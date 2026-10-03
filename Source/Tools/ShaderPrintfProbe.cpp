@@ -223,12 +223,12 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     require(frame.begin(trace ? debug::debugUnsigned(trace->plan().at("execution")) : 0), "beginFrame");
     require(commands->begin(frame.submissionContext()), "beginCommands");
     if (heapMode) {
-        commands->bindBindlessHeap(*heap);
+        require(commands->bindBindlessHeap(*heap), "bindBindlessHeap");
         if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
     } else {
         if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
     }
-    commands->dispatch(2, 1, 1);
+    require(commands->dispatch(2, 1, 1), "dispatch");
     if (heapMode) {
         VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,

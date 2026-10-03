@@ -260,7 +260,7 @@ public:
             context.commandBuffer().endRendering();
             return {};
         }
-        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
+        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*bindlessHeap_); !commandResult) { return commandResult; }
         const RasterExecutionState rasterState{.depthStencil = {
             .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(kMaterialReversedZ)}};
         auto bound = context.commandBuffer().bindExecution(defaultProgram_->execution(rasterState));
@@ -299,7 +299,7 @@ public:
                 .materialVariant = desiredProgram == alternateProgram_.get() ? 1u : 0u,
                 .transformBuffer = transformHandle_.shaderIndex,
             };
-            context.commandBuffer().pushBindlessData(&push, sizeof(push));
+            if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
             if (auto commandResult = context.commandBuffer().draw(batch.vertexCount); !commandResult) { return commandResult; }
         }
 

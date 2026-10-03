@@ -1911,10 +1911,10 @@ Result<> GPUSceneSubsystem::recordCull(
         }
     }
 
-    commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
-    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.bindBindlessHeap(*desc.bindlessHeap); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.bindExecution((desc.resetPipeline)->execution()); !commandResult) { return commandResult; }
-    commandBuffer.dispatch(1, 1, 1);
+    if (auto commandResult = commandBuffer.dispatch(1, 1, 1); !commandResult) { return commandResult; }
 
     std::vector<BufferBarrierDesc> resetBarriers;
     resetBarriers.reserve(2);
@@ -1934,9 +1934,9 @@ Result<> GPUSceneSubsystem::recordCull(
         .buffers = {resetBarriers.data(), gpuCount(resetBarriers.size())},
     }); !commandResult) { return commandResult; }
 
-    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.bindExecution((desc.instanceCullPipeline)->execution()); !commandResult) { return commandResult; }
-    commandBuffer.dispatch(desc.instanceGroupCountX, 1, 1);
+    if (auto commandResult = commandBuffer.dispatch(desc.instanceGroupCountX, 1, 1); !commandResult) { return commandResult; }
 
     std::vector<BufferBarrierDesc> cullBarriers;
     cullBarriers.reserve(4);
@@ -1968,9 +1968,9 @@ Result<> GPUSceneSubsystem::recordCull(
         .buffers = {cullBarriers.data(), gpuCount(cullBarriers.size())},
     }); !commandResult) { return commandResult; }
 
-    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.bindExecution((desc.compactPipeline)->execution()); !commandResult) { return commandResult; }
-    commandBuffer.dispatch(desc.meshletGroupCountX, 1, 1);
+    if (auto commandResult = commandBuffer.dispatch(desc.meshletGroupCountX, 1, 1); !commandResult) { return commandResult; }
 
     std::vector<BufferBarrierDesc> compactBarriers;
     compactBarriers.reserve(4);
@@ -2035,10 +2035,10 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         return makeError(Error::InvalidArgument);
     }
 
-    commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
-    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.bindBindlessHeap(*desc.bindlessHeap); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.bindExecution((desc.resetPipeline)->execution()); !commandResult) { return commandResult; }
-    commandBuffer.dispatch(1u, 1u, 1u);
+    if (auto commandResult = commandBuffer.dispatch(1u, 1u, 1u); !commandResult) { return commandResult; }
 
     BufferBarrierDesc resetBarrier{
         .buffer = visible->gpu.visibleInstanceCounter.buffer,
@@ -2049,9 +2049,9 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         .buffers = {&resetBarrier, 1},
     }); !commandResult) { return commandResult; }
 
-    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize); !commandResult) { return commandResult; }
     if (auto commandResult = commandBuffer.bindExecution((desc.instanceCullPipeline)->execution()); !commandResult) { return commandResult; }
-    commandBuffer.dispatch(desc.instanceGroupCountX, 1u, 1u);
+    if (auto commandResult = commandBuffer.dispatch(desc.instanceGroupCountX, 1u, 1u); !commandResult) { return commandResult; }
 
     std::array<BufferBarrierDesc, 3> barriers{};
     uint32_t barrierCount = 0;
@@ -2171,13 +2171,13 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         result = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice);
         if (!result) { return result; }
     }
-    commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
+    if (auto commandResult = commandBuffer.bindBindlessHeap(*desc.bindlessHeap); !commandResult) { return commandResult; }
     for (const GPUSceneComputeDispatchDesc& dispatch : desc.dispatches) {
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase++], bindings);
         if (!result) { return result; }
-        commandBuffer.pushBindlessData(dispatch.pushData, dispatch.pushDataSize);
+        if (auto commandResult = commandBuffer.pushBindlessData(dispatch.pushData, dispatch.pushDataSize); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.bindExecution(desc.pipeline->execution()); !commandResult) { return commandResult; }
-        commandBuffer.dispatch(dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ);
+        if (auto commandResult = commandBuffer.dispatch(dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ); !commandResult) { return commandResult; }
     }
     result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase], bindings);
     if (!result) { return result; }

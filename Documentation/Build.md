@@ -79,9 +79,13 @@ available and embeds shader source text and NonSemantic source/function/line
 debug information (`-g2`) while retaining optimization (`capture-symbols` mode).
 RelWithDebInfo also defaults to these symbols when internal capture injection is
 disabled (`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`), for external Nsight launches.
-`METALLIC_SHADER_CAPTURE_SYMBOLS=0` disables that independent default; requesting
-capture still enables symbols. Complete debug information can make optimized
-OpenPBR shader compilation take minutes on a cold cache. Use
+Capture and GPU Trace launch modes do not change shader compiler options. Release
+uses the same optimized, symbol-free shader compilation and cache requests with or
+without Nsight capture. Set `METALLIC_SHADER_CAPTURE_SYMBOLS=1` explicitly when
+source and function views are needed. `METALLIC_SHADER_CAPTURE_SYMBOLS=0` disables
+the RelWithDebInfo symbol default, including during capture. Complete debug
+information can make optimized OpenPBR shader compilation take minutes on a cold
+cache. Use
 `--nsight-shader-debug` for unoptimized shader debugging (`-g2 -O0`), not profiling.
 The former `-g1` mode only emitted paths/lines and was insufficient for Nsight's
 high-level source and function views. The cache request version has been bumped

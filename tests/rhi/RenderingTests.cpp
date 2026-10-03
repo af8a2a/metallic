@@ -925,7 +925,7 @@ public:
                 .renderArea = renderArea,
                 .colorAttachments = {&colorAttachment, 1},
             }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        if (auto commandResult = commandBuffer->bindBindlessHeap(*bindlessHeap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->bindExecution((defaultProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->setViewport(
             render::Viewport{
@@ -945,13 +945,13 @@ public:
             .paramsBuffer = paramsHandle.shaderIndex,
             .vertexOffset = 0,
         };
-        commandBuffer->pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = commandBuffer->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); }
 
         if (auto commandResult = commandBuffer->bindExecution((alternateProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.vertexOffset = 3;
         push.materialVariant = 1;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = commandBuffer->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); }
         commandBuffer->endRendering();
 

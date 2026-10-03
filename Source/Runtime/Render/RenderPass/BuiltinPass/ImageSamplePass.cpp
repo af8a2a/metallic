@@ -124,9 +124,8 @@ public:
             .maxDepth = 1.0f,
         }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
-        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
-        context.commandBuffer().pushBindlessData(&imageHandle_.shaderIndex, sizeof(imageHandle_.shaderIndex));
+        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*bindlessHeap_); !commandResult) { return commandResult; }
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution(), &imageHandle_.shaderIndex, sizeof(imageHandle_.shaderIndex)); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};

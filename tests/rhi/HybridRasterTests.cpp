@@ -149,11 +149,11 @@ public:
                     std::memset(data,0,pixelCount*8); output->flush(); output->unmap();
                 }
                 HYBRID_REQUIRE(commands->begin());
-                commands->bindBindlessHeap(*compareHeap); if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->bindBindlessHeap(*compareHeap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 uint32_t push[]={vertexHandle.shaderIndex,handles[0].shaderIndex,handles[1].shaderIndex,width,height,reversed,sided,bits,plane,count};
-                commands->pushBindlessData(push,sizeof(push));
+                if (auto commandResult = commands->pushBindlessData(push,sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                 const uint32_t lanes=plane>=2u ? 128u : 64u;
-                commands->dispatch(std::max(1u,(push[9]+lanes-1u)/lanes));
+                if (auto commandResult = commands->dispatch(std::max(1u,(push[9]+lanes-1u)/lanes)); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
                 HYBRID_REQUIRE(commands->end()); CommandBuffer* list[]={commands.get()};
                 HYBRID_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
                 HYBRID_REQUIRE(fence->wait()); submitted=true;
@@ -279,9 +279,9 @@ public:
                     }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                     if (auto commandResult = commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f}); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
                     commands->setScissor({.width = width, .height = height});
-                    commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
-                    commands->pushBindlessData(push, sizeof(push));
+                    if (auto commandResult = commands->pushBindlessData(push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                     if (auto commandResult = commands->drawMeshTasks(uint32_t(vertices.size() / 3)); !commandResult) { return RHITestResult::fail(std::string("drawMeshTasks failed: ") + render::resultToString(commandResult)); } commands->endRendering();
                     if (hybrid) {
                         HYBRID_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
@@ -438,11 +438,11 @@ public:
                 return RHITestResult::fail("Oversized cluster input was accepted");
             }
             HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, test.count, test.stream));
-            commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             const uint32_t push[] = {inputHandle.shaderIndex, binHandle.shaderIndex, test.count};
-            commands->pushBindlessData(push, sizeof(push));
+            if (auto commandResult = commands->pushBindlessData(push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
             if (test.count != 0) {
-                commands->dispatch(std::min(test.count, 65535u), (test.count + 65534u) / 65535u);
+                if (auto commandResult = commands->dispatch(std::min(test.count, 65535u), (test.count + 65534u) / 65535u); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
             }
             HYBRID_REQUIRE(rasterizer.finishClusterBins(*commands));
             const BufferBarrierDesc barriers[] = {

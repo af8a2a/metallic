@@ -1237,13 +1237,6 @@ private:
             resources, state == ResourceState::General ? 1u : 2u));
     }
 
-    static void dispatchClusterCandidates(CommandBuffer& commands, uint32_t count)
-    {
-        if (count != 0) {
-            commands.dispatch(std::min(count, VisibilityHybridRasterizer::kDispatchWidth),
-                divideRoundUp(count, VisibilityHybridRasterizer::kDispatchWidth), 1);
-        }
-    }
 
     void resetStreamIntegration()
     {
@@ -2225,19 +2218,17 @@ private:
             Result<> result = hybridRasterizer_->beginClusters(commandBuffer,
                 softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.shaderIndex(), activeMeshletCount_, false, false, tessellationEnabled());
             if (!result) { return result; }
-            commandBuffer.bindBindlessHeap(*registry_->heap());
+            if (auto commandResult = commandBuffer.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
             const PrivateBufferComputeStage classification[] = {
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() -> Result<> {
-                    if (auto commandResult = commandBuffer.bindExecution((clusterCountPipeline_)->execution()); !commandResult) { return commandResult; }
-                    commandBuffer.pushBindlessData(&push, sizeof(push));
-                    commandBuffer.dispatch(1);
+                    if (auto commandResult = commandBuffer.bindExecution((clusterCountPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
+                    if (auto commandResult = commandBuffer.dispatch(1); !commandResult) { return commandResult; }
                     return {};
                 }},
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
-                    if (auto commandResult = commandBuffer.bindExecution((clusterBinPipeline_)->execution()); !commandResult) { return commandResult; }
-                    commandBuffer.pushBindlessData(&push, sizeof(push));
+                    if (auto commandResult = commandBuffer.bindExecution((clusterBinPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
                     return (residentLods_[activeFrameSlot_]->arguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                 }},
             };
@@ -2261,10 +2252,10 @@ private:
             // The fork semaphore makes the producer's private cluster/argument
             // and pixel writes visible to this compute branch.
             commands.beginDebugLabel({.name = "Hybrid raster: resident software clusters"});
-            commands.bindBindlessHeap(*registry_->heap());
+            if (auto commandResult = commands.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
             if (auto commandResult = commands.bindExecution((clusterRasterPipeline_)->execution()); !commandResult) { return commandResult; }
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
-            commands.pushBindlessData(&push, sizeof(push));
+            if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
             const Result<> result = (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             commands.endDebugLabel();
             return result;
@@ -2286,7 +2277,7 @@ private:
                 .maxDepth = 1.0f,
             }); !commandResult) { return commandResult; }
             commands.setScissor(renderArea);
-            commands.bindBindlessHeap(*registry_->heap());
+            if (auto commandResult = commands.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
             for (uint32_t bucketIndex = 0;
                  bucketIndex < kGPUDrivenPreviewDrawBucketCount;
                  ++bucketIndex) {
@@ -2296,7 +2287,7 @@ private:
                 if (auto commandResult = commands.bindExecution((pipelines[bucketIndex])->execution()); !commandResult) { return commandResult; }
                 const GPUDrivenPreviewUserPush push =
                     makePush(passIndex, bucketIndex, projectWithCullingCamera);
-                commands.pushBindlessData(&push, sizeof(push));
+                if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
                 if (prebin) {
                     if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({bucketIndex * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
                 } else {
@@ -2418,7 +2409,7 @@ private:
         commandBuffer.setScissor(renderArea);
         // Stream rasterization binds its own heap; the frozen-camera path does
         // not run a final viewport HZB dispatch to restore this pass's heap.
-        commandBuffer.bindBindlessHeap(*registry_->heap());
+        if (auto commandResult = commandBuffer.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.bindExecution((compositePipeline_)->execution()); !commandResult) { return commandResult; }
         const VisibilityBufferCompositeUserPush push{
             .paramsBuffer = activeFrameResources().paramsHandle.shaderIndex(),
@@ -2432,7 +2423,7 @@ private:
             .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .shadedColors = boolProperty(&properties(), "shadedDebugColors", true) ? 1u : 0u,
         };
-        commandBuffer.pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = commandBuffer.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
         if (previousParams_.mode != kVisibilityModeNone) {
             if (auto commandResult = commandBuffer.draw(3); !commandResult) { return commandResult; }
         }
@@ -2872,7 +2863,7 @@ private:
             result = hybridRasterizer_->beginClusters(commandBuffer,
                 forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.shaderIndex(), count, true, true, tessellationEnabled());
             if (!result) { return result; }
-            commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
+            if (auto commandResult = commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
             // The prepare entry uses this otherwise unused handle for its
             // indirect dispatches; raster entries retain the queue contract.
@@ -2896,8 +2887,7 @@ private:
             if (!forceHardware) {
                 binProfile.next("Soft/hard classification");
                 commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
-                if (auto commandResult = commandBuffer.bindExecution((divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_).execution()); !commandResult) { return commandResult; }
-                commandBuffer.pushBindlessData(&push, sizeof(push));
+                if (auto commandResult = commandBuffer.bindExecution((divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_).execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
                 result = (hybridRasterizer_->candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                 commandBuffer.endDebugLabel();
                 if (!result) { return result; }
@@ -2909,14 +2899,13 @@ private:
             debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyBins" : "AfterStreamLateBins");
             if (context.debugEnabled() && boolProperty(&properties(), "softwareRasterWorkload", false)) {
                 auto diagnostic = context.profileScope("SW workload replay (diagnostic)");
-                commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
+                if (auto commandResult = commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
                 auto counterPush = push;
                 counterPush.hybridQueueBuffer = streamWorkloadHandle_.shaderIndex();
                 const PrivateBufferComputeStage workload[] = {
                     {RenderGraphResourceAccess::BufferStorageWrite, [&]() -> Result<> {
-                        if (auto commandResult = commandBuffer.bindExecution((streamWorkloadPipelines_[0])->execution()); !commandResult) { return commandResult; }
-                        commandBuffer.pushBindlessData(&counterPush, sizeof(counterPush));
-                        commandBuffer.dispatch(1, 1, 1);
+                        if (auto commandResult = commandBuffer.bindExecution((streamWorkloadPipelines_[0])->execution(), &counterPush, sizeof(counterPush)); !commandResult) { return commandResult; }
+                        if (auto commandResult = commandBuffer.dispatch(1, 1, 1); !commandResult) { return commandResult; }
                         return {};
                     }},
                     {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
@@ -2947,7 +2936,7 @@ private:
             // The fork semaphore supplies availability and visibility for the
             // producer's private cluster/argument and pixel resources.
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
-            commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
+            if (auto commandResult = commands.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
             // Fixed wave32 devices use the validated 32-thread strided kernel.
             // WorkControl 128 and the other comparison kernels remain explicit references.
             const size_t rasterMode = softwareRasterMode();
@@ -2967,7 +2956,7 @@ private:
                     {}, identity);
             }
 
-            commands.pushBindlessData(&push, sizeof(push));
+            if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
             Result<> result;
             auto* replay = profiling::WorkControlReplay::selected(phase == GPUSceneCullPhase::Early ? "early" : "late");
             if (replay) {
@@ -3014,9 +3003,8 @@ private:
                 .maxDepth = 1.0f,
             }); !commandResult) { return commandResult; }
             commands.setScissor(renderArea);
-            commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution()); !commandResult) { return commandResult; }
-            commands.pushBindlessData(&push, sizeof(push));
+            if (auto commandResult = commands.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
+            if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
             if (prebin) {
                 if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
             } else {

@@ -170,9 +170,9 @@ public:
         struct Push { PatternValues values; uint32_t imageBase, bufferBase; };
         const Push push{values, image_.shaderIndex, input_.shaderIndex};
         static_assert(sizeof(Push) == 40);
-        commands.bindBindlessHeap(*heap_);
+        if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
         result = commands.bindExecution(pipeline_->execution(), &push, sizeof(push));
-        if (result) { commands.dispatch(groups, 1, 1); }
+        if (result) { result = commands.dispatch(groups, 1, 1); }
         return result;
     }
 private:

@@ -1784,16 +1784,16 @@ class CommandBuffer {
     void setDepthStencilState(const DepthStencilState& state);
     [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution);
     [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution, const void* pushData, uint32_t byteSize);
-    void bindBindlessHeap(BindlessHeap& heap);
+    [[nodiscard]] Result<> bindBindlessHeap(BindlessHeap& heap);
     // Upload the caller's shader parameter ABI at byte zero, without a heap header.
-    void pushBindlessData(const void* data, uint32_t byteSize);
+    [[nodiscard]] Result<> pushBindlessData(const void* data, uint32_t byteSize);
     // Record compute-only instrumentation, restoring the compute pipeline,
     // descriptor heap and shared push data before returning. No rendering scope.
     Result<> recordIsolatedCompute(const std::function<Result<>()>& record);
     [[nodiscard]] Result<> draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
     [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     [[nodiscard]] Result<> drawMeshTasksIndirect(const BufferSlice& arguments);
-    void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    [[nodiscard]] Result<> dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     // Three GPU-written uint32 group counts; offset is 4-byte aligned.
     Result<> dispatchIndirect(const BufferSlice& arguments);
     Result<> buildClusterAccelerationStructureTriangles(

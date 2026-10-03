@@ -34,68 +34,6 @@ uint32_t textureDimensionAtMip(uint32_t value, uint32_t mipLevel)
     return value;
 }
 
-uint32_t formatTexelByteSize(Format format)
-{
-    switch (format) {
-    case Format::R8Unorm:
-    case Format::R8Snorm:
-    case Format::R8Uint:
-    case Format::R8Sint:
-        return 1;
-    case Format::RG8Unorm:
-    case Format::RG8Snorm:
-    case Format::RG8Uint:
-    case Format::RG8Sint:
-    case Format::R16Unorm:
-    case Format::R16Snorm:
-    case Format::R16Uint:
-    case Format::R16Sint:
-    case Format::R16Sfloat:
-        return 2;
-    case Format::BGRA8Unorm:
-    case Format::BGRA8sRGB:
-    case Format::RGBA8Unorm:
-    case Format::RGBA8Snorm:
-    case Format::RGBA8sRGB:
-    case Format::RGBA8Uint:
-    case Format::RGBA8Sint:
-    case Format::RG16Unorm:
-    case Format::RG16Snorm:
-    case Format::RG16Uint:
-    case Format::RG16Sint:
-    case Format::RG16Sfloat:
-    case Format::R32Uint:
-    case Format::R32Sint:
-    case Format::R32Sfloat:
-    case Format::A2B10G10R10UnormPack32:
-    case Format::A2R10G10B10UintPack32:
-    case Format::B10G11R11UfloatPack32:
-    case Format::E5B9G9R9UfloatPack32:
-    case Format::D32Sfloat:
-        return 4;
-    case Format::RGBA16Unorm:
-    case Format::RGBA16Snorm:
-    case Format::RGBA16Uint:
-    case Format::RGBA16Sint:
-    case Format::RGBA16Sfloat:
-    case Format::RG32Uint:
-    case Format::RG32Sint:
-    case Format::RG32Sfloat:
-        return 8;
-    case Format::RGB32Uint:
-    case Format::RGB32Sint:
-    case Format::RGB32Sfloat:
-        return 12;
-    case Format::RGBA32Uint:
-    case Format::RGBA32Sint:
-    case Format::RGBA32Sfloat:
-        return 16;
-    case Format::Unknown:
-        break;
-    }
-    return 0;
-}
-
 uint64_t textureCopyByteSize(const BufferTextureRegion& copy)
 {
     return static_cast<uint64_t>(copy.bufferSlicePitch) *
@@ -363,9 +301,9 @@ struct StreamerImpl {
         }
 
         const TextureDesc& textureDesc = streamDesc.dstTexture->desc();
-        const uint32_t blockBytes = compressedBlockBytes(textureDesc.format);
-        const uint32_t blockExtent = blockBytes ? 4 : 1;
-        const uint32_t bytesPerTexel = blockBytes ? blockBytes : formatTexelByteSize(textureDesc.format);
+        const auto format = formatInfo(textureDesc.format);
+        const uint32_t blockExtent = format.blockExtent;
+        const uint32_t bytesPerTexel = format.bytesPerBlock;
         if (bytesPerTexel == 0 || streamDesc.dstMipLevel >= textureDesc.mipCount) {
             return {};
         }
@@ -406,20 +344,13 @@ struct StreamerImpl {
         if (uint32_t(streamDesc.dstOffsetX) % blockExtent || uint32_t(streamDesc.dstOffsetY) % blockExtent ||
             (width % blockExtent && uint32_t(streamDesc.dstOffsetX) + width != mipWidth) ||
             (height % blockExtent && uint32_t(streamDesc.dstOffsetY) + height != mipHeight)) { return {}; }
-        const uint32_t rows = (height + blockExtent - 1) / blockExtent;
-        const uint64_t rowSize = ((uint64_t(width) + blockExtent - 1) / blockExtent) * bytesPerTexel;
-        if (rowSize > std::numeric_limits<uint32_t>::max()) {
-            return {};
-        }
-        const uint32_t sourceRowPitch = streamDesc.dataRowPitch == 0
-            ? static_cast<uint32_t>(rowSize)
-            : streamDesc.dataRowPitch;
-        const uint32_t sourceSlicePitch = streamDesc.dataSlicePitch == 0
-            ? sourceRowPitch * rows
-            : streamDesc.dataSlicePitch;
-        if (sourceRowPitch < rowSize || sourceSlicePitch < static_cast<uint64_t>(sourceRowPitch) * rows) {
-            return {};
-        }
+        const auto sourceFootprint = textureCopyFootprint(textureDesc.format, width, height,
+            uint64_t(depth) * streamDesc.dstLayerCount, streamDesc.dataRowPitch, streamDesc.dataSlicePitch);
+        if (!sourceFootprint || sourceFootprint->requiredBytes > std::numeric_limits<size_t>::max()) { return {}; }
+        const uint64_t rows = sourceFootprint->rows;
+        const uint64_t rowSize = sourceFootprint->rowBytes;
+        const uint64_t sourceRowPitch = sourceFootprint->rowPitch;
+        const uint64_t sourceSlicePitch = sourceFootprint->slicePitch;
 
         const DeviceCapabilities& capabilities = device->capabilities();
         const uint64_t rowPitch = alignUp(rowSize, std::max<uint64_t>(capabilities.textureUploadRowPitchAlignment, bytesPerTexel));
@@ -428,6 +359,9 @@ struct StreamerImpl {
             capabilities.textureUploadSlicePitchAlignment);
         const uint64_t copySliceCount =
             static_cast<uint64_t>(depth) * static_cast<uint64_t>(streamDesc.dstLayerCount);
+        const auto destinationFootprint = textureCopyFootprint(textureDesc.format, width, height,
+            copySliceCount, rowPitch, slicePitch);
+        if (!destinationFootprint || slicePitch > std::numeric_limits<uint64_t>::max() / copySliceCount) { return {}; }
         const uint64_t dataSize = slicePitch * copySliceCount;
         if (dataSize == 0 ||
             rowPitch > std::numeric_limits<uint32_t>::max() ||

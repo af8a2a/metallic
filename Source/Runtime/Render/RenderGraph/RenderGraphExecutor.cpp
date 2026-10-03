@@ -2357,7 +2357,7 @@ struct RenderGraphExecutor::Impl {
         }
 
         if (bindlessHeap != nullptr && usesBindlessResource(node)) {
-            commandBuffer.bindBindlessHeap(*bindlessHeap);
+            if (auto commandResult = commandBuffer.bindBindlessHeap(*bindlessHeap); !commandResult) { return commandResult; }
         }
 
         StreamerSubsystem* upload = streamerSubsystem();

@@ -149,10 +149,9 @@ Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPix
         };
     }
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
-    commands.bindBindlessHeap(*heap_);
-    if (auto commandResult = commands.bindExecution((compute_[0])->execution()); !commandResult) { return commandResult; }
-    commands.pushBindlessData(&push_, sizeof(push_));
-    commands.dispatch((push_.width + 63u) / 64u, push_.height);
+    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.bindExecution((compute_[0])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.dispatch((push_.width + 63u) / 64u, push_.height); !commandResult) { return commandResult; }
     for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
     commands.endDebugLabel();
@@ -169,19 +168,17 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
     };
     if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
-    commands.bindBindlessHeap(*heap_);
+    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
     if (!softwareRasterized) {
-        if (auto commandResult = commands.bindExecution((compute_[1])->execution()); !commandResult) { return commandResult; }
-        commands.pushBindlessData(&push_, sizeof(push_));
-        commands.dispatch(1);
+        if (auto commandResult = commands.bindExecution((compute_[1])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.dispatch(1); !commandResult) { return commandResult; }
         barrier = {
             .buffer = buffers_[2].get(),
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
         };
         if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
-        if (auto commandResult = commands.bindExecution((compute_[2])->execution()); !commandResult) { return commandResult; }
-        commands.pushBindlessData(&push_, sizeof(push_));
+        if (auto commandResult = commands.bindExecution((compute_[2])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
         auto result = (*buffers_[2]).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
         if (!result) { commands.endDebugLabel(); return result; }
     } else {
@@ -228,8 +225,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
     }); !rendering) { return rendering; }
     if (auto commandResult = commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f}); !commandResult) { return commandResult; }
     commands.setScissor(area);
-    if (auto commandResult = commands.bindExecution((resolve_[push_.reversedZ])->execution()); !commandResult) { return commandResult; }
-    commands.pushBindlessData(&push_, sizeof(push_));
+    if (auto commandResult = commands.bindExecution((resolve_[push_.reversedZ])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
     if (auto commandResult = commands.draw(3); !commandResult) { return commandResult; }
     commands.endRendering();
     commands.endDebugLabel();
@@ -251,7 +247,7 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
     } else {
         if (auto result = begin(commands, maxPixels, reversedZ); !result) { return result; }
     }
-    commands.bindBindlessHeap(*heap_);
+    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
     push_.producerPixelBuffer = producerPixelBuffer;
     push_.inputClusterCount = inputCount;
     push_.streamMode = (stream ? 1u : 0u) | (tessellation ? 2u : 0u);
@@ -273,9 +269,8 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }};
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
-    if (auto commandResult = commands.bindExecution((clusterPipelines_[0])->execution()); !commandResult) { return commandResult; }
-    commands.pushBindlessData(&push_, sizeof(push_));
-    commands.dispatch(1);
+    if (auto commandResult = commands.bindExecution((clusterPipelines_[0])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.dispatch(1); !commandResult) { return commandResult; }
     const BufferBarrierDesc ready{
         .buffer = clusterBuffer_.get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
@@ -310,9 +305,9 @@ Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffe
     // Only the small block-count prefix stays on a single workgroup.
     for (uint32_t phase = 0; phase < 4; ++phase) {
         push.activeBuildPhase = phase;
-        commands.pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
         if (phase == 0 || phase == 2) {
-            commands.dispatch(1);
+            if (auto commandResult = commands.dispatch(1); !commandResult) { return commandResult; }
             if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
         } else {
             const Result<> result = (*candidateArguments_).slice({kCandidateBuildArgumentsOffset, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
@@ -341,7 +336,7 @@ Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
 {
     if (auto commandResult = commands.bindExecution((pipeline).execution()); !commandResult) { return commandResult; }
     push.activeBuildPhase = 0;
-    commands.pushBindlessData(&push, sizeof(push));
+    if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
     const Result<> result = (*candidateArguments_).slice({12, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
     if (!result) { return result; }
     const BufferBarrierDesc barriers[] = {
@@ -357,8 +352,8 @@ Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
         }};
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 2}}); !commandResult) { return commandResult; }
     push.activeBuildPhase = 1;
-    commands.pushBindlessData(&push, sizeof(push));
-    commands.dispatch(1);
+    if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.dispatch(1); !commandResult) { return commandResult; }
     if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
     return {};
 }
@@ -372,17 +367,16 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
-    commands.bindBindlessHeap(*heap_);
+    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
     const uint32_t blocks = (push_.inputClusterCount + 127u) / 128u;
     for (size_t i = 1; i < clusterPipelines_.size(); ++i) {
-        if (auto commandResult = commands.bindExecution((clusterPipelines_[i])->execution()); !commandResult) { return commandResult; }
-        commands.pushBindlessData(&push_, sizeof(push_));
-        if (i == 2) { commands.dispatch(5); }
+        if (auto commandResult = commands.bindExecution((clusterPipelines_[i])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
+        if (i == 2) { if (auto commandResult = commands.dispatch(5); !commandResult) { return commandResult; } }
         else if (compactCandidates_) {
             const Result<> result = (*candidateArguments_).slice({12, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             if (!result) { commands.endDebugLabel(); return result; }
         }
-        else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }
+        else if (blocks != 0) { if (auto commandResult = commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); !commandResult) { return commandResult; } }
         if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     }
     // Overflow HW raster publishes early-phase retry masks in this buffer.

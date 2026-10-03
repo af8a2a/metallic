@@ -167,8 +167,7 @@ Result<> EncodedParameters::bindResources(CommandBuffer& commands) const
     if (!compatible(commands, abi())) { return makeError(Error::InvalidArgument); }
     auto retained = commands.retainResource(packet_);
     if (!retained) { return retained; }
-    commands.bindBindlessHeap(*packet_->registry->heap);
-    return {};
+    return commands.bindBindlessHeap(*packet_->registry->heap);
 }
 
 Result<> ResourceRegistry::initialize(Device& device, const BindlessHeapDesc& capacity)
@@ -310,7 +309,7 @@ Result<> ResourceRegistry::bind(CommandBuffer& commands) const
 {
     if (!state_ || commands.deviceIdentity() != state_->device) { return makeError(Error::InvalidArgument); }
     auto result = commands.retainResource(state_);
-    if (result) { commands.bindBindlessHeap(*state_->heap); }
+    if (result) { result = commands.bindBindlessHeap(*state_->heap); }
     return result;
 }
 

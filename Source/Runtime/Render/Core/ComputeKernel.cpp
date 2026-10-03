@@ -122,7 +122,7 @@ Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierD
             : commands.bindExecution(item.execution, bytes.data(), uint32_t(bytes.size()));
         if (!result) { return result; }
         if (item.arguments.valid()) { result = commands.dispatchIndirect(item.arguments); }
-        else { commands.dispatch(impl_->x, impl_->y, impl_->z); }
+        else { result = commands.dispatch(impl_->x, impl_->y, impl_->z); }
         if (!result) { return result; }
         if (i + 1 < impl_->items.size()) {
             result = commands.synchronize(betweenDispatches);

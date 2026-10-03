@@ -1,5 +1,6 @@
 #include "VulkanSynchronization.h"
 #include "VulkanTrace.h"
+#include "VulkanResult.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
@@ -97,30 +98,7 @@ bool spirvHasDescriptorBindings(const uint32_t* words, uint64_t byteSize)
 
 using vulkan::VulkanSyncScope;
 
-Result<> resultFromVk(VkResult result)
-{
-    switch (result) {
-    case VK_SUCCESS:
-        return {};
-    case VK_ERROR_OUT_OF_HOST_MEMORY:
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
-        return makeError(Error::OutOfMemory);
-    case VK_ERROR_DEVICE_LOST:
-        profiling::handleNsightAftermathDeviceLost();
-        return makeError(Error::DeviceLost);
-    case VK_ERROR_OUT_OF_DATE_KHR:
-    case VK_ERROR_SURFACE_LOST_KHR:
-        return makeError(Error::OutOfDate);
-    case VK_ERROR_EXTENSION_NOT_PRESENT:
-    case VK_ERROR_FEATURE_NOT_PRESENT:
-    case VK_ERROR_FORMAT_NOT_SUPPORTED:
-    case VK_ERROR_INCOMPATIBLE_DRIVER:
-    case VK_ERROR_LAYER_NOT_PRESENT:
-        return makeError(Error::Unsupported);
-    default:
-        return makeError(Error::Failure);
-    }
-}
+using vulkan::resultFromVk;
 
 bool hasName(const std::vector<VkExtensionProperties>& properties, const char* name)
 {
@@ -801,68 +779,6 @@ uint64_t clusterIndexByteSize(ClusterAccelerationStructureIndexFormat format)
 }
 #endif
 
-uint32_t formatTexelByteSize(Format format)
-{
-    switch (format) {
-    case Format::R8Unorm:
-    case Format::R8Snorm:
-    case Format::R8Uint:
-    case Format::R8Sint:
-        return 1;
-    case Format::RG8Unorm:
-    case Format::RG8Snorm:
-    case Format::RG8Uint:
-    case Format::RG8Sint:
-    case Format::BGRA4Unorm:
-    case Format::R16Unorm:
-    case Format::R16Snorm:
-    case Format::R16Uint:
-    case Format::R16Sint:
-    case Format::R16Sfloat:
-        return 2;
-    case Format::BGRA8Unorm:
-    case Format::BGRA8sRGB:
-    case Format::RGBA8Unorm:
-    case Format::RGBA8Snorm:
-    case Format::RGBA8sRGB:
-    case Format::RGBA8Uint:
-    case Format::RGBA8Sint:
-    case Format::RG16Unorm:
-    case Format::RG16Snorm:
-    case Format::RG16Uint:
-    case Format::RG16Sint:
-    case Format::RG16Sfloat:
-    case Format::R32Uint:
-    case Format::R32Sint:
-    case Format::R32Sfloat:
-    case Format::A2B10G10R10UnormPack32:
-    case Format::A2R10G10B10UintPack32:
-    case Format::B10G11R11UfloatPack32:
-    case Format::E5B9G9R9UfloatPack32:
-    case Format::D32Sfloat:
-        return 4;
-    case Format::RGBA16Unorm:
-    case Format::RGBA16Snorm:
-    case Format::RGBA16Uint:
-    case Format::RGBA16Sint:
-    case Format::RGBA16Sfloat:
-    case Format::RG32Uint:
-    case Format::RG32Sint:
-    case Format::RG32Sfloat:
-        return 8;
-    case Format::RGB32Uint:
-    case Format::RGB32Sint:
-    case Format::RGB32Sfloat:
-        return 12;
-    case Format::RGBA32Uint:
-    case Format::RGBA32Sint:
-    case Format::RGBA32Sfloat:
-        return 16;
-    case Format::Unknown:
-        break;
-    }
-    return 0;
-}
 
 bool fillBufferImageLayout(
     const BufferTextureRegion& desc,
@@ -872,44 +788,18 @@ bool fillBufferImageLayout(
     outBufferRowLength = 0;
     outBufferImageHeight = 0;
     const Format format = desc.texture->desc().format;
-    const uint32_t blockBytes = compressedBlockBytes(format);
-    const uint32_t blockExtent = blockBytes ? 4 : 1;
-    const uint32_t bytesPerTexel = blockBytes ? blockBytes : formatTexelByteSize(format);
-    if (bytesPerTexel == 0) {
-        return false;
-    }
-
-    const uint64_t tightRowPitch = ((uint64_t(desc.width) + blockExtent - 1) / blockExtent) * bytesPerTexel;
-    const uint64_t rowPitch = desc.bufferRowPitch == 0
-        ? tightRowPitch
-        : static_cast<uint64_t>(desc.bufferRowPitch);
-    if (rowPitch < tightRowPitch || rowPitch % bytesPerTexel != 0) {
-        return false;
-    }
-    const uint64_t rowLength = rowPitch / bytesPerTexel * blockExtent;
-    if (desc.bufferRowPitch != 0 && rowLength > std::numeric_limits<uint32_t>::max()) { return false; }
-    outBufferRowLength = desc.bufferRowPitch == 0
-        ? 0
-        : static_cast<uint32_t>(rowLength);
-
-    const uint64_t rows = (uint64_t(desc.height) + blockExtent - 1) / blockExtent;
-    if (rowPitch > std::numeric_limits<uint64_t>::max() / rows) { return false; }
-    const uint64_t tightSlicePitch = rowPitch * rows;
-    const uint64_t slicePitch = desc.bufferSlicePitch == 0 ? tightSlicePitch : desc.bufferSlicePitch;
-    if (desc.bufferSlicePitch != 0) {
-        if (slicePitch < tightSlicePitch || slicePitch % rowPitch != 0) {
-            return false;
-        }
-        const uint64_t imageHeight = slicePitch / rowPitch * blockExtent;
-        if (imageHeight > std::numeric_limits<uint32_t>::max()) { return false; }
-        outBufferImageHeight = static_cast<uint32_t>(imageHeight);
-    }
-    // The last row needs only its texels, not its trailing row/slice padding.
-    // Divide before multiplying to reject oversized regions without overflow.
-    const uint64_t lastSliceBytes = rowPitch * (rows - 1) + tightRowPitch;
-    const uint64_t availableBytes = desc.buffer.size();
-    const uint64_t slices = uint64_t(desc.depth) * desc.layerCount;
-    return lastSliceBytes <= availableBytes && slices - 1 <= (availableBytes - lastSliceBytes) / slicePitch;
+    const auto info = formatInfo(format);
+    const auto footprint = textureCopyFootprint(format, desc.width, desc.height,
+        uint64_t(desc.depth) * desc.layerCount, desc.bufferRowPitch, desc.bufferSlicePitch);
+    if (!footprint || footprint->requiredBytes > desc.buffer.size() ||
+        footprint->rowPitch % info.bytesPerBlock || footprint->slicePitch % footprint->rowPitch) { return false; }
+    const uint64_t rowLength = footprint->rowPitch / info.bytesPerBlock * info.blockExtent;
+    const uint64_t imageHeight = footprint->slicePitch / footprint->rowPitch * info.blockExtent;
+    if ((desc.bufferRowPitch && rowLength > UINT32_MAX) ||
+        (desc.bufferSlicePitch && imageHeight > UINT32_MAX)) { return false; }
+    outBufferRowLength = desc.bufferRowPitch ? uint32_t(rowLength) : 0;
+    outBufferImageHeight = desc.bufferSlicePitch ? uint32_t(imageHeight) : 0;
+    return true;
 }
 
 VkImageType toVkImageType(TextureType type)
@@ -5283,6 +5173,18 @@ void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
 
 // Descriptor indices in the payload are already relative to the bound heap.
 // Push the exact caller ABI from byte zero; no backend header is prepended.
+bool validCommandRecording(const detail::CommandBufferImpl* commandBuffer, bool recording,
+    VkQueueFlags supportedQueues)
+{
+    return commandBuffer && recording && (commandBuffer->queueFlags & supportedQueues);
+}
+
+bool validPushData(const detail::CommandBufferImpl& commandBuffer, const void* data, uint32_t byteSize)
+{
+    return (!byteSize || data) && !(byteSize & 3u) &&
+        byteSize <= commandBuffer.device->descriptorHeapWriter.maxPushDataSize();
+}
+
 void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer)
 {
     const auto& payload = commandBuffer.currentBindlessUserData;
@@ -5321,11 +5223,11 @@ Result<> CommandBuffer::bindExecutionImpl(
     uint32_t byteSize,
     bool replaceData)
 {
-    if (!impl_ || !recording_ || !execution.valid() || execution.deviceIdentity() != deviceIdentity() ||
-        (execution.kind() == ExecutionKind::Compute && !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) ||
-        (execution.kind() == ExecutionKind::Raster && !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) ||
+    if (!validCommandRecording(impl_.get(), recording_, execution.kind() == ExecutionKind::Compute
+            ? VK_QUEUE_COMPUTE_BIT : VK_QUEUE_GRAPHICS_BIT) ||
+        !execution.valid() || execution.deviceIdentity() != deviceIdentity() ||
         (execution.shaders_ && execution.raster_.colorAttachmentCount > 8) ||
-        (replaceData && ((byteSize && !data) || (byteSize & 3u) || byteSize > impl_->device->descriptorHeapWriter.maxPushDataSize()))) { return makeError(Error::InvalidArgument); }
+        (replaceData && !validPushData(*impl_, data, byteSize))) { return makeError(Error::InvalidArgument); }
     if (execution.compute_) {
         auto result = retainResource(execution.compute_);
         if (!result) { return result; }
@@ -5498,36 +5400,25 @@ void CommandBuffer::setGraphicsShaderObjectState()
     }
 }
 
-void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
+Result<> CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
 {
-    if (impl_ == nullptr || heap.impl_ == nullptr) {
-        return;
-    }
-    if (impl_->currentBindlessHeap == heap.impl_.get()) {
-        return;
-    }
-
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) ||
+        !heap.impl_ || heap.impl_->device != impl_->device) { return makeError(Error::InvalidArgument); }
+    if (impl_->currentBindlessHeap == heap.impl_.get()) { return {}; }
     impl_->currentBindlessHeap = heap.impl_.get();
-    heap.impl_->heap.bind(
-        impl_->commandBuffer,
-        heap.impl_->samplerHeap.address,
-        heap.impl_->resourceHeap.address);
+    heap.impl_->heap.bind(impl_->commandBuffer, heap.impl_->samplerHeap.address, heap.impl_->resourceHeap.address);
     pushCurrentBindlessData(*impl_);
+    return {};
 }
 
-void CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
+Result<> CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
 {
-    if (impl_ == nullptr || (byteSize > 0 && data == nullptr)) {
-        return;
-    }
-
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) ||
+        !validPushData(*impl_, data, byteSize)) { return makeError(Error::InvalidArgument); }
     impl_->currentBindlessUserData.resize(byteSize);
-    if (byteSize > 0) {
-        std::memcpy(impl_->currentBindlessUserData.data(), data, byteSize);
-    }
-    if (impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_);
-    }
+    if (byteSize) { std::memcpy(impl_->currentBindlessUserData.data(), data, byteSize); }
+    if (impl_->currentBindlessHeap) { pushCurrentBindlessData(*impl_); }
+    return {};
 }
 
 Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& record)
@@ -5613,17 +5504,20 @@ Result<> CommandBuffer::drawMeshTasksIndirect(const BufferSlice& arguments)
     return {};
 }
 
-void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+Result<> CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 {
-    if (impl_ != nullptr && groupCountX > 0 && groupCountY > 0 && groupCountZ > 0) {
-        impl_->device->functions.vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
-        if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
-    }
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT)) { return makeError(Error::InvalidArgument); }
+    if (!groupCountX || !groupCountY || !groupCountZ) { return {}; }
+    const auto& limits = impl_->device->physicalProperties.core.limits.maxComputeWorkGroupCount;
+    if (groupCountX > limits[0] || groupCountY > limits[1] || groupCountZ > limits[2]) { return makeError(Error::InvalidArgument); }
+    impl_->device->functions.vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
+    if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
+    return {};
 }
 
 Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
 {
-    if (!impl_ || !recording_ || (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
         !arguments.validate(deviceIdentity(), BufferUsageBits::Indirect, 4, sizeof(VkDispatchIndirectCommand))) {
         return makeError(Error::InvalidArgument);
     }
@@ -6114,20 +6008,6 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
     std::vector<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> buildInfos(
         desc.clusters.size());
     std::vector<uint64_t> destinationAddresses(desc.clusters.size());
-    std::vector<std::pair<Buffer*, uint64_t>> bufferAddresses;
-    bufferAddresses.reserve(6);
-    auto bufferAddress = [&bufferAddresses](Buffer& buffer) {
-        const auto iter = std::find_if(
-            bufferAddresses.begin(),
-            bufferAddresses.end(),
-            [&buffer](const auto& entry) { return entry.first == &buffer; });
-        if (iter != bufferAddresses.end()) {
-            return iter->second;
-        }
-        const uint64_t address = buffer.deviceAddress();
-        bufferAddresses.emplace_back(&buffer, address);
-        return address;
-    };
     uint64_t totalTriangleCount = 0;
     uint64_t totalVertexCount = 0;
     for (uint32_t index = 0; index < desc.clusters.size(); ++index) {
@@ -6183,9 +6063,9 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
             return makeError(Error::InvalidArgument);
         }
 
-        const uint64_t indexAddress = bufferAddress(*indexBuffer);
-        const uint64_t vertexAddress = bufferAddress(*vertexBuffer);
-        const uint64_t destinationAddress = bufferAddress(*destinationBuffer);
+        const uint64_t indexAddress = indexBuffer->deviceAddress();
+        const uint64_t vertexAddress = vertexBuffer->deviceAddress();
+        const uint64_t destinationAddress = destinationBuffer->deviceAddress();
         if (indexAddress == 0 || vertexAddress == 0 || destinationAddress == 0) {
             return makeError(Error::Failure);
         }
@@ -6235,9 +6115,9 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
     buildInfoBuffer->unmap();
     destinationAddressBuffer->unmap();
 
-    const uint64_t buildInfoAddress = bufferAddress(*buildInfoBuffer);
-    const uint64_t destinationAddress = bufferAddress(*destinationAddressBuffer);
-    const uint64_t scratchAddress = bufferAddress(*scratchBuffer);
+    const uint64_t buildInfoAddress = buildInfoBuffer->deviceAddress();
+    const uint64_t destinationAddress = destinationAddressBuffer->deviceAddress();
+    const uint64_t scratchAddress = scratchBuffer->deviceAddress();
     if (buildInfoAddress == 0 || destinationAddress == 0 || scratchAddress == 0) {
         return makeError(Error::Failure);
     }

@@ -466,7 +466,7 @@ public:
         }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
-        context.commandBuffer().pushBindlessData(&sourceHandle->shaderIndex, sizeof(sourceHandle->shaderIndex));
+        if (auto commandResult = context.commandBuffer().pushBindlessData(&sourceHandle->shaderIndex, sizeof(sourceHandle->shaderIndex)); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
@@ -5039,7 +5039,7 @@ public:
             .buffers = generalBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        if (auto commandResult = commandBuffer->bindBindlessHeap(*bindlessHeap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
         render::MeshletStreamUserPush push{
             .pageBuffer = pageHandle.shaderIndex,
             .activeGroupBuffer = activeGroupHandle.shaderIndex,
@@ -5109,8 +5109,8 @@ public:
 
         if (auto commandResult = commandBuffer->bindExecution((activeBuildPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildResetPhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto commandResult = commandBuffer->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->dispatch(1, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
 
         std::array<render::BufferBarrierDesc, 7> activePhaseBarriers = {{
             render::BufferBarrierDesc{
@@ -5161,22 +5161,22 @@ public:
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.activeBuildPhase = render::kMeshletStreamActiveBuildSeedPhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto commandResult = commandBuffer->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->dispatch(1, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildRunPhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto commandResult = commandBuffer->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->dispatch(1, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto commandResult = commandBuffer->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->dispatch(1, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
@@ -5184,8 +5184,8 @@ public:
         if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
         push.activeBuildPhase = static_cast<uint32_t>(residentPageIds.size());
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto commandResult = commandBuffer->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->dispatch(1, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
 
         std::array<render::BufferBarrierDesc, 6> readbackBarriers = {{
             render::BufferBarrierDesc{

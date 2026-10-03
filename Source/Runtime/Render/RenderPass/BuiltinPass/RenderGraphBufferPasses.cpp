@@ -69,9 +69,9 @@ public:
             .passIndex = 0,
             .padding = 0,
         };
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
-        context.commandBuffer().dispatch(1, 1, 1);
+        if (auto commandResult = context.commandBuffer().dispatch(1, 1, 1); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -154,9 +154,9 @@ public:
             .passIndex = 0,
             .padding = 0,
         };
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
-        context.commandBuffer().dispatch(1, 1, 1);
+        if (auto commandResult = context.commandBuffer().dispatch(1, 1, 1); !commandResult) { return commandResult; }
         return {};
     }
 

@@ -692,8 +692,8 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     }); !commandResult) { return 1; }
                     commandBuffer->setScissor(renderArea);
                     if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return 1; }
-                    commandBuffer->bindBindlessHeap(*bindlessHeap);
-                    commandBuffer->pushBindlessData(&sourceImageHandle.shaderIndex, sizeof(sourceImageHandle.shaderIndex));
+                    if (auto commandResult = commandBuffer->bindBindlessHeap(*bindlessHeap); !commandResult) { return 1; }
+                    if (auto commandResult = commandBuffer->pushBindlessData(&sourceImageHandle.shaderIndex, sizeof(sourceImageHandle.shaderIndex)); !commandResult) { return 1; }
                     if (auto commandResult = commandBuffer->draw(3); !commandResult) { return 1; }
                     commandBuffer->endRendering();
 

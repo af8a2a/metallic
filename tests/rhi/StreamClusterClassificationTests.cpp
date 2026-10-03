@@ -297,7 +297,7 @@ public:
                     if (submitted) { CLASSIFY_REQUIRE(fence->reset()); CLASSIFY_REQUIRE(pool->reset()); }
                     CLASSIFY_REQUIRE(commands->begin());
                     CLASSIFY_REQUIRE(rasterizer.beginClusters(*commands, test.maxPixels, test.reversed, 0, capacity, true, true));
-                    commands->bindBindlessHeap(*heap);
+                    if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
                     MeshletStreamUserPush push{.pageBuffer = handles[Pages].shaderIndex, .activeGroupBuffer = handles[Groups].shaderIndex,
                         .pageTableBuffer = handles[PageTable].shaderIndex, .paramsBuffer = handles[Params].shaderIndex,
                         .requestBuffer = handles[Requests].shaderIndex, .activeHeaderBuffer = handles[Header].shaderIndex,
@@ -306,7 +306,7 @@ public:
                     CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
                     if (schedule != 0) {
                         if (auto commandResult = commands->bindExecution((pipelines[4])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                        commands->pushBindlessData(&push, sizeof(push));
+                        if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                         CLASSIFY_REQUIRE((rasterizer.candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));
                         BufferBarrierDesc verifyBarrier{
                             .buffer = &rasterizer.clusterBuffer(),
@@ -344,7 +344,7 @@ public:
                             const bool legacy = ((dispatch / 2 + dispatch % 2) & 1u) == 0u;
                             if (auto commandResult = commands->synchronize({.buffers = {&tagsReady, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                             if (auto commandResult = commands->bindExecution((pipelines[legacy ? 7 : 2])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                            commands->pushBindlessData(&push, sizeof(push));
+                            if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2, PipelineStageBits::TopOfPipe));
                             CLASSIFY_REQUIRE((rasterizer.candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2 + 1, PipelineStageBits::BottomOfPipe));
@@ -353,7 +353,7 @@ public:
                     }
                     if (schedule == 0 || test.maxPixels != 0) {
                         if (auto commandResult = commands->bindExecution((pipelines[schedule == 0 ? 3 : schedule == 1 ? 2 : 7])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                        commands->pushBindlessData(&push, sizeof(push));
+                        if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                         CLASSIFY_REQUIRE((rasterizer.candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));
                     }
                     if (schedule != 0) {
@@ -375,7 +375,7 @@ public:
                     }
                     CLASSIFY_REQUIRE(rasterizer.finishClusterBins(*commands));
                     if (schedule != 0) {
-                        commands->bindBindlessHeap(*heap);
+                        if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
                         auto diagnosticPush = push;
                         diagnosticPush.hybridQueueBuffer = handles[16 + bufferSet].shaderIndex;
                         BufferBarrierDesc ready{
@@ -385,8 +385,8 @@ public:
                         };
                         if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         if (auto commandResult = commands->bindExecution((pipelines[5])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                        commands->pushBindlessData(&diagnosticPush, sizeof(diagnosticPush));
-                        commands->dispatch(1);
+                        if (auto commandResult = commands->pushBindlessData(&diagnosticPush, sizeof(diagnosticPush)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                        if (auto commandResult = commands->dispatch(1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
                         if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         if (auto commandResult = commands->bindExecution((pipelines[6])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         CLASSIFY_REQUIRE((rasterizer.clusterArguments()).slice({4 * 3 * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));

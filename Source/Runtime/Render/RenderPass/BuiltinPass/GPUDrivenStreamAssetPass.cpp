@@ -1427,11 +1427,11 @@ private:
         }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         if (streamRuntime_->drawTaskCount() > 0) {
-            context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
+            if (auto commandResult = context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
             if (auto commandResult = context.commandBuffer().bindExecution((visibilityPipelines_[reversedZ ? 1u : 0u])->execution()); !commandResult) { return commandResult; }
             MeshletStreamUserPush push = streamRuntime_->userPush();
             push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
-            context.commandBuffer().pushBindlessData(&push, sizeof(push));
+            if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
             if (auto commandResult = streamRuntime_->cmdDrawMeshTasks(context.commandBuffer()); !commandResult) { return commandResult; }
         }
         context.commandBuffer().endRendering();
@@ -1444,14 +1444,14 @@ private:
         if (!result) {
             return result;
         }
-        context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
+        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().bindExecution((deferredPipeline_)->execution()); !commandResult) { return commandResult; }
         const MeshletStreamUserPush push = streamRuntime_->userPush();
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().dispatch(
+        if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
+        if (auto commandResult = context.commandBuffer().dispatch(
             (frameWidth_ + 7u) / 8u,
             (frameHeight_ + 7u) / 8u,
-            1u);
+            1u); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -1483,10 +1483,10 @@ private:
             .maxDepth = 1.0f,
         }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
+        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().bindExecution((compositePipeline_)->execution()); !commandResult) { return commandResult; }
         const MeshletStreamUserPush push = streamRuntime_->userPush();
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().draw(3u, 1u, 0u, 0u); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};

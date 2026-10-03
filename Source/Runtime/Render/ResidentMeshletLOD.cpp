@@ -117,10 +117,9 @@ Result<> ResidentMeshletLOD::record(CommandBuffer& commands, ResourceRegistry& r
     for (uint32_t stage = 0; stage < 4; ++stage) {
         result = recordGraphAccessBarriers(commands, plan->passes[stage], resourcesBound);
         if (!result) { return result; }
-        if (auto commandResult = commands.bindExecution(pipelines_[stage]->execution()); !commandResult) { return commandResult; }
-        commands.pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = commands.bindExecution(pipelines_[stage]->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
         uint32_t groups = (stage == 1 || stage == 3) ? (candidates.count + 63u) / 64u : 1u;
-        if (groups != 0) { commands.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u); }
+        if (groups != 0) { if (auto commandResult = commands.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u); !commandResult) { return commandResult; } }
     }
     result = recordGraphAccessBarriers(commands, plan->passes.back(), resourcesBound);
     if (!result) { return result; }

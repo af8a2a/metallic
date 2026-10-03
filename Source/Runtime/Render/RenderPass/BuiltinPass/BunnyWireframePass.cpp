@@ -251,7 +251,7 @@ public:
             .maxDepth = 1.0f,
         }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
+        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*bindlessHeap_); !commandResult) { return commandResult; }
         const auto execution = program_->execution({.depthStencil = {
             .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(reversedZ)}});
         auto bound = context.commandBuffer().bindExecution(execution);
@@ -261,7 +261,7 @@ public:
             .positionBuffer = positionHandle_.shaderIndex,
             .transformBuffer = transformHandle_.shaderIndex,
         };
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().draw(drawVertexCount_); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};

@@ -108,7 +108,7 @@ void WorkControlShaderTrace::qualify(Device& device, Queue& queue, const std::fi
     QueueSubmissionTracker tracker; require(bool(tracker.initialize(device,queue)),"Echo tracker failed");
     RenderFrameContext frame; require(bool(frame.begin(0)),"Echo frame failed");
     require(bool((*commands)->begin(frame.submissionContext())),"Echo recording failed");
-    if (auto commandResult = (*commands)->bindExecution((*pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); } (*commands)->dispatch(1,1,1);
+    if (auto commandResult = (*commands)->bindExecution((*pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); } require(bool((*commands)->dispatch(1,1,1)), "Echo dispatch failed");
     require(bool((*commands)->end()),"Echo recording end failed");
     CommandBuffer* submitted[]{commands->get()};
     require(bool(tracker.submit({.commandBuffers = {submitted, 1}},frame)),"Echo submit failed");

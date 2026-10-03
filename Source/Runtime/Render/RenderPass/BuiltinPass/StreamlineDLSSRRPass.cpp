@@ -1002,9 +1002,8 @@ private:
             .maxDepth = 1.0f,
         }); !commandResult) { return commandResult; }
         commandBuffer.setScissor(renderArea);
-        commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
-        if (auto commandResult = commandBuffer.bindExecution((depthExportPipeline_)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&depthGuideHandle_.shaderIndex, sizeof(depthGuideHandle_.shaderIndex));
+        if (auto commandResult = commandBuffer.bindBindlessHeap(*auxiliaryHeap_); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.bindExecution((depthExportPipeline_)->execution(), &depthGuideHandle_.shaderIndex, sizeof(depthGuideHandle_.shaderIndex)); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.draw(3); !commandResult) { return commandResult; }
         commandBuffer.endRendering();
 
@@ -1028,15 +1027,15 @@ private:
             return result;
         }
 
-        commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
+        if (auto commandResult = commandBuffer.bindBindlessHeap(*auxiliaryHeap_); !commandResult) { return commandResult; }
         const StreamlineDLSSAlphaUserPush push{
             .outputImage = outputColorHandle_.shaderIndex,
         };
         if (auto commandResult = commandBuffer.bindExecution((alphaResolvePipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
-        commandBuffer.dispatch(
+        if (auto commandResult = commandBuffer.dispatch(
             (outputColor.desc().width + 7u) / 8u,
             (outputColor.desc().height + 7u) / 8u,
-            1);
+            1); !commandResult) { return commandResult; }
         return {};
     }
 

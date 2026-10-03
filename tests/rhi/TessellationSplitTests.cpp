@@ -87,9 +87,9 @@ public:
             {.buffer = buffers[0].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}},
             {.buffer = buffers[1].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}}};
         if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         const uint32_t push[] = {handles[0].shaderIndex, handles[1].shaderIndex};
-        commands->pushBindlessData(push, sizeof(push)); commands->dispatch(count / 16);
+        if (auto commandResult = commands->pushBindlessData(push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->dispatch(count / 16); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
         TESS_REQUIRE(commands->end());
         CommandBuffer* list[] = {commands.get()};
         TESS_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));

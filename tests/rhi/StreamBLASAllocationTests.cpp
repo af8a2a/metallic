@@ -87,7 +87,7 @@ public:
             const auto execute = [&](bool force) {
                 push.traversalPhase = force ? 1u : 0u;
                 if (submitted) { require(bool(fence->reset()) && bool(pool->reset()), "reset"); }
-                require(bool(command->begin()), "begin"); command->hostWriteBarrier(); command->bindBindlessHeap(*heap);
+                require(bool(command->begin()), "begin"); command->hostWriteBarrier(); require(bool(command->bindBindlessHeap(*heap)), "record command");
                 require(bool(command->bindExecution(pipeline->execution())), "bind");
                 std::array<BufferBarrierDesc, InputCount> barriers{};
                 for (uint32_t i = 0; i < InputCount; ++i) {
@@ -96,8 +96,8 @@ public:
                         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
                 }
                 for (uint32_t phase : {0u, 5u, 1u, 4u, 6u, 7u, 2u, 8u, 9u, 10u, 3u, 11u}) {
-                    push.activeBuildPhase = phase; command->pushBindlessData(&push, sizeof(push));
-                    command->dispatch(phase == 0 || phase == 7 || phase == 9 ? 1 : (count + 63) / 64);
+                    push.activeBuildPhase = phase; require(bool(command->pushBindlessData(&push, sizeof(push))), "record command");
+                    require(bool(command->dispatch(phase == 0 || phase == 7 || phase == 9 ? 1 : (count + 63) / 64)), "record command");
                     require(bool(command->synchronize({.buffers = barriers})), "phase barrier");
                 }
                 for (auto& barrier : barriers) { barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead}; }

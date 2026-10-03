@@ -139,11 +139,11 @@ public:
             if (submitted) { CANDIDATE_REQUIRE(fence->reset()); CANDIDATE_REQUIRE(pool->reset()); }
             CANDIDATE_REQUIRE(commands->begin());
             CANDIDATE_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, groupCapacity * 32, true, true));
-            commands->bindBindlessHeap(*heap);
+            if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
             if (auto commandResult = commands->bindExecution((pipelines[1])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             const uint32_t seedPush[] = {handles[4].shaderIndex, handles[5].shaderIndex, capacity};
-            commands->pushBindlessData(seedPush, sizeof(seedPush));
-            commands->dispatch((capacity + 127) / 128);
+            if (auto commandResult = commands->pushBindlessData(seedPush, sizeof(seedPush)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->dispatch((capacity + 127) / 128); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
             BufferBarrierDesc ready{
                 .buffer = &rasterizer.clusterBuffer(),
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},

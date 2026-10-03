@@ -503,12 +503,11 @@ public:
 
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        commandBuffer.bindBindlessHeap(bindlessHeap);
-        if (auto commandResult = commandBuffer.bindExecution((traversalPipeline_)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = commandBuffer.bindBindlessHeap(bindlessHeap); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.bindExecution((traversalPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
         const uint64_t groups = (uint64_t(threadCount) + 63u) / 64u;
-        commandBuffer.dispatch(static_cast<uint32_t>(std::min<uint64_t>(groups, 65535u)),
-            static_cast<uint32_t>((groups + 65534u) / 65535u), 1);
+        if (auto commandResult = commandBuffer.dispatch(static_cast<uint32_t>(std::min<uint64_t>(groups, 65535u)),
+            static_cast<uint32_t>((groups + 65534u) / 65535u), 1); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
@@ -616,7 +615,7 @@ public:
         if (auto commandResult = transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        commandBuffer.bindBindlessHeap(bindlessHeap);
+        if (auto commandResult = commandBuffer.bindBindlessHeap(bindlessHeap); !commandResult) { return commandResult; }
         const bool cooperative = push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase ||
             push.activeBuildPhase == kMeshletStreamActiveBuildEmitPhase ||
             push.activeBuildPhase == kMeshletStreamActiveBuildPrefetchPhase ||
@@ -624,10 +623,9 @@ public:
             push.activeBuildPhase == kMeshletStreamActiveBuildMaskPhase;
         const bool demand = push.activeBuildPhase == kMeshletStreamActiveBuildDemandPhase ||
             push.activeBuildPhase == kMeshletStreamActiveBuildDemandResetPhase;
-        if (auto commandResult = commandBuffer.bindExecution((demand ? *demandPipeline_ : cooperative ? *cooperativePipeline_ : *activeBuildPipeline_).execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = commandBuffer.bindExecution((demand ? *demandPipeline_ : cooperative ? *cooperativePipeline_ : *activeBuildPipeline_).execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
         const uint32_t groups = cooperative ? threadCount : threadCount / 64u + (threadCount % 64u != 0u ? 1u : 0u);
-        commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1);
+        if (auto commandResult = commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
@@ -715,10 +713,9 @@ public:
             blasClusterReferenceBuffer,
             blasClusterReferenceBufferState,
             ResourceState::General); !commandResult) { return commandResult; }
-        commandBuffer.bindBindlessHeap(bindlessHeap);
-        if (auto commandResult = commandBuffer.bindExecution((blasInputPipeline_)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
+        if (auto commandResult = commandBuffer.bindBindlessHeap(bindlessHeap); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.bindExecution((blasInputPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
@@ -786,10 +783,9 @@ public:
         if (!ready()) {
             return makeError(Error::Failure);
         }
-        commandBuffer.bindBindlessHeap(bindlessHeap);
-        if (auto commandResult = commandBuffer.bindExecution((tlasInputPipeline_)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
+        if (auto commandResult = commandBuffer.bindBindlessHeap(bindlessHeap); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.bindExecution((tlasInputPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1); !commandResult) { return commandResult; }
         return {};
     }
 

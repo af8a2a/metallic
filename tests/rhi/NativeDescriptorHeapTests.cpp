@@ -232,15 +232,21 @@ public:
             for (uint32_t i = 0; i < heaps.size(); ++i) {
                 const Push push{inputHandles[i].shaderIndex, 0x12340000u + i};
                 if (i == 0) {
-                    commands->bindBindlessHeap(*heaps[i]);
-                    commands->pushBindlessData(&push, sizeof(push));
+                    if (auto commandResult = commands->bindBindlessHeap(*heaps[i]); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                     if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 } else {
                     // Rebinding the heap must preserve/replay the exact user payload.
                     if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                    commands->bindBindlessHeap(*heaps[i]);
+                    if (auto commandResult = commands->bindBindlessHeap(*heaps[i]); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
                 }
-                commands->dispatch(1, 1, 1);
+                if (!render::hasError(commands->pushBindlessData(nullptr, 4), render::Error::InvalidArgument) ||
+                    !render::hasError(commands->pushBindlessData(&push, 3), render::Error::InvalidArgument) ||
+                    !render::hasError(commands->pushBindlessData(&push, 0xfffffffcu), render::Error::InvalidArgument) ||
+                    !render::hasError(commands->bindExecution(pipeline->execution(), &push, 3), render::Error::InvalidArgument)) {
+                    return RHITestResult::fail("invalid push data was accepted");
+                }
+                if (auto commandResult = commands->dispatch(1, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
             }
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
@@ -380,9 +386,9 @@ public:
                 {.buffer = buffers[2].get(), .before = {}, .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead}}};
             if (auto commandResult = commands->synchronize({.buffers = {barriers, 3}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const Push push{handles[0].shaderIndex, handles[1].shaderIndex, handles[2].shaderIndex, count, base};
-            commands->bindBindlessHeap(*heap);
+            if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
             if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-            commands->dispatch(count / 64, 1, 1);
+            if (auto commandResult = commands->dispatch(count / 64, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
             NATIVE_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));

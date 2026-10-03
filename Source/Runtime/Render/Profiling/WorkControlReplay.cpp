@@ -386,7 +386,7 @@ Json WorkControlReplay::run(Queue& queue, const Json& frozenIdentity)
                 require(restored == resource.expected, "replay_restore_failed");
             }
             s.submit(queue, "isolated-dispatch", [&](auto& commands) {
-                commands.bindBindlessHeap(*s.heap);
+                require(bool(commands.bindBindlessHeap(*s.heap)), "replay_heap_bind_failed");
                 require(bool(commands.bindExecution(s.execution, s.push.data(), uint32_t(s.push.size()))), "replay_pipeline_bind_failed");
                 const std::string rangeName = "WorkControl/isolated/" + s.phase;
                 NvPerfRange range(commands, rangeName.c_str());

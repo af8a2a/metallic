@@ -359,7 +359,7 @@ public:
         std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         outBarrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         // No rebind: debug instrumentation must restore heap, pipeline and push data.
-        commands.dispatch(1);
+        if (auto commandResult = commands.dispatch(1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
         runtime.boundary(commands, "Late", 0, "Probe", bindings, DebugValue::object());
         runtime.endExecution(true); runtime.poll();
         if (call(runtime, "jobs.get", {{"job", early}})["result"]["state"] != "Recorded") {

@@ -129,10 +129,10 @@ public:
         const render::HZBSPDUserPush push{.depthImage = depth_.shaderIndex, .hzbBuffer = data_.shaderIndex,
             .counterBuffer = counter_.shaderIndex, .width = context.width(), .height = context.height(),
             .mipCount = mips, .reversedZ = reversed};
-        context.commandBuffer().bindBindlessHeap(*heap_);
+        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().dispatch((context.width() + 63) / 64, (context.height() + 63) / 64);
+        if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
+        if (auto commandResult = context.commandBuffer().dispatch((context.width() + 63) / 64, (context.height() + 63) / 64); !commandResult) { return commandResult; }
         std::swap(depthBarrier.before, depthBarrier.after); std::swap(depthBarrier.oldLayout, depthBarrier.newLayout);
         if (auto commandResult = context.commandBuffer().synchronize({.textures = {&depthBarrier, 1}}); !commandResult) { return commandResult; }
         return {};

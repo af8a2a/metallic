@@ -140,14 +140,14 @@ public:
                 std::fill(pixels.begin()+pixelCount,pixels.end(),0x1234567887654321ull);
                 GROUP_REQUIRE(upload(Pixels,pixels.data(),pixels.size()*8));
                 if (submitted) { GROUP_REQUIRE(fence->reset()); GROUP_REQUIRE(pool->reset()); }
-                GROUP_REQUIRE(commands->begin()); commands->bindBindlessHeap(*heap);
+                GROUP_REQUIRE(commands->begin()); GROUP_REQUIRE(commands->bindBindlessHeap(*heap));
                 GROUP_REQUIRE(commands->bindExecution(pipelines[variant]->execution()));
                 MeshletStreamUserPush push{.pageBuffer=handles[Pages].shaderIndex, .activeGroupBuffer=handles[Groups].shaderIndex,
                     .pageTableBuffer=handles[PageTable].shaderIndex, .paramsBuffer=handles[Params].shaderIndex,
                     .activeHeaderBuffer=handles[Header].shaderIndex, .traversalPhase=index%2,
                     .rasterBindingsBuffer=handles[Bindings].shaderIndex, .hybridClusterBuffer=handles[Bins].shaderIndex};
-                commands->pushBindlessData(&push,sizeof(push));
-                commands->dispatch(2,1,1); // second group must reject out-of-list work
+                GROUP_REQUIRE(commands->pushBindlessData(&push,sizeof(push)));
+                GROUP_REQUIRE(commands->dispatch(2,1,1)); // second group must reject out-of-list work
                 BufferBarrierDesc barrier{.buffer=buffers[Pixels].get(),
                     .before={PipelineStageBits::ComputeShader,AccessBits::ShaderWrite},
                     .after={PipelineStageBits::Transfer,AccessBits::TransferRead}};

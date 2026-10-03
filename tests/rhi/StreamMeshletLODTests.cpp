@@ -840,12 +840,12 @@ private:
                 };
             }
             if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            commands->bindBindlessHeap(*heap);
+            if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
             if (cooperative) {
                 if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.traversalPhase = 2u;
-                commands->pushBindlessData(&push, sizeof(push));
-                commands->dispatch((kGroupCount + 63u) / 64u, 1, 1);
+                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->dispatch((kGroupCount + 63u) / 64u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
@@ -853,9 +853,9 @@ private:
                 // The compatibility linear path predates sparse state. Run
                 // the production initializer once when changing algorithms.
                 push.activeBuildPhase = 8;
-                commands->pushBindlessData(&push, sizeof(push));
+                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                 const uint32_t initGroups = static_cast<uint32_t>((sizes[State] / 4 + 63) / 64);
-                commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1);
+                if (auto commandResult = commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             for (uint32_t phase : {0u, 12u, 10u, 13u, 5u, 11u, 6u, 7u, 2u, 9u, 9u}) {
@@ -865,16 +865,16 @@ private:
                 if (auto commandResult = commands->bindExecution((phase == 12u || phase == 13u ? *demandPipeline :
                     cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.activeBuildPhase = phase;
-                commands->pushBindlessData(&push, sizeof(push));
-                commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1);
+                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
                 for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (cooperative) {
                 if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.traversalPhase = 3u;
-                commands->pushBindlessData(&push, sizeof(push));
-                commands->dispatch((kRequestCapacity + 63u) / 64u, 1, 1);
+                if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->dispatch((kRequestCapacity + 63u) / 64u, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             for (uint32_t index = 0; index < std::size(outputs); ++index) {
@@ -1250,11 +1250,11 @@ public:
                 };
             }
             if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), 3}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             MeshletStreamUserPush push{};
             push.paramsBuffer = handles[0].shaderIndex; push.activeHeaderBuffer = handles[2].shaderIndex;
             push.activeBuildPhase = kMeshletStreamActiveBuildPrefixPhase;
-            commands->pushBindlessData(&push, sizeof(push)); commands->dispatch(1, 1, 1);
+            if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->dispatch(1, 1, 1); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
             STREAM_LOD_REQUIRE(commands->end());
             CommandBuffer* list[] = {commands.get()};
             STREAM_LOD_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));

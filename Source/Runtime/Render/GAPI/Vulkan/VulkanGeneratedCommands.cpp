@@ -1,27 +1,11 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
 #include "VulkanTrace.h"
+#include "VulkanResult.h"
 
 #include <algorithm>
 #include <limits>
 
 namespace metallic::render::vulkan {
-namespace {
-
-Result<> convertResult(VkResult result)
-{
-    if (result == VK_SUCCESS) { return {}; }
-    if (result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-        return makeError(Error::OutOfMemory);
-    }
-    if (result == VK_ERROR_DEVICE_LOST) { return makeError(Error::DeviceLost); }
-    if (result == VK_ERROR_FEATURE_NOT_PRESENT || result == VK_ERROR_EXTENSION_NOT_PRESENT) {
-        return makeError(Error::Unsupported);
-    }
-    return makeError(Error::Failure);
-}
-
-} // namespace
-
 Result<VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT> queryGeneratedCommandsProperties(Device& device)
 {
     const auto native = nativeDevice(device);
@@ -218,11 +202,11 @@ Result<> GeneratedCommands::initialize(Device& device, const GeneratedCommandsDe
                 info->maxShaderCount > properties.maxIndirectShaderObjectCount) { return makeError(Error::InvalidArgument); }
             impl->setCapacity = info->maxShaderCount;
         } else { return makeError(Error::InvalidArgument); }
-        result = convertResult(impl->vk.vkCreateIndirectExecutionSetEXT(
+        result = resultFromVk(impl->vk.vkCreateIndirectExecutionSetEXT(
             impl->device.device, desc.executionSet, nullptr, &impl->executionSet));
         if (!result) { return result; }
     }
-    result = convertResult(impl->vk.vkCreateIndirectCommandsLayoutEXT(impl->device.device, &desc.layout, nullptr, &impl->layout));
+    result = resultFromVk(impl->vk.vkCreateIndirectCommandsLayoutEXT(impl->device.device, &desc.layout, nullptr, &impl->layout));
     if (!result) { return result; }
     impl_ = std::move(impl);
     result = prepare();
@@ -259,7 +243,7 @@ Result<> GeneratedCommands::prepare()
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &usage,
         .size = impl.requirements.size + alignment - 1, .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    auto result = convertResult(impl.vk.vkCreateBuffer(impl.device.device, &bufferInfo, nullptr, &impl.scratch));
+    auto result = resultFromVk(impl.vk.vkCreateBuffer(impl.device.device, &bufferInfo, nullptr, &impl.scratch));
     if (!result) { return result; }
     VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
     VkMemoryRequirements2 bufferRequirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
@@ -285,9 +269,9 @@ Result<> GeneratedCommands::prepare()
     const VkMemoryAllocateInfo allocation{
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags,
         .allocationSize = bufferRequirements.memoryRequirements.size, .memoryTypeIndex = memoryType};
-    result = convertResult(impl.vk.vkAllocateMemory(impl.device.device, &allocation, nullptr, &impl.memory));
+    result = resultFromVk(impl.vk.vkAllocateMemory(impl.device.device, &allocation, nullptr, &impl.memory));
     if (!result) { return result; }
-    result = convertResult(impl.vk.vkBindBufferMemory(impl.device.device, impl.scratch, impl.memory, 0));
+    result = resultFromVk(impl.vk.vkBindBufferMemory(impl.device.device, impl.scratch, impl.memory, 0));
     if (!result) { return result; }
     const VkBufferDeviceAddressInfo addressInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = impl.scratch};
     const uint64_t base = impl.vk.vkGetBufferDeviceAddress(impl.device.device, &addressInfo);

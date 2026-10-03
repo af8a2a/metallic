@@ -1468,40 +1468,32 @@ public:
     }
 };
 
-class StreamerTextureUploadTest : public RHITest {
+template<render::Format kFormat, uint32_t kBytesPerPixel>
+class StreamerTextureUploadTestBase : public RHITest {
 public:
-    StreamerTextureUploadTest()
+    StreamerTextureUploadTestBase()
     {
         type = RHITestType::Command;
-        name = "streamer_texture_upload";
+        name = kFormat == render::Format::BGRA4Unorm ? "streamer_bgra4_texture_upload" : "streamer_texture_upload";
     }
 
     RHITestResult run(RHITestContext& context) override
     {
         constexpr uint32_t kWidth = 4;
         constexpr uint32_t kHeight = 4;
-        constexpr uint32_t kTightRowPitch = kWidth * 4;
+        constexpr uint32_t kTightRowPitch = kWidth * kBytesPerPixel;
         constexpr uint32_t kSourceRowPitch = 32;
-        constexpr uint64_t kPixelByteSize = kWidth * kHeight * 4ull;
+        constexpr uint64_t kPixelByteSize = uint64_t(kWidth) * kHeight * kBytesPerPixel;
 
         std::array<uint8_t, kSourceRowPitch * kHeight> source{};
         std::array<uint8_t, kPixelByteSize> expected{};
         for (uint32_t y = 0; y < kHeight; ++y) {
             for (uint32_t x = 0; x < kWidth; ++x) {
-                const uint8_t r = static_cast<uint8_t>(x * 40 + 3);
-                const uint8_t g = static_cast<uint8_t>(y * 35 + 7);
-                const uint8_t b = static_cast<uint8_t>(x + y * 10 + 11);
-                const uint8_t a = 255;
-                const uint32_t sourceIndex = y * kSourceRowPitch + x * 4;
-                const uint32_t expectedIndex = y * kTightRowPitch + x * 4;
-                source[sourceIndex + 0] = r;
-                source[sourceIndex + 1] = g;
-                source[sourceIndex + 2] = b;
-                source[sourceIndex + 3] = a;
-                expected[expectedIndex + 0] = r;
-                expected[expectedIndex + 1] = g;
-                expected[expectedIndex + 2] = b;
-                expected[expectedIndex + 3] = a;
+                for (uint32_t byte = 0; byte < kBytesPerPixel; ++byte) {
+                    const uint8_t value = uint8_t(x * 7 + y * 11 + byte * 41);
+                    source[y * kSourceRowPitch + x * kBytesPerPixel + byte] = value;
+                    expected[y * kTightRowPitch + x * kBytesPerPixel + byte] = value;
+                }
             }
         }
 
@@ -1515,7 +1507,7 @@ public:
         result = context.device.createTexture(render::TextureDesc{
                 .type = render::TextureType::Texture2D,
                 .usage = render::TextureUsageBits::TransferDestination | render::TextureUsageBits::TransferSource,
-                .format = render::Format::RGBA8Unorm,
+                .format = kFormat,
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
@@ -1618,6 +1610,9 @@ public:
         return RHITestResult::pass();
     }
 };
+
+using StreamerTextureUploadTest = StreamerTextureUploadTestBase<render::Format::RGBA8Unorm, 4>;
+using StreamerBGRA4TextureUploadTest = StreamerTextureUploadTestBase<render::Format::BGRA4Unorm, 2>;
 
 class StreamerConstantUploadTest : public RHITest {
 public:
@@ -4347,6 +4342,7 @@ METALLIC_REGISTER_RHI_TEST(MeshletStreamPageLoadConfigurationCompatibilityTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamStorageAddressLimitTest);
 METALLIC_REGISTER_RHI_TEST(StreamerBufferUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerTextureUploadTest);
+METALLIC_REGISTER_RHI_TEST(StreamerBGRA4TextureUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphFlushTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphInvalidDoesNotBeginFrameTest);
