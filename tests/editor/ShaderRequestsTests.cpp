@@ -160,14 +160,36 @@ TEST_F(ShaderRequestCompileTest, PrewarmedOpenPBRHitsTheRuntimeRequestCache)
     const SlangShaderCacheOptions cache{.cacheDirectory = cacheDirectory.c_str(), .outCacheHit = &hit};
     std::string diagnostics;
     const ShaderRequestView warmupSource(*warmup);
-    const auto precompiled = compileSlangShaderToSpirv(warmupSource.desc(), cache, diagnostics);
-    ASSERT_TRUE(precompiled) << diagnostics;
-    EXPECT_FALSE(hit);
     const ShaderRequestView runtimeSource(runtime);
-    const auto reused = compileSlangShaderToSpirv(runtimeSource.desc(), cache, diagnostics);
-    ASSERT_TRUE(reused) << diagnostics;
-    EXPECT_TRUE(hit);
-    EXPECT_EQ(precompiled->spirv, reused->spirv);
+    for (const auto mode : {SlangShaderDebugMode::Disabled,
+            SlangShaderDebugMode::CaptureSymbols, SlangShaderDebugMode::ShaderDebug}) {
+        SCOPED_TRACE(static_cast<int>(mode));
+        setSlangShaderDebugMode(mode);
+        const auto precompiled = compileSlangShaderToSpirv(warmupSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(precompiled) << diagnostics;
+        EXPECT_FALSE(hit); // Each mode must have a separate cache identity.
+        bool hasCalls = false;
+        bool hasFunctionDebug = false;
+        const auto& words = precompiled->spirv;
+        for (size_t offset = 5; offset < words.size();) {
+            const uint32_t count = words[offset] >> 16, opcode = words[offset] & 0xffffu;
+            ASSERT_GT(count, 0u);
+            ASSERT_LE(offset + count, words.size());
+            if (opcode == 57) { hasCalls = true; } // OpFunctionCall
+            if (opcode == 11 && count > 2) { // OpExtInstImport
+                const std::string_view name(reinterpret_cast<const char*>(&words[offset + 2]),
+                    (count - 2u) * sizeof(uint32_t));
+                hasFunctionDebug |= name.starts_with("NonSemantic.Shader.DebugInfo");
+            }
+            offset += count;
+        }
+        EXPECT_TRUE(hasCalls); // Do not exhaustively inline the production scene shader.
+        EXPECT_EQ(hasFunctionDebug, mode != SlangShaderDebugMode::Disabled);
+        const auto reused = compileSlangShaderToSpirv(runtimeSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_EQ(precompiled->spirv, reused->spirv);
+    }
 }
 
 TEST_F(ShaderRequestCompileTest, DeferredSPIRVIsRasterOnlyWithNativeFloat16)

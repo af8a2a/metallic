@@ -411,6 +411,8 @@ AS 构建（BLAS/TLAS、OMM、CLAS、PTLAS）、CLAS 移动及 `BufferDecompress
 RHI 的 `MemoryBarrierDesc`、`BufferBarrierDesc` 和 `TextureBarrierDesc` 只接受一套 `before/after: SyncScope`；纹理另以 `oldLayout/newLayout: TextureLayout` 表达布局。空 scope 始终为空，有 stage 而 access 为空表示仅约束执行顺序，不再按 `ResourceState` 推导或通过 `acquireFromQueue` 覆盖。已被 semaphore wait 覆盖的远端生产者使用空源 scope；资源仍须满足队列共享约束，此接口不做 queue-family ownership transfer。RHI 保留显式依赖，只合并同一 stage 对的 memory barrier；省略冗余依赖由图规划器负责。与 [Vulkan synchronization2 的同步范围语义](https://docs.vulkan.org/spec/latest/chapters/synchronization.html) 保持一致。
 
 `ResourceState` 定义在 `Core/ResourceState.h`，只表达 RenderGraph、历史资源等上层的粗粒度用途。
+Vulkan 同步位由 `VulkanSynchronization.cpp` 的 stage/access 元数据表统一维护：原生映射、合法位掩码、队列要求、设备特性和 access-stage 依赖共用定义，并在编译期检查重复位及无效依赖。`AllCommands` 只覆盖当前队列和设备支持的执行阶段，Host 访问必须显式包含 Host stage。Barrier、semaphore 提交与 timestamp 共用这些规则；后两者额外排除 host-only stage，timestamp 仍要求转换后为单个 native stage bit。
+
 Core 通过 `resourceSyncScope()` 生成同步范围，在纹理边界通过 `textureLayoutForResourceState()`
 单向选择布局；buffer 专属用途不能转换为合法纹理布局。RHI 不接受 `ResourceState`，也不从布局反推同步范围。
 `RenderingAttachmentDesc::layout`、`BindlessImageWrite::layout`、`clearColorTexture()`、
@@ -591,14 +593,15 @@ GPU Trace 模式自动启动隐藏的 `ngfx.exe` host，使用 SDK 在主 View �
 不会额外生成 Graphics Capture。host 保持连接以支持连续导出，并随程序退出清理。
 构建选项、禁用默认注入与启动示例见 [Build.md](Build.md)。
 
-Profiler 可以通过 Nsight Graphics SDK 导出当前 View 的 Graphics Capture。使用 `--nsight-capture` 启动时，Metallic 会在 Vulkan 初始化前加载 Nsight Capture runtime，并为 Slang 生成的 SPIR-V 嵌入源码及 NonSemantic 源码、函数和行号信息（`-g2`，保留优化）。`--nsight-shader-debug` 显式关闭 shader 优化（`-g2 -O0`）。完整符号在冷缓存下可能使大型 OpenPBR shader 编译耗时数分钟；捕获模式的 live 帧时还会受 Nsight 注入影响。应用启动后，在 Profiler 中点击 **Export Current View Capture** 捕获下一帧完整 View：
+Profiler 可以通过 Nsight Graphics SDK 导出当前 View 的 Graphics Capture。使用 `--nsight-capture` 启动时，Metallic 会在 Vulkan 初始化前加载 Nsight Capture runtime；捕获入口不改变 shader 编译选项。RelWithDebInfo 默认生成嵌入源码及 NonSemantic 源码、函数和行号信息（`-g2`），Release 通过 `METALLIC_SHADER_CAPTURE_SYMBOLS=1` 显式启用。运行时与预热共享 direct SPIR-V、`-O0` 和轻量清理 passes，跳过默认 SPIR-V 预设的穷尽内联；完整策略参与缓存键。`--nsight-shader-debug` 使用不带清理 passes 的 `-g2 -O0`。驱动创建管线时仍可优化、内联；捕获模式的 live 帧时也受 Nsight 注入影响。应用启动后，在 Profiler 中点击 **Export Current View Capture** 捕获下一帧完整 View：
 
 ```powershell
-# Profiler 导出带优化符号的 Graphics Capture
+# Profiler 导出带运行时编译策略和源码符号的 Graphics Capture
+$env:METALLIC_SHADER_CAPTURE_SYMBOLS = "1"
 build\Source\Metallic.exe --nsight-capture
 ```
 
-带优化符号的 Capture 适合 Shader Browser、源码查看、Shader Editing 和 Shader Profiler 源码归因，同时尽量保持有代表性的性能行为。Graphics Capture 不提供断点和单步执行；这类实时调试需要从 Nsight Graphics 的 **Shader Debugger Activity** 启动 Metallic，并使用无优化 shader 调试模式：
+带源码符号的 Capture 使用与正式运行相同的清理策略，适合 Shader Browser、源码查看、Shader Editing 和 Shader Profiler 源码归因；具体源码和调用点关联需通过实际 Nsight 捕获确认。Graphics Capture 不提供断点和单步执行；这类实时调试需要从 Nsight Graphics 的 **Shader Debugger Activity** 启动 Metallic，并使用无清理 passes 的 shader 调试模式：
 
 ```powershell
 # 从 Nsight Shader Debugger Activity 启动，用于断点和单步
@@ -613,7 +616,7 @@ $env:METALLIC_NSIGHT_SHADER_DEBUG = "1"
 build\Source\Metallic.exe
 ```
 
-`--nsight-capture` 和 `--nsight-shader-debug` 可以同时使用；此时仍启用应用内 Graphics Capture，但 shader 使用无优化调试配置。普通、带优化捕获符号和无优化调试三种 Slang 编译模式具有独立的磁盘缓存键，不需要手动清理旧的无符号缓存。多配置生成器下，可执行文件路径通常为 `build\Source\Debug\Metallic.exe`。
+`--nsight-capture` 和 `--nsight-shader-debug` 可以同时使用；此时仍启用应用内 Graphics Capture，但 shader 使用无清理 passes 的调试配置。普通、捕获符号和 shader 调试三种 Slang 编译模式具有独立的磁盘缓存键，不需要手动清理旧缓存。多配置生成器下，可执行文件路径通常为 `build\Source\Debug\Metallic.exe`。
 
 调试信息可能把 shader 源码和本地文件路径嵌入 SPIR-V，进而进入 `.ngfx-capture` 文件。共享 Capture 前应按源码文件检查其分发范围。无优化模式会改变 shader 性能和指令布局，不应将其用于性能结论。
 

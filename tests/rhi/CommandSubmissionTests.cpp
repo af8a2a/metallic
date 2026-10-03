@@ -118,6 +118,17 @@ public:
             .value = 1,
             .stages = render::PipelineStageBits::AllCommands,
         };
+        auto invalidSignal = signalSemaphore;
+        for (const auto invalidStage : {render::PipelineStageBits::Host,
+                 render::PipelineStageBits::AllCommands | render::PipelineStageBits(uint64_t(1) << 63)}) {
+            invalidSignal.stages = invalidStage;
+            if (!render::hasError(context.graphicsQueue.submit({.signalSemaphores = {&invalidSignal, 1}}), render::Error::InvalidArgument)) {
+                return RHITestResult::fail("Semaphore submission accepted a host or unknown stage");
+            }
+            if (!render::hasError(context.graphicsQueue.submit({.waitSemaphores = {&invalidSignal, 1}}), render::Error::InvalidArgument)) {
+                return RHITestResult::fail("Semaphore wait accepted a host or unknown stage");
+            }
+        }
         result = context.graphicsQueue.submit(
             render::QueueSubmitDesc{
                 .commandBuffers = {commandBuffers, 1},
@@ -200,6 +211,12 @@ public:
         result = commandBuffer->resetTimestampQueries(*queryPool, 0, 2);
         if (!result) {
             return RHITestResult::fail(std::string("resetTimestampQueries returned ") + toString(result));
+        }
+        for (const auto invalidStage : {render::PipelineStageBits::Host,
+                 render::PipelineStageBits::TopOfPipe | render::PipelineStageBits(uint64_t(1) << 63)}) {
+            if (!render::hasError(commandBuffer->writeTimestamp(*queryPool, 0, invalidStage), render::Error::InvalidArgument)) {
+                return RHITestResult::fail("Timestamp accepted a host or unknown stage");
+            }
         }
         result = commandBuffer->writeTimestamp(*queryPool, 0, render::PipelineStageBits::TopOfPipe);
         if (!result) {

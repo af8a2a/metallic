@@ -3250,6 +3250,15 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
 
 METALLIC_RHI_HANDLE_DEFINITIONS(Queue)
 
+namespace {
+vulkan::SyncSupport syncSupport(const detail::DeviceImpl& device, VkQueueFlags queues)
+{
+    return {queues, device.capabilities.rayTracingAccelerationStructure,
+        device.capabilities.memoryDecompression, device.rayTracingPipelineEnabled,
+        device.capabilities.bindlessDescriptorHeap};
+}
+} // namespace
+
 Result<> Queue::submit(const QueueSubmitDesc& desc)
 {
     return submitImpl(desc, false);
@@ -3281,11 +3290,13 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
         profiling::NsightCategory::QueueSubmit,
         desc.commandBuffers.size());
 
+    const auto support = syncSupport(*impl_->device, impl_->queueFlags);
     std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
     waitSemaphores.reserve(desc.waitSemaphores.size() + desc.waitSwapchainSemaphores.size());
     for (uint32_t index = 0; index < desc.waitSemaphores.size(); ++index) {
         const SemaphoreSubmitDesc& wait = desc.waitSemaphores[index];
-        if (wait.semaphore == nullptr || wait.semaphore->impl_ == nullptr) {
+        if (wait.semaphore == nullptr || wait.semaphore->impl_ == nullptr ||
+            !vulkan::validDeviceStages(wait.stages, support)) {
             return makeError(Error::InvalidArgument);
         }
         waitSemaphores.push_back({
@@ -3297,7 +3308,8 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
     }
     for (uint32_t index = 0; index < desc.waitSwapchainSemaphores.size(); ++index) {
         const SwapchainSemaphoreSubmitDesc& wait = desc.waitSwapchainSemaphores[index];
-        if (wait.semaphore == nullptr || wait.semaphore->impl_ == nullptr) {
+        if (wait.semaphore == nullptr || wait.semaphore->impl_ == nullptr ||
+            !vulkan::validDeviceStages(wait.stages, support)) {
             return makeError(Error::InvalidArgument);
         }
         waitSemaphores.push_back({
@@ -3345,7 +3357,8 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
     signalSemaphores.reserve(desc.signalSemaphores.size() + desc.signalSwapchainSemaphores.size());
     for (uint32_t index = 0; index < desc.signalSemaphores.size(); ++index) {
         const SemaphoreSubmitDesc& signal = desc.signalSemaphores[index];
-        if (signal.semaphore == nullptr || signal.semaphore->impl_ == nullptr) {
+        if (signal.semaphore == nullptr || signal.semaphore->impl_ == nullptr ||
+            !vulkan::validDeviceStages(signal.stages, support)) {
             return makeError(Error::InvalidArgument);
         }
         signalSemaphores.push_back({
@@ -3357,7 +3370,8 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
     }
     for (uint32_t index = 0; index < desc.signalSwapchainSemaphores.size(); ++index) {
         const SwapchainSemaphoreSubmitDesc& signal = desc.signalSwapchainSemaphores[index];
-        if (signal.semaphore == nullptr || signal.semaphore->impl_ == nullptr) {
+        if (signal.semaphore == nullptr || signal.semaphore->impl_ == nullptr ||
+            !vulkan::validDeviceStages(signal.stages, support)) {
             return makeError(Error::InvalidArgument);
         }
         signalSemaphores.push_back({
@@ -4498,6 +4512,9 @@ Result<> CommandBuffer::writeTimestamp(
         return makeError(Error::InvalidArgument);
     }
 
+    if (!vulkan::validDeviceStages(stage, syncSupport(*impl_->device, impl_->queueFlags))) {
+        return makeError(Error::InvalidArgument);
+    }
     const auto nativeStage = toVkPipelineStages(stage);
     if (!nativeStage || (nativeStage & (nativeStage - 1)) != 0) { return makeError(Error::InvalidArgument); }
     impl_->device->functions.vkCmdWriteTimestamp2(
@@ -4597,9 +4614,7 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
         (desc.accelerationStructures.size() > UINT32_MAX)) {
         return makeError(Error::InvalidArgument);
     }
-    const vulkan::SyncSupport support{impl_->queueFlags, impl_->device->capabilities.rayTracingAccelerationStructure,
-        impl_->device->capabilities.memoryDecompression, impl_->device->rayTracingPipelineEnabled,
-        impl_->device->capabilities.bindlessDescriptorHeap};
+    const auto support = syncSupport(*impl_->device, impl_->queueFlags);
     const auto validScope = [&](SyncScope scope) { return vulkan::validScope(scope, support); };
     std::vector<VkImageMemoryBarrier2> images;
     std::vector<VkMemoryBarrier2> memory;

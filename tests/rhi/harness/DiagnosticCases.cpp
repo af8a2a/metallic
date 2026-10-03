@@ -75,6 +75,49 @@ public:
         check(vulkan::validScope({PipelineStageBits::AccelerationStructureBuild, AccessBits::AccelerationStructureWrite}, full) &&
             !vulkan::validScope({PipelineStageBits::AccelerationStructureBuild, AccessBits::AccelerationStructureWrite}, copy), "AS gating");
         check(!vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::DescriptorRead}, copy), "descriptor gating");
+        // ALL_COMMANDS is constrained by the executing queue, even when all
+        // optional device features are available.
+        auto transferOnly = full; transferOnly.queues = VK_QUEUE_TRANSFER_BIT;
+        auto computeOnly = full; computeOnly.queues = VK_QUEUE_COMPUTE_BIT;
+        auto graphicsOnly = full; graphicsOnly.queues = VK_QUEUE_GRAPHICS_BIT;
+        check(vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::TransferRead | AccessBits::TransferWrite}, transferOnly),
+            "all commands includes transfer");
+        for (const auto access : {AccessBits::ShaderWrite, AccessBits::UniformRead, AccessBits::IndirectRead,
+                 AccessBits::ColorWrite, AccessBits::DepthStencilRead, AccessBits::AccelerationStructureWrite,
+                 AccessBits::DecompressionRead, AccessBits::DescriptorRead}) {
+            check(!vulkan::validScope({PipelineStageBits::AllCommands, access}, transferOnly),
+                "all commands transfer queue rejects/" + std::to_string(uint64_t(access)));
+        }
+        check(vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}, computeOnly),
+            "all commands compute shaders");
+        check(!vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::ColorWrite}, computeOnly) &&
+            !vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::DepthStencilWrite}, computeOnly),
+            "all commands compute excludes attachments");
+        check(!vulkan::validScope({PipelineStageBits::AllCommands | PipelineStageBits::FragmentShader, AccessBits::ShaderRead}, computeOnly),
+            "all commands does not hide unsupported explicit stage");
+        check(vulkan::validScope({PipelineStageBits::Transfer, AccessBits::TransferWrite}, graphicsOnly) &&
+            vulkan::validScope({PipelineStageBits::Transfer, AccessBits::TransferRead}, computeOnly),
+            "graphics and compute imply transfer support");
+        check(!vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::AccelerationStructureWrite}, graphicsOnly),
+            "AS writes need a compute-capable queue");
+        check(!vulkan::validScope({PipelineStageBits::ComputeShader, AccessBits::ShaderWrite | AccessBits::TransferWrite}, full),
+            "every requested access needs a compatible stage");
+        check(vulkan::validScope({PipelineStageBits::AllCommands | PipelineStageBits::Host,
+            AccessBits::HostRead | AccessBits::ShaderWrite}, full), "explicit host with all commands");
+        auto noAS = full; noAS.rayTracingAS = false;
+        auto noDecode = full; noDecode.decompression = false;
+        auto noRayPipeline = full; noRayPipeline.rayTracingPipeline = false;
+        auto noHeap = full; noHeap.bindless = false;
+        check(!vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::AccelerationStructureRead}, noAS) &&
+            !vulkan::validScope({PipelineStageBits::AccelerationStructureBuild, AccessBits::None}, noAS), "AS stage and access feature dependency");
+        check(!vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::DecompressionWrite}, noDecode) &&
+            !vulkan::validScope({PipelineStageBits::MemoryDecompression, AccessBits::None}, noDecode), "decompression stage and access feature dependency");
+        check(!vulkan::validScope({PipelineStageBits::RayTracingShader, AccessBits::ShaderRead}, noRayPipeline) &&
+            vulkan::validScope({PipelineStageBits::ComputeShader, AccessBits::ShaderRead}, noRayPipeline), "ray pipeline stage feature dependency");
+        check(!vulkan::validScope({PipelineStageBits::ComputeShader, AccessBits::DescriptorRead}, noHeap), "heap access feature dependency");
+        check(!vulkan::validScope({PipelineStageBits::AllCommands | PipelineStageBits(uint64_t(1) << 63), AccessBits::None}, full) &&
+            !vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits(uint64_t(1) << 63)}, full),
+            "known bits do not hide unknown bits");
         const std::pair<TextureLayout, VkImageLayout> layouts[]{
             {TextureLayout::Undefined, VK_IMAGE_LAYOUT_UNDEFINED}, {TextureLayout::General, VK_IMAGE_LAYOUT_GENERAL},
             {TextureLayout::Present, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR}, {TextureLayout::ShaderRead, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},

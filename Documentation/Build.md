@@ -108,17 +108,28 @@ All presets, including `metallic-relwithdebinfo`, leave Nsight capture injection
 disabled unless explicitly requested with a launch mode or
 `METALLIC_NSIGHT_GRAPHICS_CAPTURE=1`. The RelWithDebInfo preset makes the SDK
 available and embeds shader source text and NonSemantic source/function/line
-debug information (`-g2`) while retaining optimization (`capture-symbols` mode).
+debug information (`-g2`) with the runtime cleanup passes (`capture-symbols` mode).
 RelWithDebInfo also defaults to these symbols when internal capture injection is
 disabled (`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`), for external Nsight launches.
 Capture and GPU Trace launch modes do not change shader compiler options. Release
-uses the same optimized, symbol-free shader compilation and cache requests with or
+uses the same symbol-free shader compilation and cache requests with or
 without Nsight capture. Set `METALLIC_SHADER_CAPTURE_SYMBOLS=1` explicitly when
 source and function views are needed. `METALLIC_SHADER_CAPTURE_SYMBOLS=0` disables
-the RelWithDebInfo symbol default, including during capture. Complete debug
-information can make optimized OpenPBR shader compilation take minutes on a cold
-cache. Use
-`--nsight-shader-debug` for unoptimized shader debugging (`-g2 -O0`), not profiling.
+the RelWithDebInfo symbol default, including during capture.
+
+Runtime and manual warmup use direct SPIR-V generation with `-O0` and an explicit
+lightweight `spirv-opt` pass sequence: dead-function elimination, local single-block
+and single-store cleanup, instruction simplification, dead-branch elimination,
+CFG cleanup, aggressive dead-code elimination and ID compaction. This avoids the
+default preset's exhaustive entry-point inlining and its large debug-info cost.
+Capture symbols retain embedded source and NonSemantic function/call-site records.
+The optimization level, backend and pass sequence are included in cache identity;
+old optimized cache entries are not reused. The Vulkan driver can still inline and
+optimize during pipeline creation, so compare pipeline creation and GPU execution
+separately from Slang compilation. Use
+`--nsight-shader-debug` for shader debugging (`-g2 -O0`, without cleanup passes),
+not representative runtime profiling. Capture-symbol profiling uses the runtime
+cleanup policy; actual source/call-site correlation must be verified in Nsight.
 The former `-g1` mode only emitted paths/lines and was insufficient for Nsight's
 high-level source and function views. The cache request version has been bumped
 so those old binaries are not reused. Restart the rebuilt executable and make a

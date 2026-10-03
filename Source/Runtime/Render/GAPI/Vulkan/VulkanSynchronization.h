@@ -20,5 +20,7 @@ VkPipelineStageFlags2 toVkPipelineStages(PipelineStageBits stages);
 VkAccessFlags2 accessFlags(AccessBits access);
 VulkanSyncScope scopeInfo(SyncScope scope);
 bool validScope(SyncScope scope, SyncSupport support);
+// Semaphore and timestamp stages use the same rules, excluding host-only stages.
+bool validDeviceStages(PipelineStageBits stages, SyncSupport support);
 
 } // namespace metallic::render::vulkan

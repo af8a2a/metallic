@@ -45,7 +45,21 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 24;
+constexpr uint32_t kShaderCacheRequestVersion = 25;
+// The default SPIR-V optimization preset exhaustively inlines entry points.
+// With NonSemantic debug records this dominates large scene-shader compiles.
+// Keep functions and run only local/dead-code cleanup; the driver still lowers
+// and optimizes SPIR-V when creating a pipeline.
+constexpr SlangOptimizationLevel kSlangOptimizationLevel = SLANG_OPTIMIZATION_LEVEL_NONE;
+constexpr const char* kSPIRVOptimizationPasses =
+    "--eliminate-dead-functions\n"
+    "--eliminate-local-single-block\n"
+    "--eliminate-local-single-store\n"
+    "--simplify-instructions\n"
+    "--eliminate-dead-branches\n"
+    "--cfg-cleanup\n"
+    "--eliminate-dead-code-aggressive\n"
+    "--compact-ids";
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -467,6 +481,10 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kShaderCacheRequestVersion);
     hash = hashText(hash, SLANG_VERSION_NUMERIC);
+    hash = hashValue(hash, static_cast<int32_t>(kSlangOptimizationLevel));
+    hash = hashText(hash, "spirv-direct");
+    hash = hashText(hash, debugMode == SlangShaderDebugMode::ShaderDebug
+        ? "" : kSPIRVOptimizationPasses);
     hash = hashValue(hash, nativeDescriptorHeapEnabled(desc));
     hash = hashText(hash, desc.moduleName);
     hash = hashText(hash, desc.entryPointName);
@@ -945,7 +963,31 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         searchPaths.push_back(searchPath.c_str());
     }
     std::vector<slang::CompilerOptionEntry> compilerOptions;
-    compilerOptions.reserve(desc.capabilities.size() + desc.macroDefines.size() + 4u);
+    compilerOptions.reserve(desc.capabilities.size() + desc.macroDefines.size() + 6u);
+    compilerOptions.push_back(slang::CompilerOptionEntry{
+        .name = slang::CompilerOptionName::EmitSpirvDirectly,
+        .value = slang::CompilerOptionValue{
+            .kind = slang::CompilerOptionValueKind::Int,
+            .intValue0 = 1,
+        },
+    });
+    compilerOptions.push_back(slang::CompilerOptionEntry{
+        .name = slang::CompilerOptionName::Optimization,
+        .value = slang::CompilerOptionValue{
+            .kind = slang::CompilerOptionValueKind::Int,
+            .intValue0 = static_cast<int32_t>(kSlangOptimizationLevel),
+        },
+    });
+    if (debugMode != SlangShaderDebugMode::ShaderDebug) {
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::DownstreamArgs,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::String,
+                .stringValue0 = "spirv-opt",
+                .stringValue1 = kSPIRVOptimizationPasses,
+            },
+        });
+    }
     if (nativeDescriptorHeapEnabled(desc)) {
         // Matches the RHI's single image/buffer index unit, specialized on device.
         // Samplers keep their own stride; AS retains its legacy address resolver.
@@ -966,13 +1008,6 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     }
     if (debugMode != SlangShaderDebugMode::Disabled) {
         compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::EmitSpirvDirectly,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::Int,
-                .intValue0 = 1,
-            },
-        });
-        compilerOptions.push_back(slang::CompilerOptionEntry{
             .name = slang::CompilerOptionName::DebugInformation,
             .value = slang::CompilerOptionValue{
                 .kind = slang::CompilerOptionValueKind::Int,
@@ -982,15 +1017,6 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
                 .intValue0 = static_cast<int32_t>(SLANG_DEBUG_INFO_LEVEL_STANDARD),
             },
         });
-        if (debugMode == SlangShaderDebugMode::ShaderDebug) {
-            compilerOptions.push_back(slang::CompilerOptionEntry{
-                .name = slang::CompilerOptionName::Optimization,
-                .value = slang::CompilerOptionValue{
-                    .kind = slang::CompilerOptionValueKind::Int,
-                    .intValue0 = static_cast<int32_t>(SLANG_OPTIMIZATION_LEVEL_NONE),
-                },
-            });
-        }
     }
     for (uint32_t capabilityIndex = 0;
          !desc.capabilities.empty() && capabilityIndex < desc.capabilities.size();
