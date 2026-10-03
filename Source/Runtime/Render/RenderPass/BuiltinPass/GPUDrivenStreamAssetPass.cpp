@@ -1,11 +1,9 @@
-#include "Runtime/Render/Core/StreamInstanceCullParameters.h"
-#include "Runtime/Render/Core/HZBParameters.h"
-#include "Runtime/Render/Core/StreamDeferredParameters.h"
-#include "Runtime/Render/Core/StreamCompositeParameters.h"
-#include "Runtime/Render/Core/DebugVisualizationParameters.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"
@@ -227,12 +225,9 @@ Result<> createStreamShader(
     std::unique_ptr<ShaderModule>& outShader,
     std::string& log)
 {
-    const bool composite = std::string_view(entryPoint) == kMeshletStreamCompositeVertexEntryPoint ||
-        std::string_view(entryPoint) == kMeshletStreamCompositeFragmentEntryPoint;
-    const char* module = composite ? kMeshletStreamCompositeShaderModuleName : kMeshletStreamShaderModuleName;
     ShaderCompileResult compileResult;
     Result<> result = compileSlangShader(
-        module,
+        kMeshletStreamShaderModuleName,
         entryPoint,
         compileResult,
         log);
@@ -240,7 +235,7 @@ Result<> createStreamShader(
         return result;
     }
     const std::string shaderDebugName =
-        std::string(module) + "." + entryPoint;
+        std::string(kMeshletStreamShaderModuleName) + "." + entryPoint;
     result = device.createShaderModule(ShaderModuleDesc{
         .spirv = compileResult.spirv,
         .debugName = shaderDebugName.c_str(),
@@ -493,6 +488,14 @@ public:
         }
         result = createStreamShader(
             *context.device,
+            kMeshletStreamDeferredEntryPoint,
+            deferredShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+        result = createStreamShader(
+            *context.device,
             kMeshletStreamCompositeVertexEntryPoint,
             compositeVertexShader_,
             log);
@@ -507,11 +510,36 @@ public:
         if (!result) {
             return result;
         }
+        result = createStreamShader(
+            *context.device,
+            kMeshletStreamCullResetEntryPoint,
+            cullResetShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+        result = createStreamShader(
+            *context.device,
+            kMeshletStreamInstanceCullEntryPoint,
+            instanceCullShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+        result = createStreamShader(
+            *context.device,
+            kMeshletStreamHZBEntryPoint,
+            hzbShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
         for (uint32_t reversedZ = 0; reversedZ < visibilityPipelines_.size(); ++reversedZ) {
             result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
                 .meshShader = {meshShader_.get()},
                 .fragmentShader = {fragmentShader_.get()},
-                .colorFormat = Format::R32Uint,
+                .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
                 .depthStencilFormat = Format::D32Sfloat,
                 .depthStencil = DepthStencilState{
                         .depthTestEnable = true,
@@ -527,17 +555,20 @@ public:
             }
         }
 
-        ShaderCompileResult deferredCompile;
-        result = compileSlangShader(kMeshletStreamShaderModuleName, kMeshletStreamDeferredEntryPoint, deferredCompile, log);
-        if (!result) { return result; }
-        result = deferredKernel_.initialize(*context.device, {.spirv = deferredCompile.spirv,
-            .parameters = parameterAbi<StreamDeferredParameters>(kStreamDeferredABI, ParameterTransport::InlinePush),
-            .debugName = "Stream deferred"}, log);
-        if (!result) { return result; }
+        result = context.device->createComputePipeline(ComputePipelineDesc{
+            .computeShader = {deferredShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { deferredPipeline_ = std::move(rhiValue); });
+        if (!result || deferredPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(GPUDrivenStreamAsset deferred)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = {compositeVertexShader_.get()},
             .fragmentShader = {compositeFragmentShader_.get()},
-            .colorFormat = context.defaultFormat,
+            .colorFormats = {context.defaultFormat}, .colorAttachmentCount = 1,
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { compositePipeline_ = std::move(rhiValue); });
         if (!result || compositePipeline_ == nullptr) {
@@ -546,24 +577,32 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
-        auto createCullKernel = [&](const char* entry, ComputeKernel& kernel) -> Result<> {
-            ShaderCompileResult compiled;
-            auto compiledResult = compileSlangShader(kMeshletStreamShaderModuleName, entry, compiled, log);
-            if (!compiledResult) { return compiledResult; }
-            return kernel.initialize(*context.device, {.spirv = compiled.spirv,
-                .parameters = parameterAbi<StreamInstanceCullParameters>(kStreamInstanceCullABI, ParameterTransport::InlinePush),
-                .debugName = entry}, log);
+        auto createComputePipeline = [&](ShaderModule& shader,
+                                         std::unique_ptr<ComputePipeline>& pipeline,
+                                         const char* label) -> Result<> {
+            Result<> pipelineResult = context.device->createComputePipeline(ComputePipelineDesc{
+                .computeShader = {&shader, "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            if (!pipelineResult || pipeline == nullptr) {
+                log += resultMessage(
+                    std::string("createComputePipeline(GPUDrivenStreamAsset ") + label + ")",
+                    pipelineResult);
+                log += '\n';
+                return pipelineResult ? makeError(Error::Failure) : pipelineResult;
+            }
+            return {};
         };
-        result = createCullKernel(kMeshletStreamCullResetEntryPoint, cullResetKernel_);
-        if (!result) { return result; }
-        result = createCullKernel(kMeshletStreamInstanceCullEntryPoint, instanceCullKernel_);
-        if (!result) { return result; }
-        ShaderCompileResult hzbCompile;
-        result = compileSlangShader("Features/GPUDriven/HZB", kMeshletStreamHZBEntryPoint, hzbCompile, log);
-        if (!result) { return result; }
-        result = hzbKernel_.initialize(*context.device, {.spirv = hzbCompile.spirv,
-            .parameters = parameterAbi<HZBParameters>(kHZBABI, ParameterTransport::InlinePush),
-            .debugName = "Stream HZB"}, log);
+        result = createComputePipeline(*cullResetShader_, cullResetPipeline_, "cull reset");
+        if (!result) {
+            return result;
+        }
+        result = createComputePipeline(*instanceCullShader_, instanceCullPipeline_, "instance cull");
+        if (!result) {
+            return result;
+        }
+        result = createComputePipeline(*hzbShader_, hzbPipeline_, "HZB");
         if (!result) {
             return result;
         }
@@ -639,15 +678,28 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
+        ResourceRegistry* heap = streamRuntime_->resourceRegistry();
+        result = heap->storageBuffer(*deferredColorBuffer_).transform([&](auto value) { deferredColorHandle_ = std::move(value); });
+        if (!result) {
+            log += resultMessage("writeStorageBuffer(GPUDrivenStreamAsset deferred color)", result);
+            log += '\n';
+            return result;
+        }
+
         result = streamRuntime_->updateRasterBindings(MeshletStreamGPURasterBindings{
-            .instanceVisibilityBuffer = {uint64_t(instanceVisibilityHandle_.shaderValue())},
-            .hzbBuffer0 = {uint64_t(hzbHandles_[0].shaderValue())},
-            .hzbBuffer1 = {uint64_t(hzbHandles_[1].shaderValue())},
+            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
+            .depthImage = depthImageHandle_.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
+            .deferredColorBuffer = deferredColorHandle_.shaderIndex(),
+            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex(),
             .hzbMipCount = hzbMipCount_,
             .hzbValid = 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
+            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
         });
         if (!result) {
             log = "GPUDrivenStreamAssetPass failed to publish raster bindings";
@@ -678,7 +730,7 @@ public:
     Result<> prepareExecution(RenderGraphExecutionContext& context) override
     {
         if (streamRuntime_) {
-            if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
+            if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(streamRuntime_); }
         }
         GPUSceneSubsystem* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
         if (gpuSceneSubsystem == nullptr ||
@@ -697,11 +749,11 @@ public:
             !(streamRuntime_ && streamRuntime_->ready()) ||
             streamRuntime_->bindlessHeap() == nullptr ||
             visibilityPipelines_[0] == nullptr || visibilityPipelines_[1] == nullptr ||
-            !deferredKernel_.valid() ||
+            deferredPipeline_ == nullptr ||
             compositePipeline_ == nullptr ||
-            !cullResetKernel_.valid() ||
-            !instanceCullKernel_.valid() ||
-            !hzbKernel_.valid() ||
+            cullResetPipeline_ == nullptr ||
+            instanceCullPipeline_ == nullptr ||
+            hzbPipeline_ == nullptr ||
             (rtasVisualization_ && !rayQueryProgram_.valid())) {
             return makeError(Error::InvalidArgument);
         }
@@ -715,11 +767,11 @@ public:
         }
 
         const MeshletStreamFrameDesc frame = frameDescFromContext(context);
-        result = streamRuntime_->resourceRegistry()->sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); });
+        result = streamRuntime_->resourceRegistry()->sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); });
         if (!result) {
             return result;
         }
-        result = streamRuntime_->resourceRegistry()->sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
+        result = streamRuntime_->resourceRegistry()->sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
         if (!result) {
             return result;
         }
@@ -785,7 +837,7 @@ public:
         const auto frame = frameDescFromContext(context);
         Result<> result;
         auto& registry = *streamRuntime_->resourceRegistry();
-        for (const auto& lease : {visibilityImageHandle_, depthImageHandle_,
+        for (const auto& lease : {visibilityImageHandle_, depthImageHandle_, deferredColorHandle_,
              instanceVisibilityHandle_, visibleInstanceIdsHandle_, visibleInstanceCounterHandle_,
              hzbHandles_[0], hzbHandles_[1]}) {
             if (lease.valid()) {
@@ -851,7 +903,7 @@ public:
                     return draw(context, *visibility.view(), depth, GPUSceneCullPhase::Early,
                         LoadOp::Clear, frame.camera.reversedZ);
                 }, RenderGraphPassKind::Raster},
-                {"Early HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands, depth.view(), frame.camera.reversedZ); }},
+                {"Early HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }},
                 {"Late Instance cull", {}, [&](CommandBuffer& commands) {
                     return cull(commands, GPUSceneCullPhase::Late);
                 }},
@@ -859,7 +911,7 @@ public:
                     return draw(context, *visibility.view(), depth, GPUSceneCullPhase::Late,
                         LoadOp::Load, frame.camera.reversedZ);
                 }, RenderGraphPassKind::Raster},
-                {"Late HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands, depth.view(), frame.camera.reversedZ); }},
+                {"Late HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }},
                 {"Deferred shading", deferredUses, [&](CommandBuffer&) { return dispatchDeferred(context); }},
                 {"Composite", compositeUses, [&](CommandBuffer&) {
                     return drawComposite(context, color);
@@ -894,6 +946,7 @@ private:
     {
         visibilityImageHandle_ = {};
         depthImageHandle_ = {};
+        deferredColorHandle_ = {};
         instanceVisibilityHandle_ = {};
         visibleInstanceIdsHandle_ = {};
         visibleInstanceCounterHandle_ = {};
@@ -954,7 +1007,7 @@ private:
             !gpuSceneView_.valid() ||
             subsystemHost == nullptr ||
             streamRuntime_->bindlessHeap() == nullptr ||
-            deferredColorBuffer_ == nullptr) {
+            !deferredColorHandle_.valid()) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -991,6 +1044,11 @@ private:
             log);
         if (!result) {
             spdlog::error("[GPUDrivenStreamAssetPass] {}", log);
+            return result;
+        }
+
+        result = streamRuntime_->resourceRegistry()->storageBuffer(*resizedDeferredColorBuffer).transform([&](auto value) { deferredColorHandle_ = std::move(value); });
+        if (!result) {
             return result;
         }
 
@@ -1118,14 +1176,19 @@ private:
         }
 
         return streamRuntime_->updateRasterBindings(MeshletStreamGPURasterBindings{
-            .instanceVisibilityBuffer = {uint64_t(instanceVisibilityHandle_.shaderValue())},
-            .hzbBuffer0 = {uint64_t(hzbHandles_[0].shaderValue())},
-            .hzbBuffer1 = {uint64_t(hzbHandles_[1].shaderValue())},
+            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
+            .depthImage = depthImageHandle_.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
+            .deferredColorBuffer = deferredColorHandle_.shaderIndex(),
+            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex(),
             .hzbMipCount = hzbMipCount_,
             .hzbValid = hzbValid_ ? 1u : 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
+            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
         });
     }
 
@@ -1136,23 +1199,21 @@ private:
         if (gpuSceneSubsystem_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        const auto* visible = gpuSceneSubsystem_->visibleDrawSet(gpuSceneView_, activeFrameSlot_);
-        if (visible == nullptr) { return makeError(Error::InvalidArgument); }
-        const auto& gpu = visible->gpu;
-        const uint32_t phaseIndex = phase == GPUSceneCullPhase::Early ? 0u : 1u;
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
-        auto encoded = streamRuntime_->encodeInstanceCull(writer, gpu.instanceVisibilityStates.buffer,
-            gpu.visibleInstanceIds.buffer, gpu.visibleInstanceCounter.buffer,
-            gpu.hzb.history[gpu.hzb.writeIndex ^ (phaseIndex == 0u ? 1u : 0u)].buffer, phaseIndex);
-        if (!encoded) { return makeError(encoded.error()); }
-        auto reset = cullResetKernel_.prepareDispatch(*encoded, 1);
-        if (!reset) { return makeError(reset.error()); }
-        auto cull = instanceCullKernel_.prepareDispatch(*encoded,
-            std::max(divideRoundUp(static_cast<uint32_t>(streamRuntime_->asset().instances().size()), 64u), 1u));
-        if (!cull) { return makeError(cull.error()); }
-        const GPUSceneInstanceCullRecordDesc desc{.phase = phase, .reset = std::move(*reset), .cull = std::move(*cull)};
+        MeshletStreamUserPush push = streamRuntime_->userPush();
+        push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
+        const GPUSceneInstanceCullRecordDesc desc{
+            .phase = phase,
+            .bindlessHeap = streamRuntime_->bindlessHeap(),
+            .resetPipeline = cullResetPipeline_.get(),
+            .instanceCullPipeline = instanceCullPipeline_.get(),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .instanceGroupCountX = std::max(
+                divideRoundUp(
+                    static_cast<uint32_t>(streamRuntime_->asset().instances().size()),
+                    64u),
+                1u),
+        };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordInstanceCull(
             commandBuffer,
@@ -1166,43 +1227,38 @@ private:
         return result;
     }
 
-    Result<> buildHzb(CommandBuffer& commandBuffer, TextureView* depth, bool reversedZ)
+    Result<> buildHzb(CommandBuffer& commandBuffer)
     {
         if (gpuSceneSubsystem_ == nullptr || hzbMipCount_ == 0) {
             return makeError(Error::InvalidArgument);
         }
-        const auto* visible = gpuSceneSubsystem_->visibleDrawSet(gpuSceneView_, activeFrameSlot_);
-        if (visible == nullptr) { return makeError(Error::InvalidArgument); }
-        const auto& hzb = visible->gpu.hzb;
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        std::vector<PreparedComputeDispatch> dispatches;
-        dispatches.reserve(hzbMipCount_);
-        uint32_t mipWidth = frameWidth_, mipHeight = frameHeight_;
-        uint32_t sourceWidth = mipWidth, sourceHeight = mipHeight;
-        uint32_t sourceOffset = 0, destinationOffset = 0;
+        std::vector<MeshletStreamUserPush> pushes;
+        pushes.reserve(hzbMipCount_);
         for (uint32_t mipLevel = 0; mipLevel < hzbMipCount_; ++mipLevel) {
-            ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
-            const HZBParameters params{
-                .hzb = writer.dataBuffer(hzb.history[hzb.writeIndex].buffer, sizeof(float), alignof(float)),
-                .depth = writer.sampledImage(depth),
-                .width = mipWidth, .height = mipHeight,
-                .sourceWidth = sourceWidth, .sourceHeight = sourceHeight,
-                .sourceOffset = sourceOffset, .destinationOffset = destinationOffset,
-                .reversedZ = reversedZ ? 1u : 0u, .mipLevel = mipLevel,
-            };
-            auto encoded = writer.encode(params, kHZBABI, ParameterTransport::InlinePush);
-            if (!encoded) { return makeError(encoded.error()); }
-            auto dispatch = hzbKernel_.prepareDispatch(*encoded, divideRoundUp(mipWidth, 8u), divideRoundUp(mipHeight, 8u));
-            if (!dispatch) { return makeError(dispatch.error()); }
-            dispatches.push_back(std::move(*dispatch));
-            sourceWidth = mipWidth; sourceHeight = mipHeight;
-            sourceOffset = destinationOffset;
-            destinationOffset += mipWidth * mipHeight;
+            MeshletStreamUserPush push = streamRuntime_->userPush();
+            push.activeBuildPhase = mipLevel;
+            pushes.push_back(push);
+        }
+        std::vector<GPUSceneComputeDispatchDesc> dispatches;
+        dispatches.reserve(hzbMipCount_);
+        uint32_t mipWidth = frameWidth_;
+        uint32_t mipHeight = frameHeight_;
+        for (uint32_t mipLevel = 0; mipLevel < hzbMipCount_; ++mipLevel) {
+            dispatches.push_back(GPUSceneComputeDispatchDesc{
+                .pushData = &pushes[mipLevel],
+                .pushDataSize = sizeof(pushes[mipLevel]),
+                .groupCountX = divideRoundUp(mipWidth, 8u),
+                .groupCountY = divideRoundUp(mipHeight, 8u),
+                .groupCountZ = 1u,
+            });
             mipWidth = std::max(1u, (mipWidth + 1u) / 2u);
             mipHeight = std::max(1u, (mipHeight + 1u) / 2u);
         }
-        const GPUSceneHZBRecordDesc desc{.preparedDispatches = dispatches};
+        const GPUSceneHZBRecordDesc desc{
+            .bindlessHeap = streamRuntime_->bindlessHeap(),
+            .pipeline = hzbPipeline_.get(),
+            .dispatches = dispatches,
+        };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordBuildHzb(
             commandBuffer,
@@ -1248,12 +1304,24 @@ private:
             return result;
         }
 
+        const ComputeProgramBindingDesc bindings[] = {
+            ComputeProgramBindingDesc{
+                .binding = 0,
+                .kind = ComputeResourceBindingKind::AccelerationStructure,
+            },
+            ComputeProgramBindingDesc{
+                .binding = 1,
+                .kind = ComputeResourceBindingKind::StorageImage,
+            },
+        };
         return rayQueryProgram_.initialize(
             device,
-            ComputeKernelDesc{
+            ComputeProgramDesc{
                 .spirv = compileResult.spirv,
-                .parameters = parameterAbi<SceneRayQueryVisualizationParams>(kSceneRayQueryVisualizationABI, ParameterTransport::InlinePush),
+                .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "GPUDrivenStreamAssetPass RTAS visualization",
+                .resourceParameters = kSceneVisualizationResourceLayout,
             },
             log);
     }
@@ -1332,14 +1400,14 @@ private:
         };
         RenderingAttachmentDesc attachment{
             .view = &visibility,
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
         };
         RenderingAttachmentDesc depthAttachment{
             .view = depth.view(),
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
@@ -1349,30 +1417,22 @@ private:
             .colorAttachments = {&attachment, 1},
             .depthStencilAttachment = &depthAttachment,
         }); !rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         if (streamRuntime_->drawTaskCount() > 0) {
             context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            auto registry = device_->resourceRegistry();
-            if (!registry) { return makeError(registry.error()); }
-            auto& commands = context.commandBuffer();
-            ParameterWriter writer(*device_, **registry, commands.frameContext());
-            auto push = streamRuntime_->hardwareParameters(writer);
+            if (auto commandResult = context.commandBuffer().bindExecution((visibilityPipelines_[reversedZ ? 1u : 0u])->execution()); !commandResult) { return commandResult; }
+            MeshletStreamUserPush push = streamRuntime_->userPush();
             push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
-            auto encoded = writer.encode(push, kStreamHardwareABI, ParameterTransport::InlinePush);
-            if (!encoded) { return makeError(encoded.error()); }
-            if (auto retained = encoded->bindResources(commands); !retained) { return retained; }
-            const auto bytes = encoded->inlineData();
-            if (auto result = commands.bindExecution(visibilityPipelines_[reversedZ ? 1u : 0u]->execution(),
-                    bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
-            streamRuntime_->cmdDrawMeshTasks(context.commandBuffer());
+            context.commandBuffer().pushBindlessData(&push, sizeof(push));
+            if (auto commandResult = streamRuntime_->cmdDrawMeshTasks(context.commandBuffer()); !commandResult) { return commandResult; }
         }
         context.commandBuffer().endRendering();
         return {};
@@ -1384,43 +1444,19 @@ private:
         if (!result) {
             return result;
         }
-        const auto resources = streamRuntime_->deferredGpuResources();
-        if (!resources.valid()) { return makeError(Error::InvalidArgument); }
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const StreamDeferredParameters params{
-            .settings = writer.dataBuffer(resources.paramsBuffer, sizeof(MeshletStreamGPUParams), 16),
-            .records = writer.dataBuffer(resources.visibleClusterBuffer, sizeof(CompactStreamVisibleRecord), 4),
-            .groups = writer.dataBuffer(resources.activeGroupBuffer, sizeof(MeshletStreamGPUActiveGroup), 16),
-            .pageTable = writer.dataBuffer(resources.pageTableBuffer, sizeof(StreamPageTableEntry), 8),
-            .header = writer.dataBuffer(resources.activeHeaderBuffer, sizeof(MeshletStreamGPUActiveHeader), 4),
-            .output = writer.dataBuffer(deferredColorBuffer_.get(), 4, 4),
-            .pages = writer.dataBuffer(resources.pageBuffer, 4, 4),
-            .visibility = writer.sampledImage(context.outputTexture("visibility").view()),
-            .width = frameWidth_, .height = frameHeight_,
-            .recordBase = 0, .recordCapacity = resources.visibleRecordCapacity,
-        };
-        auto encoded = writer.encode(params, kStreamDeferredABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return deferredKernel_.dispatch(commands, *encoded, (frameWidth_ + 7u) / 8u, (frameHeight_ + 7u) / 8u);
+        context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
+        if (auto commandResult = context.commandBuffer().bindExecution((deferredPipeline_)->execution()); !commandResult) { return commandResult; }
+        const MeshletStreamUserPush push = streamRuntime_->userPush();
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        context.commandBuffer().dispatch(
+            (frameWidth_ + 7u) / 8u,
+            (frameHeight_ + 7u) / 8u,
+            1u);
+        return {};
     }
 
     Result<> drawComposite(RenderGraphExecutionContext& context, TextureHandle color)
     {
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const StreamCompositeParameters params{
-            .colors = writer.dataBuffer(deferredColorBuffer_.get(), 4, 4),
-            .width = frameWidth_, .height = frameHeight_,
-        };
-        auto encoded = writer.encode(params, kStreamCompositeABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        if (auto result = encoded->bindResources(commands); !result) { return result; }
-        const auto bytes = encoded->inlineData();
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -1429,7 +1465,7 @@ private:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
@@ -1438,20 +1474,20 @@ private:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(frameWidth_),
             .height = static_cast<float>(frameHeight_),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
-        if (auto result = commands.bindExecution(compositePipeline_->execution(), bytes.data(), uint32_t(bytes.size())); !result) {
-            commands.endRendering();
-            return result;
-        }
-        context.commandBuffer().draw(3u, 1u, 0u, 0u);
+        context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
+        if (auto commandResult = context.commandBuffer().bindExecution((compositePipeline_)->execution()); !commandResult) { return commandResult; }
+        const MeshletStreamUserPush push = streamRuntime_->userPush();
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().draw(3u, 1u, 0u, 0u); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }
@@ -1467,7 +1503,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        SceneRayQueryVisualizationPush push{};
+        SceneRayQueryVisualizationPush push;
         push.eye[0] = frame.camera.eye.x;
         push.eye[1] = frame.camera.eye.y;
         push.eye[2] = frame.camera.eye.z;
@@ -1493,35 +1529,47 @@ private:
         push.width = context.width();
         push.height = context.height();
 
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const SceneRayQueryVisualizationParams params{
-            .scene = writer.accelerationStructure(streamRuntime_->accelerationStructure()),
-            .output = writer.storageImage(color.view()),
-            .settings = push,
+        const ComputeDispatchBinding bindings[] = {
+            ComputeDispatchBinding{
+                .binding = 0,
+                .accelerationStructure = streamRuntime_->accelerationStructure(),
+            },
+            ComputeDispatchBinding{
+                .binding = 1,
+                .textureView = color.view(),
+            },
         };
-        auto encoded = writer.encode(params, kSceneRayQueryVisualizationABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return rayQueryProgram_.dispatch(commands, *encoded, (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
+        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7u) / 8u,
+            .groupCountY = (context.height() + 7u) / 8u,
+            .groupCountZ = 1,
+        });
     }
 
     std::unique_ptr<PipelineCache> pipelineCache_;
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
+    std::unique_ptr<ShaderModule> deferredShader_;
     std::unique_ptr<ShaderModule> compositeVertexShader_;
     std::unique_ptr<ShaderModule> compositeFragmentShader_;
+    std::unique_ptr<ShaderModule> cullResetShader_;
+    std::unique_ptr<ShaderModule> instanceCullShader_;
+    std::unique_ptr<ShaderModule> hzbShader_;
     std::array<std::unique_ptr<GraphicsPipeline>, 2> visibilityPipelines_;
-    ComputeKernel deferredKernel_;
+    std::unique_ptr<ComputePipeline> deferredPipeline_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
-    ComputeKernel cullResetKernel_;
-    ComputeKernel instanceCullKernel_;
-    ComputeKernel hzbKernel_;
+    std::unique_ptr<ComputePipeline> cullResetPipeline_;
+    std::unique_ptr<ComputePipeline> instanceCullPipeline_;
+    std::unique_ptr<ComputePipeline> hzbPipeline_;
     std::unique_ptr<Buffer> deferredColorBuffer_;
     ResourceLease visibilityImageHandle_;
     ResourceLease depthImageHandle_;
+    ResourceLease deferredColorHandle_;
     ResourceLease instanceVisibilityHandle_;
     ResourceLease visibleInstanceIdsHandle_;
     ResourceLease visibleInstanceCounterHandle_;
@@ -1541,7 +1589,7 @@ private:
     const scene::Scene* gpuSceneSource_ = nullptr;
     GPUSceneSourceOverrideToken gpuSceneSourceToken_;
     bool hzbValid_ = false;
-    ComputeKernel rayQueryProgram_;
+    ComputeProgram rayQueryProgram_;
     bool rtasVisualization_ = false;
     uint64_t compiledSourceIdentity_ = 0;
     uint64_t compiledSourceContentRevision_ = 0;

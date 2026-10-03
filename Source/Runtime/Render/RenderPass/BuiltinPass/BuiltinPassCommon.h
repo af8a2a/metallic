@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "Runtime/Render/Core/StreamSceneParameters.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -86,6 +86,7 @@ inline constexpr const char* kVisibilityBufferMaskedFragmentEntryPoint =
     "visibilityBufferMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
+inline constexpr const char* kGPUDrivenPreviewHZBEntryPoint = "gpuDrivenPreviewHzbMain";
 inline constexpr const char* kVisibilityBufferCompositeVertexEntryPoint =
     "visibilityBufferCompositeVertexMain";
 inline constexpr const char* kVisibilityBufferCompositeFragmentEntryPoint =
@@ -96,7 +97,7 @@ inline constexpr const char* kGPUDrivenStreamAssetFragmentEntryPoint = "gpuDrive
 inline constexpr const char* kGPUDrivenStreamAssetUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "Features/Debug/SceneMaterialVisualize";
 inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
-inline constexpr const char* kScenePathTraceShaderModuleName = "Features/PathTracing/ScenePathTraceInline";
+inline constexpr const char* kScenePathTraceShaderModuleName = "Features/PathTracing/ScenePathTrace";
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
 inline constexpr const char* kSceneRTXDIShaderModuleName = "Features/ReSTIR/SceneRTXDI";
 inline constexpr const char* kSceneRTXDIEntryPoint = "sceneRtxdiMain";
@@ -220,6 +221,17 @@ inline constexpr uint32_t kScenePathTraceDebugStochasticTextureFiltering = 1u <<
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
 inline constexpr uint32_t kScenePathTraceCacheModeNRC = 2;
+// CPU input IDs for radiance-cache permutations. NamedResourceLayouts maps
+// these to direct SceneResourceParameters fields; shaders do not see these IDs.
+inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 20;
+inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
+inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;
+inline constexpr uint32_t kScenePathTraceSharcResolvedBinding = 23;
+inline constexpr uint32_t kScenePathTraceNRCQueryPathInfoBinding = 24;
+inline constexpr uint32_t kScenePathTraceNRCTrainingPathInfoBinding = 25;
+inline constexpr uint32_t kScenePathTraceNRCTrainingPathVerticesBinding = 26;
+inline constexpr uint32_t kScenePathTraceNRCQueryRadianceParamsBinding = 27;
+inline constexpr uint32_t kScenePathTraceNRCCountersBinding = 28;
 inline constexpr uint32_t kNRDDenoiserModeReblur = 0;
 inline constexpr uint32_t kNRDDenoiserModeRelax = 1;
 inline constexpr uint32_t kNRDDenoiserModeReference = 2;
@@ -366,7 +378,12 @@ inline void appendCameraRuntimeSettings(
     settings.push_back(runtimeFloatSetting("camera.fovDegrees", "FOV", fovDegrees, 1.0f, 179.0f, invalidateHistory));
 }
 
-
+struct RenderGraphBufferUserPush {
+    uint32_t inputBuffer = 0;
+    uint32_t outputBuffer = 0;
+    uint32_t passIndex = 0;
+    uint32_t padding = 0;
+};
 
 struct SceneGPUTransform {
     float world[16] = {
@@ -396,6 +413,24 @@ struct BunnyWireframeGPUPosition {
     float w = 1.0f;
 };
 
+struct BunnyWireframeGPUParams {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    float clearColor[4] = {};
+    float wireColor[4] = {};
+    float settings[4] = {};
+};
+
+struct BunnyWireframeUserPush {
+    uint32_t paramsBuffer = 0;
+    uint32_t positionBuffer = 0;
+    uint32_t transformBuffer = 0;
+    uint32_t padding = 0;
+};
+
 struct MaterialShaderObjectGPUPosition {
     float x = 0.0f;
     float y = 0.0f;
@@ -407,10 +442,41 @@ struct MaterialShaderObjectGPUMaterial {
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 };
 
+struct MaterialShaderObjectGPUParams {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+};
+
+struct MaterialShaderObjectUserPush {
+    uint32_t positionBuffer = 0;
+    uint32_t materialIndexBuffer = 0;
+    uint32_t materialBuffer = 0;
+    uint32_t paramsBuffer = 0;
+    uint32_t vertexOffset = 0;
+    uint32_t materialVariant = 0;
+    uint32_t transformBuffer = 0;
+    uint32_t padding = 0;
+};
+
 struct MaterialShaderObjectBatch {
     uint32_t materialIndex = 0;
     uint32_t firstVertex = 0;
     uint32_t vertexCount = 0;
+};
+
+struct SceneRayQueryVisualizationPush {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    uint32_t mode = kRayQueryVisualizationGranularityInstance;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t padding = 0;
 };
 
 struct GPUDrivenPreviewGPUVertex {
@@ -627,11 +693,47 @@ struct GPUDrivenPreviewGPUParams {
     uint32_t environmentVisible = 1;
     uint32_t materialCount = 1;
     uint32_t visibleMeshletCapacity = 0;
-    uint32_t resourcePadding = 0;
+    uint32_t lodSelectionBuffer = UINT32_MAX;
     uint32_t lodSelectionEnabled = 0;
-    uint32_t tessellationEnabled = 0;
+    uint32_t tessellationBuffer = UINT32_MAX;
     float displacementBound = 0.0f;
     uint32_t tessellationPadding[2] = {};
+};
+
+struct GPUDrivenPreviewUserPush {
+    uint32_t positionBuffer = 0;
+    uint32_t meshletBuffer = 0;
+    uint32_t meshletDrawBuffer = 0;
+    uint32_t meshletVertexBuffer = 0;
+    uint32_t meshletTriangleBuffer = 0;
+    uint32_t paramsBuffer = 0;
+    uint32_t transformBuffer = 0;
+    uint32_t instanceBuffer = 0;
+    uint32_t instanceVisibilityBuffer = 0;
+    uint32_t visibleInstanceIdsBuffer = 0;
+    uint32_t visibleInstanceCounterBuffer = 0;
+    uint32_t visibleMeshletBuffer0 = 0;
+    uint32_t visibleMeshletBuffer1 = 0;
+    uint32_t indirectBuffer0 = 0;
+    uint32_t indirectBuffer1 = 0;
+    uint32_t hzbBuffer0 = 0;
+    uint32_t hzbBuffer1 = 0;
+    uint32_t deferredColorBuffer = 0;
+    uint32_t depthImage = 0;
+    uint32_t visibilityImage = 0;
+    uint32_t passIndex = 0;
+    uint32_t mipLevel = 0;
+    uint32_t projectWithCullingCamera = 0;
+    uint32_t materialBuffer = 0;
+    uint32_t materialTextureRemapBuffer = 0;
+    uint32_t environmentImage = 0;
+    uint32_t environmentSHBuffer = 0;
+    uint32_t streamDeferredBindingsBuffer = std::numeric_limits<uint32_t>::max();
+    uint32_t residentRecordCapacity = 0;
+    uint32_t streamOwnerMaskBuffer = std::numeric_limits<uint32_t>::max();
+    float tessellationEdgePixels = 8.0f;
+    uint32_t tessellationMaxFactor = 4;
+    uint32_t tessellationMaxSplitDepth = 2;
 };
 
 static_assert(sizeof(GPUDrivenPreviewGPUVertex) == 64);
@@ -648,6 +750,23 @@ static_assert(sizeof(GPUSceneGPUMeshletDrawRecord) == 16);
 static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
 static_assert(sizeof(GPUDrivenPreviewGPUParams) == 352);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 132);
+
+struct SceneMaterialVisualizationPush {
+    float eye[4] = {};
+    float center[4] = {};
+    float upProjection[4] = {};
+    float viewport[4] = {};
+    float clipOrtho[4] = {};
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t mode = kSceneMaterialVisualizationModeMaterial;
+    uint32_t materialTextureCount = 0;
+    float bitangentFlip = 1.0f;
+    uint32_t ntcTextureSetCount = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+};
 
 struct ScenePathTracePush {
     float eye[4] = {};
@@ -685,14 +804,13 @@ struct ScenePathTracePush {
     float jitterOffsetY = 0.0f;
     uint32_t sampleFrame = 0;
     uint32_t temporalJitter = 0;
+    // Keep the shared push ABI within the descriptor heap's 256-byte limit.
     // Bits 0:15 material bin, 16:20 transmission samples, 21:25 ray depth.
     uint32_t deferredSettings = (2u << 16u) | (8u << 21u);
-    uint64_t streamScene = 0;
-    uint64_t streamPadding = 0;
 };
 
 // Per-frame parameters for the radiance-cache permutations of
-// ScenePathTrace.slang, passed through the typed root as BDA data. Layout
+// ScenePathTrace.slang (binding kScenePathTraceCacheParamsBinding). Layout
 // must match struct ScenePathTraceCacheParams in the shader byte for byte;
 // nrc mirrors ::NrcConstants from the NRC SDK headers.
 struct ScenePathTraceCacheParams {
@@ -732,8 +850,7 @@ struct ScenePathTraceCacheParams {
 
 static_assert(sizeof(ScenePathTraceCacheParams) == 172);
 static_assert(offsetof(ScenePathTraceCacheParams, nrcFrameDimensions) == 76);
-static_assert(sizeof(ScenePathTracePush) == 272);
-static_assert(offsetof(ScenePathTracePush, streamScene) == 256);
+static_assert(sizeof(ScenePathTracePush) == 256);
 
 struct SceneRTXDIPush {
     float eye[4] = {};

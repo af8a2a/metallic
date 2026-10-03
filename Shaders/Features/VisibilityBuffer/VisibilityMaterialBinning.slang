@@ -1,4 +1,5 @@
-import ShaderCore;
+import Core;
+import ParameterRoot;
 using Metallic;
 import GPUDriven;
 using Metallic.GPUDriven;
@@ -7,47 +8,63 @@ using Metallic.Material;
 
 #include "VisibilityStreamDecode.slang"
 
-#include "../../../Source/Runtime/Render/MaterialBinningParams.h"
-[[vk::push_constant]] ConstantBuffer<MaterialBinningParams> gBinning;
+// Wire layout matches MaterialBinningParams.h, verified by GPU producer/consumer tests.
+struct MaterialBinningParams
+{
+    ResourceHandle<Texture2D<uint>> visibility;
+    RWBufferSpan<VisibleClusterRecord> records;
+    RWBufferSpan<GPUDrivenPreviewInstance> instances;
+    RWBufferSpan<GPUDrivenPreviewMaterial> materials;
+    RWBufferSpan<PathTraceMaterial> shadingMaterials;
+    RWBufferSpan<MaterialBin> bins;
+    RWBufferSpan<MaterialTile> tiles;
+    RWBufferSpan<uint> arguments;
+    RWBufferSpan<CompactStreamVisibleRecord> streamRecords;
+    RWBufferSpan<StreamActiveGroup> streamGroups;
+    uint width;
+    uint height;
+    uint tileCount;
+    uint residentRecordCount;
+};
 
-#define gVisibility resolveDescriptor(gBinning.visibility)
-#define gRecords gBinning.resources.records.data
-#define gInstances gBinning.resources.instances.data
-#define gMaterials gBinning.resources.materials.data
-#define gShadingMaterials gBinning.resources.shadingMaterials.data
-#define gBins gBinning.bins.data
-#define gTiles gBinning.tiles.data
-#define gIndirect gBinning.arguments.data
-#define gStreamRecords gBinning.resources.streamRecords.data
+#define gVisibility resolveUniform(getParameters<MaterialBinningParams>().visibility)
+#define gRecords getParameters<MaterialBinningParams>().records
+#define gInstances getParameters<MaterialBinningParams>().instances
+#define gMaterials getParameters<MaterialBinningParams>().materials
+#define gShadingMaterials getParameters<MaterialBinningParams>().shadingMaterials
+#define gBins getParameters<MaterialBinningParams>().bins
+#define gTiles getParameters<MaterialBinningParams>().tiles
+#define gIndirect getParameters<MaterialBinningParams>().arguments
+#define gStreamRecords getParameters<MaterialBinningParams>().streamRecords
 
 uint materialClassForPixel(uint2 pixel)
 {
     uint recordIndex, triangleIndex;
     if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return kMaterialClassBackground; }
     uint count;
-    MaterialBinningParams push = gBinning;
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     VisibleClusterRecord record;
     if (recordIndex < push.residentRecordCount) {
-        count = push.resources.records.length();
+        count = push.records.length();
         if (recordIndex >= count) { return kMaterialClassBackground; }
         record = gRecords[recordIndex];
         if (visibleClusterSource(record) != kVisibleClusterSourceResident) { return kMaterialClassBackground; }
     } else {
         recordIndex -= push.residentRecordCount;
-        count = push.resources.streamRecords.length();
+        count = push.streamRecords.length();
         if (recordIndex >= count) { return kMaterialClassBackground; }
         record = unpackStreamVisibleRecord(gStreamRecords[recordIndex]);
-        if (record.dataIndex >= push.resources.streamGroups.length()) { return kMaterialClassBackground; }
-        record.instanceIndex = push.resources.streamGroups.data[record.dataIndex].gpuSceneInstanceIndex;
+        if (record.dataIndex >= push.streamGroups.length()) { return kMaterialClassBackground; }
+        record.instanceIndex = push.streamGroups[record.dataIndex].gpuSceneInstanceIndex;
         if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return kMaterialClassBackground; }
     }
-    count = push.resources.instances.length();
+    count = push.instances.length();
     if (record.instanceIndex >= count) { return kMaterialClassBackground; }
     uint material = gInstances[record.instanceIndex].identity.y;
-    count = push.resources.materials.length();
+    count = push.materials.length();
     if (material >= count) { return kMaterialClassBackground; }
     uint sourceMaterial = gMaterials[material].identity.z;
-    count = push.resources.shadingMaterials.length();
+    count = push.shadingMaterials.length();
     if (count == 0u) { return kMaterialClassBackground; }
     // Match the deferred reconstruction's fallback material exactly.
     return classifyDeferredMaterial(gShadingMaterials[sourceMaterial < count ? sourceMaterial : 0u]);
@@ -57,10 +74,10 @@ uint materialClassForPixel(uint2 pixel)
 [numthreads(32, 1, 1)]
 void materialBinningResetMain(uint lane : SV_GroupIndex)
 {
-    MaterialBinningParams push = gBinning;
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     if (lane < kMaterialClassCount && push.bins.contains(lane)) {
         MaterialBin bin = {lane * push.tileCount, 0u};
-        gBins[lane] = bin;
+        gBins.store(lane, bin);
     }
 }
 
@@ -68,7 +85,7 @@ void materialBinningResetMain(uint lane : SV_GroupIndex)
 [numthreads(32, 1, 1)]
 void materialBinningClassifyMain(uint3 group : SV_GroupID)
 {
-    MaterialBinningParams push = gBinning;
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     uint lane = WaveGetLaneIndex();
     uint columns = (push.width + kMaterialTileWidth - 1u) / kMaterialTileWidth;
     MaterialTile tile = {group.y * columns + group.x, 0u};
@@ -82,11 +99,11 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID)
         uint mask = WaveActiveBallot(valid && materialClass == type).x;
         if (WaveIsFirstLane() && mask != 0u && push.bins.contains(type)) {
             uint slot;
-            InterlockedAdd(gBins[type].count, 1u, slot);
+            resolveUniform(gBins.resource).InterlockedAdd(gBins.byteOffset + type * sizeof(MaterialBin) + 4u, 1u, slot);
             tile.laneMask = mask;
             uint offset = gBins[type].offset;
             if (offset < push.tiles.length() && slot < push.tiles.length() - offset) {
-                gTiles[offset + slot] = tile;
+                gTiles.store(offset + slot, tile);
             }
         }
     }
@@ -96,13 +113,13 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID)
 [numthreads(32, 1, 1)]
 void materialBinningArgumentsMain(uint lane : SV_GroupIndex)
 {
-    MaterialBinningParams push = gBinning;
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     if (lane < kMaterialClassCount && push.bins.contains(lane)) {
         if (push.arguments.length() < (lane + 1u) * 3u) { return; }
         uint offset = gBins[lane].offset;
         uint count = offset < push.tiles.length() ? min(gBins[lane].count, push.tiles.length() - offset) : 0u;
-        gIndirect[lane * 3u] = min(count, kMaterialBinMaxGroupsX);
-        gIndirect[lane * 3u + 1u] = count / kMaterialBinMaxGroupsX + uint(count % kMaterialBinMaxGroupsX != 0u);
-        gIndirect[lane * 3u + 2u] = 1u;
+        gIndirect.store(lane * 3u, min(count, kMaterialBinMaxGroupsX));
+        gIndirect.store(lane * 3u + 1u, count / kMaterialBinMaxGroupsX + uint(count % kMaterialBinMaxGroupsX != 0u));
+        gIndirect.store(lane * 3u + 2u, 1u);
     }
 }

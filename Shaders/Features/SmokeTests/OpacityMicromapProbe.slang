@@ -1,15 +1,17 @@
-#include "../../../Source/Runtime/Render/Core/SceneProbeParameters.h"
+import Core;
 using Metallic;
-[[vk::push_constant]] ConstantBuffer<OpacityMicromapProbeParameters> gProbePush;
-#define gPathTraceParameters (*gProbePush.resources)
+
 #include "../PathTracing/ScenePathTrace.slang"
-#define gProbeOutput gProbePush.output.data
+
+#define gProbeOutput resolveBuffer<RWStructuredBuffer<uint2>>(getResourceParameters<SceneResourceParameters>().probeOutput)
+struct ProbePush { uint materialTextureCount; };
+#define gProbePush getConstants<ProbePush>()
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void opacityMicromapProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    if (any(id.xy >= 64u) || !gProbePush.output.contains(id.y * 64u + id.x)) { return; }
+    if (any(id.xy >= 64u)) { return; }
     float2 uv = (float2(id.xy) + float2(0.31, 0.67)) / 64.0;
     RayDesc ray;
     ray.Origin = float3(uv, 0.0);

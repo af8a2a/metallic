@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 

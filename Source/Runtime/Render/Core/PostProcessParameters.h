@@ -8,17 +8,14 @@
 #include <cstddef>
 namespace metallic::render {
 using PostUInt = uint32_t;
-using PostSampled2D = ShaderSampledImage;
-using PostSampled2DScalar = ShaderSampledImage;
-using PostSampled2DMotion = ShaderSampledImage;
-using PostStorage2DScalar = ShaderStorageImage;
-using PostStorage2DMotion = ShaderStorageImage;
-using PostSampled3D = ShaderSampledImage;
-using PostStorage2D = ShaderStorageImage;
-using PostStorage3D = ShaderStorageImage;
-using PostSampler = ShaderSampler;
-using PostUIntData = ShaderDataSpan;
-using PostFloat4Data = ShaderDataSpan;
+using PostSampled2D = GPUResourceHandle<ResourceViewKind::SampledImage>;
+using PostSampled2DScalar = PostSampled2D;
+using PostSampled3D = PostSampled2D;
+using PostStorage2D = GPUResourceHandle<ResourceViewKind::StorageImage>;
+using PostStorage3D = PostStorage2D;
+using PostSampler = GPUSamplerHandle;
+using PostUIntData = GPUBufferSpan;
+using PostFloat4Data = GPUBufferSpan;
 #else
 import ShaderCore;
 import ColorGrading;
@@ -26,17 +23,14 @@ using Metallic;
 using Metallic.ColorGrading;
 namespace Metallic {
 typealias PostUInt = uint;
-typealias PostSampled2D = DescriptorHandle<Texture2D<float4>>;
-typealias PostSampled2DScalar = DescriptorHandle<Texture2D<float>>;
-typealias PostSampled2DMotion = DescriptorHandle<Texture2D<float2>>;
-typealias PostStorage2DScalar = DescriptorHandle<RWTexture2D<float>>;
-typealias PostStorage2DMotion = DescriptorHandle<RWTexture2D<float2>>;
-typealias PostSampled3D = DescriptorHandle<Texture3D<float4>>;
-typealias PostStorage2D = DescriptorHandle<RWTexture2D<float4>>;
-typealias PostStorage3D = DescriptorHandle<RWTexture3D<float4>>;
-typealias PostSampler = DescriptorHandle<SamplerState>;
-typealias PostUIntData = DataSpan<uint>;
-typealias PostFloat4Data = DataSpan<float4>;
+typealias PostSampled2D = ResourceHandle<Texture2D<float4>>;
+typealias PostSampled2DScalar = ResourceHandle<Texture2D<float>>;
+typealias PostSampled3D = ResourceHandle<Texture3D<float4>>;
+typealias PostStorage2D = ResourceHandle<RWTexture2D<float4>>;
+typealias PostStorage3D = ResourceHandle<RWTexture3D<float4>>;
+typealias PostSampler = SamplerHandle;
+typealias PostUIntData = RWBufferSpan<uint>;
+typealias PostFloat4Data = RWBufferSpan<float4>;
 #endif
 
 struct DisplayOutputPush {
@@ -84,19 +78,6 @@ struct AutoExposureParams {
     PostUInt padding;
 };
 
-struct DLSSSupportParams {
-    PostSampled2DScalar depth;
-    PostStorage2D color;
-};
-
-struct UpscalerGuideResolveParams {
-    PostSampled2DScalar depth;
-    PostSampled2DMotion motion;
-    PostStorage2DScalar outputDepth;
-    PostStorage2DMotion outputMotion;
-    float jitterX, jitterY;
-};
-
 struct GradingPush {
     PostUInt transform, hdr;
     float peak, paperWhite;
@@ -104,32 +85,28 @@ struct GradingPush {
 };
 
 #ifdef __cplusplus
-using GradingSettings = uint64_t;
+struct alignas(16) ColorGradingLUTParams {
 #else
-typealias GradingSettings = GradingPush*;
-#endif
 struct ColorGradingLUTParams {
+#endif
     PostStorage3D output;
     PostSampled2D custom0, custom1, custom2, custom3;
     PostSampled2DScalar reach, gamut, gammaTable;
     PostSampler sampler;
-    GradingSettings display;
+    PostUInt padding0, padding1, padding2;
+    GradingPush display;
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kDLSSSupportABI = 0x444c535353550001ull;
-static_assert(sizeof(DLSSSupportParams) == 16 && offsetof(DLSSSupportParams, color) == 8);
-inline constexpr uint64_t kUpscalerGuideResolveABI = 0x5550475549440001ull;
-static_assert(sizeof(UpscalerGuideResolveParams) == 40 && offsetof(UpscalerGuideResolveParams, jitterX) == 32);
-inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000001ull;
-inline constexpr uint64_t kSliderDebugABI = 0x534c494445000001ull;
-inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000001ull;
+inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000002ull;
+inline constexpr uint64_t kSliderDebugABI = 0x534c494445000002ull;
+inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000002ull;
 inline constexpr uint64_t kColorGradingLUTABI = 0x4752414445000002ull;
-static_assert(sizeof(FinalBlitParams) == 72 && offsetof(FinalBlitParams, display) == 32);
-static_assert(sizeof(SliderDebugParams) == 40 && offsetof(SliderDebugParams, display) == 24);
-static_assert(sizeof(AutoExposureParams) == 144 && offsetof(AutoExposureParams, display) == 64);
-static_assert(alignof(ColorGradingLUTParams) == 8);
-static_assert(sizeof(ColorGradingLUTParams) == 80 && offsetof(ColorGradingLUTParams, display) == 72);
-static_assert(offsetof(ColorGradingLUTParams, sampler) == 64 && offsetof(GradingPush, grade) == 16);
+static_assert(sizeof(FinalBlitParams) == 56 && offsetof(FinalBlitParams, display) == 16);
+static_assert(sizeof(SliderDebugParams) == 28 && offsetof(SliderDebugParams, display) == 12);
+static_assert(sizeof(AutoExposureParams) == 124 && offsetof(AutoExposureParams, display) == 44);
+static_assert(alignof(ColorGradingLUTParams) == 16);
+static_assert(sizeof(ColorGradingLUTParams) == 192 && offsetof(ColorGradingLUTParams, display) == 48);
+static_assert(offsetof(ColorGradingLUTParams, sampler) == 32 && offsetof(GradingPush, grade) == 16);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

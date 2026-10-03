@@ -19,11 +19,11 @@ using Metallic;
 #define SHARC_MAINTENANCE_BLOCK_SIZE 256
 #endif
 
-#define gHashEntries resolveDescriptor(gStage.hashEntries)
+#define gHashEntries resolveUniform(gStage.hashEntries)
 
-#define gAccumulation resolveDescriptor(gStage.accumulation)
+#define gAccumulation resolveUniform(gStage.accumulation)
 
-#define gResolved resolveDescriptor(gStage.resolved)
+#define gResolved resolveUniform(gStage.resolved)
 
 [shader("compute")]
 [numthreads(SHARC_MAINTENANCE_BLOCK_SIZE, 1, 1)]

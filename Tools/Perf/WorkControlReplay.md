@@ -16,17 +16,12 @@ existing WorkloadCase camera/history/asset configuration and P3-style before /
 control / after checkpoints. The selected capture is armed AFTER the four prime
 frames, immediately before the target frame.
 
-The production `ComputeKernel` is retained while private buffer allocations are registered
-with the canonical resource registry. Protocol v2 re-encodes the 88-byte inline
-`StreamRasterParameters`: seven typed handles and the immutable 624-byte settings
-snapshot are relocated, while record base/capacity and flags remain identical.
-`Push.bin` and `ReplayPush.bin` archive both roots; `Settings.bin` and
-`ReplaySettings.bin` archive the exact immutable settings. Compiler/device SPIR-V,
-source/scratch handles, allocation addresses, stride, size and indirect bytes are
-also archived. Legacy indices in bin/raster metadata are inert for this shader.
-The verifier still accepts v1 archives under their original raw-index rules;
-archived v1 parameters are never interpreted as v2 or executed.
-Physical addresses and handles differ by design. The first slice requires subgroup minimum 32;
+The production pipeline's retained `PreparedExecution` executes against private
+buffer allocations at the same typed descriptor indices. Full push bytes,
+compiler/device SPIR-V, original/scratch addresses, descriptor stride and size,
+indirect bytes and nested bins/raster-binding indices are archived. Physical
+addresses differ by design. This is executable and logical binding equivalence,
+not physical descriptor equality. The first slice requires subgroup minimum 32;
 the low-wave fallback is rejected. Snapshots have a 1 GiB aggregate source-byte
 budget. Copies and archives can consume several GiB; they are outside ranges.
 
@@ -59,7 +54,7 @@ the existing 1–16 exact metric-name contract.
 | Evidence | Protocol / scope |
 | --- | --- |
 | Existing in-frame ranges | `metallic-nvperf-v1` / `in-frame-command-ranges-on-graphics-queue` |
-| Isolated correctness only | `metallic-work-control-replay-v2` / `isolated-correctness-only`, counterEligible=false |
+| Isolated correctness only | `metallic-work-control-replay-v1` / `isolated-correctness-only`, counterEligible=false |
 | Isolated counter image | `metallic-nvperf-isolated-v1` / `isolated-dispatch-RHI-exclusive` |
 
 The last scope means a single dispatch per target submission, with other RHI
@@ -92,13 +87,9 @@ success. Real driver loss and genuinely hung GPU retirement remain separate
 environmental failure cases.
 
 `verify` uses current code, verifies the exact artifact inventory/hashes,
-recomputes binary equality, rechecks the ordered submit/restore ledger, versioned
-parameter relocation (or v1 nested binding indices), actual SPIR-V fingerprint, same-frame and across-process
+recomputes binary equality, rechecks the ordered submit/restore ledger, nested
+binding indices, actual SPIR-V fingerprint, same-frame and across-process
 WorkloadCase identity, and distinct profiler scope. It never executes archived
 scripts. It does not re-decode CounterDataImage; `counterImageReevaluated=false`
 remains explicit. Failed or truncated archives cannot be promoted to successful
 evidence. Hashes are integrity checks, not provenance signatures.
-
-`--skip-shader-warmup` explicitly forwards the existing application option and
-records it in `Invocation.json`. Default startup behavior is unchanged. This
-uses on-demand shader compilation; it does not skip replay correctness gates.

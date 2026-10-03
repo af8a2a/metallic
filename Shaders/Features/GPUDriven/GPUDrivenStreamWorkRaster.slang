@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 // Separate module keeps the histogram/remap shared allocation out of the
 // measured cooperative reference and other stream raster entrypoints.
 #include "GPUDrivenStreamAsset.slang"
@@ -25,13 +28,14 @@ ShaderTraceIdentity workControlTraceIdentity(uint3 group, uint lane)
 }
 #endif
 
-void rasterStreamClusterWorkBins(uint3 group, uint lane, StreamRasterParameters push, bool reorder
+void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool reorder
 #if METALLIC_WORK_CONTROL_TRACE
     , inout uint3 traceCounts
 #endif
 )
 {
-    let bins = push.bins;
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane < WaveGetLaneCount()) {
@@ -41,7 +45,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, StreamRasterParameters 
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamSoftwareValid == 0u) { return; }
     if (lane < g_StreamSoftware.vertexCount) {
-        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push.pages), float2(bins[6], bins[7]), bins[10]);
+        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push), float2(bins[6], bins[7]), bins[10]);
         // Reuse the existing raw-word scratch. Do not store snapped signed
         // coordinates as float bits: NaN canonicalization can change them.
         g_StreamRasterWords[lane] = uint4(uint2(vertex.position), asuint(vertex.depth), 0u);
@@ -51,7 +55,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, StreamRasterParameters 
     if (reorder) {
         uint bucket = 3u;
         if (lane < g_StreamSoftware.triangleCount) {
-            uint3 tri = streamSoftwareTriangle(lane, push.pages);
+            uint3 tri = streamSoftwareTriangle(lane, push);
             bucket = streamRasterWorkBucket(asint(g_StreamRasterWords[tri.x].xy), asint(g_StreamRasterWords[tri.y].xy),
                 asint(g_StreamRasterWords[tri.z].xy), (g_StreamSoftware.instanceFlags & 2u) != 0u, bins[6], bins[7], bins[10]);
         }
@@ -60,7 +64,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, StreamRasterParameters 
         triangle = work & 127u;
     }
     if (triangle < g_StreamSoftware.triangleCount) {
-        uint3 tri = streamSoftwareTriangle(triangle, push.pages);
+        uint3 tri = streamSoftwareTriangle(triangle, push);
         HybridScreenVertex a, b, c;
         a.position = asint(g_StreamRasterWords[tri.x].xy); a.depth = asfloat(g_StreamRasterWords[tri.x].z);
         b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);
@@ -89,7 +93,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, StreamRasterParameters 
         HybridTriangleDecision decision;
         hybridRasterPreparedTriangleDecision(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], push.pixels, false, decision);
+            bins[6], bins[7], bins[9], bins[10], bins[11], false, decision);
         if (!reorder && workControlTraceSelected(group, lane)) {
             ++traceCounts.x;
             if (!TRACE_PREDICATE_ENABLED || triangle == TRACE_TRIANGLE_ID) {
@@ -110,42 +114,42 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, StreamRasterParameters 
 #else
         hybridRasterPreparedTriangle(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], push.pixels, false);
+            bins[6], bins[7], bins[9], bins[10], bins[11], false);
 #endif
     }
 }
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterRasterWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void streamClusterRasterWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, gStreamRaster, false, false); return; }
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }
 #if METALLIC_WORK_CONTROL_TRACE
     uint3 traceCounts = 0;
-    rasterStreamClusterWorkBins(group, lane, gStreamRaster, true, traceCounts);
+    rasterStreamClusterWorkBins(group, lane, push, true, traceCounts);
 #else
-    rasterStreamClusterWorkBins(group, lane, gStreamRaster, true);
+    rasterStreamClusterWorkBins(group, lane, push, true);
 #endif
 }
 
 // Measurement control: same vertex setup/raster arithmetic without reordering.
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterRasterWorkControlMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void streamClusterRasterWorkControlMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
 #if METALLIC_WORK_CONTROL_TRACE
     uint3 traceCounts = 0;
     ShaderTraceIdentity id = workControlTraceIdentity(group, lane);
     bool selected = workControlTraceSelected(group, lane);
     if (selected) { shaderTraceBegin(id); }
-    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, gStreamRaster, false, false); }
-    else { rasterStreamClusterWorkBins(group, lane, gStreamRaster, false, traceCounts); }
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); }
+    else { rasterStreamClusterWorkBins(group, lane, push, false, traceCounts); }
     if (selected) {
         shaderTraceWords5(id, 2, traceCounts.z + 1,
             uint4(traceCounts, WaveGetLaneCount() < 32u ? 1u : 0u), traceCounts.y > traceCounts.z ? 1u : 0u);
     }
 #else
-    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, gStreamRaster, false, false); return; }
-    rasterStreamClusterWorkBins(group, lane, gStreamRaster, false);
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }
+    rasterStreamClusterWorkBins(group, lane, push, false);
 #endif
 }

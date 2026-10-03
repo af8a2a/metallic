@@ -1,6 +1,4 @@
-#include "Runtime/Render/Core/HybridResolveParameters.h"
-#include "Runtime/Render/Core/HybridRasterParameters.h"
-#include "Runtime/Render/Core/HybridBinParameters.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -17,20 +15,20 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
     if (width == 0 || height == 0 || width > 32768 || height > 32768 || capacity == 0 || clusterCapacity == 0 || clusterCapacity > 0x01ffffffu) {
         return makeError(Error::InvalidArgument);
     }
-    device_ = &device;
     initialized_ = false;
     clusterInitialized_ = false;
-    settings_.clusterCapacity = clusterCapacity;
-    settings_.width = width;
-    settings_.height = height;
-    settings_.capacity = std::min(capacity, 262144u);
+    push_.clusterCapacity = clusterCapacity;
+    push_.width = width;
+    push_.height = height;
+    push_.capacity = std::min(capacity, 262144u);
     // Bound integer edge products even at the largest supported 32px triangle.
     if (device.capabilities().subPixelPrecisionBits < 1 || device.capabilities().subPixelPrecisionBits > 8) {
         return makeError(Error::Unsupported);
     }
-    settings_.subpixelBits = device.capabilities().subPixelPrecisionBits;
-    Result<> result;
-    const uint64_t sizes[] = {32ull + settings_.capacity * 64ull, uint64_t(width) * height * 8, 12};
+    push_.subpixelBits = device.capabilities().subPixelPrecisionBits;
+    auto result = device.createBindlessHeap({.maxBuffers = 5}).transform([&](auto rhiValue) { heap_ = std::move(rhiValue); });
+    if (!result) { return result; }
+    const uint64_t sizes[] = {32ull + push_.capacity * 64ull, uint64_t(width) * height * 8, 12};
     const uint32_t strides[] = {16, 8, 4};
     for (size_t i = 0; i < buffers_.size(); ++i) {
         result = device.createBuffer({.size = sizes[i], .structureStride = strides[i],
@@ -38,7 +36,13 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
                 (i == 2 ? BufferUsageBits::Indirect : BufferUsageBits::None),
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffers_[i] = std::move(rhiValue); });
         if (!result) { return result; }
-
+        BindlessHandle handle;
+        result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+        if (result) { result = (*buffers_[i]).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(handle, bufferSlice); }); }
+        if (!result) { return result; }
+        if (i == 0) { push_.queueBuffer = handle.shaderIndex; }
+        if (i == 1) { push_.pixelBuffer = handle.shaderIndex; }
+        if (i == 2) { push_.argumentsBuffer = handle.shaderIndex; }
     }
     const uint64_t clusterSizes[] = {64ull + uint64_t(clusterCapacity) * 9u * 4u + ((clusterCapacity + 127u) / 128u) * 5ull * 4u, 5u * 12u};
     for (size_t i = 0; i < 2; ++i) {
@@ -48,7 +52,11 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
                 (i == 1 ? BufferUsageBits::Indirect : BufferUsageBits::None),
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!result) { return result; }
-
+        BindlessHandle handle;
+        result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+        if (result) { result = (*buffer).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(handle, bufferSlice); }); }
+        if (!result) { return result; }
+        if (i == 0) { push_.clusterBuffer = handle.shaderIndex; } else { push_.clusterArgumentsBuffer = handle.shaderIndex; }
     }
     const char* clusterEntries[] = {"hybridClusterResetMain", "hybridClusterHistogramMain",
         "hybridClusterArgumentsMain", "hybridClusterScatterMain"};
@@ -59,14 +67,20 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
     result = device.createBuffer({.size = 36, .structureStride = 4,
         .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource}).transform([&](auto rhiValue) { candidateArguments_ = std::move(rhiValue); });
     if (!result) { return result; }
-    for (size_t i = 0; i < clusterKernels_.size(); ++i) {
+    for (size_t i = 0; i < clusterShaders_.size(); ++i) {
         ShaderCompileResult shader;
         result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
             .entryPointName = clusterEntries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = clusterKernels_[i].initialize(device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<HybridBinParameters>(kHybridBinABI, ParameterTransport::InlinePush),
-            .debugName = clusterEntries[i]}, log);
+        result = device.createShaderModule({
+            .spirv = shader.spirv,
+            .debugName = clusterEntries[i],
+        }).transform([&](auto rhiValue) { clusterShaders_[i] = std::move(rhiValue); });
+        if (result) { result = device.createComputePipeline({
+            .computeShader = {clusterShaders_[i].get()},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(Push),
+        }).transform([&](auto rhiValue) { clusterPipelines_[i] = std::move(rhiValue); }); }
         if (!result) { return result; }
     }
     const char* entries[] = {"hybridResetMain", "hybridArgumentsMain", "hybridRasterMain",
@@ -76,22 +90,25 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        if (i < rasterKernels_.size()) {
-            result = rasterKernels_[i].initialize(device, {.spirv = shader.spirv,
-                .parameters = parameterAbi<HybridRasterParameters>(kHybridRasterABI, ParameterTransport::InlinePush),
-                .debugName = entries[i]}, log);
-        } else {
-            result = device.createShaderModule({.spirv = shader.spirv, .debugName = entries[i]})
-                .transform([&](auto value) { shaders_[i] = std::move(value); });
-        }
+        result = device.createShaderModule({
+            .spirv = shader.spirv,
+            .debugName = entries[i],
+        }).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
         if (!result) { return result; }
-
+        if (i < compute_.size()) {
+            result = device.createComputePipeline({
+                .computeShader = {shaders_[i].get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(Push),
+            }).transform([&](auto rhiValue) { compute_[i] = std::move(rhiValue); });
+            if (!result) { return result; }
+        }
     }
     for (size_t i = 0; i < resolve_.size(); ++i) {
         result = device.createGraphicsPipeline({
             .vertexShader = {shaders_[3].get()},
             .fragmentShader = {shaders_[4].get()},
-            .colorFormat = Format::R32Uint,
+            .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = {.cullMode = CullMode::None},
             .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
@@ -103,36 +120,6 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
     return {};
 }
 
-Result<EncodedParameters> VisibilityHybridRasterizer::encodeRasterParameters(CommandBuffer& commands)
-{
-    auto registry = device_->resourceRegistry();
-    if (!registry) { return makeError(registry.error()); }
-    ParameterWriter writer(*device_, **registry, commands.frameContext());
-    const HybridRasterParameters params{
-        .queue = writer.buffer(buffers_[0].get()), .pixels = writer.buffer(buffers_[1].get()),
-        .arguments = writer.dataBuffer(buffers_[2].get(), sizeof(uint32_t), alignof(uint32_t)),
-        .width = settings_.width, .height = settings_.height, .capacity = settings_.capacity,
-        .maxPixels = settings_.maxPixels, .reversedZ = settings_.reversedZ, .subpixelBits = settings_.subpixelBits,
-    };
-    return writer.encode(params, kHybridRasterABI, ParameterTransport::InlinePush);
-}
-
-Result<EncodedParameters> VisibilityHybridRasterizer::encodeBinParameters(CommandBuffer& commands)
-{
-    auto registry = device_->resourceRegistry();
-    if (!registry) { return makeError(registry.error()); }
-    ParameterWriter writer(*device_, **registry, commands.frameContext());
-    const HybridBinParameters params{
-        .bins = writer.buffer(clusterBuffer_.get()),
-        .arguments = writer.dataBuffer(clusterArguments_.get(), sizeof(uint32_t), alignof(uint32_t)),
-        .width = settings_.width, .height = settings_.height, .clusterCapacity = settings_.clusterCapacity,
-        .maxPixels = settings_.maxPixels, .reversedZ = settings_.reversedZ, .subpixelBits = settings_.subpixelBits,
-        .inputClusterCount = settings_.inputClusterCount,
-        .streamMode = settings_.streamMode,
-    };
-    return writer.encode(params, kHybridBinABI, ParameterTransport::InlinePush);
-}
-
 bool VisibilityHybridRasterizer::supportsRenderExtent(uint32_t width, uint32_t height) const
 {
     return width != 0 && height != 0 && width <= 32768 && height <= 32768 && buffers_[1] &&
@@ -142,16 +129,16 @@ bool VisibilityHybridRasterizer::supportsRenderExtent(uint32_t width, uint32_t h
 Result<> VisibilityHybridRasterizer::setRenderExtent(uint32_t width, uint32_t height)
 {
     if (!supportsRenderExtent(width, height)) { return makeError(Error::InvalidArgument); }
-    settings_.width = width;
-    settings_.height = height;
+    push_.width = width;
+    push_.height = height;
     return {};
 }
 
 Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels, bool reversedZ)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: clear queue and depth"});
-    settings_.maxPixels = std::clamp(std::isfinite(maxPixels) ? maxPixels : 8.0f, 1.0f, 32.0f);
-    settings_.reversedZ = reversedZ ? 1u : 0u;
+    push_.maxPixels = std::clamp(std::isfinite(maxPixels) ? maxPixels : 8.0f, 1.0f, 32.0f);
+    push_.reversedZ = reversedZ ? 1u : 0u;
     const ResourceState finals[] = {ResourceState::ShaderRead, ResourceState::ShaderRead, ResourceState::IndirectArgument};
     BufferBarrierDesc barriers[3];
     for (size_t i = 0; i < buffers_.size(); ++i) {
@@ -162,9 +149,10 @@ Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPix
         };
     }
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
-    auto parameters = encodeRasterParameters(commands);
-    if (!parameters) { return makeError(parameters.error()); }
-    if (auto result = rasterKernels_[0].dispatch(commands, *parameters, (settings_.width + 63u) / 64u, settings_.height); !result) { return result; }
+    commands.bindBindlessHeap(*heap_);
+    if (auto commandResult = commands.bindExecution((compute_[0])->execution()); !commandResult) { return commandResult; }
+    commands.pushBindlessData(&push_, sizeof(push_));
+    commands.dispatch((push_.width + 63u) / 64u, push_.height);
     for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
     commands.endDebugLabel();
@@ -181,17 +169,20 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
     };
     if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
+    commands.bindBindlessHeap(*heap_);
     if (!softwareRasterized) {
-        auto parameters = encodeRasterParameters(commands);
-        if (!parameters) { return makeError(parameters.error()); }
-        if (auto result = rasterKernels_[1].dispatch(commands, *parameters, 1); !result) { return result; }
+        if (auto commandResult = commands.bindExecution((compute_[1])->execution()); !commandResult) { return commandResult; }
+        commands.pushBindlessData(&push_, sizeof(push_));
+        commands.dispatch(1);
         barrier = {
             .buffer = buffers_[2].get(),
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
         };
         if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
-        auto result = rasterKernels_[2].dispatchIndirect(commands, *parameters, *buffers_[2]);
+        if (auto commandResult = commands.bindExecution((compute_[2])->execution()); !commandResult) { return commandResult; }
+        commands.pushBindlessData(&push_, sizeof(push_));
+        auto result = (*buffers_[2]).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
         if (!result) { commands.endDebugLabel(); return result; }
     } else {
         barrier = {
@@ -225,34 +216,21 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
             .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
         }};
     if (auto commandResult = commands.synchronize({.textures = {attachments, 2}}); !commandResult) { return commandResult; }
-    const RenderingAttachmentDesc color{.view = &visibility, .state = ResourceState::ColorAttachment,
+    const RenderingAttachmentDesc color{.view = &visibility, .layout = TextureLayout::ColorAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
-    const RenderingAttachmentDesc z{.view = &depth, .state = ResourceState::DepthStencilAttachment,
+    const RenderingAttachmentDesc z{.view = &depth, .layout = TextureLayout::DepthStencilAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
-    auto registry = device_->resourceRegistry();
-    if (!registry) { return makeError(registry.error()); }
-    ParameterWriter writer(*device_, **registry, commands.frameContext());
-    const HybridResolveParameters params{
-        .pixels = writer.dataBuffer(buffers_[1].get(), sizeof(uint64_t), alignof(uint64_t)),
-        .width = settings_.width, .reversedZ = settings_.reversedZ,
-    };
-    auto encoded = writer.encode(params, kHybridResolveABI, ParameterTransport::InlinePush);
-    if (!encoded) { return makeError(encoded.error()); }
-    if (auto result = encoded->bindResources(commands); !result) { return result; }
-    const auto bytes = encoded->inlineData();
-    const Rect area{.width = settings_.width, .height = settings_.height};
+    const Rect area{.width = push_.width, .height = push_.height};
     if (auto rendering = commands.beginRendering({
         .renderArea = area,
         .colorAttachments = {&color, 1},
         .depthStencilAttachment = &z,
     }); !rendering) { return rendering; }
-    commands.setViewport({.width = float(settings_.width), .height = float(settings_.height), .maxDepth = 1.0f});
+    if (auto commandResult = commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f}); !commandResult) { return commandResult; }
     commands.setScissor(area);
-    if (auto result = commands.bindExecution(resolve_[settings_.reversedZ]->execution(), bytes.data(), uint32_t(bytes.size())); !result) {
-        commands.endRendering();
-        return result;
-    }
-    commands.draw(3);
+    if (auto commandResult = commands.bindExecution((resolve_[push_.reversedZ])->execution()); !commandResult) { return commandResult; }
+    commands.pushBindlessData(&push_, sizeof(push_));
+    if (auto commandResult = commands.draw(3); !commandResult) { return commandResult; }
     commands.endRendering();
     commands.endDebugLabel();
     initialized_ = true;
@@ -260,21 +238,23 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
 }
 
 Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
-    uint32_t inputCount, bool stream, bool compact, bool tessellation)
+    uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact, bool tessellation)
 {
     // Compact stream preparation checks its actual candidate count on GPU and
     // falls back to HW when scratch is exhausted. Record IDs remain unbounded by scratch.
-    if (inputCount > settings_.clusterCapacity && !(stream && compact)) { return makeError(Error::InvalidArgument); }
+    if (inputCount > push_.clusterCapacity && !(stream && compact)) { return makeError(Error::InvalidArgument); }
     // Full HW never touches the software queue/pixel buffers; retain their
     // last resolved state so switching back to hybrid remains valid.
     if (stream && maxPixels == 0.0f) {
-        settings_.maxPixels = 0.0f;
-        settings_.reversedZ = reversedZ ? 1u : 0u;
+        push_.maxPixels = 0.0f;
+        push_.reversedZ = reversedZ ? 1u : 0u;
     } else {
         if (auto result = begin(commands, maxPixels, reversedZ); !result) { return result; }
     }
-    settings_.inputClusterCount = inputCount;
-    settings_.streamMode = (stream ? 1u : 0u) | (tessellation ? 2u : 0u);
+    commands.bindBindlessHeap(*heap_);
+    push_.producerPixelBuffer = producerPixelBuffer;
+    push_.inputClusterCount = inputCount;
+    push_.streamMode = (stream ? 1u : 0u) | (tessellation ? 2u : 0u);
     compactCandidates_ = compact;
     const BufferBarrierDesc barriers[] = {
         {
@@ -293,9 +273,9 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }};
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
-    auto parameters = encodeBinParameters(commands);
-    if (!parameters) { return makeError(parameters.error()); }
-    if (auto result = clusterKernels_[0].dispatch(commands, *parameters, 1); !result) { return result; }
+    if (auto commandResult = commands.bindExecution((clusterPipelines_[0])->execution()); !commandResult) { return commandResult; }
+    commands.pushBindlessData(&push_, sizeof(push_));
+    commands.dispatch(1);
     const BufferBarrierDesc ready{
         .buffer = clusterBuffer_.get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
@@ -323,22 +303,19 @@ Result<> VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& com
 }
 
 Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer& commands,
-    const ComputeKernel& kernel, ParameterWriter& writer, StreamCandidateParameters params)
+    ComputePipeline& pipeline, MeshletStreamUserPush push)
 {
-    params.bins = writer.buffer(clusterBuffer_.get());
-    params.arguments = writer.dataBuffer(candidateArguments_.get(), 4, 4);
-    // Each stage owns its inline setup/count/prefix/scatter parameters.
+    if (auto commandResult = commands.bindExecution((pipeline).execution()); !commandResult) { return commandResult; }
+    // The prepare entry uses activeBuildPhase for setup/count/prefix/scatter.
     // Only the small block-count prefix stays on a single workgroup.
     for (uint32_t phase = 0; phase < 4; ++phase) {
-        params.stage = phase;
-        auto encoded = writer.encode(params, kStreamCandidateABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
+        push.activeBuildPhase = phase;
+        commands.pushBindlessData(&push, sizeof(push));
         if (phase == 0 || phase == 2) {
-            auto result = kernel.dispatch(commands, *encoded, 1);
-            if (!result) { return result; }
+            commands.dispatch(1);
             if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
         } else {
-            const Result<> result = kernel.dispatchIndirect(commands, *encoded, *candidateArguments_, kCandidateBuildArgumentsOffset);
+            const Result<> result = (*candidateArguments_).slice({kCandidateBuildArgumentsOffset, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             if (!result) { return result; }
             const BufferBarrierDesc barriers[] = {
                 {
@@ -360,17 +337,12 @@ Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffe
 }
 
 Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
-    const ComputeKernel& kernel, ParameterWriter& writer, StreamClusterCullParameters params)
+    ComputePipeline& pipeline, MeshletStreamUserPush push)
 {
-    params.bins = writer.buffer(clusterBuffer_.get());
-    params.arguments = writer.buffer(candidateArguments_.get());
-    params.stage = 0;
-    auto cull = writer.encode(params, kStreamClusterCullABI, ParameterTransport::InlinePush);
-    if (!cull) { return makeError(cull.error()); }
-    params.stage = 1;
-    auto finalize = writer.encode(params, kStreamClusterCullABI, ParameterTransport::InlinePush);
-    if (!finalize) { return makeError(finalize.error()); }
-    auto result = kernel.dispatchIndirect(commands, *cull, *candidateArguments_, 12);
+    if (auto commandResult = commands.bindExecution((pipeline).execution()); !commandResult) { return commandResult; }
+    push.activeBuildPhase = 0;
+    commands.pushBindlessData(&push, sizeof(push));
+    const Result<> result = (*candidateArguments_).slice({12, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
     if (!result) { return result; }
     const BufferBarrierDesc barriers[] = {
         {
@@ -384,8 +356,9 @@ Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }};
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 2}}); !commandResult) { return commandResult; }
-    result = kernel.dispatch(commands, *finalize, 1);
-    if (!result) { return result; }
+    push.activeBuildPhase = 1;
+    commands.pushBindlessData(&push, sizeof(push));
+    commands.dispatch(1);
     if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
     return {};
 }
@@ -399,18 +372,17 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
-    auto parameters = encodeBinParameters(commands);
-    if (!parameters) { return makeError(parameters.error()); }
-    const uint32_t blocks = (settings_.inputClusterCount + 127u) / 128u;
-    for (size_t i = 1; i < clusterKernels_.size(); ++i) {
-        Result<> result;
-        if (i == 2) { result = clusterKernels_[i].dispatch(commands, *parameters, 5); }
-        else if (compactCandidates_) { result = clusterKernels_[i].dispatchIndirect(commands, *parameters, *candidateArguments_, 12); }
-        else if (blocks != 0) {
-            result = clusterKernels_[i].dispatch(commands, *parameters,
-                std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth);
+    commands.bindBindlessHeap(*heap_);
+    const uint32_t blocks = (push_.inputClusterCount + 127u) / 128u;
+    for (size_t i = 1; i < clusterPipelines_.size(); ++i) {
+        if (auto commandResult = commands.bindExecution((clusterPipelines_[i])->execution()); !commandResult) { return commandResult; }
+        commands.pushBindlessData(&push_, sizeof(push_));
+        if (i == 2) { commands.dispatch(5); }
+        else if (compactCandidates_) {
+            const Result<> result = (*candidateArguments_).slice({12, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
+            if (!result) { commands.endDebugLabel(); return result; }
         }
-        if (!result) { commands.endDebugLabel(); return result; }
+        else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }
         if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     }
     // Overflow HW raster publishes early-phase retry masks in this buffer.

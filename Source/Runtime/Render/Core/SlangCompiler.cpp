@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 
 #include <slang-com-ptr.h>
 #include <slang-tag-version.h>
@@ -45,7 +45,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 23;
+constexpr uint32_t kShaderCacheRequestVersion = 24;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -947,6 +947,15 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     std::vector<slang::CompilerOptionEntry> compilerOptions;
     compilerOptions.reserve(desc.capabilities.size() + desc.macroDefines.size() + 4u);
     if (nativeDescriptorHeapEnabled(desc)) {
+        // Matches the RHI's single image/buffer index unit, specialized on device.
+        // Samplers keep their own stride; AS retains its legacy address resolver.
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::SPIRVUnifiedDescriptorHeapStride,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::Int,
+                .intValue0 = 1,
+            },
+        });
         compilerOptions.push_back(slang::CompilerOptionEntry{
             .name = slang::CompilerOptionName::Capability,
             .value = slang::CompilerOptionValue{
@@ -1120,7 +1129,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     outResult.spirv.resize(byteSize / sizeof(uint32_t));
     std::memcpy(outResult.spirv.data(), shaderCode->getBufferPointer(), byteSize);
     std::string normalizationError;
-    if (!normalizeNativeDescriptorHeapSpirv(outResult.spirv, outResult.spirv, normalizationError)) {
+    if (!vulkan::normalizeNativeDescriptorHeapSpirv(outResult.spirv, outResult.spirv, normalizationError)) {
         outResult.spirv.clear();
         log += normalizationError + "\n";
         return makeError(Error::Failure);

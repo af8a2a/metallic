@@ -1,6 +1,7 @@
 #pragma once
 
-#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/SceneLightResources.h"
 
@@ -68,7 +69,8 @@ public:
 private:
     struct State;
     std::shared_ptr<State> state_;
-    std::array<ComputeKernel, 5> traces_; // conventional, NTC, NTC cooperative, streamed TLAS, stream pending
+    std::array<ComputeProgram, 5> traces_; // conventional, NTC, NTC cooperative, streamed TLAS, stream pending
+    std::array<uint32_t, 5> traceTextureCounts_{};
 };
 
 } // namespace metallic::render

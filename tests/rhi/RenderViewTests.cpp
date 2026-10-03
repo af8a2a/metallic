@@ -1,6 +1,6 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "ViewProbeParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/RenderView.h"
@@ -23,14 +23,16 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
-        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "ViewConstantsProbe",
             .entryPointName = "viewConstantsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        return kernel_.initialize(*context.device, {
+        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}};
+        return program_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .parameters = render::parameterAbi<ViewProbeParameters>(kViewProbeABI, render::ParameterTransport::InlinePush),
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kViewConstantsProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -39,20 +41,13 @@ public:
             context.properties().at("camera").at("eye")[0].get<float>() != context.viewConstants()->current.eye[0]) {
             return render::makeError(render::Error::Failure);
         }
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return render::makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const ViewProbeParameters params{
-            writer.dataBuffer(context.outputBuffer("view").buffer(), sizeof(render::ViewConstants), alignof(render::ViewConstants)),
-            writer.dataBuffer(context.viewConstantsBuffer(), sizeof(render::ViewConstants), alignof(render::ViewConstants))};
-        auto encoded = writer.encode(params, kViewProbeABI, render::ParameterTransport::InlinePush);
-        if (!encoded) { return render::makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, 1);
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .buffer = context.outputBuffer("view").buffer()},
+            {.binding = 1, .buffer = context.viewConstantsBuffer()}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel kernel_;
+    render::ComputeProgram program_;
 };
 
 class RenderViewTest final : public RHITest {

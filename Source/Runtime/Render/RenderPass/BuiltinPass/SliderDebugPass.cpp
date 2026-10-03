@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -86,14 +88,14 @@ public:
             properties.value("orientation", "vertical") == "horizontal" ? 1u : 0u,
             properties.value("swapSides", false) ? 1u : 0u,
         };
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
         auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(commands));
         SliderDebugParams params{};
-        params.sourceA = writer.sampledImage(sourceA.view());
-        params.sourceB = writer.sampledImage(sourceB.view());
-        params.output = writer.storageImage(color.view());
+        params.sourceA = writer.sampledImageHandle(sourceA.view());
+        params.sourceB = writer.sampledImageHandle(sourceB.view());
+        params.output = writer.storageImageHandle(color.view());
         params.display = push;
         auto encoded = writer.encode(params, kSliderDebugABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }

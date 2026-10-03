@@ -684,10 +684,9 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
         if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return commandResult; }
         set.state = ResourceState::TransferDestination;
         for (const Impl::TextureUpload& upload : set.uploads) {
-            commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = set.uploadBuffer.get(),
+            if (auto commandResult = (set.uploadBuffer.get())->slice({upload.bufferOffset}).and_then([&](const auto& bufferSlice) { return commandBuffer.copyBufferToTexture(BufferTextureRegion{
                 .texture = set.texture.get(),
-                .bufferOffset = upload.bufferOffset,
+                .buffer = bufferSlice,
                 .bufferRowPitch = upload.rowPitch,
                 .bufferSlicePitch = upload.rowPitch * upload.height,
                 .width = upload.width,
@@ -696,7 +695,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
                 .mipLevel = upload.mipLevel,
                 .baseLayer = upload.layer,
                 .layerCount = 1,
-            });
+            }); }); !commandResult) { return commandResult; }
         }
         TextureBarrierDesc toShaderRead{
             .texture = set.texture.get(),
@@ -805,7 +804,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .memoryBarrierCount = 1,
             .pMemoryBarriers = &memoryBarrier,
         };
-        vkCmdPipelineBarrier2(nativeCommandBuffer, &dependencyInfo);
+        vulkan::nativeCommandBufferFunctions(commandBuffer).vkCmdPipelineBarrier2(nativeCommandBuffer, &dependencyInfo);
 #else
         return makeError(Error::Unsupported);
 #endif

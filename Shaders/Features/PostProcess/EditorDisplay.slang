@@ -1,4 +1,4 @@
-import ShaderCore;
+import Core;
 using Metallic;
 
 #ifndef DISPLAY_HDR

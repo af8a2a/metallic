@@ -139,8 +139,8 @@ public:
                         TextureLayout::TransferSource, colorWrite, transferRead)) {
                     return RHITestResult::fail("Cannot clear and read the current alias image");
                 }
-                commands->copyTextureToBuffer({.texture = textures[index].get(), .buffer = readbacks[index].get(),
-                    .width = descriptions[index].width, .height = descriptions[index].height});
+                if (auto commandResult = (readbacks[index].get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = textures[index].get(), .buffer = bufferSlice,
+                    .width = descriptions[index].width, .height = descriptions[index].height}); }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
             }
             const std::array<BufferBarrierDesc, 2> hostBarriers{{
                 {.buffer = readbacks[0].get(), .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},

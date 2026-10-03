@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "harness/Fixtures.h"
@@ -88,8 +89,8 @@ public:
         auto input = context.inputTexture("color");
         auto output = context.outputBuffer("data");
         if (!input.valid() || !output.valid()) { return makeError(Error::InvalidArgument); }
-        context.commandBuffer().copyTextureToBuffer({.texture = input.texture(), .buffer = output.buffer(),
-            .width = input.desc().width, .height = input.desc().height});
+        if (auto commandResult = (output.buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = input.texture(), .buffer = bufferSlice,
+            .width = input.desc().width, .height = input.desc().height}); }); !commandResult) { return commandResult; }
         const BufferBarrierDesc host{.buffer = output.buffer(),
             .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .after = {PipelineStageBits::Host, AccessBits::HostRead}};
@@ -465,7 +466,7 @@ public:
         if (!commands->end()) { return RHITestResult::fail("Cannot finish untracked guard probe"); }
         commands.reset();
         if (!pool->reset() || !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
-            !frame.begin(0) || !commands->begin(&frame) || !executor.execute(*commands) || !commands->end()) {
+            !frame.begin(0) || !commands->begin(frame.submissionContext()) || !executor.execute(*commands) || !commands->end()) {
             return RHITestResult::fail("Cannot record tracked unsubmitted alias graph");
         }
         const auto recorded = executor.executionSnapshot();
@@ -475,7 +476,7 @@ public:
             return RHITestResult::fail("External alias execution did not remain recorded and unsubmitted");
         }
         if (!pool->createCommandBuffer().transform([&](auto value) { otherCommands = std::move(value); }) ||
-            !otherCommands->begin(&frame)) {
+            !otherCommands->begin(frame.submissionContext())) {
             return RHITestResult::fail("Cannot record second external guard probe");
         }
         if (!hasError(executor.execute(*otherCommands), Error::InvalidArgument) ||

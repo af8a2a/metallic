@@ -2,11 +2,16 @@
 
 #include "Runtime/Render/GAPI/RHI.h"
 
-#include <volk.h>
+#include "VulkanDeviceProperties.h"
 
 namespace metallic::render::vulkan {
 
 struct NativeDevice {
+    // Borrowed immutable dispatch table; valid for the lifetime of the Device.
+    const VolkDeviceTable* functions = nullptr;
+    const VolkInstanceTable* instanceFunctions = nullptr;
+    const VulkanDeviceProperties* properties = nullptr;
+    PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -66,12 +71,14 @@ NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program);
 NativeTexture nativeTexture(Texture& texture);
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
 VkDevice nativeCommandBufferDevice(CommandBuffer& commandBuffer);
+// Requires a live command buffer. The owning Device must outlive the borrowed table.
+const VolkDeviceTable& nativeCommandBufferFunctions(CommandBuffer& commandBuffer);
 // DGC leaves affected state undefined. Rebind pipeline/shaders, heap and push data afterwards.
 void notifyGeneratedCommandsExecution(CommandBuffer& commandBuffer);
 // Compatibility name: invalidates all tracked execution state after external commands.
 void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 // Exporters use the backend policy, rather than hard-coding an optimal layout.
-VkImageLayout nativeImageLayout(TextureView& view, ResourceState usage);
+VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout);
 VkImageView nativeImageView(TextureView& view);
 } // namespace metallic::render::vulkan

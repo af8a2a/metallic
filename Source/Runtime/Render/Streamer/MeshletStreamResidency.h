@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamLatency.h"
@@ -87,6 +88,7 @@ inline constexpr MeshletStreamPageResidencyState streamPageTablePatchState(
 
 inline constexpr uint32_t kStreamRequestHeaderWordCount = 16;
 inline constexpr uint32_t kStreamPrefetchPageTag = 1u << 31;
+inline constexpr uint32_t kStreamUpdateHeaderWordCount = 16;
 
 struct StreamRequestBufferHeader {
     uint32_t maxLoadRequests = 0;
@@ -107,9 +109,29 @@ struct StreamRequestBufferHeader {
     uint32_t prefetchDroppedCounter = 0;
 };
 
+struct StreamUpdateBufferHeader {
+    uint32_t patchUnloadPageCount = 0;
+    uint32_t patchPageCount = 0;
+    uint32_t frameIndex = 0;
+    uint32_t patchOverflowCounter = 0;
+    uint32_t padding0 = 0;
+    uint32_t padding1 = 0;
+    uint32_t padding2 = 0;
+    uint32_t padding3 = 0;
+    uint32_t padding4 = 0;
+    uint32_t padding5 = 0;
+    uint32_t padding6 = 0;
+    uint32_t padding7 = 0;
+    uint32_t padding8 = 0;
+    uint32_t padding9 = 0;
+    uint32_t padding10 = 0;
+    uint32_t padding11 = 0;
+};
+
 static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(StreamPageTablePatch) == 8);
 static_assert(sizeof(StreamRequestBufferHeader) == kStreamRequestHeaderWordCount * sizeof(uint32_t));
+static_assert(sizeof(StreamUpdateBufferHeader) == kStreamUpdateHeaderWordCount * sizeof(uint32_t));
 
 struct StreamGPURequestBatch {
     std::span<const uint32_t> loadPageIds;

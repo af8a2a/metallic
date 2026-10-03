@@ -1,17 +1,27 @@
-#include "../TextureFootprintProbeParameters.h"
+import Core;
 import Material;
 using Metallic;
+#include "../TestResourceParameters.h"
 using Metallic.Material;
 
-[[vk::push_constant]] ConstantBuffer<TextureFootprintProbeParameters> gProbe;
+struct TextureFootprintProbePush
+{
+    uint width;
+    uint height;
+    uint index;
+    uint orthographic;
+    float aspect;
+    float verticalFovRadians;
+    float orthographicHeight;
+    float reserved;
+};
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void textureFootprintProbeMain()
 {
-    TextureFootprintProbeInput push = gProbe.input;
-    if (!gProbe.output.contains(push.index)) { return; }
-    gProbe.output.data[push.index] = primaryTextureRayCone(
+    TextureFootprintProbePush push = getConstants<TextureFootprintProbePush>();
+    resolveBuffer<RWStructuredBuffer<float2>>(getResourceParameters<TextureFootprintProbeResources>().output)[push.index] = primaryTextureRayCone(
         uint2(push.width, push.height), push.aspect, push.verticalFovRadians,
         push.orthographicHeight, push.orthographic != 0u);
 }

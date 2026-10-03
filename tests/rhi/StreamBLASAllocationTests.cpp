@@ -1,5 +1,4 @@
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "Runtime/Render/Core/StreamBLASParameters.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -39,20 +38,27 @@ public:
                 count * sizeof(MeshletStreamGPUInstanceBLAS), count * sizeof(MeshletStreamGPUBLASBuildInfo),
                 references * 8 + 16, count * sizeof(MeshletStreamCLASPageEntry), references * 8, count * 8};
             const uint32_t strides[] = {32, 112, sizeof(MeshletStreamGPUParams), sizeof(MeshletStreamGPUBLASHeader), sizeof(MeshletStreamGPUInstanceBLAS), 16, 8, sizeof(MeshletStreamCLASPageEntry), 8, 8};
+            std::unique_ptr<BindlessHeap> heap;
+            require(bool(device->createBindlessHeap({.maxBuffers = InputCount}).transform([&](auto v) { heap = std::move(v); })), "heap");
+            std::array<BindlessHandle, InputCount> handles;
             std::array<std::unique_ptr<Buffer>, InputCount> buffers;
             for (uint32_t i = 0; i < InputCount; ++i) {
+                require(bool(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto v) { handles[i] = std::move(v); })), "handle");
                 require(bool(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                     .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                     .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto v) { buffers[i] = std::move(v); })), "buffer");
+                require(bool((*buffers[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); })), "binding");
             }
             ShaderCompileResult compiled;
             auto result = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
                 .entryPointName = kMeshletStreamBLASInputEntryPoint, .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled.diagnostics)
                 .transform([&](auto v) { compiled = std::move(v); });
             if (!result) { return RHITestResult::fail(compiled.diagnostics); }
-            ComputeKernel kernel;
-            require(bool(kernel.initialize(*device, {.spirv = compiled.spirv,
-                .parameters = parameterAbi<StreamBLASParameters>(kStreamBLASABI, ParameterTransport::InlinePush)}, compiled.diagnostics)), "kernel");
+            std::unique_ptr<ShaderModule> shader;
+            std::unique_ptr<ComputePipeline> pipeline;
+            require(bool(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto v) { shader = std::move(v); })), "shader");
+            require(bool(device->createComputePipeline({.computeShader = {shader.get()}, .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto v) { pipeline = std::move(v); })), "pipeline");
             auto* queue = device->getQueue(QueueType::Graphics);
             std::unique_ptr<CommandPool> pool;
             std::unique_ptr<CommandBuffer> command;
@@ -70,29 +76,19 @@ public:
                 if (data) { std::memcpy(mapped, data, bytes); }
                 buffers[i]->flush(); buffers[i]->unmap();
             };
-            auto registry = device->resourceRegistry();
-            require(bool(registry), "registry");
-            ParameterWriter writer(*device, **registry);
-            StreamBLASParameters push{
-                .settings = writer.dataBuffer(buffers[Params].get(), sizeof(MeshletStreamGPUParams), 16),
-                .activeGroupBuffer = writer.buffer(buffers[Groups].get()),
-                .activeHeaderBuffer = writer.buffer(buffers[Active].get()),
-                .blasBuildInfoBuffer = writer.buffer(buffers[Infos].get()),
-                .blasClusterReferenceBuffer = writer.buffer(buffers[References].get()),
-                .blasHeaderBuffer = writer.buffer(buffers[Header].get()),
-                .clasAddressBuffer = writer.buffer(buffers[Addresses].get()),
-                .clasPageTableBuffer = writer.buffer(buffers[Pages].get()),
-                .dynamicBlasAddressBuffer = writer.buffer(buffers[Destinations].get()),
-                .instanceBlasBuffer = writer.buffer(buffers[Instances].get()),
-                .scratch = writer.buffer(buffers[Header].get()),
-                .traversalPhase = 1,
-            };
+            MeshletStreamUserPush push{.activeGroupBuffer = handles[Groups].shaderIndex,
+                .paramsBuffer = handles[Params].shaderIndex, .activeHeaderBuffer = handles[Active].shaderIndex,
+                .clasAddressBuffer = handles[Addresses].shaderIndex, .clasPageTableBuffer = handles[Pages].shaderIndex,
+                .blasHeaderBuffer = handles[Header].shaderIndex, .instanceBlasBuffer = handles[Instances].shaderIndex,
+                .blasBuildInfoBuffer = handles[Infos].shaderIndex, .blasClusterReferenceBuffer = handles[References].shaderIndex,
+                .dynamicBlasAddressBuffer = handles[Destinations].shaderIndex,
+                .traversalPhase = 1};
             bool submitted = false;
             const auto execute = [&](bool force) {
                 push.traversalPhase = force ? 1u : 0u;
                 if (submitted) { require(bool(fence->reset()) && bool(pool->reset()), "reset"); }
-                require(bool(command->begin()), "begin"); command->hostWriteBarrier();
-                std::vector<EncodedParameters> packets;
+                require(bool(command->begin()), "begin"); command->hostWriteBarrier(); command->bindBindlessHeap(*heap);
+                require(bool(command->bindExecution(pipeline->execution())), "bind");
                 std::array<BufferBarrierDesc, InputCount> barriers{};
                 for (uint32_t i = 0; i < InputCount; ++i) {
                     barriers[i] = {.buffer = buffers[i].get(),
@@ -100,12 +96,8 @@ public:
                         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
                 }
                 for (uint32_t phase : {0u, 5u, 1u, 4u, 6u, 7u, 2u, 8u, 9u, 10u, 3u, 11u}) {
-                    push.activeBuildPhase = phase;
-                    auto encoded = writer.encode(push, kStreamBLASABI, ParameterTransport::InlinePush);
-                    require(bool(encoded), "parameters");
-                    packets.push_back(std::move(*encoded));
-                    require(bool(kernel.dispatch(*command, packets.back(),
-                        phase == 0 || phase == 7 || phase == 9 ? 1 : (count + 63) / 64)), "dispatch");
+                    push.activeBuildPhase = phase; command->pushBindlessData(&push, sizeof(push));
+                    command->dispatch(phase == 0 || phase == 7 || phase == 9 ? 1 : (count + 63) / 64);
                     require(bool(command->synchronize({.buffers = barriers})), "phase barrier");
                 }
                 for (auto& barrier : barriers) { barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead}; }

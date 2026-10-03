@@ -14,6 +14,7 @@ using namespace metallic;
 void checked(VkResult result) { tests::requireGpuPage(result == VK_SUCCESS, "Vulkan error " + std::to_string(result)); }
 
 struct DecompressionProbe {
+    VolkDeviceTable functions{};
     VkInstance instance = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -30,10 +31,10 @@ struct DecompressionProbe {
     ~DecompressionProbe()
     {
         if (device) {
-            vkDeviceWaitIdle(device);
-            for (auto buffer : buffers) { vkDestroyBuffer(device, buffer.buffer, nullptr); vkFreeMemory(device, buffer.memory, nullptr); }
-            if (pool) { vkDestroyCommandPool(device, pool, nullptr); }
-            vkDestroyDevice(device, nullptr);
+            functions.vkDeviceWaitIdle(device);
+            for (auto buffer : buffers) { functions.vkDestroyBuffer(device, buffer.buffer, nullptr); functions.vkFreeMemory(device, buffer.memory, nullptr); }
+            if (pool) { functions.vkDestroyCommandPool(device, pool, nullptr); }
+            functions.vkDestroyDevice(device, nullptr);
         }
         if (messenger) { vkDestroyDebugUtilsMessengerEXT(instance, messenger, nullptr); }
         if (instance) { vkDestroyInstance(instance, nullptr); }
@@ -57,7 +58,7 @@ struct DecompressionProbe {
         const VkInstanceCreateInfo create{.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &application,
             .enabledLayerCount = validate ? 1u : 0u, .ppEnabledLayerNames = &validation,
             .enabledExtensionCount = 1, .ppEnabledExtensionNames = &debug};
-        checked(vkCreateInstance(&create, nullptr, &instance)); volkLoadInstance(instance);
+        checked(vkCreateInstance(&create, nullptr, &instance)); volkLoadInstanceOnly(instance);
         const VkDebugUtilsMessengerCreateInfoEXT debugInfo{.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
             .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
             .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
@@ -99,11 +100,11 @@ struct DecompressionProbe {
             const char* extension = VK_EXT_MEMORY_DECOMPRESSION_EXTENSION_NAME;
             const VkDeviceCreateInfo info{.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &core,
                 .queueCreateInfoCount = 1, .pQueueCreateInfos = &queueInfo, .enabledExtensionCount = 1, .ppEnabledExtensionNames = &extension};
-            checked(vkCreateDevice(candidate, &info, nullptr, &device)); physical = candidate; volkLoadDevice(device);
-            vkGetDeviceQueue(device, family, 0, &queue);
+            checked(vkCreateDevice(candidate, &info, nullptr, &device)); physical = candidate; volkLoadDeviceTable(&functions, device);
+            functions.vkGetDeviceQueue(device, family, 0, &queue);
             const VkCommandPoolCreateInfo poolInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = family};
-            checked(vkCreateCommandPool(device, &poolInfo, nullptr, &pool));
+            checked(functions.vkCreateCommandPool(device, &poolInfo, nullptr, &pool));
             std::cout << properties.properties.deviceName << "; validation=" << validate << '\n';
             return true;
         }
@@ -115,8 +116,8 @@ struct DecompressionProbe {
         Buffer result{};
         const VkBufferUsageFlags2CreateInfo usage2{.sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO, .usage = usage | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT};
         const VkBufferCreateInfo create{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &usage2, .size = size};
-        checked(vkCreateBuffer(device, &create, nullptr, &result.buffer));
-        VkMemoryRequirements requirements; vkGetBufferMemoryRequirements(device, result.buffer, &requirements);
+        checked(functions.vkCreateBuffer(device, &create, nullptr, &result.buffer));
+        VkMemoryRequirements requirements; functions.vkGetBufferMemoryRequirements(device, result.buffer, &requirements);
         VkPhysicalDeviceMemoryProperties memory; vkGetPhysicalDeviceMemoryProperties(physical, &memory);
         uint32_t type = 0;
         while (type < memory.memoryTypeCount && (!(requirements.memoryTypeBits & (1u << type)) ||
@@ -124,10 +125,10 @@ struct DecompressionProbe {
         tests::requireGpuPage(type < memory.memoryTypeCount, "Memory type unavailable");
         const VkMemoryAllocateFlagsInfo flags{.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
         const VkMemoryAllocateInfo allocation{.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = requirements.size, .memoryTypeIndex = type};
-        checked(vkAllocateMemory(device, &allocation, nullptr, &result.memory));
-        checked(vkBindBufferMemory(device, result.buffer, result.memory, 0));
+        checked(functions.vkAllocateMemory(device, &allocation, nullptr, &result.memory));
+        checked(functions.vkBindBufferMemory(device, result.buffer, result.memory, 0));
         const VkBufferDeviceAddressInfo address{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = result.buffer};
-        result.address = vkGetBufferDeviceAddress(device, &address); buffers.push_back(result); return result;
+        result.address = functions.vkGetBufferDeviceAddress(device, &address); buffers.push_back(result); return result;
     }
 };
 
@@ -140,14 +141,14 @@ void verifyGpuPage(DecompressionProbe& probe, std::span<const uint8_t> stored,
     const auto output = probe.buffer(decoded.size(), VK_BUFFER_USAGE_2_TRANSFER_DST_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_MEMORY_DECOMPRESSION_BIT_EXT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     const auto readback = probe.buffer(decoded.size(), VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, host);
     void* mapped;
-    checked(vkMapMemory(probe.device, input.memory, 0, stored.size(), 0, &mapped)); std::memcpy(mapped, stored.data(), stored.size()); vkUnmapMemory(probe.device, input.memory);
+    checked(probe.functions.vkMapMemory(probe.device, input.memory, 0, stored.size(), 0, &mapped)); std::memcpy(mapped, stored.data(), stored.size()); probe.functions.vkUnmapMemory(probe.device, input.memory);
     VkCommandBuffer command;
     const VkCommandBufferAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = probe.pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
-    checked(vkAllocateCommandBuffers(probe.device, &allocate, &command));
+    checked(probe.functions.vkAllocateCommandBuffers(probe.device, &allocate, &command));
     for (uint32_t repeat = 0; repeat < repeats; ++repeat) {
-        checked(vkResetCommandBuffer(command, 0));
-        const VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; checked(vkBeginCommandBuffer(command, &begin));
+        checked(probe.functions.vkResetCommandBuffer(command, 0));
+        const VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; checked(probe.functions.vkBeginCommandBuffer(command, &begin));
         const auto barrier = [&](VkBuffer buffer, uint64_t offset, uint64_t size, VkPipelineStageFlags2 beforeStage,
             VkAccessFlags2 beforeAccess, VkPipelineStageFlags2 afterStage, VkAccessFlags2 afterAccess) {
             const VkBufferMemoryBarrier2 range{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -155,7 +156,7 @@ void verifyGpuPage(DecompressionProbe& probe, std::span<const uint8_t> stored,
                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                 .buffer = buffer, .offset = offset, .size = size};
             const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &range};
-            vkCmdPipelineBarrier2(command, &dependency);
+            probe.functions.vkCmdPipelineBarrier2(command, &dependency);
         };
         barrier(compressed.buffer, 0, stored.size(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -164,7 +165,7 @@ void verifyGpuPage(DecompressionProbe& probe, std::span<const uint8_t> stored,
         std::vector<VkDecompressMemoryRegionEXT> regions;
         for (const auto& tile : metadata.tiles) {
             const VkBufferCopy copy{tile.sourceOffset, tile.codec ? tile.sourceOffset : tile.destinationOffset, tile.storedBytes};
-            vkCmdCopyBuffer(command, input.buffer, tile.codec ? compressed.buffer : output.buffer, 1, &copy);
+            probe.functions.vkCmdCopyBuffer(command, input.buffer, tile.codec ? compressed.buffer : output.buffer, 1, &copy);
             if (tile.codec) { regions.push_back({compressed.address + tile.sourceOffset, output.address + tile.destinationOffset, tile.storedBytes, tile.decodedBytes}); }
         }
         for (const auto& tile : metadata.tiles) {
@@ -176,16 +177,16 @@ void verifyGpuPage(DecompressionProbe& probe, std::span<const uint8_t> stored,
         }
         const VkDecompressMemoryInfoEXT decompress{.sType = VK_STRUCTURE_TYPE_DECOMPRESS_MEMORY_INFO_EXT,
             .decompressionMethod = VK_MEMORY_DECOMPRESSION_METHOD_GDEFLATE_1_0_BIT_EXT, .regionCount = uint32_t(regions.size()), .pRegions = regions.data()};
-        if (!regions.empty()) { vkCmdDecompressMemoryEXT(command, &decompress); }
+        if (!regions.empty()) { probe.functions.vkCmdDecompressMemoryEXT(command, &decompress); }
         barrier(output.buffer, 0, decoded.size(), VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-        const VkBufferCopy copy{0, 0, decoded.size()}; vkCmdCopyBuffer(command, output.buffer, readback.buffer, 1, &copy);
-        checked(vkEndCommandBuffer(command));
+        const VkBufferCopy copy{0, 0, decoded.size()}; probe.functions.vkCmdCopyBuffer(command, output.buffer, readback.buffer, 1, &copy);
+        checked(probe.functions.vkEndCommandBuffer(command));
         const VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &command};
-        checked(vkQueueSubmit(probe.queue, 1, &submit, VK_NULL_HANDLE)); checked(vkQueueWaitIdle(probe.queue));
-        checked(vkMapMemory(probe.device, readback.memory, 0, decoded.size(), 0, &mapped));
-        const bool equal = std::memcmp(mapped, decoded.data(), decoded.size()) == 0; vkUnmapMemory(probe.device, readback.memory);
+        checked(probe.functions.vkQueueSubmit(probe.queue, 1, &submit, VK_NULL_HANDLE)); checked(probe.functions.vkQueueWaitIdle(probe.queue));
+        checked(probe.functions.vkMapMemory(probe.device, readback.memory, 0, decoded.size(), 0, &mapped));
+        const bool equal = std::memcmp(mapped, decoded.data(), decoded.size()) == 0; probe.functions.vkUnmapMemory(probe.device, readback.memory);
         ASSERT_TRUE(equal) << "GPU output differs at repeat " << repeat;
     }
 }
@@ -313,28 +314,29 @@ TEST(GPUPageCodec, FixedPageUploadBenchmark)
     const auto readback = probe.buffer(reference.size(), VK_BUFFER_USAGE_2_TRANSFER_DST_BIT, host);
     struct Resources {
         VkDevice device; VkDeviceMemory input;
+        const VolkDeviceTable& functions;
         VkQueryPool queries = VK_NULL_HANDLE;
         void* mapped = nullptr;
-        ~Resources() { vkDeviceWaitIdle(device); if (mapped) { vkUnmapMemory(device, input); } if (queries) { vkDestroyQueryPool(device, queries, nullptr); } }
-    } resources{probe.device, input.memory};
-    checked(vkMapMemory(probe.device, input.memory, 0, VK_WHOLE_SIZE, 0, &resources.mapped));
+        ~Resources() { functions.vkDeviceWaitIdle(device); if (mapped) { functions.vkUnmapMemory(device, input); } if (queries) { functions.vkDestroyQueryPool(device, queries, nullptr); } }
+    } resources{probe.device, input.memory, probe.functions};
+    checked(probe.functions.vkMapMemory(probe.device, input.memory, 0, VK_WHOLE_SIZE, 0, &resources.mapped));
     const VkQueryPoolCreateInfo queryInfo{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 3};
-    checked(vkCreateQueryPool(probe.device, &queryInfo, nullptr, &resources.queries));
+    checked(probe.functions.vkCreateQueryPool(probe.device, &queryInfo, nullptr, &resources.queries));
     VkCommandBuffer command;
     const VkCommandBufferAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = probe.pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
-    checked(vkAllocateCommandBuffers(probe.device, &allocate, &command));
+    checked(probe.functions.vkAllocateCommandBuffers(probe.device, &allocate, &command));
     const auto barrier = [&](VkPipelineStageFlags2 beforeStage, VkAccessFlags2 beforeAccess,
         VkPipelineStageFlags2 afterStage, VkAccessFlags2 afterAccess) {
         const VkMemoryBarrier2 memory{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
             .srcStageMask = beforeStage, .srcAccessMask = beforeAccess, .dstStageMask = afterStage, .dstAccessMask = afterAccess};
         const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &memory};
-        vkCmdPipelineBarrier2(command, &dependency);
+        probe.functions.vkCmdPipelineBarrier2(command, &dependency);
     };
     const auto submit = [&]() {
         const VkSubmitInfo submission{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &command};
-        checked(vkQueueSubmit(probe.queue, 1, &submission, VK_NULL_HANDLE));
-        checked(vkQueueWaitIdle(probe.queue));
+        checked(probe.functions.vkQueueSubmit(probe.queue, 1, &submission, VK_NULL_HANDLE));
+        checked(probe.functions.vkQueueWaitIdle(probe.queue));
     };
     VkPhysicalDeviceDriverProperties driver{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
@@ -347,42 +349,42 @@ TEST(GPUPageCodec, FixedPageUploadBenchmark)
     for (uint32_t mode = 0; mode < 3; ++mode) {
         const bool gpu = mode == 2;
         const char* name = mode == 0 ? "raw_cpu_upload" : mode == 1 ? "gdeflate_cpu_upload" : "gdeflate_ext_upload";
-        checked(vkResetCommandBuffer(command, 0));
+        checked(probe.functions.vkResetCommandBuffer(command, 0));
         const VkCommandBufferBeginInfo begin{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        checked(vkBeginCommandBuffer(command, &begin));
-        vkCmdResetQueryPool(command, resources.queries, 0, 3);
+        checked(probe.functions.vkBeginCommandBuffer(command, &begin));
+        probe.functions.vkCmdResetQueryPool(command, resources.queries, 0, 3);
         barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, resources.queries, 0);
+        probe.functions.vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, resources.queries, 0);
         std::vector<VkDecompressMemoryRegionEXT> regions;
         for (const auto& page : pages) {
             if (!gpu) {
                 const VkBufferCopy copy{page.outputOffset, page.outputOffset, page.info.uncompressedSize};
-                vkCmdCopyBuffer(command, input.buffer, output.buffer, 1, &copy);
+                probe.functions.vkCmdCopyBuffer(command, input.buffer, output.buffer, 1, &copy);
                 continue;
             }
             for (const auto& tile : page.metadata.tiles) {
                 const uint64_t source = page.inputOffset + tile.sourceOffset;
                 const uint64_t destination = page.outputOffset + tile.destinationOffset;
                 const VkBufferCopy copy{source, tile.codec ? source : destination, tile.storedBytes};
-                vkCmdCopyBuffer(command, input.buffer, tile.codec ? compressed.buffer : output.buffer, 1, &copy);
+                probe.functions.vkCmdCopyBuffer(command, input.buffer, tile.codec ? compressed.buffer : output.buffer, 1, &copy);
                 if (tile.codec) { regions.push_back({compressed.address + source, output.address + destination, tile.storedBytes, tile.decodedBytes}); }
             }
         }
-        vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, resources.queries, 1);
+        probe.functions.vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, resources.queries, 1);
         if (gpu && !regions.empty()) {
             barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT, VK_ACCESS_2_MEMORY_DECOMPRESSION_READ_BIT_EXT | VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT);
             const VkDecompressMemoryInfoEXT decompress{.sType = VK_STRUCTURE_TYPE_DECOMPRESS_MEMORY_INFO_EXT,
                 .decompressionMethod = VK_MEMORY_DECOMPRESSION_METHOD_GDEFLATE_1_0_BIT_EXT,
                 .regionCount = uint32_t(regions.size()), .pRegions = regions.data()};
-            vkCmdDecompressMemoryEXT(command, &decompress);
+            probe.functions.vkCmdDecompressMemoryEXT(command, &decompress);
         }
         barrier(VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT,
             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
-        vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, resources.queries, 2);
-        checked(vkEndCommandBuffer(command));
+        probe.functions.vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, resources.queries, 2);
+        checked(probe.functions.vkEndCommandBuffer(command));
         std::vector<double> preparation, upload, decode, total, wall;
         const uint64_t mask = probe.timestampValidBits == 64 ? UINT64_MAX : (uint64_t(1) << probe.timestampValidBits) - 1;
         std::vector<uint8_t> decoded;
@@ -404,7 +406,7 @@ TEST(GPUPageCodec, FixedPageUploadBenchmark)
             submit();
             const auto complete = Clock::now();
             std::array<uint64_t, 3> timestamps;
-            checked(vkGetQueryPoolResults(probe.device, resources.queries, 0, 3, sizeof(timestamps), timestamps.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+            checked(probe.functions.vkGetQueryPoolResults(probe.device, resources.queries, 0, 3, sizeof(timestamps), timestamps.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
             if (repeat < kWarmup) { continue; }
             preparation.push_back(milliseconds(ready - start));
             upload.push_back(double((timestamps[1] - timestamps[0]) & mask) * probe.timestampPeriod / 1e6);
@@ -413,17 +415,17 @@ TEST(GPUPageCodec, FixedPageUploadBenchmark)
             wall.push_back(milliseconds(complete - start));
         }
         // The correctness readback is outside all timed intervals.
-        checked(vkResetCommandBuffer(command, 0));
-        checked(vkBeginCommandBuffer(command, &begin));
+        checked(probe.functions.vkResetCommandBuffer(command, 0));
+        checked(probe.functions.vkBeginCommandBuffer(command, &begin));
         barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
         const VkBufferCopy copy{0, 0, reference.size()};
-        vkCmdCopyBuffer(command, output.buffer, readback.buffer, 1, &copy);
-        checked(vkEndCommandBuffer(command)); submit();
+        probe.functions.vkCmdCopyBuffer(command, output.buffer, readback.buffer, 1, &copy);
+        checked(probe.functions.vkEndCommandBuffer(command)); submit();
         void* mapped = nullptr;
-        checked(vkMapMemory(probe.device, readback.memory, 0, reference.size(), 0, &mapped));
+        checked(probe.functions.vkMapMemory(probe.device, readback.memory, 0, reference.size(), 0, &mapped));
         const bool equal = std::memcmp(mapped, reference.data(), reference.size()) == 0;
-        vkUnmapMemory(probe.device, readback.memory);
+        probe.functions.vkUnmapMemory(probe.device, readback.memory);
         ASSERT_TRUE(equal) << name;
         report["cases"].push_back({{"name", name}, {"gpuCopyPayloadBytes", gpu ? payloadBytes : reference.size()},
             {"decompressionRegions", regions.size()}, {"cpuPrepareMs", distribution(preparation)},

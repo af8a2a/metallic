@@ -207,9 +207,9 @@ bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::p
         s.report["vulkanVersionOfficiallySupported"] = bool(support.isOfficiallySupportedVersion);
         require(nv::perf::VulkanLoadDriver(native.instance), "NvPerf Vulkan driver unavailable");
         require(nv::perf::profiler::VulkanIsGpuSupported(native.instance, native.physicalDevice, native.device,
-            vkGetInstanceProcAddr, vkGetDeviceProcAddr), "NvPerf GPU/driver unsupported");
+            native.getInstanceProcAddr, native.instanceFunctions->vkGetDeviceProcAddr), "NvPerf GPU/driver unsupported");
         const auto identifiers = nv::perf::VulkanGetDeviceIdentifiers(native.instance, native.physicalDevice,
-            native.device, vkGetInstanceProcAddr, vkGetDeviceProcAddr);
+            native.device, native.getInstanceProcAddr, native.instanceFunctions->vkGetDeviceProcAddr);
         require(identifiers.pChipName != nullptr, "NvPerf missing chip identity");
         s.report["chip"] = identifiers.pChipName;
         s.report["libraryDirectory"] = METALLIC_NVPERF_LIBRARY_DIR;
@@ -218,8 +218,8 @@ bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::p
         NVPW_VK_Profiler_Queue_GetCounterAvailability_Params available{NVPW_VK_Profiler_Queue_GetCounterAvailability_Params_STRUCT_SIZE};
         available.instance = native.instance; available.physicalDevice = native.physicalDevice;
         available.device = native.device; available.queue = q.queue;
-        available.pfnGetInstanceProcAddr = reinterpret_cast<void*>(vkGetInstanceProcAddr);
-        available.pfnGetDeviceProcAddr = reinterpret_cast<void*>(vkGetDeviceProcAddr);
+        available.pfnGetInstanceProcAddr = reinterpret_cast<void*>(native.getInstanceProcAddr);
+        available.pfnGetDeviceProcAddr = reinterpret_cast<void*>(native.instanceFunctions->vkGetDeviceProcAddr);
         check(NVPW_VK_Profiler_Queue_GetCounterAvailability(&available), "CounterAvailability size");
         require(available.counterAvailabilityImageSize > 0, "Empty counter availability");
         s.availability.resize(available.counterAvailabilityImageSize);
@@ -298,8 +298,8 @@ bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::p
         check(NVPW_VK_Profiler_CalcTraceBufferSize(&trace), "Trace buffer size");
         NVPW_VK_Profiler_Queue_BeginSession_Params start{NVPW_VK_Profiler_Queue_BeginSession_Params_STRUCT_SIZE};
         start.instance = native.instance; start.physicalDevice = native.physicalDevice; start.device = native.device;
-        start.queue = s.queue; start.pfnGetInstanceProcAddr = reinterpret_cast<void*>(vkGetInstanceProcAddr);
-        start.pfnGetDeviceProcAddr = reinterpret_cast<void*>(vkGetDeviceProcAddr);
+        start.queue = s.queue; start.pfnGetInstanceProcAddr = reinterpret_cast<void*>(native.getInstanceProcAddr);
+        start.pfnGetDeviceProcAddr = reinterpret_cast<void*>(native.instanceFunctions->vkGetDeviceProcAddr);
         start.numTraceBuffers = 1; start.traceBufferSize = trace.traceBufferSize; start.maxRangesPerPass = 4; start.maxLaunchesPerPass = 4;
         check(NVPW_VK_Profiler_Queue_BeginSession(&start), "BeginSession");
         s.session = true;

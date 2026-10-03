@@ -1,5 +1,6 @@
-#include "MaterialBinningProbeParameters.h"
-#include "MaterialFixtureParameters.h"
+#include "TestResourceLayouts.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -16,6 +17,13 @@ namespace {
 
 constexpr uint32_t kBinCount = render::kMaterialClassCount;
 constexpr uint32_t kProbeHeader = kBinCount * 5 + 2;
+constexpr uint64_t kProbeABI = 0x4d42505200000003ull;
+struct MaterialProbeParams {
+    render::GPUBufferSpan bins, tiles, arguments, output;
+    uint32_t width, height, binCount, bin;
+};
+static_assert(sizeof(MaterialProbeParams) == 64);
+
 class MaterialBinningProbePass final : public render::UnsafePass {
 public:
     explicit MaterialBinningProbePass(bool fixture, bool typed = false) : fixture_(fixture), typed_(typed) {}
@@ -43,13 +51,6 @@ public:
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         device_ = context.device;
-        if (fixture_) {
-            auto shader = render::compileSlangShaderToSpirv({.moduleName = "MaterialBinningFixture",
-                .entryPointName = "materialFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
-            if (!shader) { return render::makeError(shader.error()); }
-            return fixtureKernel_.initialize(*device_, {.spirv = shader->spirv,
-                .parameters = render::parameterAbi<MaterialFixtureParameters>(kMaterialFixtureABI, render::ParameterTransport::InlinePush)}, log);
-        }
         if (typed_) {
             const char* entries[] = {"materialReadbackResetMain", "materialIndirectProbeMain", "materialIndirectProbeMain"};
             for (uint32_t i = 0; i < kernels_.size(); ++i) {
@@ -63,16 +64,18 @@ public:
                 }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
                 if (!result) { log = shader.diagnostics; return result; }
                 result = kernels_[i].initialize(*device_, {.spirv = shader.spirv,
-                    .parameters = render::parameterAbi<MaterialProbeParams>(kProbeABI, render::ParameterTransport::InlinePush)}, log);
+                    .parameters = render::parameterAbi<MaterialProbeParams>(kProbeABI)}, log);
                 if (!result) { return result; }
             }
             return {};
         }
         const render::ComputeProgramBindingDesc layout[] = {
-            {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
-        const char* entries[] = {"materialReadbackResetMain",
+            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = 1}, {.binding = 2}, {.binding = 3},
+            {.binding = 4}, {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
+        const char* entries[] = {fixture_ ? "materialFixtureMain" : "materialReadbackResetMain",
             "materialIndirectProbeMain", "materialIndirectProbeMain"};
-        for (uint32_t i = 0; i < 3u; ++i) {
+        for (uint32_t i = 0; i < (fixture_ ? 1u : 3u); ++i) {
             const render::SlangMacroDefine alternate[] = {{"PROBE_ALTERNATE", "1"}};
             render::ShaderCompileResult shader;
             auto result = render::compileSlangShaderToSpirv({
@@ -85,15 +88,17 @@ public:
             result = programs_[i].initialize(*device_, {
                 .spirv = shader.spirv,
                 .pushConstantSize = 16,
-                .bindings = layout,
+                .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
                 .requiresRayQuery = false,
+                .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
             }, log);
             if (!result) { return result; }
-            if (i == 0) {
+            if (!fixture_ && i == 0) {
                 // Constant layout, rather than obsolete table counts, defines ABI compatibility.
                 result = incompatibleProgram_.initialize(*device_, {
                     .spirv = shader.spirv, .pushConstantSize = 20,
-                    .bindings = layout, .requiresRayQuery = false,
+                    .bindings = {layout + 5, 4}, .requiresRayQuery = false,
+                    .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
                 }, log);
                 if (!result) { return result; }
             }
@@ -109,20 +114,20 @@ public:
         const uint32_t fixtureGroups = (std::max(pixels, 260u) + 63) / 64;
         const uint32_t readbackGroups = (std::max(pixels, kBinCount) + 63) / 64;
         if (fixture_) {
-            auto registry = device_->resourceRegistry();
-            if (!registry) { return render::makeError(registry.error()); }
-            render::ParameterWriter writer(*device_, **registry, commands.frameContext());
-            const MaterialFixtureParameters params{
-                writer.storageImage(context.outputTexture("visibility").view()),
-                writer.dataBuffer(context.outputBuffer("records").buffer(), 16, 4),
-                writer.dataBuffer(context.outputBuffer("instances").buffer(), 160, 4),
-                writer.dataBuffer(context.outputBuffer("materials").buffer(), 560, 4),
-                writer.dataBuffer(context.outputBuffer("shadingMaterials").buffer(), 720, 4),
-                push[0], push[1], push[2], push[3]};
-            auto encoded = writer.encode(params, kMaterialFixtureABI, render::ParameterTransport::InlinePush);
-            if (!encoded) { return render::makeError(encoded.error()); }
-            return fixtureKernel_.dispatch(commands, *encoded,
-                std::min(fixtureGroups, 65535u), (fixtureGroups + 65534) / 65535);
+            const render::ComputeDispatchBinding bindings[] = {
+                {.binding = 0, .textureView = context.outputTexture("visibility").view()},
+                {.binding = 1, .buffer = context.outputBuffer("records").buffer()},
+                {.binding = 2, .buffer = context.outputBuffer("instances").buffer()},
+                {.binding = 3, .buffer = context.outputBuffer("materials").buffer()},
+                {.binding = 4, .buffer = context.outputBuffer("shadingMaterials").buffer()}};
+            return programs_[0].dispatch({
+                .commandBuffer = &commands,
+                .bindings = {bindings, 5},
+                .pushData = push,
+                .pushDataSize = sizeof(push),
+                .groupCountX = std::min(fixtureGroups, 65535u),
+                .groupCountY = (fixtureGroups + 65534) / 65535,
+            });
         }
         render::MaterialBinningResult bins;
         std::string log;
@@ -137,11 +142,11 @@ public:
         if (typed_) { return executeTyped(context, bins, push, readbackGroups); }
         // Invalid inputs must fail before recording vkCmdDispatchIndirect2KHR.
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
-            if (!render::hasError(commands.dispatchIndirect(*bins.arguments, offset), render::Error::InvalidArgument)) {
+            if (!render::hasError((*bins.arguments).slice({offset, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); }), render::Error::InvalidArgument)) {
                 return render::makeError(render::Error::Failure);
             }
         }
-        if (!render::hasError(commands.dispatchIndirect(*bins.bins), render::Error::InvalidArgument)) {
+        if (!render::hasError((*bins.bins).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); }), render::Error::InvalidArgument)) {
             return render::makeError(render::Error::Failure);
         }
         // Read argument bytes as shader data, then restore their indirect state.
@@ -204,17 +209,19 @@ private:
     {
         auto& commands = context.commandBuffer();
         std::shared_ptr<render::ResourceRegistry> registry;
-        auto result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+        auto result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (!result) { return result; }
-        const auto writes = registry->stats().descriptorWrites;
-        render::ParameterWriter writer(*device_, *commands.frameContext(), *registry);
-        MaterialProbeParams params{writer.dataBuffer(bins.bins, 8, 8), writer.dataBuffer(bins.tiles, 8, 8),
-            writer.dataBuffer(bins.arguments, 4, 4), writer.dataBuffer(context.outputBuffer("data").buffer(), 4, 4),
+        const auto before = registry->stats();
+        render::ParameterWriter writer(*device_, *metallic::render::RenderFrameContext::from(commands), *registry);
+        MaterialProbeParams params{writer.bufferSpan(bins.bins, 8, 8), writer.bufferSpan(bins.tiles, 8, 8),
+            writer.bufferSpan(bins.arguments, 4, 4), writer.bufferSpan(context.outputBuffer("data").buffer(), 4, 4),
             push[0], push[1], push[2], push[3]};
-        // Ordinary data, including the output, never allocates descriptors.
-        if (registry->stats().descriptorWrites != writes) { return render::makeError(render::Error::Failure); }
+        // Producer buffers reuse their descriptors; the output may register once.
+        const auto after = registry->stats();
+        if (after.descriptorWrites - before.descriptorWrites > 1 ||
+            after.cacheHits - before.cacheHits < 3) { return render::makeError(render::Error::Failure); }
         render::EncodedParameters encoded;
-        result = writer.encode(params, kProbeABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); });
+        result = writer.encode(params, kProbeABI).transform([&](auto value) { encoded = std::move(value); });
         if (!result) { return result; }
         render::BufferBarrierDesc argumentBarrier{
             .buffer = bins.arguments,
@@ -227,13 +234,13 @@ private:
         std::swap(argumentBarrier.before, argumentBarrier.after);
         if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
-            if (!render::hasError(kernels_[1].dispatchIndirect(commands, encoded, *bins.arguments, offset),
+            if (!render::hasError((*bins.arguments).slice({offset, 12}).and_then([&](const auto& bufferSlice) { return kernels_[1].dispatchIndirect(commands, encoded, bufferSlice); }),
                 render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
         }
         render::EncodedParameters wrongAbi;
-        result = writer.encode(params, kProbeABI + 1, render::ParameterTransport::InlinePush).transform([&](auto value) { wrongAbi = std::move(value); });
+        result = writer.encode(params, kProbeABI + 1).transform([&](auto value) { wrongAbi = std::move(value); });
         if (!result) { return result; }
-        if (!render::hasError(kernels_[1].dispatchIndirect(commands, wrongAbi, *bins.arguments),
+        if (!render::hasError((*bins.arguments).slice({0, 12}).and_then([&](const auto& bufferSlice) { return kernels_[1].dispatchIndirect(commands, wrongAbi, bufferSlice); }),
             render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
         render::BufferBarrierDesc outputBarrier{
             .buffer = context.outputBuffer("data").buffer(),
@@ -242,11 +249,11 @@ private:
         };
         for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
             params.bin = bin;
-            result = writer.encode(params, kProbeABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); });
+            result = writer.encode(params, kProbeABI).transform([&](auto value) { encoded = std::move(value); });
             if (!result) { return result; }
             if (auto commandResult = commands.synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return commandResult; }
             const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;
-            result = kernels_[permutation].dispatchIndirect(commands, encoded, *bins.arguments, uint64_t(bin) * 12);
+            result = (*bins.arguments).slice({uint64_t(bin) * 12, 12}).and_then([&](const auto& bufferSlice) { return kernels_[permutation].dispatchIndirect(commands, encoded, bufferSlice); });
             if (!result) { return result; }
         }
         return {};
@@ -254,7 +261,6 @@ private:
     bool fixture_;
     bool typed_;
     render::Device* device_ = nullptr;
-    render::ComputeKernel fixtureKernel_;
     std::array<render::ComputeProgram, 3> programs_;
     render::ComputeProgram incompatibleProgram_;
     std::array<render::ComputeKernel, 3> kernels_;

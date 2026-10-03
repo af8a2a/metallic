@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Runtime/Render/Core/ComputeKernel.h"
-#include "Runtime/Render/Core/SampledImageSnapshot.h"
 
 #include <cstdint>
 #include <memory>
@@ -21,14 +20,29 @@ enum class ComputeResourceBindingKind : uint8_t {
 };
 
 struct ComputeProgramBindingDesc {
-    // Application resource-table slot, not a Vulkan descriptor binding.
+    // CPU input ID mapped to an explicit named field; never sent to the shader.
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
-    // DataBuffer only: explicit GPU element ABI; no descriptor is allocated.
+    // DataBuffer only: explicit element ABI for a descriptor-backed buffer span.
     uint32_t dataStride = 0;
     uint32_t dataAlignment = 0;
     bool operator==(const ComputeProgramBindingDesc&) const = default;
+};
+
+enum class ComputeResourceFieldFormat : uint8_t { Handle, IndexSpan, DataSpan };
+
+struct ComputeResourceField {
+    uint32_t binding = 0;
+    ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
+    uint32_t offset = 0;
+    ComputeResourceFieldFormat format = ComputeResourceFieldFormat::Handle;
+    bool operator==(const ComputeResourceField&) const = default;
+};
+
+struct ComputeResourceLayout {
+    uint32_t size = 0;
+    std::span<const ComputeResourceField> fields;
 };
 
 struct ComputeProgramDesc {
@@ -39,9 +53,18 @@ struct ComputeProgramDesc {
     bool requiresRayQuery = true;
     // Optional cache borrowed only during pipeline creation.
     PipelineCache* pipelineCache = nullptr;
+    // Required direct CPU/Slang resource struct. There is no implicit slot layout.
+    ComputeResourceLayout resourceParameters;
 };
 
 struct CPUProfileRecorder;
+
+// Publish through shared_ptr<const ...> and never mutate afterwards. The owner
+// retains the underlying images, while views supply stable ownership identities.
+struct ComputeSampledImageSnapshot {
+    std::shared_ptr<const void> owner;
+    std::vector<std::shared_ptr<TextureView>> views;
+};
 
 struct ComputeDispatchStats {
     uint32_t sampledImageWrites = 0;
@@ -62,7 +85,7 @@ struct ComputeDispatchBinding {
     BufferSlice data;
     // Optional immutable sampled-image array; takes precedence over textureViews.
     // The shared registry also deduplicates individual resource registrations.
-    std::shared_ptr<const SampledImageSnapshot> sampledImages;
+    std::shared_ptr<const ComputeSampledImageSnapshot> sampledImages;
 };
 
 struct ComputeDispatchDesc {
@@ -91,7 +114,7 @@ struct ComputeIndirectDispatch {
     const ComputeProgram* program = nullptr;
 };
 
-// Resource-table input adapter for Core shaders. ComputeKernel owns all execution.
+// CPU binding adapter for Core resource parameters. ComputeKernel owns execution.
 class ComputeProgram {
 public:
     ComputeProgram();

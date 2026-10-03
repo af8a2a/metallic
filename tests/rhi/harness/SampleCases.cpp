@@ -132,7 +132,7 @@ public:
         const auto transition = recording.commands->synchronize({.textures = {&barrier, 1}});
         if (!transition) { return RHITestResult::fail(render::resultToString(transition)); }
         for (uint32_t i = 0; i < 2; ++i) {
-            recording.commands->clearColorTexture(**texture, render::ResourceState::TransferDestination, {1, 0, 0, 1});
+            if (auto commandResult = recording.commands->clearColorTexture(**texture, render::TextureLayout::TransferDestination, {1, 0, 0, 1}); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
         }
         const auto ended = recording.commands->end();
         return ended ? RHITestResult::pass() : RHITestResult::fail(render::resultToString(ended));

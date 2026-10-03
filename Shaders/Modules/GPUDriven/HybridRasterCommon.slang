@@ -25,9 +25,11 @@ public bool hybridTriangleFits(float4 a, float4 b, float4 c, float2 viewport, fl
 }
 
 public bool hybridEnqueueTriangle(float4 a, float4 b, float4 c, uint visibilityId,
-    bool doubleSided, DescriptorHandle<RWStructuredBuffer<uint4>> handle, bool enabled)
+    bool doubleSided, uint queueIndex)
 {
-    if (!enabled) { return false; }
+    if (queueIndex == 0xffffffffu) { return false; }
+    RWStructuredBuffer<uint4> handle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(queueIndex));
     RWStructuredBuffer<uint4> queue = handle;
     uint4 config = queue[1];
     if (!hybridTriangleFits(a, b, c, float2(config.xy), asfloat(config.z))) { return false; }

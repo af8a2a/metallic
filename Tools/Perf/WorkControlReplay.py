@@ -18,8 +18,6 @@ PROTOCOL = "metallic-work-control-replay-experiment-v1"
 BOUND = {"pages", "groups", "header", "pageTable", "params", "rasterBindings", "bins", "pixels", "instances"}
 GUARDS = {"requests", "visibleRecords", "lodState", "hzb0", "hzb1", "instanceVisibility", "visibleInstanceIds", "visibleInstanceCounter"}
 NAMES = BOUND | GUARDS | {"arguments"}
-INLINE_BOUND = BOUND - {"params", "rasterBindings"}
-INLINE_ABI = 0x5354525241530001
 FAULTS = ("cancel-before-submit", "cancel-after-submit", "submit-failure", "device-error", "timeout", "restore-failure", "state-leak")
 
 
@@ -59,9 +57,7 @@ def equal_files(left, right):
 
 def inspect_replay(directory):
     report = w.load(directory / "Replay.json")
-    version = report.get("protocol")
-    inline = version == "metallic-work-control-replay-v2"
-    w.require(version in ("metallic-work-control-replay-v1", "metallic-work-control-replay-v2") and report.get("status") == "complete", "Incomplete replay")
+    w.require(report.get("protocol") == "metallic-work-control-replay-v1" and report.get("status") == "complete", "Incomplete replay")
     w.require("faultInjection" not in report, "Injected failure cannot become successful evidence")
     counter_passes = report.get("counterPasses", 0)
     w.require(type(counter_passes) is int and 0 <= counter_passes <= 16, "Invalid counter pass count")
@@ -90,7 +86,7 @@ def inspect_replay(directory):
             w.require(w.file_in(directory, "nvperf/" + name).stat().st_size > 0, "Empty raw counter evidence")
     w.require(report.get("measurementKind") == "diagnostic" and report.get("productionStatePublished") is False,
               "Replay publication or timing claim")
-    w.require(report.get("sameRetainedExecution") is True and report.get("bindingPolicy") == ("canonical-handles-private-allocations" if inline else "same-typed-slots-private-allocations"),
+    w.require(report.get("sameRetainedExecution") is True and report.get("bindingPolicy") == "same-typed-slots-private-allocations",
               "Missing retained executable/binding identity")
     w.require(report.get("correctnessPasses") == 2 and report.get("phase") in ("early", "late"), "Wrong replay passes/phase")
     rows = report["bindings"]
@@ -103,57 +99,28 @@ def inspect_replay(directory):
                   "Missing or aliased allocation generation")
         w.require(type(report["heapAbi"]["nativeDescriptorHeap"]) is bool and report["heapAbi"]["maxBuffers"] >= len(BOUND),
                   "Invalid heap ABI")
-    if inline:
-        source_handles = [int(r["sourceHandle"]) for r in rows if r["name"] in INLINE_BOUND]
-        scratch_handles = [int(r["scratchHandle"]) for r in rows if r["name"] in INLINE_BOUND]
-        w.require(len(set(source_handles + scratch_handles)) == 2 * len(INLINE_BOUND) and
-                  all(0 <= h < 0xffffffffffffffff for h in source_handles + scratch_handles), "Invalid or aliased canonical handle")
-    else:
-        indices = [r["shaderIndex"] for r in rows if r["name"] in BOUND]
-        w.require(len(set(indices)) == len(indices) and all(type(i) is int and 0 <= i < 0xffffffff for i in indices), "Aliased/invalid descriptor slot")
+    indices = [r["shaderIndex"] for r in rows if r["name"] in BOUND]
+    w.require(len(set(indices)) == len(indices) and all(type(i) is int and 0 <= i < 0xffffffff for i in indices), "Aliased/invalid descriptor slot")
     sources = {r["sourceAddress"] for r in rows}
     scratch = {r["scratchAddress"] for r in rows}
     w.require(len(sources) == len(rows) and len(scratch) == len(rows) and not (sources & scratch) and "0" not in sources | scratch,
               "Scratch/production allocation alias")
-    for name in (NAMES - INLINE_BOUND if inline else GUARDS | {"arguments"}):
-        if inline:
-            w.require(int(bindings[name]["sourceHandle"]) == int(bindings[name]["scratchHandle"]) == 0xffffffffffffffff,
-                      "Production guard exposed as shader descriptor")
-        else:
-            w.require(bindings[name]["shaderIndex"] == 0xffffffff, "Production guard exposed as shader descriptor")
+    for name in GUARDS | {"arguments"}:
+        w.require(bindings[name]["shaderIndex"] == 0xffffffff, "Production guard exposed as shader descriptor")
     for name in ("Input.spv", "Device.spv"):
         code = w.file_in(directory, name).read_bytes()
         w.require(len(code) >= 20 and len(code) % 4 == 0 and code[:4] == b"\x03\x02\x23\x07", "Missing actual SPIR-V")
     w.require(w.fnv((directory / "Input.spv").read_bytes()) == report["productionShader"]["spirvFnv1a64"], "SPIR-V differs from production binding")
     push = (directory / "Push.bin").read_bytes()
-    if inline:
-        replay_push = (directory / "ReplayPush.bin").read_bytes()
-        w.require(len(push) == len(replay_push) == 88, "Unexpected inline push ABI")
-        abi = report["parameterABI"]
-        settings = (directory / "Settings.bin").read_bytes()
-        w.require(abi == {"id": str(INLINE_ABI), "size": 88, "settingsBytes": 624} and len(settings) == 624, "Unexpected settings ABI")
-        w.require(settings == (directory / "ReplaySettings.bin").read_bytes(), "Settings snapshot changed during relocation")
-        source_root, source_count, source_stride = struct.unpack_from("<QII", push)
-        scratch_root, scratch_count, scratch_stride = struct.unpack_from("<QII", replay_push)
-        w.require(source_root != scratch_root and source_root > 0 and scratch_root > 0 and
-                  source_root % 16 == scratch_root % 16 == 0 and
-                  source_count == scratch_count == 1 and source_stride == scratch_stride == 624, "Invalid relocated settings span")
-        addresses = {int(row[key]) for row in rows for key in ("sourceAddress", "scratchAddress")}
-        w.require(source_root not in addresses and scratch_root not in addresses, "Settings allocation alias")
-        for i, name in enumerate(("pages", "groups", "header", "pageTable", "instances", "bins", "pixels")):
-            w.require(struct.unpack_from("<Q", push, 16 + 8 * i)[0] == int(bindings[name]["sourceHandle"]) and
-                      struct.unpack_from("<Q", replay_push, 16 + 8 * i)[0] == int(bindings[name]["scratchHandle"]), "Inline descriptor binding mismatch")
-        w.require(push[72:] == replay_push[72:] and struct.unpack_from("<II", push, 80) == (1, 0), "Raster scalar relocation mismatch")
-    else:
-        w.require(len(push) == 136, "Unexpected push ABI")
-        words = struct.unpack("<34I", push)
-        for name, index in {"pages": 0, "groups": 1, "pageTable": 2, "params": 3, "header": 7, "rasterBindings": 27, "bins": 29}.items():
-            w.require(words[index] == bindings[name]["shaderIndex"], "Push descriptor binding mismatch")
-        bins = (directory / "bins-input.bin").read_bytes()[:64]
-        raster = (directory / "rasterBindings-input.bin").read_bytes()[:68]
-        w.require(len(bins) == 64 and len(raster) == 68, "Truncated nested binding")
-        w.require(struct.unpack_from("<I", bins, 44)[0] == bindings["pixels"]["shaderIndex"], "Nested pixel binding mismatch")
-        w.require(struct.unpack_from("<I", raster, 64)[0] == bindings["instances"]["shaderIndex"], "Nested instance binding mismatch")
+    w.require(len(push) == 136, "Unexpected push ABI")
+    words = struct.unpack("<34I", push)
+    for name, index in {"pages": 0, "groups": 1, "pageTable": 2, "params": 3, "header": 7, "rasterBindings": 27, "bins": 29}.items():
+        w.require(words[index] == bindings[name]["shaderIndex"], "Push descriptor binding mismatch")
+    bins = (directory / "bins-input.bin").read_bytes()[:64]
+    raster = (directory / "rasterBindings-input.bin").read_bytes()[:68]
+    w.require(len(bins) == 64 and len(raster) == 68, "Truncated nested binding")
+    w.require(struct.unpack_from("<I", bins, 44)[0] == bindings["pixels"]["shaderIndex"], "Nested pixel binding mismatch")
+    w.require(struct.unpack_from("<I", raster, 64)[0] == bindings["instances"]["shaderIndex"], "Nested instance binding mismatch")
     args = (directory / "arguments-input.bin").read_bytes()
     w.require(len(args) >= 60 and report["indirect"]["offset"] == 48, "Indirect range mismatch")
     dims = list(struct.unpack_from("<3I", args, 48))
@@ -294,8 +261,6 @@ def run(args):
             if args.fault:
                 env["METALLIC_WORK_CONTROL_REPLAY_FAULT"] = args.fault
             command = [str(exe), "--sample", case["sampleId"]]
-            if args.skip_shader_warmup:
-                command.append("--skip-shader-warmup")
             w.save(directory / "Invocation.json", {"command": command, "environment": {k: v for k, v in env.items() if k.startswith("METALLIC_")}})
             try:
                 d.run_process(command, env, directory, args.timeout)
@@ -330,7 +295,6 @@ def main():
     live.add_argument("--runs", type=int, choices=(1, 3), default=3)
     live.add_argument("--timeout", type=float, default=240)
     live.add_argument("--counters", action="store_true")
-    live.add_argument("--skip-shader-warmup", action="store_true", help="Compile shaders on demand; record the explicit startup option")
     live.add_argument("--metrics", type=Path)
     live.add_argument("--split-metric-passes", action="store_true", help="Use SDK pass groups to exercise multi-pass replay with the same metrics")
     live.add_argument("--fault", choices=FAULTS)

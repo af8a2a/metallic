@@ -1,6 +1,9 @@
 #language slang 2026
 module GPUDriven;
 
+import ShaderCore;
+using Metallic;
+
 __include "GPUDriven/ConservativeOcclusion.slang";
 __include "GPUDriven/GPUDrivenCullingCommon.slang";
 __include "GPUDriven/GPUDrivenRasterCommon.slang";

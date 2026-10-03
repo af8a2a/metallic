@@ -1,4 +1,3 @@
-#include "Runtime/Render/Core/BunnyWireframeParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -50,6 +49,7 @@ public:
 
         std::vector<BunnyWireframeGPUPosition> positions;
         std::vector<SceneGPUTransform> transforms;
+        BunnyWireframeGPUParams params;
         if (!buildBunnyGeometry(properties(), runtimeScene, positions, transforms, drawBounds_, log)) {
             return makeError(Error::Failure);
         }
@@ -64,6 +64,10 @@ public:
         if (transforms.empty()) {
             transforms.emplace_back();
         }
+        if (drawBounds_.valid) {
+            buildBunnyParams(context.width, context.height, properties(), drawBounds_, params);
+        }
+
         Result<> result = uploadStorageBuffer(
             *context.device,
             positions.data(),
@@ -84,6 +88,63 @@ public:
         if (!result) {
             return result;
         }
+        result = uploadStorageBuffer(
+            *context.device,
+            &params,
+            sizeof(params),
+            paramsBuffer_,
+            log,
+            "BunnyWireframePass params");
+        if (!result) {
+            return result;
+        }
+
+        result = context.device->createBindlessHeap(BindlessHeapDesc{
+                .maxBuffers = 3,
+            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
+        if (!result || bindlessHeap_ == nullptr) {
+            log += resultMessage("createBindlessHeap(BunnyWireframePass)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = bindlessHeap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { paramsHandle_ = std::move(rhiValue); });
+        if (!result || !paramsHandle_.valid()) {
+            log += resultMessage("allocateBuffer(BunnyWireframePass params)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = bindlessHeap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { positionHandle_ = std::move(rhiValue); });
+        if (!result || !positionHandle_.valid()) {
+            log += resultMessage("allocateBuffer(BunnyWireframePass positions)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = bindlessHeap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { transformHandle_ = std::move(rhiValue); });
+        if (!result || !transformHandle_.valid()) {
+            log += resultMessage("allocateBuffer(BunnyWireframePass transforms)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        result = (*paramsBuffer_).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(paramsHandle_, bufferSlice); });
+        if (!result) {
+            log += resultMessage("writeStorageBuffer(BunnyWireframePass params)", result);
+            log += '\n';
+            return result;
+        }
+        result = (*positionBuffer_).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(positionHandle_, bufferSlice); });
+        if (!result) {
+            log += resultMessage("writeStorageBuffer(BunnyWireframePass positions)", result);
+            log += '\n';
+            return result;
+        }
+        result = (*transformBuffer_).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(transformHandle_, bufferSlice); });
+        if (!result) {
+            log += resultMessage("writeStorageBuffer(BunnyWireframePass transforms)", result);
+            log += '\n';
+            return result;
+        }
+
         ShaderCompileResult vertexCompile;
         result = compileSlangShader(
             kBunnyWireframeShaderModuleName,
@@ -111,7 +172,7 @@ public:
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BunnyWireframeParameters),
+                .bindlessUserPushDataSize = sizeof(BunnyWireframeUserPush),
             }).transform([&](auto rhiValue) { program_ = std::move(rhiValue); });
         if (!result || program_ == nullptr) {
             log += resultMessage("createGraphicsShaderObjectProgram(BunnyWireframePass)", result);
@@ -138,27 +199,16 @@ public:
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
             !depth.valid() ||
-            device_ == nullptr ||
+            bindlessHeap_ == nullptr ||
             program_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        auto& commands = context.commandBuffer();
-        EncodedParameters encoded;
         if (drawVertexCount_ > 0) {
-            if (!drawBounds_.valid) { return makeError(Error::InvalidArgument); }
-            auto registry = device_->resourceRegistry();
-            if (!registry) { return makeError(registry.error()); }
-            ParameterWriter writer(*device_, **registry, commands.frameContext());
-            BunnyWireframeParameters params{
-                .positions = writer.dataBuffer(positionBuffer_.get(), sizeof(BunnyWireframeGPUPosition), 16),
-                .transforms = writer.dataBuffer(transformBuffer_.get(), sizeof(SceneGPUTransform), 16),
-            };
-            buildBunnyParams(context.width(), context.height(), context.properties(), drawBounds_, params.settings);
-            auto packet = writer.encode(params, kBunnyWireframeABI, ParameterTransport::InlinePush);
-            if (!packet) { return makeError(packet.error()); }
-            encoded = std::move(*packet);
-            if (auto result = encoded.bindResources(commands); !result) { return result; }
+            Result<> result = updateParamsBuffer(context.width(), context.height(), context.properties());
+            if (!result) {
+                return result;
+            }
         }
 
         const Rect renderArea{
@@ -169,7 +219,7 @@ public:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
@@ -177,7 +227,7 @@ public:
         const bool reversedZ = cameraUsesReversedZ(cameraPropertiesFrom(context.properties()));
         RenderingAttachmentDesc depthAttachment{
             .view = depth.view(),
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
@@ -192,21 +242,27 @@ public:
             context.commandBuffer().endRendering();
             return {};
         }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
+        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         const auto execution = program_->execution({.depthStencil = {
             .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(reversedZ)}});
-        const auto bytes = encoded.inlineData();
-        auto bound = commands.bindExecution(execution, bytes.data(), uint32_t(bytes.size()));
+        auto bound = context.commandBuffer().bindExecution(execution);
         if (!bound) { context.commandBuffer().endRendering(); return bound; }
-        context.commandBuffer().draw(drawVertexCount_);
+        const BunnyWireframeUserPush push{
+            .paramsBuffer = paramsHandle_.shaderIndex,
+            .positionBuffer = positionHandle_.shaderIndex,
+            .transformBuffer = transformHandle_.shaderIndex,
+        };
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().draw(drawVertexCount_); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }
@@ -284,7 +340,7 @@ private:
 
     Result<> rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
     {
-        if (device_ == nullptr) {
+        if (device_ == nullptr || bindlessHeap_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -330,6 +386,15 @@ private:
         if (!result) {
             return result;
         }
+        result = (*positionBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(positionHandle_, bufferSlice); });
+        if (!result) {
+            return result;
+        }
+        result = (*transformBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(transformHandle_, bufferSlice); });
+        if (!result) {
+            return result;
+        }
+
         positionBuffer_ = std::move(positionBuffer);
         transformBuffer_ = std::move(transformBuffer);
         drawBounds_ = bounds;
@@ -338,6 +403,28 @@ private:
         structuralRevision_ = runtimeScene.sceneGraph().structuralRevision();
         transformRevision_ = runtimeScene.transformRevision();
         visibilityRevision_ = runtimeScene.visibilityRevision();
+        return {};
+    }
+
+    Result<> updateParamsBuffer(
+        uint32_t width,
+        uint32_t height,
+        const RenderGraphProperties& properties)
+    {
+        if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        BunnyWireframeGPUParams params;
+        buildBunnyParams(width, height, properties, drawBounds_, params);
+
+        void* mapped = paramsBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, &params, sizeof(params));
+        paramsBuffer_->flush({0, sizeof(params)});
+        paramsBuffer_->unmap();
         return {};
     }
 
@@ -556,6 +643,11 @@ private:
 
     std::unique_ptr<Buffer> positionBuffer_;
     std::unique_ptr<Buffer> transformBuffer_;
+    std::unique_ptr<Buffer> paramsBuffer_;
+    std::unique_ptr<BindlessHeap> bindlessHeap_;
+    BindlessHandle positionHandle_;
+    BindlessHandle transformHandle_;
+    BindlessHandle paramsHandle_;
     std::unique_ptr<GraphicsShaderObjectProgram> program_;
     scene::Bounds drawBounds_;
     Device* device_ = nullptr;

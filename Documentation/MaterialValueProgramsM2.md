@@ -38,7 +38,7 @@
 
 `MaterialValueProgramSet` 规范化 JSON 对象字段顺序，按源码排序去重，产生静态 Slang 函数和 switch。代码身份不包含实例数量、实例顺序、参数值或材质索引。不同 JSON 数值表示/不同表达式即使数学等价，也不承诺同键；通用优化 IR 留待 M3。
 
-每个程序带 manifest：参数槽 mask、输入/输出 mask、节点数。该版本只有受控算术节点，外部资源和副作用集合固定为空。运行时参数通过 PathTraceParameters.materialValues 的 typed handle 传递，CPU/Slang 记录为 80 字节：16 字节 ID/保留位，64 字节参数。旧 720 字节模型载荷不扩展。
+每个程序带 manifest：参数槽 mask、输入/输出 mask、节点数。该版本只有受控算术节点，外部资源和副作用集合固定为空。运行时参数绑定 97，CPU/Slang 记录为 80 字节：16 字节 ID/保留位，64 字节参数。旧 720 字节模型载荷不扩展。
 
 生成 include 写入 `.cache/materials/<key>/MaterialValueDispatch.hlsli`，已有内容不符时拒绝使用。路径参与 Slang 请求，include 内容进入现有依赖追踪；场景程序集改变会重建 kernel，单纯参数更新保持 kernel key。缓存和测试图像均为本地输出。
 

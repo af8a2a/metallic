@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "RHITest.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDLSSNR.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -26,12 +27,12 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto& command = context.commandBuffer();
-        command.clearColorTexture(*context.outputTexture("color").texture(), render::ResourceState::TransferDestination,
-            {0.25f, 0.5f, 0.75f, 1.0f});
-        command.clearColorTexture(*context.outputTexture("motion").texture(), render::ResourceState::TransferDestination,
-            {0.0f, 0.0f, 0.0f, 0.0f});
-        command.clearColorTexture(*context.outputTexture("depth").texture(), render::ResourceState::TransferDestination,
-            {0.5f, 0.0f, 0.0f, 0.0f});
+        if (auto commandResult = command.clearColorTexture(*context.outputTexture("color").texture(), render::TextureLayout::TransferDestination,
+            {0.25f, 0.5f, 0.75f, 1.0f}); !commandResult) { return commandResult; }
+        if (auto commandResult = command.clearColorTexture(*context.outputTexture("motion").texture(), render::TextureLayout::TransferDestination,
+            {0.0f, 0.0f, 0.0f, 0.0f}); !commandResult) { return commandResult; }
+        if (auto commandResult = command.clearColorTexture(*context.outputTexture("depth").texture(), render::TextureLayout::TransferDestination,
+            {0.5f, 0.0f, 0.0f, 0.0f}); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -48,10 +49,10 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().copyTextureToBuffer({
-            .texture = context.inputTexture("color").texture(), .buffer = context.outputBuffer("pixels").buffer(),
+        if (auto commandResult = (context.outputBuffer("pixels").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({
+            .texture = context.inputTexture("color").texture(), .buffer = bufferSlice,
             .bufferRowPitch = context.width() * 4, .bufferSlicePitch = context.width() * context.height() * 4,
-            .width = context.width(), .height = context.height()});
+            .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -185,7 +186,7 @@ public:
         }
         // A normal device does not initialize Streamline. Fallback must compile
         // there; strict mode must report Unsupported instead of faking success.
-        if (context.device.capabilities().streamline) { return RHITestResult::pass(); }
+        if (metallic::render::vulkan::deviceCapabilities(context.device).streamline) { return RHITestResult::pass(); }
         render::RenderGraphExecutor executor;
         graph = fixtureGraph(true, true);
         graph.setNodeRuntimeProperty(graph.findNode("Nr")->id, "sliderDebug", true);
@@ -209,7 +210,7 @@ public:
         if (!render::vulkan::dlssNrSdkAvailable()) { return RHITestResult::skip("DLSS-NR build option is off"); }
         // Select Streamline at runner startup so this test uses the same device
         // and Vulkan loader as the test environment.
-        if (!context.device.capabilities().streamline) {
+        if (!metallic::render::vulkan::deviceCapabilities(context.device).streamline) {
             return RHITestResult::skip("Run separately with --rhi-streamline --filter dlss_nr_runtime");
         }
         auto graph = fixtureGraph(true, false);
@@ -286,7 +287,7 @@ public:
     DLSSNRSliderTest() { type = RHITestType::Rendering; name = "dlss_nr_runtime_slider"; }
     RHITestResult run(RHITestContext& context) override
     {
-        if (!render::vulkan::dlssNrSdkAvailable() || !context.device.capabilities().streamline ||
+        if (!render::vulkan::dlssNrSdkAvailable() || !metallic::render::vulkan::deviceCapabilities(context.device).streamline ||
             !context.device.capabilities().bindlessDescriptorHeap) {
             return RHITestResult::skip("Requires the NR build and --rhi-streamline");
         }
@@ -380,7 +381,7 @@ public:
     DLSSNRSceneTest() { type = RHITestType::Rendering; name = "dlss_nr_runtime_scene"; }
     RHITestResult run(RHITestContext& context) override
     {
-        if (!render::vulkan::dlssNrSdkAvailable() || !context.device.capabilities().streamline ||
+        if (!render::vulkan::dlssNrSdkAvailable() || !metallic::render::vulkan::deviceCapabilities(context.device).streamline ||
             !context.device.capabilities().rayQuery) {
             return RHITestResult::skip("Requires the NR build and --rhi-streamline on a ray-query device");
         }

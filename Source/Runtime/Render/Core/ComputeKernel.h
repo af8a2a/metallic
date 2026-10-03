@@ -15,7 +15,6 @@ struct ComputeKernelDesc {
     PipelineCache* pipelineCache = nullptr;
 };
 
-namespace profiling { class WorkControlReplay; }
 class ComputeKernel;
 
 // Immutable dispatches retain parameters, executable state and indirect allocations.
@@ -47,17 +46,10 @@ public:
         uint32_t x, uint32_t y = 1, uint32_t z = 1) const;
     [[nodiscard]] Result<PreparedComputeDispatch> prepareIndirectBatch(
         std::span<const ComputeIndirectParameters> dispatches) const;
-    // Bind and retain code/parameters before a diagnostic hook replaces execution.
-    Result<> bind(CommandBuffer& commands, const EncodedParameters& params) const;
     Result<> dispatch(CommandBuffer& commands, const EncodedParameters& params,
         uint32_t x, uint32_t y = 1, uint32_t z = 1) const;
     Result<> dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params, const BufferSlice& arguments) const;
-    Result<> dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
-        Buffer& arguments, uint64_t offset = 0) const;
 private:
-    // Borrowed diagnostic view; replay retains a copy of this kernel.
-    ComputePipeline* diagnosticPipeline() const;
-    friend class profiling::WorkControlReplay;
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

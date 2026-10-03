@@ -1,7 +1,8 @@
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
-#include "Runtime/Render/Core/NRDParameters.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #if METALLIC_HAS_NRD
 #include "Runtime/Render/Denoising/NRDPlan.h"
@@ -118,6 +119,20 @@ Format formatFromNrd(denoising::Format format)
     return Format::Unknown;
 }
 
+constexpr uint64_t kNRDABI = 0x4e52445000000002ull;
+struct NRDPushData {
+    GPUBufferSpan constants;
+    GPUBufferSpan resources;
+};
+struct NRDResourceIndices {
+    uint32_t sampled[32]{};
+    uint32_t storage[16]{};
+    uint32_t samplers[2]{};
+};
+static_assert(sizeof(NRDPushData) == 24);
+static_assert(sizeof(NRDResourceIndices) == 200);
+static_assert(offsetof(NRDResourceIndices, storage) == 128);
+static_assert(offsetof(NRDResourceIndices, samplers) == 192);
 #endif
 } // namespace
 
@@ -170,7 +185,7 @@ struct NRDRuntime::Impl {
         }
         std::string log;
         return pipelines[index].initialize(*device, {.spirv = compiled.spirv,
-            .parameters = parameterAbi<NRDPushData>(kNRDABI, ParameterTransport::InlinePush), .debugName = recipe.shaderName.c_str()}, log);
+            .parameters = parameterAbi<NRDPushData>(kNRDABI), .debugName = recipe.shaderName.c_str()}, log);
     }
 };
 
@@ -246,7 +261,7 @@ Result<> NRDRuntime::initialize(Device& device, uint16_t width, uint16_t height,
         clear();
         return result;
     }
-    result = device.resourceRegistry().transform([&](auto rhiValue) { impl_->registry = std::move(rhiValue); });
+    result = metallic::render::ResourceRegistry::forDevice(device).transform([&](auto rhiValue) { impl_->registry = std::move(rhiValue); });
     if (!result) { clear(); return result; }
     impl_->pipelines.resize(impl_->plan.pipelines().size());
     return {};
@@ -327,7 +342,7 @@ Result<> NRDRuntime::denoiseReference(bool specular, CommandBuffer& commands)
 
 Result<> NRDRuntime::record(uint32_t index, CommandBuffer& commands)
 {
-    if (!commands.recording() || !commands.frameContext() || !commands.frameContext()->recording() ||
+    if (!commands.recording() || !metallic::render::RenderFrameContext::from(commands) || !metallic::render::RenderFrameContext::from(commands)->recording() ||
         !valid() || !impl_->frameReady || index >= impl_->scheduled.size() || impl_->scheduled[index])
         return makeError(Error::InvalidArgument);
     if (index == 0 && !impl_->device->capabilities().shaderImageGatherExtended)
@@ -502,7 +517,7 @@ Result<> NRDRuntime::record(uint32_t index, CommandBuffer& commands)
         result = recordBoundary(0);
         if (!result) { return result; }
         for (const auto& use : accessPlan->passes.front().uses) {
-            commands.clearColorTexture(*bindings[use.resource].texture, ResourceState::TransferDestination, {0, 0, 0, 0});
+            if (auto commandResult = commands.clearColorTexture(*bindings[use.resource].texture, TextureLayout::TransferDestination, {0, 0, 0, 0}); !commandResult) { return commandResult; }
         }
         impl_->clearPending = false;
     }
@@ -525,13 +540,13 @@ Result<> NRDRuntime::record(uint32_t index, CommandBuffer& commands)
 Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::DispatchDesc& stage,
     std::span<const NRDTextureRef> textures)
 {
-    ParameterWriter writer(*impl_->device, *commands.frameContext(), *impl_->registry);
-    NRDResourceHandles handles{};
+    ParameterWriter writer(*impl_->device, *metallic::render::RenderFrameContext::from(commands), *impl_->registry);
+    NRDResourceIndices indices;
     for (uint32_t i = 0; i < 2; ++i) {
         const auto filter = i == 0 ? SamplerFilter::Nearest : SamplerFilter::Linear;
-        handles.samplers[i] = writer.sampler({.minFilter = filter, .magFilter = filter,
+        indices.samplers[i] = static_cast<uint32_t>(writer.sampler({.minFilter = filter, .magFilter = filter,
             .mipFilter = SamplerFilter::Nearest, .addressU = SamplerAddressMode::ClampToEdge,
-            .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge});
+            .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge}).index);
     }
     uint32_t sampled = 0, storage = 0;
     for (uint32_t i = 0; i < stage.resourcesNum; ++i) {
@@ -539,15 +554,15 @@ Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
         const auto& texture = textures[i];
         const bool output = resource.descriptorType == denoising::DescriptorType::STORAGE_TEXTURE;
         if (output)
-            handles.storage[storage++] = writer.storageImage(texture.view);
+            indices.storage[storage++] = static_cast<uint32_t>(writer.storageImage(texture.view).index);
         else
-            handles.sampled[sampled++] = writer.sampledImage(texture.view, ResourceState::General);
+            indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, TextureLayout::General).index);
     }
     if (!writer.status()) { return writer.status(); }
-    const NRDPushData params{stage.constantBufferDataSize ? writer.data(stage.constantBufferData, stage.constantBufferDataSize) : 0,
-        writer.data(&handles, sizeof(handles))};
+    const NRDPushData params{stage.constantBufferDataSize ? writer.dataSpan(stage.constantBufferData, stage.constantBufferDataSize) : GPUBufferSpan{},
+        writer.dataSpan(&indices, sizeof(indices), sizeof(indices), alignof(NRDResourceIndices))};
     EncodedParameters encoded;
-    auto result = writer.encode(params, kNRDABI, ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); });
+    auto result = writer.encode(params, kNRDABI).transform([&](auto value) { encoded = std::move(value); });
     if (!result) { return result; }
     return impl_->pipelines[stage.pipelineIndex].dispatch(commands, encoded, stage.gridWidth, stage.gridHeight);
 }

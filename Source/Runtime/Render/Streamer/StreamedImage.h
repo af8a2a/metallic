@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #define STB_IMAGE_STATIC
@@ -102,15 +103,15 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
             }); !commandResult) { return commandResult; }
             imageState_ = ResourceState::TransferDestination;
 
-            commands.copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = uploadBuffer_.get(),
+            if (auto commandResult = (uploadBuffer_.get())->slice().and_then([&](const auto& bufferSlice) { return commands.copyBufferToTexture(BufferTextureRegion{
                 .texture = imageTexture_.get(),
+                .buffer = bufferSlice,
                 .width = imageWidth_,
                 .height = imageHeight_,
                 .depth = 1,
                 .mipLevel = 0,
                 .baseLayer = 0,
-            });
+            }); }); !commandResult) { return commandResult; }
 
             TextureBarrierDesc toShaderRead{
                 .texture = imageTexture_.get(),

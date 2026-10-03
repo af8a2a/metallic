@@ -1,26 +1,23 @@
-#include "../EnvironmentPrefilterProbeParameters.h"
+import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import Lighting;
 using Metallic.Lighting;
-
-[[vk::push_constant]] ConstantBuffer<EnvironmentPrefilterProbeParameters> gProbe;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void environmentPrefilterFieldProbeMain(uint3 id : SV_DispatchThreadID)
 {
     uint count = kEnvironmentFilterWidth * kEnvironmentFilterHeight * kEnvironmentFilterLayers;
-    if (!gProbe.output.contains(id.x)) { return; }
     if (id.x < count) {
-        if (!gProbe.prefiltered.contains(id.x)) { return; }
-        gProbe.output.data[id.x] =
-            gProbe.prefiltered.data[id.x];
+        resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<EnvironmentPrefilterFieldProbeResources>().output)[id.x] =
+            resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<EnvironmentPrefilterFieldProbeResources>().coefficients)[id.x];
     } else if (id.x < count + 2u) {
         uint width, height, levels;
-        resolveDescriptor(gProbe.radiance).GetDimensions(0, width, height, levels);
-        gProbe.output.data[id.x] = id.x == count
-            ? float4(resolveDescriptor(gProbe.radiance).Load(int3(0, 0, levels - 1)).rgb, float(levels))
-            : float4(resolveDescriptor(gProbe.radiance).Load(int3(width / 2, height / 2, 0)).r,
-                resolveDescriptor(gProbe.radiance).Load(int3(0, 0, 0)).r, 0.0, 0.0);
+        resolveUniform(getResourceParameters<EnvironmentPrefilterFieldProbeResources>().environment).GetDimensions(0, width, height, levels);
+        resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<EnvironmentPrefilterFieldProbeResources>().output)[id.x] = id.x == count
+            ? float4(resolveUniform(getResourceParameters<EnvironmentPrefilterFieldProbeResources>().environment).Load(int3(0, 0, levels - 1)).rgb, float(levels))
+            : float4(resolveUniform(getResourceParameters<EnvironmentPrefilterFieldProbeResources>().environment).Load(int3(width / 2, height / 2, 0)).r,
+                resolveUniform(getResourceParameters<EnvironmentPrefilterFieldProbeResources>().environment).Load(int3(0, 0, 0)).r, 0.0, 0.0);
     }
 }

@@ -37,7 +37,7 @@ Direct `Queue::submit` remains available to legacy callers, which continue to ow
 command-buffer/resource lifetimes and wait before resetting or destroying them.
 
 The normal sequence is `frame.begin(frameNumber)`, reset the command pool,
-`commandBuffer.begin(&frame)`, record/end, then `tracker.submit(desc, frame)`.
+`commandBuffer.begin(frame.submissionContext())`, record/end, then `tracker.submit(desc, frame)`.
 `frame.begin` waits for its previous submission before releasing retained
 resources. On an abandoned recording, reset the command pool before
 `frame.cancel()`. Device and queue ownership must outlive their completion
@@ -45,9 +45,15 @@ points and retained resources.
 
 `GPUCompletionPoint::appendWaits` exports/coalesces GPU waits. The point must stay
 alive until the consumer completes. `RenderFrameContext::addDependency` retains
-it and adds waits to tracked submissions; `CommandBuffer::addDependency` retains
+it and adds waits to tracked submissions; Core's `addCommandDependency(commands, point)` retains
 it until the command buffer's next recording and adds waits even to direct
 `Queue::submit`. Explicit waits and command-buffer waits are coalesced by timeline.
+
+GAPI only sees `CommandSubmissionContext` and neutral submission transactions.
+Core owns frame policy and invalidates the shared context on reset/destruction, so
+commands cannot reuse a previous frame generation. `RenderFrameContext::from(commands)`
+returns null after that invalidation. Queue acceptance transfers retained resources
+through the context without allocation; it does not publish GPU completion.
 
 ## Resource rules
 

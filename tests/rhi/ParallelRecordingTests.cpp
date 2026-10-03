@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -521,8 +522,8 @@ public:
                 for (const char* output : {"CopyRed.color", "CopyGreen.color"}) {
                     auto result = executor.transitionOutput(*commands, output, render::ResourceState::TransferSource);
                     if (!result) { return result; }
-                    commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture,
-                        .buffer = readback.get(), .bufferOffset = offset, .width = 4, .height = 4});
+                    if (auto commandResult = (readback.get())->slice({offset}).and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture,
+                        .buffer = bufferSlice, .width = 4, .height = 4}); }); !commandResult) { return commandResult; }
                     offset += 64;
                 }
                 return commands->end();
@@ -623,7 +624,7 @@ public:
         RECORD_CHECK(!batch.seal(frame, duplicates));
         RECORD_REQUIRE(batch.seal(frame, {&a, 1}));
         RECORD_CHECK(batch.valid() && frame.recording() && !frame.hasAcceptedWork());
-        RECORD_CHECK(!a->begin(&frame) && !frame.sealRecording());
+        RECORD_CHECK(!a->begin(frame.submissionContext()) && !frame.sealRecording());
         RECORD_CHECK(!context.graphicsQueue.submit({.commandBuffers = {&a, 1}}));
         render::SubmissionReceipt receipt;
         RECORD_CHECK(!tracker.submitBatch(batch, {.commandBuffers = {&a, 1}}, frame).transform([&](auto value) { receipt = std::move(value); }));

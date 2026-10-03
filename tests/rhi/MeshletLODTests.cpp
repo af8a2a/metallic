@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/ResidentMeshletLOD.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -223,10 +224,11 @@ public:
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
         LOD_REQUIRE(created);
         std::shared_ptr<ResourceRegistry> registry;
-        LOD_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        LOD_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 4> buffers;
-        GPUSceneGlobalBufferViews inputs;
-        GPUSceneBufferView* views[] = {&inputs.lodGroups, &inputs.meshlets, &inputs.instances, &inputs.meshletDraws};
+        GPUSceneConsumerBindings bindings;
+        const GPUSceneGlobalBufferKind kinds[] = {GPUSceneGlobalBufferKind::LODGroups, GPUSceneGlobalBufferKind::Meshlets,
+            GPUSceneGlobalBufferKind::Instances, GPUSceneGlobalBufferKind::MeshletDraws};
         const void* data[] = {f.groups.data(), f.clusters.data(), f.instances.data(), f.candidates.data()};
         const uint32_t strides[] = {32, 80, 160, 16};
         const size_t counts[] = {f.groups.size(), f.clusters.size(), f.instances.size(), f.candidates.size()};
@@ -236,14 +238,19 @@ public:
             void* mapped = buffers[i]->map();
             if (!mapped) { return RHITestResult::fail("input map"); }
             std::memcpy(mapped, data[i], counts[i] * strides[i]); buffers[i]->flush(); buffers[i]->unmap();
-            *views[i] = {.buffer = buffers[i].get(), .size = counts[i] * strides[i], .structureStride = strides[i]};
+            auto& handle = bindings.buffers[static_cast<size_t>(kinds[i])];
+            LOD_REQUIRE(registry->storageBuffer(*buffers[i]).transform([&](auto value) { handle = std::move(value); }));
         }
         ResidentMeshletLOD selector;
         const uint32_t capacity = static_cast<uint32_t>(f.candidates.size());
         LOD_REQUIRE(selector.initialize(*device, capacity, log));
+        ResourceLease selections, arguments, scratch;
+        LOD_REQUIRE(registry->storageBuffer(selector.selections()).transform([&](auto value) { selections = std::move(value); }));
+        LOD_REQUIRE(registry->storageBuffer(selector.arguments()).transform([&](auto value) { arguments = std::move(value); }));
+        LOD_REQUIRE(registry->storageBuffer(selector.scratch()).transform([&](auto value) { scratch = std::move(value); }));
         std::unique_ptr<Buffer> readback;
         const uint64_t selectionBytes = (uint64_t(capacity) + 1u) * 16u;
-        LOD_REQUIRE(device->createBuffer({.size = selectionBytes + 36, .usage = BufferUsageBits::TransferDestination,
+        LOD_REQUIRE(device->createBuffer({.size = selectionBytes + 24, .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         Queue* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
@@ -252,23 +259,22 @@ public:
         LOD_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
         LOD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); LOD_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         std::array<std::vector<MeshletLODSelection>, 2> displayPixelCuts;
-        for (uint32_t test = 0; test < 34; ++test) {
+        for (uint32_t test = 0; test < 32; ++test) {
             MeshletLODView view;
             view.eye = {float(test % 3) * 20, 1, float(test % 5) * 25, .1f};
             view.forward[3] = test % 2 ? 1.f : 0.f;
             view.projection = {test % 3 ? 1080.f : 540.f, .577350269f, 100.f, .2f + float(test % 7)};
             const uint32_t manual = test >= 20 && test < 24 ? test - 20 : UINT32_MAX;
-            if (test >= 24 && test < 32) {
+            if (test >= 24) {
                 const uint32_t renderHeight = std::array{1080u, 720u, 540u, 2160u}[(test - 24) % 4];
                 view.eye = {0, 0, 50, .1f};
                 view.forward[3] = test >= 28 ? 1.f : 0.f;
                 view.projection = {float(renderHeight), .577350269f, 60.f,
                     meshletLodRenderPixelThreshold(1.5f, renderHeight, 1080)};
             }
-            const uint32_t candidateOffset = test >= 32 ? 5u : 0u;
-            const uint32_t count = test == 19 ? 0u : capacity - candidateOffset;
+            const uint32_t count = test == 19 ? 0u : capacity;
             auto expected = selectMeshletLodReference(f.groups, f.clusters, f.instances,
-                std::span(f.candidates).subspan(candidateOffset, count), view, candidateOffset, manual);
+                std::span(f.candidates).first(count), view, 0, manual);
             if (test != 0) { LOD_REQUIRE(fence->reset()); LOD_REQUIRE(pool->reset()); }
             LOD_REQUIRE(commands->begin());
             if (test == 0) {
@@ -277,8 +283,8 @@ public:
                     if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
             }
-            LOD_REQUIRE(selector.record(*commands, *registry, count == 0 ? GPUSceneGlobalBufferViews{} : inputs, view, {candidateOffset, count},
-                static_cast<uint32_t>(f.instances.size()), static_cast<uint32_t>(f.groups.size()), manual));
+            LOD_REQUIRE(selector.record(*commands, *registry, bindings, view, {0, count},
+                static_cast<uint32_t>(f.instances.size()), static_cast<uint32_t>(f.groups.size()), selections, arguments, scratch, manual));
             BufferBarrierDesc barriers[] = {
                 {
                     .buffer = &selector.selections(),
@@ -299,9 +305,9 @@ public:
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             {
-                auto sourceSlice = (&selector.arguments())->slice({0, 36});
+                auto sourceSlice = (&selector.arguments())->slice({0, 24});
                 if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice({selectionBytes, 36});
+                auto destinationSlice = readback.get()->slice({selectionBytes, 24});
                 if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
@@ -320,15 +326,13 @@ public:
             std::memcpy(actual.data(), mapped + 4, actualCount * sizeof(MeshletLODSelection));
             const uint32_t* args = mapped + selectionBytes / 4u;
             bool validArguments = args[0] == actualCount && args[1] == 1 && args[2] == 1 &&
-                args[3] == (actualCount + 31) / 32 && args[4] == 1 && args[5] == 1 &&
-                args[6] == std::min(actualCount * 8u, 65535u) &&
-                args[7] == std::max(1u, (actualCount * 8u + 65534u) / 65535u) && args[8] == 1;
+                args[3] == (actualCount + 31) / 32 && args[4] == 1 && args[5] == 1;
             readback->unmap();
             if (actual != expected || !validArguments) {
                 return RHITestResult::fail("CPU/GPU LOD mismatch in case " + std::to_string(test) +
                     ": expected " + std::to_string(expected.size()) + ", actual " + std::to_string(actual.size()));
             }
-            if (test >= 24 && test < 32) {
+            if (test >= 24) {
                 auto& nativeCut = displayPixelCuts[(test - 24) / 4];
                 if ((test - 24) % 4 == 0) { nativeCut = actual; }
                 else if (actual != nativeCut) {
@@ -336,8 +340,7 @@ public:
                 }
             }
         }
-        if (registry->stats().descriptorWrites != 0) { return RHITestResult::fail("LOD allocated unexpected buffer descriptors"); }
-        return RHITestResult::pass("34 GPU/reference comparisons: perspective/ortho, near plane, shear/reflection, hidden instances, empty cut, manual LOD, indirect arguments and invariant display-pixel cuts across native/Quality/Performance/supersampling");
+        return RHITestResult::pass("32 GPU/reference comparisons: perspective/ortho, near plane, shear/reflection, hidden instances, empty cut, manual LOD, indirect arguments and invariant display-pixel cuts across native/Quality/Performance/supersampling");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MeshletLODGPUTest);

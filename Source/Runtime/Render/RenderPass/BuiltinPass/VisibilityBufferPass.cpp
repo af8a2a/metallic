@@ -1,13 +1,6 @@
-#include "Runtime/Render/Core/ResidentRasterParameters.h"
-#include "Runtime/Render/Core/VisibilityCompositeParameters.h"
-#include "Runtime/Render/Core/StreamRasterParameters.h"
-#include "Runtime/Render/Core/StreamWorkloadParameters.h"
-#include "Runtime/Render/Core/StreamClusterCullParameters.h"
-#include "Runtime/Render/Core/StreamClassifyParameters.h"
-#include "Runtime/Render/Core/StreamInstanceCullParameters.h"
-#include "Runtime/Render/Core/InstanceCullParameters.h"
-#include "Runtime/Render/Core/HZBParameters.h"
-#include "Runtime/Render/Core/HZBSPDParameters.h"
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -136,6 +129,7 @@ struct GPUDrivenPreviewFrameSlotResources {
     ResourceLease paramsHandle;
     ResourceLease lodSelectionHandle;
     ResourceLease lodArgumentsHandle;
+    ResourceLease lodScratchHandle;
     ResourceLease instanceVisibilityHandle;
     ResourceLease visibleInstanceIdsHandle;
     ResourceLease visibleInstanceCounterHandle;
@@ -147,6 +141,7 @@ struct GPUDrivenPreviewFrameSlotBindings {
     ResourceLease paramsHandle;
     ResourceLease lodSelectionHandle;
     ResourceLease lodArgumentsHandle;
+    ResourceLease lodScratchHandle;
     ResourceLease instanceVisibilityHandle;
     ResourceLease visibleInstanceIdsHandle;
     ResourceLease visibleInstanceCounterHandle;
@@ -165,9 +160,11 @@ struct GPUDrivenPreviewBindingBundle {
     std::unique_ptr<Buffer> streamOwnerMaskBuffer;
     std::unique_ptr<Buffer> hzbSpdCounterBuffer;
     std::unique_ptr<Buffer> hzbSpdResetBuffer;
+    ResourceLease hzbSpdCounterHandle;
     std::shared_ptr<ResourceRegistry> registry;
     GPUSceneConsumerBindings gpuSceneBindings;
     ResourceLease materialTextureRemapHandle;
+    ResourceLease tessellationHandle;
     std::vector<GPUDrivenPreviewFrameSlotBindings> frameSlots;
     std::array<ResourceLease, 2> hzbHandles;
     ResourceLease depthImageHandle;
@@ -653,9 +650,8 @@ public:
                     ? kGPUDrivenPreviewAmplificationGroupSize
                     : 0u,
                 .taskRequireFullSubgroups = amplificationWave32_,
-                .colorFormat = Format::R32Uint,
-                .secondColorFormat = tessellationEnabled() ? Format::RGBA32Sfloat : Format::Unknown,
-                .thirdColorFormat = tessellationEnabled() ? Format::RGBA8Unorm : Format::Unknown,
+                .colorFormats = {Format::R32Uint, Format::RGBA32Sfloat, Format::RGBA8Unorm},
+                .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
                 .depthStencilFormat = Format::D32Sfloat,
                 .rasterization = RasterizationState{
                     .cullMode = doubleSided ? CullMode::None : CullMode::Back,
@@ -680,8 +676,7 @@ public:
             // single-target PSO so it cannot overwrite viewport domain/colors.
             if (result && tessellationEnabled()) {
                 pipelineDesc.fragmentShader.module = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
-                pipelineDesc.secondColorFormat = Format::Unknown;
-                pipelineDesc.thirdColorFormat = Format::Unknown;
+                pipelineDesc.colorAttachmentCount = 1;
                 result = context.device->createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { frozenStandardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
                 if (result) {
                     pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(true);
@@ -699,7 +694,7 @@ public:
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = {compositeVertexShader_.get()},
             .fragmentShader = {compositeFragmentShader_.get()},
-            .colorFormat = Format::RGBA8Unorm,
+            .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
             .pipelineCache = pipelineCache_.get(),
@@ -779,8 +774,8 @@ public:
                 (context.streamer() == nullptr ||
                     !(streamRuntime_ && streamRuntime_->ready()) ||
                     streamVisibilityPipeline_ == nullptr ||
-                    !streamCullResetKernel_.valid() ||
-                    !streamInstanceCullKernel_.valid()))) {
+                    streamCullResetPipeline_ == nullptr ||
+                    streamInstanceCullPipeline_ == nullptr))) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -839,8 +834,8 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
-        result = registry_->sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
-        if (result) { result = registry_->sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); }); }
+        result = registry_->sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
+        if (result) { result = registry_->sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); }); }
         std::shared_ptr<PreparedBindings> bindings;
         if (result) { result = prepareFrame(context, bindings); }
         if (!result) { return result; }
@@ -884,8 +879,8 @@ public:
                 return result;
             }
         }
-        for (const auto& lease : {streamHybridClusterHandle_, streamHybridPixelHandle_,
-             streamHybridQueueHandle_,
+        for (const auto& lease : {streamWorkloadHandle_, streamHybridClusterHandle_, streamHybridPixelHandle_,
+             streamCandidateArgumentsHandle_, streamHybridQueueHandle_, streamTessellationHandle_,
              streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_,
              streamVisibilityImageHandle_, streamDepthImageHandle_, streamInstanceVisibilityHandle_,
              streamVisibleInstanceIdsHandle_, streamVisibleInstanceCounterHandle_, streamHzbHandles_[0], streamHzbHandles_[1]}) {
@@ -920,14 +915,13 @@ public:
         packet.registry = registry_;
         packet.owners.push_back(streamRuntime_);
         packet.owners.push_back(hybridRasterizer_);
-        if (tessellationBuffer_) { packet.owners.push_back(tessellationBuffer_->retainAllocation()); }
         for (const auto& lod : residentLods_) { packet.owners.push_back(lod); }
         auto retain = [&](const ResourceLease& lease) {
             if (lease.valid()) { packet.leases.push_back(lease); }
         };
         for (const auto& lease : {
             hybridQueueHandle_, hybridClusterHandle_, hybridPixelHandle_,
-            materialTextureRemapHandle_,
+            tessellationHandle_, hzbSpdCounterHandle_, materialTextureRemapHandle_,
             depthImageHandle_, visibilityImageHandle_, cullingDepthImageHandle_,
             streamOwnerMaskHandle_, streamDebugRecordsHandle_, streamDebugGroupsHandle_}) {
             retain(lease);
@@ -943,7 +937,7 @@ public:
         }
         const auto& slot = frameSlotResources_[activeFrameSlot_];
         for (const auto& lease : {slot.paramsHandle, slot.lodSelectionHandle, slot.lodArgumentsHandle,
-             slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
+             slot.lodScratchHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
              slot.visibleInstanceCounterHandle, slot.visibleMeshletHandles[0], slot.visibleMeshletHandles[1],
              slot.indirectHandles[0], slot.indirectHandles[1]}) {
             retain(lease);
@@ -1011,7 +1005,8 @@ public:
         }});
         stages.push_back({"Resident LOD", {}, [&](CommandBuffer& commands) -> Result<> {
             auto lodResult = residentLods_[activeFrameSlot_]->record(commands, *registry_,
-                gpuSceneSubsystem_->globalBufferViews(), lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
+                gpuSceneBindings_, lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
+                slot.lodSelectionHandle, slot.lodArgumentsHandle, slot.lodScratchHandle,
                 autoLodFromProperties(properties()) ? UINT32_MAX : lodLevelFromProperties(properties()));
             if (!lodResult) { return lodResult; }
             if (context.debugEnabled()) {
@@ -1033,7 +1028,7 @@ public:
             return {};
         }});
         const auto addHzb = [&](std::string_view name) {
-            stages.push_back({name, hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands, freezeCullingCamera_ ? cullingTargets_.depthView.get() : depth.view()); }});
+            stages.push_back({name, hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }});
         };
         const auto addResidentRaster = [&](uint32_t passIndex, bool frozen) {
             // The compound operation owns private hybrid resources and keeps its
@@ -1255,20 +1250,32 @@ private:
         streamRuntime_.reset();
         streamMeshShader_.reset();
         streamFragmentShader_.reset();
+        streamCullResetShader_.reset();
+        streamInstanceCullShader_.reset();
         streamVisibilityPipeline_.reset();
         standardZStreamVisibilityPipeline_.reset();
-        streamCullResetKernel_.clear();
-        streamInstanceCullKernel_.clear();
+        streamCullResetPipeline_.reset();
+        streamInstanceCullPipeline_.reset();
         streamHybridQueueHandle_ = {};
+        streamTessellationHandle_ = {};
         streamHybridClusterHandle_ = {};
-        for (auto& kernel : streamWorkloadKernels_) { kernel.clear(); }
+        streamWorkloadHandle_ = {};
+        for (auto& pipeline : streamWorkloadPipelines_) { pipeline.reset(); }
+        for (auto& shader : streamWorkloadShaders_) { shader.reset(); }
         streamHybridPixelHandle_ = {};
-        streamClusterPrepareKernel_.clear();
-        for (auto& kernel : streamRasterKernels_) { kernel.clear(); }
-        streamClusterBinKernel_.clear();
-        streamClusterBinP0Kernel_.clear();
-        streamClusterCullKernel_.clear();
-        streamClusterCullP0Kernel_.clear();
+        streamCandidateArgumentsHandle_ = {};
+        streamClusterPrepareShader_.reset();
+        streamClusterPreparePipeline_.reset();
+        streamClusterBinShader_.reset();
+        streamClusterBinP0Shader_.reset();
+        streamClusterCullShader_.reset();
+        streamClusterCullP0Shader_.reset();
+        for (auto& shader : streamClusterRasterShaders_) { shader.reset(); }
+        streamClusterBinPipeline_.reset();
+        streamClusterBinP0Pipeline_.reset();
+        streamClusterCullPipeline_.reset();
+        streamClusterCullP0Pipeline_.reset();
+        for (auto& pipeline : streamClusterRasterPipelines_) { pipeline.reset(); }
         streamVisibilityImageHandle_ = {};
         streamDepthImageHandle_ = {};
         streamInstanceVisibilityHandle_ = {};
@@ -1485,12 +1492,16 @@ private:
             bool meshShadingShader = false;
             std::unique_ptr<ShaderModule>* shader = nullptr;
         };
-        const std::array<ShaderRequest, 7> requests{
+        const std::array<ShaderRequest, 11> requests{
             ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationTask" : kVisibilityBufferAmplificationEntryPoint, true, &amplificationShader_},
             ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationMesh" : kVisibilityBufferMeshEntryPoint, true, &meshShader_},
             ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationMesh" : kVisibilityBufferMeshEntryPoint, true, &maskedMeshShader_},
             ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationFragment" : kVisibilityBufferFragmentEntryPoint, false, &fragmentShader_},
             ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationFragment" : kVisibilityBufferMaskedFragmentEntryPoint, false, &maskedFragmentShader_},
+            ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
+            ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
+            ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewHZBEntryPoint, false, &hzbShader_},
+            ShaderRequest{kHZBSPDModule, kHZBSPDEntryPoint, false, &hzbSpdShader_},
             ShaderRequest{kVisibilityBufferCompositeShaderModuleName, kVisibilityBufferCompositeVertexEntryPoint, false, &compositeVertexShader_},
             ShaderRequest{kVisibilityBufferCompositeShaderModuleName, kVisibilityBufferCompositeFragmentEntryPoint, false, &compositeFragmentShader_},
         };
@@ -1499,6 +1510,7 @@ private:
             amplificationWaveOps_ ? "1" : "0",
         };
         const SlangMacroDefine maskedMeshDefine{"VISIBILITY_BUFFER_ALPHA_MASKED", "1"};
+        const SlangMacroDefine spdLdsDefine{kHZBSPDWaveOpsDefine, "0"};
         for (const ShaderRequest& request : requests) {
             const bool isAmplification = request.shader == &amplificationShader_;
             std::array<SlangMacroDefine, 2> macroDefines;
@@ -1507,6 +1519,8 @@ private:
                 macroDefines[macroDefineCount++] = amplificationDefine;
             } else if (request.shader == &maskedMeshShader_ || (tessellationEnabled() && request.shader == &maskedFragmentShader_)) {
                 macroDefines[macroDefineCount++] = maskedMeshDefine;
+            } else if (request.shader == &hzbSpdShader_) {
+                macroDefines[macroDefineCount++] = spdLdsDefine;
             }
             const auto shaderCompileBegin = GPUDrivenCompileClock::now();
             Result<> result = createShader(
@@ -1538,9 +1552,11 @@ private:
                 Result<> taskResult = createShader(device, kMeshletStreamShaderModuleName, "streamTessellationTask", true, streamTaskShader_, log, &amplificationDefine, 1u);
                 if (!taskResult) { return taskResult; }
             } else { streamTaskShader_.reset(); }
-            const std::array<ShaderRequest, 2> streamRequests{
+            const std::array<ShaderRequest, 4> streamRequests{
                 ShaderRequest{kMeshletStreamShaderModuleName, tessellationEnabled() ? "streamTessellationMesh" : kMeshletStreamMeshEntryPoint, true, &streamMeshShader_},
                 ShaderRequest{kMeshletStreamShaderModuleName, tessellationEnabled() ? "streamTessellationFragment" : kMeshletStreamFragmentEntryPoint, false, &streamFragmentShader_},
+                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamCullResetEntryPoint, false, &streamCullResetShader_},
+                ShaderRequest{kMeshletStreamShaderModuleName, kMeshletStreamInstanceCullEntryPoint, false, &streamInstanceCullShader_},
             };
             for (const ShaderRequest& request : streamRequests) {
                 const auto shaderCompileBegin = GPUDrivenCompileClock::now();
@@ -1560,83 +1576,106 @@ private:
             }
         }
 
-        auto createInlineKernel = [&](const char* module, const char* entry, ParameterABI abi,
-                                   ComputeKernel& kernel, const SlangMacroDefine* define = nullptr) -> Result<> {
-            auto shader = compileSlangShaderToSpirv({.moduleName = module, .entryPointName = entry,
-                .searchPath = kTriangleShaderSearchPath, .macroDefines = {define, define ? 1u : 0u}}, log);
-            if (!shader) { return makeError(shader.error()); }
-            const std::string debugName = std::string(module) + "." + entry + (define ? std::string(".") + define->value : "");
-            uint64_t hash = 14695981039346656037ull;
-            const auto* bytes = reinterpret_cast<const uint8_t*>(shader->spirv.data());
-            for (size_t i = 0; i < shader->spirv.size() * sizeof(uint32_t); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
-            shaderHashes_[debugName] = std::to_string(hash);
-            return kernel.initialize(device, {.spirv = shader->spirv, .parameters = abi,
-                .debugName = debugName.c_str(), .pipelineCache = pipelineCache_.get()}, log);
-        };
-        Result<> hzbResult = createInlineKernel(kHZBModule, kHZBEntryPoint,
-            parameterAbi<HZBParameters>(kHZBABI, ParameterTransport::InlinePush), hzbKernel_);
-        if (!hzbResult) { return hzbResult; }
-        const SlangMacroDefine ldsDefine{kHZBSPDWaveOpsDefine, "0"};
-        hzbResult = createInlineKernel(kHZBSPDModule, kHZBSPDEntryPoint,
-            parameterAbi<HZBSPDParameters>(kHZBSPDABI, ParameterTransport::InlinePush), hzbSpdKernel_, &ldsDefine);
-        if (!hzbResult) { return hzbResult; }
-        hzbSpdWaveKernel_.clear();
+        hzbSpdWaveShader_.reset();
+        hzbSpdWavePipeline_.reset();
         if (supportsHzbSpdWaveOps(device.capabilities())) {
             const SlangMacroDefine waveDefine{kHZBSPDWaveOpsDefine, "1"};
-            hzbResult = createInlineKernel(kHZBSPDModule, kHZBSPDEntryPoint,
-                parameterAbi<HZBSPDParameters>(kHZBSPDABI, ParameterTransport::InlinePush), hzbSpdWaveKernel_, &waveDefine);
-            if (!hzbResult) { return hzbResult; }
+            const Result<> result = createShader(device, kHZBSPDModule, kHZBSPDEntryPoint,
+                false, hzbSpdWaveShader_, log, &waveDefine, 1u);
+            if (!result) { return result; }
         }
 
-        Result<> result = createInlineKernel(kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewResetEntryPoint,
-            parameterAbi<InstanceCullParameters>(kInstanceCullABI, ParameterTransport::InlinePush), resetKernel_);
-        if (!result) { return result; }
-        result = createInlineKernel(kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint,
-            parameterAbi<InstanceCullParameters>(kInstanceCullABI, ParameterTransport::InlinePush), instanceCullKernel_);
-        if (!result) { return result; }
-        if (hybridRasterizer_) {
-            const auto residentABI = parameterAbi<ResidentRasterParameters>(kResidentRasterABI, ParameterTransport::InlinePush);
-            for (auto [entry, kernel] : {std::pair{"visibilityClusterCountMain", &clusterCountKernel_},
-                     std::pair{"visibilityClusterBinMain", &clusterBinKernel_},
-                     std::pair{"visibilityClusterRasterMain", &clusterRasterKernel_}}) {
-                result = createInlineKernel(kVisibilityBufferShaderModuleName, entry, residentABI, *kernel);
-                if (!result) { return result; }
+        auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
+            const auto pipelineBegin = GPUDrivenCompileClock::now();
+            Result<> result = device.createComputePipeline(ComputePipelineDesc{
+                .computeShader = {&shader, "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(GPUDrivenPreviewUserPush),
+                .pipelineCache = pipelineCache_.get(),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            if (!result || pipeline == nullptr) {
+                log += resultMessage(std::string("createComputePipeline(VisibilityBufferPass ") + label + ")", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
             }
+            logGPUDrivenCompileStage(std::string("compute pipeline ") + label, pipelineBegin);
+            return result;
+        };
+
+        Result<> result = createCompute(*resetShader_, resetPipeline_, "reset");
+        if (!result) {
+            return result;
+        }
+        result = createCompute(*instanceCullShader_, instanceCullPipeline_, "instance cull");
+        if (!result) {
+            return result;
+        }
+        result = createCompute(*hzbShader_, hzbPipeline_, "HZB");
+        if (!result) {
+            return result;
+        }
+        result = createCompute(*hzbSpdShader_, hzbSpdPipeline_, "SPD HZB");
+        if (!result) { return result; }
+        if (hzbSpdWaveShader_) {
+            result = createCompute(*hzbSpdWaveShader_, hzbSpdWavePipeline_, "SPD HZB wave ops");
+            if (!result) { return result; }
+        }
+        if (hybridRasterizer_) {
+            result = createShader(device, kVisibilityBufferShaderModuleName,
+                "visibilityClusterCountMain", false, clusterCountShader_, log);
+            if (result) { result = createCompute(*clusterCountShader_, clusterCountPipeline_, "cluster count"); }
+            if (!result) { return result; }
+            result = createShader(device, kVisibilityBufferShaderModuleName,
+                "visibilityClusterBinMain", false, clusterBinShader_, log);
+            if (result) { result = createCompute(*clusterBinShader_, clusterBinPipeline_, "cluster bin"); }
+            if (result) { result = createShader(device, kVisibilityBufferShaderModuleName,
+                "visibilityClusterRasterMain", false, clusterRasterShader_, log); }
+            if (result) { result = createCompute(*clusterRasterShader_, clusterRasterPipeline_, "cluster raster"); }
+            if (!result) { return result; }
         }
         if (!streamEnabled_) {
             return result;
         }
 
+        auto createStreamCompute = [&](ShaderModule& shader,
+                                       std::unique_ptr<ComputePipeline>& pipeline,
+                                       const char* label) -> Result<> {
+            Result<> streamResult = device.createComputePipeline(ComputePipelineDesc{
+                .computeShader = {&shader, "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache_.get(),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            if (!streamResult || pipeline == nullptr) {
+                log += resultMessage(
+                    std::string("createComputePipeline(VisibilityBufferPass stream ") +
+                        label + ")",
+                    streamResult);
+                log += '\n';
+                return streamResult ? makeError(Error::Failure) : streamResult;
+            }
+            return {};
+        };
         if (hybridRasterizer_) {
-            auto candidateShader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-                .entryPointName = "streamClusterPrepareMain", .searchPath = kMeshletStreamShaderSearchPath}, log);
-            if (!candidateShader) { return makeError(candidateShader.error()); }
-            result = streamClusterPrepareKernel_.initialize(device, {.spirv = candidateShader->spirv,
-                .parameters = parameterAbi<StreamCandidateParameters>(kStreamCandidateABI, ParameterTransport::InlinePush),
-                .pipelineCache = pipelineCache_.get()}, log);
+            result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterPrepareMain", false, streamClusterPrepareShader_, log);
+            if (result) { result = createStreamCompute(*streamClusterPrepareShader_, streamClusterPreparePipeline_, "cluster candidates"); }
             if (!result) { return result; }
-            for (auto [entry, kernel] : {std::pair{"streamClusterCullMain", &streamClusterCullKernel_},
-                     std::pair{"streamClusterCullP0Main", &streamClusterCullP0Kernel_}}) {
-                auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-                    .entryPointName = entry, .searchPath = kMeshletStreamShaderSearchPath}, log);
-                if (!shader) { return makeError(shader.error()); }
-                result = kernel->initialize(device, {.spirv = shader->spirv,
-                    .parameters = parameterAbi<StreamClusterCullParameters>(kStreamClusterCullABI, ParameterTransport::InlinePush),
-                    .pipelineCache = pipelineCache_.get()}, log);
-                if (!result) { return result; }
-            }
-            for (auto [entry, kernel] : {std::pair{"streamClusterBinMain", &streamClusterBinKernel_},
-                     std::pair{"streamClusterBinP0Main", &streamClusterBinP0Kernel_}}) {
-                if (!result) { return result; }
-                auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-                    .entryPointName = entry, .searchPath = kMeshletStreamShaderSearchPath}, log);
-                if (!shader) { return makeError(shader.error()); }
-                result = kernel->initialize(device, {.spirv = shader->spirv,
-                    .parameters = parameterAbi<StreamClassifyParameters>(kStreamClassifyABI, ParameterTransport::InlinePush),
-                    .pipelineCache = pipelineCache_.get()}, log);
-            }
+            result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterCullMain", false, streamClusterCullShader_, log);
+            if (result) { result = createStreamCompute(*streamClusterCullShader_, streamClusterCullPipeline_, "cluster cull"); }
+            if (!result) { return result; }
+            result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterBinMain", false, streamClusterBinShader_, log);
+            if (result) { result = createStreamCompute(*streamClusterBinShader_, streamClusterBinPipeline_, "cluster bin"); }
+            if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterCullP0Main", false, streamClusterCullP0Shader_, log); }
+            if (result) { result = createStreamCompute(*streamClusterCullP0Shader_, streamClusterCullP0Pipeline_, "P0 cluster cull"); }
+            if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
+                "streamClusterBinP0Main", false, streamClusterBinP0Shader_, log); }
+            if (result) { result = createStreamCompute(*streamClusterBinP0Shader_, streamClusterBinP0Pipeline_, "P0 cluster bin"); }
             const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain", "streamClusterRasterGroup32Main", "streamClusterRasterGroup64Main", "streamClusterRasterGroup128Main"};
-            for (size_t i = 0; result && i < streamRasterKernels_.size(); ++i) {
+            for (size_t i=0; result && i<streamClusterRasterShaders_.size(); ++i) {
                 if (i >= 6) {
                     const char* experiment = std::getenv("METALLIC_SW_GROUP_EXPERIMENT");
                     const bool experiments = experiment && std::strcmp(experiment, "1") == 0;
@@ -1649,43 +1688,35 @@ private:
                     }
                     if (i != 6 && !experiments) { continue; }
                 }
-                {
-                    const char* module = i >= 6 ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : i >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName;
-                    auto shader = compileSlangShaderToSpirv({.moduleName = module,
-                        .entryPointName = rasterEntries[i], .searchPath = kMeshletStreamShaderSearchPath}, log);
-                    if (!shader) { return makeError(shader.error()); }
-                    uint64_t hash = 14695981039346656037ull;
-                    for (uint32_t word : shader->spirv) {
-                        for (uint32_t shift = 0; shift < 32; shift += 8) { hash ^= (word >> shift) & 255u; hash *= 1099511628211ull; }
-                    }
-                    shaderHashes_[std::string(module) + "." + rasterEntries[i]] = std::to_string(hash);
-                    result = streamRasterKernels_[i].initialize(device, {.spirv = shader->spirv,
-                        .parameters = parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush),
-                        .pipelineCache = pipelineCache_.get()}, log);
-                    continue;
-                }
-
+                result = createShader(device, i >= 6 ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : i >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
+                if (result) { result = createStreamCompute(*streamClusterRasterShaders_[i], streamClusterRasterPipelines_[i], rasterEntries[i]); }
             }
             const char* workloadEntries[] = {"streamWorkloadResetMain", "streamWorkloadMain"};
             for (size_t i = 0; result && i < 2; ++i) {
-                result = createInlineKernel("Features/GPUDriven/GPUDrivenStreamWorkload", workloadEntries[i],
-                    parameterAbi<StreamWorkloadParameters>(kStreamWorkloadABI, ParameterTransport::InlinePush), streamWorkloadKernels_[i]);
+                result = createShader(device, "Features/GPUDriven/GPUDrivenStreamWorkload", workloadEntries[i], false, streamWorkloadShaders_[i], log);
+                if (result) { result = createStreamCompute(*streamWorkloadShaders_[i], streamWorkloadPipelines_[i], workloadEntries[i]); }
             }
             if (!result) { return result; }
         }
-        result = createInlineKernel(kMeshletStreamShaderModuleName, kMeshletStreamCullResetEntryPoint,
-            parameterAbi<StreamInstanceCullParameters>(kStreamInstanceCullABI, ParameterTransport::InlinePush), streamCullResetKernel_);
-        if (!result) { return result; }
-        result = createInlineKernel(kMeshletStreamShaderModuleName, kMeshletStreamInstanceCullEntryPoint,
-            parameterAbi<StreamInstanceCullParameters>(kStreamInstanceCullABI, ParameterTransport::InlinePush), streamInstanceCullKernel_);
-        if (!result) { return result; }
+        result = createStreamCompute(
+            *streamCullResetShader_,
+            streamCullResetPipeline_,
+            "cull reset");
+        if (result) {
+            result = createStreamCompute(
+                *streamInstanceCullShader_,
+                streamInstanceCullPipeline_,
+                "instance cull");
+        }
+        if (!result) {
+            return result;
+        }
         GraphicsPipelineDesc pipelineDesc{
             .taskShader = {streamTaskShader_.get()},
             .meshShader = {streamMeshShader_.get()},
             .fragmentShader = {streamFragmentShader_.get()},
-            .colorFormat = Format::R32Uint,
-            .secondColorFormat = tessellationEnabled() ? Format::RGBA32Sfloat : Format::Unknown,
-            .thirdColorFormat = tessellationEnabled() ? Format::RGBA8Unorm : Format::Unknown,
+            .colorFormats = {Format::R32Uint, Format::RGBA32Sfloat, Format::RGBA8Unorm},
+            .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = RasterizationState{
                 .cullMode = CullMode::None,
@@ -1953,7 +1984,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
         const uint64_t expectedRemapBytes =
-            static_cast<uint64_t>(materialTextureCount_) * sizeof(ShaderSampledImage);
+            static_cast<uint64_t>(materialTextureCount_) * sizeof(uint32_t);
         const bool remapLayoutChanged =
             materialTextureRemapBuffer_->desc().size != expectedRemapBytes;
         const uint64_t expectedOwnerMaskBytes = static_cast<uint64_t>(
@@ -2014,49 +2045,58 @@ private:
         return {};
     }
 
-    Result<EncodedParameters> encodeResidentParameters(CommandBuffer& commands,
-        uint32_t passIndex, uint32_t mipLevel, bool projectWithCullingCamera) const
+    GPUDrivenPreviewUserPush makePush(
+        uint32_t passIndex = 0,
+        uint32_t mipLevel = 0,
+        bool projectWithCullingCamera = false) const
     {
-        const auto& slot = activeFrameResources();
-        ParameterWriter writer(*device_, *registry_, commands.frameContext());
-        const auto use = [&](const ResourceLease& lease) -> ShaderBuffer {
-            if (lease.valid()) { (void)writer.use(lease); }
-            return {lease.shaderValue()};
-        };
-        const ResidentRasterResources resources{
-            .positionBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::Vertices]),
-            .meshletBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets]),
-            .meshletDrawBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws]),
-            .meshletVertexBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletVertices]),
-            .meshletTriangleBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletTriangleWords]),
-            .paramsBuffer = use(slot.paramsHandle),
-            .transformBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::Geometries]),
-            .instanceBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::Instances]),
-            .instanceVisibilityBuffer = use(slot.instanceVisibilityHandle),
-            .materialBuffer = use(gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials]),
-            .materialTextureRemapBuffer = use(materialTextureRemapHandle_),
-            .streamOwnerMaskBuffer = use(streamOwnerMaskHandle_),
-            .bins = use(hybridClusterHandle_),
-            .previousHZB = use(hzbHandles_[(previousParams_.frameIndex & 1u) ^ 1u]),
-            .currentHZB = use(hzbHandles_[previousParams_.frameIndex & 1u]),
-            .writableBins = use(hybridClusterHandle_),
-            .queue = use(hybridQueueHandle_),
-            .lodSelections = use(slot.lodSelectionHandle),
-            .tessellationData = tessellationBuffer_ ? writer.dataBuffer(tessellationBuffer_.get(), sizeof(uint32_t), 4) : ShaderDataSpan{},
-            .pixels = use(hybridPixelHandle_),
-        };
-        const ResidentRasterParameters parameters{
-            .resources = writer.data(&resources, sizeof(resources), alignof(ResidentRasterResources)),
-            .passIndex = passIndex, .mipLevel = mipLevel,
+        const GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
+        return GPUDrivenPreviewUserPush{
+            .positionBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Vertices].shaderIndex(),
+            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
+            .meshletDrawBuffer =
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
+            .meshletVertexBuffer =
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletVertices].shaderIndex(),
+            .meshletTriangleBuffer =
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletTriangleWords].shaderIndex(),
+            .paramsBuffer = slot.paramsHandle.shaderIndex(),
+            .transformBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Geometries].shaderIndex(),
+            .instanceBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Instances].shaderIndex(),
+            .instanceVisibilityBuffer = slot.instanceVisibilityHandle.shaderIndex(),
+            .visibleInstanceIdsBuffer = slot.visibleInstanceIdsHandle.shaderIndex(),
+            .visibleInstanceCounterBuffer = slot.visibleInstanceCounterHandle.shaderIndex(),
+            .visibleMeshletBuffer0 = slot.visibleMeshletHandles[0].shaderIndex(),
+            .visibleMeshletBuffer1 = slot.visibleMeshletHandles[1].shaderIndex(),
+            .indirectBuffer0 = slot.indirectHandles[0].shaderIndex(),
+            .indirectBuffer1 = slot.indirectHandles[1].shaderIndex(),
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
+            // Reuse the raster-only unused color slot for the hybrid queue.
+            .deferredColorBuffer = hybridRasterEnabled() && !clusterPrebinEnabled()
+                ? hybridQueueHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
+            .depthImage = freezeCullingCamera_
+                ? cullingDepthImageHandle_.shaderIndex()
+                : depthImageHandle_.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
+            .passIndex = passIndex,
+            .mipLevel = mipLevel,
             .projectWithCullingCamera = projectWithCullingCamera ? 1u : 0u,
+            .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].shaderIndex(),
+            .materialTextureRemapBuffer = materialTextureRemapHandle_.shaderIndex(),
+            .environmentImage = kGPUDrivenInvalidBindlessIndex,
+            .environmentSHBuffer = clusterPrebinEnabled()
+                ? hybridClusterHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
+            .streamDeferredBindingsBuffer = kGPUDrivenInvalidBindlessIndex,
+            .residentRecordCapacity = residentRecordCapacity_,
+            .streamOwnerMaskBuffer =
+                streamEnabled_ && streamOwnerMaskHandle_.valid()
+                ? streamOwnerMaskHandle_.shaderIndex()
+                : kGPUDrivenInvalidBindlessIndex,
             .tessellationEdgePixels = tessellationEdgePixels(),
             .tessellationMaxFactor = tessellationMaxFactor(),
             .tessellationMaxSplitDepth = tessellationMaxSplitDepth(),
-            .hasBins = clusterPrebinEnabled() ? 1u : 0u,
-            .hasQueue = hybridRasterEnabled() && !clusterPrebinEnabled() ? 1u : 0u,
-            .hasStreamOwnerMask = streamEnabled_ && streamOwnerMaskHandle_.valid() ? 1u : 0u,
         };
-        return writer.encode(parameters, kResidentRasterABI, ParameterTransport::InlinePush);
     }
 
     Result<> initializeInternalBuffers(CommandBuffer& commandBuffer)
@@ -2096,30 +2136,17 @@ private:
         if (gpuSceneSubsystem_ == nullptr || passIndex >= kGPUSceneCullPhaseCount) {
             return makeError(Error::InvalidArgument);
         }
-        const auto& slot = activeFrameResources();
-        ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-        const auto& instanceView = gpuSceneSubsystem_->globalBufferViews().instances;
-        auto instanceSlice = instanceView.buffer->slice({instanceView.offset, instanceView.size});
-        if (!instanceSlice) { return makeError(instanceSlice.error()); }
-        const InstanceCullParameters params{
-            .settings = {writer.data(&previousParams_, sizeof(previousParams_), 16), 1, sizeof(previousParams_)},
-            .instances = writer.dataBuffer(*instanceSlice, sizeof(GPUSceneGPUInstanceRecord), alignof(GPUSceneGPUInstanceRecord)),
-            .visibility = writer.dataBuffer(slot.instanceVisibilityBuffer, 4, 4),
-            .visibleIds = writer.dataBuffer(slot.visibleInstanceIdsBuffer, 4, 4),
-            .streamOwners = streamEnabled_ ? writer.dataBuffer(streamOwnerMaskBuffer_.get(), 4, 4) : ShaderDataSpan{},
-            .counter = writer.buffer(slot.visibleInstanceCounterBuffer),
-            .hzb = writer.buffer(hzbBuffers_[(frameIndex_ & 1u) ^ (passIndex == 0u ? 1u : 0u)]),
-            .phase = passIndex,
-        };
-        auto encoded = writer.encode(params, kInstanceCullABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        auto reset = resetKernel_.prepareDispatch(*encoded, 1);
-        if (!reset) { return makeError(reset.error()); }
-        auto cull = instanceCullKernel_.prepareDispatch(*encoded, std::max(divideRoundUp(instanceCount_, 64u), 1u));
-        if (!cull) { return makeError(cull.error()); }
+        GPUDrivenPreviewUserPush push = makePush(passIndex);
         const GPUSceneInstanceCullRecordDesc desc{
-            .phase = passIndex == 0 ? GPUSceneCullPhase::Early : GPUSceneCullPhase::Late,
-            .reset = std::move(*reset), .cull = std::move(*cull),
+            .phase = passIndex == 0
+                ? GPUSceneCullPhase::Early
+                : GPUSceneCullPhase::Late,
+            .bindlessHeap = registry_->heap(),
+            .resetPipeline = resetPipeline_.get(),
+            .instanceCullPipeline = instanceCullPipeline_.get(),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .instanceGroupCountX = divideRoundUp(instanceCount_, 64u),
         };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordInstanceCull(
@@ -2164,7 +2191,7 @@ private:
         };
         const RenderingAttachmentDesc visibilityAttachment{
             .view = &visibility,
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
@@ -2172,13 +2199,13 @@ private:
         TextureHandle domain = context.outputTexture("domain");
         TextureHandle debugColor = context.outputTexture("color");
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
-            .view = domain.view(), .state = ResourceState::ColorAttachment,
+            .view = domain.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
-            .view = debugColor.view(), .state = ResourceState::ColorAttachment,
+            .view = debugColor.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
@@ -2196,18 +2223,22 @@ private:
         if (prebin) {
             auto binProfile = context.profileScope("Soft/hard classification");
             Result<> result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), reversedZ, activeMeshletCount_, false, false, tessellationEnabled());
+                softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.shaderIndex(), activeMeshletCount_, false, false, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*registry_->heap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
-            auto push = encodeResidentParameters(commandBuffer, passIndex, 0, projectWithCullingCamera);
-            if (!push) { return makeError(push.error()); }
+            const auto push = makePush(passIndex, 0, projectWithCullingCamera);
             const PrivateBufferComputeStage classification[] = {
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() -> Result<> {
-                    return clusterCountKernel_.dispatch(commandBuffer, *push, 1);
+                    if (auto commandResult = commandBuffer.bindExecution((clusterCountPipeline_)->execution()); !commandResult) { return commandResult; }
+                    commandBuffer.pushBindlessData(&push, sizeof(push));
+                    commandBuffer.dispatch(1);
+                    return {};
                 }},
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
-                    return clusterBinKernel_.dispatchIndirect(commandBuffer, *push, residentLods_[activeFrameSlot_]->arguments());
+                    if (auto commandResult = commandBuffer.bindExecution((clusterBinPipeline_)->execution()); !commandResult) { return commandResult; }
+                    commandBuffer.pushBindlessData(&push, sizeof(push));
+                    return (residentLods_[activeFrameSlot_]->arguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                 }},
             };
             result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->clusterBuffer(), classification);
@@ -2231,10 +2262,10 @@ private:
             // and pixel writes visible to this compute branch.
             commands.beginDebugLabel({.name = "Hybrid raster: resident software clusters"});
             commands.bindBindlessHeap(*registry_->heap());
-            auto push = encodeResidentParameters(commands, passIndex, 0, projectWithCullingCamera);
-            if (!push) { return makeError(push.error()); }
-            const Result<> result = clusterRasterKernel_.dispatchIndirect(commands, *push, hybridRasterizer_->clusterArguments(),
-                VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+            if (auto commandResult = commands.bindExecution((clusterRasterPipeline_)->execution()); !commandResult) { return commandResult; }
+            const auto push = makePush(passIndex, 0, projectWithCullingCamera);
+            commands.pushBindlessData(&push, sizeof(push));
+            const Result<> result = (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             commands.endDebugLabel();
             return result;
         };
@@ -2246,14 +2277,14 @@ private:
                 .colorAttachments = {colors, tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u},
                 .depthStencilAttachment = &depthAttachment,
             }); !rendering) { return rendering; }
-            commands.setViewport(Viewport{
+            if (auto commandResult = commands.setViewport(Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
                 .width = static_cast<float>(frameWidth_),
                 .height = static_cast<float>(frameHeight_),
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
-            });
+            }); !commandResult) { return commandResult; }
             commands.setScissor(renderArea);
             commands.bindBindlessHeap(*registry_->heap());
             for (uint32_t bucketIndex = 0;
@@ -2262,15 +2293,14 @@ private:
                 const auto& pipelines = tessellationEnabled() && projectWithCullingCamera
                     ? (reversedZ ? frozenVisibilityPipelines_ : frozenStandardZVisibilityPipelines_)
                     : (reversedZ ? visibilityPipelines_ : standardZVisibilityPipelines_);
-                auto push = encodeResidentParameters(commands, passIndex, bucketIndex, projectWithCullingCamera);
-                if (!push) { return makeError(push.error()); }
-                if (auto result = push->bindResources(commands); !result) { return result; }
-                const auto bytes = push->inlineData();
-                if (auto result = commands.bindExecution((pipelines[bucketIndex])->execution(), bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
+                if (auto commandResult = commands.bindExecution((pipelines[bucketIndex])->execution()); !commandResult) { return commandResult; }
+                const GPUDrivenPreviewUserPush push =
+                    makePush(passIndex, bucketIndex, projectWithCullingCamera);
+                commands.pushBindlessData(&push, sizeof(push));
                 if (prebin) {
-                    commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments(), bucketIndex * 3u * sizeof(uint32_t));
+                    if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({bucketIndex * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
                 } else {
-                    commands.drawMeshTasksIndirect(residentLods_[activeFrameSlot_]->arguments(), tessellationEnabled() ? 24u : 12u);
+                    if (auto commandResult = (residentLods_[activeFrameSlot_]->arguments()).slice({tessellationEnabled() ? 24u : 12u, 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
                 }
             }
             commands.endRendering();
@@ -2288,32 +2318,28 @@ private:
         return hybridRasterEnabled() ? hybridRasterizer_->resolve(context.commandBuffer(), visibilityTexture, visibility, depthTexture, depth, prebin) : Result<>{};
     }
 
-    Result<> buildHzb(CommandBuffer& commandBuffer, TextureView* depth)
+    Result<> buildHzb(CommandBuffer& commandBuffer)
     {
         if (gpuSceneSubsystem_ == nullptr || hzbMipCount_ == 0) {
             return makeError(Error::InvalidArgument);
         }
-        const auto* visible = gpuSceneSubsystem_->visibleDrawSet(gpuSceneView_, activeFrameSlot_);
-        if (visible == nullptr) { return makeError(Error::InvalidArgument); }
-        const auto& hzb = visible->gpu.hzb;
-        Buffer* output = hzb.history[hzb.writeIndex].buffer;
         if (boolProperty(&properties(), "hzbSpd", true) &&
             frameWidth_ <= kHZBSPDMaxDimension && frameHeight_ <= kHZBSPDMaxDimension) {
-            ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-            const HZBSPDParameters params{
-                .depthImage = writer.sampledImage(depth), .hzbBuffer = writer.buffer(output),
-                .counterBuffer = writer.buffer(hzbSpdCounterBuffer_.get()),
+            const HZBSPDUserPush push{
+                .depthImage = freezeCullingCamera_ ? cullingDepthImageHandle_.shaderIndex() : depthImageHandle_.shaderIndex(),
+                .hzbBuffer = hzbHandles_[frameIndex_ & 1u].shaderIndex(),
+                .counterBuffer = hzbSpdCounterHandle_.shaderIndex(),
                 .width = frameWidth_, .height = frameHeight_, .mipCount = hzbMipCount_,
                 .reversedZ = previousParams_.clipOrtho[3] > 0.5f ? 1u : 0u};
-            auto encoded = writer.encode(params, kHZBSPDABI, ParameterTransport::InlinePush);
-            if (!encoded) { return makeError(encoded.error()); }
-            const auto& kernel = hzbSpdWaveKernel_.valid() && boolProperty(&properties(), "hzbSpdWaveOps", true)
-                ? hzbSpdWaveKernel_ : hzbSpdKernel_;
-            auto dispatch = kernel.prepareDispatch(*encoded, divideRoundUp(frameWidth_, kHZBSPDTileSize),
-                divideRoundUp(frameHeight_, kHZBSPDTileSize));
-            if (!dispatch) { return makeError(dispatch.error()); }
+            const GPUSceneComputeDispatchDesc dispatch{
+                .pushData = &push, .pushDataSize = sizeof(push),
+                .groupCountX = divideRoundUp(frameWidth_, kHZBSPDTileSize),
+                .groupCountY = divideRoundUp(frameHeight_, kHZBSPDTileSize)};
             const GPUSceneHZBRecordDesc desc{
-                .preparedDispatches = std::span(&*dispatch, 1), .singleDispatch = true,
+                .bindlessHeap = registry_->heap(),
+                .pipeline = hzbSpdWavePipeline_ && boolProperty(&properties(), "hzbSpdWaveOps", true)
+                    ? hzbSpdWavePipeline_.get() : hzbSpdPipeline_.get(),
+                .dispatches = std::span(&dispatch, 1), .singleDispatch = true,
                 .counterBuffer = hzbSpdCounterBuffer_.get(), .counterResetSource = hzbSpdResetBuffer_.get()};
             std::string log;
             const Result<> result = gpuSceneSubsystem_->recordBuildHzb(
@@ -2321,27 +2347,31 @@ private:
             if (!result) { spdlog::error("[VisibilityBufferPass] {}", log); }
             return result;
         }
-        std::vector<PreparedComputeDispatch> dispatches;
-        dispatches.reserve(hzbMipCount_);
-        uint32_t width = frameWidth_, height = frameHeight_;
-        uint32_t sourceWidth = width, sourceHeight = height, sourceOffset = 0, offset = 0;
-        for (uint32_t mip = 0; mip < hzbMipCount_; ++mip) {
-            ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-            const HZBParameters params{
-                .hzb = writer.dataBuffer(output, sizeof(float), alignof(float)), .depth = writer.sampledImage(depth),
-                .width = width, .height = height, .sourceWidth = sourceWidth, .sourceHeight = sourceHeight,
-                .sourceOffset = sourceOffset, .destinationOffset = offset,
-                .reversedZ = previousParams_.clipOrtho[3] > 0.5f ? 1u : 0u, .mipLevel = mip};
-            auto encoded = writer.encode(params, kHZBABI, ParameterTransport::InlinePush);
-            if (!encoded) { return makeError(encoded.error()); }
-            auto dispatch = hzbKernel_.prepareDispatch(*encoded, divideRoundUp(width, 8u), divideRoundUp(height, 8u));
-            if (!dispatch) { return makeError(dispatch.error()); }
-            dispatches.push_back(std::move(*dispatch));
-            sourceWidth = width; sourceHeight = height; sourceOffset = offset;
-            offset += width * height;
-            width = std::max(1u, (width + 1u) / 2u); height = std::max(1u, (height + 1u) / 2u);
+        std::vector<GPUDrivenPreviewUserPush> pushes;
+        pushes.reserve(hzbMipCount_);
+        for (uint32_t mipLevel = 0; mipLevel < hzbMipCount_; ++mipLevel) {
+            pushes.push_back(makePush(0, mipLevel));
         }
-        const GPUSceneHZBRecordDesc desc{.preparedDispatches = dispatches};
+        std::vector<GPUSceneComputeDispatchDesc> dispatches;
+        dispatches.reserve(hzbMipCount_);
+        uint32_t mipWidth = frameWidth_;
+        uint32_t mipHeight = frameHeight_;
+        for (uint32_t mipLevel = 0; mipLevel < hzbMipCount_; ++mipLevel) {
+            dispatches.push_back(GPUSceneComputeDispatchDesc{
+                .pushData = &pushes[mipLevel],
+                .pushDataSize = sizeof(pushes[mipLevel]),
+                .groupCountX = divideRoundUp(mipWidth, 8u),
+                .groupCountY = divideRoundUp(mipHeight, 8u),
+                .groupCountZ = 1,
+            });
+            mipWidth = std::max(1u, (mipWidth + 1u) / 2u);
+            mipHeight = std::max(1u, (mipHeight + 1u) / 2u);
+        }
+        const GPUSceneHZBRecordDesc desc{
+            .bindlessHeap = registry_->heap(),
+            .pipeline = hzbPipeline_.get(),
+            .dispatches = dispatches,
+        };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordBuildHzb(
             commandBuffer,
@@ -2368,7 +2398,7 @@ private:
         };
         const RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
@@ -2377,51 +2407,35 @@ private:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
-        commandBuffer.setViewport(Viewport{
+        if (auto commandResult = commandBuffer.setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(frameWidth_),
             .height = static_cast<float>(frameHeight_),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         commandBuffer.setScissor(renderArea);
-        if (previousParams_.mode == kVisibilityModeNone) {
-            commandBuffer.endRendering();
-            return {};
-        }
-        ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-        const ResourceLease leases[] = {activeFrameResources().paramsHandle, visibilityImageHandle_, depthImageHandle_};
-        for (const auto& lease : leases) {
-            if (auto result = writer.use(lease); !result) { return result; }
-        }
-        // Stream-only scenes have no resident meshlet buffers.
-        if (residentRecordCapacity_ != 0) {
-            if (auto result = writer.use(gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws]); !result) { return result; }
-            if (auto result = writer.use(gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets]); !result) { return result; }
-        }
-        if (streamEnabled_) {
-            if (auto result = writer.use(streamDebugRecordsHandle_); !result) { return result; }
-            if (auto result = writer.use(streamDebugGroupsHandle_); !result) { return result; }
-        }
-        const VisibilityCompositeParameters push{
-            .paramsBuffer = {activeFrameResources().paramsHandle.shaderValue()},
-            .visibilityImage = {visibilityImageHandle_.shaderValue()},
-            .depthImage = {depthImageHandle_.shaderValue()},
-            .residentRecords = {gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderValue()},
-            .meshletBuffer = {gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderValue()},
-            .streamRecords = {streamEnabled_ ? streamDebugRecordsHandle_.shaderValue() : UINT64_MAX},
-            .streamGroups = {streamEnabled_ ? streamDebugGroupsHandle_.shaderValue() : UINT64_MAX},
+        // Stream rasterization binds its own heap; the frozen-camera path does
+        // not run a final viewport HZB dispatch to restore this pass's heap.
+        commandBuffer.bindBindlessHeap(*registry_->heap());
+        if (auto commandResult = commandBuffer.bindExecution((compositePipeline_)->execution()); !commandResult) { return commandResult; }
+        const VisibilityBufferCompositeUserPush push{
+            .paramsBuffer = activeFrameResources().paramsHandle.shaderIndex(),
+            .visibilityImage = visibilityImageHandle_.shaderIndex(),
+            // Frozen HZB depth belongs to the culling camera, not the debug viewport.
+            .depthImage = depthImageHandle_.shaderIndex(),
+            .residentRecords = gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
+            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
             .residentRecordCapacity = residentRecordCapacity_,
+            .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
+            .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .shadedColors = boolProperty(&properties(), "shadedDebugColors", true) ? 1u : 0u,
-            .streamEnabled = streamEnabled_ ? 1u : 0u,
         };
-        auto encoded = writer.encode(push, kVisibilityCompositeABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        if (auto result = encoded->bindResources(commandBuffer); !result) { return result; }
-        const auto bytes = encoded->inlineData();
-        if (auto result = commandBuffer.bindExecution(compositePipeline_->execution(), bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
-        commandBuffer.draw(3);
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        if (previousParams_.mode != kVisibilityModeNone) {
+            if (auto commandResult = commandBuffer.draw(3); !commandResult) { return commandResult; }
+        }
         commandBuffer.endRendering();
         return {};
     }
@@ -2623,20 +2637,18 @@ private:
         if (hybridRasterizer_) {
             Result<> hybridResult = heap.storageBuffer(hybridRasterizer_->queueBuffer()).transform([&](auto value) { streamHybridQueueHandle_ = std::move(value); });
             if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->clusterBuffer()).transform([&](auto value) { streamHybridClusterHandle_ = std::move(value); }); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->workloadBuffer()).transform([&](auto value) { streamWorkloadHandle_ = std::move(value); }); }
             if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->pixelBuffer()).transform([&](auto value) { streamHybridPixelHandle_ = std::move(value); }); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->candidateArguments()).transform([&](auto value) { streamCandidateArgumentsHandle_ = std::move(value); }); }
             if (!hybridResult) { return hybridResult; }
         }
-        ShaderDataSpan tessellationData{};
         if (tessellationEnabled()) {
-            if (!tessellationBuffer_) { return makeError(Error::InvalidArgument); }
-            auto slice = tessellationBuffer_->slice();
-            if (!slice) { return makeError(slice.error()); }
-            if (auto valid = slice->validateData(device_->identity(), 4, 4); !valid) { return valid; }
-            tessellationData = {slice->deviceAddress(), static_cast<uint32_t>(slice->size() / 4), 4};
+            Result<> tessResult = heap.storageBuffer(*tessellationBuffer_).transform([&](auto value) { streamTessellationHandle_ = std::move(value); });
+            if (!tessResult) { return tessResult; }
         }
-        Result<> result = heap.sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { streamVisibilityImageHandle_ = std::move(value); });
+        Result<> result = heap.sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { streamVisibilityImageHandle_ = std::move(value); });
         if (result) {
-            result = heap.sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { streamDepthImageHandle_ = std::move(value); });
+            result = heap.sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { streamDepthImageHandle_ = std::move(value); });
         }
         if (result) {
             result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer).transform([&](auto value) { streamInstanceVisibilityHandle_ = std::move(value); });
@@ -2665,9 +2677,14 @@ private:
         }
         result = streamRuntime_->updateRasterBindings(
             MeshletStreamGPURasterBindings{
-                .instanceVisibilityBuffer = {uint64_t(streamInstanceVisibilityHandle_.shaderValue())},
-                .hzbBuffer0 = {uint64_t(streamHzbHandles_[0].shaderValue())},
-                .hzbBuffer1 = {uint64_t(streamHzbHandles_[1].shaderValue())},
+                .instanceVisibilityBuffer =
+                    streamInstanceVisibilityHandle_.shaderIndex(),
+                .hzbBuffer0 = streamHzbHandles_[0].shaderIndex(),
+                .hzbBuffer1 = streamHzbHandles_[1].shaderIndex(),
+                .depthImage = streamDepthImageHandle_.shaderIndex(),
+                .visibilityImage = streamVisibilityImageHandle_.shaderIndex(),
+                .visibleInstanceIdsBuffer =
+                    streamVisibleInstanceIdsHandle_.shaderIndex(),
                 .visibleRecordBase = residentRecordCapacity_,
                 .visibleRecordCapacity = streamRecordCapacity,
                 .hzbMipCount = hzbMipCount_,
@@ -2675,12 +2692,14 @@ private:
                 .cullingFlags = streamCullingFlags(),
                 .width = frameWidth_,
                 .height = frameHeight_,
-                .gpuSceneInstanceBuffer = {uint64_t(streamGPUSceneInstanceHandle_.shaderValue())},
-                .tessellationBuffer = tessellationData,
+                .visibleInstanceCounterBuffer =
+                    streamVisibleInstanceCounterHandle_.shaderIndex(),
+                .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.shaderIndex(),
+                .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.shaderIndex() : UINT32_MAX,
                 .displacementBound = previousParams_.displacementBound,
                 .classificationFlags = boolProperty(&properties(), "metadataFastClassification", true) ? 0u : 1u,
-                .materialBuffer = {uint64_t(streamMaterialHandle_.shaderValue())},
-                .materialTextureRemapBuffer = {uint64_t(streamMaterialTextureRemapHandle_.shaderValue())},
+                .materialBuffer = streamMaterialHandle_.shaderIndex(),
+                .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.shaderIndex(),
                 .materialTextureCount = materialTextureCount_,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
@@ -2757,27 +2776,26 @@ private:
         GPUSceneCullPhase phase)
     {
         if (!streamEnabled_ || gpuSceneSubsystem_ == nullptr ||
-            !streamCullResetKernel_.valid() ||
-            !streamInstanceCullKernel_.valid()) {
+            streamCullResetPipeline_ == nullptr ||
+            streamInstanceCullPipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        const auto* visible = gpuSceneSubsystem_->visibleDrawSet(gpuSceneView_, activeFrameSlot_);
-        if (visible == nullptr) { return makeError(Error::InvalidArgument); }
-        const auto& gpu = visible->gpu;
-        const uint32_t phaseIndex = phase == GPUSceneCullPhase::Early ? 0u : 1u;
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
-        auto encoded = streamRuntime_->encodeInstanceCull(writer, gpu.instanceVisibilityStates.buffer,
-            gpu.visibleInstanceIds.buffer, gpu.visibleInstanceCounter.buffer,
-            gpu.hzb.history[gpu.hzb.writeIndex ^ (phaseIndex == 0u ? 1u : 0u)].buffer, phaseIndex);
-        if (!encoded) { return makeError(encoded.error()); }
-        auto reset = streamCullResetKernel_.prepareDispatch(*encoded, 1);
-        if (!reset) { return makeError(reset.error()); }
-        auto cull = streamInstanceCullKernel_.prepareDispatch(*encoded,
-            std::max(divideRoundUp(static_cast<uint32_t>(streamRuntime_->asset().instances().size()), 64u), 1u));
-        if (!cull) { return makeError(cull.error()); }
-        const GPUSceneInstanceCullRecordDesc desc{.phase = phase, .reset = std::move(*reset), .cull = std::move(*cull)};
+        MeshletStreamUserPush push = streamRuntime_->userPush();
+        push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
+        const GPUSceneInstanceCullRecordDesc desc{
+            .phase = phase,
+            .bindlessHeap = streamRuntime_->bindlessHeap(),
+            .resetPipeline = streamCullResetPipeline_.get(),
+            .instanceCullPipeline = streamInstanceCullPipeline_.get(),
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .instanceGroupCountX = std::max(
+                divideRoundUp(
+                    static_cast<uint32_t>(
+                        streamRuntime_->asset().instances().size()),
+                    64u),
+                1u),
+        };
         std::string log;
         Result<> result = gpuSceneSubsystem_->recordInstanceCull(
             commandBuffer,
@@ -2819,7 +2837,7 @@ private:
         };
         const RenderingAttachmentDesc visibilityAttachment{
             .view = &visibility,
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
@@ -2827,37 +2845,39 @@ private:
         TextureHandle domain = context.outputTexture("domain");
         TextureHandle debugColor = context.outputTexture("color");
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
-            .view = domain.view(), .state = ResourceState::ColorAttachment,
+            .view = domain.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
-            .view = debugColor.view(), .state = ResourceState::ColorAttachment,
+            .view = debugColor.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
         };
         const bool prebin = clusterPrebinEnabled();
+        MeshletStreamUserPush push = streamRuntime_->userPush();
         const bool forceHardware = prebin && !tessellationEnabled() &&
             boolProperty(&properties(), "benchmarkForceHardwareRaster", false);
+        push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.shaderIndex() : UINT32_MAX;
+        push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.shaderIndex() : UINT32_MAX;
+        push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
+        push.tessellationEdgePixels = tessellationEdgePixels();
+        push.tessellationMaxFactor = tessellationMaxFactor();
+        push.tessellationMaxSplitDepth = tessellationMaxSplitDepth();
         if (prebin) {
             auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_->visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
-                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, count, true, true, tessellationEnabled());
+                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.shaderIndex(), count, true, true, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
-            ParameterWriter candidateWriter(*device_, *registry_, commandBuffer.frameContext());
-            const auto streamResources = streamRuntime_->deferredGpuResources();
-            const StreamCandidateParameters candidates{
-                .headers = candidateWriter.dataBuffer(streamResources.activeHeaderBuffer, sizeof(MeshletStreamGPUActiveHeader), 16),
-                .groups = candidateWriter.dataBuffer(streamResources.activeGroupBuffer, sizeof(MeshletStreamGPUActiveGroup), 16),
-                .visibility = candidateWriter.buffer(activeFrameResources().instanceVisibilityBuffer),
-                .late = (phase == GPUSceneCullPhase::Early ? 0u : 1u),
-            };
-            result = hybridRasterizer_->prepareStreamClusterCandidates(commandBuffer, streamClusterPrepareKernel_, candidateWriter, candidates);
+            // The prepare entry uses this otherwise unused handle for its
+            // indirect dispatches; raster entries retain the queue contract.
+            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.shaderIndex();
+            result = hybridRasterizer_->prepareStreamClusterCandidates(commandBuffer, *streamClusterPreparePipeline_, push);
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
             context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyCandidates" : "AfterStreamLateCandidates");
@@ -2867,33 +2887,18 @@ private:
             // depends on the cull stage removing all semantically forced HW.
             // Experimental until full-pass gains are established in scene profiles.
             const bool divertHardware = boolProperty(&properties(), "cullHardwareClassification", false);
-            ParameterWriter cullWriter(*device_, *registry_, commandBuffer.frameContext());
-            StreamClusterCullParameters cullParams{
-                .instances = cullWriter.buffer(gpuSceneSubsystem_->globalBufferViews().instances.buffer),
-                .visibility = cullWriter.buffer(activeFrameResources().instanceVisibilityBuffer),
-                .previousHZB = cullWriter.buffer(hzbBuffers_[(frameIndex_ & 1u) ^ 1u]),
-                .currentHZB = cullWriter.buffer(hzbBuffers_[frameIndex_ & 1u]),
-                .phase = (phase == GPUSceneCullPhase::Early ? 0u : 1u),
-            };
-            result = streamRuntime_->fillClusterCullParameters(cullWriter, cullParams);
-            if (!result) { return result; }
             result = hybridRasterizer_->cullStreamClusters(commandBuffer,
-                divertHardware ? streamClusterCullKernel_ : streamClusterCullP0Kernel_, cullWriter, cullParams);
+                divertHardware ? *streamClusterCullPipeline_ : *streamClusterCullP0Pipeline_, push);
+            push.hybridQueueBuffer = UINT32_MAX;
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
             debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClusterCull" : "AfterStreamLateClusterCull", ResourceState::General);
             if (!forceHardware) {
                 binProfile.next("Soft/hard classification");
                 commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
-                ParameterWriter classifyWriter(*device_, *registry_, commandBuffer.frameContext());
-                const auto& instanceView = gpuSceneSubsystem_->globalBufferViews().instances;
-                auto instances = instanceView.buffer->slice({instanceView.offset, instanceView.size});
-                if (!instances) { return makeError(instances.error()); }
-                auto parameters = streamRuntime_->encodeClusterClassify(classifyWriter, &hybridRasterizer_->clusterBuffer(),
-                    classifyWriter.dataBuffer(*instances, sizeof(GPUSceneGPUInstanceRecord), 16), tessellationEnabled());
-                if (!parameters) { return makeError(parameters.error()); }
-                result = (divertHardware ? streamClusterBinKernel_ : streamClusterBinP0Kernel_).dispatchIndirect(
-                    commandBuffer, *parameters, hybridRasterizer_->candidateArguments());
+                if (auto commandResult = commandBuffer.bindExecution((divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_).execution()); !commandResult) { return commandResult; }
+                commandBuffer.pushBindlessData(&push, sizeof(push));
+                result = (hybridRasterizer_->candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                 commandBuffer.endDebugLabel();
                 if (!result) { return result; }
                 context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClassify" : "AfterStreamLateClassify");
@@ -2904,17 +2909,19 @@ private:
             debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyBins" : "AfterStreamLateBins");
             if (context.debugEnabled() && boolProperty(&properties(), "softwareRasterWorkload", false)) {
                 auto diagnostic = context.profileScope("SW workload replay (diagnostic)");
-                ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-                auto parameters = streamRuntime_->encodeSoftwareWorkload(writer, &hybridRasterizer_->clusterBuffer(),
-                    &hybridRasterizer_->workloadBuffer(), gpuSceneSubsystem_->globalBufferViews().instances.buffer);
-                if (!parameters) { return makeError(parameters.error()); }
+                commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
+                auto counterPush = push;
+                counterPush.hybridQueueBuffer = streamWorkloadHandle_.shaderIndex();
                 const PrivateBufferComputeStage workload[] = {
                     {RenderGraphResourceAccess::BufferStorageWrite, [&]() -> Result<> {
-                        return streamWorkloadKernels_[0].dispatch(commandBuffer, *parameters, 1);
+                        if (auto commandResult = commandBuffer.bindExecution((streamWorkloadPipelines_[0])->execution()); !commandResult) { return commandResult; }
+                        commandBuffer.pushBindlessData(&counterPush, sizeof(counterPush));
+                        commandBuffer.dispatch(1, 1, 1);
+                        return {};
                     }},
                     {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
-                        return streamWorkloadKernels_[1].dispatchIndirect(commandBuffer, *parameters, hybridRasterizer_->clusterArguments(),
-                            VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+                        if (auto commandResult = commandBuffer.bindExecution((streamWorkloadPipelines_[1])->execution()); !commandResult) { return commandResult; }
+                        return (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                     }},
                 };
                 result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->workloadBuffer(), workload);
@@ -2940,21 +2947,14 @@ private:
             // The fork semaphore supplies availability and visibility for the
             // producer's private cluster/argument and pixel resources.
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
+            commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             // Fixed wave32 devices use the validated 32-thread strided kernel.
             // WorkControl 128 and the other comparison kernels remain explicit references.
             const size_t rasterMode = softwareRasterMode();
-            if (!streamRasterKernels_[rasterMode].valid()) { return makeError(Error::Unsupported); }
+            if (!streamClusterRasterPipelines_[rasterMode]) { return makeError(Error::Unsupported); }
+            if (auto commandResult = commands.bindExecution((streamClusterRasterPipelines_[rasterMode])->execution()); !commandResult) { return commandResult; }
 
-            auto* replay = profiling::WorkControlReplay::selected(phase == GPUSceneCullPhase::Early ? "early" : "late");
-            std::vector<uint8_t> settingsSnapshot;
-            ParameterWriter writer(*device_, *registry_, commands.frameContext());
-            auto parameters = streamRuntime_->encodeSoftwareRaster(writer, &hybridRasterizer_->clusterBuffer(),
-                &hybridRasterizer_->pixelBuffer(), gpuSceneSubsystem_->globalBufferViews().instances.buffer,
-                replay ? &settingsSnapshot : nullptr);
-            if (!parameters) { return makeError(parameters.error()); }
             if (context.debugEnabled()) {
-                // Bind before the checkpoint: shader trace may replace execution there.
-                if (auto bound = streamRasterKernels_[rasterMode].bind(commands, *parameters); !bound) { return bound; }
                 auto identity = softwareRasterIdentity();
                 identity["phase"] = phase == GPUSceneCullPhase::Early ? "early" : "late";
                 identity["queue"] = async ? "compute" : "graphics";
@@ -2967,30 +2967,31 @@ private:
                     {}, identity);
             }
 
+            commands.pushBindlessData(&push, sizeof(push));
             Result<> result;
+            auto* replay = profiling::WorkControlReplay::selected(phase == GPUSceneCullPhase::Early ? "early" : "late");
             if (replay) {
                 std::vector<profiling::WorkControlReplayBinding> bindings;
                 streamRuntime_->appendReplayBindings(bindings);
-                bindings.push_back({"bins", &hybridRasterizer_->clusterBuffer()});
-                bindings.push_back({"pixels", &hybridRasterizer_->pixelBuffer()});
-                bindings.push_back({"instances", gpuSceneSubsystem_->globalBufferViews().instances.buffer});
+                bindings.push_back({"bins", &hybridRasterizer_->clusterBuffer(), streamHybridClusterHandle_.shaderIndex()});
+                bindings.push_back({"pixels", &hybridRasterizer_->pixelBuffer(), streamHybridPixelHandle_.shaderIndex()});
+                bindings.push_back({"instances", gpuSceneSubsystem_->globalBufferViews().instances.buffer,
+                    streamGPUSceneInstanceHandle_.shaderIndex()});
                 GPUSceneViewGPUResourcesView guards;
                 if (!gpuSceneSubsystem_->viewGpuResources(gpuSceneView_, activeFrameSlot_, guards)) {
                     return makeError(Error::InvalidArgument);
                 }
-                bindings.push_back({"hzb0", guards.hzbHistory[0].buffer});
-                bindings.push_back({"hzb1", guards.hzbHistory[1].buffer});
-                bindings.push_back({"instanceVisibility", guards.instanceVisibilityStates.buffer});
-                bindings.push_back({"visibleInstanceIds", guards.visibleInstanceIds.buffer});
-                bindings.push_back({"visibleInstanceCounter", guards.visibleInstanceCounter.buffer});
-                replay->before(commands, streamRasterKernels_[rasterMode], *parameters,
-                    bindings, hybridRasterizer_->clusterArguments(), settingsSnapshot, softwareRasterIdentity());
+                bindings.push_back({"hzb0", guards.hzbHistory[0].buffer, UINT32_MAX});
+                bindings.push_back({"hzb1", guards.hzbHistory[1].buffer, UINT32_MAX});
+                bindings.push_back({"instanceVisibility", guards.instanceVisibilityStates.buffer, UINT32_MAX});
+                bindings.push_back({"visibleInstanceIds", guards.visibleInstanceIds.buffer, UINT32_MAX});
+                bindings.push_back({"visibleInstanceCounter", guards.visibleInstanceCounter.buffer, UINT32_MAX});
+                replay->before(commands, *streamClusterRasterPipelines_[rasterMode], *streamRuntime_->bindlessHeap(),
+                    bindings, hybridRasterizer_->clusterArguments(), &push, sizeof(push), softwareRasterIdentity());
             }
             {
                 profiling::NvPerfRange range(commands, phase == GPUSceneCullPhase::Early ? "WorkControl/early" : "WorkControl/late");
-                const uint64_t offset = VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t);
-                result = context.debugEnabled() ? commands.dispatchIndirect(hybridRasterizer_->clusterArguments(), offset)
-                    : streamRasterKernels_[rasterMode].dispatchIndirect(commands, *parameters, hybridRasterizer_->clusterArguments(), offset);
+                result = (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             }
             if (replay && result) { replay->after(commands); }
             commands.endDebugLabel();
@@ -3004,41 +3005,22 @@ private:
                 .colorAttachments = {colors, tessellationEnabled() ? 3u : 1u},
                 .depthStencilAttachment = &depthAttachment,
             }); !rendering) { return rendering; }
-            commands.setViewport(Viewport{
+            if (auto commandResult = commands.setViewport(Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
                 .width = static_cast<float>(frameWidth_),
                 .height = static_cast<float>(frameHeight_),
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
-            });
+            }); !commandResult) { return commandResult; }
             commands.setScissor(renderArea);
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            ParameterWriter writer(*device_, *registry_, commands.frameContext());
-            auto push = streamRuntime_->hardwareParameters(writer);
-            push.hasQueue = hybridRasterEnabled() && !prebin ? 1u : 0u;
-            push.hasBins = prebin ? 1u : 0u;
-            if (push.hasQueue) {
-                if (auto retained = writer.use(streamHybridQueueHandle_); !retained) { return retained; }
-                push.hybridQueueBuffer = {streamHybridQueueHandle_.shaderValue()};
-            }
-            if (push.hasBins) {
-                if (auto retained = writer.use(streamHybridClusterHandle_); !retained) { return retained; }
-                push.hybridClusterBuffer = push.writableBins = {streamHybridClusterHandle_.shaderValue()};
-            }
-            push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
-            push.tessellationEdgePixels = tessellationEdgePixels();
-            push.tessellationMaxFactor = tessellationMaxFactor();
-            push.tessellationMaxSplitDepth = tessellationMaxSplitDepth();
-            auto encoded = writer.encode(push, kStreamHardwareABI, ParameterTransport::InlinePush);
-            if (!encoded) { return makeError(encoded.error()); }
-            if (auto retained = encoded->bindResources(commands); !retained) { return retained; }
-            const auto bytes = encoded->inlineData();
-            if (auto result = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution(), bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
+            if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution()); !commandResult) { return commandResult; }
+            commands.pushBindlessData(&push, sizeof(push));
             if (prebin) {
-                commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments());
+                if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
             } else {
-                streamRuntime_->cmdDrawMeshTasks(commands, tessellationEnabled());
+                if (auto commandResult = streamRuntime_->cmdDrawMeshTasks(commands, tessellationEnabled()); !commandResult) { return commandResult; }
             }
             commands.endRendering();
             commands.endDebugLabel();
@@ -3198,7 +3180,7 @@ private:
                 if (!hybridResult) { return hybridResult; }
             }
         }
-        Result<> result = device_->resourceRegistry().transform([&](auto rhiValue) { bundle.registry = std::move(rhiValue); });
+        Result<> result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { bundle.registry = std::move(rhiValue); });
         if (!result) { return result; }
 
         auto bindBuffer = [&](Buffer& buffer, ResourceLease& handle,
@@ -3208,7 +3190,7 @@ private:
         auto writeImage = [&](ResourceLease& handle, TextureView& view,
                               std::string_view label) -> Result<> {
             Result<> writeResult =
-                bundle.registry->sampledImage(view, ResourceState::ShaderRead).transform([&](auto value) { handle = std::move(value); });
+                bundle.registry->sampledImage(view, TextureLayout::ShaderRead).transform([&](auto value) { handle = std::move(value); });
             if (!writeResult) {
                 log += resultMessage(std::string("writeSampledImage(VisibilityBufferPass ") +
                                          std::string(label) + ")",
@@ -3239,6 +3221,7 @@ private:
             }
             result = bindBuffer(bundle.residentLods[frameSlot]->selections(), bindings.lodSelectionHandle, "resident LOD selections");
             if (result) { result = bindBuffer(bundle.residentLods[frameSlot]->arguments(), bindings.lodArgumentsHandle, "resident LOD arguments"); }
+            if (result) { result = bindBuffer(bundle.residentLods[frameSlot]->scratch(), bindings.lodScratchHandle, "resident LOD scratch"); }
             if (!result) { return result; }
             if (resources.paramsBuffer == nullptr ||
                 resources.instanceVisibilityBuffer == nullptr ||
@@ -3308,6 +3291,8 @@ private:
         const uint32_t zero = 0;
         result = updateHostStorageBuffer(*bundle.hzbSpdResetBuffer, &zero, sizeof(zero));
         if (!result) { return result; }
+        result = bindBuffer(*bundle.hzbSpdCounterBuffer, bundle.hzbSpdCounterHandle, "SPD HZB counter");
+        if (!result) { return result; }
         if (streamEnabled_) {
             bundle.streamDebugResources = streamRuntime_->deferredGpuResources();
             if (!bundle.streamDebugResources.valid()) {
@@ -3370,9 +3355,9 @@ private:
             log = "VisibilityBufferPass canonical material texture remap size is invalid";
             return makeError(Error::InvalidArgument);
         }
-        std::vector<ShaderSampledImage> materialTextureRemap(
+        std::vector<uint32_t> materialTextureRemap(
             materialTextureCount_,
-            ShaderSampledImage{bundle.materialTextureHandles.front().shaderValue()});
+            bundle.materialTextureHandles.front().shaderIndex());
         const auto textureForSlot = [](const scene::RenderMaterial& material,
                                        uint32_t slot) -> const scene::RenderTextureInfo* {
             const std::array<const scene::RenderTextureInfo*,
@@ -3416,11 +3401,11 @@ private:
                 continue;
             }
             materialTextureRemap[remapIndex] =
-                ShaderSampledImage{bundle.materialTextureHandles[consumerTextureIndex].shaderValue()};
+                bundle.materialTextureHandles[consumerTextureIndex].shaderIndex();
         }
         result = uploadStorageBuffer(
             *device_, materialTextureRemap.data(),
-            static_cast<uint64_t>(materialTextureRemap.size() * sizeof(ShaderSampledImage)),
+            static_cast<uint64_t>(materialTextureRemap.size() * sizeof(uint32_t)),
             bundle.materialTextureRemapBuffer, log,
             "VisibilityBufferPass material texture descriptor remap");
         if (!result) {
@@ -3458,10 +3443,10 @@ private:
         if (!gpuSceneSource_) { return makeError(Error::InvalidArgument); }
         const auto materials = gpuSceneSource_->materials();
         const auto makeData = [&](const std::vector<ResourceLease>& handles) {
-            std::vector<ShaderSampledImage> descriptors(logicalTextureToMaterialTexture_.size(), ShaderSampledImage{UINT64_MAX});
+            std::vector<uint32_t> descriptors(logicalTextureToMaterialTexture_.size(), UINT32_MAX);
             for (size_t i = 0; i < descriptors.size(); ++i) {
                 const uint32_t mapped = logicalTextureToMaterialTexture_[i];
-                if (mapped < handles.size()) { descriptors[i] = ShaderSampledImage{handles[mapped].shaderValue()}; }
+                if (mapped < handles.size()) { descriptors[i] = handles[mapped].shaderIndex(); }
             }
             return buildTessellationData(materials, descriptors);
         };
@@ -3482,6 +3467,8 @@ private:
         Result<> result = uploadStorageBuffer(*device_, data.data(), data.size() * sizeof(uint32_t),
             bundle.tessellationBuffer, log, "Tessellation patterns and materials");
         if (!result) { return result; }
+        result = allocateAndWriteBuffer(*bundle.registry, *bundle.tessellationBuffer,
+            bundle.tessellationHandle, log, "tessellation");
         return result;
     }
 
@@ -3495,9 +3482,11 @@ private:
         registry_ = std::move(bundle.registry);
         materialTextureRemapBuffer_ = std::move(bundle.materialTextureRemapBuffer);
         tessellationBuffer_ = std::move(bundle.tessellationBuffer);
+        tessellationHandle_ = bundle.tessellationHandle;
         streamOwnerMaskBuffer_ = std::move(bundle.streamOwnerMaskBuffer);
         hzbSpdCounterBuffer_ = std::move(bundle.hzbSpdCounterBuffer);
         hzbSpdResetBuffer_ = std::move(bundle.hzbSpdResetBuffer);
+        hzbSpdCounterHandle_ = bundle.hzbSpdCounterHandle;
         gpuSceneBindings_ = bundle.gpuSceneBindings;
         materialTextureRemapHandle_ = bundle.materialTextureRemapHandle;
         hzbHandles_ = bundle.hzbHandles;
@@ -3515,6 +3504,7 @@ private:
             resources.paramsHandle = bindings.paramsHandle;
             resources.lodSelectionHandle = bindings.lodSelectionHandle;
             resources.lodArgumentsHandle = bindings.lodArgumentsHandle;
+            resources.lodScratchHandle = bindings.lodScratchHandle;
             resources.instanceVisibilityHandle = bindings.instanceVisibilityHandle;
             resources.visibleInstanceIdsHandle = bindings.visibleInstanceIdsHandle;
             resources.visibleInstanceCounterHandle = bindings.visibleInstanceCounterHandle;
@@ -4352,8 +4342,7 @@ private:
         GPUDrivenPreviewGPUParams previous, frozen;
         uint64_t temporalFrameIndex = 0;
         uint32_t width = 1, height = 1, instanceCount = 0, hzbMipCount = 1, frameIndex = 0;
-        uint32_t textureCount = 1, materialCount = 1;
-        bool tessellation = false;
+        uint32_t textureCount = 1, materialCount = 1, lodSelection = UINT32_MAX, tessellation = UINT32_MAX;
         float displacementBound = 0;
         bool hasView = false, hzbValid = false, previousValid = false, frozenValid = false;
         bool freeze = false, freezeChanged = false;
@@ -4411,8 +4400,9 @@ private:
 
         params.meshletOffset = input.adaptiveRange.offset;
         params.meshletCount = input.adaptiveRange.count;
+        params.lodSelectionBuffer = input.lodSelection;
         params.lodSelectionEnabled = 1u;
-        params.tessellationEnabled = input.tessellation ? 1u : 0u;
+        params.tessellationBuffer = input.tessellation;
         params.displacementBound = input.displacementBound;
         output.params = params;
         return {};
@@ -4437,7 +4427,8 @@ private:
         input.hzbValid = hzbValid_ && !input.freezeChanged;
         input.previousValid = previousCameraValid_ && !input.freezeChanged;
         input.frozenValid = frozenCullingCameraValid_ && !(input.freezeChanged && !input.freeze);
-        input.tessellation = tessellationEnabled();
+        input.lodSelection = slot.lodSelectionHandle.shaderIndex();
+        input.tessellation = tessellationEnabled() ? tessellationHandle_.shaderIndex() : UINT32_MAX;
         input.displacementBound = tessellationEnabled() && gpuSceneSource_
             ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
         CameraPreparationOutput camera;
@@ -4474,22 +4465,36 @@ private:
     ResourceLease hybridQueueHandle_;
     ResourceLease hybridClusterHandle_;
     ResourceLease hybridPixelHandle_;
-    std::array<ComputeKernel, 2> streamWorkloadKernels_;
+    ResourceLease streamWorkloadHandle_;
+    std::array<std::unique_ptr<ShaderModule>, 2> streamWorkloadShaders_;
+    std::array<std::unique_ptr<ComputePipeline>, 2> streamWorkloadPipelines_;
     std::map<std::string, std::string> shaderHashes_;
     ResourceLease streamHybridClusterHandle_;
     ResourceLease streamHybridPixelHandle_;
-    ComputeKernel streamClusterPrepareKernel_;
-    std::array<ComputeKernel, 9> streamRasterKernels_;
-    ComputeKernel clusterBinKernel_;
-    ComputeKernel clusterCountKernel_;
-    ComputeKernel clusterRasterKernel_;
-    ComputeKernel streamClusterBinKernel_;
-    ComputeKernel streamClusterBinP0Kernel_;
-    ComputeKernel streamClusterCullKernel_;
-    ComputeKernel streamClusterCullP0Kernel_;
+    ResourceLease streamCandidateArgumentsHandle_;
+    std::unique_ptr<ShaderModule> streamClusterPrepareShader_;
+    std::unique_ptr<ComputePipeline> streamClusterPreparePipeline_;
+    std::unique_ptr<ShaderModule> clusterBinShader_;
+    std::unique_ptr<ShaderModule> clusterCountShader_;
+    std::unique_ptr<ShaderModule> clusterRasterShader_;
+    std::unique_ptr<ShaderModule> streamClusterBinShader_;
+    std::unique_ptr<ShaderModule> streamClusterBinP0Shader_;
+    std::unique_ptr<ShaderModule> streamClusterCullShader_;
+    std::unique_ptr<ShaderModule> streamClusterCullP0Shader_;
+    std::array<std::unique_ptr<ShaderModule>, 9> streamClusterRasterShaders_;
+    std::unique_ptr<ComputePipeline> clusterBinPipeline_;
+    std::unique_ptr<ComputePipeline> clusterCountPipeline_;
+    std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
+    std::unique_ptr<ComputePipeline> streamClusterBinPipeline_;
+    std::unique_ptr<ComputePipeline> streamClusterBinP0Pipeline_;
+    std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
+    std::unique_ptr<ComputePipeline> streamClusterCullP0Pipeline_;
+    std::array<std::unique_ptr<ComputePipeline>, 9> streamClusterRasterPipelines_;
     ResourceLease streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
     std::unique_ptr<Buffer> tessellationBuffer_;
+    ResourceLease tessellationHandle_;
+    ResourceLease streamTessellationHandle_;
     std::unique_ptr<ShaderModule> streamTaskShader_;
     std::string compiledTessellationKey_;
     int compiledTextureMaxDimension_ = 512;
@@ -4502,12 +4507,13 @@ private:
     std::array<Buffer*, 2> hzbBuffers_{};
     std::unique_ptr<Buffer> hzbSpdCounterBuffer_;
     std::unique_ptr<Buffer> hzbSpdResetBuffer_;
+    ResourceLease hzbSpdCounterHandle_;
     GPUDrivenPreviewCullingTargets cullingTargets_;
     std::shared_ptr<PreparedSceneResources> preparedScene_;
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::vector<TextureView*> materialViews_;
     std::shared_ptr<ScenePathTraceResources> sharedTextureResources_;
-    std::shared_ptr<const SampledImageSnapshot> materialSnapshot_;
+    std::shared_ptr<const ComputeSampledImageSnapshot> materialSnapshot_;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;
     const scene::Scene* gpuSceneSource_ = nullptr;
@@ -4542,25 +4548,32 @@ private:
     std::unique_ptr<ShaderModule> maskedFragmentShader_;
     std::unique_ptr<ShaderModule> frozenFragmentShader_;
     std::unique_ptr<ShaderModule> frozenMaskedFragmentShader_;
+    std::unique_ptr<ShaderModule> resetShader_;
+    std::unique_ptr<ShaderModule> instanceCullShader_;
+    std::unique_ptr<ShaderModule> hzbShader_;
+    std::unique_ptr<ShaderModule> hzbSpdShader_;
+    std::unique_ptr<ShaderModule> hzbSpdWaveShader_;
     std::unique_ptr<ShaderModule> compositeVertexShader_;
     std::unique_ptr<ShaderModule> compositeFragmentShader_;
     std::unique_ptr<ShaderModule> streamMeshShader_;
     std::unique_ptr<ShaderModule> streamFragmentShader_;
+    std::unique_ptr<ShaderModule> streamCullResetShader_;
+    std::unique_ptr<ShaderModule> streamInstanceCullShader_;
     std::unique_ptr<PipelineCache> pipelineCache_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> visibilityPipelines_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> standardZVisibilityPipelines_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenVisibilityPipelines_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenStandardZVisibilityPipelines_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
-    ComputeKernel resetKernel_;
-    ComputeKernel instanceCullKernel_;
-    ComputeKernel hzbKernel_;
-    ComputeKernel hzbSpdKernel_;
-    ComputeKernel hzbSpdWaveKernel_;
+    std::unique_ptr<ComputePipeline> resetPipeline_;
+    std::unique_ptr<ComputePipeline> instanceCullPipeline_;
+    std::unique_ptr<ComputePipeline> hzbPipeline_;
+    std::unique_ptr<ComputePipeline> hzbSpdPipeline_;
+    std::unique_ptr<ComputePipeline> hzbSpdWavePipeline_;
     std::unique_ptr<GraphicsPipeline> streamVisibilityPipeline_;
     std::unique_ptr<GraphicsPipeline> standardZStreamVisibilityPipeline_;
-    ComputeKernel streamCullResetKernel_;
-    ComputeKernel streamInstanceCullKernel_;
+    std::unique_ptr<ComputePipeline> streamCullResetPipeline_;
+    std::unique_ptr<ComputePipeline> streamInstanceCullPipeline_;
     scene::Bounds drawBounds_;
     uint64_t sceneResourceIdentity_ = 0;
     uint64_t sceneRevision_ = 0;

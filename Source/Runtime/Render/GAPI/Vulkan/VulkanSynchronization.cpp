@@ -2,24 +2,6 @@
 
 namespace metallic::render::vulkan {
 
-VkImageLayout imageLayout(ResourceState usage, bool unified)
-{
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    switch (usage) {
-    case ResourceState::Undefined: layout = VK_IMAGE_LAYOUT_UNDEFINED; break;
-    case ResourceState::Present: layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; break;
-    case ResourceState::ColorAttachment: layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; break;
-    case ResourceState::DepthStencilAttachment: layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; break;
-    case ResourceState::ShaderRead: layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; break;
-    case ResourceState::TransferSource: layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; break;
-    case ResourceState::TransferDestination: layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; break;
-    case ResourceState::General: layout = VK_IMAGE_LAYOUT_GENERAL; break;
-    default: break;
-    }
-    return unified && layout != VK_IMAGE_LAYOUT_UNDEFINED && layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-        ? VK_IMAGE_LAYOUT_GENERAL : layout;
-}
-
 VkImageLayout imageLayout(TextureLayout usage, bool unified)
 {
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;

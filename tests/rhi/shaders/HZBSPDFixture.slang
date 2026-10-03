@@ -1,12 +1,14 @@
-#include "../HZBFixtureParameters.h"
+import Core;
+using Metallic;
+#include "../TestResourceParameters.h"
 
-[[vk::push_constant]] ConstantBuffer<HZBFixtureParameters> gFixture;
+struct FixturePush { uint width; uint height; uint seed; uint reversedZ; };
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
 {
-    HZBFixtureParameters push = gFixture;
-    if (id.x >= push.width || id.y >= push.height || !push.counter.contains(1u)) { return; }
+    FixturePush push = getConstants<FixturePush>();
+    if (id.x >= push.width || id.y >= push.height) { return; }
     uint hash = (id.x * 73u + id.y * 137u + push.seed * 31u) % 1024u;
     // Each 64x64 tile has a different range so the last-group tail must
     // actually combine spatially distinct tile results.
@@ -15,17 +17,10 @@ void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
     if (id.x + 1u == push.width || id.y + 1u == push.height) {
         depth = push.reversedZ != 0u ? 0.0 : 1.0;
     }
+    if (id.x == 0u && id.y == 0u) { depth = asfloat(0x7fc00000u); }
+    resolveUniform(getResourceParameters<HZBSPDFixtureResources>().depth)[id.xy] = depth;
     if (id.x == 0u && id.y == 0u) {
-#if METALLIC_HZB_FIXTURE_FINITE
-        // Multi-dispatch streaming preserves the sampled depth, unlike SPD's NaN sanitization.
-        depth = push.reversedZ != 0u ? 0.0 : 1.0;
-#else
-        depth = asfloat(0x7fc00000u);
-#endif
-    }
-    resolveDescriptor(push.depth)[id.xy] = depth;
-    if (id.x == 0u && id.y == 0u) {
-        push.counter.data[0] = 0u;
-        push.counter.data[1] = push.seed;
+        resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<HZBSPDFixtureResources>().counter)[0] = 0u;
+        resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<HZBSPDFixtureResources>().counter)[1] = push.seed;
     }
 }

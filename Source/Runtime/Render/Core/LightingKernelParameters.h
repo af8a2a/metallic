@@ -1,6 +1,6 @@
 #pragma once
 
-// Shared declarations: handles select native views; ordinary data uses bounded BDA spans.
+// Shared declarations: handles select native views; ordinary data uses bounded descriptor spans.
 #ifdef __cplusplus
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include <array>
@@ -13,13 +13,13 @@ using LightSampledImage = ShaderSampledImage;
 using LightSampledScalarImage = ShaderSampledImage;
 using LightStorageImage = ShaderStorageImage;
 using LightStorageScalarImage = ShaderStorageImage;
-using LightGridData = ShaderDataSpan;
-using LightGridCells = ShaderDataSpan;
-using LightGridLights = ShaderDataSpan;
-using LightPunctualData = ShaderDataSpan;
-using LightUIntData = ShaderDataSpan;
-using LightUInt4Data = ShaderDataSpan;
-using LightFloat4Data = ShaderDataSpan;
+using LightGridData = GPUBufferSpan;
+using LightGridCells = GPUBufferSpan;
+using LightGridLights = GPUBufferSpan;
+using LightPunctualData = GPUBufferSpan;
+using LightUIntData = GPUBufferSpan;
+using LightUInt4Data = GPUBufferSpan;
+using LightFloat4Data = GPUBufferSpan;
 #else
 import ShaderCore;
 import Lighting;
@@ -29,17 +29,17 @@ namespace Metallic {
 typealias LightUInt = uint;
 typealias LightUInt2 = uint2;
 typealias LightFloat4 = float4;
-typealias LightSampledImage = DescriptorHandle<Texture2D<float4>>;
-typealias LightSampledScalarImage = DescriptorHandle<Texture2D<float>>;
-typealias LightStorageImage = DescriptorHandle<RWTexture2D<float4>>;
-typealias LightStorageScalarImage = DescriptorHandle<RWTexture2D<float>>;
-typealias LightGridData = DataSpan<ClusterLightGridParams>;
-typealias LightGridCells = DataSpan<ClusterLightGridCell>;
-typealias LightGridLights = DataSpan<ClusterLightData>;
-typealias LightPunctualData = DataSpan<GPUPunctualLight>;
-typealias LightUIntData = DataSpan<uint>;
-typealias LightUInt4Data = DataSpan<uint4>;
-typealias LightFloat4Data = DataSpan<float4>;
+typealias LightSampledImage = ResourceHandle<Texture2D<float4>>;
+typealias LightSampledScalarImage = ResourceHandle<Texture2D<float>>;
+typealias LightStorageImage = ResourceHandle<RWTexture2D<float4>>;
+typealias LightStorageScalarImage = ResourceHandle<RWTexture2D<float>>;
+typealias LightGridData = RWBufferSpan<ClusterLightGridParams>;
+typealias LightGridCells = RWBufferSpan<ClusterLightGridCell>;
+typealias LightGridLights = RWBufferSpan<ClusterLightData>;
+typealias LightPunctualData = RWBufferSpan<GPUPunctualLight>;
+typealias LightUIntData = RWBufferSpan<uint>;
+typealias LightUInt4Data = RWBufferSpan<uint4>;
+typealias LightFloat4Data = RWBufferSpan<float4>;
 #endif
 
 struct ClusterLightGridBuildParams {
@@ -88,7 +88,7 @@ struct BuildReGIRParams {
     LightSampledScalarImage localLightPdf;
     LightUInt4Data output;
     LightPunctualData lights;
-    LightUInt padding0, padding1;
+    LightUInt padding0;
     BuildReGIRPush settings;
 };
 
@@ -103,15 +103,15 @@ struct EnvironmentLightingPrecomputeParams {
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kClusterLightGridBuildABI = 0x4347524944000001ull;
-inline constexpr uint64_t kLightGridDebugABI = 0x4c47444247000001ull;
-inline constexpr uint64_t kPrepareLightsPdfABI = 0x4c50444600000001ull;
-inline constexpr uint64_t kBuildReGIRABI = 0x5245474952000001ull;
-inline constexpr uint64_t kEnvironmentLightingPrecomputeABI = 0x454e565052000001ull;
-static_assert(sizeof(ClusterLightGridBuildParams) == 80);
-static_assert(sizeof(LightGridDebugParams) == 72 && offsetof(LightGridDebugParams, settings) == 40);
-static_assert(sizeof(PrepareLightsPdfParams) == 72 && offsetof(PrepareLightsPdfParams, settings) == 40);
-static_assert(sizeof(BuildReGIRParams) == 112 && offsetof(BuildReGIRParams, settings) == 48);
-static_assert(sizeof(EnvironmentLightingPrecomputeParams) == 88 && offsetof(EnvironmentLightingPrecomputeParams, settings) == 56);
+inline constexpr uint64_t kClusterLightGridBuildABI = 0x4347524944000002ull;
+inline constexpr uint64_t kLightGridDebugABI = 0x4c47444247000002ull;
+inline constexpr uint64_t kPrepareLightsPdfABI = 0x4c50444600000002ull;
+inline constexpr uint64_t kBuildReGIRABI = 0x5245474952000002ull;
+inline constexpr uint64_t kEnvironmentLightingPrecomputeABI = 0x454e565052000002ull;
+static_assert(sizeof(ClusterLightGridBuildParams) == 60);
+static_assert(sizeof(LightGridDebugParams) == 60 && offsetof(LightGridDebugParams, settings) == 28);
+static_assert(sizeof(PrepareLightsPdfParams) == 56 && offsetof(PrepareLightsPdfParams, settings) == 24);
+static_assert(sizeof(BuildReGIRParams) == 96 && offsetof(BuildReGIRParams, settings) == 32);
+static_assert(sizeof(EnvironmentLightingPrecomputeParams) == 72 && offsetof(EnvironmentLightingPrecomputeParams, settings) == 40);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

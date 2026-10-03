@@ -92,10 +92,10 @@ public:
     {
         const auto source = context.inputTexture("color");
         const uint32_t bytes = source.desc().format == render::Format::RGBA16Sfloat ? 8 : 4;
-        context.commandBuffer().copyTextureToBuffer({.texture = source.texture(),
-            .buffer = context.outputBuffer("pixels").buffer(), .bufferRowPitch = context.width() * bytes,
+        if (auto commandResult = (context.outputBuffer("pixels").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = source.texture(),
+            .buffer = bufferSlice, .bufferRowPitch = context.width() * bytes,
             .bufferSlicePitch = context.width() * context.height() * bytes,
-            .width = context.width(), .height = context.height()});
+            .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -113,7 +113,7 @@ public:
         const float level = context.properties().value("level", 1.0f);
         const auto rgb = context.properties().value("rgb", std::array<float, 3>{level, level, level});
         const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
-            .state = render::ResourceState::ColorAttachment, .loadOp = render::LoadOp::Clear,
+            .layout = render::TextureLayout::ColorAttachment, .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store, .clearColor = {rgb[0], rgb[1], rgb[2], 1.0f}};
         if (auto commandResult = context.commandBuffer().beginRendering({
             .renderArea = {0, 0, context.width(), context.height()},

@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -162,8 +164,8 @@ public:
             RenderGraphStageUse{"privateShadow", RenderGraphResourceAccess::TextureTransferRead},
             RenderGraphStageUse{"shadow", RenderGraphResourceAccess::TextureTransferWrite}};
         const std::array stages{RenderGraphStage{"Publish shadow", uses, [&](CommandBuffer& stageCommands) -> Result<> {
-            stageCommands.copyTexture({.source = shadow.texture, .destination = output.texture(),
-                .width = context.width(), .height = context.height(), .depth = 1});
+            if (auto commandResult = stageCommands.copyTexture({.source = shadow.texture, .destination = output.texture(),
+                .width = context.width(), .height = context.height(), .depth = 1}); !commandResult) { return commandResult; }
             return {};
         }}};
         result = context.executeStages(stages, {}, imports);
@@ -179,7 +181,7 @@ public:
         });
         shadow.parameters->unmap();
         if (!uploaded.valid()) { return makeError(Error::OutOfMemory); }
-        if (auto commandResult = commands.copyStreamedData(*context.streamer()); !commandResult) { return commandResult; }
+        if (auto commandResult = context.streamer()->copyStreamedData(commands); !commandResult) { return commandResult; }
         profile.next("Publish camera history");
         history_->view = view;
         history_->sceneIdentity = info.sceneIdentity;

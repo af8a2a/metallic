@@ -39,7 +39,7 @@ public:
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = {vertexShader_.get()},
             .fragmentShader = {fragmentShader_.get()},
-            .colorFormat = Format::RGBA8Unorm,
+            .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = PrimitiveTopology::TriangleList,
         }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
@@ -65,7 +65,7 @@ public:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.04f, 0.06f, 0.09f, 1.0f},
@@ -75,18 +75,18 @@ public:
             .colorAttachments = {&attachment, 1},
         });
         if (!rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         auto bound = context.commandBuffer().bindExecution(execution_);
         if (!bound) { context.commandBuffer().endRendering(); return bound; }
-        context.commandBuffer().draw(3);
+        if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }

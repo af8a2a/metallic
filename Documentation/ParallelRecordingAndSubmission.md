@@ -360,7 +360,7 @@ GPUScene 同步/扩容、view 发布、image descriptor 注册仍由 coordinator
 
 `ComputeProgram::prepareDispatch(frame, desc)` 和 `prepareIndirectBatch(frame, desc, items)` 不访问 command buffer，要求 `desc.commandBuffer == nullptr`。完成前调用者保持 program、输入 wrapper、frame generation 和各自 profiler/stats 输出稳定；多个任务可共享同一个只读 program 和 registry，但各写自己的结果。
 
-返回的不可变包持有 executable、按值复制的 constants、descriptor lease、普通数据 BDA allocation、sampled-image snapshot owner，以及带范围的 indirect argument slice。输入 wrapper、pushData 和 program 可以在准备后销毁；indirect batch 的兼容 permutation 也被保留。批次间需要的 barrier 由 `record(commands, betweenDispatches)` 的调用者在录制期传入，包不保存指向临时 barrier 数组的指针。
+返回的不可变包持有 executable、按值复制的 constants、descriptor lease、普通数据 DR buffer lease、sampled-image snapshot owner，以及带范围的 indirect argument slice。输入 wrapper、pushData 和 program 可以在准备后销毁；indirect batch 的兼容 permutation 也被保留。批次间需要的 barrier 由 `record(commands, betweenDispatches)` 的调用者在录制期传入，包不保存指向临时 barrier 数组的指针。
 
 `record()` 先验证 device、recording 与 frame generation，再把包保留到本地 command，绑定 registry/execution 并派发。它不查询或改写 program 的 descriptor cache，也不依赖原始资源 wrapper。帧内包拒绝旧帧、已取消帧和错误目标；准备失败返回错误，不发布参数包。`ComputeKernel` 的 typed 参数与 `ComputeProgram` 的资源表输入都生成同一种 `PreparedComputeDispatch`，只有一处录制实现。无 frame 调用由独立 `ParameterWriter` 保存不可变数据，同样经过参数包；旧描述符映射诊断已移入测试，不再作为公共模式。
 

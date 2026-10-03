@@ -1,6 +1,7 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "AutoExposureFixtureParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
@@ -26,32 +27,36 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
-        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "AutoExposureFixture",
             .entryPointName = "autoExposureFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        return kernel_.initialize(*context.device, {
+        const render::ComputeProgramBindingDesc binding{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage};
+        return program_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .parameters = render::parameterAbi<AutoExposureFixtureParameters>(kExposureFixtureABI, render::ParameterTransport::InlinePush),
+            .pushConstantSize = 16,
+            .bindings = {&binding, 1},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kAutoExposureFixtureLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return render::makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const AutoExposureFixtureParameters push{
-            writer.storageImage(context.outputTexture("color").view()), context.width(), context.height(),
-            context.properties().value("luminance", 0.18f), context.properties().value("outliers", 0u)};
-        auto encoded = writer.encode(push, kExposureFixtureABI, render::ParameterTransport::InlinePush);
-        if (!encoded) { return render::makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, (push.width + 7) / 8, (push.height + 7) / 8);
+        struct Push { uint32_t width, height; float luminance; uint32_t outliers; };
+        const Push push{context.width(), context.height(), context.properties().value("luminance", 0.18f),
+            context.properties().value("outliers", 0u)};
+        const render::ComputeDispatchBinding binding{.binding = 0, .textureView = context.outputTexture("color").view()};
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {&binding, 1},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (push.width + 7) / 8,
+            .groupCountY = (push.height + 7) / 8,
+        });
     }
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel kernel_;
+    render::ComputeProgram program_;
 };
 
 // Consume every AutoExposure export in another pass. This checks that the
@@ -100,8 +105,7 @@ public:
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
-        commands.copyTextureToBuffer({.texture = color.texture(), .buffer = data.buffer(),
-            .bufferOffset = 16 + histogram.desc().size, .width = context.width(), .height = context.height()});
+        if (auto commandResult = (data.buffer())->slice({16 + histogram.desc().size}).and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = color.texture(), .buffer = bufferSlice, .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -136,7 +140,11 @@ public:
                             ++*static_cast<std::atomic_uint*>(target);
                         }
                     }
-                }, &validationErrors}, .preferUnifiedImageLayouts = preferUnified})
+                }, &validationErrors},
+                .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                    .preferUnifiedImageLayouts = preferUnified,
+                },
+            })
                 .transform([&](auto value) { device = std::move(value); });
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RHITestResult::skip("requires bindless descriptors");

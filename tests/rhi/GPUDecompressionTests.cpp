@@ -1,8 +1,9 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "GPUPageCodecChecks.h"
-#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
+#include "Runtime/Render/Streamer/StreamUploadCompletion.h"
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Scene/MeshletStreamGPUCodec.h"
@@ -72,7 +73,7 @@ public:
             std::vector<StreamDecompressionTile> tiles;
             for (const auto& tile : metadata.tiles) { tiles.push_back({tile.sourceOffset, tile.destinationOffset, tile.storedBytes, tile.decodedBytes, tile.codec != 0}); }
             requireGpuPage(bool(tracker.initialize(context.device, context.graphicsQueue)), "Tracker initialization");
-            requireGpuPage(bool(context.device.createStreamer({.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })), "Streamer creation");
+            requireGpuPage(bool(createStreamer(context.device, {.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })), "Streamer creation");
             requireGpuPage(bool(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) && bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })), "Commands creation");
             requireGpuPage(bool(context.device.createBuffer({.size = decoded.size(),
                 .usage = BufferUsageBits::TransferDestination | BufferUsageBits::TransferSource | BufferUsageBits::MemoryDecompression,
@@ -81,13 +82,13 @@ public:
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Readback creation");
             // Include cancelled recording and repeated slot reuse.
             for (uint32_t iteration = 0; iteration < 7; ++iteration) {
-                requireGpuPage(bool(frame.begin(iteration)) && bool(pool->reset()) && bool(commands->begin(&frame)) &&
+                requireGpuPage(bool(frame.begin(iteration)) && bool(pool->reset()) && bool(commands->begin(frame.submissionContext())) &&
                     bool(streamer->beginFrame(frame)), "Frame begin");
                 requireGpuPage(!streamer->streamDecompressedBufferData(stored, tiles, *destination, 1), "Misaligned destination accepted");
                 requireGpuPage(streamer->streamDecompressedBufferData(stored, tiles, *destination, 0), "GPU page staging");
                 auto receipt = streamer->pendingCopyCompletion();
                 requireGpuPage(receipt && !receipt->isRecordedBefore(*commands) && !receipt->isComplete(), "Premature upload completion");
-                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = streamer->copyStreamedData(*commands); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 requireGpuPage(receipt->isRecordedBefore(*commands), "Decode not covered by upload receipt");
                 const BufferBarrierDesc barrier{
                     .buffer = destination.get(),
@@ -165,7 +166,7 @@ public:
                 QueueSubmissionTracker tracker;
                 struct Drain { Queue& queue; RenderFrameContext& frame; ~Drain() { frame.cancel(); (void)queue.waitIdle(); } } drain{context.graphicsQueue, frame};
                 requireGpuPage(bool(tracker.initialize(context.device, context.graphicsQueue)), "Tracker");
-                requireGpuPage(bool(context.device.createStreamer({.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })), "Streamer");
+                requireGpuPage(bool(createStreamer(context.device, {.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })), "Streamer");
                 requireGpuPage(bool(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) && bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })), "Commands");
                 requireGpuPage(bool(context.device.createBuffer({.size = residency.pageBufferSize(),
                     .usage = BufferUsageBits::TransferDestination | BufferUsageBits::TransferSource | BufferUsageBits::MemoryDecompression}).transform([&](auto rhiValue) { destination = std::move(rhiValue); })), "Destination");
@@ -176,10 +177,10 @@ public:
                 const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 uint32_t frameIndex = 0;
                 while (!residency.pageResident(0) && std::chrono::steady_clock::now() < deadline) {
-                    requireGpuPage(bool(frame.begin(frameIndex++)) && bool(pool->reset()) && bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)), "Begin");
+                    requireGpuPage(bool(frame.begin(frameIndex++)) && bool(pool->reset()) && bool(commands->begin(frame.submissionContext())) && bool(streamer->beginFrame(frame)), "Begin");
                     residency.beginFrame();
                     const uint32_t uploads = residency.processUploads(*streamer, *destination, 1);
-                    if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = streamer->copyStreamedData(*commands); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                     if (uploads) {
                         requireGpuPage(residency.throughputSnapshot().totals.geometryReadyPages == 0, "Premature ready counter");
                         const BufferBarrierDesc barrier{

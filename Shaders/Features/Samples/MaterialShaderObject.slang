@@ -1,6 +1,34 @@
-#include "../../../Source/Runtime/Render/Core/MaterialRasterParameters.h"
+import ShaderCore;
 using Metallic;
-[[vk::push_constant]] ConstantBuffer<MaterialRasterParameters> gParams;
+
+struct MaterialShaderObjectPush
+{
+    uint positionBuffer;
+    uint materialIndexBuffer;
+    uint materialBuffer;
+    uint paramsBuffer;
+    uint vertexOffset;
+    uint materialVariant;
+    uint transformBuffer;
+    uint padding;
+};
+
+struct SceneTransform
+{
+    float4 world0;
+    float4 world1;
+    float4 world2;
+    float4 world3;
+};
+
+struct MaterialCameraParams
+{
+    float4 eye;
+    float4 center;
+    float4 upProjection;
+    float4 viewport;
+    float4 clipOrtho;
+};
 
 struct MaterialVertexOutput
 {
@@ -14,7 +42,7 @@ float3 safeNormalize(float3 value, float3 fallback)
     return lengthSquared > 0.00000001 ? value * rsqrt(lengthSquared) : fallback;
 }
 
-float4 projectPosition(float3 worldPosition, MaterialShaderObjectGPUParams params)
+float4 projectPosition(float3 worldPosition, MaterialCameraParams params)
 {
     float3 forward = safeNormalize(params.center.xyz - params.eye.xyz, float3(0.0, 0.0, -1.0));
     float3 cameraUp = safeNormalize(params.upProjection.xyz, float3(0.0, 1.0, 0.0));
@@ -55,17 +83,25 @@ float4 projectPosition(float3 worldPosition, MaterialShaderObjectGPUParams param
 }
 
 [shader("vertex")]
-MaterialVertexOutput materialShaderObjectVertexMain(uint vertexIndex : SV_VertexID)
+MaterialVertexOutput materialShaderObjectVertexMain(uint vertexIndex : SV_VertexID, uniform MaterialShaderObjectPush push)
 {
-    MaterialVertexOutput invalid = (MaterialVertexOutput)0;
-    invalid.position = float4(0, 0, 2, 1);
-    uint count = min(gParams.positions.length(), gParams.materialIndices.length());
-    if (gParams.vertexOffset >= count || vertexIndex >= count - gParams.vertexOffset) { return invalid; }
-    uint globalVertexIndex = gParams.vertexOffset + vertexIndex;
-    float4 localPosition = gParams.positions.data[globalVertexIndex];
-    uint transformIndex = (uint)localPosition.w;
-    if (!gParams.transforms.contains(transformIndex)) { return invalid; }
-    MaterialRasterTransform transform = gParams.transforms.data[transformIndex];
+    StructuredBuffer<float4> positionHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<float4>>(push.positionBuffer));
+    StructuredBuffer<uint> materialIndexHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.materialIndexBuffer));
+    StructuredBuffer<MaterialCameraParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<MaterialCameraParams>>(push.paramsBuffer));
+    StructuredBuffer<SceneTransform> transformHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<SceneTransform>>(push.transformBuffer));
+
+    StructuredBuffer<float4> positions = positionHandle;
+    StructuredBuffer<uint> materialIndices = materialIndexHandle;
+    StructuredBuffer<MaterialCameraParams> paramsBuffer = paramsHandle;
+    StructuredBuffer<SceneTransform> transforms = transformHandle;
+
+    uint globalVertexIndex = push.vertexOffset + vertexIndex;
+    float4 localPosition = positions[globalVertexIndex];
+    SceneTransform transform = transforms[(uint)localPosition.w];
     float3 worldPosition =
         transform.world0.xyz * localPosition.x +
         transform.world1.xyz * localPosition.y +
@@ -73,22 +109,27 @@ MaterialVertexOutput materialShaderObjectVertexMain(uint vertexIndex : SV_Vertex
         transform.world3.xyz;
 
     MaterialVertexOutput output;
-    output.position = projectPosition(worldPosition, gParams.camera);
-    output.materialIndex = gParams.materialIndices.data[globalVertexIndex];
+    output.position = projectPosition(worldPosition, paramsBuffer[0]);
+    output.materialIndex = materialIndices[globalVertexIndex];
     return output;
 }
 
 [shader("fragment")]
-float4 materialShaderObjectFragmentMain(MaterialVertexOutput input) : SV_Target0
+float4 materialShaderObjectFragmentMain(MaterialVertexOutput input, uniform MaterialShaderObjectPush push) : SV_Target0
 {
-    return gParams.materials.contains(input.materialIndex) ? gParams.materials.data[input.materialIndex] : float4(0);
-
+    StructuredBuffer<float4> materialHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<float4>>(push.materialBuffer));
+    StructuredBuffer<float4> materials = materialHandle;
+    return materials[input.materialIndex];
 }
 
 [shader("fragment")]
-float4 materialShaderObjectAlternateFragmentMain(MaterialVertexOutput input) : SV_Target0
+float4 materialShaderObjectAlternateFragmentMain(MaterialVertexOutput input, uniform MaterialShaderObjectPush push) : SV_Target0
 {
-    float4 baseColor = gParams.materials.contains(input.materialIndex) ? gParams.materials.data[input.materialIndex] : float4(0);
+    StructuredBuffer<float4> materialHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<float4>>(push.materialBuffer));
+    StructuredBuffer<float4> materials = materialHandle;
+    float4 baseColor = materials[input.materialIndex];
     float3 shifted = lerp(baseColor.rgb, baseColor.gbr, 0.45);
     return float4(shifted, baseColor.a);
 }

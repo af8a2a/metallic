@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runner.h"
 #include "HtmlReport.h"
 #include "GTestHtmlReport.h"
@@ -167,11 +168,11 @@ Json profileJson(const Profile& value)
     const auto& desc = value.desc;
     return {{"id", value.id}, {"validation", desc.enableSynchronizationValidation ? "sync" : desc.enableValidation ? "core" : "off"},
         {"shaderObject", desc.enableShaderObject}, {"bindless", desc.enableBindlessDescriptorHeap},
-        {"asyncCompute", desc.enableAsyncCompute}, {"unifiedLayouts", desc.preferUnifiedImageLayouts},
+        {"asyncCompute", desc.enableAsyncCompute}, {"unifiedLayouts", metallic::render::vulkan::deviceExtensions(desc).preferUnifiedImageLayouts},
         {"rayQuery", desc.enableRayQuery}, {"rayTracingAS", desc.enableRayTracingAccelerationStructure},
         {"partitionedAS", desc.enablePartitionedAccelerationStructure}, {"clusterAS", desc.enableClusterAccelerationStructure}, {"opacityMicromap", desc.enableOpacityMicromap},
         {"positionFetch", desc.enableRayTracingPositionFetch}, {"dgc", desc.enableDeviceGeneratedCommands},
-        {"streamline", desc.enableStreamline}, {"aftermath", desc.enableAftermath}};
+        {"streamline", metallic::render::vulkan::deviceExtensions(desc).enableStreamline}, {"aftermath", metallic::render::vulkan::deviceExtensions(desc).enableAftermath}};
 }
 
 std::string utf8(const std::filesystem::path& path)
@@ -272,7 +273,8 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         for (const auto queue : {render::QueueType::Graphics, render::QueueType::Compute, render::QueueType::Copy}) {
             if (device->getQueue(queue)) { queues.push_back(queue); }
         }
-        verdict = evaluate(selected.metadata.requirements, config, device->capabilities(), queues, activeValidation(*device));
+        verdict = evaluate(selected.metadata.requirements, config, device->capabilities(), queues,
+            activeValidation(*device), render::vulkan::deviceCapabilities(*device));
         if (verdict.status != Status::Pass) { return; }
         if (selected.metadata.comparison && selected.metadata.comparison->capability == Capability::GeneratedCommands &&
             input.value("variant", "reference") == "target") {

@@ -39,10 +39,10 @@ inline void forgetTraceObject(VkDevice device, VkObjectType type, uint64_t objec
 {
     emitTrace({.kind = TraceKind::Retire, .device = device, .objectType = type, .object = object});
 }
-inline void recordBarrier(VkDevice device, VkCommandBuffer command, const VkDependencyInfo& dependency,
+inline void recordBarrier(const VolkDeviceTable& functions, VkDevice device, VkCommandBuffer command, const VkDependencyInfo& dependency,
     const BarrierDesc* requested = nullptr)
 {
-    vkCmdPipelineBarrier2(command, &dependency);
+    functions.vkCmdPipelineBarrier2(command, &dependency);
     emitTrace({.kind = TraceKind::Barrier, .device = device, .command = command,
         .dependency = &dependency, .requested = requested});
 }

@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
@@ -138,7 +140,7 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
                 add("bucket" + std::to_string(i) + ".overflow", bucket.overflow);
                 buckets.push_back({{"index", i}, {"offset", bucket.visibleMeshletOffset}, {"capacity", bucket.visibleMeshletCapacity}});
             }
-            // These two passes use recordInstanceCull. The view
+            // These two passes use recordInstanceCull, not recordCull. The view
             // allocates meshlet worklists but these paths do not populate them.
             for (size_t i = unproducedBegin; i < bindings.size(); ++i) {
                 bindings[i].metadata["captureSupported"] = false;

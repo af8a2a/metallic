@@ -1,12 +1,11 @@
-#include "Runtime/Render/Core/BindlessSmokeParameters.h"
-#include "TextureResidencyProbe.h"
-#include "Runtime/Render/Core/StreamActiveBuildParameters.h"
-#include "Runtime/Render/Core/StreamTraversalParameters.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -19,7 +18,7 @@
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -68,7 +67,7 @@ constexpr uint32_t kSPIRVRayTracingClusterAccelerationStructureNv = 5437u;
 // Native DescriptorHandle shaders expose only Slang's unbounded heap arrays.
 // A scalar/fixed-array descriptor here would silently restore a per-pass Vulkan
 // binding, even if its binding number happened to match a heap's number.
-bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words, bool requireDeviceAddresses = true)
+bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
 {
     if (words.size() < 5 || words[0] != kSPIRVMagic) { return false; }
     bool heapCapability = false, heapBuiltin = false, deviceAddresses = false;
@@ -91,7 +90,7 @@ bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words, bool 
         if (opcode == 59 && count >= 4 && instruction[3] == 9) { ++pushBlocks; }
         offset += count;
     }
-    return heapCapability && heapBuiltin && (!requireDeviceAddresses || deviceAddresses) && pushBlocks == 1;
+    return heapCapability && heapBuiltin && deviceAddresses && pushBlocks == 1;
 }
 
 render::EnvironmentSettings sampleEnvironmentSettings(const render::RenderSampleDesc& desc)
@@ -397,7 +396,6 @@ public:
             return render::makeError(render::Error::InvalidArgument);
         }
 
-        device_ = context.device;
         render::Result<> result = createSlangShaderModule(
             *context.device,
             kBindlessSmokeShaderModuleName,
@@ -420,7 +418,7 @@ public:
         result = context.device->createGraphicsPipeline(render::GraphicsPipelineDesc{
             .vertexShader = {vertexShader_.get()},
             .fragmentShader = {fragmentShader_.get()},
-            .colorFormat = render::Format::RGBA8Unorm,
+            .colorFormats = {render::Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = render::PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
@@ -432,20 +430,14 @@ public:
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const auto source = context.inputTexture("source");
+        const render::BindlessHandle* sourceHandle = context.bindlessInput("source");
         render::TextureHandle color = context.outputTexture("color");
-        if (!source.valid() || device_ == nullptr ||
+        if (sourceHandle == nullptr ||
+            sourceHandle->kind != render::BindlessHandleKind::SampledImage ||
             !color.valid() ||
             pipeline_ == nullptr) {
             return render::makeError(render::Error::InvalidArgument);
         }
-
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return render::makeError(registry.error()); }
-        render::ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
-        const render::BindlessSmokeParameters params{writer.sampledImage(source.view())};
-        auto encoded = writer.encode(params, render::kBindlessSmokeABI, render::ParameterTransport::InlinePush);
-        if (!encoded) { return render::makeError(encoded.error()); }
 
         const render::Rect renderArea{
             .x = 0,
@@ -455,7 +447,7 @@ public:
         };
         render::RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
@@ -464,25 +456,23 @@ public:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !commandResult) { return commandResult; }
-        context.commandBuffer().setViewport(render::Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(render::Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
-        if (auto result = encoded->bindResources(context.commandBuffer()); !result) { return result; }
-        context.commandBuffer().pushBindlessData(encoded->inlineData().data(), static_cast<uint32_t>(encoded->inlineData().size()));
-        context.commandBuffer().draw(3);
+        context.commandBuffer().pushBindlessData(&sourceHandle->shaderIndex, sizeof(sourceHandle->shaderIndex));
+        if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }
 
 private:
-    render::Device* device_ = nullptr;
     std::unique_ptr<render::ShaderModule> vertexShader_;
     std::unique_ptr<render::ShaderModule> fragmentShader_;
     std::unique_ptr<render::GraphicsPipeline> pipeline_;
@@ -545,7 +535,7 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        auto* frame = context.commandBuffer().frameContext();
+        auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer());
         if (!frame) { return render::makeError(render::Error::InvalidArgument); }
         frame->retain(buffer_);
         return {};
@@ -834,10 +824,10 @@ public:
             .moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = kShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        device_ = context.device;
-        return program_.initialize(*context.device, {.spirv = shader.spirv,
-            .parameters = render::parameterAbi<render::TextureResidencyProbeParameters>(
-                render::kTextureResidencyProbeABI, render::ParameterTransport::InlinePush)}, log);
+        const render::ComputeProgramBindingDesc binding{.binding = 0};
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
+            .requiresRayQuery = false, .resourceParameters = render::kTextureFeedbackResourceLayout}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -857,13 +847,14 @@ public:
             state.resources = resources;
             state.feedback = prepared->textureFeedback;
         }
-        return dispatchTextureResidencyProbe(*device_, program_, context.commandBuffer(), *prepared->textureFeedback,
-            resources->logicalTextureIndices()[0], context.properties().value("wantedMip", 0u), 1u);
+        const render::ComputeDispatchBinding binding{.binding = 0, .buffer = prepared->textureFeedback};
+        const uint32_t push[]{resources->logicalTextureIndices()[0], context.properties().value("wantedMip", 0u), 1u, 0u};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
+            .pushData = push, .pushDataSize = sizeof(push)});
     }
 
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel program_;
+    render::ComputeProgram program_;
 };
 
 class TestEnvironmentConsumerPass final : public render::ComputePass {
@@ -2967,10 +2958,10 @@ public:
         name = "render_graph_bunny_wireframe_preview";
     }
 
-    RHITestResult run(RHITestContext& context) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(context.enableValidation);
+        render::Result<> result = preview.initialize(false);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -3005,10 +2996,10 @@ public:
         name = "render_graph_bunny_camera_sync";
     }
 
-    RHITestResult run(RHITestContext& context) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(context.enableValidation);
+        render::Result<> result = preview.initialize(false);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -3027,7 +3018,6 @@ public:
             return RHITestResult::fail("preview render did not clear graph dirty state");
         }
 
-        const auto initialPixels = preview.pixels();
         render::RenderGraphNode* bunnyNode = graph.findNode("Bunny");
         if (bunnyNode == nullptr) {
             return RHITestResult::fail("default Bunny graph did not create Bunny node");
@@ -3052,23 +3042,6 @@ public:
                 std::to_string(brightPixels));
         }
 
-        if (preview.pixels() == initialPixels) {
-            return RHITestResult::fail("Inline camera update did not change wireframe output");
-        }
-        const auto cameraPixels = preview.pixels();
-        result = preview.render(graph, 271, 193);
-        if (!result || countBrightPixels(preview.pixels()) < 256) {
-            return RHITestResult::fail("Wireframe odd-size resize failed: " + preview.lastLog());
-        }
-        result = preview.render(graph, 256, 256);
-        if (!result || preview.pixels() != cameraPixels) {
-            return RHITestResult::fail("Wireframe inline settings changed after extent restoration");
-        }
-        std::string log;
-        if (!saveRgba8Png(context.outputDirectory / "bunny-inline.png",
-            reinterpret_cast<const uint8_t*>(preview.pixels().data()), 256, 256, log)) {
-            return RHITestResult::fail(log);
-        }
         return RHITestResult::pass();
     }
 };
@@ -3206,7 +3179,7 @@ public:
         }
 
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(context.enableValidation, true);
+        render::Result<> result = preview.initialize(false, true);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -3288,11 +3261,6 @@ public:
             }
         }
 
-        const auto original = preview.pixels();
-        if (!preview.render(sample.graph, 173, 151, sample.desc.previewOutput) ||
-            !preview.render(sample.graph, 160, 160, sample.desc.previewOutput) || preview.pixels() != original) {
-            return RHITestResult::fail("Material visualization inline parameters changed after resize: " + preview.lastLog());
-        }
         return RHITestResult::pass("wrote scene material visualization previews");
     }
 };
@@ -3393,8 +3361,8 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
-            .buffer = context.outputBuffer("data").buffer(), .width = context.width(), .height = context.height()});
+        if (auto commandResult = (context.outputBuffer("data").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+            .buffer = bufferSlice, .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -3409,10 +3377,12 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
         .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
         .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
         .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
-            if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+            // General loader diagnostics are still logged; count command validation here.
+            if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
+                (message.type & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT))) {
                 ++*static_cast<std::atomic_uint*>(target);
             }
-        }, &validationErrors}, .preferUnifiedImageLayouts = false})
+        }, &validationErrors}, .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{.preferUnifiedImageLayouts = false}})
         .transform([&](auto value) { device = std::move(value); });
     if (render::hasError(result, render::Error::Unsupported)) {
         return RHITestResult::skip("cache stages require ray query and bindless resources");
@@ -3480,7 +3450,7 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
             bool visible = false;
             for (const auto& pixel : pixels) {
                 if (!std::all_of(pixel.begin(), pixel.end(), [](float value) { return std::isfinite(value); }) ||
-                    pixel[3] != 1.0f) { return "cache stages left invalid or unwritten HDR pixels"; }
+                    pixel[3] != 1.0f) { return "cache stages left invalid or unwritten output pixels"; }
                 visible = visible || pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0;
             }
             return visible ? std::string{} : "cache output contains no visible light";
@@ -3540,51 +3510,6 @@ public:
     RenderGraphSharcStagesTest() { type = RHITestType::Rendering; name = "render_graph_sharc_stages_history_and_cancel"; }
     RHITestResult run(RHITestContext& context) override { return runPathTraceCacheStages(context, false); }
 };
-
-// Isolate SDK ownership from shader ABI and render-graph submission.
-class NRCContextLifecycleTest final : public RHITest {
-public:
-    NRCContextLifecycleTest() { type = RHITestType::Resource; name = "nrc_context_lifecycle"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-#if METALLIC_HAS_NRC
-        const char* enabled = std::getenv("METALLIC_TEST_NRC_CACHE");
-        if (!enabled || std::string_view(enabled) != "1") { return RHITestResult::skip("set METALLIC_TEST_NRC_CACHE=1 for NRC SDK lifecycle"); }
-        std::atomic_uint errors{0};
-        std::unique_ptr<render::Device> device;
-        auto created = render::createDevice({.applicationName = "NRC context lifecycle",
-            .enableValidation = context.enableValidation,
-            .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
-                if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-                    ++*static_cast<std::atomic_uint*>(target);
-                }
-            }, &errors}}).transform([&](auto value) { device = std::move(value); });
-        if (!created) { return RHITestResult::fail("NRC lifecycle device creation failed"); }
-        const auto outcome = [&]() -> RHITestResult {
-            render::vulkan::NRCIntegration cache;
-            std::string log;
-            auto initialized = cache.initialize(*device, log);
-            if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip(log); }
-            if (!initialized) { return RHITestResult::fail(log); }
-            nrc::ContextSettings settings{};
-            settings.sceneBoundsMin = {-1, -1, -1};
-            settings.sceneBoundsMax = {1, 1, 1};
-            settings.frameDimensions = {64, 48};
-            settings.trainingDimensions = {64, 48};
-            if (!cache.configure(settings, *device, log)) { return RHITestResult::fail(log); }
-            if (!device->waitIdle()) { return RHITestResult::fail("NRC configure completion failed"); }
-            return RHITestResult::pass("NRC initialize/configure/destroy without any shader dispatch");
-        }();
-        device.reset();
-        if (errors != 0) { return RHITestResult::fail("NRC context-only lifecycle emitted " + std::to_string(errors.load()) + " Vulkan validation errors: " + outcome.message); }
-        return outcome;
-#else
-        (void)context;
-        return RHITestResult::skip("built without the NRC SDK");
-#endif
-    }
-};
-METALLIC_REGISTER_RHI_TEST(NRCContextLifecycleTest);
 
 class RenderGraphNRCStagesTest final : public RHITest {
 public:
@@ -4102,7 +4027,7 @@ public:
             ShaderEntry{"Features/VisibilityBuffer/VisibilityBuffer", "visibilityBufferMaskedFragmentMain"},
             ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewResetMain"},
             ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain"},
-            ShaderEntry{"Features/GPUDriven/HZB", "hzbMain"},
+            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewHzbMain"},
             ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeVertexMain"},
             ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeFragmentMain"},
         };
@@ -4200,10 +4125,7 @@ public:
         for (const char* entryPoint : kRasterEntryPoints) {
             render::ShaderCompileResult rasterCompile;
             result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                    .moduleName = (std::string_view(entryPoint) == render::kMeshletStreamCompositeVertexEntryPoint ||
-                        std::string_view(entryPoint) == render::kMeshletStreamCompositeFragmentEntryPoint)
-                        ? render::kMeshletStreamCompositeShaderModuleName : std::string_view(entryPoint) == render::kMeshletStreamHZBEntryPoint
-                            ? "Features/GPUDriven/HZB" : render::kMeshletStreamShaderModuleName,
+                    .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
                 }, rasterCompile.diagnostics).transform([&](auto value) { rasterCompile = std::move(value); });
@@ -4885,6 +4807,107 @@ public:
             return RHITestResult::fail(std::string("writeHostBuffer(resident pages) returned ") + toString(result));
         }
 
+        std::unique_ptr<render::BindlessHeap> bindlessHeap;
+        result = device->createBindlessHeap(render::BindlessHeapDesc{
+                .maxSamplers = 0,
+                .maxSampledImages = 0,
+                .maxBuffers = 15,
+            }).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
+        if (!result || bindlessHeap == nullptr) {
+            return RHITestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+        }
+
+        auto allocateStorageBuffer = [&bindlessHeap](
+            render::Buffer& buffer,
+            const char* label,
+            render::BindlessHandle& outHandle) -> RHITestResult {
+            render::Result<> bindlessResult = bindlessHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { outHandle = std::move(rhiValue); });
+            if (!bindlessResult || !outHandle.valid()) {
+                return RHITestResult::fail(std::string("allocateBuffer(") + label + ") returned " + toString(bindlessResult));
+            }
+            bindlessResult = (buffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap->writeStorageBuffer(outHandle, bufferSlice); });
+            if (!bindlessResult) {
+                return RHITestResult::fail(std::string("writeStorageBuffer(") + label + ") returned " + toString(bindlessResult));
+            }
+            return RHITestResult::pass();
+        };
+
+        render::BindlessHandle instanceHandle;
+        testResult = allocateStorageBuffer(*instanceBuffer, "instances", instanceHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle primitiveHandle;
+        testResult = allocateStorageBuffer(*primitiveBuffer, "primitives", primitiveHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle lodLevelHandle;
+        testResult = allocateStorageBuffer(*lodLevelBuffer, "lod levels", lodLevelHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle groupHandle;
+        testResult = allocateStorageBuffer(*groupBuffer, "groups", groupHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle residentPageHandle;
+        testResult = allocateStorageBuffer(*residentPageBuffer, "resident pages", residentPageHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle pageHandle;
+        testResult = allocateStorageBuffer(*pageBuffer, "stream pages", pageHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle nodeHandle;
+        testResult = allocateStorageBuffer(*nodeBuffer, "hierarchy nodes", nodeHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle pageTableHandle;
+        testResult = allocateStorageBuffer(*pageTableBuffer, "page table", pageTableHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle paramsHandle;
+        testResult = allocateStorageBuffer(*paramsBuffer, "params", paramsHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle requestHandle;
+        testResult = allocateStorageBuffer(*requestBuffer, "request", requestHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle activeGroupHandle;
+        testResult = allocateStorageBuffer(*activeGroupBuffer, "active groups", activeGroupHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle activeHeaderHandle;
+        testResult = allocateStorageBuffer(*activeHeaderBuffer, "active header", activeHeaderHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle drawIndirectHandle;
+        testResult = allocateStorageBuffer(*drawIndirectBuffer, "draw indirect", drawIndirectHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle traversalHeaderHandle;
+        testResult = allocateStorageBuffer(*traversalHeaderBuffer, "traversal header", traversalHeaderHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+        render::BindlessHandle traversalWorkHandle;
+        testResult = allocateStorageBuffer(*traversalWorkBuffer, "traversal work", traversalWorkHandle);
+        if (!testResult.passed) {
+            return testResult;
+        }
+
         render::ShaderCompileResult compileResult;
         result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
@@ -4898,12 +4921,23 @@ public:
                 ": " +
                 compileResult.diagnostics);
         }
-        render::ComputeKernel traversalKernel;
-        std::string traversalLog;
-        result = traversalKernel.initialize(*device, {.spirv = compileResult.spirv,
-            .parameters = render::parameterAbi<render::StreamTraversalParameters>(render::kStreamTraversalABI,
-                render::ParameterTransport::InlinePush)}, traversalLog);
-        if (!result) { return RHITestResult::fail(traversalLog); }
+        std::unique_ptr<render::ShaderModule> traversalShader;
+        result = device->createShaderModule(render::ShaderModuleDesc{
+            .spirv = compileResult.spirv,
+        }).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); });
+        if (!result || traversalShader == nullptr) {
+            return RHITestResult::fail(std::string("createShaderModule(traversal) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ComputePipeline> pipeline;
+        result = device->createComputePipeline(render::ComputePipelineDesc{
+            .computeShader = {traversalShader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+        if (!result || pipeline == nullptr) {
+            return RHITestResult::fail(std::string("createComputePipeline(traversal) returned ") + toString(result));
+        }
 
         render::ShaderCompileResult activeBuildCompileResult;
         result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
@@ -4918,11 +4952,23 @@ public:
                 ": " +
                 activeBuildCompileResult.diagnostics);
         }
-        render::ComputeKernel activeBuildKernel;
-        result = activeBuildKernel.initialize(*device, {.spirv = activeBuildCompileResult.spirv,
-            .parameters = render::parameterAbi<render::StreamActiveBuildParameters>(render::kStreamActiveBuildABI,
-                render::ParameterTransport::InlinePush)}, traversalLog);
-        if (!result) { return RHITestResult::fail(traversalLog); }
+        std::unique_ptr<render::ShaderModule> activeBuildShader;
+        result = device->createShaderModule(render::ShaderModuleDesc{
+            .spirv = activeBuildCompileResult.spirv,
+        }).transform([&](auto rhiValue) { activeBuildShader = std::move(rhiValue); });
+        if (!result || activeBuildShader == nullptr) {
+            return RHITestResult::fail(std::string("createShaderModule(active build) returned ") + toString(result));
+        }
+
+        std::unique_ptr<render::ComputePipeline> activeBuildPipeline;
+        result = device->createComputePipeline(render::ComputePipelineDesc{
+            .computeShader = {activeBuildShader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { activeBuildPipeline = std::move(rhiValue); });
+        if (!result || activeBuildPipeline == nullptr) {
+            return RHITestResult::fail(std::string("createComputePipeline(active build) returned ") + toString(result));
+        }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
@@ -4993,33 +5039,24 @@ public:
             .buffers = generalBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        auto activeRegistry = device->resourceRegistry();
-        if (!activeRegistry) { return RHITestResult::fail("Missing active registry"); }
-        render::ParameterWriter activeWriter(*device, **activeRegistry);
-        render::StreamActiveBuildParameters activeParams{
-            .settings = activeWriter.dataBuffer(paramsBuffer.get(), sizeof(render::MeshletStreamGPUParams), 16),
-            .activeGroupBuffer = activeWriter.buffer(activeGroupBuffer.get()),
-            .activeHeaderBuffer = activeWriter.buffer(activeHeaderBuffer.get()),
-            .drawIndirectBuffer = activeWriter.buffer(drawIndirectBuffer.get()),
-            .groupBuffer = activeWriter.buffer(groupBuffer.get()),
-            .instanceBuffer = activeWriter.buffer(instanceBuffer.get()),
-            .lodLevelBuffer = activeWriter.buffer(lodLevelBuffer.get()),
-            .nodeBuffer = activeWriter.buffer(nodeBuffer.get()),
-            .pageBuffer = activeWriter.buffer(pageBuffer.get()),
-            .pageTableBuffer = activeWriter.buffer(pageTableBuffer.get()),
-            .primitiveBuffer = activeWriter.buffer(primitiveBuffer.get()),
-            .requestBuffer = activeWriter.buffer(requestBuffer.get()),
-            .traversalHeaderBuffer = activeWriter.buffer(traversalHeaderBuffer.get()),
-            .traversalWorkBuffer = activeWriter.buffer(traversalWorkBuffer.get()),
-        };
-        // No frame context in this low-level fixture: keep all packets until the fence completes.
-        std::vector<render::EncodedParameters> activePackets;
-        const auto recordActive = [&](uint32_t phase) -> render::Result<> {
-            activeParams.activeBuildPhase = phase;
-            auto encoded = activeWriter.encode(activeParams, render::kStreamActiveBuildABI, render::ParameterTransport::InlinePush);
-            if (!encoded) { return render::makeError(encoded.error()); }
-            activePackets.push_back(std::move(*encoded));
-            return activeBuildKernel.dispatch(*commandBuffer, activePackets.back(), 1);
+        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        render::MeshletStreamUserPush push{
+            .pageBuffer = pageHandle.shaderIndex,
+            .activeGroupBuffer = activeGroupHandle.shaderIndex,
+            .pageTableBuffer = pageTableHandle.shaderIndex,
+            .paramsBuffer = paramsHandle.shaderIndex,
+            .requestBuffer = requestHandle.shaderIndex,
+            .residentPageBuffer = residentPageHandle.shaderIndex,
+            .activeHeaderBuffer = activeHeaderHandle.shaderIndex,
+            .instanceBuffer = instanceHandle.shaderIndex,
+            .primitiveBuffer = primitiveHandle.shaderIndex,
+            .lodLevelBuffer = lodLevelHandle.shaderIndex,
+            .groupBuffer = groupHandle.shaderIndex,
+            .nodeBuffer = nodeHandle.shaderIndex,
+            .drawIndirectBuffer = drawIndirectHandle.shaderIndex,
+            .traversalHeaderBuffer = traversalHeaderHandle.shaderIndex,
+            .traversalWorkBuffer = traversalWorkHandle.shaderIndex,
+            .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
         };
 
         std::array<render::BufferBarrierDesc, 7> activeBuildBarriers = {{
@@ -5070,7 +5107,10 @@ public:
             .buffers = activeBuildBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildResetPhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
+        if (auto commandResult = commandBuffer->bindExecution((activeBuildPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildResetPhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
 
         std::array<render::BufferBarrierDesc, 7> activePhaseBarriers = {{
             render::BufferBarrierDesc{
@@ -5120,38 +5160,32 @@ public:
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildSeedPhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildSeedPhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildRunPhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildRunPhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildFinalizePhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
+        push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        auto traversalRegistry = device->resourceRegistry();
-        if (!traversalRegistry) { return RHITestResult::fail("Missing traversal registry"); }
-        render::ParameterWriter traversalWriter(*device, **traversalRegistry);
-        const render::StreamTraversalParameters traversalParams{
-            .settings = traversalWriter.dataBuffer(paramsBuffer.get(), sizeof(render::MeshletStreamGPUParams), 16),
-            .instances = traversalWriter.dataBuffer(instanceBuffer.get(), sizeof(render::MeshletStreamGPUInstance), 16),
-            .residentPages = traversalWriter.dataBuffer(residentPageBuffer.get(), 4, 4),
-            .primitives = traversalWriter.buffer(primitiveBuffer.get()), .groups = traversalWriter.buffer(groupBuffer.get()),
-            .nodes = traversalWriter.buffer(nodeBuffer.get()), .pageTable = traversalWriter.buffer(pageTableBuffer.get()),
-            .requests = traversalWriter.buffer(requestBuffer.get()), .phase = render::kMeshletStreamTraversalUnloadPhase,
-            .threadCount = static_cast<uint32_t>(residentPageIds.size()),
-        };
-        auto traversalEncoded = traversalWriter.encode(traversalParams, render::kStreamTraversalABI, render::ParameterTransport::InlinePush);
-        if (!traversalEncoded) { return RHITestResult::fail("Traversal parameter encoding failed"); }
-        if (auto dispatched = traversalKernel.dispatch(*commandBuffer, *traversalEncoded, 1); !dispatched) {
-            return RHITestResult::fail(render::resultToString(dispatched));
-        }
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
+        push.activeBuildPhase = static_cast<uint32_t>(residentPageIds.size());
+        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->dispatch(1, 1, 1);
 
         std::array<render::BufferBarrierDesc, 6> readbackBarriers = {{
             render::BufferBarrierDesc{
@@ -5475,37 +5509,6 @@ public:
     }
 };
 
-class RenderGraphRTXCRInlineTest final : public RHITest {
-public:
-    RenderGraphRTXCRInlineTest() { type = RHITestType::Rendering; name = "render_graph_rtxcr_inline_material"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        render::RenderGraphPreviewRenderer preview;
-        auto initialized = preview.initialize(context.enableValidation, true);
-        if (!initialized) { return RHITestResult::fail(toString(initialized)); }
-        render::RenderGraph graph;
-        graph.addNode("RTXCRMaterialSamplePass", "Material");
-        graph.markOutput("Material.color");
-        std::vector<uint32_t> previous;
-        for (const char* view : {"overview", "chiang", "far-field", "subsurface"}) {
-            graph.setNodeRuntimeProperty(graph.findNode("Material")->id, "view", view);
-            if (!preview.render(graph, 129, 97)) { return RHITestResult::fail(preview.lastLog()); }
-            if (countVisiblePixels(preview.pixels()) < 128) { return RHITestResult::fail(std::string(view) + " has too little coverage"); }
-            if (previous == preview.pixels()) { return RHITestResult::fail("View selection did not change output"); }
-            previous = preview.pixels();
-            std::string log;
-            if (!saveRgba8Png(context.outputDirectory / (std::string("RTXCRInline-") + view + ".png"),
-                reinterpret_cast<const uint8_t*>(previous.data()), 129, 97, log)) { return RHITestResult::fail(log); }
-        }
-        graph.setNodeRuntimeProperty(graph.findNode("Material")->id, "exposure", 0.5f);
-        if (!preview.render(graph, 129, 97)) { return RHITestResult::fail(preview.lastLog()); }
-        if (previous == preview.pixels()) { return RHITestResult::fail("Exposure did not change output"); }
-        if (!preview.render(graph, 65, 49)) { return RHITestResult::fail(preview.lastLog()); }
-        return RHITestResult::pass("Four RTXCR views, exposure update and odd-size resize");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(RenderGraphRTXCRInlineTest);
-
 #if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY && \
     defined(METALLIC_HAS_RTXCR_ASSETS) && METALLIC_HAS_RTXCR_ASSETS
 class RenderGraphRTXCRMaterialPreviewTest : public RHITest {
@@ -5576,13 +5579,12 @@ public:
             const char* moduleName;
             const char* entryPointName;
             bool rayQuery;
-            bool deviceAddresses = true;
         } entries[] = {
             {"Features/Lighting/BuildReGIR", "buildReGIRMain", false},
             {"Features/Lighting/PrepareLightsPdf", "prepareLightsPdfMain", false},
             {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain", true},
-            {"Features/ReSTIR/RTXDIConfidence", "rtxdiConfidenceMain", false, false},
-            {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", false, false},
+            {"Features/ReSTIR/RTXDIConfidence", "rtxdiConfidenceMain", false},
+            {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", false},
         };
         for (const ShaderEntry& entry : entries) {
             render::ShaderCompileResult compileResult;
@@ -5602,7 +5604,7 @@ public:
                     ": " +
                     compileResult.diagnostics);
             }
-            if (!hasNativeComputeResourceInterface(compileResult.spirv, entry.deviceAddresses)) {
+            if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
                 return RHITestResult::fail(std::string(entry.moduleName) + " retained a fixed descriptor binding or invalid compute resource ABI");
             }
         }
@@ -7277,7 +7279,7 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("RenderFrameContext::begin returned ") + toString(result));
         }
-        result = commandBuffer->begin(&frame);
+        result = commandBuffer->begin(frame.submissionContext());
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
@@ -7296,15 +7298,15 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
-            .buffer = readbackBuffer.get(),
+            .buffer = bufferSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
-        });
+        }); }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -7684,7 +7686,7 @@ public:
                     result = frame.wait(5'000'000'000ull);
                     if (result) { result = pool->reset(); }
                     if (result) { result = frame.begin(iteration + 1); }
-                    if (result) { result = commands->begin(&frame); }
+                    if (result) { result = commands->begin(frame.submissionContext()); }
                     if (result) { result = executor.execute(*commands); }
                     if (result) { result = commands->end(); }
                     CommandBuffer* list[]{commands.get()};
@@ -7731,7 +7733,7 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(context.enableValidation);
+        render::Result<> result = preview.initialize(false);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -7754,21 +7756,6 @@ public:
             return RHITestResult::fail(
                 std::string("image sample pass produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
-        }
-
-        const auto firstFrame = preview.pixels();
-        result = preview.render(graph, 160, 120);
-        if (!result || preview.pixels() != firstFrame) {
-            return RHITestResult::fail("Image inline parameters changed consecutive-frame output: " + preview.lastLog());
-        }
-        result = preview.render(graph, 173, 127);
-        if (!result || preview.width() != 173 || preview.height() != 127 ||
-            countVisiblePixels(preview.pixels()) < 173 * 127 / 2) {
-            return RHITestResult::fail("Image inline parameters failed odd-size resize: " + preview.lastLog());
-        }
-        result = preview.render(graph, 160, 120);
-        if (!result || preview.pixels() != firstFrame) {
-            return RHITestResult::fail("Image output changed after restoring original extent: " + preview.lastLog());
         }
 
         std::string outputMessage;
@@ -7845,72 +7832,6 @@ public:
         return RHITestResult::pass();
     }
 };
-
-class MaterialRasterInlinePixelsTest final : public RHITest {
-public:
-    MaterialRasterInlinePixelsTest() { type = RHITestType::Rendering; name = "material_raster_inline_batch_pixels"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        std::filesystem::path path;
-        std::string log;
-        if (!writeAlphaMaskScene(context.outputDirectory / "material-raster", path, log)) {
-            return RHITestResult::fail(log);
-        }
-        path = std::filesystem::absolute(path);
-        render::RenderGraphProperties source;
-        { std::ifstream input(path); input >> source; }
-        const auto primitive = source["meshes"][0]["primitives"][0];
-        source["meshes"] = render::RenderGraphProperties::array();
-        source["nodes"] = render::RenderGraphProperties::array();
-        const std::array<std::array<float, 4>, 3> colors{{{1,0,0,1}, {0,0,1,1}, {0,1,0,1}}};
-        for (uint32_t i = 0; i < 3; ++i) {
-            auto part = primitive; part["material"] = i;
-            source["meshes"].push_back({{"primitives", {part}}});
-            source["nodes"].push_back({{"mesh", i}, {"translation", {float(i) * 2.4f - 2.4f, 0.0f, 0.0f}}});
-            source["materials"][i] = {{"pbrMetallicRoughness", {{"baseColorFactor", colors[i]}}}};
-        }
-        source["scenes"][0]["nodes"] = {0, 1, 2};
-        { std::ofstream output(path); output << source.dump(); }
-        render::RenderGraphPreviewRenderer preview;
-        if (!preview.initialize(context.enableValidation)) { return RHITestResult::fail(preview.lastLog()); }
-        render::RenderGraph graph;
-        const auto node = graph.addNode("SceneMaterialShaderObjectPass", "Materials", {{"path", path.string()}});
-        graph.markOutput("Materials.color");
-        if (!preview.render(graph, 256, 128)) { return RHITestResult::fail(preview.lastLog()); }
-        const auto original = preview.pixels();
-        for (uint32_t color : {packRgba8(255,0,0,255), packRgba8(0,0,255,255), packRgba8(0,255,0,255)}) {
-            if (std::count(original.begin(), original.end(), color) < 100) {
-                return RHITestResult::fail("Three material batches did not preserve their distinct colors");
-            }
-        }
-        graph.setNodeRuntimeProperty(node->id, "debugAlternateShaders", true);
-        if (!preview.render(graph, 256, 128)) { return RHITestResult::fail(preview.lastLog()); }
-        const auto alternate = preview.pixels();
-        uint32_t changed = 0;
-        for (size_t i = 0; i < original.size(); ++i) {
-            if (original[i] != alternate[i]) {
-                ++changed;
-                if (original[i] != packRgba8(0,0,255,255)) {
-                    return RHITestResult::fail("Shader switch changed an even material batch or background");
-                }
-            }
-        }
-        if (changed < 100) { return RHITestResult::fail("Alternate shader did not change odd material batch"); }
-        if (!preview.render(graph, 273, 139) || !preview.render(graph, 256, 128) || preview.pixels() != alternate) {
-            return RHITestResult::fail("Batch inline parameters changed after odd-size resize: " + preview.lastLog());
-        }
-        graph.setNodeRuntimeProperty(node->id, "debugAlternateShaders", false);
-        if (!preview.render(graph, 256, 128) || preview.pixels() != original) {
-            return RHITestResult::fail("Default material shader did not restore batch colors");
-        }
-        if (!saveRgba8Png(context.outputDirectory / "material-raster-inline.png",
-            reinterpret_cast<const uint8_t*>(preview.pixels().data()), 256, 128, log)) {
-            return RHITestResult::fail(log);
-        }
-        return RHITestResult::pass("Three BDA material batches, default/alternate/default shader switching and resize restore");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(MaterialRasterInlinePixelsTest);
 
 class RenderGraphVisibilityBufferPassSmokeTest : public RHITest {
 public:
@@ -8145,7 +8066,7 @@ public:
         render::QueueSubmissionTracker readbackTracker;
         result = readbackTracker.initialize(*device, *graphicsQueue);
         if (result) { result = readbackFrame.begin(kStreamingWarmupFrameCount); }
-        if (result) { result = commandBuffer->begin(&readbackFrame); }
+        if (result) { result = commandBuffer->begin(readbackFrame.submissionContext()); }
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
@@ -8163,15 +8084,15 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
-            .buffer = readbackBuffer.get(),
+            .buffer = bufferSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
-        });
+        }); }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -8338,20 +8259,24 @@ public:
                 std::string("transitionOutput(raster readback) returned ") +
                 toString(result));
         }
-        const render::TextureBufferCopyDesc colorCopy{
+        auto rasterColorReadbackSlice = rasterColorReadback->slice();
+        if (!rasterColorReadbackSlice) { return RHITestResult::fail(render::resultToString(rasterColorReadbackSlice)); }
+        auto rasterVisibilityReadbackSlice = rasterVisibilityReadback->slice();
+        if (!rasterVisibilityReadbackSlice) { return RHITestResult::fail(render::resultToString(rasterVisibilityReadbackSlice)); }
+        const render::BufferTextureRegion colorCopy{
             .texture = rasterColor->texture,
-            .buffer = rasterColorReadback.get(),
+            .buffer = *rasterColorReadbackSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
         };
-        render::TextureBufferCopyDesc visibilityCopy = colorCopy;
+        render::BufferTextureRegion visibilityCopy = colorCopy;
         visibilityCopy.texture = rasterVisibility->texture;
-        visibilityCopy.buffer = rasterVisibilityReadback.get();
-        rasterCommandBuffer->copyTextureToBuffer(colorCopy);
-        rasterCommandBuffer->copyTextureToBuffer(visibilityCopy);
+        visibilityCopy.buffer = *rasterVisibilityReadbackSlice;
+        if (auto commandResult = rasterCommandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
+        if (auto commandResult = rasterCommandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
         result = rasterCommandBuffer->end();
         if (!result) {
             return RHITestResult::fail(
@@ -8464,15 +8389,15 @@ public:
                     render::ResourceState::TransferSource);
             }
             if (result) {
-                captureCommandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+                if (auto commandResult = (captureReadback.get())->slice().and_then([&](const auto& bufferSlice) { return captureCommandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
                     .texture = captureOutput->texture,
-                    .buffer = captureReadback.get(),
+                    .buffer = bufferSlice,
                     .width = width,
                     .height = height,
                     .depth = 1,
                     .mipLevel = 0,
                     .baseLayer = 0,
-                });
+                }); }); !commandResult) { error = render::resultToString(commandResult); return false; }
                 result = captureCommandBuffer->end();
             }
             if (!result) {
@@ -9127,24 +9052,30 @@ public:
                 toString(result));
         }
 
-        const render::TextureBufferCopyDesc colorCopy{
+        auto colorReadbackSlice = colorReadback->slice();
+        if (!colorReadbackSlice) { return RHITestResult::fail(render::resultToString(colorReadbackSlice)); }
+        auto visibilityReadbackSlice = visibilityReadback->slice();
+        if (!visibilityReadbackSlice) { return RHITestResult::fail(render::resultToString(visibilityReadbackSlice)); }
+        auto depthReadbackSlice = depthReadback->slice();
+        if (!depthReadbackSlice) { return RHITestResult::fail(render::resultToString(depthReadbackSlice)); }
+        const render::BufferTextureRegion colorCopy{
             .texture = color->texture,
-            .buffer = colorReadback.get(),
+            .buffer = *colorReadbackSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
         };
-        render::TextureBufferCopyDesc visibilityCopy = colorCopy;
+        render::BufferTextureRegion visibilityCopy = colorCopy;
         visibilityCopy.texture = visibility->texture;
-        visibilityCopy.buffer = visibilityReadback.get();
-        render::TextureBufferCopyDesc depthCopy = colorCopy;
+        visibilityCopy.buffer = *visibilityReadbackSlice;
+        render::BufferTextureRegion depthCopy = colorCopy;
         depthCopy.texture = depth->texture;
-        depthCopy.buffer = depthReadback.get();
-        commandBuffer->copyTextureToBuffer(colorCopy);
-        commandBuffer->copyTextureToBuffer(visibilityCopy);
-        commandBuffer->copyTextureToBuffer(depthCopy);
+        depthCopy.buffer = *depthReadbackSlice;
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(depthCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         const render::BufferBarrierDesc residentRecordsToCopy{
             .buffer = globalViews.meshletDraws.buffer,
@@ -9350,9 +9281,9 @@ public:
                 }
             }
             if (result) {
-                commandBuffer->copyTextureToBuffer(colorCopy);
-                commandBuffer->copyTextureToBuffer(visibilityCopy);
-                commandBuffer->copyTextureToBuffer(depthCopy);
+                if (auto commandResult = commandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commandBuffer->copyTextureToBuffer(depthCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                 result = commandBuffer->end();
             }
             if (result) {

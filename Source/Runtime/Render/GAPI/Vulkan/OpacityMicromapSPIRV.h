@@ -1,10 +1,13 @@
 #pragma once
 
+#include "SpirvWalker.h"
+
 #include <algorithm>
 #include <cstring>
 #include <span>
 #include <string_view>
 #include <vector>
+#include <utility>
 #include <cstdint>
 
 namespace metallic::render::vulkan {
@@ -15,10 +18,10 @@ namespace metallic::render::vulkan {
 inline bool enableOpacityMicromapSpirv(
     std::span<const uint32_t> code, std::vector<uint32_t>& output, bool useExt = false)
 {
-    output.assign(code.begin(), code.end());
-    if (code.size() < 5 || code[0] != 0x07230203u) {
-        return false;
-    }
+    const SpirvWalker walker(code);
+    if (!walker.valid()) { return false; }
+    // Stage edits so an aliased output cannot invalidate the source during traversal.
+    std::vector<uint32_t> result(code.begin(), code.end());
     constexpr uint32_t kRayQuery = 4472;
     const uint32_t kOpacityCapability = useExt ? 5381 : 6032;
     const std::string_view extension = useExt ? "SPV_EXT_opacity_micromap" : "SPV_KHR_opacity_micromap";
@@ -27,14 +30,10 @@ inline bool enableOpacityMicromapSpirv(
     bool hasCapability = false;
     bool hasExtension = false;
     uint32_t boolType = 0;
-    size_t capabilitiesEnd = 5, extensionsEnd = 5, modesEnd = 5, functionsBegin = code.size();
+    size_t capabilitiesEnd = SpirvWalker::kHeaderWords, extensionsEnd = SpirvWalker::kHeaderWords,
+        modesEnd = SpirvWalker::kHeaderWords, functionsBegin = code.size();
     std::vector<uint32_t> entryPoints, configuredEntries;
-    for (size_t offset = 5; offset < code.size();) {
-        const uint32_t count = code[offset] >> 16;
-        const uint32_t op = code[offset] & 0xffffu;
-        if (count == 0 || count > code.size() - offset) {
-            return false;
-        }
+    for (const auto& [offset, count, op] : walker.instructions()) {
         if (op == 17 && count == 2) { // OpCapability
             rayQuery |= code[offset + 1] == kRayQuery;
             hasCapability |= code[offset + 1] == kOpacityCapability;
@@ -56,9 +55,9 @@ inline bool enableOpacityMicromapSpirv(
         } else if (op == 54) { // OpFunction
             functionsBegin = std::min(functionsBegin, offset);
         }
-        offset += count;
     }
     if (!rayQuery) {
+        output = std::move(result);
         return true;
     }
     if (useExt) {
@@ -69,17 +68,19 @@ inline bool enableOpacityMicromapSpirv(
             std::vector<uint32_t> instruction(words + 1, 0);
             instruction[0] = (uint32_t(words + 1) << 16) | 10u;
             std::memcpy(instruction.data() + 1, extension.data(), extension.size());
-            output.insert(output.begin() + std::max(extensionsEnd, capabilitiesEnd), instruction.begin(), instruction.end());
+            result.insert(result.begin() + std::max(extensionsEnd, capabilitiesEnd), instruction.begin(), instruction.end());
         }
         if (!hasCapability) {
-            output.insert(output.begin() + capabilitiesEnd, {(2u << 16) | 17u, kOpacityCapability});
+            result.insert(result.begin() + capabilitiesEnd, {(2u << 16) | 17u, kOpacityCapability});
         }
+        output = std::move(result);
         return true;
     }
     std::erase_if(entryPoints, [&](uint32_t entry) {
         return std::find(configuredEntries.begin(), configuredEntries.end(), entry) != configuredEntries.end();
     });
     if (entryPoints.empty()) {
+        output = std::move(result);
         return true;
     }
     if (functionsBegin == code.size() || code[3] > 0xfffffffdU) {
@@ -92,36 +93,35 @@ inline bool enableOpacityMicromapSpirv(
     }
     const uint32_t enabledId = nextId++;
     extensionsEnd = std::max(extensionsEnd, capabilitiesEnd);
-    output.clear();
-    output.insert(output.end(), code.begin(), code.begin() + 5);
-    output[3] = nextId;
-    for (size_t offset = 5; offset < code.size();) {
+    result.clear();
+    result.insert(result.end(), code.begin(), code.begin() + SpirvWalker::kHeaderWords);
+    result[3] = nextId;
+    for (const auto& [offset, count, op] : walker.instructions()) {
         if (offset == capabilitiesEnd && !hasCapability) {
-            output.insert(output.end(), {(2u << 16) | 17u, kOpacityCapability});
+            result.insert(result.end(), {(2u << 16) | 17u, kOpacityCapability});
         }
         if (offset == extensionsEnd && !hasExtension) {
             constexpr char kExtension[] = "SPV_KHR_opacity_micromap";
             constexpr size_t kWords = (sizeof(kExtension) + 3) / 4;
-            output.push_back((uint32_t(kWords + 1) << 16) | 10u);
-            const size_t begin = output.size();
-            output.resize(begin + kWords, 0);
-            std::memcpy(output.data() + begin, kExtension, sizeof(kExtension));
+            result.push_back((uint32_t(kWords + 1) << 16) | 10u);
+            const size_t begin = result.size();
+            result.resize(begin + kWords, 0);
+            std::memcpy(result.data() + begin, kExtension, sizeof(kExtension));
         }
         if (offset == modesEnd) {
             for (uint32_t entry : entryPoints) {
-                output.insert(output.end(), {(4u << 16) | 331u, entry, kOpacityMode, enabledId});
+                result.insert(result.end(), {(4u << 16) | 331u, entry, kOpacityMode, enabledId});
             }
         }
         if (offset == functionsBegin) {
             if (needsBool) {
-                output.insert(output.end(), {(2u << 16) | 20u, boolType});
+                result.insert(result.end(), {(2u << 16) | 20u, boolType});
             }
-            output.insert(output.end(), {(3u << 16) | 41u, boolType, enabledId}); // OpConstantTrue
+            result.insert(result.end(), {(3u << 16) | 41u, boolType, enabledId}); // OpConstantTrue
         }
-        const uint32_t count = code[offset] >> 16;
-        output.insert(output.end(), code.begin() + offset, code.begin() + offset + count);
-        offset += count;
+        result.insert(result.end(), code.begin() + offset, code.begin() + offset + count);
     }
+    output = std::move(result);
     return true;
 }
 

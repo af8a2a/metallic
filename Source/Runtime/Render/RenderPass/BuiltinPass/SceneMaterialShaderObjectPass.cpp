@@ -1,4 +1,3 @@
-#include "Runtime/Render/Core/MaterialRasterParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -75,6 +74,11 @@ public:
             transforms.emplace_back();
         }
 
+        MaterialShaderObjectGPUParams params;
+        if (drawBounds_.valid) {
+            buildParams(context.width, context.height, drawBounds_, params);
+        }
+
         Result<> result = uploadStorageBuffer(
             *context.device,
             positions.data(),
@@ -115,6 +119,47 @@ public:
         if (!result) {
             return result;
         }
+        result = uploadStorageBuffer(
+            *context.device,
+            &params,
+            sizeof(params),
+            paramsBuffer_,
+            log,
+            "SceneMaterialShaderObjectPass params");
+        if (!result) {
+            return result;
+        }
+
+        result = context.device->createBindlessHeap(BindlessHeapDesc{
+                .maxBuffers = 5,
+            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
+        if (!result || bindlessHeap_ == nullptr) {
+            log += resultMessage("createBindlessHeap(SceneMaterialShaderObjectPass)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = allocateAndWriteBuffer(*bindlessHeap_, *positionBuffer_, positionHandle_, log, "positions");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *materialIndexBuffer_, materialIndexHandle_, log, "material indices");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *materialBuffer_, materialHandle_, log, "materials");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "params");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(*bindlessHeap_, *transformBuffer_, transformHandle_, log, "transforms");
+        if (!result) {
+            return result;
+        }
+
         ShaderCompileResult vertexCompile;
         result = compileSlangShader(
             kMaterialShaderObjectShaderModuleName,
@@ -171,33 +216,16 @@ public:
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
             !depth.valid() ||
-            device_ == nullptr ||
+            bindlessHeap_ == nullptr ||
             defaultProgram_ == nullptr ||
             alternateProgram_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        auto& commands = context.commandBuffer();
-        std::vector<EncodedParameters> parameters;
         if (!batches_.empty()) {
-            if (!drawBounds_.valid) { return makeError(Error::InvalidArgument); }
-            auto registry = device_->resourceRegistry();
-            if (!registry) { return makeError(registry.error()); }
-            ParameterWriter writer(*device_, **registry, commands.frameContext());
-            MaterialRasterParameters params{
-                .positions = writer.dataBuffer(positionBuffer_.get(), sizeof(MaterialShaderObjectGPUPosition), 16),
-                .materialIndices = writer.dataBuffer(materialIndexBuffer_.get(), 4, 4),
-                .materials = writer.dataBuffer(materialBuffer_.get(), sizeof(MaterialShaderObjectGPUMaterial), 16),
-                .transforms = writer.dataBuffer(transformBuffer_.get(), sizeof(SceneGPUTransform), 16),
-            };
-            buildParams(context.width(), context.height(), drawBounds_, params.camera);
-            parameters.reserve(batches_.size());
-            for (const auto& batch : batches_) {
-                params.vertexOffset = batch.firstVertex;
-                auto encoded = writer.encode(params, kMaterialRasterABI, ParameterTransport::InlinePush);
-                if (!encoded) { return makeError(encoded.error()); }
-                if (auto result = encoded->bindResources(commands); !result) { return result; }
-                parameters.push_back(std::move(*encoded));
+            Result<> result = updateParamsBuffer(context.width(), context.height());
+            if (!result) {
+                return result;
             }
         }
 
@@ -209,7 +237,7 @@ public:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
@@ -217,7 +245,7 @@ public:
         constexpr bool kMaterialReversedZ = kDefaultReversedZ;
         RenderingAttachmentDesc depthAttachment{
             .view = depth.view(),
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(kMaterialReversedZ),
@@ -232,31 +260,47 @@ public:
             context.commandBuffer().endRendering();
             return {};
         }
+        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         const RasterExecutionState rasterState{.depthStencil = {
             .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(kMaterialReversedZ)}};
-        context.commandBuffer().setViewport(Viewport{
+        auto bound = context.commandBuffer().bindExecution(defaultProgram_->execution(rasterState));
+        if (!bound) { context.commandBuffer().endRendering(); return bound; }
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
 
 
         const bool debugAlternateShaders =
             context.properties().value("debugAlternateShaders", false);
-        for (size_t index = 0; index < batches_.size(); ++index) {
-            const auto& batch = batches_[index];
+        GraphicsShaderObjectProgram* currentProgram = defaultProgram_.get();
+        for (const MaterialShaderObjectBatch& batch : batches_) {
             GraphicsShaderObjectProgram* desiredProgram =
                 debugAlternateShaders && ((batch.materialIndex & 1u) != 0)
                 ? alternateProgram_.get()
                 : defaultProgram_.get();
-            const auto bytes = parameters[index].inlineData();
-            auto bound = commands.bindExecution(desiredProgram->execution(rasterState), bytes.data(), uint32_t(bytes.size()));
-            if (!bound) { commands.endRendering(); return bound; }
-            context.commandBuffer().draw(batch.vertexCount);
+            if (desiredProgram != currentProgram) {
+                bound = context.commandBuffer().bindExecution(desiredProgram->execution(rasterState));
+                if (!bound) { context.commandBuffer().endRendering(); return bound; }
+                currentProgram = desiredProgram;
+            }
+
+            const MaterialShaderObjectUserPush push{
+                .positionBuffer = positionHandle_.shaderIndex,
+                .materialIndexBuffer = materialIndexHandle_.shaderIndex,
+                .materialBuffer = materialHandle_.shaderIndex,
+                .paramsBuffer = paramsHandle_.shaderIndex,
+                .vertexOffset = batch.firstVertex,
+                .materialVariant = desiredProgram == alternateProgram_.get() ? 1u : 0u,
+                .transformBuffer = transformHandle_.shaderIndex,
+            };
+            context.commandBuffer().pushBindlessData(&push, sizeof(push));
+            if (auto commandResult = context.commandBuffer().draw(batch.vertexCount); !commandResult) { return commandResult; }
         }
 
         context.commandBuffer().endRendering();
@@ -301,7 +345,7 @@ private:
 
     Result<> rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
     {
-        if (device_ == nullptr) {
+        if (device_ == nullptr || bindlessHeap_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -378,6 +422,23 @@ private:
             return result;
         }
 
+        result = (*positionBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(positionHandle_, bufferSlice); });
+        if (!result) {
+            return result;
+        }
+        result = (*transformBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(transformHandle_, bufferSlice); });
+        if (!result) {
+            return result;
+        }
+        result = (*materialIndexBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(materialIndexHandle_, bufferSlice); });
+        if (!result) {
+            return result;
+        }
+        result = (*materialBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(materialHandle_, bufferSlice); });
+        if (!result) {
+            return result;
+        }
+
         positionBuffer_ = std::move(positionBuffer);
         transformBuffer_ = std::move(transformBuffer);
         materialIndexBuffer_ = std::move(materialIndexBuffer);
@@ -428,6 +489,28 @@ private:
         return {};
     }
 
+    static Result<> allocateAndWriteBuffer(
+        BindlessHeap& heap,
+        Buffer& buffer,
+        BindlessHandle& outHandle,
+        std::string& log,
+        std::string_view label)
+    {
+        Result<> result = heap.allocate(BindlessHandleKind::Buffer).transform([&](BindlessHandle handle) { outHandle = handle; });
+        if (!result || !outHandle.valid()) {
+            log += resultMessage(std::string("allocateBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = (buffer).slice().and_then([&](const auto& bufferSlice) { return heap.writeStorageBuffer(outHandle, bufferSlice); });
+        if (!result) {
+            log += resultMessage(std::string("writeStorageBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
+            log += '\n';
+        }
+        return result;
+    }
+
     static Result<> createProgram(
         Device& device,
         const ShaderCompileResult& vertexCompile,
@@ -444,7 +527,7 @@ private:
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MaterialRasterParameters),
+                .bindlessUserPushDataSize = sizeof(MaterialShaderObjectUserPush),
             }).transform([&](auto rhiValue) { outProgram = std::move(rhiValue); });
         if (!result || outProgram == nullptr) {
             log += resultMessage(std::string("createGraphicsShaderObjectProgram(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
@@ -645,10 +728,36 @@ private:
         outParams.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
     }
 
+    Result<> updateParamsBuffer(uint32_t width, uint32_t height)
+    {
+        if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
+            return makeError(Error::InvalidArgument);
+        }
+
+        MaterialShaderObjectGPUParams params;
+        buildParams(width, height, drawBounds_, params);
+
+        void* mapped = paramsBuffer_->map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        std::memcpy(mapped, &params, sizeof(params));
+        paramsBuffer_->flush({0, sizeof(params)});
+        paramsBuffer_->unmap();
+        return {};
+    }
+
     std::unique_ptr<Buffer> positionBuffer_;
     std::unique_ptr<Buffer> transformBuffer_;
     std::unique_ptr<Buffer> materialIndexBuffer_;
     std::unique_ptr<Buffer> materialBuffer_;
+    std::unique_ptr<Buffer> paramsBuffer_;
+    std::unique_ptr<BindlessHeap> bindlessHeap_;
+    BindlessHandle positionHandle_;
+    BindlessHandle transformHandle_;
+    BindlessHandle materialIndexHandle_;
+    BindlessHandle materialHandle_;
+    BindlessHandle paramsHandle_;
     std::unique_ptr<GraphicsShaderObjectProgram> defaultProgram_;
     std::unique_ptr<GraphicsShaderObjectProgram> alternateProgram_;
     std::vector<MaterialShaderObjectBatch> batches_;

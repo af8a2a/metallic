@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -923,7 +925,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
         resource.byteSize = byteSize;
         resource.structureStride = structureStride;
         std::shared_ptr<ResourceRegistry> registry;
-        result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+        result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (result) { result = registry->storageBuffer(*resource.buffer).transform([&](auto value) { resource.resource = std::move(value); }); }
         if (!result) { return result; }
         return {};
@@ -1458,7 +1460,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
         resource.byteSize = byteSize;
         resource.structureStride = sizeof(T);
         std::shared_ptr<ResourceRegistry> registry;
-        result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+        result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (result) { result = registry->storageBuffer(*resource.buffer).transform([&](auto value) { resource.resource = std::move(value); }); }
         if (!result) { return result; }
 
@@ -1862,6 +1864,146 @@ const ClusterLightGridSnapshot* GPUSceneSubsystem::lightGrid(GPUSceneViewId view
     return found->second[frameSlot]->snapshot(scene_);
 }
 
+Result<> GPUSceneSubsystem::recordCull(
+    CommandBuffer& commandBuffer,
+    GPUSceneViewId view,
+    uint32_t frameSlot,
+    const GPUSceneCullRecordDesc& desc,
+    std::string& log)
+{
+    const GPUSceneVisibleDrawSet* visible = scene_.visibleDrawSet(view, frameSlot);
+    const uint32_t generation = scene_.drawSet().generation;
+    const uint64_t revision = scene_.drawSet().revision;
+    if (visible == nullptr ||
+        visible->gpu.sourceView != view ||
+        visible->gpu.frameSlot != frameSlot ||
+        !visible->gpu.validFor(generation, revision)) {
+        log = "GPUScene recordCull requires a live View with a prepared current-revision frame slot";
+        return makeError(Error::InvalidArgument);
+    }
+    const size_t phaseIndex = static_cast<size_t>(desc.phase);
+    if (phaseIndex >= kGPUSceneCullPhaseCount ||
+        desc.bindlessHeap == nullptr ||
+        desc.resetPipeline == nullptr ||
+        desc.instanceCullPipeline == nullptr ||
+        desc.compactPipeline == nullptr ||
+        desc.pushData == nullptr ||
+        desc.pushDataSize == 0) {
+        log = "GPUScene recordCull received an incomplete culling description";
+        return makeError(Error::InvalidArgument);
+    }
+
+    const GPUSceneCullPhaseGPUView& phase = visible->gpu.phases[phaseIndex];
+    Buffer* indirectBuffer = phase.buckets.front().indirectArguments.buffer;
+    Buffer* instanceVisibilityBuffer = visible->gpu.instanceVisibilityStates.buffer;
+    Buffer* visibleMeshletBuffer = phase.visibleMeshletIds.buffer;
+    if (indirectBuffer == nullptr ||
+        instanceVisibilityBuffer == nullptr ||
+        visibleMeshletBuffer == nullptr) {
+        log = "GPUScene recordCull found an incomplete VisibleDrawSet GPU bundle";
+        return makeError(Error::InvalidArgument);
+    }
+    for (const GPUSceneBucketGPUView& bucket : phase.buckets) {
+        if (bucket.indirectArguments.buffer != indirectBuffer ||
+            bucket.overflow.buffer != indirectBuffer) {
+            log = "GPUScene recordCull requires all bucket arguments and overflow counters in one buffer";
+            return makeError(Error::InvalidArgument);
+        }
+    }
+
+    commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
+    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.bindExecution((desc.resetPipeline)->execution()); !commandResult) { return commandResult; }
+    commandBuffer.dispatch(1, 1, 1);
+
+    std::vector<BufferBarrierDesc> resetBarriers;
+    resetBarriers.reserve(2);
+    resetBarriers.push_back(BufferBarrierDesc{
+        .buffer = indirectBuffer,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+    });
+    if (visible->gpu.visibleInstanceCounter.buffer != nullptr) {
+        resetBarriers.push_back(BufferBarrierDesc{
+            .buffer = visible->gpu.visibleInstanceCounter.buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        });
+    }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
+        .buffers = {resetBarriers.data(), gpuCount(resetBarriers.size())},
+    }); !commandResult) { return commandResult; }
+
+    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.bindExecution((desc.instanceCullPipeline)->execution()); !commandResult) { return commandResult; }
+    commandBuffer.dispatch(desc.instanceGroupCountX, 1, 1);
+
+    std::vector<BufferBarrierDesc> cullBarriers;
+    cullBarriers.reserve(4);
+    cullBarriers.push_back(BufferBarrierDesc{
+        .buffer = indirectBuffer,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+    });
+    cullBarriers.push_back(BufferBarrierDesc{
+        .buffer = instanceVisibilityBuffer,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+    });
+    if (visible->gpu.visibleInstanceIds.buffer != nullptr) {
+        cullBarriers.push_back(BufferBarrierDesc{
+            .buffer = visible->gpu.visibleInstanceIds.buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        });
+    }
+    if (visible->gpu.visibleInstanceCounter.buffer != nullptr) {
+        cullBarriers.push_back(BufferBarrierDesc{
+            .buffer = visible->gpu.visibleInstanceCounter.buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        });
+    }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
+        .buffers = {cullBarriers.data(), gpuCount(cullBarriers.size())},
+    }); !commandResult) { return commandResult; }
+
+    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.bindExecution((desc.compactPipeline)->execution()); !commandResult) { return commandResult; }
+    commandBuffer.dispatch(desc.meshletGroupCountX, 1, 1);
+
+    std::vector<BufferBarrierDesc> compactBarriers;
+    compactBarriers.reserve(4);
+    compactBarriers.push_back(BufferBarrierDesc{
+        .buffer = visibleMeshletBuffer,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+    });
+    compactBarriers.push_back(BufferBarrierDesc{
+        .buffer = indirectBuffer,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+    });
+    if (visible->gpu.visibleInstanceIds.buffer != nullptr) {
+        compactBarriers.push_back(BufferBarrierDesc{
+            .buffer = visible->gpu.visibleInstanceIds.buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        });
+    }
+    if (visible->gpu.visibleInstanceCounter.buffer != nullptr) {
+        compactBarriers.push_back(BufferBarrierDesc{
+            .buffer = visible->gpu.visibleInstanceCounter.buffer,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        });
+    }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
+        .buffers = {compactBarriers.data(), gpuCount(compactBarriers.size())},
+    }); !commandResult) { return commandResult; }
+    return {};
+}
+
 Result<> GPUSceneSubsystem::recordInstanceCull(
     CommandBuffer& commandBuffer,
     GPUSceneViewId view,
@@ -1881,14 +2023,22 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
     }
     const size_t phaseIndex = static_cast<size_t>(desc.phase);
     if (phaseIndex >= kGPUSceneCullPhaseCount ||
-        !desc.reset.valid() || !desc.cull.valid() ||
+        desc.bindlessHeap == nullptr ||
+        desc.resetPipeline == nullptr ||
+        desc.instanceCullPipeline == nullptr ||
+        desc.pushData == nullptr ||
+        desc.pushDataSize == 0 ||
+        desc.instanceGroupCountX == 0 ||
         visible->gpu.instanceVisibilityStates.buffer == nullptr ||
         visible->gpu.visibleInstanceCounter.buffer == nullptr) {
         log = "GPUScene recordInstanceCull received an incomplete culling description";
         return makeError(Error::InvalidArgument);
     }
 
-    if (auto result = desc.reset.record(commandBuffer); !result) { return result; }
+    commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
+    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.bindExecution((desc.resetPipeline)->execution()); !commandResult) { return commandResult; }
+    commandBuffer.dispatch(1u, 1u, 1u);
 
     BufferBarrierDesc resetBarrier{
         .buffer = visible->gpu.visibleInstanceCounter.buffer,
@@ -1899,7 +2049,9 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         .buffers = {&resetBarrier, 1},
     }); !commandResult) { return commandResult; }
 
-    if (auto result = desc.cull.record(commandBuffer); !result) { return result; }
+    commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
+    if (auto commandResult = commandBuffer.bindExecution((desc.instanceCullPipeline)->execution()); !commandResult) { return commandResult; }
+    commandBuffer.dispatch(desc.instanceGroupCountX, 1u, 1u);
 
     std::array<BufferBarrierDesc, 3> barriers{};
     uint32_t barrierCount = 0;
@@ -1943,22 +2095,27 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         log = "GPUScene recordBuildHzb requires a live View with a prepared current-revision frame slot";
         return makeError(Error::InvalidArgument);
     }
-    const size_t dispatchCount = desc.preparedDispatches.size();
-    if (desc.preparedDispatches.empty()) {
+    if (desc.bindlessHeap == nullptr ||
+        desc.pipeline == nullptr ||
+        desc.dispatches.empty()) {
         log = "GPUScene recordBuildHzb received an incomplete HZB description";
         return makeError(Error::InvalidArgument);
     }
 
     const GPUSceneHZBGPUView& hzb = visible->gpu.hzb;
     Buffer* writeBuffer = hzb.history[hzb.writeIndex].buffer;
-    if (writeBuffer == nullptr || dispatchCount != (desc.singleDispatch ? 1u : hzb.mipCount) ||
+    if (writeBuffer == nullptr || desc.dispatches.size() != (desc.singleDispatch ? 1u : hzb.mipCount) ||
         (desc.singleDispatch && (desc.counterBuffer == nullptr || desc.counterResetSource == nullptr))) {
         log = "GPUScene recordBuildHzb dispatch count does not match the View HZB mip chain";
         return makeError(Error::InvalidArgument);
     }
-    for (const auto& dispatch : desc.preparedDispatches) {
-        if (!dispatch.valid()) {
-            log = "GPUScene recordBuildHzb received an invalid prepared mip dispatch";
+    for (const GPUSceneComputeDispatchDesc& dispatch : desc.dispatches) {
+        if (dispatch.pushData == nullptr ||
+            dispatch.pushDataSize == 0 ||
+            dispatch.groupCountX == 0 ||
+            dispatch.groupCountY == 0 ||
+            dispatch.groupCountZ == 0) {
+            log = "GPUScene recordBuildHzb received an invalid mip dispatch";
             return makeError(Error::InvalidArgument);
         }
     }
@@ -1992,7 +2149,7 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         phases.push_back({.uses = {declaredGraphAccess(1, Access::BufferTransferRead, compute),
             declaredGraphAccess(2, Access::BufferTransferWrite, compute)}});
     }
-    for (size_t i = 0; i < dispatchCount; ++i) {
+    for (size_t i = 0; i < desc.dispatches.size(); ++i) {
         auto& phase = phases.emplace_back();
         phase.uses.push_back(declaredGraphAccess(0, Access::BufferStorageReadWrite, compute));
         if (desc.singleDispatch) {
@@ -2014,11 +2171,13 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         result = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice);
         if (!result) { return result; }
     }
-    for (const auto& dispatch : desc.preparedDispatches) {
+    commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
+    for (const GPUSceneComputeDispatchDesc& dispatch : desc.dispatches) {
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase++], bindings);
         if (!result) { return result; }
-        result = dispatch.record(commandBuffer);
-        if (!result) { return result; }
+        commandBuffer.pushBindlessData(dispatch.pushData, dispatch.pushDataSize);
+        if (auto commandResult = commandBuffer.bindExecution(desc.pipeline->execution()); !commandResult) { return commandResult; }
+        commandBuffer.dispatch(dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ);
     }
     result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase], bindings);
     if (!result) { return result; }

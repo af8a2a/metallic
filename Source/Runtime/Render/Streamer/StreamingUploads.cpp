@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 
 namespace metallic::render {
@@ -33,7 +34,7 @@ Result<> StreamingUploads::initialize(Device& device, std::string& log, uint32_t
 
     StreamerDesc desc = defaultRenderGraphStreamerDesc();
     desc.queuedFrameCount = frameSlotCount;
-    Result<> result = device.createStreamer(desc).transform([&](auto rhiValue) { streamer_ = std::move(rhiValue); });
+    Result<> result = createStreamer(device, desc).transform([&](auto rhiValue) { streamer_ = std::move(rhiValue); });
     if (!result || streamer_ == nullptr) {
         log = "createStreamer(StreamingUploads) returned ";
         log += resultToString(result);

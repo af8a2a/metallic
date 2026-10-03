@@ -1,3 +1,5 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 
 #include <algorithm>
@@ -180,10 +182,10 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
     if (prepared.image) {
         const auto result = prepared.image->upload(context.commandBuffer());
         if (!result) { return result; }
-        if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(prepared.image); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(prepared.image); }
     }
     if (prepared.clusterAccelerationStructure) {
-        if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(prepared.clusterAccelerationStructure); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(prepared.clusterAccelerationStructure); }
     }
     prepared.textureFeedback = nullptr;
     if (prepared.geometry) {
@@ -231,7 +233,7 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         });
         context.publishCpuProfile(stream.beginFrameCpuProfile().sections);
         if (!result) { return result; }
-        if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(prepared.geometry); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(prepared.geometry); }
     }
     if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
         auto resources = prepared.snapshot->pathTraceResources;

@@ -1,3 +1,6 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactCLASPool.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -17,6 +20,31 @@
 
 namespace metallic::tests {
 namespace {
+// Instrument only this test's privately owned device, restoring dispatch before destruction.
+class ScopedPropertyQueryCounter {
+public:
+    explicit ScopedPropertyQueryCounter(render::Device& device)
+        : table_(*const_cast<VolkInstanceTable*>(render::vulkan::nativeDevice(device).instanceFunctions))
+    {
+        original_ = table_.vkGetPhysicalDeviceProperties2;
+        count_ = 0;
+        table_.vkGetPhysicalDeviceProperties2 = countQuery;
+    }
+    ~ScopedPropertyQueryCounter() { table_.vkGetPhysicalDeviceProperties2 = original_; }
+    ScopedPropertyQueryCounter(const ScopedPropertyQueryCounter&) = delete;
+    ScopedPropertyQueryCounter& operator=(const ScopedPropertyQueryCounter&) = delete;
+    uint32_t count() const { return count_; }
+private:
+    static VKAPI_ATTR void VKAPI_CALL countQuery(VkPhysicalDevice device, VkPhysicalDeviceProperties2* properties)
+    {
+        ++count_;
+        original_(device, properties);
+    }
+    VolkInstanceTable& table_;
+    inline static thread_local PFN_vkGetPhysicalDeviceProperties2 original_ = nullptr;
+    inline static thread_local uint32_t count_ = 0;
+};
+
 class CLASSizeMoveTest final : public RHITest {
   public:
     CLASSizeMoveTest()
@@ -41,6 +69,7 @@ class CLASSizeMoveTest final : public RHITest {
         };
         try {
             require(bool(result), "Device creation failed");
+            ScopedPropertyQueryCounter propertyQueries(*device);
             auto* queue = device->getQueue(QueueType::Graphics);
             constexpr auto usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
                                    BufferUsageBits::AccelerationStructureBuildInput |
@@ -187,8 +216,10 @@ class CLASSizeMoveTest final : public RHITest {
             require(bool(commands->moveClusterAccelerationStructures(move)), "Relocating compact CLAS failed");
             submit();
             std::filesystem::create_directories(context.outputDirectory);
+            require(propertyQueries.count() == 0, "CLAS runtime re-queried fixed physical-device properties");
             std::ofstream(context.outputDirectory / "CLASSizeMove.txt")
                 << "worstCaseBytes=" << stride * 2 << " actualBytes=" << actual[0] + actual[1]
+                << " runtimePropertyQueries=" << propertyQueries.count()
                 << " moveScratchBytes=" << exactMoveSizes.updateScratchSize << '\n';
             return RHITestResult::pass(
                 "Actual GPU sizes, compact relocation, second relocation and invalid-range rejection");
@@ -317,7 +348,7 @@ class CompactCLASLifecycleTest final : public RHITest {
             uint32_t gpuPageEntry = 0;
             std::span<const MeshletStreamCLASPageBuild> activeRequests(&build, 1);
             auto record = [&](bool request, bool cancel = false) {
-                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)),
+                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())),
                         "Begin failed");
                 require(bool(pool.cmdBuildPages(
                             *cmd, *pageBuffer,
@@ -484,7 +515,7 @@ class CompactCLASLifecycleTest final : public RHITest {
             const uint64_t secondAddress = pool.clusterAddress(secondPage, 0);
             const uint64_t bothBytes = pool.stats().storageBytes;
             require(bothBytes <= pool.stats().storageBudgetBytes, "Physical growth exceeded budget");
-            require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Begin pending frame");
+            require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Begin pending frame");
             require(bool(pool.cmdBuildPages(*cmd, *pageBuffer, {}, log)) && bool(cmd->end()), "Record pending frame");
             pool.retirePages(std::span(&pageIndex, 1));
             for (uint32_t i = 0; i < 4; ++i) { pool.beginFrame(); }
@@ -535,7 +566,7 @@ class CompactCLASLifecycleTest final : public RHITest {
                     .startStorageBytes = capacity, .growStorageBytes = 256, .emptyChunkRetentionFrames = 60}, log)), log);
                 for (uint32_t i = 0; i < 5 && !pressure.pageHasClas(pageIndex); ++i) {
                     pressure.beginFrame();
-                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Pressure begin");
+                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Pressure begin");
                     require(bool(pressure.cmdBuildPages(*cmd, *pageBuffer, std::span(&build, 1), log)) && bool(cmd->end()), log);
                     CommandBuffer* list[] = {cmd.get()};
                     require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Pressure submit");
@@ -551,7 +582,7 @@ class CompactCLASLifecycleTest final : public RHITest {
                     .persistentPages = std::span(&pageIndex, 1)}, log)), log);
                 auto tick = [&](std::span<const MeshletStreamCLASPageBuild> requests) {
                     segregated.beginFrame();
-                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Segregated begin");
+                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Segregated begin");
                     require(bool(segregated.cmdBuildPages(*cmd, *pageBuffer, requests, log)) && bool(cmd->end()), log);
                     CommandBuffer* list[] = {cmd.get()};
                     require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Segregated submit");
@@ -579,7 +610,7 @@ class CompactCLASLifecycleTest final : public RHITest {
                 .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2, .growStorageBytes = 256}, log)), log);
             for (uint32_t i = 0; i < 3; ++i) {
                 constrained.beginFrame();
-                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Budget test begin");
+                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Budget test begin");
                 require(bool(constrained.cmdBuildPages(*cmd, *pageBuffer, std::span(&build, 1), log)) && bool(cmd->end()), log);
                 CommandBuffer* list[] = {cmd.get()};
                 require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Budget test submit");
@@ -624,12 +655,12 @@ class MiniZorahCLASInFlightTest final : public RHITest {
         desc.enableComputeFullSubgroups = true;
         desc.preferredTaskSubgroupSize = 32;
         desc.enableAsyncCompute = true;
-        desc.enableStreamline = std::getenv("METALLIC_TEST_CLAS_SCENE_SWITCH") != nullptr;
+        metallic::render::vulkan::deviceExtensions(desc).enableStreamline = std::getenv("METALLIC_TEST_CLAS_SCENE_SWITCH") != nullptr;
         desc.enableRayTracingAccelerationStructure = true;
-        desc.enablePushDescriptor = true;
+        metallic::render::vulkan::deviceExtensions(desc).enablePushDescriptor = true;
         desc.enableRayQuery = true;
         desc.enableClusterAccelerationStructure = true;
-        desc.enableAftermath = true;
+        metallic::render::vulkan::deviceExtensions(desc).enableAftermath = true;
         std::unique_ptr<Device> device;
         auto result = createDevice(desc).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(result, Error::Unsupported)) { return RHITestResult::skip("CLAS unavailable"); }

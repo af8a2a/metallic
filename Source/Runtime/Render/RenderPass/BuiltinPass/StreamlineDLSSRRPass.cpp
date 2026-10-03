@@ -1,4 +1,6 @@
-#include "Runtime/Render/Core/PostProcessParameters.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -38,6 +40,9 @@ inline constexpr const char* kStreamlineDLSSDepthFragmentEntryPoint =
 inline constexpr const char* kStreamlineDLSSAlphaEntryPoint =
     "streamlineDlssAlphaMain";
 
+struct StreamlineDLSSAlphaUserPush {
+    uint32_t outputImage = 0;
+};
 
 class StreamlineDLSSPass final : public UnsafePass {
 public:
@@ -195,7 +200,7 @@ public:
                   preparedSettings_,
                   log);
         preparedValid_ = result.has_value();
-        if (result && variant_ == DLSSVariant::SuperResolution && depthExportPipeline_ != nullptr) {
+        if (result && variant_ == DLSSVariant::SuperResolution && auxiliaryHeap_ != nullptr) {
             // Resource-only graph rebuilds reuse this pass. Resize its private
             // D32 export together with the newly negotiated input dimensions.
             return prepareSuperResolutionResources(*context.device, preparedSettings_.renderWidth,
@@ -214,23 +219,31 @@ public:
             log = std::string(passTypeName()) + " requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
         }
-        device_ = context.device;
         if (boolProperty(&properties(), "exportOutputGuides", false)) {
             ShaderCompileResult shader;
             auto result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
                 .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
+            const ComputeProgramBindingDesc bindings[] = {
+                {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
+                {.binding = 1, .kind = ComputeResourceBindingKind::SampledImage},
+                {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
+                {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
+            };
             result = guideResolve_.initialize(*context.device, {
                 .spirv = shader.spirv,
-                .parameters = parameterAbi<UpscalerGuideResolveParams>(kUpscalerGuideResolveABI, ParameterTransport::InlinePush),
+                .pushConstantSize = 8,
+                .bindings = {bindings, 4},
                 .debugName = "UpscalerGuideResolve",
+                .requiresRayQuery = false,
+                .resourceParameters = kUpscalerGuideResourceLayout,
             }, log);
             if (!result) { return result; }
         }
         const bool featureSupported = variant_ == DLSSVariant::RayReconstruction
-            ? context.device->capabilities().streamlineDlssRr
-            : context.device->capabilities().streamlineDlssSr;
-        if (!context.device->capabilities().streamline || !featureSupported) {
+            ? metallic::render::vulkan::deviceCapabilities(*context.device).streamlineDlssRr
+            : metallic::render::vulkan::deviceCapabilities(*context.device).streamlineDlssSr;
+        if (!metallic::render::vulkan::deviceCapabilities(*context.device).streamline || !featureSupported) {
             log = std::string(passTypeName()) + " requires DeviceCapabilities::" +
                 (variant_ == DLSSVariant::RayReconstruction ? "streamlineDlssRr" : "streamlineDlssSr");
             return makeError(Error::Unsupported);
@@ -321,7 +334,7 @@ public:
                 RenderGraphStageUse{"output.motionVectors", RenderGraphResourceAccess::TextureStorageWrite},
                 RenderGraphStageUse{"output.depth", RenderGraphResourceAccess::TextureStorageWrite}};
             std::vector<RenderGraphStage> stages{{"DLSS pass through", copyUses,
-                [&](CommandBuffer& command) -> Result<> { copyInputToOutput(command, inputColor, outputColor); return {}; }}};
+                [&](CommandBuffer& command) -> Result<> { return copyInputToOutput(command, inputColor, outputColor); }}};
             if (boolProperty(&properties(), "exportOutputGuides", false)) {
                 stages.push_back({"DLSS output guides", guideUses,
                     [&](CommandBuffer&) { return resolveOutputGuides(context, motionVectors, depth, {}); }});
@@ -514,19 +527,22 @@ private:
     {
         if (!boolProperty(&properties(), "exportOutputGuides", false)) { return {}; }
         auto& command = context.commandBuffer();
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, command.frameContext());
-        const UpscalerGuideResolveParams params{
-            .depth = writer.sampledImage(depth.view()),
-            .motion = writer.sampledImage(motion.view()),
-            .outputDepth = writer.storageImage(context.outputTexture("depth").view()),
-            .outputMotion = writer.storageImage(context.outputTexture("motionVectors").view()),
-            .jitterX = jitter[0], .jitterY = jitter[1],
+        auto* mv = motion.view();
+        auto* z = depth.view();
+        const ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .textureViews = {&mv, 1}},
+            {.binding = 1, .textureViews = {&z, 1}},
+            {.binding = 2, .textureView = context.outputTexture("motionVectors").view()},
+            {.binding = 3, .textureView = context.outputTexture("depth").view()},
         };
-        auto encoded = writer.encode(params, kUpscalerGuideResolveABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return guideResolve_.dispatch(command, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
+        return guideResolve_.dispatch({
+            .commandBuffer = &command,
+            .bindings = {bindings, 4},
+            .pushData = jitter.data(),
+            .pushDataSize = 8,
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
     }
 
     const char* passTypeName() const
@@ -787,9 +803,9 @@ private:
         return vulkan::StreamlineDLSSRRMode::Balanced;
     }
 
-    static void copyInputToOutput(CommandBuffer& commandBuffer, TextureHandle inputColor, TextureHandle outputColor)
+    static Result<> copyInputToOutput(CommandBuffer& commandBuffer, TextureHandle inputColor, TextureHandle outputColor)
     {
-        commandBuffer.copyTexture(TextureCopyDesc{
+        return commandBuffer.copyTexture(TextureCopyDesc{
             .source = inputColor.texture(),
             .destination = outputColor.texture(),
             .width = outputColor.desc().width,
@@ -814,6 +830,28 @@ private:
         }
 
         Result<> result;
+        if (auxiliaryHeap_ == nullptr) {
+            result = device.createBindlessHeap(BindlessHeapDesc{
+                    .maxSampledImages = 1,
+                    .maxStorageImages = 1,
+                }).transform([&](auto rhiValue) { auxiliaryHeap_ = std::move(rhiValue); });
+            if (!result || auxiliaryHeap_ == nullptr) {
+                log += resultMessage("createBindlessHeap(StreamlineDLSSSRPass)", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
+            result = auxiliaryHeap_->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { depthGuideHandle_ = std::move(rhiValue); });
+            if (!result || !depthGuideHandle_.valid()) {
+                log = "StreamlineDLSSSRPass failed to allocate its depth guide descriptor";
+                return result ? makeError(Error::Failure) : result;
+            }
+            result = auxiliaryHeap_->allocate(BindlessHandleKind::StorageImage).transform([&](auto rhiValue) { outputColorHandle_ = std::move(rhiValue); });
+            if (!result || !outputColorHandle_.valid()) {
+                log = "StreamlineDLSSSRPass failed to allocate its output descriptor";
+                return result ? makeError(Error::Failure) : result;
+            }
+        }
+
         if (depthExportPipeline_ == nullptr) {
             result = createSlangShaderModule(
                 device,
@@ -852,16 +890,26 @@ private:
             }
         }
 
-        if (!alphaResolve_.valid()) {
-            ShaderCompileResult shader;
-            result = compileSlangShaderToSpirv({.moduleName = kStreamlineDLSSSupportShaderModuleName,
-                .entryPointName = kStreamlineDLSSAlphaEntryPoint, .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-                shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-            if (!result) { log = shader.diagnostics; return result; }
-            result = alphaResolve_.initialize(device, {.spirv = shader.spirv,
-                .parameters = parameterAbi<DLSSSupportParams>(kDLSSSupportABI, ParameterTransport::InlinePush),
-                .debugName = "DLSSAlphaResolve"}, log);
-            if (!result) { return result; }
+        if (alphaResolvePipeline_ == nullptr) {
+            result = createSlangShaderModule(
+                device,
+                kStreamlineDLSSSupportShaderModuleName,
+                kStreamlineDLSSAlphaEntryPoint,
+                alphaShader_,
+                log);
+            if (!result) {
+                return result;
+            }
+            result = device.createComputePipeline(ComputePipelineDesc{
+                .computeShader = {alphaShader_.get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(StreamlineDLSSAlphaUserPush),
+            }).transform([&](auto rhiValue) { alphaResolvePipeline_ = std::move(rhiValue); });
+            if (!result || alphaResolvePipeline_ == nullptr) {
+                log += resultMessage("createComputePipeline(StreamlineDLSSSRPass alpha resolve)", result);
+                log += '\n';
+                return result ? makeError(Error::Failure) : result;
+            }
         }
 
         if (dlssDepth_ != nullptr &&
@@ -913,20 +961,20 @@ private:
         if (!validTexture(depthGuide) ||
             dlssDepth_ == nullptr ||
             dlssDepthView_ == nullptr ||
+            auxiliaryHeap_ == nullptr ||
             depthExportPipeline_ == nullptr ||
             renderWidth != dlssDepthWidth_ ||
             renderHeight != dlssDepthHeight_) {
             return makeError(Error::InvalidArgument);
         }
 
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
-        const DLSSSupportParams params{.depth = writer.sampledImage(depthGuide.view())};
-        auto encoded = writer.encode(params, kDLSSSupportABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        if (auto result = encoded->bindResources(commandBuffer); !result) { return result; }
-        const auto bytes = encoded->inlineData();
+        Result<> result = auxiliaryHeap_->writeSampledImage(
+            depthGuideHandle_,
+            *depthGuide.view(),
+            TextureLayout::ShaderRead);
+        if (!result) {
+            return result;
+        }
 
         const Rect renderArea{
             .x = 0,
@@ -936,7 +984,7 @@ private:
         };
         RenderingAttachmentDesc depthAttachment{
             .view = dlssDepthView_.get(),
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearDepth = 1.0f,
@@ -945,20 +993,19 @@ private:
             .renderArea = renderArea,
             .depthStencilAttachment = &depthAttachment,
         }); !rendering) { return rendering; }
-        commandBuffer.setViewport(Viewport{
+        if (auto commandResult = commandBuffer.setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(renderWidth),
             .height = static_cast<float>(renderHeight),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         commandBuffer.setScissor(renderArea);
-        if (auto commandResult = commandBuffer.bindExecution(depthExportPipeline_->execution(), bytes.data(), uint32_t(bytes.size())); !commandResult) {
-            commandBuffer.endRendering();
-            return commandResult;
-        }
-        commandBuffer.draw(3);
+        commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
+        if (auto commandResult = commandBuffer.bindExecution((depthExportPipeline_)->execution()); !commandResult) { return commandResult; }
+        commandBuffer.pushBindlessData(&depthGuideHandle_.shaderIndex, sizeof(depthGuideHandle_.shaderIndex));
+        if (auto commandResult = commandBuffer.draw(3); !commandResult) { return commandResult; }
         commandBuffer.endRendering();
 
         return {};
@@ -968,19 +1015,32 @@ private:
         CommandBuffer& commandBuffer,
         TextureHandle outputColor)
     {
-        if (!validTexture(outputColor) || !alphaResolve_.valid()) { return makeError(Error::InvalidArgument); }
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
-        const DLSSSupportParams params{.color = writer.storageImage(outputColor.view())};
-        auto encoded = writer.encode(params, kDLSSSupportABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return alphaResolve_.dispatch(commandBuffer, *encoded,
-            (outputColor.desc().width + 7u) / 8u, (outputColor.desc().height + 7u) / 8u);
+        if (!validTexture(outputColor) ||
+            auxiliaryHeap_ == nullptr ||
+            alphaResolvePipeline_ == nullptr ||
+            !outputColorHandle_.valid()) {
+            return makeError(Error::InvalidArgument);
+        }
+        Result<> result = auxiliaryHeap_->writeStorageImage(
+            outputColorHandle_,
+            *outputColor.view());
+        if (!result) {
+            return result;
+        }
+
+        commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
+        const StreamlineDLSSAlphaUserPush push{
+            .outputImage = outputColorHandle_.shaderIndex,
+        };
+        if (auto commandResult = commandBuffer.bindExecution((alphaResolvePipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
+        commandBuffer.dispatch(
+            (outputColor.desc().width + 7u) / 8u,
+            (outputColor.desc().height + 7u) / 8u,
+            1);
+        return {};
     }
 
-    Device* device_ = nullptr;
-    ComputeKernel guideResolve_;
+    ComputeProgram guideResolve_;
     uint64_t lastFrame_ = 0;
     uint64_t lastHistoryRevision_ = 0;
     DLSSVariant variant_ = DLSSVariant::SuperResolution;
@@ -1000,10 +1060,14 @@ private:
     uint32_t preparedOutputHeight_ = 0;
     bool preparedValid_ = false;
     bool forceReset_ = true;
+    std::unique_ptr<BindlessHeap> auxiliaryHeap_;
+    BindlessHandle depthGuideHandle_;
+    BindlessHandle outputColorHandle_;
     std::unique_ptr<ShaderModule> depthVertexShader_;
     std::unique_ptr<ShaderModule> depthFragmentShader_;
+    std::unique_ptr<ShaderModule> alphaShader_;
     std::unique_ptr<GraphicsPipeline> depthExportPipeline_;
-    ComputeKernel alphaResolve_;
+    std::unique_ptr<ComputePipeline> alphaResolvePipeline_;
     std::unique_ptr<Texture> dlssDepth_;
     std::unique_ptr<TextureView> dlssDepthView_;
     uint32_t dlssDepthWidth_ = 0;

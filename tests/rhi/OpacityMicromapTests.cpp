@@ -1,10 +1,11 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 
 #include "Runtime/Render/RayTracing/OpacityMicromapBake.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "Runtime/Render/Core/SceneProbeParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
@@ -206,10 +207,16 @@ public:
                 render::vulkan::enableOpacityMicromapSpirv(patched, twice) && patched == twice, "RayQuery OMM mode missing or not idempotent");
             OMM_EXPECT(render::vulkan::enableOpacityMicromapSpirv(compiled.spirv, patched, true) && patched != compiled.spirv &&
                 render::vulkan::enableOpacityMicromapSpirv(patched, twice, true) && patched == twice, "RayQuery EXT OMM capability missing or not idempotent");
-            render::ComputeKernel program;
-            OMM_REQUIRE(program.initialize(*device, {.spirv = compiled.spirv,
-                .parameters = render::parameterAbi<render::OpacityMicromapProbeParameters>(
-                    render::kOpacityMicromapProbeABI, render::ParameterTransport::InlinePush)}, log));
+            const render::ComputeProgramBindingDesc layout[] = {
+                {0, render::ComputeResourceBindingKind::AccelerationStructure}, {2}, {3}, {4}, {5}, {6},
+                {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()}, {63}};
+            render::ComputeProgram program;
+            OMM_REQUIRE(program.initialize(*device, {
+                .spirv = compiled.spirv,
+                .pushConstantSize = 4,
+                .bindings = {layout, uint32_t(std::size(layout))},
+                .resourceParameters = render::kSceneProbeResourceLayout,
+            }, log));
             std::unique_ptr<render::Buffer> output;
             OMM_REQUIRE(device->createBuffer({.size = sizeof(Probe), .structureStride = 8,
                 .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
@@ -284,25 +291,24 @@ public:
                     "fixture did not exercise multiple partitions");
                 OMM_REQUIRE(frame.begin(step));
                 OMM_REQUIRE(pool->reset());
-                OMM_REQUIRE(commands->begin(&frame));
+                OMM_REQUIRE(commands->begin(frame.submissionContext()));
                 OMM_REQUIRE(resources.uploadMaterialTextures(*commands));
-                auto registry = device->resourceRegistry();
-                OMM_REQUIRE(registry.transform([](auto&) {}));
-                render::ParameterWriter writer(*device, **registry, &frame);
-                render::PathTraceParameters sceneParameters{};
-                sceneParameters.scene = writer.accelerationStructure(resources.accelerationStructure().accelerationStructure());
-                sceneParameters.vertices = writer.dataBuffer(resources.shadingVertexBuffer(), 16, 8);
-                sceneParameters.indices = writer.dataBuffer(resources.indexBuffer(), 4, 4);
-                sceneParameters.primitives = writer.dataBuffer(resources.primitiveBuffer(), 32, 4);
-                sceneParameters.instances = writer.dataBuffer(resources.instanceBuffer(), 16, 4);
-                sceneParameters.materials = writer.buffer(resources.materialBuffer());
-                sceneParameters.materialTextures = writer.sampledImages(resources.materialTextureViews());
-                const render::OpacityMicromapProbeParameters parameters{
-                    writer.data(&sceneParameters, sizeof(sceneParameters)), writer.dataBuffer(output.get(), 8, 4),
-                    uint32_t(resources.materialTextureViews().size()), 0};
-                auto encoded = writer.encode(parameters, render::kOpacityMicromapProbeABI, render::ParameterTransport::InlinePush);
-                OMM_REQUIRE(encoded.transform([](auto&) {}));
-                OMM_REQUIRE(program.dispatch(*commands, *encoded, 8, 8));
+                const render::ComputeDispatchBinding bindings[] = {
+                    {.binding = 0, .accelerationStructure = resources.accelerationStructure().accelerationStructure()},
+                    {.binding = 2, .buffer = resources.shadingVertexBuffer()}, {.binding = 3, .buffer = resources.indexBuffer()},
+                    {.binding = 4, .buffer = resources.primitiveBuffer()}, {.binding = 5, .buffer = resources.instanceBuffer()},
+                    {.binding = 6, .buffer = resources.materialBuffer()},
+                    {.binding = 9, .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()}},
+                    {.binding = 63, .buffer = output.get()}};
+                const uint32_t textureCount = uint32_t(resources.materialTextureViews().size());
+                OMM_REQUIRE(program.dispatch({
+                    .commandBuffer = commands.get(),
+                    .bindings = {bindings, uint32_t(std::size(bindings))},
+                    .pushData = &textureCount,
+                    .pushDataSize = 4,
+                    .groupCountX = 8,
+                    .groupCountY = 8,
+                }));
                 OMM_REQUIRE(commands->end());
                 render::CommandBuffer* submitted[] = {commands.get()};
                 OMM_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));

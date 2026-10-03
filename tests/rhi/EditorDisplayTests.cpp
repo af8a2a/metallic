@@ -49,8 +49,8 @@ public:
         init.PipelineInfoMain.PipelineRenderingCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
-        ui.initialized = ImGui_ImplVulkan_Init(&init);
-        if (!ui.initialized || !ui.display.initialize(native.device, format, true, 203.0f,
+        ui.initialized = EditorDisplayRenderer::loadBackendFunctions(native) && ImGui_ImplVulkan_Init(&init);
+        if (!ui.initialized || !ui.display.initialize(native, format, true, 203.0f,
                 VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
             return RHITestResult::fail("HDR ImGui initialization failed");
         }
@@ -88,7 +88,7 @@ public:
             },
         };
         if (auto commandResult = commands->synchronize({.textures = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        render::RenderingAttachmentDesc attachment{.view = sourceView.get(), .state = render::ResourceState::ColorAttachment,
+        render::RenderingAttachmentDesc attachment{.view = sourceView.get(), .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear, .storeOp = render::StoreOp::Store, .clearColor = {12.5f, 5.0f, 1.0f, 1.0f}};
         if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commands->endRendering();
@@ -100,7 +100,7 @@ public:
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
         if (auto commandResult = commands->synchronize({.textures = {&readable, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::ResourceState::ShaderRead));
+        const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::TextureLayout::ShaderRead));
         ImGui_ImplVulkan_NewFrame();
         ImGui::NewFrame();
         auto* list = ImGui::GetBackgroundDrawList();
@@ -126,7 +126,7 @@ public:
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
         };
         if (auto commandResult = commands->synchronize({.textures = {&toReadback, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commands->copyTextureToBuffer({.texture = output.get(), .buffer = readback.get(), .width = 32, .height = 32});
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = output.get(), .buffer = bufferSlice, .width = 32, .height = 32}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         render::CommandBuffer* command = commands.get();
         if (!commands->end() || !context.graphicsQueue.submit({
             .commandBuffers = {&command, 1},
@@ -158,7 +158,7 @@ public:
             return RHITestResult::fail("PQ fixture allocation failed");
         }
         const auto outputDescriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*outputView),
-            render::vulkan::nativeImageLayout(*outputView, render::ResourceState::ShaderRead));
+            render::vulkan::nativeImageLayout(*outputView, render::TextureLayout::ShaderRead));
         const render::TextureBarrierDesc encodeBarriers[] = {
             {.texture = output.get(), .oldLayout = render::TextureLayout::TransferSource,
                 .newLayout = render::TextureLayout::ShaderRead,
@@ -177,7 +177,7 @@ public:
         commands->endRendering();
         toReadback.texture = pq.get();
         if (!commands->synchronize({.textures = {&toReadback, 1}})) { return RHITestResult::fail("PQ readback barrier failed"); }
-        commands->copyTextureToBuffer({.texture = pq.get(), .buffer = readback.get(), .width = 32, .height = 32});
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = pq.get(), .buffer = bufferSlice, .width = 32, .height = 32}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         if (!commands->end() || !context.graphicsQueue.submit({.commandBuffers = {&command, 1},
                 .signalFence = fence.get()}) || !fence->wait()) { return RHITestResult::fail("PQ submit failed"); }
         readback->invalidate();

@@ -1,5 +1,14 @@
 # Shared registry、typed 参数与子系统资源身份
 
+当前契约见 [ResourceAccessABI.md](ResourceAccessABI.md)：renderer image/buffer 句柄统一为 32 位，
+普通数据、资源表、常量表和 ParameterRoot 均通过 DR buffer 读取。
+设备后端配置现已移入 `VulkanDeviceExtensions`，当前入口及能力查询见
+[项目架构的 Vulkan 章节](ProjectArchitecture.md#102-vulkan-实现)；下文的旧 DeviceDesc 字段同样属于历史记录。
+
+**以下章节是迁移历史记录，不是当前 API 指南。** 其中的 64 位 image/buffer handle、
+`DataSpan`、`writer.dataBuffer()`、BDA 参数根和旧布局已被移除；历史测试数字只适用于当时版本。
+当前仍适用的资源保留、设备 provenance、同步和提交期所有权原则没有改变。
+
 ## 已接入的路径
 
 `Device::resourceRegistry()` 提供设备级共享 registry。`ComputeKernel` 只保存 shader、pipeline 与参数 ABI；没有 Program 私有 heap、binding layout 或 resource table。
@@ -12,10 +21,10 @@
 
 - GPUScene 上传后发布 `ResourceLease`，移除额外 `BufferView` 和 consumer 私有 descriptor 分配。`createBindings()` 只复制当前 generation/revision 对应的 leases。
 - `MeshletStreamRuntime` 与两个 raster 消费者不再创建私有 heap。resident/stream 共用材质纹理索引、材质 remap buffer 和 tessellation buffer，删除第二套上传及重映射。
-- `ComputeProgram` 的 Core 资源表路径作为兼容适配器保留，它只编码参数，创建与录制统一委托 `ComputeKernel`。ScenePathTrace、deferred shading 等生产调用者已直接使用 `ComputeKernel` 的 inline 参数包与共享 registry。旧 SPIR-V mapping 诊断已移到测试内的原始 RHI fixture。
-- NRD 使用 `ComputeKernel` / `ParameterWriter`，取消 sampler/image slot 池与逐帧游标。SDK 调度计划、历史状态、barrier 和取消恢复逻辑仍由 NRD 适配层管理；16 字节 inline 根引用常量和 400 字节完整 canonical handle 快照，存入同一提交参数区；不再截断为 uint32 索引，也不借用 Streamer 常量缓冲。
+- `ComputeProgram` 的 Core 资源表路径成为兼容适配器，ScenePathTrace、deferred shading 等现有调用者复用 registry 身份。它只编码参数，创建与录制统一委托 `ComputeKernel`。旧 SPIR-V mapping 诊断已移到测试内的原始 RHI fixture。
+- NRD 使用 `ComputeKernel` / `ParameterWriter`，取消 sampler/image slot 池与逐帧游标。SDK 调度计划、历史状态、barrier 和取消恢复逻辑仍由 NRD 适配层管理；常量与资源索引存入同一提交参数区，不再借用 Streamer 常量缓冲。
 
-**当前边界：** 生产 compute 与 resident/stream raster 使用具名 inline 参数、typed handle 和有界 BDA span；大快照由参数包保留。`ComputeProgram` 的数字 slot 保留给兼容性与对照测试。下文分批说明 registry、数据范围、同步及执行入口的演进；最初阶段的接口范围不代表仍待迁移的生产调用清单。最新 shader 用法见 [Shader 模块](../Shaders/README.md)。
+**迁移边界：** ComputeProgram 的命名 typed 参数尚未全面替换数字 slot；raster/stream 的既有 push struct 也继续使用原 ABI。共享的是资源身份、descriptor 分配和提交期所有权。BDA buffer API、同步模型、NRC/DLSS 原生 SDK 资源包装和 lazy native view 不在本批范围。
 
 ## 参数与资源契约
 
@@ -120,7 +129,7 @@ return kernel.dispatch(commands, *packet, groupCount);
 
 Slang 的 `.data` 是普通 GPU 指针，`.length()` 在 stride 与 `sizeof(T)` 不一致时返回零；消费端先检查 `.contains(index)` 或完整的派生范围，再访问内存。CPU 范围校验与 shader 索引校验缺一不可；BDA 指针访问不自动继承 SSBO robust bounds。参见 [Vulkan BDA 示例](https://docs.vulkan.org/samples/latest/samples/extensions/buffer_device_address/README.html) 和 [BDA 对齐说明](https://docs.vulkan.org/guide/latest/buffer_device_address_alignment.html)。这不是强制检查所有指针解引用的语言包装，也不是自动推断 C++/Slang ABI 的反射系统。
 
-`CommandBuffer::copyBuffer(sourceSlice, destinationSlice)` 返回 Result，要求等长非空范围、正确设备/transfer usage，拒绝同一分配内重叠复制。`dispatchIndirect(slice)` 要求 Indirect usage、4 字节对齐及至少 12 字节；只读取开头三个 dispatch 计数。`ComputeKernel` 同样提供 slice 间接入口。旧 Buffer+offset 入口转交给这些校验，保留原签名。复制和间接命令在录制时保留实际分配，typed packet 和 Core 数据槽也保留同一分配，延续 frame 完成/取消/部分提交回收契约。Device 仍须晚于所有 slice、packet、command 和 GPU 工作销毁。保留解决存活期，不负责 barrier、队列依赖或阻止 CPU 提前覆盖正在使用的字节。
+`CommandBuffer::copyBuffer(sourceSlice, destinationSlice)` 返回 Result，要求等长非空范围、正确设备/transfer usage，拒绝同一分配内重叠复制。`dispatchIndirect(slice)` 与 `drawMeshTasksIndirect(slice)` 要求 Indirect usage、4 字节对齐及至少 12 字节；只读取开头三个 group 计数。`ComputeKernel` 同样只提供 slice 间接入口，旧 Buffer+offset 重载已删除。`BufferTextureRegion::buffer` 也直接持有 slice，以其地址为拷贝起点、长度为容量上限，并按拷贝方向校验 transfer usage。复制和间接命令在录制时保留实际分配，typed packet 和 Core 数据槽也保留同一分配，延续 frame 完成/取消/部分提交回收契约。Device 仍须晚于所有 slice、packet、command 和 GPU 工作销毁。保留解决存活期，不负责 barrier、队列依赖或阻止 CPU 提前覆盖正在使用的字节。
 
 原生 BDA 在分配创建时查询一次；当前 VMA 路径不重定位存活的 buffer。CPU slice 不承担长期资产身份。Streaming 的 ResourceId/PageId、generation、resident 映射仍保留，解析到当前分配后再形成 slice，避免把可迁移页永久表示为裸地址。slice 保留的是原生 allocation，页内范围的复用与 residency pinning 仍由 streaming 原有协议负责。
 

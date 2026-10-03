@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
 #include "Runtime/Render/Streamer/MeshletStreamLatency.h"
 #include "Runtime/Task/TaskSystem.h"

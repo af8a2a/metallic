@@ -1,5 +1,6 @@
-#include "../../../Source/Runtime/Render/Core/InstanceCullParameters.h"
-[[vk::push_constant]] ConstantBuffer<InstanceCullParameters> gInstanceCull;
+import ShaderCore;
+using Metallic;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
@@ -7,37 +8,63 @@ using Metallic.Material;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void gpuDrivenPreviewResetMain(uint3 id : SV_DispatchThreadID)
+void gpuDrivenPreviewResetMain(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uniform GPUDrivenPreviewPush push)
 {
-    InstanceCullParameters p = gInstanceCull;
-    if (p.phase == 0u) { resolveDescriptor(p.counter)[0] = 0u; }
+    if (push.passIndex == 0u) {
+        RWStructuredBuffer<uint> visibleInstanceCounterHandle =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceCounterBuffer));
+        visibleInstanceCounterHandle[0] = 0u;
+    }
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void gpuDrivenPreviewInstanceCullMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+void gpuDrivenPreviewInstanceCullMain(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uniform GPUDrivenPreviewPush push)
 {
-    InstanceCullParameters p = gInstanceCull;
-    if (!p.settings.contains(0u)) { return; }
-    RWStructuredBuffer<uint> visibleInstanceCounterHandle = resolveDescriptor(p.counter);
-    GPUDrivenPreviewParams params = p.settings.data[0];
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenPreviewInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(push.instanceBuffer));
+    RWStructuredBuffer<uint> visibilityHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.instanceVisibilityBuffer));
+    RWStructuredBuffer<uint> visibleInstanceIdsHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceIdsBuffer));
+    RWStructuredBuffer<uint> visibleInstanceCounterHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceCounterBuffer));
+
+    GPUDrivenPreviewParams params = paramsHandle[0];
     uint instanceIndex = dispatchThreadId.x;
-    if (instanceIndex >= params.instanceCount || !p.instances.contains(instanceIndex) || !p.visibility.contains(instanceIndex)) {
+    if (instanceIndex >= params.instanceCount) {
         return;
     }
 
-    if (p.streamOwners.contains(instanceIndex) && p.streamOwners.data[instanceIndex] != 0u) {
-        // Preserve Stream's early state during the late resident pass.
-        if (p.phase == 0u) { p.visibility.data[instanceIndex] = 0u; }
-        return;
+    RWStructuredBuffer<uint> visibility = visibilityHandle;
+    if (push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
+        StructuredBuffer<uint> streamOwnerMaskHandle =
+            resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.streamOwnerMaskBuffer));
+        StructuredBuffer<uint> streamOwnerMask = streamOwnerMaskHandle;
+        if (streamOwnerMask[instanceIndex] != 0u) {
+            // Early culling clears stale shared state before the Stream
+            // producer runs. Late culling must preserve Stream's early state
+            // (2 == deferred/occluded) so its late HZB pass can recover it.
+            if (push.passIndex == 0u) {
+                visibility[instanceIndex] = 0u;
+            }
+            return;
+        }
     }
-    if (p.phase != 0 && p.visibility.data[instanceIndex] != 2u) {
+    if (push.passIndex != 0 && visibility[instanceIndex] != 2u) {
         return;
     }
 
-    GPUDrivenPreviewInstance instance = p.instances.data[instanceIndex];
+    StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
+    GPUDrivenPreviewInstance instance = instances[instanceIndex];
     if ((instance.identity.w & kInstanceVisible) == 0u) {
-        p.visibility.data[instanceIndex] = 0u;
+        visibility[instanceIndex] = 0u;
         return;
     }
     SceneTransform transform = instanceTransform(instance);
@@ -49,29 +76,80 @@ void gpuDrivenPreviewInstanceCullMain(uint3 dispatchThreadId : SV_DispatchThread
 
     if ((params.cullingFlags & kCullInstanceFrustum) != 0 &&
         !sphereInsideFrustum(center, radius, camera)) {
-        p.visibility.data[instanceIndex] = 0u;
+        visibility[instanceIndex] = 0u;
         return;
     }
 
-    if ((params.cullingFlags & kCullInstanceHZB) == 0 || (p.phase == 0u && params.hzbValid == 0u)) {
-        p.visibility.data[instanceIndex] = p.phase == 0 ? 1u : 3u;
+    if ((params.cullingFlags & kCullInstanceHZB) == 0 || (push.passIndex == 0u && params.hzbValid == 0u)) {
+        visibility[instanceIndex] = push.passIndex == 0 ? 1u : 3u;
         uint outputIndex = 0u;
         InterlockedAdd(visibleInstanceCounterHandle[0], 1u, outputIndex);
-        if (outputIndex < params.instanceCount && p.visibleIds.contains(outputIndex)) {
-            p.visibleIds.data[outputIndex] = instanceIndex;
+        if (outputIndex < params.instanceCount) {
+            visibleInstanceIdsHandle[outputIndex] = instanceIndex;
         }
         return;
     }
 
-    CameraData hzbCamera = p.phase == 0 ? previousCullingCamera(params) : camera;
-    bool occluded = sphereOccluded(center, radius, hzbCamera, params, p.hzb);
-    p.visibility.data[instanceIndex] = occluded ? (p.phase == 0 ? 2u : 0u) :
-        (p.phase == 0 ? 1u : 3u);
+    uint currentHzb = params.frameIndex & 1u;
+    uint hzbIndex = push.passIndex == 0 ? (currentHzb ^ 1u) : currentHzb;
+    CameraData hzbCamera = push.passIndex == 0 ? previousCullingCamera(params) : camera;
+    bool occluded = sphereOccluded(center, radius, hzbCamera, params, push, hzbIndex);
+    visibility[instanceIndex] = occluded ? (push.passIndex == 0 ? 2u : 0u) :
+        (push.passIndex == 0 ? 1u : 3u);
     if (!occluded) {
         uint outputIndex = 0u;
         InterlockedAdd(visibleInstanceCounterHandle[0], 1u, outputIndex);
-        if (outputIndex < params.instanceCount && p.visibleIds.contains(outputIndex)) {
-            p.visibleIds.data[outputIndex] = instanceIndex;
+        if (outputIndex < params.instanceCount) {
+            visibleInstanceIdsHandle[outputIndex] = instanceIndex;
         }
     }
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void gpuDrivenPreviewHzbMain(
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uniform GPUDrivenPreviewPush push)
+{
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    GPUDrivenPreviewParams params = paramsHandle[0];
+    uint mipWidth = mipDimension(params.width, push.mipLevel);
+    uint mipHeight = mipDimension(params.height, push.mipLevel);
+    if (dispatchThreadId.x >= mipWidth || dispatchThreadId.y >= mipHeight) {
+        return;
+    }
+
+    uint currentHzb = params.frameIndex & 1u;
+    uint hzbHandleIndex = currentHzb == 0 ? push.hzbBuffer0 : push.hzbBuffer1;
+    RWStructuredBuffer<float> hzbHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<float>>(hzbHandleIndex));
+    RWStructuredBuffer<float> hzb = hzbHandle;
+    uint destinationIndex = hzbMipOffset(params, push.mipLevel) +
+        dispatchThreadId.y * mipWidth + dispatchThreadId.x;
+
+    if (push.mipLevel == 0) {
+        Texture2D<float> depthHandle =
+            resolveUniform(ResourceHandle<Texture2D<float>>(push.depthImage));
+        Texture2D<float> depth = depthHandle;
+        hzb[destinationIndex] = depth.Load(int3(dispatchThreadId.xy, 0));
+        return;
+    }
+
+    uint sourceMip = push.mipLevel - 1u;
+    uint sourceWidth = mipDimension(params.width, sourceMip);
+    uint sourceHeight = mipDimension(params.height, sourceMip);
+    uint sourceOffset = hzbMipOffset(params, sourceMip);
+    uint2 sourceBase = dispatchThreadId.xy * 2u;
+    uint2 source0 = min(sourceBase, uint2(sourceWidth - 1u, sourceHeight - 1u));
+    uint2 source1 = min(sourceBase + uint2(1u, 0u), uint2(sourceWidth - 1u, sourceHeight - 1u));
+    uint2 source2 = min(sourceBase + uint2(0u, 1u), uint2(sourceWidth - 1u, sourceHeight - 1u));
+    uint2 source3 = min(sourceBase + uint2(1u, 1u), uint2(sourceWidth - 1u, sourceHeight - 1u));
+    float depth0 = hzb[sourceOffset + source0.y * sourceWidth + source0.x];
+    float depth1 = hzb[sourceOffset + source1.y * sourceWidth + source1.x];
+    float depth2 = hzb[sourceOffset + source2.y * sourceWidth + source2.x];
+    float depth3 = hzb[sourceOffset + source3.y * sourceWidth + source3.x];
+    hzb[destinationIndex] = params.clipOrtho.w > 0.5 ?
+        min(min(depth0, depth1), min(depth2, depth3)) :
+        max(max(depth0, depth1), max(depth2, depth3));
 }

@@ -23,13 +23,9 @@ cache key or equal marker name is not binding identity. Keep leases alive until
 all submitted work completes. Reject rebinding/reallocation between capture
 and replay. A scratch implementation must declare and verify a one-to-one
 relocation map, including indices embedded inside buffers; it must not claim
-physical binding equality. The v2 implementation retains the production ComputeKernel and registers private
-allocations with the canonical registry. It verifies and archives a one-to-one
-handle map, then re-encodes the 88-byte inline root and the immutable 624-byte
-settings snapshot. Record base/capacity and flags are preserved. Physical
-binding equality is not claimed. The v1 same-typed-index archives remain
-read-only offline evidence under their original verifier; no v1 root is executed
-by the v2 kernel.
+physical binding equality. The implementation selects private allocations at
+identical typed indices and retains the production executable. It reports
+physical relocation explicitly; physical binding equality is not claimed.
 
 ## Resource closure
 
@@ -40,16 +36,16 @@ Audit roots: `streamClusterRasterWorkControlMain`,
 
 | Resource / addressing | Access by selected dispatch | Required capture |
 | --- | --- | --- |
-| `push.bins` | Read: header, stable software list | Full allocation, including bins[4..11], capacity and list at `16 + 4 * bins[5]` |
+| `push.hybridClusterBuffer` | Read: header, stable software list | Full allocation, including bins[4..11], capacity and list at `16 + 4 * bins[5]` |
 | cluster indirect buffer | Indirect read | All bytes; command at offset 48, 12 bytes `(x,y,z)`; preserve 65535-wide flattening |
-| `push.settings` BDA snapshot | Read | Full struct, both cameras, jitter, extents, page bounds, task count and frame data |
-| `push.header` | Read | Full header, active count/capacity/max clusters |
-| `push.groups` | Read | Full allocation, masks, flags, page/instance IDs, transforms |
-| `push.pageTable` | Read in this dispatch | Full entries including `lastRequestFrame`, not WorkloadCase's mappings-only hash |
-| `push.pages` | Read | Resident payload bytes and exact descriptor range; headers, positions, triangle bytes |
-| inline record base/capacity and hasInstances | Read | Preserve all scalar bytes; old rasterBindings buffer is only a production guard |
-| `push.instances` | Read | Exact range/dimensions and instance identity flags |
-| `push.pixels` | Atomic read/modify/write | Full allocation before and immediately after control; 64-bit packed depth/visibility, including inactive tail; bins[9] is reversed-Z, bins[10] is subpixel precision |
+| `push.paramsBuffer` | Read | Full struct, both cameras, jitter, extents, page bounds, task count and frame data |
+| `push.activeHeaderBuffer` | Read | Full header, active count/capacity/max clusters |
+| `push.activeGroupBuffer` | Read | Full allocation, masks, flags, page/instance IDs, transforms |
+| `push.pageTableBuffer` | Read in this dispatch | Full entries including `lastRequestFrame`, not WorkloadCase's mappings-only hash |
+| `push.pageBuffer` | Read | Resident payload bytes and exact descriptor range; headers, positions, triangle bytes |
+| `push.rasterBindingsBuffer` | Read | Entire struct; record base/capacity and nested descriptor indices |
+| `rasterBindings.gpuSceneInstanceBuffer` | Read | Exact range/dimensions and instance identity flags |
+| `bins[11]` pixel buffer | Atomic read/modify/write | Full allocation before and immediately after control; 64-bit packed depth/visibility, including inactive tail; bins[9] is reversed-Z, bins[10] is subpixel precision |
 | request/visible-record resources in fallback | Conditional declarations; publication disabled by `false,false` | Verify reachable compiled path or retain private copies; unknown access rejects replay |
 
 The first implementation rejects minimum subgroup sizes below 32. The fallback's
@@ -81,7 +77,7 @@ may reach a production resolve, page request consumer or history publisher.
 4. With renderer submission/publication suspended, restore the dispatch input
    bytes and resource states (or initialize an independently owned scratch
    closure). Read back and byte-compare restored inputs. Then submit exactly
-   one indirect dispatch using the retained kernel and re-encoded scratch parameters.
+   one indirect dispatch using the retained pipeline, heap and push bytes.
    Restoration/copy/verification commands are outside the measured submission.
 5. Wait with a finite deadline; byte-compare full direct output with the
    same-frame control. Restore production continuation state and byte-compare

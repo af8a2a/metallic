@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -238,10 +240,10 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
         if (!device_->createBuffer({.size = pixels.size() * sizeof(uint32_t),
                 .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }) ||
             !device_->createCommandPool(*graphicsQueue_).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
-            !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(&frame) ||
+            !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(frame.submissionContext()) ||
             !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
-        commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
-            .width = output->desc.width, .height = output->desc.height});
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = output->texture, .buffer = bufferSlice,
+            .width = output->desc.width, .height = output->desc.height}); }); !commandResult) { return false; }
         if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
             !commands->end()) { return false; }
         render::CommandBuffer* buffers[] = {commands.get()};
@@ -378,10 +380,10 @@ bool EditorApplication::runSceneSwitchSmokeTest()
         if (!device_->createBuffer({.size = pixelCount * (hdr ? 8u : 4u),
                 .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }) ||
             !device_->createCommandPool(*graphicsQueue_).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
-            !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(&frame) ||
+            !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(frame.submissionContext()) ||
             !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
-        commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
-            .width = output->desc.width, .height = output->desc.height});
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = output->texture, .buffer = bufferSlice,
+            .width = output->desc.width, .height = output->desc.height}); }); !commandResult) { return false; }
         if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
             !commands->end()) { return false; }
         render::CommandBuffer* buffers[] = {commands.get()};

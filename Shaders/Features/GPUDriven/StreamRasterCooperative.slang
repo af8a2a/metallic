@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 // SW-only descriptor. No traversal/culling params, bounds, material or request state.
 struct StreamSoftwareRasterDesc
 {
@@ -12,27 +15,27 @@ groupshared float4 g_StreamSoftwareClip[128];
 
 // Called by the complete first wave only. Every return is wave-uniform;
 // all waves rejoin at the caller's group barrier, including rejected pages.
-bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetParams params,
-    uint visibleRecordBase, uint visibleRecordCapacity, StreamRasterResources resources)
+bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
 {
     uint lane = WaveGetLaneIndex();
-    let header = resources.header;
-    let groups = resources.groups;
-    let instances = resources.instances;
-    let table = resources.pageTable;
-    let pages = resources.pages;
+    StructuredBuffer<GPUDrivenStreamAssetParams> params =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> header =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     uint field = 0u;
     switch (lane) {
-    case 0: field = params.drawTaskCount; break;
-    case 1: field = params.pageBufferBytes; break;
-    case 2: field = params.scenePageCount; break;
+    case 0: field = params[0].drawTaskCount; break;
+    case 1: field = params[0].pageBufferBytes; break;
+    case 2: field = params[0].scenePageCount; break;
     case 3: field = header[0].activeGroupCount; break;
     case 4: field = header[0].activeGroupCapacity; break;
     case 5: field = header[0].maxActiveGroupClusters; break;
-    case 6: field = visibleRecordBase; break;
-    case 7: field = visibleRecordCapacity; break;
-    case 8: field = resources.hasInstances ? 1u : 0u; break;
-    case 9: field = params.renderViewport.y > 0.0 ? 1u : 0u; break;
+    case 6: field = bindings[0].visibleRecordBase; break;
+    case 7: field = bindings[0].visibleRecordCapacity; break;
+    case 8: field = bindings[0].gpuSceneInstanceBuffer; break;
+    case 9: field = params[0].renderViewport.y > 0.0 ? 1u : 0u; break;
     }
     uint tasks = WaveReadLaneAt(field, 0u) / kMeshletTriangleChunkCount;
     uint recordCapacity = WaveReadLaneAt(field, 7u);
@@ -45,8 +48,10 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetParams params,
     if (groupIndex >= min(WaveReadLaneAt(field, 3u), WaveReadLaneAt(field, 4u))) { return false; }
     uint pageBufferBytes = WaveReadLaneAt(field, 1u);
     uint pageCount = WaveReadLaneAt(field, 2u);
-    bool hasInstances = WaveReadLaneAt(field, 8u) != 0u;
+    uint instanceBuffer = WaveReadLaneAt(field, 8u);
     bool renderCamera = WaveReadLaneAt(field, 9u) != 0u;
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> groups =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
     field = 0u;
     switch (lane) {
     case 0: field = groups[groupIndex].pageIndex; break;
@@ -62,19 +67,25 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetParams params,
         (WaveReadLaneAt(field, 3u) & (kActiveGroupLoadRequest | kActiveGroupUnloadRequest)) != 0u ||
         ((WaveReadLaneAt(field, 2u) >> clusterIndex) & 1u) == 0u) { return false; }
     uint instanceFlags = 0u;
-    if (hasInstances) {
+    if (instanceBuffer != 0xffffffffu) {
+        StructuredBuffer<GPUDrivenPreviewInstance> instances =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(instanceBuffer));
         uint count = 0u, stride;
         if (lane == 0u) { StructuredBuffer<GPUDrivenPreviewInstance> buffer = instances; buffer.GetDimensions(count, stride); }
         if (instanceIndex >= WaveReadLaneFirst(count)) { return false; }
         if (lane == 0u) { instanceFlags = instances[instanceIndex].identity.w; }
         instanceFlags = WaveReadLaneFirst(instanceFlags);
     }
+    StructuredBuffer<GPUDrivenStreamAssetPageTableEntry> table =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
     field = lane == 0u ? table[pageIndex].deviceOffsetAndState : 0u;
     field = WaveReadLaneFirst(field);
     uint state = field & kStreamPageStateMask;
     uint pageOffset = field & kStreamPageDeviceOffsetMask;
     if ((state != kStreamStateResident && state != kStreamStateLockedFallback) ||
         pageBufferBytes < kPayloadHeaderBytes || pageOffset > pageBufferBytes - kPayloadHeaderBytes) { return false; }
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint pageWord = pageOffset / 4u;
     // One word per lane, coalesced header fetch. Only consume validated ranges.
     field = lane < kPayloadHeaderBytes / 4u ? pages[pageWord + lane] : 0u;
@@ -103,11 +114,11 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetParams params,
         triangles > kMaxMeshletTriangles || triangleStart > indexCount || triangles > (indexCount - triangleStart) / 3u) { return false; }
     // Disjoint writes need no wave/group shared reads before the outer barrier.
     switch (lane) {
-    case 0: g_StreamSoftware.eye = renderCamera ? params.renderEye : params.eye; break;
-    case 1: g_StreamSoftware.center = renderCamera ? params.renderCenter : params.center; break;
-    case 2: g_StreamSoftware.upProjection = renderCamera ? params.renderUpProjection : params.upProjection; break;
-    case 3: g_StreamSoftware.viewport = renderCamera ? params.renderViewport : params.viewport; break;
-    case 4: g_StreamSoftware.clipOrtho = renderCamera ? params.renderClipOrtho : params.clipOrtho; break;
+    case 0: g_StreamSoftware.eye = renderCamera ? params[0].renderEye : params[0].eye; break;
+    case 1: g_StreamSoftware.center = renderCamera ? params[0].renderCenter : params[0].center; break;
+    case 2: g_StreamSoftware.upProjection = renderCamera ? params[0].renderUpProjection : params[0].upProjection; break;
+    case 3: g_StreamSoftware.viewport = renderCamera ? params[0].renderViewport : params[0].viewport; break;
+    case 4: g_StreamSoftware.clipOrtho = renderCamera ? params[0].renderClipOrtho : params[0].clipOrtho; break;
     case 5: g_StreamSoftware.world0 = groups[groupIndex].world0; break;
     case 6: g_StreamSoftware.world1 = groups[groupIndex].world1; break;
     case 7: g_StreamSoftware.world2 = groups[groupIndex].world2; break;
@@ -124,8 +135,10 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetParams params,
     return true;
 }
 
-float4 streamSoftwareClip(uint vertex, DescriptorHandle<StructuredBuffer<uint>> pages)
+float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
 {
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint word = g_StreamSoftware.positionWord + vertex * g_StreamSoftware.positionStride;
     float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
     float3 worldPosition = g_StreamSoftware.world0.xyz * local.x + g_StreamSoftware.world1.xyz * local.y +
@@ -156,8 +169,10 @@ float4 streamSoftwareClip(uint vertex, DescriptorHandle<StructuredBuffer<uint>> 
     return clip;
 }
 
-uint3 streamSoftwareTriangle(uint triangle, DescriptorHandle<StructuredBuffer<uint>> pages)
+uint3 streamSoftwareTriangle(uint triangle, GPUDrivenStreamAssetPush push)
 {
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint address = g_StreamSoftware.triangleByte + triangle * 3u;
     uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     indices = uint3(indices.x < g_StreamSoftware.vertexCount ? indices.x : 0u,
@@ -166,16 +181,10 @@ uint3 streamSoftwareTriangle(uint triangle, DescriptorHandle<StructuredBuffer<ui
     return reflected ? indices.xzy : indices;
 }
 
-bool loadStreamSoftwareWave(uint record, StreamRasterParameters push)
+void rasterStreamClusterCooperative(uint3 group, uint lane, GPUDrivenStreamAssetPush push)
 {
-    if (push.settings.data == nullptr || !push.settings.contains(0u)) { return false; }
-    return loadStreamSoftwareWave(record, push.settings.data[0], push.visibleRecordBase,
-        push.visibleRecordCapacity, streamRasterResources(push));
-}
-
-void rasterStreamClusterCooperative(uint3 group, uint lane, StreamRasterParameters push)
-{
-    let bins = push.bins;
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane < WaveGetLaneCount()) {
@@ -184,12 +193,12 @@ void rasterStreamClusterCooperative(uint3 group, uint lane, StreamRasterParamete
     }
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamSoftwareValid == 0u) { return; }
-    if (lane < g_StreamSoftware.vertexCount) { g_StreamSoftwareClip[lane] = streamSoftwareClip(lane, push.pages); }
+    if (lane < g_StreamSoftware.vertexCount) { g_StreamSoftwareClip[lane] = streamSoftwareClip(lane, push); }
     GroupMemoryBarrierWithGroupSync();
     if (lane < g_StreamSoftware.triangleCount) {
-        uint3 tri = streamSoftwareTriangle(lane, push.pages);
+        uint3 tri = streamSoftwareTriangle(lane, push);
         hybridRasterTriangle(g_StreamSoftwareClip[tri.x], g_StreamSoftwareClip[tri.y], g_StreamSoftwareClip[tri.z],
             packVisibilityId(g_StreamSoftware.recordIndex, lane), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], push.pixels);
+            bins[6], bins[7], bins[9], bins[10], bins[11]);
     }
 }

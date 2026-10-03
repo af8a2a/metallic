@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactCLASPool.h"
 

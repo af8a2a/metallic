@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/ImportanceSampling.h"
@@ -40,7 +41,7 @@ Result<> SceneLightResources::buildSampling(Device& device, CommandBuffer& comma
         host.retire(sampling_);
         sampling_ = std::move(next);
     }
-    if (auto* frame = commands.frameContext()) { frame->retain(sampling_); }
+    if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(sampling_); }
     // PDF layout state is advanced while recording. If any later pass cancels
     // this recording, recreate it instead of assuming those GPU transitions ran.
     Result<> transaction = host.deferSubmission(commands, []() {},
@@ -224,7 +225,7 @@ Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
         records_ = std::move(records);
         ++revision_;
     }
-    if (auto* frame = commands.frameContext()) { frame->retain(buffer_); }
+    if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(buffer_); }
     commands.hostWriteBarrier();
     return {};
 }

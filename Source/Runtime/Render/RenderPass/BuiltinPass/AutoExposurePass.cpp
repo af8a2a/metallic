@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -115,19 +116,19 @@ public:
             finiteProperty(context.properties(), "artisticExposure", 1.0f, 0.001f, 16.0f),
         };
         auto& commands = context.commandBuffer();
-        if (auto* frame = commands.frameContext()) { frame->retain(state_); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(state_); }
         Result<> result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [] {}, [state = state_] { state->valid = false; }));
         if (!result) { return result; }
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(commands));
         AutoExposureParams params{};
-        params.source = writer.sampledImage(source.view());
-        params.output = writer.storageImage(color.view());
-        params.histogram = writer.dataBuffer(histogram.buffer(), 4, 4);
-        params.history = writer.dataBuffer(state_->history.get(), 16, 16);
-        params.exposure = writer.dataBuffer(exposure.buffer(), 16, 16);
+        params.source = writer.sampledImageHandle(source.view());
+        params.output = writer.storageImageHandle(color.view());
+        params.histogram = writer.bufferSpan(histogram.buffer(), {}, 4, 4);
+        params.history = writer.bufferSpan(state_->history.get(), {}, 16, 16);
+        params.exposure = writer.bufferSpan(exposure.buffer(), {}, 16, 16);
         params.display = push;
         auto encoded = writer.encode(params, kAutoExposureABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }

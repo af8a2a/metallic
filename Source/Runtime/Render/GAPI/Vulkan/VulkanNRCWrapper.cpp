@@ -218,11 +218,6 @@ Result<> NRCIntegration::configure(const nrc::ContextSettings& settings, Device&
         return makeError(Error::Failure);
     }
 
-    // Configure replaces buffers used by SDK commands, including EndFrame work.
-    // Complete that work before releasing the old externally owned allocations.
-    const auto idle = device.waitIdle();
-    if (!idle) { return idle; }
-
     nrc::BuffersAllocationInfo allocationInfo;
     const nrc::Status allocationStatus =
         nrc::vulkan::Context::GetBuffersAllocationInfo(settings, allocationInfo);

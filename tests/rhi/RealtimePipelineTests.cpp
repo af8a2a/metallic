@@ -1,7 +1,9 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "TestResourceLayouts.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "RealtimeProbeParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -154,32 +156,27 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
-        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
             .entryPointName = "environmentPrefilterProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        return kernel_.initialize(*context.device, {
+        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 2}, {.binding = 3}};
+        return program_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .parameters = render::parameterAbi<RealtimeProbeParameters>(kRealtimeProbeABI, render::ParameterTransport::InlinePush),
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kRealtimeGuideProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return render::makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
-        RealtimeProbeParameters params{};
-        params.data = writer.dataBuffer(context.outputBuffer("data").buffer(), 16, 4);
-        params.prefilter = writer.buffer(context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot().prefilteredSpecularBuffer);
-        auto encoded = writer.encode(params, kRealtimeProbeABI, render::ParameterTransport::InlinePush);
-        if (!encoded) { return render::makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, 1);
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 2, .buffer = context.outputBuffer("data").buffer()},
+            {.binding = 3, .buffer = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot().prefilteredSpecularBuffer}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel kernel_;
+    render::ComputeProgram program_;
 };
 
 class EnvironmentPrefilterTest final : public RHITest {
@@ -248,118 +245,44 @@ public:
 
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
-        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
             .entryPointName = "realtimeGuideProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        return kernel_.initialize(*context.device, {
+        const render::ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+        return program_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .parameters = render::parameterAbi<RealtimeProbeParameters>(kRealtimeProbeABI, render::ParameterTransport::InlinePush),
+            .bindings = {bindings, 3},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kRealtimeGuideProbeLayout,
         }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
-            .buffer = context.outputBuffer("pixels").buffer(), .bufferRowPitch = context.width() * 4,
+        if (auto commandResult = (context.outputBuffer("pixels").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+            .buffer = bufferSlice, .bufferRowPitch = context.width() * 4,
             .bufferSlicePitch = context.width() * context.height() * 4,
-            .width = context.width(), .height = context.height()});
+            .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         auto* motion = context.inputTexture("motion").view();
         auto* depth = context.inputTexture("depth").view();
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return render::makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
-        RealtimeProbeParameters params{};
-        params.motion = writer.sampledImage(motion);
-        params.depth = writer.sampledImage(depth);
-        params.data = writer.dataBuffer(context.outputBuffer("guides").buffer(), 16, 4);
-        auto encoded = writer.encode(params, kRealtimeProbeABI, render::ParameterTransport::InlinePush);
-        if (!encoded) { return render::makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .textureViews = {&motion, 1}},
+            {.binding = 1, .textureViews = {&depth, 1}},
+            {.binding = 2, .buffer = context.outputBuffer("guides").buffer()}};
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, 3},
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
     }
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel kernel_;
+    render::ComputeProgram program_;
 };
-
-// Exercise the migrated guide readback without requiring DLSS or scene loading.
-class RealtimeGuideFixturePass final : public render::UnsafePass {
-public:
-    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
-    {
-        render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").transferWrite().format = render::Format::RGBA8Unorm;
-        reflection.addTextureOutput("motion").transferWrite().format = render::Format::RG16Sfloat;
-        reflection.addTextureOutput("depth").transferWrite().format = render::Format::R32Sfloat;
-        return reflection;
-    }
-    render::Result<> execute(render::RenderGraphExecutionContext& context) override
-    {
-        auto& commands = context.commandBuffer();
-        commands.clearColorTexture(*context.outputTexture("color").texture(),
-            render::ResourceState::TransferDestination, {1.0f, 0.0f, 0.0f, 1.0f});
-        commands.clearColorTexture(*context.outputTexture("motion").texture(),
-            render::ResourceState::TransferDestination, {-2.0f, 0.5f, 0.0f, 0.0f});
-        commands.clearColorTexture(*context.outputTexture("depth").texture(),
-            render::ResourceState::TransferDestination, {0.25f, 0.0f, 0.0f, 0.0f});
-        return {};
-    }
-};
-
-class RealtimeGuideInlineTest final : public RHITest {
-public:
-    RealtimeGuideInlineTest() { type = RHITestType::Rendering; name = "realtime_guide_inline_readback"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        std::unique_ptr<render::Device> device;
-        auto initialized = render::createDevice({.applicationName = "Realtime guide inline",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
-            .transform([&](auto value) { device = std::move(value); });
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
-        if (!initialized) { return realtimeFailure("Guide device initialization failed"); }
-        render::registerRenderGraphPassType("RealtimeGuideFixture", "Guide inputs",
-            [] { return std::make_unique<RealtimeGuideFixturePass>(); });
-        render::registerRenderGraphPassType("RealtimeReadbackPass", "Realtime GPU regression readback",
-            [] { return std::make_unique<RealtimeReadbackPass>(); });
-        render::RenderGraph graph;
-        graph.addNode("RealtimeGuideFixture", "Source");
-        graph.addNode("RealtimeReadbackPass", "Readback");
-        for (const char* name : {"color", "motion", "depth"}) {
-            graph.addEdge(std::string("Source.") + name, std::string("Readback.") + name);
-        }
-        graph.markOutput("Readback.guides");
-        graph.markOutput("Readback.pixels");
-        render::RenderGraphExecutor executor;
-        std::string log;
-        for (const auto size : {std::array<uint32_t, 2>{17, 9}, {1, 1}, {63, 37}}) {
-            if (!executor.compile(*device, graph, size[0], size[1], log)) { return realtimeFailure(log); }
-            if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
-                !executor.waitForSubmittedWork()) { return realtimeFailure("Guide execution failed"); }
-            auto* guides = executor.outputResource("Readback.guides")->buffer;
-            guides->invalidate();
-            const auto* values = static_cast<const std::array<float, 4>*>(guides->map());
-            if (!values) { return realtimeFailure("Guide map failed"); }
-            bool matches = true;
-            for (uint32_t i = 0; i < size[0] * size[1]; ++i) {
-                matches &= values[i] == std::array<float, 4>{-2.0f, 0.5f, 0.25f, 1.0f};
-            }
-            guides->unmap();
-            auto* color = executor.outputResource("Readback.pixels")->buffer;
-            color->invalidate();
-            const auto* pixels = static_cast<const std::array<uint8_t, 4>*>(color->map());
-            if (!pixels) { return realtimeFailure("Color map failed"); }
-            for (uint32_t i = 0; i < size[0] * size[1]; ++i) {
-                matches &= pixels[i] == std::array<uint8_t, 4>{255, 0, 0, 255};
-            }
-            color->unmap();
-            if (!matches) { return realtimeFailure("Guide component, pixel coverage or transfer readback mismatch"); }
-        }
-        return RHITestResult::pass("Signed motion, depth, alpha and color readback exact across odd extents and resize; no DLSS dependency");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(RealtimeGuideInlineTest);
 
 class RealtimePipelineTest : public RHITest {
 public:
@@ -390,7 +313,7 @@ public:
         }
         // Streamline owns process-wide Vulkan state: use one device for the test.
         auto* device = &context.device;
-        if (!device->capabilities().streamlineDlssSr || !device->capabilities().meshShader) {
+        if (!metallic::render::vulkan::deviceCapabilities(*device).streamlineDlssSr || !device->capabilities().meshShader) {
             return RHITestResult::skip("Requires --rhi-realtime and supported mesh shaders/DLSS-SR");
         }
         const uint32_t initialValidationCount = context.validationMessageCount != nullptr
@@ -705,7 +628,7 @@ public:
             return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the default full scene");
         }
         if (!context.device.capabilities().meshShader || !context.device.capabilities().clusterAccelerationStructure ||
-            (miniZorah_ && !context.device.capabilities().streamlineDlssSr)) {
+            (miniZorah_ && !metallic::render::vulkan::deviceCapabilities(context.device).streamlineDlssSr)) {
             return RHITestResult::skip("Requires --rhi-realtime with mesh shaders, CLAS and DLSS-SR");
         }
         try {

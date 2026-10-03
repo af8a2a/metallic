@@ -1,18 +1,20 @@
-#include "../ClusterLightGridProbeParameters.h"
+import Core;
+using Metallic;
+#include "../TestResourceParameters.h"
+import Lighting;
+using Metallic.Lighting;
 
-[[vk::push_constant]] ConstantBuffer<ClusterLightGridProbeParameters> gProbe;
-#define gParams resolveDescriptor(gProbe.params)
-#define gLights resolveDescriptor(gProbe.lights)
-#define gCandidates resolveDescriptor(gProbe.candidates)
-#define gCells resolveDescriptor(gProbe.cells)
-#define gLightIndices resolveDescriptor(gProbe.lightIndices)
-#define gOutput gProbe.output.data
+#define gParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getResourceParameters<ClusterLightGridLookupProbeResources>().parameters)
+#define gLights resolveBuffer<StructuredBuffer<ClusterLightData>>(getResourceParameters<ClusterLightGridLookupProbeResources>().lights)
+#define gCandidates resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<ClusterLightGridLookupProbeResources>().candidates)
+#define gCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getResourceParameters<ClusterLightGridLookupProbeResources>().cells)
+#define gLightIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<ClusterLightGridLookupProbeResources>().lightIndices)
+#define gOutput resolveBuffer<RWStructuredBuffer<uint4>>(getResourceParameters<ClusterLightGridLookupProbeResources>().output)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void clusterLightGridLookupProbeMain()
 {
-    if (!gProbe.output.contains(8u)) { return; }
     ClusterLightGridParams params = gParams[0];
     for (uint query = 0u; query < 8u; ++query) {
         uint2 pixel = uint2(0u);

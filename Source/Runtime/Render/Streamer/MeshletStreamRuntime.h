@@ -1,7 +1,7 @@
 #pragma once
-#include "Runtime/Render/Core/StreamRasterResourceSettings.h"
-#include "Runtime/Render/Core/StreamHardwareParameters.h"
 
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <unordered_set>
@@ -42,8 +42,6 @@ struct StreamSceneReadiness {
     float fraction() const { return requiredPages ? float(completedPages) / float(requiredPages) : 0.f; }
 };
 struct DebugResourceBinding;
-struct StreamClusterCullParameters;
-struct StreamRasterParameters;
 namespace profiling { struct WorkControlReplayBinding; }
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
@@ -51,7 +49,6 @@ inline constexpr const char* kMeshletStreamShaderModuleName = "Features/GPUDrive
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
 inline constexpr const char* kMeshletStreamDeferredEntryPoint = "gpuDrivenStreamAssetDeferredMain";
-inline constexpr const char* kMeshletStreamCompositeShaderModuleName = "Features/GPUDriven/StreamComposite";
 inline constexpr const char* kMeshletStreamCompositeVertexEntryPoint =
     "gpuDrivenStreamAssetCompositeVertexMain";
 inline constexpr const char* kMeshletStreamCompositeFragmentEntryPoint =
@@ -60,7 +57,8 @@ inline constexpr const char* kMeshletStreamCullResetEntryPoint =
     "gpuDrivenStreamAssetCullResetMain";
 inline constexpr const char* kMeshletStreamInstanceCullEntryPoint =
     "gpuDrivenStreamAssetInstanceCullMain";
-inline constexpr const char* kMeshletStreamHZBEntryPoint = "hzbMain";
+inline constexpr const char* kMeshletStreamHZBEntryPoint =
+    "gpuDrivenStreamAssetHzbMain";
 inline constexpr const char* kMeshletStreamPageTableInitEntryPoint = "gpuDrivenStreamAssetInitializePageTableMain";
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
@@ -340,8 +338,8 @@ struct MeshletStreamGPUParams {
     float previousViewport[4] = {};
     float previousClipOrtho[4] = {};
     float lodPixelError = 1.5f; // Resolved internal render-pixel threshold (GPU ABI).
-    uint32_t reservedLODTopology = 0;
-    uint32_t reservedLODState = 0;
+    uint32_t lodTopologyBuffer = UINT32_MAX;
+    uint32_t lodStateBuffer = UINT32_MAX;
     uint32_t lodInstanceOffsetsOffset = 0;
     float renderEye[4] = {};
     float renderCenter[4] = {};
@@ -349,12 +347,12 @@ struct MeshletStreamGPUParams {
     float renderViewport[4] = {};
     float renderClipOrtho[4] = {};
     float prefetchParams[4] = {}; // Frustum expansion, LOD error scale, enabled, forecast pose valid.
-    uint32_t reservedDemand = 0;
+    uint32_t demandBuffer = UINT32_MAX;
     uint32_t demandTaskOffset = 0; // Tile root indices in LOD topology, grouped by instance.
     uint32_t demandTaskCount = 0;
     uint32_t splitFrontier = 0;
     uint32_t demandInstanceOffsetsOffset = 0; // Group/tile bit bases and task start/count per instance.
-    uint32_t reservedDemandStats = 0;
+    uint32_t demandStatsBuffer = UINT32_MAX;
     uint32_t maxBlasClustersPerBuild = 0;
     uint32_t blasStorageBytes = 0;
     uint32_t blasStorageAddressLow = 0;
@@ -370,7 +368,34 @@ struct MeshletStreamGPUParams {
     uint32_t lodTelemetryPadding[2] = {};
 };
 
-using MeshletStreamGPURasterBindings = StreamRasterResourceSettings;
+struct MeshletStreamGPURasterBindings {
+    uint32_t visibleClusterBuffer = 0;
+    uint32_t instanceVisibilityBuffer = 0;
+    uint32_t hzbBuffer0 = 0;
+    uint32_t hzbBuffer1 = 0;
+    uint32_t depthImage = 0;
+    uint32_t visibilityImage = 0;
+    uint32_t deferredColorBuffer = 0;
+    uint32_t visibleInstanceIdsBuffer = 0;
+    // Stream records keep a local storage index while visibility IDs address
+    // the common resident + stream record namespace.
+    uint32_t visibleRecordBase = 0;
+    uint32_t visibleRecordCapacity = 0;
+    uint32_t hzbMipCount = 0;
+    uint32_t hzbValid = 0;
+    uint32_t cullingFlags = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t visibleInstanceCounterBuffer = 0;
+    uint32_t gpuSceneInstanceBuffer = UINT32_MAX;
+    uint32_t tessellationBuffer = UINT32_MAX;
+    float displacementBound = 0.0f;
+    uint32_t classificationFlags = 0; // bit 0: disable metadata fast classification
+    uint32_t materialBuffer = UINT32_MAX;
+    uint32_t materialTextureRemapBuffer = UINT32_MAX;
+    uint32_t materialTextureCount = 0;
+    uint32_t materialPadding = 0;
+};
 
 // Non-owning resources required by a unified deferred consumer. The stream
 // runtime retains ownership; a consumer registers these buffers in its own
@@ -387,8 +412,6 @@ struct MeshletStreamDeferredGPUResourcesView {
     uint32_t visibleRecordCapacity = 0;
     RayTracingAccelerationStructure* accelerationStructure = nullptr;
 
-    uint64_t encodeRayQuerySnapshot(ParameterWriter& writer) const;
-
     bool valid() const
     {
         return pageBuffer != nullptr &&
@@ -401,7 +424,42 @@ struct MeshletStreamDeferredGPUResourcesView {
     }
 };
 
-
+struct MeshletStreamUserPush {
+    uint32_t pageBuffer = 0;
+    uint32_t activeGroupBuffer = 0;
+    uint32_t pageTableBuffer = 0;
+    uint32_t paramsBuffer = 0;
+    uint32_t requestBuffer = 0;
+    uint32_t residentPageBuffer = 0;
+    uint32_t updateBuffer = 0;
+    uint32_t activeHeaderBuffer = 0;
+    uint32_t instanceBuffer = 0;
+    uint32_t primitiveBuffer = 0;
+    uint32_t lodLevelBuffer = 0;
+    uint32_t groupBuffer = 0;
+    uint32_t nodeBuffer = 0;
+    uint32_t drawIndirectBuffer = 0;
+    uint32_t traversalHeaderBuffer = 0;
+    uint32_t traversalWorkBuffer = 0;
+    uint32_t clasAddressBuffer = 0;
+    uint32_t clasPageTableBuffer = 0;
+    uint32_t blasHeaderBuffer = 0;
+    uint32_t instanceBlasBuffer = 0;
+    uint32_t blasBuildInfoBuffer = 0;
+    uint32_t blasClusterReferenceBuffer = 0;
+    uint32_t fallbackBlasAddressBuffer = 0;
+    uint32_t dynamicBlasAddressBuffer = 0;
+    uint32_t tlasInstanceBuffer = 0;
+    uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
+    uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
+    uint32_t rasterBindingsBuffer = UINT32_MAX;
+    uint32_t hybridQueueBuffer = UINT32_MAX;
+    uint32_t hybridClusterBuffer = UINT32_MAX;
+    uint32_t clasPublicationRevision = 0;
+    float tessellationEdgePixels = 8.0f;
+    uint32_t tessellationMaxFactor = 4;
+    uint32_t tessellationMaxSplitDepth = 2;
+};
 
 static_assert(sizeof(MeshletStreamGPUActiveHeader) == 32);
 static_assert(sizeof(MeshletStreamGPUActiveGroup) == 112);
@@ -420,8 +478,8 @@ static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGPUParams) == 624);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
-static_assert(sizeof(MeshletStreamGPURasterBindings) == 128);
-
+static_assert(sizeof(MeshletStreamGPURasterBindings) == 96);
+static_assert(sizeof(MeshletStreamUserPush) == 136);
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -572,15 +630,8 @@ public:
 
     ResourceRegistry* resourceRegistry() const { return registry_.get(); }
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
-    StreamHardwareParameters hardwareParameters(ParameterWriter& writer) const;
+    MeshletStreamUserPush userPush() const;
     Result<> updateRasterBindings(const MeshletStreamGPURasterBindings& bindings);
-    Result<EncodedParameters> encodeSoftwareRaster(ParameterWriter& writer, Buffer* bins, Buffer* pixels, Buffer* instances, std::vector<uint8_t>* settingsSnapshot = nullptr) const;
-    Result<EncodedParameters> encodeSoftwareWorkload(ParameterWriter& writer, Buffer* bins, Buffer* counters, Buffer* instances) const;
-    Result<> fillClusterCullParameters(ParameterWriter& writer, StreamClusterCullParameters& params) const;
-    Result<EncodedParameters> encodeClusterClassify(ParameterWriter& writer, Buffer* bins,
-        ShaderDataSpan instances, bool tessellation) const;
-    Result<EncodedParameters> encodeInstanceCull(ParameterWriter& writer, Buffer* visibility,
-        Buffer* visibleIds, Buffer* counter, Buffer* hzb, uint32_t phase) const;
     Result<> cmdPrepareVisibility(CommandBuffer& commandBuffer);
     Result<> cmdPrepareDeferred(CommandBuffer& commandBuffer);
     MeshletStreamDeferredGPUResourcesView deferredGpuResources() const;
@@ -588,7 +639,7 @@ public:
     uint32_t visibleClusterCapacity() const;
     uint32_t rasterCandidateCapacity() const { return rasterCandidateCapacity_; }
     uint32_t drawTaskCount() const;
-    void cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation = false) const;
+    [[nodiscard]] Result<> cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation = false) const;
     const scene::Bounds& bounds() const { return drawBounds_; }
     const scene::MeshletStreamAsset& asset() const { return asset_; }
     const MeshletStreamResidencyManager& residency() const { return residency_; }
@@ -600,8 +651,6 @@ public:
     MeshletStreamCLASPool* clasPool() const { return clasPool_.get(); }
 
 private:
-    Result<> fillSoftwareRasterParameters(ParameterWriter& writer, StreamRasterParameters& params,
-        Buffer* bins, Buffer* pixels, Buffer* instances) const;
     Result<> beginUploadBatch(CommandBuffer& commandBuffer, Streamer& streamer,
         const MeshletStreamFrameDesc& frame, const std::function<Result<>()>& flushUploads, bool initialLoad);
     Result<> cmdBuildPendingClas(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint = {});
@@ -635,6 +684,11 @@ private:
         bool submitted() const { return recorded() && buildTransaction->resolved(); }
     };
 
+    struct ResidentPageFrame {
+        std::unique_ptr<Buffer> buffer;
+        ResourceLease handle;
+    };
+
     class UpdatePass;
     class TraversalPass;
     class ActiveBuildPass;
@@ -662,7 +716,6 @@ private:
     Result<> transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
     void consumeGpuRequestReadback(CPUProfileRecorder* profiler, bool allowLegacyReadback);
 
-    Device* device_ = nullptr;
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
@@ -689,6 +742,7 @@ private:
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<Buffer> visibleClusterBuffer_;
     std::unique_ptr<Buffer> rasterBindingsBuffer_;
+    std::vector<ResidentPageFrame> residentPageFrames_;
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> lodLevelBuffer_;
@@ -762,6 +816,9 @@ private:
     ResourceLease primitiveHandle_;
     ResourceLease lodLevelHandle_;
     ResourceLease groupHandle_;
+    ResourceLease lodTopologyHandle_;
+    ResourceLease lodStateHandle_;
+    ResourceLease demandHandle_;
     uint32_t demandTaskOffset_ = 0;
     uint32_t demandTaskCount_ = 0;
     uint32_t demandInstanceOffsetsOffset_ = 0;
@@ -772,6 +829,15 @@ private:
     ResourceLease drawIndirectHandle_;
     ResourceLease traversalHeaderHandle_;
     ResourceLease traversalWorkHandle_;
+    ResourceLease clasAddressHandle_;
+    ResourceLease clasPageTableHandle_;
+    ResourceLease blasHeaderHandle_;
+    ResourceLease instanceBlasHandle_;
+    ResourceLease blasBuildInfoHandle_;
+    ResourceLease blasClusterReferenceHandle_;
+    ResourceLease fallbackBlasAddressHandle_;
+    ResourceLease dynamicBlasAddressHandle_;
+    ResourceLease tlasInstanceHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
@@ -839,7 +905,6 @@ private:
     bool topLevelBuildPending_ = false;
     std::vector<FallbackBLASPrimitive> fallbackBlasPrimitives_;
     uint32_t currentFrameUploadCount_ = 0;
-    MeshletStreamGPURasterBindings rasterBindingsSnapshot_{};
     MeshletStreamGPUParams previousFrameParams_;
     bool previousFrameParamsValid_ = false;
 };

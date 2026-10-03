@@ -1,5 +1,4 @@
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "../../tests/rhi/ShaderDiagnosticParameters.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
@@ -165,55 +164,55 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     report["phase"] = "device-create";
     save(directory / "Report.json", report);
     auto device = require(render::createDevice({.applicationName = "Metallic Shader Printf P0",
-        .enableBindlessDescriptorHeap = heapMode, .shaderPrintf = &capture}), "createDevice");
+        .enableBindlessDescriptorHeap = heapMode,
+        .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+            .shaderPrintf = &capture,
+        },
+    }), "createDevice");
     const auto native = vk::nativeDevice(*device);
-    VkPhysicalDeviceDriverProperties driver{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-    VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
-    vkGetPhysicalDeviceProperties2(native.physicalDevice, &properties);
-    report["device"] = {{"name", properties.properties.deviceName}, {"apiVersion", version(properties.properties.apiVersion)},
-        {"driverVersionRaw", properties.properties.driverVersion}, {"driverName", driver.driverName},
-        {"driverInfo", driver.driverInfo}, {"vendorId", properties.properties.vendorID}, {"deviceId", properties.properties.deviceID},
+    const auto& driver = native.properties->driver;
+    const auto& properties = native.properties->core;
+    report["device"] = {{"name", properties.deviceName}, {"apiVersion", version(properties.apiVersion)},
+        {"driverVersionRaw", properties.driverVersion}, {"driverName", driver.driverName},
+        {"driverInfo", driver.driverInfo}, {"vendorId", properties.vendorID}, {"deviceId", properties.deviceID},
         {"descriptorHeap", native.descriptorHeapEnabled}};
     report["loadedLayerModule"] = loadedModule(L"VkLayer_khronos_validation.dll");
-    metallic::tests::ShaderDiagnosticParameters push{};
-    push.cookie = 305397763;
+    auto shader = require(device->createShaderModule({
+        .spirv = compiled.spirv,
+    }), "createShaderModule");
+    struct Push { uint32_t inputBuffer; uint32_t cookie; };
+    Push push{0, 305397763};
     report["phase"] = "pipeline-create";
     save(directory / "Report.json", report);
-    render::ComputeKernel kernel;
-    std::unique_ptr<render::ShaderModule> shader;
-    std::unique_ptr<render::ComputePipeline> pipeline;
-    if (heapMode) {
-        std::string log;
-        require(kernel.initialize(*device, {.spirv = compiled.spirv,
-            .parameters = render::parameterAbi<metallic::tests::ShaderDiagnosticParameters>(
-                metallic::tests::kShaderDiagnosticABI, render::ParameterTransport::InlinePush),
-            .debugName = "Shader diagnostic probe"}, log), "initializeKernel");
-    } else {
-        shader = require(device->createShaderModule({.spirv = compiled.spirv}), "createShaderModule");
-        pipeline = require(device->createComputePipeline({
-            .computeShader = {shader.get(), "main"},
-        }), "createComputePipeline");
-    }
+    auto pipeline = require(device->createComputePipeline({
+        .computeShader = {shader.get(), "main"},
+        .usesBindlessHeap = heapMode,
+        .bindlessUserPushDataSize = heapMode ? sizeof(Push) : 0,
+    }), "createComputePipeline");
+    std::unique_ptr<render::BindlessHeap> heap;
     std::unique_ptr<render::Buffer> input, output;
-    render::ShaderBuffer outputHandle{};
-    render::EncodedParameters encoded;
+    render::BindlessHandle inputHandle{}, outputHandle{};
     if (heapMode) {
-        auto registry = require(device->resourceRegistry(), "resourceRegistry");
-        render::ParameterWriter writer(*device, *registry);
+        heap = require(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 4}), "createHeap");
+        (void)require(heap->allocate(metallic::render::BindlessHandleKind::Buffer), "reserveUnusedSlot");
+        inputHandle = require(heap->allocate(metallic::render::BindlessHandleKind::Buffer), "allocateInput");
+        outputHandle = require(heap->allocate(metallic::render::BindlessHandleKind::Buffer), "allocateOutput");
+        if (inputHandle.index == 0 || inputHandle.shaderIndex == inputHandle.index) {
+            throw std::runtime_error("Probe must use nonzero slot and final descriptor indices");
+        }
         input = require(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostUpload}), "createInput");
         output = require(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostReadback}), "createOutput");
-        outputHandle = writer.buffer(output.get());
-        const std::array<uint32_t, 4> values{uint32_t(outputHandle.value), uint32_t(outputHandle.value >> 32), 73, 0};
+        require((*input).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(inputHandle, bufferSlice); }), "writeInputDescriptor");
+        require((*output).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(outputHandle, bufferSlice); }), "writeOutputDescriptor");
+        const std::array<uint32_t, 4> values{outputHandle.shaderIndex, 73, 0, 0};
         void* mapped = input->map();
         if (!mapped) { throw std::runtime_error("Input map failed"); }
         std::memcpy(mapped, values.data(), sizeof(values));
         input->flush();
         input->unmap();
-        push.input = writer.buffer(input.get());
-        encoded = require(writer.encode(push, metallic::tests::kShaderDiagnosticABI, render::ParameterTransport::InlinePush), "encodeParameters");
-        report["parameterABI"] = {{"size", sizeof(push)}, {"transport", "InlinePush"}, {"nestedHandleBits", 64}};
+        push.inputBuffer = inputHandle.shaderIndex;
     }
     auto& queue = *device->getQueue(render::QueueType::Graphics);
     render::QueueSubmissionTracker tracker;
@@ -222,19 +221,20 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     auto commands = require(pool->createCommandBuffer(), "createCommandBuffer");
     render::RenderFrameContext frame;
     require(frame.begin(trace ? debug::debugUnsigned(trace->plan().at("execution")) : 0), "beginFrame");
-    require(commands->begin(&frame), "beginCommands");
+    require(commands->begin(frame.submissionContext()), "beginCommands");
     if (heapMode) {
-        require(kernel.dispatch(*commands, encoded, 2), "dispatchKernel");
+        commands->bindBindlessHeap(*heap);
+        if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
     } else {
-        require(commands->bindExecution(pipeline->execution()), "bindOrdinaryExecution");
-        commands->dispatch(2, 1, 1);
+        if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
     }
+    commands->dispatch(2, 1, 1);
     if (heapMode) {
         VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
             .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
         VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-        vkCmdPipelineBarrier2(vk::nativeCommandBuffer(*commands), &dependency);
+        native.functions->vkCmdPipelineBarrier2(vk::nativeCommandBuffer(*commands), &dependency);
     }
     require(commands->end(), "endCommands");
     report["phase"] = "submit";
@@ -260,7 +260,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         output->invalidate();
         std::memcpy(actual.data(), mapped, sizeof(actual));
         output->unmap();
-        const std::array<uint32_t, 4> expected{74, push.cookie, 73, uint32_t(outputHandle.value)};
+        const std::array<uint32_t, 4> expected{74, push.cookie, inputHandle.shaderIndex, outputHandle.shaderIndex};
         report["readback"] = {{"actual", actual}, {"expected", expected}, {"passed", actual == expected}};
         if (actual != expected) { throw std::runtime_error("Descriptor heap readback mismatch"); }
     }

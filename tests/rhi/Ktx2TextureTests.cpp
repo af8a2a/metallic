@@ -1,10 +1,12 @@
-#include "TextureResidencyProbe.h"
+#include "TestResourceLayouts.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/TextureProbeParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "json.hpp"
 #include <zstd.h>
 #include <fstream>
@@ -149,9 +151,22 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                        .entryPointName = "main",
                                        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),
             shader.diagnostics);
-    ComputeKernel program;
-    require(program.initialize(context.device, {.spirv = shader.spirv,
-        .parameters = parameterAbi<TextureResourceProbeParameters>(kTextureResourceProbeABI, ParameterTransport::InlinePush)}, log), log);
+    const ComputeProgramBindingDesc layout[] = {
+        {.binding = 0,
+         .kind = ComputeResourceBindingKind::SampledImage,
+         .descriptorCount = resources.materialTextureCount()},
+        {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+    ComputeProgram program;
+    require(program.initialize(context.device,
+                               {
+                                   .spirv = shader.spirv,
+                                   .pushConstantSize = 16,
+                                   .bindings = {layout, 2},
+                                   .requiresRayQuery = false,
+                                   .resourceParameters = kTextureProbeResourceLayout,
+                               },
+                               log),
+            log);
     std::unique_ptr<Buffer> output;
     require(context.device.createBuffer({.size = 48,
                                          .structureStride = 16,
@@ -160,32 +175,36 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
             "sample buffer");
     std::unique_ptr<CommandPool> pool;
     std::unique_ptr<CommandBuffer> commands;
-    QueueSubmissionTracker tracker;
-    RenderFrameContext frame;
+    std::unique_ptr<Fence> fence;
     require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }), "sample pool");
     require(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }), "sample commands");
-    require(tracker.initialize(context.device, context.graphicsQueue), "sample tracker");
-    require(frame.begin(1), "sample frame");
-    require(commands->begin(&frame), "sample begin");
+    require(context.device.createFence({}).transform([&](auto rhiValue) { fence = std::move(rhiValue); }), "sample fence");
+    require(commands->begin(), "sample begin");
     const BufferBarrierDesc ready{
         .buffer = output.get(),
         .before = {},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-    require(index < resources.materialTextureViews().size(), "sample texture index");
-    auto registry = context.device.resourceRegistry();
-    require(bool(registry), "sample registry");
-    ParameterWriter writer(context.device, **registry, &frame);
-    const TextureResourceProbeParameters params{
-        writer.sampledImage(resources.materialTextureViews()[index]), writer.dataBuffer(output.get(), 16, 4), mip, flags};
-    auto encoded = writer.encode(params, kTextureResourceProbeABI, ParameterTransport::InlinePush);
-    require(bool(encoded), "sample parameters");
-    require(program.dispatch(*commands, *encoded, 1), "sample dispatch");
+    const ComputeDispatchBinding bindings[] = {{
+        .binding = 0,
+        .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
+    },
+                                               {.binding = 1, .buffer = output.get()}};
+    const uint32_t push[] = {index, mip, flags, 0};
+    require(program.dispatch({
+        .commandBuffer = commands.get(),
+        .bindings = {bindings, 2},
+        .pushData = push,
+        .pushDataSize = 16,
+    }),
+            log);
     require(commands->end(), "sample end");
     CommandBuffer* command = commands.get();
-    require(tracker.submit({.commandBuffers = {&command, 1}}, frame), "sample submit");
-    require(frame.wait(), "sample wait");
+    require(context.graphicsQueue.submit(
+                {.commandBuffers = {&command, 1}, .signalFence = fence.get()}),
+            "sample submit");
+    require(fence->wait(), "sample wait");
     output->invalidate();
     std::array<float, 12> result;
     auto* mapped = output->map();
@@ -556,9 +575,15 @@ public:
         ShaderCompileResult shader;
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
-        ComputeKernel program;
-        require(program.initialize(context.device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<TextureResidencyProbeParameters>(kTextureResidencyProbeABI, ParameterTransport::InlinePush)}, log), log);
+        ComputeProgram program;
+        const ComputeProgramBindingDesc binding{.binding=0};
+        require(program.initialize(context.device,{
+            .spirv = shader.spirv,
+            .pushConstantSize = 16,
+            .bindings = {&binding, 1},
+            .requiresRayQuery = false,
+            .resourceParameters = kTextureFeedbackResourceLayout,
+        },log),log);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         QueueSubmissionTracker tracker;
@@ -573,7 +598,7 @@ public:
             require(frame.wait(),"feedback wait");
             require(pool->reset(),"feedback reset");
             require(frame.begin(index++),"feedback frame");
-            require(commands->begin(&frame),"feedback begin");
+            require(commands->begin(frame.submissionContext()),"feedback begin");
             Buffer* feedback = nullptr;
             textureProfile.reset();
             require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile,frozen),"streaming tick");
@@ -584,8 +609,14 @@ public:
                 sawTextureSchedule |= timing.name=="Candidates and allocation queries";
             }
             require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
-            require(dispatchTextureResidencyProbe(context.device, program, *commands, *feedback,
-                imageSlot, 0, visible ? 1000u : 0u), "feedback dispatch");
+            ComputeDispatchBinding view{.binding=0,.buffer=feedback};
+            const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
+            require(program.dispatch({
+                .commandBuffer = commands.get(),
+                .bindings = {&view, 1},
+                .pushData = push,
+                .pushDataSize = 16,
+            }),"feedback dispatch");
             require(resources.endTextureStreaming(*commands,index,&textureProfile),"feedback readback");
             require(commands->end(),"feedback end");
             if (cancel) { frame.cancel(); return; }
@@ -683,9 +714,10 @@ public:
         require(compileSlangShaderToSpirv({.moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
-        ComputeKernel program;
-        require(program.initialize(context.device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<TextureResidencyProbeParameters>(kTextureResidencyProbeABI, ParameterTransport::InlinePush)}, log), log);
+        ComputeProgram program;
+        const ComputeProgramBindingDesc layout{.binding = 0};
+        require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
+            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameters = kTextureFeedbackResourceLayout}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::array<std::unique_ptr<CommandBuffer>, 3> commands;
         QueueSubmissionTracker tracker;
@@ -704,14 +736,16 @@ public:
         } drain{context.graphicsQueue,frame};
         uint64_t frameIndex = 0;
         const auto dispatch = [&](CommandBuffer& command, Buffer& feedback, uint32_t mip, uint32_t samples) {
-            require(dispatchTextureResidencyProbe(context.device, program, command, feedback,
-                slot, mip, samples), "feedback contract demand");
+            const ComputeDispatchBinding binding{.binding = 0, .buffer = &feedback};
+            const uint32_t push[]{slot,mip,samples,0};
+            require(program.dispatch({.commandBuffer = &command, .bindings = {&binding,1},
+                .pushData = push, .pushDataSize = sizeof(push)}), "feedback contract demand");
         };
         const auto tick = [&](bool fineDemand, bool cancelReadback = false) {
             require(frame.wait(), "feedback contract wait");
             require(pool->reset(), "feedback contract reset");
             require(frame.begin(++frameIndex), "feedback contract frame");
-            require(commands[0]->begin(&frame), "feedback first consumer begin");
+            require(commands[0]->begin(frame.submissionContext()), "feedback first consumer begin");
             Buffer* first = nullptr;
             require(resources.beginTextureStreaming(*commands[0], frameIndex, first), "feedback first consumer metadata");
             require(first != nullptr && first->desc().memoryLocation == MemoryLocation::Device,
@@ -722,13 +756,13 @@ public:
             // is cancelled. Frame completion alone must not publish that sample.
             dispatch(*commands[0], *first, cancelReadback ? 0u : baseMip, 1000);
             require(commands[0]->end(), "feedback first consumer end");
-            require(commands[1]->begin(&frame), "feedback second consumer begin");
+            require(commands[1]->begin(frame.submissionContext()), "feedback second consumer begin");
             Buffer* second = nullptr;
             require(resources.beginTextureStreaming(*commands[1], frameIndex, second), "feedback second consumer metadata");
             require(second == first, "Consumers in one frame must share accumulated texture feedback");
             dispatch(*commands[1], *second, 0, fineDemand ? 1000u : 0u);
             require(commands[1]->end(), "feedback second consumer end");
-            require(commands[2]->begin(&frame), "feedback readback tail begin");
+            require(commands[2]->begin(frame.submissionContext()), "feedback readback tail begin");
             require(resources.endTextureStreaming(*commands[2], frameIndex), "feedback graph-end readback");
             require(commands[2]->end(), "feedback readback tail end");
             if (cancelReadback) {
@@ -807,9 +841,12 @@ public:
         require(compileSlangShaderToSpirv({.moduleName = "TextureStreamingProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
-        ComputeKernel program;
-        require(program.initialize(context.device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<TextureStreamingProbeParameters>(kTextureStreamingProbeABI, ParameterTransport::InlinePush)}, log), log);
+        const ComputeProgramBindingDesc layout[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
+            {.binding = 1}, {.binding = 2}, {.binding = 3, .kind = ComputeResourceBindingKind::Sampler}};
+        ComputeProgram program;
+        require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
+            .bindings = layout, .requiresRayQuery = false, .resourceParameters = metallic::tests::kTextureStreamingProbeLayout}, log), log);
         const SamplerDesc sampler{.mipFilter = SamplerFilter::Linear,
             .addressU = SamplerAddressMode::Repeat, .addressV = SamplerAddressMode::Repeat};
         std::unique_ptr<Buffer> output;
@@ -834,24 +871,21 @@ public:
             require(frame.wait(), "stability feedback wait");
             require(pool->reset(), "stability pool reset");
             require(frame.begin(frameIndex++), "stability frame");
-            require(commands->begin(&frame), "stability begin");
+            require(commands->begin(frame.submissionContext()), "stability begin");
             Buffer* feedback = nullptr;
             require(resources.beginTextureStreaming(*commands, frameIndex, feedback, nullptr, frozen), "stability stream tick");
             require(resources.uploadMaterialTextures(*commands), "retain stability texture generation");
             const BufferBarrierDesc ready{.buffer = output.get(), .before = {},
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
             require(commands->synchronize({.buffers = {&ready, 1}}), "stability output ready");
-            require(imageSlot < resources.materialTextureViews().size(), "stability texture index");
-            auto registry = context.device.resourceRegistry();
-            require(bool(registry), "stability registry");
-            ParameterWriter writer(context.device, **registry, &frame);
-            const TextureStreamingProbeParameters params{
-                writer.sampledImage(resources.materialTextureViews()[imageSlot]), writer.sampler(sampler),
-                writer.dataBuffer(feedback, 4, 4), writer.dataBuffer(output.get(), 16, 4),
-                imageSlot, visible ? 1u : 0u, .25f, 5.25f};
-            auto encoded = writer.encode(params, kTextureStreamingProbeABI, ParameterTransport::InlinePush);
-            require(bool(encoded), "stability parameters");
-            require(program.dispatch(*commands, *encoded, 1), "stability probe dispatch");
+            const ComputeDispatchBinding bindings[] = {
+                {.binding = 0, .sampledImages = resources.materialTextureSnapshot()},
+                {.binding = 1, .buffer = feedback}, {.binding = 2, .buffer = output.get()},
+                {.binding = 3, .sampler = &sampler}};
+            struct Push { uint32_t slot, visible; float nearSourceLod, farSourceLod; };
+            const Push push{imageSlot, visible ? 1u : 0u, .25f, 5.25f};
+            require(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,
+                .pushData = &push, .pushDataSize = sizeof(push)}), "stability probe dispatch");
             require(resources.endTextureStreaming(*commands, frameIndex), "stability feedback readback");
             require(commands->end(), "stability end");
             auto* command = commands.get();
@@ -1072,7 +1106,7 @@ class BCTextureUploadTest final : public RHITest {
                     }
                 }
                 std::unique_ptr<Streamer> streamer;
-                require(context.device.createStreamer({.constantBufferSize = 4096, .dynamicBufferSizePerFrame = 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }),
+                require(createStreamer(context.device, {.constantBufferSize = 4096, .dynamicBufferSizePerFrame = 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }),
                         "BC streamer");
                 std::unique_ptr<Texture> texture;
                 require(context.device.createTexture({.usage = TextureUsageBits::TransferDestination |
@@ -1127,12 +1161,11 @@ class BCTextureUploadTest final : public RHITest {
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 };
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = streamer->copyStreamedData(*commands); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
                 barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                commands->copyTextureToBuffer(
-                    {.texture = texture.get(), .buffer = readback.get(), .width = width, .height = height});
+                if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = texture.get(), .buffer = bufferSlice, .width = width, .height = height}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                 require(commands->end(), "BC end");
                 CommandBuffer* command = commands.get();
                 require(

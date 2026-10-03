@@ -6,9 +6,6 @@
 
 namespace metallic::render {
 
-inline constexpr const char* kHZBModule = "Features/GPUDriven/HZB";
-inline constexpr const char* kHZBEntryPoint = "hzbMain";
-
 inline constexpr uint32_t kHZBSPDTileSize = 64;
 inline constexpr uint32_t kHZBSPDMaxDimension = 4096;
 inline constexpr const char* kHZBSPDModule = "Features/GPUDriven/HZBSPD";
@@ -22,5 +19,17 @@ inline bool supportsHzbSpdWaveOps(const DeviceCapabilities& capabilities)
     return capabilities.computeSubgroupShuffle && capabilities.minSubgroupSize >= 16 &&
         capabilities.maxSubgroupSize <= 256 && capabilities.minSubgroupSize <= capabilities.maxSubgroupSize;
 }
+
+// Native bindless header is prepended by the RHI. See HZBSPD.slang.
+struct HZBSPDUserPush {
+    uint32_t depthImage = 0;
+    uint32_t hzbBuffer = 0;
+    uint32_t counterBuffer = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t mipCount = 0; // Includes full-resolution mip 0.
+    uint32_t reversedZ = 1;
+};
+static_assert(sizeof(HZBSPDUserPush) == 28);
 
 } // namespace metallic::render

@@ -1,6 +1,7 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/RHI.h"
-#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
+#include "Runtime/Render/Streamer/StreamUploadCompletion.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
@@ -95,7 +96,7 @@ uint32_t formatTexelByteSize(Format format)
     return 0;
 }
 
-uint64_t textureCopyByteSize(const BufferTextureCopyDesc& copy)
+uint64_t textureCopyByteSize(const BufferTextureRegion& copy)
 {
     return static_cast<uint64_t>(copy.bufferSlicePitch) *
         static_cast<uint64_t>(copy.depth) *
@@ -116,7 +117,7 @@ struct StreamerImpl {
     };
 
     struct TextureCopyRequest {
-        BufferTextureCopyDesc copy;
+        BufferTextureRegion copy;
     };
 
     struct BufferGarbage {
@@ -192,19 +193,7 @@ struct StreamerImpl {
             return makeError(Error::InvalidArgument);
         }
         uploadSlots.resize(desc.queuedFrameCount);
-        // Frame slot numbers are local to each executor. A shared streamer
-        // assigns its bounded upload slots by completion identity, not that
-        // local number. Reopening a recording must find its existing offsets.
-        auto selected = std::find_if(uploadSlots.begin(), uploadSlots.end(),
-            [&](const UploadSlot& slot) { return slot.completion.sameSubmission(frame.completion()); });
-        if (selected == uploadSlots.end()) {
-            auto preferred = uploadSlots.begin() + frame.slotIndex();
-            selected = preferred->completion.isComplete() ? preferred :
-                std::find_if(uploadSlots.begin(), uploadSlots.end(),
-                    [](const UploadSlot& slot) { return slot.completion.isComplete(); });
-        }
-        if (selected == uploadSlots.end()) { return makeError(Error::InvalidArgument); }
-        UploadSlot& slot = *selected;
+        UploadSlot& slot = uploadSlots[frame.slotIndex()];
         if (!slot.completion.sameSubmission(frame.completion())) {
             if (!slot.completion.isComplete()) {
                 return makeError(Error::InvalidArgument);
@@ -217,7 +206,7 @@ struct StreamerImpl {
             dynamicBufferOffset = slot.dynamicOffset;
             constantBufferOffset = slot.constantOffset;
         }
-        frameIndex = static_cast<uint32_t>(selected - uploadSlots.begin());
+        frameIndex = frame.slotIndex();
         activeFrame = &frame;
         completionTracked = true;
         frame.retain(constantBuffer);
@@ -485,11 +474,12 @@ struct StreamerImpl {
         if (activeFrame != nullptr) {
             activeFrame->retain(dynamicBuffer);
         }
+        auto copySlice = dynamicBuffer->slice({bufferOffset, dataSize});
+        if (!copySlice) { return {}; }
         textureRequests.push_back(TextureCopyRequest{
-            .copy = BufferTextureCopyDesc{
-                .buffer = dynamicBuffer.get(),
+            .copy = BufferTextureRegion{
                 .texture = streamDesc.dstTexture,
-                .bufferOffset = bufferOffset,
+                .buffer = *copySlice,
                 .bufferRowPitch = static_cast<uint32_t>(rowPitch),
                 .bufferSlicePitch = static_cast<uint32_t>(slicePitch),
                 .textureOffsetX = streamDesc.dstOffsetX,
@@ -654,8 +644,8 @@ struct StreamerImpl {
                 if (!validated) { return validated; }
             }
             if (installation) {
-                if (!commandBuffer.frameContext() ||
-                    !installation->completion_.sameSubmission(commandBuffer.frameContext()->completion())) {
+                if (!metallic::render::RenderFrameContext::from(commandBuffer) ||
+                    !installation->completion_.sameSubmission(metallic::render::RenderFrameContext::from(commandBuffer)->completion())) {
                     return makeError(Error::InvalidArgument);
                 }
                 auto attached = commandBuffer.addSubmissionTransaction(installation->submission_);
@@ -681,7 +671,7 @@ struct StreamerImpl {
             }
 
             for (const TextureCopyRequest& request : textureRequests) {
-                commandBuffer.copyBufferToTexture(request.copy);
+                if (auto commandResult = commandBuffer.copyBufferToTexture(request.copy); !commandResult) { return commandResult; }
             }
             if (!decompressions.empty()) {
                 if (phase) { phase("Decompression input barrier"); }
@@ -856,14 +846,7 @@ struct StreamerImpl {
 
 } // namespace detail
 
-Streamer::Streamer(std::unique_ptr<detail::StreamerImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Streamer::~Streamer() = default;
-Streamer::Streamer(Streamer&&) noexcept = default;
-Streamer& Streamer::operator=(Streamer&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Streamer)
 
 const StreamerDesc& Streamer::desc() const
 {
@@ -926,18 +909,13 @@ Result<> Streamer::beginFrame(RenderFrameContext& frame)
     return impl_ != nullptr ? impl_->beginFrame(frame) : makeError(Error::InvalidArgument);
 }
 
-Result<> CommandBuffer::copyStreamedData(Streamer& streamer)
+Result<std::unique_ptr<Streamer>> createStreamer(Device& device, const StreamerDesc& desc)
 {
-    return streamer.copyStreamedData(*this);
-}
-
-Result<std::unique_ptr<Streamer>> Device::createStreamer(const StreamerDesc& desc)
-{
-    if (impl_ == nullptr) {
+    if (!device.identity()) {
         return makeError(Error::InvalidArgument);
     }
 
-    auto streamerImpl = std::make_unique<detail::StreamerImpl>(*this);
+    auto streamerImpl = std::make_unique<detail::StreamerImpl>(device);
     Result<> result = streamerImpl->create(desc);
     if (!result) {
         return std::unexpected(result.error());

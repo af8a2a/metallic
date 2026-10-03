@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Task/TaskSystem.h"
@@ -27,8 +28,8 @@ Result<> verifyRed(RenderGraphExecutor& executor, RHITestContext& context, const
     if (result) { result = recording.prepare(frame).transform([&](auto value) { commands = value; }); }
     if (result) { result = executor.transitionOutput(*commands, output, ResourceState::TransferSource); }
     if (result) {
-        commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture, .buffer = readback.get(),
-            .width = 32, .height = 32});
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture, .buffer = bufferSlice,
+            .width = 32, .height = 32}); }); !commandResult) { return commandResult; }
         result = commands->end();
     }
     if (result) { result = tracker.submit({.commandBuffers = {&commands, 1}}, frame); }

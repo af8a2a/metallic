@@ -40,7 +40,7 @@ Json describeDevice(render::Device& device, const Profile& profile)
         Capability::IndependentCopy, Capability::IndependentCompute, Capability::RayQuery, Capability::PositionFetch,
         Capability::OpacityMicromap, Capability::UnifiedLayouts, Capability::PartitionedAS, Capability::ClusterAS,
         Capability::GeneratedCommands, Capability::MemoryDecompression}) {
-        const bool usable = enabled(capability, device.capabilities());
+        const bool usable = enabled(capability, device.capabilities(), render::vulkan::deviceCapabilities(device));
         capabilities.push_back({{"id", name(capability)}, {"requested", requested(capability, profile)},
             {"enabled", usable}, {"physicalSupport", usable ? "True" : "Unknown"}});
     }

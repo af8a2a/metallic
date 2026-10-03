@@ -1,19 +1,21 @@
-#define METALLIC_PATH_TRACE_GUIDES_INLINE 1
+import Core;
+using Metallic;
+
 #include "OpenPBRRayQueryPathTrace.slang"
 
-#define gDlssRrAlbedo resolveDescriptor(gPathTraceParameters.albedo)
+#define gDlssRrAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideAlbedo)
 
-#define gDlssRrSpecularAlbedo resolveDescriptor(gPathTraceParameters.specularAlbedo)
+#define gDlssRrSpecularAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularAlbedo)
 
-#define gDlssRrNormalRoughness resolveDescriptor(gPathTraceParameters.normalRoughness)
+#define gDlssRrNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().guideNormalRoughness)
 
-#define gDlssRrMotionVectors resolveDescriptor(gPathTraceParameters.motionVectors)
+#define gDlssRrMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().guideMotion)
 
-#define gDlssRrLinearDepth resolveDescriptor(gPathTraceParameters.linearDepth)
+#define gDlssRrLinearDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideLinearDepth)
 
-#define gDlssRrSpecularHitDistance resolveDescriptor(gPathTraceParameters.specularHitDistance)
+#define gDlssRrSpecularHitDistance resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularHitDistance)
 
-#define gDlssDepth resolveDescriptor(gPathTraceParameters.depth)
+#define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
 
 struct DLSSRRGuideData
 {
@@ -114,7 +116,7 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
 [numthreads(8, 8, 1)]
 void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = scenePathTraceSettings();
+    ScenePathTracePush push = getConstants<ScenePathTracePush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
@@ -162,6 +164,6 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
         gHistoryCurrent[pixel] = float4(color, 1.0);
     }
 
-    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(gPathTraceLights)), 1.0);
+    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
     writeDlssRrGuides(pixel, guides, push);
 }

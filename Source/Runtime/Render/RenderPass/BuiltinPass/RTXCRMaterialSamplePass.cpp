@@ -1,4 +1,4 @@
-#include "Runtime/Render/Core/MaterialSampleParameters.h"
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -21,7 +21,29 @@ namespace {
 constexpr const char* kRTXCRMaterialSampleShaderModuleName = "Features/Samples/RTXCRMaterialSample";
 constexpr const char* kRTXCRMaterialSampleEntryPoint = "rtxcrMaterialSampleMain";
 
+struct RTXCRMaterialSamplePush {
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t viewMode = 0;
+    uint32_t padding0 = 0;
 
+    float exposure = 1.0f;
+    float lightAzimuthDegrees = -35.0f;
+    float hairMelanin = 0.55f;
+    float hairMelaninRedness = 0.35f;
+
+    float hairLongitudinalRoughness = 0.28f;
+    float hairAzimuthalRoughness = 0.35f;
+    float hairCuticleAngleDegrees = 3.0f;
+    float hairIor = 1.55f;
+
+    float sssScale = 1.0f;
+    float sssAnisotropy = 0.0f;
+    float sssMaxSampleRadius = 0.12f;
+    float padding1 = 0.0f;
+};
+
+static_assert(sizeof(RTXCRMaterialSamplePush) == 64);
 
 float floatProperty(
     const RenderGraphProperties& properties,
@@ -137,14 +159,21 @@ public:
             return result;
         }
 
-        device_ = context.device;
+        const ComputeProgramBindingDesc bindings[] = {
+            ComputeProgramBindingDesc{
+                .binding = 0,
+                .kind = ComputeResourceBindingKind::StorageImage,
+            },
+        };
         std::string programLog;
         result = program_.initialize(
             *context.device,
-            ComputeKernelDesc{
+            ComputeProgramDesc{
                 .spirv = compileResult.spirv,
-                .parameters = parameterAbi<RTXCRMaterialSampleParams>(kRTXCRMaterialSampleABI, ParameterTransport::InlinePush),
+                .pushConstantSize = sizeof(RTXCRMaterialSamplePush),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "RTXCRMaterialSamplePass",
+                .resourceParameters = kOutputImageResourceLayout,
             },
             programLog);
         if (!programLog.empty()) {
@@ -162,7 +191,7 @@ public:
         }
 
         const RenderGraphProperties& properties = context.properties();
-        RTXCRMaterialSamplePush push{};
+        RTXCRMaterialSamplePush push;
         push.width = context.width();
         push.height = context.height();
         push.viewMode = viewModeProperty(properties);
@@ -213,19 +242,25 @@ public:
             0.01f,
             0.5f);
 
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const RTXCRMaterialSampleParams params{.output = writer.storageImage(color.view()), .settings = push};
-        auto encoded = writer.encode(params, kRTXCRMaterialSampleABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return program_.dispatch(commands, *encoded, (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
+        const ComputeDispatchBinding bindings[] = {
+            ComputeDispatchBinding{
+                .binding = 0,
+                .textureView = color.view(),
+            },
+        };
+        return program_.dispatch(ComputeDispatchDesc{
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7u) / 8u,
+            .groupCountY = (context.height() + 7u) / 8u,
+            .groupCountZ = 1,
+        });
     }
 
 private:
-    Device* device_ = nullptr;
-    ComputeKernel program_;
+    ComputeProgram program_;
 };
 
 } // namespace

@@ -9,33 +9,33 @@ using Metallic;
 // This follows the FullSample gradient strata, A-trous filtering, confidence
 // conversion, and short non-linear temporal filtering flow.
 
-#define gNoisyDiffuse resolveDescriptor(gParams.noisyDiffuse)
+#define gNoisyDiffuse resolveUniform(gParams.noisyDiffuse)
 
-#define gNoisySpecular resolveDescriptor(gParams.noisySpecular)
+#define gNoisySpecular resolveUniform(gParams.noisySpecular)
 
-#define gBaseColorMetalness resolveDescriptor(gParams.baseColorMetalness)
+#define gBaseColorMetalness resolveUniform(gParams.baseColorMetalness)
 
-#define gMotionVectors resolveDescriptor(gParams.motionVectors)
+#define gMotionVectors resolveUniform(gParams.motionVectors)
 
-#define gPreviousLuminance resolveDescriptor(gParams.previousLuminance)
+#define gPreviousLuminance resolveUniform(gParams.previousLuminance)
 
-#define gCurrentLuminance resolveDescriptor(gParams.currentLuminance)
+#define gCurrentLuminance resolveUniform(gParams.currentLuminance)
 
-#define gGradientA resolveDescriptor(gParams.gradientA)
+#define gGradientA resolveUniform(gParams.gradientA)
 
-#define gGradientB resolveDescriptor(gParams.gradientB)
+#define gGradientB resolveUniform(gParams.gradientB)
 
-#define gPreviousDiffuseConfidence resolveDescriptor(gParams.previousDiffuseConfidence)
+#define gPreviousDiffuseConfidence resolveUniform(gParams.previousDiffuseConfidence)
 
-#define gPreviousSpecularConfidence resolveDescriptor(gParams.previousSpecularConfidence)
+#define gPreviousSpecularConfidence resolveUniform(gParams.previousSpecularConfidence)
 
-#define gDiffuseConfidence resolveDescriptor(gParams.diffuseConfidence)
+#define gDiffuseConfidence resolveUniform(gParams.diffuseConfidence)
 
-#define gSpecularConfidence resolveDescriptor(gParams.specularConfidence)
+#define gSpecularConfidence resolveUniform(gParams.specularConfidence)
 
-#define gCurrentDiffuseConfidence resolveDescriptor(gParams.currentDiffuseConfidence)
+#define gCurrentDiffuseConfidence resolveUniform(gParams.currentDiffuseConfidence)
 
-#define gCurrentSpecularConfidence resolveDescriptor(gParams.currentSpecularConfidence)
+#define gCurrentSpecularConfidence resolveUniform(gParams.currentSpecularConfidence)
 
 static const uint kComputeGradient = 0u;
 static const uint kFilterAToB = 1u;

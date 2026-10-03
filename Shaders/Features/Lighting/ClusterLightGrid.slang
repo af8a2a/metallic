@@ -6,15 +6,15 @@ using Metallic;
 import Lighting;
 using Metallic.Lighting;
 
-#define gClusterParams gParams.grid.data
+#define gClusterParams gParams.grid
 
-#define gClusterLights gParams.lights.data
+#define gClusterLights gParams.lights
 
-#define gClusterCandidates gParams.candidates.data
+#define gClusterCandidates gParams.candidates
 
-#define gClusterCells gParams.cells.data
+#define gClusterCells gParams.cells
 
-#define gClusterLightIndices gParams.indices.data
+#define gClusterLightIndices gParams.indices
 
 static const uint kClusterLightGridThreadCount = 64u;
 groupshared uint gClusterIntersectionCount;
@@ -141,7 +141,7 @@ void clusterLightGridMain(uint3 groupId : SV_GroupID, uint threadIndex : SV_Grou
             uint entry;
             InterlockedAdd(gClusterIntersectionCount, 1u, entry);
             if (entry < params.viewport.z) {
-                gClusterLightIndices[offset + entry] = sourceIndex;
+                gClusterLightIndices.store(offset + entry, sourceIndex);
             }
         }
     }
@@ -152,6 +152,6 @@ void clusterLightGridMain(uint3 groupId : SV_GroupID, uint threadIndex : SV_Grou
         cell.count = min(gClusterIntersectionCount, params.viewport.z);
         cell.overflow = gClusterIntersectionCount > params.viewport.z ? 1u : 0u;
         cell.totalCount = gClusterIntersectionCount;
-        gClusterCells[cellIndex] = cell;
+        gClusterCells.store(cellIndex, cell);
     }
 }

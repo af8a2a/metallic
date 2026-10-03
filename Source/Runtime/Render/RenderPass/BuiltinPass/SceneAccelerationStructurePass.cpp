@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"

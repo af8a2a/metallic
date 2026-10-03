@@ -1,32 +1,58 @@
-#if defined(PROBE_TYPED)
-#include "../MaterialBinningProbeParameters.h"
-#else
 import Core;
-#endif
 using Metallic;
+#include "../TestResourceParameters.h"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
+#define gVisibility resolveUniform(getResourceParameters<MaterialBinningProbeResources>().visibility)
+#define gRecords resolveBuffer<RWStructuredBuffer<VisibleClusterRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)
+#define gInstances resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<MaterialBinningProbeResources>().instances)
+#define gMaterials resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<MaterialBinningProbeResources>().materials)
+#define gShadingMaterials resolveBuffer<RWStructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
 #if defined(PROBE_TYPED)
-[[vk::push_constant]] ConstantBuffer<MaterialProbeParams> gMaterialProbe;
-#define gBins gMaterialProbe.bins.data
-#define gTiles gMaterialProbe.tiles.data
-#define gArguments gMaterialProbe.arguments.data
-#define gResult gMaterialProbe.output.data
+import ParameterRoot;
+struct MaterialProbeParams {
+    RWBufferSpan<MaterialBin> bins;
+    RWBufferSpan<MaterialTile> tiles;
+    RWBufferSpan<uint> arguments;
+    RWBufferSpan<uint> output;
+    uint width; uint height; uint binCount; uint bin;
+};
+#define gBins getParameters<MaterialProbeParams>().bins
+#define gTiles getParameters<MaterialProbeParams>().tiles
+#define gArguments getParameters<MaterialProbeParams>().arguments
+#define gResult getParameters<MaterialProbeParams>().output
 #else
-#define gBins getResource<StructuredBuffer<MaterialBin>>(5)
-#define gTiles getResource<StructuredBuffer<MaterialTile>>(6)
-#define gArguments getResource<StructuredBuffer<uint>>(7)
-#define gResult getResource<RWStructuredBuffer<uint>>(8)
+#define gBins resolveBuffer<StructuredBuffer<MaterialBin>>(getResourceParameters<MaterialBinningProbeResources>().bins)
+#define gTiles resolveBuffer<StructuredBuffer<MaterialTile>>(getResourceParameters<MaterialBinningProbeResources>().tiles)
+#define gArguments resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<MaterialBinningProbeResources>().arguments)
+#define gResult resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<MaterialBinningProbeResources>().output)
 #endif
+
+void storeResult(uint index, uint value)
+{
+#if defined(PROBE_TYPED)
+    gResult.store(index, value);
+#else
+    gResult[index] = value;
+#endif
+}
+void addResult(uint index, uint value)
+{
+#if defined(PROBE_TYPED)
+    resolveUniform(gResult.resource).InterlockedAdd(gResult.byteOffset + index * 4u, value);
+#else
+    InterlockedAdd(gResult[index], value);
+#endif
+}
 
 struct ProbePush { uint width; uint height; uint binCount; uint bin; };
 ProbePush probePush()
 {
 #if defined(PROBE_TYPED)
-    MaterialProbeParams params = gMaterialProbe;
+    MaterialProbeParams params = getParameters<MaterialProbeParams>();
     return {params.width, params.height, params.binCount, params.bin};
 #else
     return getConstants<ProbePush>();
@@ -34,7 +60,51 @@ ProbePush probePush()
 }
 static const uint kProbeHeader = 27u;
 
-
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void materialFixtureMain(uint3 id : SV_DispatchThreadID)
+{
+    ProbePush push = probePush();
+    uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
+    if (i < 260u) {
+        VisibleClusterRecord record = {0u, i, 0u, 0u};
+        if (i == 257u) { record.flags = 1u << 28u; }
+        if (i == 258u) { record.instanceIndex = 10000u; }
+        gRecords[i] = record;
+        GPUDrivenPreviewInstance instance = {};
+        instance.identity.y = i == 259u ? 10000u : (i * 17u) % 257u;
+        gInstances[i] = instance;
+    }
+    if (i < 257u) {
+        GPUDrivenPreviewMaterial material = {};
+        material.identity.z = i == 0u ? 10000u : (i * 73u) % 257u;
+        gMaterials[i] = material;
+        // Change executable features while keeping source material IDs stable.
+        uint type = 1u + (i + push.bin) % 4u;
+        PathTraceMaterial shading = {};
+        shading.params.x = type == 1u ? 0.0 : (type == 2u ? 1.0 : 0.5);
+        shading.glassParams.x = type == 4u ? 1.0 : 0.0;
+        shading.metallicRoughnessTexture.textureIndex = 0xffffffffu;
+        shading.metallicRoughnessTexture.ntcTextureSetIndex = 0xffffffffu;
+        if (i == 1u || i == 2u) {
+            shading.params.x = 1.0;
+            shading.glassParams.x = 0.0;
+            if (i == 1u) { shading.metallicRoughnessTexture.textureIndex = 7u; }
+            else { shading.metallicRoughnessTexture.ntcTextureSetIndex = 0u; }
+        }
+        gShadingMaterials[i] = shading;
+    }
+    if (i < push.width * push.height) {
+        uint kind = i % 262u;
+        // A dense tile list crosses Vulkan's guaranteed 65535-group X limit.
+        if (push.width > 4096u) { kind = 0u; }
+        uint record = kind < 257u ? kind : kind - 2u;
+        uint visibility = ((record + 1u) << 7u) | (i % 127u);
+        if (kind == 257u || push.width == 8u) { visibility = 0u; }
+        if (kind == 258u) { visibility = 10001u << 7u; }
+        gVisibility[uint2(i % push.width, i / push.width)] = visibility;
+    }
+}
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -42,16 +112,16 @@ void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
 {
     ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
-    if (i == 0u) { gResult[kProbeHeader - 2u] = push.bin; gResult[kProbeHeader - 1u] = 0u; }
+    if (i == 0u) { storeResult(kProbeHeader - 2u, push.bin); storeResult(kProbeHeader - 1u, 0u); }
     if (i < push.binCount) {
-        gResult[i * 5u] = gBins[i].offset;
-        gResult[i * 5u + 1u] = gBins[i].count;
-        for (uint c = 0u; c < 3u; ++c) { gResult[i * 5u + 2u + c] = gArguments[i * 3u + c]; }
+        storeResult(i * 5u, gBins[i].offset);
+        storeResult(i * 5u + 1u, gBins[i].count);
+        for (uint c = 0u; c < 3u; ++c) { storeResult(i * 5u + 2u + c, gArguments[i * 3u + c]); }
     }
     if (i < push.width * push.height) {
-        gResult[kProbeHeader + i * 3u] = 0xffffffffu;
-        gResult[kProbeHeader + i * 3u + 1u] = 0u;
-        gResult[kProbeHeader + i * 3u + 2u] = 0u;
+        storeResult(kProbeHeader + i * 3u, 0xffffffffu);
+        storeResult(kProbeHeader + i * 3u + 1u, 0u);
+        storeResult(kProbeHeader + i * 3u + 2u, 0u);
     }
 }
 
@@ -67,18 +137,18 @@ void materialIndirectProbeMain(uint3 group : SV_GroupID)
     uint lane = WaveGetLaneIndex();
     uint columns = (push.width + 7u) / 8u, rows = (push.height + 3u) / 4u;
     if (tile.tileIndex >= columns * rows || tile.laneMask == 0u) {
-        if (WaveIsFirstLane()) { InterlockedAdd(gResult[kProbeHeader - 1u], 1u); }
+        if (WaveIsFirstLane()) { addResult(kProbeHeader - 1u, 1u); }
         return;
     }
     if ((tile.laneMask & (1u << lane)) == 0u) { return; }
     uint2 pixel = materialTilePixel(tile, lane, push.width);
-    if (any(pixel >= uint2(push.width, push.height))) { InterlockedAdd(gResult[kProbeHeader - 1u], 1u); return; }
+    if (any(pixel >= uint2(push.width, push.height))) { addResult(kProbeHeader - 1u, 1u); return; }
     uint result = kProbeHeader + (pixel.y * push.width + pixel.x) * 3u;
-    gResult[result] = push.bin;
-    InterlockedAdd(gResult[result + 1u], 1u);
-    gResult[result + 2u] = WaveGetLaneCount();
+    storeResult(result, push.bin);
+    addResult(result + 1u, 1u);
+    storeResult(result + 2u, WaveGetLaneCount());
 #if PROBE_ALTERNATE
     // Detect ignored permutation switches as well as the actual subgroup width.
-    gResult[result + 2u] += 100u;
+    addResult(result + 2u, 100u);
 #endif
 }

@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
@@ -159,14 +161,14 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
         const uint32_t dispatchWidth = std::min(partialCount, kEnvironmentSHMaxDispatchWidth);
         const uint32_t dispatchHeight =
             (partialCount + dispatchWidth - 1u) / dispatchWidth;
-        auto registry = device->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device, **registry, commandBuffer.frameContext());
+        ParameterWriter writer(*device, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
         EnvironmentLightingPrecomputeParams params{
             .radiance = writer.sampledImage(&radianceView),
-            .partials = writer.dataBuffer(&partials, 16, 16),
-            .coefficients = writer.dataBuffer(&coefficients, 16, 16),
-            .specular = writer.dataBuffer(&specular, 16, 16),
+            .partials = writer.bufferSpan(&partials, 16, 16),
+            .coefficients = writer.bufferSpan(&coefficients, 16, 16),
+            .specular = writer.bufferSpan(&specular, 16, 16),
         };
         EnvironmentLightingPrecomputePush push{
             .width = width,
@@ -629,15 +631,14 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     }); !commandResult) { return commandResult; }
 
     for (uint32_t mip = 0; mip < mipCount; ++mip) {
-        context.commandBuffer->copyBufferToTexture(BufferTextureCopyDesc{
-            .buffer = staging->radiance.get(),
+        if (auto commandResult = (staging->radiance.get())->slice({decoded.mipOffsets[mip] * sizeof(float)}).and_then([&](const auto& bufferSlice) { return context.commandBuffer->copyBufferToTexture(BufferTextureRegion{
             .texture = next->radiance.get(),
-            .bufferOffset = decoded.mipOffsets[mip] * sizeof(float),
+            .buffer = bufferSlice,
             .width = std::max(next->width >> mip, 1u),
             .height = std::max(next->height >> mip, 1u),
             .depth = 1,
             .mipLevel = mip,
-        });
+        }); }); !commandResult) { return commandResult; }
     }
 
     TextureBarrierDesc textureToRead{

@@ -1,4 +1,6 @@
-#include "../../../Source/Runtime/Render/Core/ResidentRasterParameters.h"
+import ShaderCore;
+using Metallic;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
@@ -66,32 +68,35 @@ float materialBaseColorAlpha(
     GPUDrivenPreviewMaterial material,
     float2 uv,
     GPUDrivenPreviewParams params,
-    ResidentRasterParameters push)
+    GPUDrivenPreviewPush push)
 {
     GPUDrivenPreviewTextureInfo textureInfo = material.baseColorTexture;
     if (textureInfo.textureIndex == kInvalidTextureIndex ||
         textureInfo.textureIndex >= params.materialTextureCount) {
         return material.baseColor.a;
     }
-    ResidentMaterialTextureRemapBuffer remap = push.resources.materialTextureRemapBuffer;
-    DescriptorHandle<Texture2D<float4>> textureHandle = remap[textureInfo.textureIndex];
+    StructuredBuffer<uint> remapHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.materialTextureRemapBuffer));
+    StructuredBuffer<uint> remap = remapHandle;
+    Texture2D<float4> textureHandle =
+        resolveNonUniform(ResourceHandle<Texture2D<float4>>(remap[textureInfo.textureIndex]));
     Texture2D<float4> texture = textureHandle;
     return material.baseColor.a *
         sampleAlphaCoverage(texture, transformMaterialUv(textureInfo, uv));
 }
 
-bool residentClusterVisible(uint meshletDrawIndex, ResidentRasterParameters push)
+bool residentClusterVisible(uint meshletDrawIndex, GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        push.resources.paramsBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
-        push.resources.meshletBuffer;
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> meshletDrawHandle =
-        push.resources.meshletDrawBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
-        push.resources.instanceBuffer;
-    DescriptorHandle<StructuredBuffer<uint>> visibilityHandle =
-        push.resources.instanceVisibilityBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenPreviewMeshlet> meshletHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(push.meshletBuffer));
+    StructuredBuffer<VisibleClusterRecord> meshletDrawHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.meshletDrawBuffer));
+    StructuredBuffer<GPUDrivenPreviewInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(push.instanceBuffer));
+    StructuredBuffer<uint> visibilityHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.instanceVisibilityBuffer));
 
     GPUDrivenPreviewParams params = paramsHandle[0];
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
@@ -110,9 +115,9 @@ bool residentClusterVisible(uint meshletDrawIndex, ResidentRasterParameters push
                 (push.passIndex != 0u && visibility[meshletDraw.instanceIndex] == 3u));
         // Stream culling reuses the shared visibility state after resident
         // culling, so producer ownership must be checked independently here.
-        if (visible && push.hasStreamOwnerMask != 0u) {
-            DescriptorHandle<StructuredBuffer<uint>> streamOwnerMaskHandle =
-                push.resources.streamOwnerMaskBuffer;
+        if (visible && push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
+            StructuredBuffer<uint> streamOwnerMaskHandle =
+                resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.streamOwnerMaskBuffer));
             StructuredBuffer<uint> streamOwnerMask = streamOwnerMaskHandle;
             visible = streamOwnerMask[meshletDraw.instanceIndex] == 0u;
         }
@@ -129,9 +134,7 @@ bool residentClusterVisible(uint meshletDrawIndex, ResidentRasterParameters push
                 visible = meshletVisibleInOcclusionPhase(
                     transformPoint(transform, meshlet.boundingSphere.xyz),
                     max(meshlet.boundingSphere.w * transformMaxScale(transform), 0.0) + params.displacementBound,
-                    visibility[meshletDraw.instanceIndex], params, push.passIndex,
-                    push.resources.previousHZB,
-                    push.resources.currentHZB);
+                    visibility[meshletDraw.instanceIndex], params, push);
             }
         }
     }
@@ -144,19 +147,19 @@ bool residentClusterVisible(uint meshletDrawIndex, ResidentRasterParameters push
 void visibilityBufferAmplificationMain(
     uint3 groupID : SV_GroupID,
     uint groupThreadIndex : SV_GroupIndex,
-    uniform ResidentRasterParameters push)
+    uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        push.resources.paramsBuffer;
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records =
-        push.resources.meshletDrawBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    StructuredBuffer<VisibleClusterRecord> records =
+        resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.meshletDrawBuffer));
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint localMeshletIndex = hybridFlatGroup(groupID) * kAmplificationGroupSize + groupThreadIndex;
     uint meshletDrawIndex = 0xffffffffu;
     bool visible;
-    if (push.hasBins != 0u) {
-        DescriptorHandle<StructuredBuffer<uint>> bins =
-            push.resources.bins;
+    if (push.environmentSHBuffer != kInvalidTextureIndex) {
+        StructuredBuffer<uint> bins =
+            resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.environmentSHBuffer));
         visible = hybridBinRecord(bins, push.mipLevel, localMeshletIndex, meshletDrawIndex);
         // A compact bin has no holes within a task group. Preserve lane order
         // directly, including devices without full Wave32 task subgroups.
@@ -168,7 +171,7 @@ void visibilityBufferAmplificationMain(
         DispatchMesh(count, 1, 1, g_AmplificationPayload);
         return;
     } else {
-        meshletDrawIndex = residentLodRecordIndex(localMeshletIndex, params, push.resources.lodSelections);
+        meshletDrawIndex = residentLodRecordIndex(localMeshletIndex, params, push);
         visible = residentClusterVisible(meshletDrawIndex, push);
         if (visible) { visible = visibleClusterDrawBucket(records[meshletDrawIndex]) == push.mipLevel; }
     }
@@ -251,24 +254,24 @@ void visibilityBufferMeshMain(
     out vertices VisibilityBufferVertexOutput vertices[kMaxMeshletVertices],
     out indices uint3 triangles[kMaxMeshletTriangles],
     out primitives VisibilityBufferPrimitiveOutput primitives[kMaxMeshletTriangles],
-    uniform ResidentRasterParameters push)
+    uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> positionHandle =
-        push.resources.positionBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
-        push.resources.meshletBuffer;
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> meshletDrawHandle =
-        push.resources.meshletDrawBuffer;
-    DescriptorHandle<StructuredBuffer<uint>> meshletVertexHandle =
-        push.resources.meshletVertexBuffer;
-    DescriptorHandle<StructuredBuffer<uint>> meshletTriangleHandle =
-        push.resources.meshletTriangleBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        push.resources.paramsBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>> geometryHandle =
-        push.resources.transformBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
-        push.resources.instanceBuffer;
+    StructuredBuffer<GPUDrivenPreviewVertex> positionHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(push.positionBuffer));
+    StructuredBuffer<GPUDrivenPreviewMeshlet> meshletHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(push.meshletBuffer));
+    StructuredBuffer<VisibleClusterRecord> meshletDrawHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.meshletDrawBuffer));
+    StructuredBuffer<uint> meshletVertexHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletVertexBuffer));
+    StructuredBuffer<uint> meshletTriangleHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletTriangleBuffer));
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenPreviewGeometry> geometryHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewGeometry>>(push.transformBuffer));
+    StructuredBuffer<GPUDrivenPreviewInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(push.instanceBuffer));
     StructuredBuffer<GPUDrivenPreviewVertex> verticesBuffer = positionHandle;
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
     StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
@@ -346,7 +349,7 @@ void visibilityBufferMeshMain(
         // Alpha-tested buckets keep their existing bilinear material coverage.
         if (hybridEnqueueTriangle(g_HybridClipPositions[indices.x],
             g_HybridClipPositions[indices.y], g_HybridClipPositions[indices.z], visibilityId,
-            (push.mipLevel & 1u) != 0u, push.resources.queue, push.hasQueue != 0u)) {
+            (push.mipLevel & 1u) != 0u, push.deferredColorBuffer)) {
             indices = uint3(0u);
         }
 #endif
@@ -365,12 +368,12 @@ uint visibilityBufferFragmentMain(uint visibilityId : SV_PrimitiveID) : SV_Targe
 [shader("fragment")]
 uint visibilityBufferMaskedFragmentMain(
     VisibilityBufferFragmentInput input,
-    uniform ResidentRasterParameters push) : SV_Target0
+    uniform GPUDrivenPreviewPush push) : SV_Target0
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        push.resources.paramsBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materialHandle =
-        push.resources.materialBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenPreviewMaterial> materialHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(push.materialBuffer));
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint materialIndex = min(input.materialIndex, max(params.materialCount, 1u) - 1u);
     GPUDrivenPreviewMaterial material = materialHandle[materialIndex];
@@ -388,16 +391,16 @@ struct ResidentRasterCluster
     GPUDrivenPreviewInstance instance;
 };
 
-ResidentRasterCluster residentRasterCluster(uint index, ResidentRasterParameters push)
+ResidentRasterCluster residentRasterCluster(uint index, GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records =
-        push.resources.meshletDrawBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshlets =
-        push.resources.meshletBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>> geometries =
-        push.resources.transformBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances =
-        push.resources.instanceBuffer;
+    StructuredBuffer<VisibleClusterRecord> records =
+        resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.meshletDrawBuffer));
+    StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(push.meshletBuffer));
+    StructuredBuffer<GPUDrivenPreviewGeometry> geometries =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewGeometry>>(push.transformBuffer));
+    StructuredBuffer<GPUDrivenPreviewInstance> instances =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(push.instanceBuffer));
     ResidentRasterCluster c;
     c.record = records[index];
     c.meshlet = meshlets[c.record.clusterIndex];
@@ -406,12 +409,12 @@ ResidentRasterCluster residentRasterCluster(uint index, ResidentRasterParameters
     return c;
 }
 
-float4 residentClusterClip(ResidentRasterCluster c, uint vertex, GPUDrivenPreviewParams params, ResidentRasterParameters push)
+float4 residentClusterClip(ResidentRasterCluster c, uint vertex, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> indices =
-        push.resources.meshletVertexBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vertices =
-        push.resources.positionBuffer;
+    StructuredBuffer<uint> indices =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletVertexBuffer));
+    StructuredBuffer<GPUDrivenPreviewVertex> vertices =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(push.positionBuffer));
     float3 world = transformPoint(instanceTransform(c.instance),
         vertices[c.geometry.payload.x + indices[c.meshlet.ranges.x + vertex]].position.xyz);
     float4 clip = projectPosition(world, push.projectWithCullingCamera != 0u ? cullingCamera(params) : renderCamera(params));
@@ -422,10 +425,10 @@ float4 residentClusterClip(ResidentRasterCluster c, uint vertex, GPUDrivenPrevie
     return clip;
 }
 
-uint3 residentClusterTriangle(ResidentRasterCluster c, uint triangle, ResidentRasterParameters push)
+uint3 residentClusterTriangle(ResidentRasterCluster c, uint triangle, GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> words =
-        push.resources.meshletTriangleBuffer;
+    StructuredBuffer<uint> words =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletTriangleBuffer));
     return uint3(loadPackedMeshletTriangleIndex(words, c.meshlet.ranges.z, triangle, 0u),
         loadPackedMeshletTriangleIndex(words, c.meshlet.ranges.z, triangle, 1u),
         loadPackedMeshletTriangleIndex(words, c.meshlet.ranges.z, triangle, 2u));
@@ -437,29 +440,29 @@ groupshared uint g_PrebinHardware;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void visibilityClusterCountMain(uniform ResidentRasterParameters push)
+void visibilityClusterCountMain(uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters =
-        push.resources.paramsBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> parameters =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
     GPUDrivenPreviewParams params = parameters[0];
-    DescriptorHandle<StructuredBuffer<uint4>> selections =
-        push.resources.lodSelections;
-    DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        push.resources.writableBins;
+    StructuredBuffer<uint4> selections =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(params.lodSelectionBuffer));
+    RWStructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.environmentSHBuffer));
     bins[12] = min(selections[0].x, params.meshletCount);
 }
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ResidentRasterParameters push)
+void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters =
-        push.resources.paramsBuffer;
-    DescriptorHandle<RWStructuredBuffer<uint>> binHandle =
-        push.resources.writableBins;
+    StructuredBuffer<GPUDrivenPreviewParams> parameters =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    RWStructuredBuffer<uint> binHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.environmentSHBuffer));
     RWStructuredBuffer<uint> bins = binHandle;
     GPUDrivenPreviewParams params = parameters[0];
-    uint index = residentLodRecordIndex(hybridFlatGroup(group), params, push.resources.lodSelections);
+    uint index = residentLodRecordIndex(hybridFlatGroup(group), params, push);
     if (lane == 0u) {
         hybridClassifyCluster(bins, 0xffffffffu, index, hybridFlatGroup(group));
         g_PrebinVisible = residentClusterVisible(index, push) ? 1u : 0u;
@@ -473,7 +476,7 @@ void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupInde
     GroupMemoryBarrierWithGroupSync();
     if (g_PrebinVisible == 0u) { return; }
     uint bucket = visibleClusterDrawBucket(g_PrebinCluster.record);
-    if (bucket >= 2u || params.tessellationEnabled != 0u) {
+    if (bucket >= 2u || params.tessellationBuffer != 0xffffffffu) {
         if (lane == 0u) { hybridClassifyCluster(bins, bucket, index, hybridFlatGroup(group)); }
         return;
     }
@@ -494,14 +497,14 @@ void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupInde
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ResidentRasterParameters push)
+void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        push.resources.bins;
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.environmentSHBuffer));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters =
-        push.resources.paramsBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> parameters =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
     GPUDrivenPreviewParams params = parameters[0];
     if (lane == 0u) { g_PrebinCluster = residentRasterCluster(record, push); }
     GroupMemoryBarrierWithGroupSync();
@@ -514,7 +517,7 @@ void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupI
         tri = residentRasterWinding(tri, instanceTransform(g_PrebinCluster.instance));
         hybridRasterTriangle(g_HybridClipPositions[tri.x], g_HybridClipPositions[tri.y], g_HybridClipPositions[tri.z],
             packVisibilityId(record, lane), (visibleClusterDrawBucket(g_PrebinCluster.record) & 1u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], push.resources.pixels);
+            bins[6], bins[7], bins[9], bins[10], bins[11]);
     }
 }
 

@@ -1,17 +1,16 @@
-#include "../MotionProbeParameters.h"
-#include "UnusedPathTraceScene.hlsli"
-[[vk::push_constant]] ConstantBuffer<MotionProbeParameters> gMotionProbe;
+import Core;
+using Metallic;
+#include "../TestResourceParameters.h"
 
 #include "../../../Shaders/Features/PathTracing/ScenePathTrace.slang"
 
-#define gMotionResults gMotionProbe.output.data
+#define gMotionResults resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<DLSSMotionVectorProbeResources>().motionResults)
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void dlssMotionVectorProbeMain(uint3 dispatchId : SV_DispatchThreadID)
 {
     uint index = dispatchId.x;
-    if (index >= 32u || !gMotionProbe.output.contains(index * 4u + 3u)) { return; }
     ScenePathTracePush push = {};
     push.width = 640;
     push.height = 360;

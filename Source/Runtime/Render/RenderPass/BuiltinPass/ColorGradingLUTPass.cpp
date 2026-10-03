@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -68,7 +70,7 @@ public:
         }
         return program_.initialize(*context.device,
                                    {.spirv = shader.spirv,
-                                    .parameters = parameterAbi<ColorGradingLUTParams>(kColorGradingLUTABI, ParameterTransport::InlinePush),
+                                    .parameters = parameterAbi<ColorGradingLUTParams>(kColorGradingLUTABI),
                                     .debugName = "ColorGradingLUT"},
                                    log);
     }
@@ -83,22 +85,22 @@ public:
                         isHDROutput(output_.mode) ? output_.peakNits : 100.0f, output_.paperWhiteNits,
                         colorGradingParameters(context.properties())};
         auto views = resources_.views();
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
         auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(commands));
         ColorGradingLUTParams params{};
-        params.output = writer.storageImage(lut.view());
-        params.custom0 = writer.sampledImage(views[0]);
-        params.custom1 = writer.sampledImage(views[1]);
-        params.custom2 = writer.sampledImage(views[2]);
-        params.custom3 = writer.sampledImage(views[3]);
-        params.reach = writer.sampledImage(views[4]);
-        params.gamut = writer.sampledImage(views[5]);
-        params.gammaTable = writer.sampledImage(views[6]);
-        params.sampler = writer.sampler(SamplerDesc{});
-        params.display = writer.data(&push, sizeof(push), alignof(GradingPush));
-        auto encoded = writer.encode(params, kColorGradingLUTABI, ParameterTransport::InlinePush);
+        params.output = writer.storageImageHandle(lut.view());
+        params.custom0 = writer.sampledImageHandle(views[0]);
+        params.custom1 = writer.sampledImageHandle(views[1]);
+        params.custom2 = writer.sampledImageHandle(views[2]);
+        params.custom3 = writer.sampledImageHandle(views[3]);
+        params.reach = writer.sampledImageHandle(views[4]);
+        params.gamut = writer.sampledImageHandle(views[5]);
+        params.gammaTable = writer.sampledImageHandle(views[6]);
+        params.sampler = writer.samplerHandle(SamplerDesc{});
+        params.display = push;
+        auto encoded = writer.encode(params, kColorGradingLUTABI);
         if (!encoded) { return makeError(encoded.error()); }
         return program_.dispatch(commands, *encoded, 16, 16, 16);
     }

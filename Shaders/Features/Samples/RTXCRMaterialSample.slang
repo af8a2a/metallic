@@ -1,5 +1,4 @@
-#include "../../../Source/Runtime/Render/Core/MaterialSampleParameters.h"
-[[vk::push_constant]] ConstantBuffer<RTXCRMaterialSampleParams> gParams;
+import Core;
 using Metallic;
 
 // This software contains source code that calls interfaces provided by NVIDIA Corporation.
@@ -7,9 +6,30 @@ using Metallic;
 #include <rtxcr/HairFarFieldBCSDF.hlsli>
 #include <rtxcr/SubsurfaceScattering.hlsli>
 
+struct RTXCRMaterialSamplePush
+{
+    uint width;
+    uint height;
+    uint viewMode;
+    uint padding0;
 
+    float exposure;
+    float lightAzimuthDegrees;
+    float hairMelanin;
+    float hairMelaninRedness;
 
-#define gOutput resolveDescriptor(gParams.output)
+    float hairLongitudinalRoughness;
+    float hairAzimuthalRoughness;
+    float hairCuticleAngleDegrees;
+    float hairIor;
+
+    float sssScale;
+    float sssAnisotropy;
+    float sssMaxSampleRadius;
+    float padding1;
+};
+
+#define gOutput resolveUniform(getResourceParameters<OutputImageResourceParameters>().output)
 
 static const float kPi = 3.14159265358979323846;
 
@@ -221,7 +241,7 @@ float3 acesApprox(float3 color)
 void rtxcrMaterialSampleMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    RTXCRMaterialSamplePush push = gParams.settings;
+    RTXCRMaterialSamplePush push = getConstants<RTXCRMaterialSamplePush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

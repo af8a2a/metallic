@@ -1,6 +1,6 @@
-#include "FrameHistoryProbeParameters.h"
-#include "FrameEnvironmentProbeParameters.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
+#include "TestResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include <stdexcept>
 #include <string>
 
@@ -36,7 +36,8 @@ namespace {
 constexpr uint64_t kWaitTimeout = 5'000'000'000ull;
 
 struct ScopedTimelineWaitResult {
-    PFN_vkWaitSemaphores original = vkWaitSemaphores;
+    PFN_vkWaitSemaphores& entry;
+    PFN_vkWaitSemaphores original;
     static inline VkResult result = VK_SUCCESS;
     static inline uint32_t calls = 0;
     static VKAPI_ATTR VkResult VKAPI_CALL wait(VkDevice, const VkSemaphoreWaitInfo*, uint64_t)
@@ -44,8 +45,15 @@ struct ScopedTimelineWaitResult {
         ++calls;
         return result;
     }
-    ScopedTimelineWaitResult() { calls = 0; vkWaitSemaphores = wait; }
-    ~ScopedTimelineWaitResult() { vkWaitSemaphores = original; }
+    explicit ScopedTimelineWaitResult(render::Device& device)
+        : entry(const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)->vkWaitSemaphores),
+          original(entry)
+    {
+        // Quiescent, test-only fault injection into this device's dispatch.
+        calls = 0;
+        entry = wait;
+    }
+    ~ScopedTimelineWaitResult() { entry = original; }
 };
 
 struct Commands {
@@ -73,7 +81,7 @@ struct Commands {
     {
         render::Result<> result = frame.begin(index);
         if (result) { result = pool->reset(); }
-        return result ? buffer->begin(&frame) : result;
+        return result ? buffer->begin(frame.submissionContext()) : result;
     }
     render::Result<> submit(render::QueueSubmissionTracker& tracker, render::Semaphore* gate = nullptr)
     {
@@ -175,7 +183,7 @@ public:
         if (tracker.submit({.commandBuffers = {staleBuffers, 1}}, commands.frame)) {
             return RHITestResult::fail("cancelled command recording was accepted by a new frame generation");
         }
-        FRAME_REQUIRE(commands.buffer->begin(&commands.frame));
+        FRAME_REQUIRE(commands.buffer->begin(commands.frame.submissionContext()));
         const render::GPUCompletionPoint point = commands.frame.completion();
         auto retained = std::make_shared<uint32_t>(17);
         std::weak_ptr<uint32_t> retainedWeak = retained;
@@ -255,7 +263,7 @@ public:
 
         // Drain actual GPU work first; inject only the host API result so the
         // test covers terminal teardown without deliberately faulting the GPU.
-        ScopedTimelineWaitResult injected;
+        ScopedTimelineWaitResult injected(context.device);
         ScopedTimelineWaitResult::result = VK_TIMEOUT;
         if (commands.frame.reset() || tracker.reset() || deferred.drain() ||
             !commands.frame.completion().valid() || retainedWeak.expired() || retiredWeak.expired()) {
@@ -296,7 +304,7 @@ public:
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
-        FRAME_REQUIRE(context.device.createStreamer(render::StreamerDesc{
+        FRAME_REQUIRE(createStreamer(context.device, render::StreamerDesc{
             .constantBufferSize = 4096,
             .dynamicBufferSizePerFrame = 64 * 1024,
             .queuedFrameCount = 1,
@@ -367,7 +375,7 @@ public:
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
-        FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
+        FRAME_REQUIRE(createStreamer(context.device, {.dynamicBufferSizePerFrame = 64 * 1024,
             .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         constexpr uint32_t kPages = 64, kWordsPerPage = 5 * 1024;
         constexpr uint64_t kBytes = uint64_t(kPages) * kWordsPerPage * sizeof(uint32_t);
@@ -414,7 +422,7 @@ public:
         }
         // Reject capacities whose alignment or queued-frame multiplication
         // would overflow before attempting any Vulkan allocation.
-        if (context.device.createStreamer({.dynamicBufferSizePerFrame = UINT64_MAX,
+        if (createStreamer(context.device, {.dynamicBufferSizePerFrame = UINT64_MAX,
                 .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) {
             return RHITestResult::fail("overflowing staging capacity was accepted");
         }
@@ -438,6 +446,8 @@ render::Result<> createProbe(render::Device& device, const char* entry,
         .pushConstantSize = sizeof(uint32_t),
         .bindings = bindings,
         .requiresRayQuery = false,
+        .resourceParameters = std::string_view(entry) == "accumulateHistory" ? metallic::tests::kFrameHistoryProbeLayout :
+            std::string_view(entry) == "sampleImages" ? metallic::tests::kFrameImagesProbeLayout : metallic::tests::kFrameCopyProbeLayout,
     }, log);
 }
 
@@ -545,9 +555,9 @@ public:
             FRAME_REQUIRE(device->createTextureView(*images->textures[i], {}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
             images->views[i] = std::move(view);
         }
-        auto a = std::make_shared<const render::SampledImageSnapshot>(render::SampledImageSnapshot{
+        auto a = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
             images, {images->views[0], images->views[1]}});
-        auto b = std::make_shared<const render::SampledImageSnapshot>(render::SampledImageSnapshot{
+        auto b = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
             images, {images->views[0], images->views[2]}});
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage, .descriptorCount = 2},
@@ -572,8 +582,8 @@ public:
                         .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                     };
                     if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    commands.buffer->clearColorTexture(*images->textures[j], render::ResourceState::TransferDestination,
-                        {float((j + 1) * 10), 0, 0, 0});
+                    if (auto commandResult = commands.buffer->clearColorTexture(*images->textures[j], render::TextureLayout::TransferDestination,
+                        {float((j + 1) * 10), 0, 0, 0}); !commandResult) { return RHITestResult::fail(std::string("clearColorTexture failed: ") + render::resultToString(commandResult)); }
                     barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
                     barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
                     if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
@@ -652,7 +662,7 @@ public:
         render::QueueSubmissionTracker tracker;
         std::array<Commands, 3> frames;
         render::HistoryResourceManager history;
-        render::ComputeKernel program;
+        render::ComputeProgram program;
         std::unique_ptr<render::Buffer> output;
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(tracker.initialize(*device, queue));
@@ -666,15 +676,13 @@ public:
         textureDesc.height = 1;
         textureDesc.format = render::Format::RGBA32Sfloat;
         FRAME_REQUIRE(history.ensureTexture("history", textureDesc));
+        const render::ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+        };
         std::string log;
-        render::ShaderCompileResult shader;
-        FRAME_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameHistoryProbe",
-            .entryPointName = "accumulateHistory", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log)
-            .transform([&](auto value) { shader = std::move(value); }));
-        FRAME_REQUIRE(program.initialize(*device, {.spirv = shader.spirv,
-            .parameters = render::parameterAbi<FrameHistoryProbeParameters>(kFrameHistoryProbeABI, render::ParameterTransport::InlinePush)}, log));
-        auto registry = device->resourceRegistry();
-        if (!registry) { return RHITestResult::fail("History probe registry unavailable"); }
+        FRAME_REQUIRE(createProbe(*device, "accumulateHistory", bindings, program, log));
         QueueDrain drain{queue, gate.get()};
         for (uint32_t index = 0; index < 3; ++index) {
             auto& commands = frames[index];
@@ -684,14 +692,17 @@ public:
             FRAME_REQUIRE(history.transitionTexture(*commands.buffer, "history", render::HistorySlot::Current, render::ResourceState::General));
             FRAME_REQUIRE(history.transitionTexture(*commands.buffer, "history", render::HistorySlot::Previous, render::ResourceState::General));
             storageBarrier(*commands.buffer, *output);
-            render::ParameterWriter writer(*device, **registry, &commands.frame);
-            const FrameHistoryProbeParameters params{
-                writer.storageImage(history.texture("history", render::HistorySlot::Previous).view),
-                writer.storageImage(history.texture("history", render::HistorySlot::Current).view),
-                writer.dataBuffer(output.get(), 4, 4), index, 0};
-            auto encoded = writer.encode(params, kFrameHistoryProbeABI, render::ParameterTransport::InlinePush);
-            if (!encoded) { return RHITestResult::fail("History probe parameter encoding failed"); }
-            FRAME_REQUIRE(program.dispatch(*commands.buffer, *encoded, 1));
+            const render::ComputeDispatchBinding resources[] = {
+                {.binding = 0, .textureView = history.texture("history", render::HistorySlot::Previous).view},
+                {.binding = 1, .textureView = history.texture("history", render::HistorySlot::Current).view},
+                {.binding = 2, .buffer = output.get()},
+            };
+            FRAME_REQUIRE(program.dispatch({
+                .commandBuffer = commands.buffer.get(),
+                .bindings = {resources, 3},
+                .pushData = &index,
+                .pushDataSize = 4,
+            }));
             history.markWritten("history");
             FRAME_REQUIRE(commands.submit(tracker, index == 0 ? gate.get() : nullptr));
         }
@@ -708,71 +719,6 @@ public:
         return RHITestResult::pass();
     }
 };
-
-// Different executors can both use local frame slot zero. Upload allocations
-// must be keyed by completion identity, while retaining bounded backpressure.
-class FrameSharedStreamerSlotsTest final : public RHITest {
-public:
-    FrameSharedStreamerSlotsTest() { type = RHITestType::Command; name = "frame_shared_streamer_local_slots"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        render::QueueSubmissionTracker tracker;
-        std::array<Commands, 3> frames{Commands{0}, Commands{0}, Commands{0}};
-        std::unique_ptr<render::Streamer> streamer;
-        std::unique_ptr<render::Buffer> output;
-        std::unique_ptr<render::Semaphore> gate;
-        FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
-        for (auto& frame : frames) { FRAME_REQUIRE(frame.initialize(context.device, context.graphicsQueue)); }
-        FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
-            .queuedFrameCount = 2}).transform([&](auto value) { streamer = std::move(value); }));
-        FRAME_REQUIRE(context.device.createBuffer({.size = 4 * sizeof(uint32_t),
-            .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto value) { output = std::move(value); }));
-        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto value) { gate = std::move(value); }));
-        QueueDrain drain{context.graphicsQueue, gate.get()};
-        GateWatchdog watchdog(*gate);
-        const auto upload = [&](Commands& commands, uint32_t index, uint32_t value) -> render::Result<> {
-            const render::StreamDataChunk chunk{.data = &value, .size = sizeof(value)};
-            if (!streamer->streamBufferData({.dataChunks = {&chunk, 1}, .dstBuffer = output.get(),
-                    .dstOffset = index * sizeof(value)}).buffer) { return render::makeError(render::Error::Failure); }
-            return streamer->copyStreamedData(*commands.buffer);
-        };
-        FRAME_REQUIRE(frames[0].begin(0));
-        FRAME_REQUIRE(streamer->beginFrame(frames[0].frame));
-        FRAME_REQUIRE(upload(frames[0], 0, 101));
-        streamer->endFrame();
-        // Reopening the same recording must preserve its allocated offsets.
-        FRAME_REQUIRE(streamer->beginFrame(frames[0].frame));
-        FRAME_REQUIRE(upload(frames[0], 1, 102));
-        streamer->endFrame();
-        FRAME_REQUIRE(frames[0].submit(tracker, gate.get()));
-        FRAME_REQUIRE(frames[1].begin(0));
-        FRAME_REQUIRE(streamer->beginFrame(frames[1].frame));
-        FRAME_REQUIRE(upload(frames[1], 2, 201));
-        streamer->endFrame();
-        FRAME_REQUIRE(frames[1].submit(tracker, gate.get()));
-        if (frames[0].frame.completion().isComplete()) {
-            return RHITestResult::fail("Shared streamer waited for the first view instead of using a free upload slot");
-        }
-        FRAME_REQUIRE(frames[2].begin(0));
-        if (streamer->beginFrame(frames[2].frame)) {
-            return RHITestResult::fail("Shared streamer reused an in-flight upload slot when capacity was full");
-        }
-        FRAME_REQUIRE(gate->signal(1));
-        FRAME_REQUIRE(frames[1].frame.wait(kWaitTimeout));
-        FRAME_REQUIRE(streamer->beginFrame(frames[2].frame));
-        FRAME_REQUIRE(upload(frames[2], 3, 301));
-        streamer->endFrame();
-        FRAME_REQUIRE(frames[2].submit(tracker));
-        FRAME_REQUIRE(frames[2].frame.wait(kWaitTimeout));
-        std::array<uint32_t, 4> actual{};
-        if (!readWords(*output, actual.data(), actual.size()) || actual != std::array<uint32_t, 4>{101, 102, 201, 301}) {
-            return RHITestResult::fail("Shared upload slots overwrote another view or reset a reopened frame's offsets");
-        }
-        return RHITestResult::pass();
-    }
-};
-METALLIC_REGISTER_RHI_TEST(FrameSharedStreamerSlotsTest);
 
 class FrameTwoSlotGraphTest : public RHITest {
 public:
@@ -796,7 +742,7 @@ public:
         for (auto& slot : slots) { FRAME_REQUIRE(slot.initialize(context.device, context.graphicsQueue)); }
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { rebuildGate = std::move(rhiValue); }));
-        FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
+        FRAME_REQUIRE(createStreamer(context.device, {.dynamicBufferSizePerFrame = 64 * 1024,
             .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createBuffer({.size = 6 * sizeof(uint32_t),
             .usage = render::BufferUsageBits::TransferDestination,
@@ -841,10 +787,10 @@ public:
             // so the graph also exercises a same-state write-after-write barrier.
             if (index % 2 == 0 || index == 5) {
                 FRAME_REQUIRE(executor.transitionOutput(*commands.buffer, "Triangle.color", render::ResourceState::TransferSource));
-                commands.buffer->copyTextureToBuffer({
+                if (auto commandResult = (imageReadbacks[index].get())->slice().and_then([&](const auto& bufferSlice) { return commands.buffer->copyTextureToBuffer({
                     .texture = executor.outputResource("Triangle.color")->texture,
-                    .buffer = imageReadbacks[index].get(), .width = kWidth, .height = kWidth,
-                });
+                    .buffer = bufferSlice, .width = kWidth, .height = kWidth,
+                }); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
             }
             FRAME_REQUIRE(commands.submit(tracker, index == 0 ? gate.get() : index == 5 ? rebuildGate.get() : nullptr));
             if (index == 0) { firstPoint = commands.frame.completion(); }
@@ -1145,8 +1091,8 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
-            render::ResourceState::TransferDestination, {0.25f, 0.5f, 0.75f, 1.0f});
+        if (auto commandResult = context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
+            render::TextureLayout::TransferDestination, {0.25f, 0.5f, 0.75f, 1.0f}); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -1460,7 +1406,7 @@ public:
         // transitionOutput attaches the aggregate wait to Queue::submit.
         FRAME_REQUIRE(consumer.begin(0));
         FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Upload.data", render::ResourceState::TransferSource));
-        FRAME_REQUIRE(consumer.buffer->addDependency(second)); // Duplicate is coalesced.
+        FRAME_REQUIRE(addCommandDependency(*consumer.buffer, second)); // Duplicate is coalesced.
         {
             auto sourceSlice = (executor.outputResource("Upload.data")->buffer)->slice({0, 16});
             if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
@@ -1603,8 +1549,8 @@ public:
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { pixels = std::move(rhiValue); }));
         FRAME_REQUIRE(readback.begin(6));
         FRAME_REQUIRE(executor.transitionOutput(*readback.buffer, "TextureCopy.color", render::ResourceState::TransferSource));
-        readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
-            .buffer = pixels.get(), .width = 16, .height = 16});
+        if (auto commandResult = (pixels.get())->slice().and_then([&](const auto& bufferSlice) { return readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
+            .buffer = bufferSlice, .width = 16, .height = 16}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         FRAME_REQUIRE(readback.submit(tracker));
         FRAME_REQUIRE(readback.frame.wait(kWaitTimeout));
         std::array<uint32_t, 256> image{};
@@ -1642,6 +1588,67 @@ METALLIC_REGISTER_RHI_TEST(FrameCompletionLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(FrameUploadLifetimeTest);
 METALLIC_REGISTER_RHI_TEST(FrameDescriptorSnapshotTest);
 METALLIC_REGISTER_RHI_TEST(FrameHistoryDependencyTest);
+
+class FrameSubmissionContextLifetimeTest final : public RHITest {
+public:
+    FrameSubmissionContextLifetimeTest()
+    {
+        type = RHITestType::Command;
+        name = "frame_submission_context_lifetime";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"frame.submission.context.lifetime"}, bench::Layer::Core);
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        Commands commands;
+        FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
+        std::shared_ptr<CommandSubmissionContext> stale;
+        {
+            RenderFrameContext frame;
+            if (commands.buffer->begin(frame.submissionContext())) {
+                return RHITestResult::fail("Unbegun frame silently became a standalone recording");
+            }
+            FRAME_REQUIRE(frame.begin(0));
+            stale = frame.submissionContext();
+            FRAME_REQUIRE(commands.buffer->begin(stale));
+            FRAME_REQUIRE(commands.buffer->end());
+            FRAME_REQUIRE(frame.reset());
+            if (commands.buffer->begin(frame.submissionContext())) {
+                return RHITestResult::fail("Reset frame silently became a standalone recording");
+            }
+            FRAME_REQUIRE(frame.begin(1));
+            if (stale == frame.submissionContext() || stale->recording() || stale->canSubmit(true, true) ||
+                RenderFrameContext::from(*commands.buffer) || commands.buffer->begin(stale)) {
+                return RHITestResult::fail("Old recording generation survived frame reset");
+            }
+            FRAME_REQUIRE(commands.pool->reset());
+            FRAME_REQUIRE(commands.buffer->begin(frame.submissionContext()));
+            FRAME_REQUIRE(commands.buffer->end());
+            stale = frame.submissionContext();
+        }
+        CommandBuffer* buffers[]{commands.buffer.get()};
+        if (RenderFrameContext::from(*commands.buffer) || stale->recording() || stale->canSubmit(true, true) ||
+            context.graphicsQueue.submit({.commandBuffers = buffers}) || commands.buffer->begin(stale)) {
+            return RHITestResult::fail("Destroyed frame left a usable recording context");
+        }
+        FRAME_REQUIRE(commands.pool->reset());
+        FRAME_REQUIRE(commands.buffer->begin());
+        auto semaphore = context.device.createSemaphore();
+        if (!semaphore) { return RHITestResult::fail("Cannot create dependency semaphore"); }
+        Semaphore liveSemaphore = std::move(**semaphore);
+        SemaphoreSubmitDesc invalidWait{.semaphore = semaphore->get(), .value = 1};
+        FRAME_REQUIRE(commands.buffer->addDependency({&invalidWait, 1}));
+        FRAME_REQUIRE(commands.buffer->end());
+        if (!hasError(context.graphicsQueue.submit({.commandBuffers = buffers}), Error::InvalidArgument)) {
+            return RHITestResult::fail("Neutral dependency accepted an empty semaphore wrapper");
+        }
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameSubmissionContextLifetimeTest);
 
 class FrameSubmissionTransactionsTest final : public RHITest {
 public:
@@ -1725,7 +1732,7 @@ public:
         FRAME_REQUIRE(commands.pool->createCommandBuffer().transform([&](auto rhiValue) { tail = std::move(rhiValue); }));
         FRAME_REQUIRE(registerEvent(*commands.buffer, 6));
         FRAME_REQUIRE(commands.buffer->end());
-        FRAME_REQUIRE(tail->begin(&commands.frame));
+        FRAME_REQUIRE(tail->begin(commands.frame.submissionContext()));
         FRAME_REQUIRE(registerEvent(*tail, 7));
         FRAME_REQUIRE(tail->end());
         render::GPUCompletionPoint prefix;
@@ -1767,14 +1774,18 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
-        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "FrameEnvironmentProbe",
             .entryPointName = "readEnvironment", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        return kernel_.initialize(*context.device, {
+        const render::ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+        return program_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .parameters = render::parameterAbi<FrameEnvironmentProbeParameters>(kFrameEnvironmentProbeABI, render::ParameterTransport::InlinePush),
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kFrameEnvironmentProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -1794,19 +1805,14 @@ public:
             transaction->cancel();
         }
         const auto& snapshot = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return render::makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const FrameEnvironmentProbeParameters params{writer.sampledImage(snapshot.radianceView),
-            writer.dataBuffer(context.outputBuffer("data").buffer(), 16, 4)};
-        auto encoded = writer.encode(params, kFrameEnvironmentProbeABI, render::ParameterTransport::InlinePush);
-        if (!encoded) { return render::makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, 1);
+        render::TextureView* views[] = {snapshot.radianceView};
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .textureViews = {views, 1}},
+            {.binding = 1, .buffer = context.outputBuffer("data").buffer()}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel kernel_;
+    render::ComputeProgram program_;
 };
 
 class FrameEnvironmentRecoveryTest final : public RHITest {

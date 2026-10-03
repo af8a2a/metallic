@@ -1,15 +1,7 @@
-#include "Runtime/Render/Core/StreamRasterParameters.h"
-#include "Runtime/Render/Core/StreamWorkloadParameters.h"
-#include "Runtime/Render/Core/StreamClusterCullParameters.h"
-#include "Runtime/Render/Core/StreamClassifyParameters.h"
-#include "Runtime/Render/Core/StreamSceneParameters.h"
-#include "Runtime/Render/Core/StreamBLASParameters.h"
-#include "Runtime/Render/Core/StreamTLASParameters.h"
-#include "Runtime/Render/Core/StreamActiveBuildParameters.h"
-#include "Runtime/Render/Core/StreamTraversalParameters.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
-#include "Runtime/Render/Core/StreamPageTableParameters.h"
-#include "Runtime/Render/Core/StreamInstanceCullParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
@@ -262,99 +254,240 @@ Result<> transitionBuffer(
     return {};
 }
 
+Result<> createSlangShaderModule(
+    Device& device,
+    const char* moduleName,
+    const char* entryPoint,
+    std::unique_ptr<ShaderModule>& outShader,
+    std::string& log)
+{
+    ShaderCompileResult compileResult;
+    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+            .moduleName = moduleName,
+            .entryPointName = entryPoint,
+            .searchPath = kMeshletStreamShaderSearchPath,
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+    if (!result) {
+        log += "compileSlangShaderToSpirv(";
+        log += moduleName;
+        log += ".";
+        log += entryPoint;
+        log += ") returned ";
+        log += resultToString(result);
+        if (!compileResult.diagnostics.empty()) {
+            log += ": ";
+            log += compileResult.diagnostics;
+        }
+        log += '\n';
+        return result;
+    }
+
+    const std::string shaderDebugName = std::string(moduleName) + "." + entryPoint;
+    result = device.createShaderModule(ShaderModuleDesc{
+        .spirv = compileResult.spirv,
+        .debugName = shaderDebugName.c_str(),
+    }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
+    if (!result || outShader == nullptr) {
+        log += resultMessage("createShaderModule", result);
+        log += '\n';
+        return result ? makeError(Error::Failure) : result;
+    }
+    return {};
+}
+
 } // namespace
 
 class MeshletStreamRuntime::UpdatePass {
 public:
-    Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
+    Result<> initialize(Device& device, ResourceRegistry& registry, uint64_t updateByteSize, uint32_t frameSlots, std::string& log,
+        PipelineCache* pipelineCache)
     {
-        device_ = &device;
-        const char* entries[] = {kMeshletStreamPageTableInitEntryPoint, kMeshletStreamUpdateEntryPoint};
-        for (size_t i = 0; i < kernels_.size(); ++i) {
-            auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-                .entryPointName = entries[i], .searchPath = kMeshletStreamShaderSearchPath}, log);
-            if (!shader) { return makeError(shader.error()); }
-            auto result = kernels_[i].initialize(device, {.spirv = shader->spirv,
-                .parameters = parameterAbi<StreamPageTableParameters>(kStreamPageTableABI, ParameterTransport::InlinePush),
-                .debugName = entries[i], .pipelineCache = pipelineCache}, log);
+        if (updateByteSize == 0 || frameSlots == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        Result<> result;
+        updateBuffers_.resize(frameSlots);
+        updateHandles_.resize(frameSlots);
+        for (uint32_t slot = 0; slot < frameSlots; ++slot) {
+            result = createHostStorageBuffer(device, updateByteSize, updateBuffers_[slot], log, "MeshletStreamRuntime update");
+            if (!result) { return result; }
+            result = allocateAndWriteBuffer(registry, *updateBuffers_[slot], updateHandles_[slot], log, "meshlet stream update");
             if (!result) { return result; }
         }
+
+        device_ = &device;
+        registry_ = &registry;
+        auto initializeKernel = [&](const char* entry, ComputeKernel& kernel) -> Result<> {
+            auto shader = compileSlangShaderToSpirv({
+                .moduleName = kMeshletStreamShaderModuleName,
+                .entryPointName = entry,
+                .searchPath = kMeshletStreamShaderSearchPath,
+            }, log);
+            if (!shader) { return makeError(shader.error()); }
+            return kernel.initialize(device, {
+                .spirv = shader->spirv,
+                .parameters = parameterAbi<MeshletStreamUserPush>(kPageTableABI, ParameterTransport::InlinePush),
+                .debugName = entry,
+                .pipelineCache = pipelineCache,
+            }, log);
+        };
+        result = initializeKernel(kMeshletStreamPageTableInitEntryPoint, pageTableInitKernel_);
+        if (!result) { return result; }
+        result = initializeKernel(kMeshletStreamUpdateEntryPoint, updateKernel_);
+        if (!result) { return result; }
         return {};
     }
 
-    bool ready() const { return kernels_[0].valid() && kernels_[1].valid(); }
-
-    Result<> initializePageTable(CommandBuffer& commands, ResourceRegistry& registry, uint32_t pageCount,
-        Buffer& pages, ResourceState& state)
+    bool ready() const
     {
-        if (!ready() || pageCount == 0 || uint64_t(pageCount) * 8u > pages.desc().size) {
-            return makeError(Error::InvalidArgument);
-        }
-        ParameterWriter writer(*device_, registry, commands.frameContext());
-        StreamPageTableParameters params{.pages = writer.dataBuffer(&pages, 8, 8)};
-        params.pages.count = pageCount;
-        return record(commands, writer, params, kernels_[0], pageCount, pages, state);
+        return !updateBuffers_.empty() && updateBuffers_.front() != nullptr &&
+            updateHandles_.front().valid() &&
+            pageTableInitKernel_.valid() && updateKernel_.valid();
     }
 
-    Result<> apply(CommandBuffer& commands, ResourceRegistry& registry,
-        std::span<const StreamPageTablePatch> patches, uint32_t maxUpdatePatches,
-        Buffer& pages, ResourceState& state)
+    ResourceLease updateHandle() const { return updateHandles_.empty() ? ResourceLease{} : updateHandles_.front(); }
+
+    Result<> initializePageTable(
+        CommandBuffer& commandBuffer,
+        MeshletStreamUserPush push,
+        uint32_t pageCount,
+        Buffer& pageTableBuffer,
+        ResourceState& pageTableState)
     {
-        if (patches.empty()) { return {}; }
-        if (!ready() || patches.size() > maxUpdatePatches) { return makeError(Error::InvalidArgument); }
-        // Each dispatch owns a snapshot, including multiple updates in one frame slot.
-        std::vector<StreamPageTablePatch> ordered;
-        ordered.reserve(patches.size());
-        for (const auto& patch : patches) {
-            if (streamPageTablePatchState(patch) == MeshletStreamPageResidencyState::Unloaded) { ordered.push_back(patch); }
+        if (!ready() || pageCount == 0) {
+            return makeError(Error::Failure);
         }
-        for (const auto& patch : patches) {
-            if (streamPageTablePatchState(patch) != MeshletStreamPageResidencyState::Unloaded) { ordered.push_back(patch); }
+        constexpr uint32_t kMaxDispatchGroupsPerDimension = 65535u;
+        const uint32_t totalGroups = (pageCount - 1u) / 64u + 1u;
+        const uint32_t groupCountX = std::min(totalGroups, kMaxDispatchGroupsPerDimension);
+        const uint32_t groupCountY =
+            (totalGroups + kMaxDispatchGroupsPerDimension - 1u) / kMaxDispatchGroupsPerDimension;
+
+        push.activeBuildPhase = pageCount;
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
+        ParameterWriter writer(*device_, *registry_, RenderFrameContext::from(commandBuffer));
+        auto parameters = writer.encode(push, kPageTableABI, ParameterTransport::InlinePush);
+        if (!parameters) { return makeError(parameters.error()); }
+        if (auto dispatched = pageTableInitKernel_.dispatch(commandBuffer, *parameters, groupCountX, groupCountY); !dispatched) { return dispatched; }
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
+        return {};
+    }
+
+    Result<> apply(
+        CommandBuffer& commandBuffer,
+        MeshletStreamUserPush push,
+        std::span<const StreamPageTablePatch> patches,
+        uint32_t maxUpdatePatches,
+        uint32_t frameIndex,
+        Buffer& pageTableBuffer,
+        ResourceState& pageTableState)
+    {
+        if (patches.empty()) {
+            return {};
         }
-        ParameterWriter writer(*device_, registry, commands.frameContext());
-        const StreamPageTableParameters params{
-            .pages = writer.dataBuffer(&pages, 8, 8),
-            .patches = {writer.data(ordered.data(), ordered.size() * sizeof(StreamPageTablePatch), 8),
-                static_cast<uint32_t>(ordered.size()), sizeof(StreamPageTablePatch)},
+        if (!ready() || patches.size() > maxUpdatePatches) {
+            return makeError(Error::Failure);
+        }
+
+        const uint32_t patchCount = static_cast<uint32_t>(patches.size());
+        uint32_t unloadPatchCount = 0;
+        for (const StreamPageTablePatch& patch : patches) {
+            if (streamPageTablePatchState(patch) == MeshletStreamPageResidencyState::Unloaded) {
+                ++unloadPatchCount;
+            }
+        }
+
+        const uint32_t slot = metallic::render::RenderFrameContext::from(commandBuffer) ? metallic::render::RenderFrameContext::from(commandBuffer)->slotIndex() :
+            frameIndex % static_cast<uint32_t>(updateBuffers_.size());
+        if (slot >= updateBuffers_.size()) { return makeError(Error::InvalidArgument); }
+        auto& updateBuffer = *updateBuffers_[slot];
+        auto retained = commandBuffer.retainResource(updateBuffers_[slot]->retainAllocation());
+        if (!retained) { return retained; }
+        push.updateBuffer = updateHandles_[slot].shaderIndex();
+        void* mapped = updateBuffer.map();
+        if (mapped == nullptr) {
+            return makeError(Error::Failure);
+        }
+        auto* header = static_cast<StreamUpdateBufferHeader*>(mapped);
+        *header = StreamUpdateBufferHeader{
+            .patchUnloadPageCount = unloadPatchCount,
+            .patchPageCount = patchCount,
+            .frameIndex = frameIndex,
         };
-        return record(commands, writer, params, kernels_[1], static_cast<uint32_t>(ordered.size()), pages, state);
+        auto* patchData = reinterpret_cast<StreamPageTablePatch*>(
+            static_cast<uint8_t*>(mapped) + sizeof(StreamUpdateBufferHeader));
+        uint32_t writeIndex = 0;
+        for (const StreamPageTablePatch& patch : patches) {
+            if (streamPageTablePatchState(patch) == MeshletStreamPageResidencyState::Unloaded) {
+                patchData[writeIndex++] = patch;
+            }
+        }
+        for (const StreamPageTablePatch& patch : patches) {
+            if (streamPageTablePatchState(patch) != MeshletStreamPageResidencyState::Unloaded) {
+                patchData[writeIndex++] = patch;
+            }
+        }
+        updateBuffer.flush({0, sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch)});
+        updateBuffer.unmap();
+
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
+        ParameterWriter writer(*device_, *registry_, RenderFrameContext::from(commandBuffer));
+        if (auto used = writer.use(updateHandles_[slot]); !used) { return used; }
+        auto parameters = writer.encode(push, kPageTableABI, ParameterTransport::InlinePush);
+        if (!parameters) { return makeError(parameters.error()); }
+        if (auto dispatched = updateKernel_.dispatch(commandBuffer, *parameters, (patchCount + 63u) / 64u, 1); !dispatched) { return dispatched; }
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
+        return {};
     }
 
 private:
-    Result<> record(CommandBuffer& commands, ParameterWriter& writer, const StreamPageTableParameters& params,
-        const ComputeKernel& kernel, uint32_t count, Buffer& pages, ResourceState& state)
-    {
-        auto encoded = writer.encode(params, kStreamPageTableABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        const uint32_t groups = (count - 1u) / 64u + 1u;
-        auto dispatch = kernel.prepareDispatch(*encoded, std::min(groups, 65535u), (groups + 65534u) / 65535u);
-        if (!dispatch) { return makeError(dispatch.error()); }
-        auto result = transitionBuffer(commands, pages, state, ResourceState::General);
-        if (result) { result = dispatch->record(commands); }
-        if (result) { result = transitionBuffer(commands, pages, state, ResourceState::General, true); }
-        return result;
-    }
+    std::vector<std::unique_ptr<Buffer>> updateBuffers_;
+    // Same inline wire layout as the stream shaders; kernel packets retain executable state.
+    static constexpr uint64_t kPageTableABI = 0x4d53504754420001ull;
     Device* device_ = nullptr;
-    std::array<ComputeKernel, 2> kernels_;
+    ResourceRegistry* registry_ = nullptr;
+    ComputeKernel pageTableInitKernel_;
+    ComputeKernel updateKernel_;
+    std::vector<ResourceLease> updateHandles_;
 };
 
 class MeshletStreamRuntime::TraversalPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
-        auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamTraversalEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, log);
-        if (!shader) { return makeError(shader.error()); }
-        return kernel_.initialize(device, {.spirv = shader->spirv,
-            .parameters = parameterAbi<StreamTraversalParameters>(kStreamTraversalABI, ParameterTransport::InlinePush),
-            .debugName = kMeshletStreamTraversalEntryPoint, .pipelineCache = pipelineCache}, log);
+        Result<> result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamTraversalEntryPoint,
+            traversalShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = device.createComputePipeline(ComputePipelineDesc{
+            .computeShader = {traversalShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { traversalPipeline_ = std::move(rhiValue); });
+        if (!result || traversalPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime traversal)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
     }
 
-    bool ready() const { return kernel_.valid(); }
+    bool ready() const
+    {
+        return traversalShader_ != nullptr && traversalPipeline_ != nullptr;
+    }
 
     Result<> dispatch(
         CommandBuffer& commandBuffer,
-        const EncodedParameters& parameters,
+        BindlessHeap& bindlessHeap,
+        const MeshletStreamUserPush& push,
         uint32_t threadCount,
         Buffer& pageTableBuffer,
         ResourceState& pageTableState,
@@ -370,42 +503,89 @@ public:
 
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        if (auto commandResult = commandBuffer.bindExecution((traversalPipeline_)->execution()); !commandResult) { return commandResult; }
+        commandBuffer.pushBindlessData(&push, sizeof(push));
         const uint64_t groups = (uint64_t(threadCount) + 63u) / 64u;
-        auto result = kernel_.dispatch(commandBuffer, parameters, static_cast<uint32_t>(std::min<uint64_t>(groups, 65535u)),
+        commandBuffer.dispatch(static_cast<uint32_t>(std::min<uint64_t>(groups, 65535u)),
             static_cast<uint32_t>((groups + 65534u) / 65535u), 1);
-        if (!result) { return result; }
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
 private:
-    ComputeKernel kernel_;
+    std::unique_ptr<ShaderModule> traversalShader_;
+    std::unique_ptr<ComputePipeline> traversalPipeline_;
 };
 
 class MeshletStreamRuntime::ActiveBuildPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
-        const char* entries[] = {kMeshletStreamActiveBuildEntryPoint, kMeshletStreamCooperativeBuildEntryPoint, kMeshletStreamDemandEntryPoint};
-        for (size_t i = 0; i < kernels_.size(); ++i) {
-            auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-                .entryPointName = entries[i], .searchPath = kMeshletStreamShaderSearchPath}, log);
-            if (!shader) { return makeError(shader.error()); }
-            auto result = kernels_[i].initialize(device, {.spirv = shader->spirv,
-                .parameters = parameterAbi<StreamActiveBuildParameters>(kStreamActiveBuildABI, ParameterTransport::InlinePush),
-                .debugName = entries[i], .pipelineCache = pipelineCache}, log);
-            if (!result) { return result; }
+        profiling::CPUPhase phase("streamInit.activeShader");
+        Result<> result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamActiveBuildEntryPoint,
+            activeBuildShader_,
+            log);
+        if (!result) {
+            return result;
         }
+
+        phase.next("streamInit.activePipeline");
+        result = device.createComputePipeline(ComputePipelineDesc{
+            .computeShader = {activeBuildShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { activeBuildPipeline_ = std::move(rhiValue); });
+        if (!result || activeBuildPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime active build)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        phase.next("streamInit.cooperativeShader");
+        result = createSlangShaderModule(device, kMeshletStreamShaderModuleName,
+            kMeshletStreamCooperativeBuildEntryPoint, cooperativeShader_, log);
+        if (!result) { return result; }
+        phase.next("streamInit.cooperativePipeline");
+        result = device.createComputePipeline({
+            .computeShader = {cooperativeShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { cooperativePipeline_ = std::move(rhiValue); });
+        if (!result) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime cooperative LOD)", result);
+            return result;
+        }
+        result = createSlangShaderModule(device, kMeshletStreamShaderModuleName,
+            kMeshletStreamDemandEntryPoint, demandShader_, log);
+        if (!result) { return result; }
+        result = device.createComputePipeline({
+            .computeShader = {demandShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { demandPipeline_ = std::move(rhiValue); });
+        if (!result) { return result; }
+        phase.next("streamInit.lodCacheStatus");
+        spdlog::info("[MeshletStreamRuntime] LOD PSO cache enabled={} activeHit={} cooperativeHit={}",
+            pipelineCache != nullptr, activeBuildPipeline_->pipelineCacheHit(), cooperativePipeline_->pipelineCacheHit());
         return {};
     }
 
-    bool ready() const { return kernels_[0].valid() && kernels_[1].valid() && kernels_[2].valid(); }
+    bool ready() const
+    {
+        return activeBuildShader_ != nullptr && activeBuildPipeline_ != nullptr && cooperativePipeline_ != nullptr && demandPipeline_ != nullptr;
+    }
 
     Result<> dispatch(
         CommandBuffer& commandBuffer,
-        const EncodedParameters& parameters,
-        uint32_t phase,
+        BindlessHeap& bindlessHeap,
+        const MeshletStreamUserPush& push,
         uint32_t threadCount,
         Buffer& activeGroupBuffer,
         ResourceState& activeGroupBufferState,
@@ -436,17 +616,18 @@ public:
         if (auto commandResult = transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        const bool cooperative = phase == kMeshletStreamActiveBuildFrontierPhase ||
-            phase == kMeshletStreamActiveBuildEmitPhase ||
-            phase == kMeshletStreamActiveBuildPrefetchPhase ||
-            phase == kMeshletStreamActiveBuildClearPhase ||
-            phase == kMeshletStreamActiveBuildMaskPhase;
-        const bool demand = phase == kMeshletStreamActiveBuildDemandPhase ||
-            phase == kMeshletStreamActiveBuildDemandResetPhase;
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        const bool cooperative = push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildEmitPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildPrefetchPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildClearPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildMaskPhase;
+        const bool demand = push.activeBuildPhase == kMeshletStreamActiveBuildDemandPhase ||
+            push.activeBuildPhase == kMeshletStreamActiveBuildDemandResetPhase;
+        if (auto commandResult = commandBuffer.bindExecution((demand ? *demandPipeline_ : cooperative ? *cooperativePipeline_ : *activeBuildPipeline_).execution()); !commandResult) { return commandResult; }
+        commandBuffer.pushBindlessData(&push, sizeof(push));
         const uint32_t groups = cooperative ? threadCount : threadCount / 64u + (threadCount % 64u != 0u ? 1u : 0u);
-        auto result = kernels_[demand ? 2 : cooperative ? 1 : 0].dispatch(commandBuffer, parameters,
-            std::min(groups, 65535u), (groups + 65534u) / 65535u, 1);
-        if (!result) { return result; }
+        commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1);
         if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
@@ -458,25 +639,51 @@ public:
     }
 
 private:
-    std::array<ComputeKernel, 3> kernels_;
+    std::unique_ptr<ShaderModule> activeBuildShader_;
+    std::unique_ptr<ComputePipeline> activeBuildPipeline_;
+    std::unique_ptr<ShaderModule> cooperativeShader_;
+    std::unique_ptr<ComputePipeline> cooperativePipeline_;
+    std::unique_ptr<ShaderModule> demandShader_;
+    std::unique_ptr<ComputePipeline> demandPipeline_;
 };
 
 class MeshletStreamRuntime::BLASInputPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
-        auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamBLASInputEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, log);
-        if (!shader) { return makeError(shader.error()); }
-        return kernel_.initialize(device, {.spirv = shader->spirv,
-            .parameters = parameterAbi<StreamBLASParameters>(kStreamBLASABI, ParameterTransport::InlinePush),
-            .debugName = kMeshletStreamBLASInputEntryPoint, .pipelineCache = pipelineCache}, log);
+        Result<> result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamBLASInputEntryPoint,
+            blasInputShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = device.createComputePipeline(ComputePipelineDesc{
+            .computeShader = {blasInputShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { blasInputPipeline_ = std::move(rhiValue); });
+        if (!result || blasInputPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime BLAS input)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
     }
-    bool ready() const { return kernel_.valid(); }
+
+    bool ready() const
+    {
+        return blasInputShader_ != nullptr && blasInputPipeline_ != nullptr;
+    }
 
     Result<> dispatch(
         CommandBuffer& commandBuffer,
-        const EncodedParameters& parameters,
+        BindlessHeap& bindlessHeap,
+        const MeshletStreamUserPush& push,
         uint32_t threadCount,
         Buffer& activeGroupBuffer,
         ResourceState& activeGroupBufferState,
@@ -508,8 +715,10 @@ public:
             blasClusterReferenceBuffer,
             blasClusterReferenceBufferState,
             ResourceState::General); !commandResult) { return commandResult; }
-        auto result = kernel_.dispatch(commandBuffer, parameters, (threadCount + 63u) / 64u);
-        if (!result) { return result; }
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        if (auto commandResult = commandBuffer.bindExecution((blasInputPipeline_)->execution()); !commandResult) { return commandResult; }
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
         if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         if (auto commandResult = transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
@@ -525,28 +734,68 @@ public:
     }
 
 private:
-    ComputeKernel kernel_;
+    std::unique_ptr<ShaderModule> blasInputShader_;
+    std::unique_ptr<ComputePipeline> blasInputPipeline_;
 };
 
 class MeshletStreamRuntime::TLASInputPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
-        auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamTLASInputEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, log);
-        if (!shader) { return makeError(shader.error()); }
-        return kernel_.initialize(device, {.spirv = shader->spirv,
-            .parameters = parameterAbi<StreamTLASParameters>(kStreamTLASABI, ParameterTransport::InlinePush),
-            .debugName = kMeshletStreamTLASInputEntryPoint, .pipelineCache = pipelineCache}, log);
+        Result<> result = createSlangShaderModule(
+            device,
+            kMeshletStreamShaderModuleName,
+            kMeshletStreamTLASInputEntryPoint,
+            tlasInputShader_,
+            log);
+        if (!result) {
+            return result;
+        }
+        result = device.createComputePipeline(ComputePipelineDesc{
+            .computeShader = {tlasInputShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { tlasInputPipeline_ = std::move(rhiValue); });
+        if (!result || tlasInputPipeline_ == nullptr) {
+            log += resultMessage("createComputePipeline(MeshletStreamRuntime TLAS input)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+        return {};
     }
-    bool ready() const { return kernel_.valid(); }
-    Result<> dispatch(CommandBuffer& commands, const EncodedParameters& params, uint32_t count)
+
+    bool ready() const
     {
-        if (count == 0) { return {}; }
-        return kernel_.dispatch(commands, params, (count + 63u) / 64u);
+        return tlasInputShader_ != nullptr && tlasInputPipeline_ != nullptr;
     }
+
+    Result<> dispatch(
+        CommandBuffer& commandBuffer,
+        BindlessHeap& bindlessHeap,
+        const MeshletStreamUserPush& push,
+        uint32_t threadCount,
+        Buffer& instanceBlasBuffer,
+        ResourceState& instanceBlasBufferState,
+        Buffer& tlasInstanceBuffer,
+        ResourceState& tlasInstanceBufferState)
+    {
+        if (threadCount == 0) {
+            return {};
+        }
+        if (!ready()) {
+            return makeError(Error::Failure);
+        }
+        commandBuffer.bindBindlessHeap(bindlessHeap);
+        if (auto commandResult = commandBuffer.bindExecution((tlasInputPipeline_)->execution()); !commandResult) { return commandResult; }
+        commandBuffer.pushBindlessData(&push, sizeof(push));
+        commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
+        return {};
+    }
+
 private:
-    ComputeKernel kernel_;
+    std::unique_ptr<ShaderModule> tlasInputShader_;
+    std::unique_ptr<ComputePipeline> tlasInputPipeline_;
 };
 
 MeshletStreamRuntime::MeshletStreamRuntime() = default;
@@ -560,7 +809,6 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 {
     profiling::CPUPhase phase("streamInit.reset");
     reset();
-    device_ = &device;
     log.clear();
 
     phase.next("streamInit.openAsset");
@@ -876,6 +1124,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         log += "Stream page priority buffer exceeds 32-bit word addressing\n";
         return makeError(Error::InvalidArgument);
     }
+    const uint64_t updateByteSize =
+        sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(maxUpdatePatches_) * sizeof(StreamPageTablePatch);
 
     phase.next("streamInit.sceneMetadata");
     result = initializeSceneMetadataBuffers(device, log);
@@ -1597,11 +1847,26 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         return result;
     }
 
+    residentPageFrames_.resize(std::max(desc.queuedFrameCount, 1u));
+    for (ResidentPageFrame& frame : residentPageFrames_) {
+        result = createHostStorageBuffer(
+            device,
+            std::max<uint64_t>(
+                static_cast<uint64_t>(residentPageCapacity_) * sizeof(uint32_t),
+                sizeof(uint32_t)),
+            frame.buffer,
+            log,
+            "MeshletStreamRuntime resident pages");
+        if (!result) {
+            return result;
+        }
+    }
+
     if (uint64_t(desc.rasterMaterialTextureCapacity) + 4u > device.capabilities().maxBindlessSampledImages) {
         log = "Stream raster material textures exceed the device descriptor capacity";
         return makeError(Error::Unsupported);
     }
-    result = device.resourceRegistry().transform([&](auto rhiValue) { registry_ = std::move(rhiValue); });
+    result = metallic::render::ResourceRegistry::forDevice(device).transform([&](auto rhiValue) { registry_ = std::move(rhiValue); });
     if (!result) { return result; }
     result = allocateAndWriteBuffer(*registry_, *pageBuffer_, pageHandle_, log, "meshlet stream pages");
     if (!result) {
@@ -1649,6 +1914,17 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (!result) {
         return result;
     }
+    for (ResidentPageFrame& frame : residentPageFrames_) {
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *frame.buffer,
+            frame.handle,
+            log,
+            "meshlet stream resident pages");
+        if (!result) {
+            return result;
+        }
+    }
     result = allocateAndWriteBuffer(*registry_, *instanceBuffer_, instanceHandle_, log, "meshlet stream instances");
     if (!result) {
         return result;
@@ -1665,6 +1941,16 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (!result) {
         return result;
     }
+    result = allocateAndWriteBuffer(*registry_, *lodTopologyBuffer_, lodTopologyHandle_, log, "meshlet stream LOD topology");
+    if (!result) {
+        return result;
+    }
+    result = allocateAndWriteBuffer(*registry_, *lodStateBuffer_, lodStateHandle_, log, "meshlet stream LOD frontier");
+    if (!result) {
+        return result;
+    }
+    result = allocateAndWriteBuffer(*registry_, *demandBuffer_, demandHandle_, log, "meshlet stream demand");
+    if (!result) { return result; }
     result = allocateAndWriteBuffer(*registry_, *nodeBuffer_, nodeHandle_, log, "meshlet stream hierarchy nodes");
     if (!result) {
         return result;
@@ -1697,11 +1983,94 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         return result;
     }
     if (clasPool_ != nullptr) {
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *clasPool_->clusterAddressBuffer(),
+            clasAddressHandle_,
+            log,
+            "meshlet stream CLAS addresses");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *clasPool_->pageTableBuffer(),
+            clasPageTableHandle_,
+            log,
+            "meshlet stream CLAS page table");
+        if (!result) {
+            return result;
+        }
+    }
+    if (desc.enableClusterRtx) {
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *blasHeaderBuffer_,
+            blasHeaderHandle_,
+            log,
+            "meshlet stream BLAS header");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *instanceBlasBuffer_,
+            instanceBlasHandle_,
+            log,
+            "meshlet stream instance BLAS inputs");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *blasBuildInfoBuffer_,
+            blasBuildInfoHandle_,
+            log,
+            "meshlet stream BLAS build infos");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *blasClusterReferenceBuffer_,
+            blasClusterReferenceHandle_,
+            log,
+            "meshlet stream BLAS cluster references");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *fallbackBlasAddressBuffer_,
+            fallbackBlasAddressHandle_,
+            log,
+            "meshlet stream fallback BLAS addresses");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *blasAddressBuffer_,
+            dynamicBlasAddressHandle_,
+            log,
+            "meshlet stream dynamic BLAS addresses");
+        if (!result) {
+            return result;
+        }
+        result = allocateAndWriteBuffer(
+            *registry_,
+            *tlasInstanceBuffer_,
+            tlasInstanceHandle_,
+            log,
+            "meshlet stream TLAS instances");
+        if (!result) {
+            return result;
+        }
     }
 
     phase.next("streamInit.updatePass");
     updatePass_ = std::make_unique<UpdatePass>();
-    result = updatePass_->initialize(device, log, pipelineCache);
+    result = updatePass_->initialize(device, *registry_, updateByteSize, desc.queuedFrameCount, log, pipelineCache);
     if (!result) {
         return result;
     }
@@ -1746,7 +2115,6 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
 void MeshletStreamRuntime::reset()
 {
-    device_ = nullptr;
     sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     rasterSnapshotFrozen_ = false;
     ++debugGeneration_;
@@ -1776,6 +2144,7 @@ void MeshletStreamRuntime::reset()
     paramsBuffer_.reset();
     visibleClusterBuffer_.reset();
     rasterBindingsBuffer_.reset();
+    residentPageFrames_.clear();
     instanceBuffer_.reset();
     primitiveBuffer_.reset();
     lodLevelBuffer_.reset();
@@ -1785,6 +2154,7 @@ void MeshletStreamRuntime::reset()
     deviceImmutableMetadata_ = false;
     lodStateBuffer_.reset();
     demandBuffer_.reset();
+    demandHandle_ = {};
     demandBufferState_ = ResourceState::Undefined;
     demandTaskOffset_ = 0;
     demandTaskCount_ = 0;
@@ -1850,10 +2220,21 @@ void MeshletStreamRuntime::reset()
     primitiveHandle_ = {};
     lodLevelHandle_ = {};
     groupHandle_ = {};
+    lodTopologyHandle_ = {};
+    lodStateHandle_ = {};
     nodeHandle_ = {};
     drawIndirectHandle_ = {};
     traversalHeaderHandle_ = {};
     traversalWorkHandle_ = {};
+    clasAddressHandle_ = {};
+    clasPageTableHandle_ = {};
+    blasHeaderHandle_ = {};
+    instanceBlasHandle_ = {};
+    blasBuildInfoHandle_ = {};
+    blasClusterReferenceHandle_ = {};
+    fallbackBlasAddressHandle_ = {};
+    dynamicBlasAddressHandle_ = {};
+    tlasInstanceHandle_ = {};
     pageBufferState_ = ResourceState::Undefined;
     activeGroupBufferState_ = ResourceState::Undefined;
     activeHeaderBufferState_ = ResourceState::Undefined;
@@ -1935,13 +2316,13 @@ Result<> MeshletStreamRuntime::prepareImmutableMetadataRead(CommandBuffer& comma
     if (!immutableMetadataUpload_) { return {}; }
     // Retain and wait the timeline even after the loader's CPU wait/reset: a
     // consumer may use a different queue from the initial upload queue.
-    return commandBuffer.addDependency(immutableMetadataUpload_->completion);
+    return addCommandDependency(commandBuffer, immutableMetadataUpload_->completion);
 }
 
 Result<> MeshletStreamRuntime::uploadImmutableMetadata(CommandBuffer& commandBuffer)
 {
     const auto upload = immutableMetadataUpload_;
-    auto* frame = commandBuffer.frameContext();
+    auto* frame = metallic::render::RenderFrameContext::from(commandBuffer);
     if (!upload || !upload->staging || !frame || !frame->recording() || !commandBuffer.recording()) {
         return makeError(Error::InvalidArgument);
     }
@@ -1973,8 +2354,9 @@ Result<> MeshletStreamRuntime::uploadImmutableMetadata(CommandBuffer& commandBuf
 
     auto result = commandBuffer.retainResource(upload);
     if (result) { result = commandBuffer.retainResource(upload->staging->retainAllocation()); }
-    if (result) { result = commandBuffer.retainResource(groupBuffer_->retainAllocation()); }
-    if (result) { result = commandBuffer.retainResource(lodTopologyBuffer_->retainAllocation()); }
+    for (const auto& lease : {groupHandle_, lodTopologyHandle_}) {
+        if (result) { result = registry_->retain(commandBuffer, lease); }
+    }
     if (!result) { return result; }
     const BufferBarrierDesc stagingReady{
         .buffer = upload->staging.get(),
@@ -2160,7 +2542,7 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
 Result<> MeshletStreamRuntime::cmdLoadInitialResources(
     CommandBuffer& commandBuffer, Streamer& streamer, const std::function<Result<>()>& flushUploads)
 {
-    if (!ready() || !commandBuffer.frameContext() || !commandBuffer.frameContext()->recording()) {
+    if (!ready() || !metallic::render::RenderFrameContext::from(commandBuffer) || !metallic::render::RenderFrameContext::from(commandBuffer)->recording()) {
         return makeError(Error::InvalidArgument);
     }
     if (!immutableMetadataReady()) { return uploadImmutableMetadata(commandBuffer); }
@@ -2187,18 +2569,12 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         pageHandle_, activeGroupHandle_, activeHeaderHandle_, pageTableHandle_,
         paramsHandle_, visibleClusterHandle_, rasterBindingsHandle_, requestHandle_,
         instanceHandle_, primitiveHandle_, lodLevelHandle_, groupHandle_,
-        nodeHandle_,
-        drawIndirectHandle_, traversalHeaderHandle_, traversalWorkHandle_}) {
+        lodTopologyHandle_, lodStateHandle_, demandHandle_, nodeHandle_,
+        drawIndirectHandle_, traversalHeaderHandle_, traversalWorkHandle_, clasAddressHandle_,
+        clasPageTableHandle_, blasHeaderHandle_, instanceBlasHandle_, blasBuildInfoHandle_,
+        blasClusterReferenceHandle_, fallbackBlasAddressHandle_, dynamicBlasAddressHandle_, tlasInstanceHandle_}) {
         if (lease.valid()) {
             auto retained = registry_->retain(commandBuffer, lease);
-            if (!retained) { return retained; }
-        }
-    }
-    for (auto* buffer : {fallbackBlasAddressBuffer_.get(), tlasInstanceBuffer_.get(), blasHeaderBuffer_.get(),
-        instanceBlasBuffer_.get(), blasBuildInfoBuffer_.get(), blasClusterReferenceBuffer_.get(), blasAddressBuffer_.get(),
-        clasPool_ ? clasPool_->clusterAddressBuffer() : nullptr, clasPool_ ? clasPool_->pageTableBuffer() : nullptr}) {
-        if (buffer) {
-            auto retained = commandBuffer.retainResource(buffer->retainAllocation());
             if (!retained) { return retained; }
         }
     }
@@ -2209,6 +2585,12 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
             if (!retained) { return retained; }
         }
     }
+    for (const auto& slot : residentPageFrames_) {
+        if (!slot.handle.valid()) { continue; }
+        auto retained = registry_->retain(commandBuffer, slot.handle);
+        if (!retained) { return retained; }
+    }
+
     // Geometry roots are locked; completed root CLAS / accepted fallback BLAS
     // remain valid until reset or an explicit root invalidation. While loading,
     // completion polling below can advance progress, so refresh once per frame.
@@ -2240,7 +2622,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         swapUpload(nextUpload);
         currentUploadSlot_ = uploadSlot;
     }
-    nextUpload.completion = commandBuffer.frameContext() ? commandBuffer.frameContext()->completion() : GPUCompletionPoint{};
+    nextUpload.completion = metallic::render::RenderFrameContext::from(commandBuffer) ? metallic::render::RenderFrameContext::from(commandBuffer)->completion() : GPUCompletionPoint{};
     if (rasterSnapshotFrozen_) {
         // Rotate host-write frame slots, but do not publish completions, consume
         // requests, reclaim pages or enqueue new geometry/CLAS work.
@@ -2298,7 +2680,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         profile.next("Record page copies");
         if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::TransferDestination); !commandResult) { return commandResult; }
         if (flushUploads) { if (auto commandResult = flushUploads(); !commandResult) { return commandResult; } }
-        else { if (auto commandResult = commandBuffer.copyStreamedData(streamer); !commandResult) { return commandResult; } }
+        else { if (auto commandResult = streamer.copyStreamedData(commandBuffer); !commandResult) { return commandResult; } }
         if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead); !commandResult) { return commandResult; }
     }
     profile.next("Queue resident CLAS");
@@ -2309,10 +2691,20 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
     }
     profile.next("Publish resident pages");
     const std::span<const uint32_t> residentPages = residency_.residentPages();
-    if (residentPages.size() > residentPageCapacity_) {
+    if (residentPages.size() > residentPageCapacity_ || residentPageFrames_.empty()) {
         return makeError(Error::Failure);
     }
     currentResidentPageCount_ = static_cast<uint32_t>(residentPages.size());
+    if (!residentPages.empty()) {
+        ResidentPageFrame& residentFrame = residentPageFrames_[frameIndex_ % residentPageFrames_.size()];
+        const Result<> residentUpdate = updateHostBuffer(
+            *residentFrame.buffer,
+            residentPages.data(),
+            static_cast<uint64_t>(residentPages.size()) * sizeof(uint32_t));
+        if (!residentUpdate) {
+            return residentUpdate;
+        }
+    }
     return {};
 }
 
@@ -2541,18 +2933,44 @@ Result<> MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
     return {};
 }
 
-StreamHardwareParameters MeshletStreamRuntime::hardwareParameters(ParameterWriter& writer) const
+MeshletStreamUserPush MeshletStreamRuntime::userPush() const
 {
-    const auto use = [&](const ResourceLease& lease) -> ShaderBuffer {
-        (void)writer.use(lease);
-        return {lease.shaderValue()};
-    };
-    return StreamHardwareParameters{
-        .pageBuffer = use(pageHandle_), .activeGroupBuffer = use(activeGroupHandle_),
-        .pageTableBuffer = use(pageTableHandle_), .settings = writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16),
-        .requestBuffer = use(requestHandle_), .activeHeaderBuffer = use(activeHeaderHandle_),
-        .rasterSettings = writer.data(&rasterBindingsSnapshot_, sizeof(rasterBindingsSnapshot_), 16),
-        .tessellationEdgePixels = 8.0f, .tessellationMaxFactor = 4, .tessellationMaxSplitDepth = 2,
+    return MeshletStreamUserPush{
+        .pageBuffer = pageHandle_.shaderIndex(),
+        .activeGroupBuffer = activeGroupHandle_.shaderIndex(),
+        .pageTableBuffer = pageTableHandle_.shaderIndex(),
+        .paramsBuffer = paramsHandle_.shaderIndex(),
+        .requestBuffer = requestHandle_.shaderIndex(),
+        .residentPageBuffer = !residentPageFrames_.empty()
+            ? residentPageFrames_[frameIndex_ % residentPageFrames_.size()].handle.shaderIndex()
+            : 0u,
+        .updateBuffer = updatePass_ != nullptr ? updatePass_->updateHandle().shaderIndex() : 0u,
+        .activeHeaderBuffer = activeHeaderHandle_.shaderIndex(),
+        .instanceBuffer = instanceHandle_.shaderIndex(),
+        .primitiveBuffer = primitiveHandle_.shaderIndex(),
+        .lodLevelBuffer = lodLevelHandle_.shaderIndex(),
+        .groupBuffer = groupHandle_.shaderIndex(),
+        .nodeBuffer = nodeHandle_.shaderIndex(),
+        .drawIndirectBuffer = drawIndirectHandle_.shaderIndex(),
+        .traversalHeaderBuffer = traversalHeaderHandle_.shaderIndex(),
+        .traversalWorkBuffer = traversalWorkHandle_.shaderIndex(),
+        .clasAddressBuffer = clasAddressHandle_.valid() ? clasAddressHandle_.shaderIndex() : 0u,
+        .clasPageTableBuffer = clasPageTableHandle_.valid() ? clasPageTableHandle_.shaderIndex() : 0u,
+        .blasHeaderBuffer = blasHeaderHandle_.valid() ? blasHeaderHandle_.shaderIndex() : 0u,
+        .instanceBlasBuffer = instanceBlasHandle_.valid() ? instanceBlasHandle_.shaderIndex() : 0u,
+        .blasBuildInfoBuffer = blasBuildInfoHandle_.valid() ? blasBuildInfoHandle_.shaderIndex() : 0u,
+        .blasClusterReferenceBuffer = blasClusterReferenceHandle_.valid()
+            ? blasClusterReferenceHandle_.shaderIndex()
+            : 0u,
+        .fallbackBlasAddressBuffer = fallbackBlasAddressHandle_.valid()
+            ? fallbackBlasAddressHandle_.shaderIndex()
+            : 0u,
+        .dynamicBlasAddressBuffer = dynamicBlasAddressHandle_.valid()
+            ? dynamicBlasAddressHandle_.shaderIndex()
+            : 0u,
+        .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.shaderIndex() : 0u,
+        .rasterBindingsBuffer = rasterBindingsHandle_.shaderIndex(),
+        .clasPublicationRevision = clasPool_ ? uint32_t(clasPool_->stats().publicationRevision) : 0u,
     };
 }
 
@@ -2563,98 +2981,8 @@ Result<> MeshletStreamRuntime::updateRasterBindings(
         return makeError(Error::InvalidArgument);
     }
     MeshletStreamGPURasterBindings resolved = bindings;
-    resolved.visibleClusterBuffer = {visibleClusterHandle_.shaderValue()};
-    updateStreamRasterResourceFlags(resolved);
-    auto result = updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
-    if (result) { rasterBindingsSnapshot_ = resolved; }
-    return result;
-}
-
-Result<> MeshletStreamRuntime::fillSoftwareRasterParameters(ParameterWriter& writer, StreamRasterParameters& params,
-    Buffer* bins, Buffer* pixels, Buffer* instances) const
-{
-    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    params = {
-        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
-        .pages = writer.buffer(pageBuffer_.get()), .groups = writer.buffer(activeGroupBuffer_.get()),
-        .header = writer.buffer(activeHeaderBuffer_.get()), .pageTable = writer.buffer(pageTableBuffer_.get()),
-        .instances = writer.buffer(instances), .bins = writer.buffer(bins),
-        .pixels = pixels ? writer.buffer(pixels) : ShaderBuffer{},
-        .visibleRecordBase = rasterBindingsSnapshot_.visibleRecordBase,
-        .visibleRecordCapacity = rasterBindingsSnapshot_.visibleRecordCapacity,
-        .hasInstances = 1,
-    };
-    return {};
-}
-
-Result<EncodedParameters> MeshletStreamRuntime::encodeSoftwareRaster(ParameterWriter& writer,
-    Buffer* bins, Buffer* pixels, Buffer* instances, std::vector<uint8_t>* settingsSnapshot) const
-{
-    StreamRasterParameters params;
-    auto result = fillSoftwareRasterParameters(writer, params, bins, pixels, instances);
-    if (!result) { return makeError(result.error()); }
-    if (settingsSnapshot) {
-        settingsSnapshot->resize(sizeof(previousFrameParams_));
-        std::memcpy(settingsSnapshot->data(), &previousFrameParams_, sizeof(previousFrameParams_));
-    }
-    return writer.encode(params, kStreamRasterABI, ParameterTransport::InlinePush);
-}
-
-Result<EncodedParameters> MeshletStreamRuntime::encodeSoftwareWorkload(ParameterWriter& writer,
-    Buffer* bins, Buffer* counters, Buffer* instances) const
-{
-    StreamWorkloadParameters params;
-    // Coverage diagnostics never receive or retain the production pixel buffer.
-    auto result = fillSoftwareRasterParameters(writer, params.raster, bins, nullptr, instances);
-    if (!result) { return makeError(result.error()); }
-    params.counters = writer.buffer(counters);
-    return writer.encode(params, kStreamWorkloadABI, ParameterTransport::InlinePush);
-}
-
-Result<> MeshletStreamRuntime::fillClusterCullParameters(ParameterWriter& writer, StreamClusterCullParameters& params) const
-{
-    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    params.settings = writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16);
-    params.rasterSettings = writer.data(&rasterBindingsSnapshot_, sizeof(rasterBindingsSnapshot_), 16);
-    params.pages = writer.buffer(pageBuffer_.get());
-    params.groups = writer.buffer(activeGroupBuffer_.get());
-    params.header = writer.buffer(activeHeaderBuffer_.get());
-    params.pageTable = writer.buffer(pageTableBuffer_.get());
-    params.requests = writer.buffer(requestBuffer_.get());
-    params.records = writer.buffer(visibleClusterBuffer_.get());
-    params.flags = (rasterBindingsSnapshot_.resourceFlags & 3u);
-    return {};
-}
-
-Result<EncodedParameters> MeshletStreamRuntime::encodeClusterClassify(ParameterWriter& writer,
-    Buffer* bins, ShaderDataSpan instances, bool tessellation) const
-{
-    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    const StreamClassifyParameters params{
-        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
-        .groups = writer.dataBuffer(activeGroupBuffer_.get(), sizeof(MeshletStreamGPUActiveGroup), 16),
-        .pages = writer.dataBuffer(pageBuffer_.get(), 4, 4),
-        .instances = instances,
-        .bins = writer.buffer(bins),
-        .tessellationEnabled = tessellation ? 1u : 0u,
-    };
-    return writer.encode(params, kStreamClassifyABI, ParameterTransport::InlinePush);
-}
-
-Result<EncodedParameters> MeshletStreamRuntime::encodeInstanceCull(ParameterWriter& writer,
-    Buffer* visibility, Buffer* visibleIds, Buffer* counter, Buffer* hzb, uint32_t phase) const
-{
-    if (!previousFrameParamsValid_ || phase > 1u) { return makeError(Error::InvalidArgument); }
-    const StreamInstanceCullParameters params{
-        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
-        .instances = writer.dataBuffer(instanceBuffer_.get(), sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
-        .visibility = writer.dataBuffer(visibility, 4, 4), .visibleIds = writer.dataBuffer(visibleIds, 4, 4),
-        .counter = writer.buffer(counter), .hzb = writer.buffer(hzb), .phase = phase,
-        .width = rasterBindingsSnapshot_.width, .height = rasterBindingsSnapshot_.height,
-        .mipCount = rasterBindingsSnapshot_.hzbMipCount, .hzbValid = rasterBindingsSnapshot_.hzbValid,
-        .cullingFlags = rasterBindingsSnapshot_.cullingFlags, .displacementBound = rasterBindingsSnapshot_.displacementBound,
-    };
-    return writer.encode(params, kStreamInstanceCullABI, ParameterTransport::InlinePush);
+    resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex();
+    return updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
 }
 
 Result<> MeshletStreamRuntime::cmdPrepareVisibility(CommandBuffer& commandBuffer)
@@ -2690,18 +3018,6 @@ Result<> MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
         ResourceState::ShaderRead,
         true); !commandResult) { return commandResult; }
     return {};
-}
-
-uint64_t MeshletStreamDeferredGPUResourcesView::encodeRayQuerySnapshot(ParameterWriter& writer) const
-{
-    const StreamSceneParameters params{
-        .pages = writer.dataBuffer(pageBuffer, sizeof(uint32_t), alignof(uint32_t)),
-        .pageTable = writer.dataBuffer(pageTableBuffer, 2 * sizeof(uint32_t), 8),
-        .instances = writer.dataBuffer(instanceBuffer,
-            sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
-        .header = writer.dataBuffer(activeHeaderBuffer, sizeof(uint32_t), alignof(uint32_t)),
-    };
-    return writer.data(&params, sizeof(params), alignof(StreamSceneParameters));
 }
 
 MeshletStreamDeferredGPUResourcesView MeshletStreamRuntime::deferredGpuResources() const
@@ -2869,11 +3185,12 @@ Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint3
     return {};
 }
 
-void MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation) const
+Result<> MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation) const
 {
-    if (ready() && drawTaskCount() > 0 && prepareImmutableMetadataRead(commandBuffer)) {
-        commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGPUDrawIndirect) : 0u);
-    }
+    if (!ready() || drawTaskCount() == 0) { return {}; }
+    auto result = prepareImmutableMetadataRead(commandBuffer);
+    return result ? (*drawIndirectBuffer_).slice({tessellation ? sizeof(MeshletStreamGPUDrawIndirect) : 0u, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.drawMeshTasksIndirect(bufferSlice); })
+                  : result;
 }
 
 uint32_t MeshletStreamRuntime::computeMaxActiveGroups(uint32_t capacity) const
@@ -3238,7 +3555,7 @@ Result<> MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& comman
 
     Result<> result = updatePass_->initializePageTable(
         commandBuffer,
-        *registry_,
+        userPush(),
         asset_.pageCount(),
         *pageTableBuffer_,
         pageTableState_);
@@ -3275,9 +3592,10 @@ Result<> MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffe
     }
     Result<> result = updatePass_->apply(
         commandBuffer,
-        *registry_,
+        userPush(),
         patches,
         maxUpdatePatches_,
+        frameIndex_,
         *pageTableBuffer_,
         pageTableState_);
     if (!result) {
@@ -3319,7 +3637,7 @@ Result<> MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
 Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& commandBuffer)
 {
     Buffer* readback = requestReadbackBuffer_.get();
-    if (auto* frame = commandBuffer.frameContext()) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
         RequestReadback* slot = nullptr;
         for (auto& candidate : requestReadbacks_) {
             if (!candidate.submission || candidate.submission->cancelled() ||
@@ -3367,7 +3685,7 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
     }
-    requestReadbackValid_ = commandBuffer.frameContext() == nullptr;
+    requestReadbackValid_ = metallic::render::RenderFrameContext::from(commandBuffer) == nullptr;
     return {};
 }
 
@@ -3422,10 +3740,14 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
         std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
             std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f)),
         height, frame.displayHeight);
+    params.lodTopologyBuffer = lodTopologyHandle_.shaderIndex();
+    params.lodStateBuffer = lodStateHandle_.shaderIndex();
     const uint64_t threshold = uint64_t(distributedDemandMinGroups_) +
         (currentFrameDistributedDemand_ ? 0u : distributedDemandMinGroups_ / 8u);
     currentFrameDistributedDemand_ = distributedPageDemand_ &&
         (distributedDemandMinGroups_ == 0 || recentDemandGroupTests_ == UINT32_MAX || recentDemandGroupTests_ >= threshold);
+    params.demandBuffer = currentFrameDistributedDemand_ ? demandHandle_.shaderIndex() : UINT32_MAX;
+    params.demandStatsBuffer = distributedPageDemand_ || lodTransitionTelemetry_ ? demandHandle_.shaderIndex() : UINT32_MAX;
     params.demandTaskOffset = demandTaskOffset_;
     params.demandTaskCount = demandTaskCount_;
     params.demandInstanceOffsetsOffset = demandInstanceOffsetsOffset_;
@@ -3524,23 +3846,13 @@ Result<> MeshletStreamRuntime::dispatchTraversal(
     if (traversalPass_ == nullptr || registry_ == nullptr || !traversalPass_->ready()) {
         return makeError(Error::InvalidArgument);
     }
-    if (threadCount == 0) { return {}; }
-    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-    const auto residentPages = residency_.residentPages();
-    const StreamTraversalParameters params{
-        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
-        .instances = writer.dataBuffer(instanceBuffer_.get(), sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
-        .residentPages = {residentPages.empty() ? 0ull : writer.data(residentPages.data(), residentPages.size_bytes(), 4), static_cast<uint32_t>(residentPages.size()), 4},
-        .primitives = writer.buffer(primitiveBuffer_.get()), .groups = writer.buffer(groupBuffer_.get()),
-        .nodes = writer.buffer(nodeBuffer_.get()), .pageTable = writer.buffer(pageTableBuffer_.get()),
-        .requests = writer.buffer(requestBuffer_.get()), .phase = traversalPhase, .threadCount = threadCount,
-    };
-    auto encoded = writer.encode(params, kStreamTraversalABI, ParameterTransport::InlinePush);
-    if (!encoded) { return makeError(encoded.error()); }
+    MeshletStreamUserPush push = userPush();
+    push.traversalPhase = traversalPhase;
+    push.activeBuildPhase = threadCount;
     return traversalPass_->dispatch(
         commandBuffer,
-        *encoded,
+        *registry_->heap(),
+        push,
         threadCount,
         *pageTableBuffer_,
         pageTableState_,
@@ -3554,43 +3866,17 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
         return makeError(Error::InvalidArgument);
     }
 
-    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-    StreamActiveBuildParameters push{
-        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
-        .activeGroupBuffer = writer.buffer(activeGroupBuffer_.get()),
-        .activeHeaderBuffer = writer.buffer(activeHeaderBuffer_.get()),
-        .demandBuffer = writer.buffer(demandBuffer_.get()),
-        .demandStatsBuffer = writer.buffer(demandBuffer_.get()),
-        .drawIndirectBuffer = writer.buffer(drawIndirectBuffer_.get()),
-        .groupBuffer = writer.buffer(groupBuffer_.get()),
-        .instanceBuffer = writer.buffer(instanceBuffer_.get()),
-        .lodLevelBuffer = writer.buffer(lodLevelBuffer_.get()),
-        .lodStateBuffer = writer.buffer(lodStateBuffer_.get()),
-        .lodTopologyBuffer = writer.buffer(lodTopologyBuffer_.get()),
-        .nodeBuffer = writer.buffer(nodeBuffer_.get()),
-        .pageBuffer = writer.buffer(pageBuffer_.get()),
-        .pageTableBuffer = writer.buffer(pageTableBuffer_.get()),
-        .primitiveBuffer = writer.buffer(primitiveBuffer_.get()),
-        .rasterBindingsBuffer = writer.buffer(rasterBindingsBuffer_.get()),
-        .requestBuffer = writer.buffer(requestBuffer_.get()),
-        .traversalHeaderBuffer = writer.buffer(traversalHeaderBuffer_.get()),
-        .traversalWorkBuffer = writer.buffer(traversalWorkBuffer_.get()),
-        .flags = (currentFrameDistributedDemand_ ? 1u : 0u) |
-            ((distributedPageDemand_ || lodTransitionTelemetry_) ? 2u : 0u) | 4u,
-    };
+    MeshletStreamUserPush push = userPush();
     // The diagnostic observation packs a 26-bit frame tag. Reset at its wrap,
     // once per 67 million frames, so an old unvisited group cannot alias history.
     const bool initializeState = lodStateBufferState_ == ResourceState::Undefined ||
         (lodTransitionTelemetry_ && (frameIndex_ & 0x03ffffffu) == 0u);
     if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
     if (distributedPageDemand_ || lodTransitionTelemetry_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
-    const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) -> Result<> {
+    const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) {
         push.activeBuildPhase = phase;
-        auto encoded = writer.encode(push, kStreamActiveBuildABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
         Result<> result = activeBuildPass_->dispatch(
-            commandBuffer, *encoded, phase, threadCount,
+            commandBuffer, *registry_->heap(), push, threadCount,
             *activeGroupBuffer_, activeGroupBufferState_,
             *activeHeaderBuffer_, activeHeaderBufferState_,
             *pageTableBuffer_, pageTableState_, *requestBuffer_, requestBufferState_,
@@ -3675,30 +3961,14 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     commandBuffer.hostWriteBarrier();
     if (auto r = transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true); !r) { return r; }
 
-    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-    StreamBLASParameters push{
-        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
-        .activeGroupBuffer = writer.buffer(activeGroupBuffer_.get()),
-        .activeHeaderBuffer = writer.buffer(activeHeaderBuffer_.get()),
-        .blasBuildInfoBuffer = writer.buffer(blasBuildInfoBuffer_.get()),
-        .blasClusterReferenceBuffer = writer.buffer(blasClusterReferenceBuffer_.get()),
-        .blasHeaderBuffer = writer.buffer(blasHeaderBuffer_.get()),
-        .clasAddressBuffer = writer.buffer(clasPool_->clusterAddressBuffer()),
-        .clasPageTableBuffer = writer.buffer(clasPool_->pageTableBuffer()),
-        .dynamicBlasAddressBuffer = writer.buffer(blasAddressBuffer_.get()),
-        .instanceBlasBuffer = writer.buffer(instanceBlasBuffer_.get()),
-        .scratch = writer.buffer(blasHeaderBuffer_.get()),
-        .clasPublicationRevision = uint32_t(clasPool_->stats().publicationRevision),
-    };
-    auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) -> Result<> {
+    auto dispatchPhase = [this, &commandBuffer](uint32_t phase, uint32_t threadCount) {
+        MeshletStreamUserPush push = userPush();
         push.activeBuildPhase = phase;
         push.traversalPhase = *blasCacheInitialized_ ? 0u : 1u;
-        auto encoded = writer.encode(push, kStreamBLASABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
         return blasInputPass_->dispatch(
             commandBuffer,
-            *encoded,
+            *registry_->heap(),
+            push,
             threadCount,
             *activeGroupBuffer_,
             activeGroupBufferState_,
@@ -3932,19 +4202,16 @@ Result<> MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
         tlasInstanceBuffer_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    ParameterWriter writer(*device_, *registry_, commandBuffer.frameContext());
-    const StreamTLASParameters params{
-        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
-        .instances = writer.dataBuffer(instanceBuffer_.get(), sizeof(MeshletStreamGPUInstance), 16),
-        .blasRecords = writer.dataBuffer(instanceBlasBuffer_.get(), sizeof(MeshletStreamGPUInstanceBLAS), 4),
-        .fallbackAddresses = writer.dataBuffer(fallbackBlasAddressBuffer_.get(), sizeof(uint64_t), 8),
-        .output = writer.dataBuffer(tlasInstanceBuffer_.get(), 64, 16),
-    };
-    auto encoded = writer.encode(params, kStreamTLASABI, ParameterTransport::InlinePush);
-    if (!encoded) { return makeError(encoded.error()); }
     commandBuffer.hostWriteBarrier();
-    return tlasInputPass_->dispatch(commandBuffer, *encoded, asset_.instanceCount());
+    return tlasInputPass_->dispatch(
+        commandBuffer,
+        *registry_->heap(),
+        userPush(),
+        asset_.instanceCount(),
+        *instanceBlasBuffer_,
+        instanceBlasBufferState_,
+        *tlasInstanceBuffer_,
+        tlasInstanceBufferState_);
 }
 
 Result<> MeshletStreamRuntime::cmdBuildTlas(CommandBuffer& commandBuffer)
@@ -4058,15 +4325,15 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profile
 void MeshletStreamRuntime::appendReplayBindings(std::vector<profiling::WorkControlReplayBinding>& bindings) const
 {
     bindings.insert(bindings.end(), {
-        {"pages", pageBuffer_.get()},
-        {"groups", activeGroupBuffer_.get()},
-        {"header", activeHeaderBuffer_.get()},
-        {"pageTable", pageTableBuffer_.get()},
-        {"params", paramsBuffer_.get()},
-        {"rasterBindings", rasterBindingsBuffer_.get()},
-        {"requests", requestBuffer_.get()},
-        {"visibleRecords", visibleClusterBuffer_.get()},
-        {"lodState", lodStateBuffer_.get()},
+        {"pages", pageBuffer_.get(), pageHandle_.shaderIndex()},
+        {"groups", activeGroupBuffer_.get(), activeGroupHandle_.shaderIndex()},
+        {"header", activeHeaderBuffer_.get(), activeHeaderHandle_.shaderIndex()},
+        {"pageTable", pageTableBuffer_.get(), pageTableHandle_.shaderIndex()},
+        {"params", paramsBuffer_.get(), paramsHandle_.shaderIndex()},
+        {"rasterBindings", rasterBindingsBuffer_.get(), rasterBindingsHandle_.shaderIndex()},
+        {"requests", requestBuffer_.get(), UINT32_MAX},
+        {"visibleRecords", visibleClusterBuffer_.get(), UINT32_MAX},
+        {"lodState", lodStateBuffer_.get(), UINT32_MAX},
     });
 }
 

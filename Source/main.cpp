@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ShaderWarmup.h"
+#include "Runtime/Render/Core/RHISmokeTests.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/GAPI/RHI.h"

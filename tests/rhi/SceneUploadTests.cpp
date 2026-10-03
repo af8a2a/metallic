@@ -1,6 +1,7 @@
+#include "TestResourceLayouts.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "SceneUploadProbeParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -156,10 +157,14 @@ public:
         ShaderCompileResult shader;
         UPLOAD_REQUIRE(compileSlangShaderToSpirv({.moduleName = "SceneUploadProbe", .entryPointName = "sceneUploadProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
-        ComputeKernel program;
+        ComputeProgram program;
+        const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::SampledImage}, {1}};
         UPLOAD_REQUIRE(program.initialize(*device, {
             .spirv = shader.spirv,
-            .parameters = parameterAbi<SceneUploadProbeParameters>(kSceneUploadProbeABI, ParameterTransport::InlinePush),
+            .pushConstantSize = 4,
+            .bindings = {layout, 2},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kSceneUploadProbeLayout,
         }, log));
         std::unique_ptr<Buffer> output;
         UPLOAD_REQUIRE(device->createBuffer({.size = kTextureCount * kMipCount * 2u * 16u, .structureStride = 16,
@@ -177,17 +182,19 @@ public:
             ~FrameDrain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
         } frameDrain{frame, *pool};
         UPLOAD_REQUIRE(frame.begin(0));
-        UPLOAD_REQUIRE(commands->begin(&frame));
-        auto registry = device->resourceRegistry();
-        if (!registry) { return RHITestResult::fail(toString(Result<>{std::unexpected(registry.error())})); }
+        UPLOAD_REQUIRE(commands->begin(frame.submissionContext()));
         for (uint32_t index = 0; index < kTextureCount; ++index) {
-            ParameterWriter writer(*device, **registry, &frame);
-            const SceneUploadProbeParameters params{
-                writer.sampledImage(resources.materialTextureViews()[index + 1]),
-                writer.dataBuffer(output.get(), 16, 4), index * kMipCount * 2u, kMipCount};
-            auto encoded = writer.encode(params, kSceneUploadProbeABI, ParameterTransport::InlinePush);
-            if (!encoded) { return RHITestResult::fail(toString(Result<>{std::unexpected(encoded.error())})); }
-            UPLOAD_REQUIRE(program.dispatch(*commands, *encoded, (kMipCount + 7) / 8));
+            const ComputeDispatchBinding bindings[] = {
+                {.binding = 0, .textureViews = {resources.materialTextureViews().data() + index + 1, 1}},
+                {.binding = 1, .buffer = output.get()},
+            };
+            const uint32_t offset = index * kMipCount * 2u;
+            UPLOAD_REQUIRE(program.dispatch({
+                .commandBuffer = commands.get(),
+                .bindings = {bindings, 2},
+                .pushData = &offset,
+                .pushDataSize = 4,
+            }));
         }
         UPLOAD_REQUIRE(commands->end());
         CommandBuffer* submitted[] = {commands.get()};

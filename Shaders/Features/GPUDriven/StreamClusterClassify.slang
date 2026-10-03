@@ -1,5 +1,5 @@
-#include "../../../Source/Runtime/Render/Core/StreamClassifyParameters.h"
-[[vk::push_constant]] ConstantBuffer<StreamClassifyParameters> gStreamClassify;
+import ShaderCore;
+using Metallic;
 
 // Classification consumes only the selected camera, instance transform and
 // the cull pass's prevalidated geometry addresses. Keep the raster ABI unchanged.
@@ -59,9 +59,10 @@ float4 projectStreamClassifyPosition(float3 worldPosition, StreamClassifyDesc c)
     return clip;
 }
 
-float4 streamClassifyClip(StreamClassifyDesc c, uint vertex, StreamClassifyParameters push)
+float4 streamClassifyClip(StreamClassifyDesc c, uint vertex, GPUDrivenStreamAssetPush push)
 {
-    uint* pages = push.pages.data;
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint word = c.positionWord + vertex * c.positionStrideWords;
     float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
     float3 world = c.world0.xyz * local.x + c.world1.xyz * local.y +
@@ -71,17 +72,12 @@ float4 streamClassifyClip(StreamClassifyDesc c, uint vertex, StreamClassifyParam
     return clip;
 }
 
-uint streamClassifyByte(uint* pages, uint address)
+uint3 streamClassifyTriangle(StreamClassifyDesc c, uint triangle, GPUDrivenStreamAssetPush push)
 {
-    return (pages[address / 4u] >> ((address & 3u) * 8u)) & 255u;
-}
-
-uint3 streamClassifyTriangle(StreamClassifyDesc c, uint triangle, StreamClassifyParameters push)
-{
-    uint* pages = push.pages.data;
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint address = c.triangleBaseByte + triangle * 3u;
-    uint3 indices = uint3(streamClassifyByte(pages, address),
-        streamClassifyByte(pages, address + 1u), streamClassifyByte(pages, address + 2u));
+    uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     // Retain the existing malformed-index fallback in the stream HW decoder.
     indices = uint3(indices.x < c.vertexCount ? indices.x : 0u,
         indices.y < c.vertexCount ? indices.y : 0u, indices.z < c.vertexCount ? indices.z : 0u);
@@ -92,22 +88,27 @@ uint3 streamClassifyTriangle(StreamClassifyDesc c, uint triangle, StreamClassify
     return reflected ? indices.xzy : indices;
 }
 
-void classifyStreamCluster(uint3 group, uint lane, StreamClassifyParameters push, bool checkHardware)
+void classifyStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool checkHardware)
 {
-    RWStructuredBuffer<uint> bins = push.bins;
+    RWStructuredBuffer<uint> handle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.hybridClusterBuffer));
+    RWStructuredBuffer<uint> bins = handle;
     uint work = hybridFlatGroup(group);
     if (work >= bins[0]) { return; }
     uint item = hybridStreamClassifyBase(work);
     uint candidate = bins[item];
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
-    if (!push.settings.contains(0u) || push.settings.data == nullptr || bins[13] == 0u ||
-        push.groups.data == nullptr || !push.groups.contains(record / bins[13])) { return; }
-    // P1 cull already diverts coverage and tessellation to hardware.
+    // P1 cull guarantees every queued item is eligible for exact classification.
+    // Only the P0 comparison entry retains the dependent bindings/instance loads.
     if (checkHardware) {
-        uint instanceIndex = push.groups.data[record / bins[13]].gpuSceneInstanceIndex;
-        bool needsCoverage = push.instances.data != nullptr && push.instances.contains(instanceIndex) &&
-            (push.instances.data[instanceIndex].identity.w & 12u) != 0u;
-        if (push.tessellationEnabled != 0u || needsCoverage) {
+        StructuredBuffer<GPUDrivenStreamAssetRasterBindings> raster = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
+        bool needsCoverage = false;
+        if (raster[0].gpuSceneInstanceBuffer != 0xffffffffu) {
+            StructuredBuffer<GPUDrivenStreamAssetActiveGroup> groups = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+            StructuredBuffer<GPUDrivenPreviewInstance> instances = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(raster[0].gpuSceneInstanceBuffer));
+            needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;
+        }
+        if (raster[0].tessellationBuffer != 0xffffffffu || needsCoverage) {
             if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
             return;
         }
@@ -115,8 +116,10 @@ void classifyStreamCluster(uint3 group, uint lane, StreamClassifyParameters push
     // All fields have exactly one writer. The first subgroup spreads the
     // independent loads; the existing group barrier publishes them to all 128 lanes.
     if (lane < WaveGetLaneCount()) {
-        GPUDrivenStreamAssetParams* params = push.settings.data;
-        GPUDrivenStreamAssetActiveGroup* groups = push.groups.data;
+        StructuredBuffer<GPUDrivenStreamAssetParams> params =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
+        StructuredBuffer<GPUDrivenStreamAssetActiveGroup> groups =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
         bool renderCamera = params[0].renderViewport.y > 0.0;
         uint groupIndex = record / bins[13];
         // Also covers subgroups smaller than the number of descriptor fields.
@@ -145,13 +148,6 @@ void classifyStreamCluster(uint3 group, uint lane, StreamClassifyParameters push
         }
     }
     GroupMemoryBarrierWithGroupSync();
-    // Uniform checks precede the barriers and every BDA load.
-    uint64_t positionEnd = uint64_t(g_StreamClassify.positionWord) +
-        uint64_t(g_StreamClassify.vertexCount) * g_StreamClassify.positionStrideWords;
-    uint64_t triangleEnd = uint64_t(g_StreamClassify.triangleBaseByte) + uint64_t(g_StreamClassify.triangleCount) * 3u;
-    if (push.pages.data == nullptr || g_StreamClassify.vertexCount == 0u ||
-        g_StreamClassify.vertexCount > 128u || g_StreamClassify.triangleCount > 128u ||
-        positionEnd > uint64_t(push.pages.length()) || triangleEnd > uint64_t(push.pages.length()) * 4u) { return; }
     if (lane < g_StreamClassify.vertexCount) { g_StreamRasterClip[lane] = streamClassifyClip(g_StreamClassify, lane, push); }
     GroupMemoryBarrierWithGroupSync();
     bool hardware = false;
@@ -169,14 +165,14 @@ void classifyStreamCluster(uint3 group, uint lane, StreamClassifyParameters push
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void streamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    classifyStreamCluster(group, lane, gStreamClassify, false);
+    classifyStreamCluster(group, lane, push, false);
 }
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterBinP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void streamClusterBinP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    classifyStreamCluster(group, lane, gStreamClassify, true);
+    classifyStreamCluster(group, lane, push, true);
 }

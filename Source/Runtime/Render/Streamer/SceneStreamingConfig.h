@@ -1,4 +1,5 @@
 #pragma once
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"

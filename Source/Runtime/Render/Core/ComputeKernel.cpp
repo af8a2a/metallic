@@ -13,19 +13,14 @@ struct ComputeKernel::Impl {
     PreparedExecution execution;
 };
 
-ComputePipeline* ComputeKernel::diagnosticPipeline() const
-{
-    return impl_ ? impl_->pipeline.get() : nullptr;
-}
-
 Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, std::string& log)
 {
     clear();
     log.clear();
     if (desc.spirv.size() < 5 || desc.spirv[0] != 0x07230203u || !desc.parameters.id || !desc.parameters.size || !std::has_single_bit(desc.parameters.alignment) ||
         desc.parameters.alignment > 4096 ||
-        (desc.parameters.transport != ParameterTransport::DeviceAddress && desc.parameters.transport != ParameterTransport::InlinePush) ||
-        (desc.parameters.transport == ParameterTransport::InlinePush && (desc.parameters.size & 3u))) {
+        (desc.parameters.transport != ParameterTransport::DescriptorBuffer && desc.parameters.transport != ParameterTransport::InlinePush) ||
+        (desc.parameters.size & 3u)) {
         return makeError(Error::InvalidArgument);
     }
     for (size_t word = 5; word < desc.spirv.size();) {
@@ -43,7 +38,7 @@ Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc
             .computeShader = {impl->shader.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = desc.parameters.transport == ParameterTransport::InlinePush
-                ? desc.parameters.size : uint32_t(sizeof(uint64_t)),
+                ? desc.parameters.size : uint32_t(sizeof(GPUBufferSpan)),
             .pipelineCache = desc.pipelineCache,
         }).transform([&](auto rhiValue) { impl->pipeline = std::move(rhiValue); });
     }
@@ -121,7 +116,7 @@ Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierD
         const auto& item = impl_->items[i];
         result = item.parameters.bindResources(commands);
         if (!result) { return result; }
-        const uint64_t root = item.parameters.address();
+        const auto root = item.parameters.root();
         const auto bytes = item.parameters.inlineData();
         result = bytes.empty() ? commands.bindExecution(item.execution, &root, sizeof(root))
             : commands.bindExecution(item.execution, bytes.data(), uint32_t(bytes.size()));
@@ -137,33 +132,11 @@ Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierD
     return {};
 }
 
-Result<> ComputeKernel::bind(CommandBuffer& commands, const EncodedParameters& params) const
-{
-    if (!impl_ || !params.compatible(commands, impl_->parameters) || commands.deviceIdentity() != impl_->device) {
-        return makeError(Error::InvalidArgument);
-    }
-    auto result = commands.retainResource(impl_);
-    if (!result) { return result; }
-    result = params.bindResources(commands);
-    if (!result) { return result; }
-    const auto bytes = params.inlineData();
-    const uint64_t root = params.address();
-    return bytes.empty() ? commands.bindExecution(impl_->execution, &root, sizeof(root))
-        : commands.bindExecution(impl_->execution, bytes.data(), uint32_t(bytes.size()));
-}
-
 Result<> ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameters& params,
     uint32_t x, uint32_t y, uint32_t z) const
 {
     auto prepared = prepareDispatch(params, x, y, z);
     return prepared ? prepared->record(commands) : makeError(prepared.error());
-}
-
-Result<> ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
-    Buffer& arguments, uint64_t offset) const
-{
-    auto slice = arguments.slice({offset, 12});
-    return slice ? dispatchIndirect(commands, params, *slice) : makeError(slice.error());
 }
 
 Result<> ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,

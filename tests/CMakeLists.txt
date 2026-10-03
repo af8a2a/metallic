@@ -273,6 +273,7 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html" METALLIC_REP
 configure_file(rhi/harness/HtmlReportTemplate.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/HtmlReportTemplate.h" @ONLY)
 
 add_executable(MetallicRHITests
+    rhi/RHIHandleTests.cpp
     rhi/GeneratedCommandsTests.cpp
     rhi/DebugControlTests.cpp
     rhi/Main.cpp
@@ -521,6 +522,19 @@ if(METALLIC_HAS_DLSS_NR)
         --output-dir "$<TARGET_FILE_DIR:MetallicRHITests>/dlss-nr-output")
     set_tests_properties(MetallicDLSSNRRuntimeTests PROPERTIES LABELS "rhi;dlss-nr" SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
+
+# Pure feature negotiation and property snapshot tests; no Vulkan loader, GPU, or optional SDK required.
+add_executable(MetallicVulkanDeviceFeaturesTests
+    rhi/VulkanDeviceFeaturesTests.cpp
+    rhi/VulkanDevicePropertiesTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceProperties.cpp")
+target_include_directories(MetallicVulkanDeviceFeaturesTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicVulkanDeviceFeaturesTests PRIVATE metallic::volk GTest::gtest_main)
+if(MSVC)
+    target_compile_options(MetallicVulkanDeviceFeaturesTests PRIVATE /EHsc)
+endif()
+add_test(NAME MetallicVulkanDeviceFeaturesTests COMMAND MetallicVulkanDeviceFeaturesTests --gtest_color=no)
+set_tests_properties(MetallicVulkanDeviceFeaturesTests PROPERTIES LABELS "rhi;device" TIMEOUT 30)
 
 # Small host-side tests for callback ownership and loss accounting; no Vulkan device.
 add_executable(MetallicShaderPrintfTests

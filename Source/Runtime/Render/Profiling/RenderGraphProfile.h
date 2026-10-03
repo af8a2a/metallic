@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Streamer/MeshletStreamThroughput.h"
 #include <cstdint>

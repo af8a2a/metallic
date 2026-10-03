@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Debug/DebugTransport.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 
@@ -12,7 +13,7 @@ class RenderSubsystemHost;
 class RenderGraphExecutionContext;
 class GPUSceneSubsystem;
 class MeshletStreamRuntime;
-class ComputeKernel;
+class ComputeProgram;
 struct GPUSceneViewTag;
 template <typename Tag> struct GPUSceneId;
 
@@ -80,7 +81,7 @@ private:
     std::shared_ptr<TaskSink> taskSink_;
     uint64_t taskSubscription_ = 0;
     uint64_t nextSample_ = 1;
-    std::unique_ptr<ComputeKernel> probeProgram_;
+    std::unique_ptr<ComputeProgram> probeProgram_;
 };
 
 std::unordered_map<std::string, debug::DebugTypeDesc> renderDebugLayouts();

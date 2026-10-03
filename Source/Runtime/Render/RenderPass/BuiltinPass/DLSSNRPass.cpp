@@ -1,3 +1,6 @@
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -249,22 +252,22 @@ private:
             properties.value("orientation", "vertical") == "horizontal" ? 1u : 0u,
             properties.value("swapSides", false) ? 1u : 0u,
         };
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
         auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(commands));
         SliderDebugParams params{};
-        params.sourceA = writer.sampledImage(input.view());
-        params.output = writer.storageImage(output.view());
+        params.sourceA = writer.sampledImageHandle(input.view());
+        params.output = writer.storageImageHandle(output.view());
         params.display = push;
         auto encoded = writer.encode(params, kSliderDebugABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }
         return sliderProgram_.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 
-    static void copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)
+    static Result<> copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)
     {
-        command.copyTexture({.source = input.texture(), .destination = output.texture(),
+        return command.copyTexture({.source = input.texture(), .destination = output.texture(),
             .width = output.desc().width, .height = output.desc().height, .depth = 1});
     }
 
@@ -300,7 +303,7 @@ private:
         if (!plan) { return makeError(plan.error()); }
         auto result = recordGraphAccessBarriers(command, plan->passes.front(), bindings);
         if (!result) { return result; }
-        copyColor(command, input, output);
+        if (auto result = copyColor(command, input, output); !result) { return result; }
         return recordGraphAccessBarriers(command, plan->passes.back(), bindings);
     }
 
@@ -309,7 +312,7 @@ private:
         const std::array uses{RenderGraphStageUse{"inputColor", RenderGraphResourceAccess::TextureTransferRead},
             RenderGraphStageUse{"color", RenderGraphResourceAccess::TextureTransferWrite}};
         const std::array stages{RenderGraphStage{"DLSS NR pass through", uses,
-            [&](CommandBuffer& command) -> Result<> { copyColor(command, input, output); return {}; }}};
+            [&](CommandBuffer& command) -> Result<> { return copyColor(command, input, output); }}};
         return context.executeStages(stages);
     }
 

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "harness/Fixtures.h"
@@ -76,7 +77,7 @@ public:
         if (auto retained = context.commandBuffer().retainResource(output.buffer()->retainAllocation()); !retained) {
             return retained;
         }
-        vkCmdFillBuffer(vulkan::nativeCommandBuffer(context.commandBuffer()),
+        vulkan::nativeCommandBufferFunctions(context.commandBuffer()).vkCmdFillBuffer(vulkan::nativeCommandBuffer(context.commandBuffer()),
             vulkan::nativeBuffer(*output.buffer()).buffer, 0, output.buffer()->desc().size,
             bufferAliasPattern(context.frameIndex()));
         return {};
@@ -451,7 +452,7 @@ public:
     RenderGraphBuiltinBufferAliasingTest()
     {
         type = RHITestType::Rendering;
-        name = "render_graph_buffer_aliasing_builtin_bda_shader_chain";
+        name = "render_graph_buffer_aliasing_builtin_bindless_shader_chain";
     }
 
     std::optional<bench::Metadata> metadata() const override
@@ -459,7 +460,7 @@ public:
         return bench::Metadata{.suite = "sync", .profile = "async", .layer = bench::Layer::RenderGraph,
             .requirements = {.validation = bench::Validation::Synchronization,
                 .capabilities = {bench::Capability::Bindless}},
-            .coverage = {"graph.bufferAliasing.builtinShaderChain", "graph.bufferAliasing.noUnneededViews",
+            .coverage = {"graph.bufferAliasing.builtinShaderChain", "graph.bufferAliasing.bindlessViews",
                 "graph.bufferAliasing.deviceAddressAndNativeIdentity", "graph.bufferAliasing.pipelinedFrameReuse"},
             .artifacts = {"buffer-builtin-memory.json", "buffer-builtin-readback.bin"}};
     }
@@ -472,8 +473,8 @@ public:
             return RHITestResult::skip("Builtin buffer shaders require the bindless descriptor heap");
         }
         registerBufferAliasPasses();
-        // These builtins write/copy four bounded BDA words. FullOverwrite
-        // is valid specifically for their fixed 16-byte allocations.
+        // These builtins dispatch one Store4/Load4, so their FullOverwrite
+        // contract is valid specifically for their fixed 16-byte descriptors.
         for (const auto type : {"RenderGraphBufferWritePass", "RenderGraphBufferCopyPass"}) {
             auto pass = createRenderGraphPass(type);
             if (!pass) { return RHITestResult::fail("Builtin buffer pass registration is missing"); }
@@ -483,7 +484,7 @@ public:
                 output->lifetime != RenderGraphResourceLifetime::Transient ||
                 output->initialization != RenderGraphInitialization::FullOverwrite ||
                 output->access != RenderGraphResourceAccess::BufferStorageWrite ||
-                output->bindlessAccess != RenderGraphBindlessAccess::None) {
+                output->bindlessAccess != RenderGraphBindlessAccess::Buffer) {
                 return RHITestResult::fail("Builtin buffer descriptor no longer matches its full 16-byte shader initialization contract");
             }
         }
@@ -513,26 +514,30 @@ public:
         }
         const auto compiledMemory = aliased.bufferMemoryStats();
         auto resources = bench::Json::array();
+        std::vector<uint32_t> descriptorIndices;
         std::vector<VkBuffer> nativeBuffers;
         for (const auto name : {"Write.data", "Copy1.data", "Copy2.data", "Copy3.data"}) {
             const auto* resource = aliased.outputResource(name);
-            if (!resource || !resource->buffer || resource->bufferView ||
+            if (!resource || !resource->buffer || !resource->bufferView ||
                 resource->buffer->desc().size != bytes || resource->buffer->desc().memoryLocation != MemoryLocation::Device ||
-                resource->bindlessHandle.valid() || !resource->buffer->deviceAddress()) {
-                return RHITestResult::fail("BDA alias buffer omitted its address or allocated an unnecessary view/descriptor");
+                resource->bufferView->desc().range.offset || resource->bufferView->desc().range.size != bytes ||
+                !resource->bindlessHandle.valid() || !resource->buffer->deviceAddress()) {
+                return RHITestResult::fail("Deferred alias buffer view creation omitted an exact-size bindless descriptor or valid BDA");
             }
             const auto native = vulkan::nativeBuffer(*resource->buffer);
             if (native.buffer == VK_NULL_HANDLE || native.address != resource->buffer->deviceAddress() ||
+                std::find(descriptorIndices.begin(), descriptorIndices.end(), resource->bindlessHandle.shaderIndex) != descriptorIndices.end() ||
                 std::find(nativeBuffers.begin(), nativeBuffers.end(), native.buffer) != nativeBuffers.end()) {
-                return RHITestResult::fail("Builtin shader aliases conflated native buffer objects");
+                return RHITestResult::fail("Builtin shader aliases conflated native buffer objects or bindless descriptor indices");
             }
+            descriptorIndices.push_back(resource->bindlessHandle.shaderIndex);
             nativeBuffers.push_back(native.buffer);
             const auto memory = resource->buffer->memoryInfo();
             // Device addresses may coincide for overlapping aliases. Native
-            // objects still identify separate resources without descriptor views.
+            // objects and descriptor indices still identify separate resources.
             resources.push_back({{"name", name}, {"deviceAddress", native.address},
-                {"hasDescriptor", resource->bindlessHandle.valid()}, {"allocationId", memory.allocationId},
-                {"backingAllocationId", memory.backingAllocationId}, {"bufferBytes", resource->buffer->desc().size}});
+                {"descriptorIndex", resource->bindlessHandle.shaderIndex}, {"allocationId", memory.allocationId},
+                {"backingAllocationId", memory.backingAllocationId}, {"viewBytes", resource->bufferView->desc().range.size}});
         }
         auto* compute = context.device.getQueue(QueueType::Compute);
         std::vector<Queue*> queues{&context.graphicsQueue};
@@ -572,7 +577,7 @@ public:
                         !readBufferAliasWords(aliased, "Readback.data", actualWords) || actualWords != baselineWords ||
                         actualWords.size() != expectedWords.size() ||
                         !std::equal(actualWords.begin(), actualWords.end(), expectedWords.begin())) {
-                        return RHITestResult::fail("Builtin BDA writer/copy chain changed or corrupted the four-word readback pattern");
+                        return RHITestResult::fail("Builtin bindless Store4/Load4 chain changed or corrupted the four-word readback pattern");
                     }
                     frameCount += 4;
                     configurations.push_back({{"shaderQueue", shaderQueue->sameQueue(context.graphicsQueue) ? "graphics" : "compute"},
@@ -596,7 +601,7 @@ public:
             output.exceptions(std::ios::badbit | std::ios::failbit);
             output << evidence.dump(2) << '\n';
         }
-        return RHITestResult::pass("Builtin Slang writer and three BDA shader copies preserve all four words over " +
+        return RHITestResult::pass("Builtin Slang writer and three bindless shader copies preserve all four words over " +
             std::to_string(frameCount) + " alias frames; four independent VkBuffers/descriptors reuse two compatible backing slots");
     }
 };
@@ -749,7 +754,7 @@ public:
         if (!commands->end()) { return RHITestResult::fail("Cannot finish untracked buffer guard commands"); }
         commands.reset();
         if (!pool->reset() || !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
-            !frame.begin(0) || !commands->begin(&frame) || !executor.execute(*commands) || !commands->end()) {
+            !frame.begin(0) || !commands->begin(frame.submissionContext()) || !executor.execute(*commands) || !commands->end()) {
             return RHITestResult::fail("Cannot record tracked but unsubmitted buffer alias graph");
         }
         const auto recorded = executor.executionSnapshot();
@@ -759,7 +764,7 @@ public:
             return RHITestResult::fail("External buffer alias capture did not remain recorded and unsubmitted");
         }
         if (!pool->createCommandBuffer().transform([&](auto value) { otherCommands = std::move(value); }) ||
-            !otherCommands->begin(&frame)) {
+            !otherCommands->begin(frame.submissionContext())) {
             return RHITestResult::fail("Cannot begin a second buffer external guard probe");
         }
         if (!hasError(executor.execute(*otherCommands), Error::InvalidArgument) ||

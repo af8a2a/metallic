@@ -1,3 +1,5 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -693,7 +695,7 @@ public:
         const bool realtime = setting("METALLIC_MINIZORAH_BENCH_REALTIME", 0) != 0;
         const uint32_t recordingWorkers = setting("METALLIC_MINIZORAH_RECORDING_WORKERS", 0);
         const uint32_t finalHoldFrames = setting("METALLIC_MINIZORAH_BENCH_FINAL_HOLD", 0);
-        if (realtime && !context.device.capabilities().streamlineDlssSr) {
+        if (realtime && !metallic::render::vulkan::deviceCapabilities(context.device).streamlineDlssSr) {
             return RHITestResult::skip("Realtime replay requires --rhi-realtime and DLSS-SR");
         }
         uint32_t frameCount = setting("METALLIC_MINIZORAH_BENCH_FRAMES", 8400);
@@ -843,7 +845,7 @@ public:
             desc.enableAsyncCompute = true;
             // Both configurations use the same enabled device capabilities.
             desc.enableRayTracingAccelerationStructure = true;
-            desc.enablePushDescriptor = true;
+            metallic::render::vulkan::deviceExtensions(desc).enablePushDescriptor = true;
             desc.enableRayQuery = true;
             desc.enableClusterAccelerationStructure = true;
             auto start = Clock::now();

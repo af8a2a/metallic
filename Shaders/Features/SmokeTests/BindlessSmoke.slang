@@ -1,10 +1,14 @@
-#include "../../../Source/Runtime/Render/Core/BindlessSmokeParameters.h"
+import ShaderCore;
 using Metallic;
-[[vk::push_constant]] ConstantBuffer<BindlessSmokeParameters> gBindlessSmoke;
 
 struct BindlessSmokeVertexOutput
 {
     float4 position : SV_Position;
+};
+
+struct SampledImagePush
+{
+    uint sourceImage;
 };
 
 static const float2 kFullscreenTrianglePositions[3] =
@@ -23,8 +27,10 @@ BindlessSmokeVertexOutput bindlessSmokeVertexMain(uint vertexIndex : SV_VertexID
 }
 
 [shader("fragment")]
-float4 bindlessSmokeFragmentMain() : SV_Target0
+float4 bindlessSmokeFragmentMain(uniform SampledImagePush bindless) : SV_Target0
 {
-    Texture2D<float4> source = resolveDescriptor(gBindlessSmoke.sourceImage);
+    Texture2D<float4> sourceHandle =
+        resolveUniform(ResourceHandle<Texture2D<float4>>(bindless.sourceImage));
+    Texture2D<float4> source = sourceHandle;
     return source.Load(int3(0, 0, 0));
 }

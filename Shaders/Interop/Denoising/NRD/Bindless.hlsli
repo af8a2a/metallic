@@ -1,8 +1,25 @@
 #pragma once
 #define NRD_INTERNAL 1
 
-#include "../../../../Source/Runtime/Render/Core/NRDParameters.h"
-[[vk::push_constant]] ConstantBuffer<NRDPushData> gNrdPush;
+// Slots describe algorithm inputs, never Vulkan descriptor bindings. Values are
+// device ResourceRegistry indices and may be anywhere in the native heap.
+struct NRDResourceIndices
+{
+    uint sampled[32];
+    uint storage[16];
+    uint samplers[2];
+};
+
+import ShaderCore;
+
+struct NRDPushData
+{
+    Metallic::BufferSpan<uint> constants;
+    Metallic::BufferSpan<NRDResourceIndices> resources;
+};
+
+import ParameterRoot;
+#define gNrdPush (Metallic::getParameters<NRDPushData>())
 
 #define NRD_CONSTANTS_START(name) struct name {
 #define NRD_TYPE_float4x4 column_major float4x4
@@ -25,3 +42,8 @@
 #define NRD_SAMPLERS_START
 #define NRD_SAMPLER(...)
 #define NRD_SAMPLERS_END
+
+T nrdConstants<T>()
+{
+    return Metallic::resolveUniform(gNrdPush.constants.resource).Load<T>(gNrdPush.constants.byteOffset);
+}

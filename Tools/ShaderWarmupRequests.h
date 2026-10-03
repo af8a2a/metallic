@@ -35,8 +35,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
     add("Features/Debug/LightGridDebug", {"lightGridDebugMain"});
     add("Features/Debug/SliderDebug", {"sliderDebugMain", "sliderDebugOverlayMain"});
     add("Features/Environment/EnvironmentLightingPrecompute", {"environmentLightingPrecomputeMain"});
-    add("Features/GPUDriven/HZB", {"hzbMain"});
-    add("Features/GPUDriven/GPUDrivenCulling", {"gpuDrivenPreviewResetMain", "gpuDrivenPreviewInstanceCullMain"});
+    add("Features/GPUDriven/GPUDrivenCulling", {"gpuDrivenPreviewResetMain", "gpuDrivenPreviewInstanceCullMain", "gpuDrivenPreviewHzbMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkload", {"streamWorkloadResetMain", "streamWorkloadMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkRaster", {"streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"});
     add("Features/GPUDriven/GPUDrivenStreamGroupRaster", {"streamClusterRasterGroup32Main"});
@@ -72,16 +71,16 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
 
     const char* streamModule = "Features/GPUDriven/GPUDrivenStreamAsset";
     add(streamModule, {"gpuDrivenStreamAssetCullResetMain", "gpuDrivenStreamAssetInstanceCullMain",
-         "gpuDrivenStreamAssetTraversalMain",
+        "gpuDrivenStreamAssetHzbMain", "gpuDrivenStreamAssetTraversalMain",
         "streamDistributedDemandMain", "streamCooperativeLodMain",
         "gpuDrivenStreamAssetBuildActiveMain", "gpuDrivenStreamAssetBuildBlasInputMain",
         "gpuDrivenStreamAssetBuildTlasInputMain", "streamClusterPrepareMain",
         "streamClusterCullMain", "streamClusterCullP0Main",
-        "gpuDrivenStreamAssetDeferredMain", "gpuDrivenStreamAssetInitializePageTableMain",
+        "gpuDrivenStreamAssetDeferredMain", "gpuDrivenStreamAssetCompositeVertexMain",
+        "gpuDrivenStreamAssetCompositeFragmentMain", "gpuDrivenStreamAssetInitializePageTableMain",
         "gpuDrivenStreamAssetApplyUpdatesMain", "gpuDrivenStreamAssetFragmentMain",
         "streamClusterRasterMain", "streamClusterRasterLegacyMain",
         "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain"});
-    add("Features/GPUDriven/StreamComposite", {"gpuDrivenStreamAssetCompositeVertexMain", "gpuDrivenStreamAssetCompositeFragmentMain"});
     add(streamModule, {"gpuDrivenStreamAssetMeshMain"}, {"spvMeshShadingEXT"});
     const std::vector<std::string> meshCapabilities{"spvMeshShadingEXT", "spvGroupNonUniformBallot"};
     add(streamModule, {"gpuDrivenStreamAssetMeshMain", "streamTessellationMesh"}, meshCapabilities);
@@ -142,9 +141,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
             if (cacheDefine[0] != '\0') {
                 defines.emplace_back(cacheDefine, "1");
             }
-            add(cacheDefine[0] == '\0' ? "Features/PathTracing/ScenePathTraceInline" :
-                    std::string_view(cacheDefine).starts_with("SHARC") ? "Features/PathTracing/ScenePathTraceSharc" : "Features/PathTracing/ScenePathTraceNRC",
-                {"scenePathTraceMain"}, pathCapabilities, defines, rtxcrPaths);
+            add("Features/PathTracing/ScenePathTrace", {"scenePathTraceMain"}, pathCapabilities, defines, rtxcrPaths);
             if (cacheDefine[0] != '\0') { continue; }
             add("Features/PathTracing/ScenePathTraceGuides", {"scenePathTraceGuidesMain"}, pathCapabilities, defines, rtxcrPaths);
             add("Features/PathTracing/OpenPBRRayQueryPathTrace", {"openPbrRayQueryPathTraceMain"}, pathCapabilities, defines, rtxcrPaths);

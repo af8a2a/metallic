@@ -6,6 +6,43 @@ namespace Metallic.GPUDriven
 // Shared GPUScene ABI for culling, visibility rasterization and material resolve.
 public static const uint kInvalidTextureIndex = 0xffffffffu;
 
+public struct GPUDrivenPreviewPush
+{
+    public uint positionBuffer;
+    public uint meshletBuffer;
+    public uint meshletDrawBuffer;
+    public uint meshletVertexBuffer;
+    public uint meshletTriangleBuffer;
+    public uint paramsBuffer;
+    public uint transformBuffer;
+    public uint instanceBuffer;
+    public uint instanceVisibilityBuffer;
+    public uint visibleInstanceIdsBuffer;
+    public uint visibleInstanceCounterBuffer;
+    public uint visibleMeshletBuffer0;
+    public uint visibleMeshletBuffer1;
+    public uint indirectBuffer0;
+    public uint indirectBuffer1;
+    public uint hzbBuffer0;
+    public uint hzbBuffer1;
+    public uint deferredColorBuffer;
+    public uint depthImage;
+    public uint visibilityImage;
+    public uint passIndex;
+    public uint mipLevel;
+    public uint projectWithCullingCamera;
+    public uint materialBuffer;
+    public uint materialTextureRemapBuffer;
+    public uint environmentImage;
+    public uint environmentSHBuffer;
+    public uint streamDeferredBindingsBuffer;
+    public uint residentRecordCapacity;
+    public uint streamOwnerMaskBuffer;
+    public float tessellationEdgePixels;
+    public uint tessellationMaxFactor;
+    public uint tessellationMaxSplitDepth;
+};
+
 public struct GPUDrivenPreviewVertex
 {
     public float4 position;
@@ -88,13 +125,6 @@ public struct GPUDrivenPreviewTextureInfo
     public float4 transform1;
 };
 
-public struct StreamActiveGroup {
-    uint pageOffset, pageIndex, clusterCount, primitiveIndex;
-    uint lodLevel, materialIndex, mask, flags;
-    uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
-    float4 world0, world1, world2, world3;
-};
-
 public struct GPUDrivenPreviewMaterial
 {
     public float4 baseColor;
@@ -152,17 +182,18 @@ public struct GPUDrivenPreviewParams
     public uint environmentVisible;
     public uint materialCount;
     public uint visibleMeshletCapacity;
-    public uint resourcePadding;
+    public uint lodSelectionBuffer;
     public uint lodSelectionEnabled;
-    public uint tessellationEnabled;
+    public uint tessellationBuffer;
     public float displacementBound;
     public uint2 tessellationPadding;
 };
 
-public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params,
-    DescriptorHandle<StructuredBuffer<uint4>> selections)
+public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
 {
     if (params.lodSelectionEnabled == 0u) { return params.meshletOffset + candidate; }
+    StructuredBuffer<uint4> selections =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(params.lodSelectionBuffer));
     uint count = min(selections[0].x, selections[0].y);
     return candidate < count ? selections[candidate + 1u].z : 0xffffffffu;
 }

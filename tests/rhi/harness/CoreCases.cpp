@@ -1,4 +1,5 @@
-#include "TextureBindingProbeParameters.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Fixtures.h"
 #include "TraceRecorder.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -44,6 +45,70 @@ RHITestResult compare(RHITestContext& context, Buffer& buffer, std::span<const s
     }
     return equal ? RHITestResult::pass() : RHITestResult::fail(prefix + " readback mismatch");
 }
+
+class TextureSliceLifetimeTest final : public RHITest {
+public:
+    TextureSliceLifetimeTest() { type = RHITestType::Command; name = "texture_slice_bounds_and_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto texture = context.device.createTexture({
+            .usage = TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,
+            .format = Format::RGBA8Unorm, .width = 8, .height = 2});
+        auto readback = context.device.createBuffer({.size = 256, .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback});
+        CASE_REQUIRE(texture); CASE_REQUIRE(readback);
+        std::vector<std::byte> expected(256, std::byte{0xa7});
+        if (!writeBuffer(**readback, expected)) { return RHITestResult::fail("readback initialization failed"); }
+        bench::GPUCommands recording(context.graphicsQueue);
+        CASE_REQUIRE(recording.initialize(context.device));
+        auto& commands = *recording.commands;
+        TextureBarrierDesc barrier{.texture = texture->get(), .oldLayout = TextureLayout::Undefined,
+            .newLayout = TextureLayout::TransferDestination,
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+        CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
+        std::weak_ptr<void> uploadAllocation;
+        {
+            auto upload = context.device.createBuffer({.size = 256, .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload});
+            CASE_REQUIRE(upload);
+            std::vector<std::byte> source(256, std::byte{0x33});
+            for (uint32_t i = 0; i < 64; ++i) { source[128 + i] = expected[64 + i] = std::byte(i); }
+            if (!writeBuffer(**upload, source)) { return RHITestResult::fail("upload initialization failed"); }
+            auto slice = (*upload)->slice({128, 64});
+            CASE_REQUIRE(slice);
+            auto shortSlice = slice->subslice({0, 32});
+            CASE_REQUIRE(shortSlice);
+            if (!hasError(commands.copyBufferToTexture({.texture = texture->get(), .buffer = *shortSlice,
+                    .width = 8, .height = 2}), Error::InvalidArgument) ||
+                !hasError(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = *slice,
+                    .width = 8, .height = 2}), Error::InvalidArgument)) {
+                return RHITestResult::fail("copy ignored slice bounds or transfer usage");
+            }
+            uploadAllocation = slice->retainAllocation();
+            CASE_REQUIRE(commands.copyBufferToTexture({.texture = texture->get(), .buffer = *slice,
+                .width = 8, .height = 2}));
+        }
+        if (uploadAllocation.expired()) { return RHITestResult::fail("recording did not retain upload allocation"); }
+        barrier.oldLayout = TextureLayout::TransferDestination;
+        barrier.newLayout = TextureLayout::TransferSource;
+        barrier.before = barrier.after;
+        barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
+        CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
+        auto slice = (*readback)->slice({64, 64});
+        CASE_REQUIRE(slice);
+        auto shortSlice = slice->subslice({0, 32});
+        CASE_REQUIRE(shortSlice);
+        if (!hasError(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = *shortSlice,
+                .width = 8, .height = 2}), Error::InvalidArgument)) {
+            return RHITestResult::fail("readback used backing size instead of slice size");
+        }
+        CASE_REQUIRE(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = *slice,
+            .width = 8, .height = 2}));
+        CASE_REQUIRE(recording.submitAndWait());
+        return compare(context, **readback, expected, "texture-slice");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(TextureSliceLifetimeTest);
 
 class TextureSubresourceCopyTest final : public RHITest {
 public:
@@ -116,23 +181,23 @@ public:
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 3, 0, layers}};
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
             for (const auto& r : regions) {
-                commands.copyBufferToTexture({.buffer = upload->get(), .texture = texture->get(), .bufferOffset = r.offset,
+                CASE_REQUIRE((upload->get())->slice({r.offset}).and_then([&](const auto& bufferSlice) { return commands.copyBufferToTexture({.texture = texture->get(), .buffer = bufferSlice,
                     .bufferRowPitch = r.row, .bufferSlicePitch = r.slice, .width = r.width, .height = r.height,
-                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer});
+                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}); }));
             }
             barrier.oldLayout = TextureLayout::TransferDestination;
             barrier.before = barrier.after;
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-            commands.copyBufferToTexture({.buffer = upload->get(), .texture = texture->get(), .bufferOffset = size,
+            CASE_REQUIRE((upload->get())->slice({size}).and_then([&](const auto& bufferSlice) { return commands.copyBufferToTexture({.texture = texture->get(), .buffer = bufferSlice,
                 .textureOffsetX = 1, .textureOffsetY = 1, .textureOffsetZ = int32_t(targetZ),
-                .width = 3, .height = 2, .depth = 1, .mipLevel = target.mip, .baseLayer = target.layer});
+                .width = 3, .height = 2, .depth = 1, .mipLevel = target.mip, .baseLayer = target.layer}); }));
             barrier.newLayout = TextureLayout::TransferSource;
             barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
             for (const auto& r : regions) {
-                commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .bufferOffset = r.offset,
+                CASE_REQUIRE((readback->get())->slice({r.offset}).and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture->get(), .buffer = bufferSlice,
                     .bufferRowPitch = r.row, .bufferSlicePitch = r.slice, .width = r.width, .height = r.height,
-                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer});
+                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}); }));
             }
             CASE_REQUIRE(recording.submitAndWait());
             const std::string prefix = volume ? "volume" : "array";
@@ -154,7 +219,7 @@ public:
             if (context.trace) {
                 const auto identity = context.trace->textureId(**texture);
                 bool initial = false, toRead = false;
-                const bool unified = context.device.capabilities().unifiedImageLayouts;
+                const bool unified = metallic::render::vulkan::deviceCapabilities(context.device).unifiedImageLayouts;
                 const auto snapshot = context.trace->snapshot();
                 for (const auto& event : snapshot.at("events")) {
                     if (event.at("kind") != "barrier") { continue; }
@@ -193,6 +258,174 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(TextureSubresourceCopyTest);
 
+class TextureLayerCopyTest final : public RHITest {
+public:
+    TextureLayerCopyTest() { type = RHITestType::Command; name = "texture_copy_layer_range_and_mips"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        constexpr uint32_t layers = 5, mipBytes = 4 * 4 * 4, baseBytes = 8 * 8 * 4;
+        const TextureDesc desc{.usage = TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,
+            .format = Format::RGBA8Unorm, .width = 8, .height = 8, .mipCount = 2, .layerCount = layers};
+        auto source = context.device.createTexture(desc), destination = context.device.createTexture(desc);
+        auto upload = context.device.createBuffer({.size = mipBytes * layers, .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload});
+        auto readback = context.device.createBuffer({.size = (baseBytes + mipBytes) * layers,
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback});
+        CASE_REQUIRE(source); CASE_REQUIRE(destination); CASE_REQUIRE(upload); CASE_REQUIRE(readback);
+        std::vector<std::byte> data(mipBytes * layers);
+        for (uint32_t layer = 0; layer < layers; ++layer) {
+            std::fill_n(data.begin() + layer * mipBytes, mipBytes, std::byte(31 + layer));
+        }
+        if (!writeBuffer(**upload, data)) { return RHITestResult::fail("array upload failed"); }
+        auto uploadSlice = (*upload)->slice();
+        auto mipReadback = (*readback)->slice({0, mipBytes * layers});
+        auto baseReadback = (*readback)->slice({mipBytes * layers, baseBytes * layers});
+        CASE_REQUIRE(uploadSlice); CASE_REQUIRE(mipReadback); CASE_REQUIRE(baseReadback);
+        bench::GPUCommands recording(context.graphicsQueue);
+        CASE_REQUIRE(recording.initialize(context.device));
+        auto& commands = *recording.commands;
+        std::array<TextureBarrierDesc, 2> barriers;
+        for (size_t i = 0; i < barriers.size(); ++i) {
+            barriers[i] = {.texture = i == 0 ? source->get() : destination->get(),
+                .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::TransferDestination,
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 2, 0, layers}};
+        }
+        CASE_REQUIRE(commands.synchronize({.textures = barriers}));
+        CASE_REQUIRE(commands.copyBufferToTexture({.texture = source->get(), .buffer = *uploadSlice,
+            .width = 4, .height = 4, .mipLevel = 1, .layerCount = layers}));
+        CASE_REQUIRE(commands.clearColorTexture(**destination, TextureLayout::TransferDestination, {0, 0, 0, 1}));
+        for (auto& barrier : barriers) {
+            barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = barrier.after;
+        }
+        barriers[0].newLayout = TextureLayout::TransferSource;
+        barriers[0].after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
+        CASE_REQUIRE(commands.synchronize({.textures = barriers}));
+        TextureCopyDesc copy{.source = source->get(), .destination = destination->get(), .width = 4, .height = 4,
+            .sourceMipLevel = 1, .sourceBaseLayer = 1, .destinationMipLevel = 1, .destinationBaseLayer = 2, .layerCount = 2};
+        for (uint32_t count : {0u, 4u, UINT32_MAX}) {
+            auto invalid = copy; invalid.layerCount = count;
+            if (!hasError(commands.copyTexture(invalid), Error::InvalidArgument)) {
+                return RHITestResult::fail("out-of-range copy layer count accepted");
+            }
+        }
+        auto invalidSource = copy; invalidSource.sourceBaseLayer = 4;
+        auto invalidDestination = copy; invalidDestination.destinationBaseLayer = UINT32_MAX;
+        auto invalidMip = copy; invalidMip.sourceMipLevel = 2;
+        auto invalidExtent = copy; invalidExtent.width = 8;
+        for (const auto& invalid : {invalidSource, invalidDestination, invalidMip, invalidExtent}) {
+            if (!hasError(commands.copyTexture(invalid), Error::InvalidArgument)) {
+                return RHITestResult::fail("out-of-range copy subresource accepted");
+            }
+        }
+        CASE_REQUIRE(commands.copyTexture(copy));
+        barriers[1].newLayout = TextureLayout::TransferSource;
+        barriers[1].after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
+        CASE_REQUIRE(commands.synchronize({.textures = {&barriers[1], 1}}));
+        CASE_REQUIRE(commands.copyTextureToBuffer({.texture = destination->get(), .buffer = *mipReadback,
+            .width = 4, .height = 4, .mipLevel = 1, .layerCount = layers}));
+        CASE_REQUIRE(commands.copyTextureToBuffer({.texture = destination->get(), .buffer = *baseReadback,
+            .width = 8, .height = 8, .layerCount = layers}));
+        CASE_REQUIRE(recording.submitAndWait());
+        std::vector<std::byte> expected((mipBytes + baseBytes) * layers);
+        for (size_t i = 3; i < expected.size(); i += 4) { expected[i] = std::byte{255}; }
+        for (uint32_t layer = 2; layer < 4; ++layer) {
+            std::copy_n(data.begin() + (layer - 1) * mipBytes, mipBytes, expected.begin() + layer * mipBytes);
+        }
+        return compare(context, **readback, expected, "texture-layer-copy");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(TextureLayerCopyTest);
+
+class MultipleColorAttachmentsTest final : public RHITest {
+public:
+    MultipleColorAttachmentsTest() { type = RHITestType::Rendering; name = "graphics_four_mrt_readback"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::array<std::unique_ptr<ShaderModule>, 3> modules;
+        const char* entries[]{"vertexMain", "fragmentMain", "depthMain"};
+        for (size_t i = 0; i < modules.size(); ++i) {
+            std::string log;
+            auto shader = compileSlangShaderToSpirv({.moduleName = "TestbenchMRT", .entryPointName = entries[i],
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+            if (!shader) { return RHITestResult::fail(log); }
+            auto module = context.device.createShaderModule({.spirv = shader->spirv});
+            CASE_REQUIRE(module); modules[i] = std::move(*module);
+        }
+        GraphicsPipelineDesc desc{.vertexShader = {modules[0].get()}, .fragmentShader = {modules[1].get()},
+            .colorFormats = {Format::RGBA8Unorm, Format::RGBA8Unorm, Format::RGBA8Unorm, Format::RGBA8Unorm},
+            .colorAttachmentCount = 4};
+        for (uint32_t count : {0u, 5u, GraphicsPipelineDesc::kMaxColorAttachments + 1}) {
+            auto invalid = desc; invalid.colorAttachmentCount = count;
+            if (!hasError(context.device.createGraphicsPipeline(invalid), Error::InvalidArgument)) {
+                return RHITestResult::fail("invalid color attachment count or Unknown format accepted");
+            }
+        }
+        auto invalid = desc; invalid.colorFormats[3] = Format::D32Sfloat;
+        if (!hasError(context.device.createGraphicsPipeline(invalid), Error::InvalidArgument)) {
+            return RHITestResult::fail("depth format accepted as color attachment");
+        }
+        auto pipeline = context.device.createGraphicsPipeline(desc);
+        CASE_REQUIRE(pipeline);
+        auto depthOnly = desc;
+        depthOnly.colorAttachmentCount = 0;
+        depthOnly.depthStencilFormat = Format::D32Sfloat;
+        depthOnly.fragmentShader.module = modules[2].get();
+        CASE_REQUIRE(context.device.createGraphicsPipeline(depthOnly));
+        constexpr uint32_t width = 16, height = 8;
+        std::array<std::unique_ptr<Texture>, 4> textures;
+        std::array<std::unique_ptr<TextureView>, 4> views;
+        std::array<std::unique_ptr<Buffer>, 4> readbacks;
+        std::array<TextureBarrierDesc, 4> barriers;
+        std::array<RenderingAttachmentDesc, 4> attachments;
+        for (size_t i = 0; i < textures.size(); ++i) {
+            auto texture = context.device.createTexture({.usage = TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
+                .format = Format::RGBA8Unorm, .width = width, .height = height});
+            CASE_REQUIRE(texture); textures[i] = std::move(*texture);
+            auto view = context.device.createTextureView(*textures[i], {});
+            CASE_REQUIRE(view); views[i] = std::move(*view);
+            auto readback = context.device.createBuffer({.size = width * height * 4,
+                .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback});
+            CASE_REQUIRE(readback); readbacks[i] = std::move(*readback);
+            barriers[i] = {.texture = textures[i].get(), .oldLayout = TextureLayout::Undefined,
+                .newLayout = TextureLayout::ColorAttachment,
+                .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorWrite}};
+            attachments[i] = {.view = views[i].get(), .layout = TextureLayout::ColorAttachment,
+                .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
+        }
+        bench::GPUCommands recording(context.graphicsQueue);
+        CASE_REQUIRE(recording.initialize(context.device));
+        auto& commands = *recording.commands;
+        CASE_REQUIRE(commands.synchronize({.textures = barriers}));
+        CASE_REQUIRE(commands.beginRendering({.renderArea = {0, 0, width, height}, .colorAttachments = attachments}));
+        CASE_REQUIRE(commands.bindExecution((*pipeline)->execution()));
+        CASE_REQUIRE(commands.setViewport({0, 0, float(width), float(height), 0, 1}));
+        commands.setScissor({0, 0, width, height});
+        CASE_REQUIRE(commands.draw(3));
+        commands.endRendering();
+        for (auto& barrier : barriers) {
+            barrier.oldLayout = TextureLayout::ColorAttachment; barrier.newLayout = TextureLayout::TransferSource;
+            barrier.before = barrier.after; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
+        }
+        CASE_REQUIRE(commands.synchronize({.textures = barriers}));
+        for (size_t i = 0; i < textures.size(); ++i) {
+            auto slice = readbacks[i]->slice(); CASE_REQUIRE(slice);
+            CASE_REQUIRE(commands.copyTextureToBuffer({.texture = textures[i].get(), .buffer = *slice,
+                .width = width, .height = height}));
+        }
+        CASE_REQUIRE(recording.submitAndWait());
+        const std::array<std::array<uint8_t, 4>, 4> colors{{{255, 0, 0, 255}, {0, 255, 0, 255},
+            {0, 0, 255, 255}, {255, 255, 0, 255}}};
+        for (size_t i = 0; i < textures.size(); ++i) {
+            std::vector<std::byte> expected(width * height * 4);
+            for (size_t j = 0; j < expected.size(); ++j) { expected[j] = std::byte(colors[i][j % 4]); }
+            auto result = compare(context, *readbacks[i], expected, "mrt" + std::to_string(i));
+            if (!result.passed) { return result; }
+        }
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MultipleColorAttachmentsTest);
+
 class GraphicsExecutionSwitchTest final : public RHITest {
 public:
     GraphicsExecutionSwitchTest() { type = RHITestType::Rendering; name = "graphics_pipeline_shader_object_aba_readback"; }
@@ -218,7 +451,7 @@ public:
             CASE_REQUIRE(module); modules[i] = std::move(*module);
         }
         auto pipeline = context.device.createGraphicsPipeline({.vertexShader = {modules[0].get()},
-            .fragmentShader = {modules[1].get()}, .colorFormat = Format::RGBA8Unorm});
+            .fragmentShader = {modules[1].get()}, .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1});
         auto shaders = context.device.createGraphicsShaderObjectProgram({.vertexShader = {modules[0].get()},
             .fragmentShader = {modules[2].get()}});
         CASE_REQUIRE(pipeline); CASE_REQUIRE(shaders);
@@ -237,20 +470,20 @@ public:
             .newLayout = TextureLayout::ColorAttachment, .before = {},
             .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorWrite}, .range = {0, 1, 0, 1}};
         CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-        RenderingAttachmentDesc attachment{.view = view->get(), .state = ResourceState::ColorAttachment,
+        RenderingAttachmentDesc attachment{.view = view->get(), .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearColor = {0, 0, 0, 1}};
         CASE_REQUIRE(commands.beginRendering({.renderArea = {0, 0, width, height}, .colorAttachments = {&attachment, 1}}));
         for (uint32_t i = 0; i < 3; ++i) {
             CASE_REQUIRE(commands.bindExecution(i == 1 ? (*shaders)->execution() : (*pipeline)->execution()));
-            commands.setViewport({float(i * 13), 0, 13, float(height), 0, 1});
+            CASE_REQUIRE(commands.setViewport({float(i * 13), 0, 13, float(height), 0, 1}));
             commands.setScissor({int32_t(i * 13 + 1), 1, 11, height - 2});
-            commands.draw(3);
+            CASE_REQUIRE(commands.draw(3));
         }
         commands.endRendering();
         barrier.oldLayout = TextureLayout::ColorAttachment; barrier.newLayout = TextureLayout::TransferSource;
         barrier.before = barrier.after; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
         CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-        commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .width = width, .height = height});
+        CASE_REQUIRE((readback->get())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture->get(), .buffer = bufferSlice, .width = width, .height = height}); }));
         CASE_REQUIRE(recording.submitAndWait());
         std::vector<std::byte> expected(width * height * 4);
         for (uint32_t y = 0; y < height; ++y) {
@@ -349,14 +582,16 @@ public:
     }
     RHITestResult run(RHITestContext& context) override
     {
-        using Params = NonuniformTextureParams;
+        struct Params { GPUBufferSpan images; ShaderSampler samplers[2]; ShaderBuffer output; };
+        static_assert(sizeof(Params) == 24);
+        constexpr uint64_t abi = 0x544253414d504c45ull;
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "TestbenchBindings", .entryPointName = "main",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = SlangDescriptorHeapMode::Default}, log);
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return RHITestResult::fail(log); }
         ComputeKernel kernel;
-        CASE_REQUIRE(kernel.initialize(context.device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(kNonuniformTextureABI, ParameterTransport::InlinePush)}, log));
-        auto registry = context.device.resourceRegistry();
+        CASE_REQUIRE(kernel.initialize(context.device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(abi)}, log));
+        auto registry = metallic::render::ResourceRegistry::forDevice(context.device);
         CASE_REQUIRE(registry);
         std::array<std::unique_ptr<Texture>, 2> images;
         std::array<std::unique_ptr<TextureView>, 2> views;
@@ -374,7 +609,7 @@ public:
         TextureView* pointers[]{views[0].get(), views[1].get()};
         const Params params{writer.sampledImages(pointers), {writer.sampler({.minFilter = SamplerFilter::Nearest,
             .magFilter = SamplerFilter::Nearest}), writer.sampler({})}, writer.buffer(output->get())};
-        auto packet = writer.encode(params, kNonuniformTextureABI, ParameterTransport::InlinePush);
+        auto packet = writer.encode(params, abi);
         CASE_REQUIRE(packet);
         for (uint32_t iteration = 0; iteration < 2; ++iteration) {
             std::array<std::byte, 33 * 16> sentinel;
@@ -390,8 +625,8 @@ public:
                     .before = iteration ? SyncScope{PipelineStageBits::ComputeShader, AccessBits::ShaderRead} : SyncScope{},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 1, 0, 1}};
                 CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-                commands.clearColorTexture(*images[i], ResourceState::TransferDestination,
-                    i == iteration ? ColorValue{1, 0, 0, 1} : ColorValue{0, 1, 0, 1});
+                CASE_REQUIRE(commands.clearColorTexture(*images[i], TextureLayout::TransferDestination,
+                    i == iteration ? ColorValue{1, 0, 0, 1} : ColorValue{0, 1, 0, 1}));
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.newLayout = TextureLayout::ShaderRead;
                 barrier.before = barrier.after; barrier.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
                 CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));

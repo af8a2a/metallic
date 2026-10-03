@@ -1,7 +1,8 @@
+#include "TestResourceLayouts.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "UnifiedTopLevelProbeParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -55,14 +56,13 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = context.preparedScene->snapshot->pathTraceResources;
-        device_ = context.device;
         const char* capabilities[]{"spvRayQueryKHR"};
         auto shader = compileSlangShaderToSpirv({.moduleName = "UnifiedTopLevelProbe",
             .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-            .capabilities = capabilities}, log);
+            .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return makeError(shader.error()); }
-        return kernel_.initialize(*context.device, {.spirv = shader->spirv,
-            .parameters = parameterAbi<UnifiedTopLevelProbeParameters>(kUnifiedRayProbeABI, ParameterTransport::InlinePush)}, log);
+        const ComputeProgramBindingDesc bindings[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
+        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
@@ -72,19 +72,13 @@ public:
         if (!sceneResources_ || sceneResources_->accelerationStructure().accelerationStructure() != structure) {
             return makeError(Error::InvalidArgument);
         }
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const UnifiedTopLevelProbeParameters params{writer.accelerationStructure(structure),
-            writer.dataBuffer(context.outputBuffer("observations").buffer(), sizeof(bench::RayObservation), 4)};
-        auto encoded = writer.encode(params, kUnifiedRayProbeABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, 1);
+        const ComputeDispatchBinding bindings[]{{.binding = 0,
+            .accelerationStructure = structure},
+            {.binding = 1, .buffer = context.outputBuffer("observations").buffer()}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
     }
 private:
-    Device* device_ = nullptr;
-    ComputeKernel kernel_;
+    ComputeProgram program_;
     std::shared_ptr<ScenePathTraceResources> sceneResources_;
 };
 

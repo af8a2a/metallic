@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 
 namespace metallic::render {

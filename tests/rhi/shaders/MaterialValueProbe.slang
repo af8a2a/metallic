@@ -1,19 +1,15 @@
-import ShaderCore;
+import Core;
 using Metallic;
 import Material;
 using Metallic.Material;
-#include "../MaterialValueProbeParameters.h"
-[[vk::push_constant]] ConstantBuffer<MaterialValueProbeParameters> gProbe;
-#define METALLIC_LOAD_MATERIAL_VALUE(index) gProbe.instances.data[index]
 #include "MaterialValueDispatch.hlsli"
 
 [shader("compute")]
 [numthreads(4, 1, 1)]
 void materialValueProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    if (!gProbe.instances.contains(id.x) || !gProbe.output.contains(id.x * 25u + 24u)) { return; }
-    MaterialValueInstance instance = gProbe.instances.data[id.x];
-    float* output = gProbe.output.data;
+    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[id.x];
+    RWStructuredBuffer<float> output = resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<SceneResourceParameters>().probeOutput);
     uint cursor = id.x * 25;
     output[cursor++] = float(instance.programId);
     for (uint p = 0; p < 4; ++p) {

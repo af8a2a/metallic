@@ -29,7 +29,7 @@ Y-up 经纬环境图只决定 texel 到方向的映射，不改变这套系数�
 
 ```hlsl
 // From a shader in Shaders/Features/<Feature>/:
-import ShaderCore;
+import Core;
 using Metallic;
 
 SH::L2RGB radianceSH = SH::L2RGB::zero();
@@ -81,8 +81,8 @@ float3 irradiance = environment.evaluate(environmentLocalNormal);
 offset 以 float4 元素计，写入时 w=0。不要把紧凑的 `L2RGB` 直接强转为缓冲区布局。
 
 `EnvironmentLightingPrecompute` 通过类型化投影生成系数，保留原有并行归约与
-逐系数余弦卷积。`OpenPBRDirectLighting`（参考和 VBuffer 延迟路径共用）
-通过辐照度类型读取；环境旋转、强度与 BRDF 归一化位置保持原样。
+逐系数余弦卷积。`OpenPBRDirectLighting`（参考和 VBuffer 延迟路径共用）及
+`VisibilityBufferShading` 通过辐照度类型读取；环境旋转、强度与 BRDF 归一化位置保持原样。
 
 ## 验证
 

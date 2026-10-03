@@ -3,21 +3,26 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-#include "../HybridProbeParameters.h"
+struct ProbePush
+{
+    uint vertices;
+    uint queue;
+    uint doubleSided;
+};
 struct Vertex { float4 position : SV_Position; nointerpolation uint id : TEXCOORD0; };
 [shader("mesh")]
 [numthreads(1, 1, 1)]
 [outputtopology("triangle")]
 void probeMeshMain(uint3 group : SV_GroupID, out vertices Vertex outputVertices[3],
-    out indices uint3 triangles[1], uniform HybridMeshProbeParameters push)
+    out indices uint3 triangles[1], uniform ProbePush push)
 {
-    if (group.x >= push.vertices.length() / 3u) { SetMeshOutputCounts(0, 0); return; }
-    float4* input = push.vertices.data;
+    DescriptorHandle<StructuredBuffer<float4>> input =
+        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.vertices, 0));
     float4 a = input[group.x * 3u];
     float4 b = input[group.x * 3u + 1u];
     float4 c = input[group.x * 3u + 2u];
     bool queued = hybridEnqueueTriangle(a, b, c, group.x + 1u, push.doubleSided != 0,
-        push.queue, push.enabled != 0u);
+        push.queue);
     SetMeshOutputCounts(3, 1);
     outputVertices[0].position = a;
     outputVertices[1].position = b;

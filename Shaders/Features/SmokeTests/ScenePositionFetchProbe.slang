@@ -1,15 +1,16 @@
-#include "../../../Source/Runtime/Render/Core/SceneProbeParameters.h"
+import Core;
 using Metallic;
-[[vk::push_constant]] ConstantBuffer<ScenePositionProbeParameters> gProbePush;
-#define gPathTraceParameters (*gProbePush.resources)
+
 #include "../PathTracing/ScenePathTrace.slang"
-#define gProbeOutput gProbePush.output.data
+
+#define gProbeOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().probeOutput)
+struct ProbePush { float translationX; };
+#define gProbePush getConstants<ProbePush>()
 
 [shader("compute")]
 [numthreads(4, 1, 1)]
 void scenePositionFetchProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= 4u || !gProbePush.output.contains(id.x * 6u + 5u)) { return; }
     // Two indexed triangles, a back-face hit, and a miss. The fixture has a
     // nonuniform object transform, so treating fetched positions as world space
     // or changing the authored normal orientation cannot pass unnoticed.
@@ -35,14 +36,4 @@ void scenePositionFetchProbeMain(uint3 id : SV_DispatchThreadID)
     gProbeOutput[base + 3u] = hit.tangent;
     gProbeOutput[base + 4u] = float4(hit.bitangent, float(hit.triangleIndex));
     gProbeOutput[base + 5u] = float4(hit.texcoord, float(hit.materialIndex), float(hit.instanceIndex));
-    if (id.x == 3u) {
-        PathTraceInstance instance;
-        PathTracePrimitive primitive;
-        uint3 indices;
-        gProbeOutput[base + 5u] = float4(
-            !loadPathTraceTriangle(0xffffffffu, 0u, instance, primitive, indices),
-            !loadPathTraceTriangle(gInstances.length(), 0u, instance, primitive, indices),
-            !loadPathTraceTriangle(0u, 0xffffffffu, instance, primitive, indices),
-            !loadPathTraceTriangle(0u, 0x55555556u, instance, primitive, indices));
-    }
 }

@@ -1,7 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/Core/SampledImageSnapshot.h"
-
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/NeuralTextureResources.h"
 #include "Runtime/Render/SceneShadingVertex.h"
@@ -62,7 +61,7 @@ struct SceneUploadStats {
     std::vector<SceneTextureLoadTiming> slowestTextures;
 };
 
-
+struct ComputeSampledImageSnapshot;
 
 class ScenePathTraceResources final {
 public:
@@ -141,7 +140,7 @@ public:
     std::shared_ptr<MaterialBindingGeneration> materialBinding() const;
     const std::vector<TextureView*>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
-    std::shared_ptr<const SampledImageSnapshot> materialTextureSnapshot() const;
+    std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot() const;
     // Source-image indexed KTX tail selection; non-KTX entries are zero.
     const std::vector<uint32_t>& materialTextureFirstMips() const;
     const NeuralTextureResources& neuralTextures() const;

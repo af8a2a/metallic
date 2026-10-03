@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/MeshletStreamInitialLoader.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -99,7 +100,7 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
         if (!result) { return fail(result, "frame begin (30 s timeout)"); }
         result = commandPool_->reset();
         if (!result) { return fail(result, "command pool reset"); }
-        result = commands_->begin(&frame_);
+        result = commands_->begin(frame_.submissionContext());
         if (!result) { return fail(result, "command buffer begin"); }
         result = uploads_.beginFrame(frame_);
         if (!result) { return fail(result, "upload frame begin"); }

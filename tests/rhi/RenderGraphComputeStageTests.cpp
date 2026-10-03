@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -522,13 +523,13 @@ public:
             const Stage stages[] = {
                 {"CopyInput", copyUses, [&](render::CommandBuffer& commands) -> render::Result<> {
                     ++probe.callbacks;
-                    commands.copyTexture({.source = context.inputTexture("image").texture(), .destination = texture,
-                        .width = 4, .height = 4, .depth = 1});
+                    if (auto commandResult = commands.copyTexture({.source = context.inputTexture("image").texture(), .destination = texture,
+                        .width = 4, .height = 4, .depth = 1}); !commandResult) { return commandResult; }
                     return {};
                 }, Kind::Unsafe},
                 {"Readback", readbackUses, [&](render::CommandBuffer& commands) -> render::Result<> {
                     ++probe.callbacks;
-                    commands.copyTextureToBuffer({.texture = texture, .buffer = data.buffer(), .width = 4, .height = 4});
+                    if (auto commandResult = (data.buffer())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture, .buffer = bufferSlice, .width = 4, .height = 4}); }); !commandResult) { return commandResult; }
                     return {};
                 }, Kind::Unsafe},
             };
@@ -542,13 +543,13 @@ public:
             {"ValidatedPrefix", {}, [&](render::CommandBuffer&) -> render::Result<> { ++probe.callbacks; return {}; }},
             {"Clear", clearUses, [&](render::CommandBuffer& commands) -> render::Result<> {
                 ++probe.callbacks;
-                commands.clearColorTexture(*texture, render::ResourceState::TransferDestination,
-                    render::ColorValue{1.0f, 0.0f, 1.0f, 1.0f});
+                if (auto commandResult = commands.clearColorTexture(*texture, render::TextureLayout::TransferDestination,
+                    render::ColorValue{1.0f, 0.0f, 1.0f, 1.0f}); !commandResult) { return commandResult; }
                 return {};
             }, Kind::Unsafe},
             {"Readback", copyUses, [&](render::CommandBuffer& commands) -> render::Result<> {
                 ++probe.callbacks;
-                commands.copyTextureToBuffer({.texture = texture, .buffer = data.buffer(), .width = 4, .height = 4});
+                if (auto commandResult = (data.buffer())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture, .buffer = bufferSlice, .width = 4, .height = 4}); }); !commandResult) { return commandResult; }
                 return {};
             }, Kind::Unsafe},
         };

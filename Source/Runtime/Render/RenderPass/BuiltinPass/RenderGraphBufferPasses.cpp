@@ -1,4 +1,3 @@
-#include "Runtime/Render/Core/RenderGraphBufferParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -17,7 +16,8 @@ public:
         reflection.addBufferOutput("data", "Known test byte pattern")
             .buffer(kRenderGraphBufferByteSize)
             .storageWrite()
-            .transient(RenderGraphInitialization::FullOverwrite);
+            .transient(RenderGraphInitialization::FullOverwrite)
+            .bindlessBuffer();
         return reflection;
     }
 
@@ -30,43 +30,54 @@ public:
             log = "RenderGraphBufferWritePass requires DeviceCapabilities::bindlessDescriptorHeap";
             return makeError(Error::Unsupported);
         }
-        if (kernel_.valid()) {
+        if (pipeline_ != nullptr) {
             return {};
         }
 
-        device_ = context.device;
-        ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv({.moduleName = kRenderGraphBufferShaderModuleName,
-            .entryPointName = kRenderGraphBufferWriteEntryPoint, .searchPath = kTriangleShaderSearchPath},
-            shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-        if (!result) { log = shader.diagnostics; return result; }
-        return kernel_.initialize(*context.device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<RenderGraphBufferParams>(kRenderGraphBufferABI, ParameterTransport::InlinePush),
-            .debugName = "RenderGraphBuffer"}, log);
+        Result<> result = createSlangShaderModule(
+            *context.device,
+            kRenderGraphBufferShaderModuleName,
+            kRenderGraphBufferWriteEntryPoint,
+            shader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = context.device->createComputePipeline(ComputePipelineDesc{
+            .computeShader = {shader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+        if (!result) {
+            log += resultMessage("createComputePipeline(RenderGraphBufferWritePass)", result);
+            log += '\n';
+        }
+        return result;
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         BufferHandle data = context.outputBuffer("data");
-        if (!data.valid() || !kernel_.valid()) {
+        if (!data.valid() || !data.bindlessHandle().valid() || pipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const RenderGraphBufferParams params{
-            .output = writer.dataBuffer(data.buffer(), 4, 4),
+        const RenderGraphBufferUserPush push{
+            .inputBuffer = 0,
+            .outputBuffer = data.bindlessHandle().shaderIndex,
+            .passIndex = 0,
+            .padding = 0,
         };
-        auto encoded = writer.encode(params, kRenderGraphBufferABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, 1);
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
+        context.commandBuffer().dispatch(1, 1, 1);
+        return {};
     }
 
 private:
-    Device* device_ = nullptr;
-    ComputeKernel kernel_;
+    std::unique_ptr<ShaderModule> shader_;
+    std::unique_ptr<ComputePipeline> pipeline_;
 };
 
 class RenderGraphBufferCopyPass final : public ComputePass {
@@ -80,11 +91,13 @@ public:
         RenderPassReflection reflection;
         reflection.addBufferInput("source", "Source byte buffer")
             .buffer(kRenderGraphBufferByteSize)
-            .storageRead();
+            .storageRead()
+            .bindlessBuffer();
         reflection.addBufferOutput("data", "Copied byte buffer")
             .buffer(kRenderGraphBufferByteSize)
             .storageWrite()
-            .transient(RenderGraphInitialization::FullOverwrite);
+            .transient(RenderGraphInitialization::FullOverwrite)
+            .bindlessBuffer();
         return reflection;
     }
 
@@ -97,19 +110,30 @@ public:
             log = "RenderGraphBufferCopyPass requires DeviceCapabilities::bindlessDescriptorHeap";
             return makeError(Error::Unsupported);
         }
-        if (kernel_.valid()) {
+        if (pipeline_ != nullptr) {
             return {};
         }
 
-        device_ = context.device;
-        ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv({.moduleName = kRenderGraphBufferShaderModuleName,
-            .entryPointName = kRenderGraphBufferCopyEntryPoint, .searchPath = kTriangleShaderSearchPath},
-            shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-        if (!result) { log = shader.diagnostics; return result; }
-        return kernel_.initialize(*context.device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<RenderGraphBufferParams>(kRenderGraphBufferABI, ParameterTransport::InlinePush),
-            .debugName = "RenderGraphBuffer"}, log);
+        Result<> result = createSlangShaderModule(
+            *context.device,
+            kRenderGraphBufferShaderModuleName,
+            kRenderGraphBufferCopyEntryPoint,
+            shader_,
+            log);
+        if (!result) {
+            return result;
+        }
+
+        result = context.device->createComputePipeline(ComputePipelineDesc{
+            .computeShader = {shader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+        if (!result) {
+            log += resultMessage("createComputePipeline(RenderGraphBufferCopyPass)", result);
+            log += '\n';
+        }
+        return result;
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -117,27 +141,28 @@ public:
         BufferHandle source = context.inputBuffer("source");
         BufferHandle data = context.outputBuffer("data");
         if (!source.valid() ||
+            !source.bindlessHandle().valid() ||
             !data.valid() ||
-            !kernel_.valid()) {
+            !data.bindlessHandle().valid() ||
+            pipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const RenderGraphBufferParams params{
-            .source = writer.dataBuffer(source.buffer(), 4, 4),
-            .output = writer.dataBuffer(data.buffer(), 4, 4),
+        const RenderGraphBufferUserPush push{
+            .inputBuffer = source.bindlessHandle().shaderIndex,
+            .outputBuffer = data.bindlessHandle().shaderIndex,
+            .passIndex = 0,
+            .padding = 0,
         };
-        auto encoded = writer.encode(params, kRenderGraphBufferABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        return kernel_.dispatch(commands, *encoded, 1);
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
+        context.commandBuffer().dispatch(1, 1, 1);
+        return {};
     }
 
 private:
-    Device* device_ = nullptr;
-    ComputeKernel kernel_;
+    std::unique_ptr<ShaderModule> shader_;
+    std::unique_ptr<ComputePipeline> pipeline_;
 };
 
 } // namespace

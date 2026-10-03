@@ -9,9 +9,9 @@ using Metallic.Lighting;
 // GPU construction of a grid ReGIR light selector. Each grid cell owns a
 // fixed-size set of RIS light slots, matching the selection flow used by RTXDI.
 
-#define gLocalLightPdf resolveDescriptor(gParams.localLightPdf)
+#define gLocalLightPdf resolveUniform(gParams.localLightPdf)
 
-#define gReGIRData gParams.output.data
+#define gReGIRData gParams.output
 
 static const uint kReGIRHeaderRecordCount = 3u;
 static const uint kReGIRMagic = 0x52454749u;
@@ -111,13 +111,13 @@ void buildReGIRMain(
     float sceneRadius = max(push.sceneCenterRadius.w, 0.01);
     float cellSize = sceneRadius * 2.0 / float(max(push.gridSize, 1u));
     if (lightSlot == 0u) {
-        gReGIRData[0] = uint4(push.gridSize, push.gridSize, push.gridSize, push.lightsPerCell);
-        gReGIRData[1] = asuint(float4(push.sceneCenterRadius.xyz, cellSize));
-        gReGIRData[2] = uint4(
+        gReGIRData.store(0, uint4(push.gridSize, push.gridSize, push.gridSize, push.lightsPerCell));
+        gReGIRData.store(1, asuint(float4(push.sceneCenterRadius.xyz, cellSize)));
+        gReGIRData.store(2, uint4(
             kReGIRMagic,
             push.lightSlotCount,
             asuint(max(push.samplingJitter, 0.0)),
-            push.frameIndex);
+            push.frameIndex));
     }
 
     uint cellIndex = lightSlot / push.lightsPerCell;
@@ -137,14 +137,14 @@ void buildReGIRMain(
     uint selectedLight = 0xffffffffu;
     float selectedTarget = 0.0;
     float weightSum = 0.0;
-    uint lightCount = min(push.lightCount, min(uint(gParams.lights.data[0].positionRange.x), gParams.lights.length() - 1u));
+    uint lightCount = min(push.lightCount, min(uint(gParams.lights[0].positionRange.x), gParams.lights.length() - 1u));
     for (uint sampleIndex = 0u; lightCount > 0u && sampleIndex < push.buildSamples; ++sampleIndex) {
         uint candidateLight;
         float sourcePdf;
         if (!sampleLocalLightPdf(seed, lightCount, candidateLight, sourcePdf)) {
             continue;
         }
-        GPUPunctualLight light = gParams.lights.data[candidateLight + 1u];
+        GPUPunctualLight light = gParams.lights[candidateLight + 1u];
         float target = punctualLightTargetForVolume(light, cellCenter, cellRadius);
         float candidateWeight = target / (sourcePdf * float(push.buildSamples));
         if (!(candidateWeight > 0.0) || !isfinite(candidateWeight)) { continue; }
@@ -158,9 +158,9 @@ void buildReGIRMain(
     float inverseSourcePdf = selectedTarget > 0.0
         ? weightSum / selectedTarget
         : 0.0;
-    gReGIRData[kReGIRHeaderRecordCount + lightSlot] = uint4(
+    gReGIRData.store(kReGIRHeaderRecordCount + lightSlot, uint4(
         selectedLight,
         asuint(inverseSourcePdf),
         0u,
-        0u);
+        0u));
 }

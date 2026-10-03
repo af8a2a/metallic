@@ -1,26 +1,29 @@
+import ShaderCore;
+using Metallic;
+
 // Diagnostic replay only. No visibility/depth writes and no changes to production
 // raster kernels. Counts coverage and attempted pixel atomics, not winning writes.
 #include "GPUDrivenStreamAsset.slang"
 
 #include "StreamRasterWorkload.slang"
-#include "../../../Source/Runtime/Render/Core/StreamWorkloadParameters.h"
-[[vk::push_constant]] ConstantBuffer<StreamWorkloadParameters> gStreamWorkload;
 
 [shader("compute")]
 [numthreads(16, 1, 1)]
-void streamWorkloadResetMain(uint lane : SV_GroupIndex)
+void streamWorkloadResetMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    let counters = gStreamWorkload.counters;
+    RWStructuredBuffer<uint64_t> counters =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint64_t>>(push.hybridQueueBuffer));
     counters[lane] = 0;
 }
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    StreamRasterParameters push = gStreamWorkload.raster;
-    let bins = push.bins;
-    let handle = gStreamWorkload.counters;
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
+    RWStructuredBuffer<uint64_t> handle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint64_t>>(push.hybridQueueBuffer));
     RWStructuredBuffer<uint64_t> counters = handle;
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
@@ -34,14 +37,14 @@ void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         return;
     }
     if (lane < g_StreamSoftware.vertexCount) {
-        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push.pages), float2(bins[6], bins[7]), bins[10]);
+        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push), float2(bins[6], bins[7]), bins[10]);
         g_StreamRasterWords[lane] = uint4(uint2(vertex.position), asuint(vertex.depth), 0);
     }
     GroupMemoryBarrierWithGroupSync();
     uint64_t4 work = uint64_t4(0);
     bool active = lane < g_StreamSoftware.triangleCount;
     if (active) {
-        uint3 tri = streamSoftwareTriangle(lane, push.pages);
+        uint3 tri = streamSoftwareTriangle(lane, push);
         work = workloadTriangle(asint(g_StreamRasterWords[tri.x].xy), asint(g_StreamRasterWords[tri.y].xy),
             asint(g_StreamRasterWords[tri.z].xy), (g_StreamSoftware.instanceFlags & 2u) != 0,
             bins[6], bins[7], bins[10]);

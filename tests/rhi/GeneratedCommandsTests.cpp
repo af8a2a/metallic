@@ -39,6 +39,25 @@ TEST(DeviceGeneratedCommands, IndirectBindingChangesPipelineHash)
     EXPECT_NE(graphicsHash, render::detail::graphicsPipelineStateHash(graphics));
 }
 
+TEST(PipelineStateHash, ColorAttachmentArray)
+{
+    render::GraphicsPipelineDesc desc{.colorFormats = {render::Format::RGBA8Unorm, render::Format::R32Uint,
+        render::Format::RGBA16Sfloat, render::Format::RGBA32Sfloat}, .colorAttachmentCount = 4};
+    const auto hash = render::detail::graphicsPipelineStateHash(desc);
+    auto changed = desc;
+    changed.colorFormats[3] = render::Format::RGBA8Unorm;
+    EXPECT_NE(hash, render::detail::graphicsPipelineStateHash(changed));
+    changed = desc;
+    std::swap(changed.colorFormats[0], changed.colorFormats[1]);
+    EXPECT_NE(hash, render::detail::graphicsPipelineStateHash(changed));
+    changed = desc;
+    changed.colorAttachmentCount = 3;
+    EXPECT_NE(hash, render::detail::graphicsPipelineStateHash(changed));
+    changed = desc;
+    changed.colorFormats[7] = render::Format::R32Uint;
+    EXPECT_EQ(hash, render::detail::graphicsPipelineStateHash(changed));
+}
+
 TEST(DeviceGeneratedCommands, ProbeShaderCompiles)
 {
     render::ShaderCompileResult shader;
@@ -50,6 +69,7 @@ TEST(DeviceGeneratedCommands, ProbeShaderCompiles)
 
 struct ProbeResources {
     VkDevice device;
+    const VolkDeviceTable& functions;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -59,12 +79,12 @@ struct ProbeResources {
     ~ProbeResources()
     {
         // Also protect cleanup after a failed submission/wait assertion.
-        vkDeviceWaitIdle(device);
-        for (auto pipeline : pipelines) { if (pipeline) { vkDestroyPipeline(device, pipeline, nullptr); } }
-        for (auto shader : shaders) { if (shader) { vkDestroyShaderModule(device, shader, nullptr); } }
-        if (layout) { vkDestroyPipelineLayout(device, layout, nullptr); }
-        if (pool) { vkDestroyDescriptorPool(device, pool, nullptr); }
-        if (setLayout) { vkDestroyDescriptorSetLayout(device, setLayout, nullptr); }
+        functions.vkDeviceWaitIdle(device);
+        for (auto pipeline : pipelines) { if (pipeline) { functions.vkDestroyPipeline(device, pipeline, nullptr); } }
+        for (auto shader : shaders) { if (shader) { functions.vkDestroyShaderModule(device, shader, nullptr); } }
+        if (layout) { functions.vkDestroyPipelineLayout(device, layout, nullptr); }
+        if (pool) { functions.vkDestroyDescriptorPool(device, pool, nullptr); }
+        if (setLayout) { functions.vkDestroyDescriptorSetLayout(device, setLayout, nullptr); }
     }
 };
 
@@ -93,18 +113,18 @@ public:
             return RHITestResult::skip("DGC compute pipeline binding unsupported");
         }
         const auto native = rv::nativeDevice(device);
-        ProbeResources resources{native.device};
+        ProbeResources resources{native.device, *native.functions};
 #define DGC_VK(expr) if ((expr) != VK_SUCCESS) { return RHITestResult::fail(#expr); }
 #define DGC_RHI(expr) if (!(expr)) { return RHITestResult::fail(#expr); }
         const VkDescriptorSetLayoutBinding binding{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
         const VkDescriptorSetLayoutCreateInfo setInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .bindingCount = 1, .pBindings = &binding};
-        DGC_VK(vkCreateDescriptorSetLayout(native.device, &setInfo, nullptr, &resources.setLayout));
+        DGC_VK(native.functions->vkCreateDescriptorSetLayout(native.device, &setInfo, nullptr, &resources.setLayout));
         const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
         const VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             .setLayoutCount = 1, .pSetLayouts = &resources.setLayout, .pushConstantRangeCount = 1, .pPushConstantRanges = &push};
-        DGC_VK(vkCreatePipelineLayout(native.device, &layoutInfo, nullptr, &resources.layout));
+        DGC_VK(native.functions->vkCreatePipelineLayout(native.device, &layoutInfo, nullptr, &resources.layout));
         for (uint32_t i = 0; i < 2; ++i) {
             const render::SlangMacroDefine macro{"DGC_ADD", i ? "1000" : "0"};
             render::ShaderCompileResult shader;
@@ -116,14 +136,14 @@ public:
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             const VkShaderModuleCreateInfo shaderInfo{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                 .codeSize = shader.spirv.size() * 4, .pCode = shader.spirv.data()};
-            DGC_VK(vkCreateShaderModule(native.device, &shaderInfo, nullptr, &resources.shaders[i]));
+            DGC_VK(native.functions->vkCreateShaderModule(native.device, &shaderInfo, nullptr, &resources.shaders[i]));
             const VkPipelineCreateFlags2CreateInfo flags{.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
                 .flags = useGenerated ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0u};
             const VkComputePipelineCreateInfo pipelineInfo{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                 .pNext = &flags, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                     .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = resources.shaders[i], .pName = "main"},
                 .layout = resources.layout};
-            DGC_VK(vkCreateComputePipelines(native.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &resources.pipelines[i]));
+            DGC_VK(native.functions->vkCreateComputePipelines(native.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &resources.pipelines[i]));
         }
         std::unique_ptr<render::Buffer> output, arguments;
         DGC_RHI(device.createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
@@ -133,15 +153,15 @@ public:
         const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
         const VkDescriptorPoolCreateInfo poolInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &poolSize};
-        DGC_VK(vkCreateDescriptorPool(native.device, &poolInfo, nullptr, &resources.pool));
+        DGC_VK(native.functions->vkCreateDescriptorPool(native.device, &poolInfo, nullptr, &resources.pool));
         VkDescriptorSet set = VK_NULL_HANDLE;
         const VkDescriptorSetAllocateInfo setAllocation{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .descriptorPool = resources.pool, .descriptorSetCount = 1, .pSetLayouts = &resources.setLayout};
-        DGC_VK(vkAllocateDescriptorSets(native.device, &setAllocation, &set));
+        DGC_VK(native.functions->vkAllocateDescriptorSets(native.device, &setAllocation, &set));
         const VkDescriptorBufferInfo bufferInfo{rv::nativeBuffer(*output).buffer, 0, 16};
         const VkWriteDescriptorSet write{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
             .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bufferInfo};
-        vkUpdateDescriptorSets(native.device, 1, &write, 0, nullptr);
+        native.functions->vkUpdateDescriptorSets(native.device, 1, &write, 0, nullptr);
 
         std::vector<uint32_t> observations;
         // Exercise fixed state, pipeline switching, and explicit preprocessing.
@@ -192,8 +212,8 @@ public:
             struct Drain { render::Queue& queue; ~Drain() { (void)queue.waitIdle(); } } drain{context.graphicsQueue};
             DGC_RHI(commands->begin());
             const auto cmd = rv::nativeCommandBuffer(*commands);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
+            native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
+            native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
             const rv::GeneratedCommandsArguments args{.commands = arguments.get(), .offset = 8, .sequenceCount = 3,
                 .countBuffer = arguments.get()};
             if (useGenerated) {
@@ -209,23 +229,23 @@ public:
                 DGC_RHI(generated.execute(*commands, args, mode == 2));
             } else {
                 for (uint32_t index = 0; index < 2; ++index) {
-                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[mode && index ? 1 : 0]);
+                    native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[mode && index ? 1 : 0]);
                     const uint32_t pushValues[]{index, index ? 9u : 7u};
-                    vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushValues), pushValues);
-                    vkCmdDispatch(cmd, 1, 1, 1);
+                    native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushValues), pushValues);
+                    native.functions->vkCmdDispatch(cmd, 1, 1, 1);
                 }
             }
             // Generated execution invalidates native binding state; explicitly establish all state again.
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
+            native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
+            native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
             const uint32_t rebound[]{3, 777};
-            vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(rebound), rebound);
-            vkCmdDispatch(cmd, 1, 1, 1);
+            native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(rebound), rebound);
+            native.functions->vkCmdDispatch(cmd, 1, 1, 1);
             const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                 .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
                 .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
             const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-            vkCmdPipelineBarrier2(cmd, &dependency);
+            native.functions->vkCmdPipelineBarrier2(cmd, &dependency);
             DGC_RHI(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
             DGC_RHI(context.graphicsQueue.submit({.commandBuffers = {submitted, 1}, .signalFence = fence.get()}));

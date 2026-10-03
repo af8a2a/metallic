@@ -1,8 +1,6 @@
-#include "Runtime/Render/Core/HZBSPDParameters.h"
-#include "Runtime/Render/Core/HZBParameters.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "HZBFixtureParameters.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/HZBSPD.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -47,27 +45,20 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
-        device_ = context.device;
         render::ShaderCompileResult shader;
-        const render::SlangMacroDefine finiteFixture{"METALLIC_HZB_FIXTURE_FINITE",
-            properties().value("streamInline", false) ? "1" : "0"};
         auto result = render::compileSlangShaderToSpirv({.moduleName = "HZBSPDFixture",
-            .entryPointName = "hzbSpdFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-            .macroDefines = {&finiteFixture, 1}}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+            .entryPointName = "hzbSpdFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
+        const render::ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage}, {.binding = 1}};
         result = fixture_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .parameters = render::parameterAbi<HZBFixtureParameters>(kHZBFixtureABI, render::ParameterTransport::InlinePush),
+            .pushConstantSize = 16,
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kHZBSPDFixtureLayout,
         }, log);
         if (!result) { return result; }
-        if (properties().value("streamInline", false)) {
-            auto compiled = render::compileSlangShaderToSpirv({.moduleName = render::kHZBModule,
-                .entryPointName = render::kHZBEntryPoint, .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log);
-            if (!compiled) { return render::makeError(compiled.error()); }
-            return streamKernel_.initialize(*context.device, {.spirv = compiled->spirv,
-                .parameters = render::parameterAbi<render::HZBParameters>(render::kHZBABI,
-                    render::ParameterTransport::InlinePush)}, log);
-        }
         const render::SlangMacroDefine waveDefine{render::kHZBSPDWaveOpsDefine,
             properties().value("waveOps", true) ? "1" : "0"};
         result = render::compileSlangShaderToSpirv({
@@ -83,27 +74,38 @@ public:
             log = "SPD wave operations require SPIR-V 1.6";
             return render::makeError(render::Error::Failure);
         }
-        return spdKernel_.initialize(*context.device, {.spirv = shader.spirv,
-            .parameters = render::parameterAbi<render::HZBSPDParameters>(render::kHZBSPDABI,
-                render::ParameterTransport::InlinePush)}, log);
+        result = context.device->createShaderModule({.spirv = shader.spirv}).transform([&](auto rhiValue) { shader_ = std::move(rhiValue); });
+        if (!result) { return result; }
+        result = context.device->createComputePipeline({
+            .computeShader = {shader_.get()},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(render::HZBSPDUserPush),
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+        if (!result) { return result; }
+        result = context.device->createBindlessHeap({.maxSampledImages = 1, .maxBuffers = 2}).transform([&](auto rhiValue) { heap_ = std::move(rhiValue); });
+        if (result) { result = heap_->allocate(metallic::render::BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { depth_ = std::move(rhiValue); }); }
+        if (result) { result = heap_->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { data_ = std::move(rhiValue); }); }
+        if (result) { result = heap_->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { counter_ = std::move(rhiValue); }); }
+        return result;
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const uint32_t seed = uint32_t(context.frameIndex());
         const uint32_t reversed = context.properties().value("reversedZ", true) ? 1u : 0u;
+        uint32_t constants[] = {context.width(), context.height(), seed, reversed};
         const auto depth = context.outputTexture("depth");
         auto* data = context.outputBuffer("data").buffer();
         auto* counter = context.outputBuffer("counter").buffer();
-        auto fixtureRegistry = device_->resourceRegistry();
-        if (!fixtureRegistry) { return render::makeError(fixtureRegistry.error()); }
-        render::ParameterWriter fixtureWriter(*device_, **fixtureRegistry, context.commandBuffer().frameContext());
-        const HZBFixtureParameters fixtureParams{
-            fixtureWriter.storageImage(depth.view()), fixtureWriter.dataBuffer(counter, 4, 4),
-            context.width(), context.height(), seed, reversed};
-        auto fixtureEncoded = fixtureWriter.encode(fixtureParams, kHZBFixtureABI, render::ParameterTransport::InlinePush);
-        if (!fixtureEncoded) { return render::makeError(fixtureEncoded.error()); }
-        auto result = fixture_.dispatch(context.commandBuffer(), *fixtureEncoded,
-            (context.width() + 7) / 8, (context.height() + 7) / 8);
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .textureView = depth.view()}, {.binding = 1, .buffer = counter}};
+        auto result = fixture_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, 2},
+            .pushData = constants,
+            .pushDataSize = sizeof(constants),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
         if (!result) { return result; }
         render::TextureBarrierDesc depthBarrier{
             .texture = depth.texture(),
@@ -118,70 +120,34 @@ public:
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
         if (auto commandResult = context.commandBuffer().synchronize({.textures = {&depthBarrier, 1}, .buffers = {&counterBarrier, 1}}); !commandResult) { return commandResult; }
-        if (properties().value("streamInline", false)) {
-            auto registry = device_->resourceRegistry();
-            if (!registry) { return render::makeError(registry.error()); }
-            std::vector<render::PreparedComputeDispatch> dispatches;
-            uint32_t width = context.width(), height = context.height();
-            uint32_t sourceWidth = width, sourceHeight = height, sourceOffset = 0, offset = 0, mip = 0;
-            for (;;) {
-                render::ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
-                const render::HZBParameters params{
-                    .hzb = writer.dataBuffer(data, 4, 4), .depth = writer.sampledImage(depth.view()),
-                    .width = width, .height = height, .sourceWidth = sourceWidth, .sourceHeight = sourceHeight,
-                    .sourceOffset = sourceOffset, .destinationOffset = offset, .reversedZ = reversed, .mipLevel = mip};
-                auto encoded = writer.encode(params, render::kHZBABI, render::ParameterTransport::InlinePush);
-                if (!encoded) { return render::makeError(encoded.error()); }
-                auto dispatch = streamKernel_.prepareDispatch(*encoded, (width + 7) / 8, (height + 7) / 8);
-                if (!dispatch) { return render::makeError(dispatch.error()); }
-                dispatches.push_back(std::move(*dispatch));
-                if (width == 1 && height == 1) { break; }
-                sourceWidth = width; sourceHeight = height; sourceOffset = offset;
-                offset += width * height;
-                width = (width + 1) / 2; height = (height + 1) / 2; ++mip;
-            }
-            const render::MemoryBarrierDesc between{
-                {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
-                {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderRead | render::AccessBits::ShaderWrite}};
-            for (const auto& dispatch : dispatches) {
-                result = context.commandBuffer().synchronize({.memory = {&between, 1}});
-                if (!result) { return result; }
-                result = dispatch.record(context.commandBuffer());
-                if (!result) { return result; }
-            }
-        } else {
-            auto registry = device_->resourceRegistry();
-            if (!registry) { return render::makeError(registry.error()); }
-            render::ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
-            uint32_t mips = 0;
-            hzbElements(context.width(), context.height(), mips);
-            const render::HZBSPDParameters params{
-                .depthImage = writer.sampledImage(depth.view()), .hzbBuffer = writer.buffer(data),
-                .counterBuffer = writer.buffer(counter), .width = context.width(), .height = context.height(),
-                .mipCount = mips, .reversedZ = reversed};
-            auto encoded = writer.encode(params, render::kHZBSPDABI, render::ParameterTransport::InlinePush);
-            if (!encoded) { return render::makeError(encoded.error()); }
-            result = spdKernel_.dispatch(context.commandBuffer(), *encoded, (context.width() + 63) / 64, (context.height() + 63) / 64);
-            if (!result) { return result; }
-        }
+        result = heap_->writeSampledImage(depth_, *depth.view(), render::TextureLayout::ShaderRead);
+        if (result) { result = (*data).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(data_, bufferSlice); }); }
+        if (result) { result = (*counter).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(counter_, bufferSlice); }); }
+        if (!result) { return result; }
+        uint32_t mips = 0;
+        hzbElements(context.width(), context.height(), mips);
+        const render::HZBSPDUserPush push{.depthImage = depth_.shaderIndex, .hzbBuffer = data_.shaderIndex,
+            .counterBuffer = counter_.shaderIndex, .width = context.width(), .height = context.height(),
+            .mipCount = mips, .reversedZ = reversed};
+        context.commandBuffer().bindBindlessHeap(*heap_);
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
+        context.commandBuffer().pushBindlessData(&push, sizeof(push));
+        context.commandBuffer().dispatch((context.width() + 63) / 64, (context.height() + 63) / 64);
         std::swap(depthBarrier.before, depthBarrier.after); std::swap(depthBarrier.oldLayout, depthBarrier.newLayout);
         if (auto commandResult = context.commandBuffer().synchronize({.textures = {&depthBarrier, 1}}); !commandResult) { return commandResult; }
         return {};
     }
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel fixture_;
-    render::ComputeKernel streamKernel_;
-    render::ComputeKernel spdKernel_;
+    render::ComputeProgram fixture_;
+    std::unique_ptr<render::ShaderModule> shader_;
+    std::unique_ptr<render::ComputePipeline> pipeline_;
+    std::unique_ptr<render::BindlessHeap> heap_;
+    render::BindlessHandle depth_, data_, counter_;
 };
 
-class HZBSPDReductionTest : public RHITest {
+class HZBSPDReductionTest final : public RHITest {
 public:
-    explicit HZBSPDReductionTest(bool streamInline = false) : streamInline_(streamInline)
-    {
-        type = RHITestType::Rendering;
-        name = streamInline ? "stream_hzb_inline_conservative_reduction" : "hzb_spd_conservative_reduction";
-    }
+    HZBSPDReductionTest() { type = RHITestType::Rendering; name = "hzb_spd_conservative_reduction"; }
     RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
@@ -203,13 +169,12 @@ public:
             device->capabilities().maxSubgroupSize, device->capabilities().computeSubgroupShuffle);
         uint32_t pyramids = 0;
         for (bool waveOps : {false, true}) {
-            if (streamInline_ && waveOps) { continue; }
             if (waveOps && !render::supportsHzbSpdWaveOps(device->capabilities())) {
                 spdlog::info("[SPD] wave variant unavailable; validated LDS fallback only");
                 continue;
             }
             for (bool reversed : {false, true}) {
-                graph.setNodeProperties(node, {{"reversedZ", reversed}, {"waveOps", waveOps}, {"streamInline", streamInline_}});
+                graph.setNodeProperties(node, {{"reversedZ", reversed}, {"waveOps", waveOps}});
                 for (auto size : sizes) {
                     if (!executor.compile(*device, graph, size[0], size[1], log)) { return RHITestResult::fail(log); }
                     // Repeated builds with different depth reveal stale tail/counter data.
@@ -263,19 +228,9 @@ public:
             }
             pyramids += uint32_t(sizes.size()) * 2u * 3u;
         }
-        return RHITestResult::pass(std::to_string(pyramids) + (streamInline_
-            ? " inline stream HZB pyramids exactly match CPU min/max including odd edges, 1D and repeated frames"
-            : " SPD wave/LDS pyramids exactly match CPU min/max, including odd edges, 1D, NaN and repeated tails"));
+        return RHITestResult::pass(std::to_string(pyramids) + " SPD wave/LDS pyramids exactly match CPU min/max, including odd edges, 1D, NaN and repeated tails");
     }
-private:
-    bool streamInline_ = false;
 };
-
-class StreamHZBInlineReductionTest final : public HZBSPDReductionTest {
-public:
-    StreamHZBInlineReductionTest() : HZBSPDReductionTest(true) {}
-};
-METALLIC_REGISTER_RHI_TEST(StreamHZBInlineReductionTest);
 
 class HZBSPDVisibilityTest final : public RHITest {
 public:

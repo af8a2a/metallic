@@ -1,8 +1,8 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
-#include "NativeNestedProbeParameters.h"
-#include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -32,7 +32,7 @@ public:
         std::string log;
         std::vector<uint32_t> untouched{0x12345678};
         const std::vector<uint32_t> malformed{0x07230203, 0x10600, 0, 10, 0, 0};
-        if (render::normalizeNativeDescriptorHeapSpirv(malformed, untouched, log) ||
+        if (render::vulkan::normalizeNativeDescriptorHeapSpirv(malformed, untouched, log) ||
             untouched != std::vector<uint32_t>{0x12345678}) {
             return RHITestResult::fail("malformed SPIR-V modified output or was accepted");
         }
@@ -57,21 +57,24 @@ public:
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             render::ShaderCompileResult shader;
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({
-                .moduleName = "NativeDescriptorNestedProbe", .entryPointName = "nestedBufferMain",
+                .moduleName = "NativeDescriptorHandles", .entryPointName = "nestedBufferMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
             }, {.enableDiskCache = false}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             std::vector<uint32_t> normalized;
-            if (!render::normalizeNativeDescriptorHeapSpirv(shader.spirv, normalized, log) || normalized != shader.spirv) {
+            if (!render::vulkan::normalizeNativeDescriptorHeapSpirv(shader.spirv, normalized, log) || normalized != shader.spirv) {
                 return RHITestResult::fail("normalization is not idempotent: " + log);
             }
             std::filesystem::create_directories(context.outputDirectory / name);
             std::ofstream binary(context.outputDirectory / name /
                 (mode == render::SlangDescriptorHeapMode::Native ? "native.spv" : "mapped.spv"), std::ios::binary);
             binary.write(reinterpret_cast<const char*>(shader.spirv.data()), shader.spirv.size() * sizeof(uint32_t));
-            render::ComputeKernel program;
+            render::ComputeProgram program;
+            const render::ComputeProgramBindingDesc layout[] = {{0}, {1}};
             const auto initialized = program.initialize(*device, {
                 .spirv = shader.spirv,
-                .parameters = render::parameterAbi<NativeNestedProbeParameters>(kNativeNestedProbeABI, render::ParameterTransport::InlinePush),
+                .bindings = {layout, 2},
+                .requiresRayQuery = false,
+                .resourceParameters = metallic::tests::kNativeDescriptorHandlesLayout,
             }, log);
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(initialized, render::Error::Unsupported)) {
                 return RHITestResult::skip("mapped passed; native requires KHR untyped pointers");
@@ -100,15 +103,9 @@ public:
                 }
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
-            NATIVE_REQUIRE(commands->begin(&frame));
-            auto registry = device->resourceRegistry();
-            if (!registry) { return RHITestResult::fail("Native probe registry unavailable"); }
-            render::ParameterWriter writer(*device, **registry, &frame);
-            const auto recordsHandle = writer.buffer(records.get());
-            const NativeNestedProbeParameters params{recordsHandle, recordsHandle, recordsHandle, writer.buffer(output.get())};
-            auto encoded = writer.encode(params, kNativeNestedProbeABI, render::ParameterTransport::InlinePush);
-            if (!encoded) { return RHITestResult::fail("Native probe parameter encoding failed"); }
-            NATIVE_REQUIRE(program.dispatch(*commands, *encoded, 1));
+            NATIVE_REQUIRE(commands->begin(frame.submissionContext()));
+            const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = records.get()}, {.binding = 1, .buffer = output.get()}};
+            NATIVE_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = {bindings, 2}}));
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
             NATIVE_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
@@ -191,9 +188,9 @@ public:
                 // slot zero so neither a local index nor an implicit slot can pass.
                 NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 3u + i * 10u, .maxBuffers = 3}).transform([&](auto rhiValue) { heaps[i] = std::move(rhiValue); }));
                 render::BindlessHandle unused;
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { inputHandles[i] = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { outputHandles[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { inputHandles[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { outputHandles[i] = std::move(rhiValue); }));
                 if (inputHandles[i].index == 0 || inputHandles[i].shaderIndex == inputHandles[i].index) {
                     return RHITestResult::fail("test must exercise a nonzero slot and buffer partition");
                 }
@@ -201,8 +198,8 @@ public:
                     .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
                     .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { outputs[i] = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heaps[i]->writeStorageBuffer(inputHandles[i], *inputs[i]));
-                NATIVE_REQUIRE(heaps[i]->writeStorageBuffer(outputHandles[i], *outputs[i]));
+                NATIVE_REQUIRE((*inputs[i]).slice().and_then([&](const auto& bufferSlice) { return heaps[i]->writeStorageBuffer(inputHandles[i], bufferSlice); }));
+                NATIVE_REQUIRE((*outputs[i]).slice().and_then([&](const auto& bufferSlice) { return heaps[i]->writeStorageBuffer(outputHandles[i], bufferSlice); }));
                 const std::array<uint32_t, 4> data{outputHandles[i].shaderIndex, 17u + i * 13u, 0, 0};
                 void* mapped = inputs[i]->map();
                 if (mapped == nullptr) { return RHITestResult::fail("input map failed"); }
@@ -231,7 +228,7 @@ public:
                 }
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
-            NATIVE_REQUIRE(commands->begin(&frame));
+            NATIVE_REQUIRE(commands->begin(frame.submissionContext()));
             for (uint32_t i = 0; i < heaps.size(); ++i) {
                 const Push push{inputHandles[i].shaderIndex, 0x12340000u + i};
                 if (i == 0) {
@@ -294,7 +291,7 @@ public:
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "NativeDescriptorAtomics", .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, {.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
             std::vector<uint32_t> normalized;
-            if (!render::normalizeNativeDescriptorHeapSpirv(compiled.spirv, normalized, log) || normalized != compiled.spirv) {
+            if (!render::vulkan::normalizeNativeDescriptorHeapSpirv(compiled.spirv, normalized, log) || normalized != compiled.spirv) {
                 return RHITestResult::fail("mixed atomic normalization is not idempotent: " + log);
             }
             std::filesystem::create_directories(context.outputDirectory / name);
@@ -320,17 +317,17 @@ public:
             std::unique_ptr<render::BindlessHeap> heap;
             NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 8}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
             render::BindlessHandle unused;
-            NATIVE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
+            NATIVE_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
             std::array<render::BindlessHandle, 3> handles;
             std::array<std::unique_ptr<render::Buffer>, 3> buffers;
             const std::array<uint64_t, 3> sizes{1024 * 8, 16, count * 96};
             const std::array<uint32_t, 3> strides{8, 4, 96};
             for (uint32_t i = 0; i < buffers.size(); ++i) {
-                NATIVE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                     .usage = render::BufferUsageBits::Storage,
                     .memoryLocation = i == 2 ? render::MemoryLocation::HostUpload : render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+                NATIVE_REQUIRE((*buffers[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
                 if (handles[i].index == 0 || handles[i].index == handles[i].shaderIndex) {
                     return RHITestResult::fail("atomic test requires nonzero final descriptor indices");
                 }
@@ -368,7 +365,7 @@ public:
                 }
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
-            NATIVE_REQUIRE(commands->begin(&frame));
+            NATIVE_REQUIRE(commands->begin(frame.submissionContext()));
             const render::BufferBarrierDesc barriers[] = {
                 {
                     .buffer = buffers[0].get(),

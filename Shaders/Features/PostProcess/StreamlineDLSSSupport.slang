@@ -1,11 +1,20 @@
-#include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
+import ShaderCore;
 using Metallic;
-[[vk::push_constant]] ConstantBuffer<DLSSSupportParams> gSupport;
 
 struct StreamlineDLSSVertexOutput
 {
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
+};
+
+struct SampledImagePush
+{
+    uint sourceImage;
+};
+
+struct StreamlineDLSSAlphaPush
+{
+    uint outputImage;
 };
 
 static const float2 kFullscreenTrianglePositions[3] =
@@ -33,9 +42,12 @@ StreamlineDLSSVertexOutput streamlineDlssDepthVertexMain(uint vertexIndex : SV_V
 
 [shader("fragment")]
 float streamlineDlssDepthFragmentMain(
-    StreamlineDLSSVertexOutput input) : SV_Depth
+    StreamlineDLSSVertexOutput input,
+    uniform SampledImagePush bindless) : SV_Depth
 {
-    Texture2D<float> depthGuide = resolveDescriptor(gSupport.depth);
+    Texture2D<float> depthHandle =
+        resolveUniform(ResourceHandle<Texture2D<float>>(bindless.sourceImage));
+    Texture2D<float> depthGuide = depthHandle;
 
     uint width = 1;
     uint height = 1;
@@ -48,9 +60,12 @@ float streamlineDlssDepthFragmentMain(
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void streamlineDlssAlphaMain(
-    uint3 dispatchThreadId : SV_DispatchThreadID)
+    uint3 dispatchThreadId : SV_DispatchThreadID,
+    uniform StreamlineDLSSAlphaPush push)
 {
-    RWTexture2D<float4> outputImage = resolveDescriptor(gSupport.color);
+    RWTexture2D<float4> outputHandle =
+        resolveUniform(ResourceHandle<RWTexture2D<float4>>(push.outputImage));
+    RWTexture2D<float4> outputImage = outputHandle;
 
     uint width = 1;
     uint height = 1;

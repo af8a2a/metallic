@@ -190,12 +190,24 @@ public uint hzbMipOffset(GPUDrivenPreviewParams params, uint mipLevel)
     return offset;
 }
 
+public float loadHzb(
+    GPUDrivenPreviewPush push,
+    uint hzbBufferIndex,
+    uint elementIndex)
+{
+    uint handleIndex = hzbBufferIndex == 0 ? push.hzbBuffer0 : push.hzbBuffer1;
+    RWStructuredBuffer<float> hzbHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<float>>(handleIndex));
+    return hzbHandle[elementIndex];
+}
+
 public bool sphereOccluded(
     float3 center,
     float radius,
     CameraData camera,
     GPUDrivenPreviewParams params,
-    DescriptorHandle<RWStructuredBuffer<float>> hzb)
+    GPUDrivenPreviewPush push,
+    uint hzbBufferIndex)
 {
     float3 viewCenter = worldToView(center, camera);
     float zNear = max(camera.clipOrtho.x, 0.0001);
@@ -220,10 +232,10 @@ public bool sphereOccluded(
     uint2 maxTexel = min(uint2(maxPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
     if (any(maxTexel - minTexel > 1u)) { return false; }
     uint mipOffset = hzbMipOffset(params, mipLevel);
-    float depth00 = hzb[mipOffset + minTexel.y * mipWidth + minTexel.x];
-    float depth10 = hzb[mipOffset + minTexel.y * mipWidth + maxTexel.x];
-    float depth01 = hzb[mipOffset + maxTexel.y * mipWidth + minTexel.x];
-    float depth11 = hzb[mipOffset + maxTexel.y * mipWidth + maxTexel.x];
+    float depth00 = loadHzb(push, hzbBufferIndex, mipOffset + minTexel.y * mipWidth + minTexel.x);
+    float depth10 = loadHzb(push, hzbBufferIndex, mipOffset + minTexel.y * mipWidth + maxTexel.x);
+    float depth01 = loadHzb(push, hzbBufferIndex, mipOffset + maxTexel.y * mipWidth + minTexel.x);
+    float depth11 = loadHzb(push, hzbBufferIndex, mipOffset + maxTexel.y * mipWidth + maxTexel.x);
     float nearestZ = max(viewCenter.z - radius, zNear);
     // Pull the test sphere slightly toward the camera and require a strict depth
     // separation to avoid toggling instances on quantized HZB boundaries.
@@ -233,22 +245,21 @@ public bool sphereOccluded(
 }
 
 public bool meshletVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
-    GPUDrivenPreviewParams params, uint passIndex,
-    DescriptorHandle<RWStructuredBuffer<float>> previousHZB,
-    DescriptorHandle<RWStructuredBuffer<float>> currentHZB)
+    GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
 {
-    bool early = passIndex == 0u;
+    bool early = push.passIndex == 0u;
     if ((params.cullingFlags & kCullMeshletHZB) == 0u) {
         return instanceState == (early ? 1u : 3u);
     }
     if (early ? instanceState != 1u : (instanceState != 1u && instanceState != 3u)) { return false; }
+    uint currentHzb = params.frameIndex & 1u;
     // Re-evaluate the immutable early predicate in the second task-shader pass.
     // This reconstructs the deferred set without a bounded append queue (and
     // without dropping geometry if a queue would overflow).
     bool deferred = instanceState == 3u || (params.hzbValid != 0u &&
-        sphereOccluded(center, radius, previousCullingCamera(params), params, previousHZB));
+        sphereOccluded(center, radius, previousCullingCamera(params), params, push, currentHzb ^ 1u));
     if (early) { return !deferred; }
-    return deferred && !sphereOccluded(center, radius, cullingCamera(params), params, currentHZB);
+    return deferred && !sphereOccluded(center, radius, cullingCamera(params), params, push, currentHzb);
 }
 
 public bool meshletVisible(

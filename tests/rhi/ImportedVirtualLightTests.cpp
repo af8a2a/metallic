@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"

@@ -1,3 +1,5 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Editor/EditorApplication.h"
@@ -2656,15 +2658,17 @@ bool EditorApplication::initializeRhi()
                 .preferredTaskSubgroupSize = 32,
                 .enableRayTracingAccelerationStructure = true,
                 .enableRayQuery = true,
-                .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
                 .enablePartitionedAccelerationStructure = true,
-                .enableStreamline = enableStreamline,
-                .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
                 .enableAsyncCompute = true,
                 .memoryBudget = {.enabled = gpuDrivenScenesOnly_},
-                .shaderPrintf = shaderTrace_ ? &shaderTrace_->capture() : nullptr,
+                .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                    .enablePushDescriptor = true,
+                    .enableStreamline = enableStreamline,
+                    .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
+                    .shaderPrintf = shaderTrace_ ? &shaderTrace_->capture() : nullptr,
+                },
             }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
     }
     if (!result || device_ == nullptr) {
@@ -2854,7 +2858,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             pipelineInfo.PipelineRenderingCreateInfo = renderingInfo;
             ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
         }
-        if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_).device, colorFormat,
+        if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_), colorFormat,
                 render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED)) {
             return false;
@@ -2925,12 +2929,13 @@ bool EditorApplication::initializeImGuiBackends()
 #endif
     initInfo.CheckVkResultFn = checkVkResult;
 
-    imguiRendererInitialized_ = ImGui_ImplVulkan_Init(&initInfo);
+    imguiRendererInitialized_ = EditorDisplayRenderer::loadBackendFunctions(nativeDevice) &&
+        ImGui_ImplVulkan_Init(&initInfo);
     if (!imguiRendererInitialized_) {
         spdlog::error("ImGui Vulkan renderer backend initialization failed");
         return false;
     }
-    return displayRenderer_.initialize(nativeDevice.device, colorFormat,
+    return displayRenderer_.initialize(nativeDevice, colorFormat,
         render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED);
 }
@@ -2955,7 +2960,7 @@ bool EditorApplication::createViewportSampler()
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .maxLod = 1.0f,
     };
-    const VkResult result = vkCreateSampler(nativeDevice.device, &samplerInfo, nullptr, &viewportSampler_);
+    const VkResult result = nativeDevice.functions->vkCreateSampler(nativeDevice.device, &samplerInfo, nullptr, &viewportSampler_);
     if (result != VK_SUCCESS) {
         spdlog::error("vkCreateSampler(viewport) failed with VkResult {}", static_cast<int>(result));
         return false;
@@ -3018,7 +3023,7 @@ void EditorApplication::shutdown()
     if (viewportSampler_ != VK_NULL_HANDLE && device_ != nullptr) {
         const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
         if (nativeDevice.device != VK_NULL_HANDLE) {
-            vkDestroySampler(nativeDevice.device, viewportSampler_, nullptr);
+            nativeDevice.functions->vkDestroySampler(nativeDevice.device, viewportSampler_, nullptr);
         }
         viewportSampler_ = VK_NULL_HANDLE;
     }
@@ -7095,7 +7100,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             spdlog::error("commandPool reset failed with Result {}", render::resultToString(result));
             return false;
         }
-        result = frame.commandBuffer->begin(&frame.context);
+        result = frame.commandBuffer->begin(frame.context.submissionContext());
         if (!result) {
             spdlog::error("commandBuffer begin failed with Result {}", render::resultToString(result));
             return false;
@@ -7137,7 +7142,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         if (composition && !composition->descriptor) {
             composition->descriptor = ImGui_ImplVulkan_AddTexture(
                 render::vulkan::nativeImageView(*composition->view),
-                render::vulkan::nativeImageLayout(*composition->view, render::ResourceState::ShaderRead));
+                render::vulkan::nativeImageLayout(*composition->view, render::TextureLayout::ShaderRead));
             if (!composition->descriptor) { return false; }
         }
         render::TextureBarrierDesc toColor{
@@ -7161,7 +7166,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         };
         render::RenderingAttachmentDesc colorAttachment{
             .view = composition ? composition->view.get() : swapchainImageViews_[imageIndex].get(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{
@@ -8136,7 +8141,7 @@ bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
     viewportDescriptor_ = ImGui_ImplVulkan_AddTexture(
         viewportSampler_,
         imageView,
-        render::vulkan::nativeImageLayout(*output->view, render::ResourceState::ShaderRead));
+        render::vulkan::nativeImageLayout(*output->view, render::TextureLayout::ShaderRead));
     if (viewportDescriptor_ == VK_NULL_HANDLE) {
         renderGraphStatus_ = "ImGui failed to allocate viewport descriptor";
         return false;

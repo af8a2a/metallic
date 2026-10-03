@@ -1,6 +1,5 @@
 #include "WorkControlReplay.h"
 #include "NvPerf.h"
-#include "Runtime/Render/Core/StreamRasterParameters.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include <cstdlib>
 #include <cstring>
@@ -28,7 +27,7 @@ void barrier(CommandBuffer& commands)
         .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .memoryBarrierCount = 1, .pMemoryBarriers = &memory};
-    vkCmdPipelineBarrier2(vulkan::nativeCommandBuffer(commands), &dependency);
+    vulkan::nativeCommandBufferFunctions(commands).vkCmdPipelineBarrier2(vulkan::nativeCommandBuffer(commands), &dependency);
 }
 void copy(CommandBuffer& commands, Buffer& source, Buffer& destination)
 {
@@ -83,19 +82,19 @@ struct WorkControlReplay::Impl {
     std::filesystem::path output;
     std::vector<Resource> resources;
     std::unique_ptr<Buffer> control;
-    ComputeKernel kernel;
-    EncodedParameters replayParameters;
+    std::unique_ptr<BindlessHeap> heap;
     std::unique_ptr<CommandPool> pool;
     std::unique_ptr<CommandBuffer> commands;
     std::unique_ptr<Fence> fence;
+    PreparedExecution execution;
     std::vector<uint8_t> push;
     size_t pixel = SIZE_MAX, arguments = SIZE_MAX;
     bool captured = false, completedControl = false;
     std::string fault;
-    Json evidence{{"protocol", "metallic-work-control-replay-v2"}, {"status", "preparing"},
+    Json evidence{{"protocol", "metallic-work-control-replay-v1"}, {"status", "preparing"},
         {"measurementKind", "diagnostic"}, {"scope", "isolated-correctness-only"},
         {"counterEligible", false}, {"productionStatePublished", false},
-        {"bindingPolicy", "canonical-handles-private-allocations"}};
+        {"bindingPolicy", "same-typed-slots-private-allocations"}};
 
     std::unique_ptr<Buffer> buffer(const BufferDesc& source, bool host)
     {
@@ -197,9 +196,9 @@ WorkControlReplay* WorkControlReplay::selected(std::string_view phase)
     return active && active->impl_->phase == phase ? active : nullptr;
 }
 
-void WorkControlReplay::before(CommandBuffer& commands, const ComputeKernel& kernel, const EncodedParameters& parameters,
+void WorkControlReplay::before(CommandBuffer& commands, ComputePipeline& pipeline, BindlessHeap& productionHeap,
     std::span<const WorkControlReplayBinding> bindings, Buffer& arguments,
-    std::span<const uint8_t> settings, Json identity)
+    const void* push, uint32_t pushBytes, Json identity)
 {
     auto& s = *impl_;
     require(!s.captured && identity.at("mode") == 5 && identity.at("snapshotFrozen") == true &&
@@ -208,36 +207,15 @@ void WorkControlReplay::before(CommandBuffer& commands, const ComputeKernel& ker
     // First acceptance slice excludes the low-wave fallback's larger descriptor closure.
     require(s.device.capabilities().subgroupSize >= 32 &&
         s.device.capabilities().minSubgroupSize >= 32, "replay_low_subgroup_unsupported");
-    require(kernel.valid() && parameters.abi() == parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush), "replay_push_abi_mismatch");
-    s.kernel = kernel;
-    auto& pipeline = *kernel.diagnosticPipeline();
-    const auto push = parameters.inlineData();
-    require(push.size() == sizeof(StreamRasterParameters), "replay_push_abi_mismatch");
-    StreamRasterParameters source;
-    std::memcpy(&source, push.data(), sizeof(source));
-    require(source.settings.address && source.settings.count == 1 && source.settings.stride == settings.size() &&
-        !settings.empty(), "replay_settings_abi_mismatch");
-    StreamRasterParameters relocated = source;
-    auto registry = s.device.resourceRegistry();
-    require(bool(registry), "replay_registry_missing");
-    ParameterWriter writer(s.device, **registry);
-    relocated.settings = {writer.data(settings.data(), settings.size(), 16), 1, uint32_t(settings.size())};
-    write(s.output / "Settings.bin", std::vector<uint8_t>(settings.begin(), settings.end()));
-    write(s.output / "ReplaySettings.bin", std::vector<uint8_t>(settings.begin(), settings.end()));
-    const std::map<std::string, ShaderBuffer StreamRasterParameters::*> fields{
-        {"pages", &StreamRasterParameters::pages}, {"groups", &StreamRasterParameters::groups},
-        {"header", &StreamRasterParameters::header}, {"pageTable", &StreamRasterParameters::pageTable},
-        {"instances", &StreamRasterParameters::instances}, {"bins", &StreamRasterParameters::bins},
-        {"pixels", &StreamRasterParameters::pixels}};
-    std::set<std::string> names;
-
+    s.execution = pipeline.execution();
     const auto inputCode = vulkan::nativeComputeSpirv(pipeline, false);
     const auto deviceCode = vulkan::nativeComputeSpirv(pipeline, true);
     require(!inputCode.empty() && !deviceCode.empty(), "replay_missing_actual_spirv");
     write(s.output / "Input.spv", inputCode);
     write(s.output / "Device.spv", deviceCode);
     s.evidence["sameRetainedExecution"] = true;
-    s.push.assign(push.begin(), push.end());
+    s.push.resize(pushBytes);
+    std::memcpy(s.push.data(), push, pushBytes);
     write(s.output / "Push.bin", s.push);
     s.evidence["phase"] = s.phase;
     s.evidence["productionShader"] = std::move(identity);
@@ -245,11 +223,24 @@ void WorkControlReplay::before(CommandBuffer& commands, const ComputeKernel& ker
     s.evidence["subgroupSize"] = s.device.capabilities().subgroupSize;
     s.evidence["bindingGenerationEvidence"] = "allocation-id-and-frozen-graph-generation";
     s.evidence["heapAbi"] = {{"nativeDescriptorHeap", vulkan::nativeDevice(s.device).descriptorHeapEnabled},
-        {"maxBuffers", (*registry)->heap()->desc().maxBuffers}};
-    s.evidence["parameterABI"] = {{"id", std::to_string(kStreamRasterABI)}, {"size", sizeof(source)},
-        {"settingsBytes", settings.size()}};
+        {"maxBuffers", productionHeap.desc().maxBuffers}, {"maxSamplers", productionHeap.desc().maxSamplers},
+        {"maxSampledImages", productionHeap.desc().maxSampledImages}, {"maxStorageImages", productionHeap.desc().maxStorageImages}};
+    require(bool(s.device.createBindlessHeap(productionHeap.desc()).transform([&](auto value) { s.heap = std::move(value); })),
+        "replay_heap_creation_failed");
+    std::map<uint32_t, BindlessHandle> handles;
+    std::set<uint32_t> wanted;
+    for (const auto& binding : bindings) {
+        if (binding.shaderIndex != UINT32_MAX) { require(wanted.insert(binding.shaderIndex).second, "replay_descriptor_alias_unqualified"); }
+    }
+    // Preserve the typed index ABI, including mapped descriptor heap offsets.
+    for (uint32_t i = 0; i < productionHeap.desc().maxBuffers && handles.size() < wanted.size(); ++i) {
+        BindlessHandle handle;
+        require(bool(s.heap->allocate(BindlessHandleKind::Buffer).transform([&](auto value) { handle = value; })), "replay_descriptor_allocation_failed");
+        if (wanted.contains(handle.shaderIndex)) { handles.emplace(handle.shaderIndex, handle); }
+    }
+    require(handles.size() == wanted.size(), "replay_descriptor_identity_mismatch");
     std::vector<WorkControlReplayBinding> all(bindings.begin(), bindings.end());
-    all.push_back({"arguments", &arguments});
+    all.push_back({"arguments", &arguments, UINT32_MAX});
     std::set<Buffer*> allocations;
     uint64_t totalBytes = 0;
     for (const auto& binding : all) {
@@ -267,19 +258,12 @@ void WorkControlReplay::before(CommandBuffer& commands, const ComputeKernel& ker
         resource.working = s.buffer(binding.buffer->desc(), false);
         resource.readback = s.buffer(binding.buffer->desc(), true);
         copy(commands, *binding.buffer, *resource.initial);
-        require(names.insert(binding.name).second, "replay_duplicate_resource_name");
-        const auto field = fields.find(binding.name);
-        uint64_t sourceHandle = UINT64_MAX, scratchHandle = UINT64_MAX;
-        if (field != fields.end()) {
-            sourceHandle = (source.*field->second).value;
-            require(writer.buffer(binding.buffer).value == sourceHandle, "replay_source_handle_mismatch");
-            relocated.*field->second = writer.buffer(resource.working.get());
-            scratchHandle = (relocated.*field->second).value;
-            require(sourceHandle != scratchHandle, "replay_handle_alias");
+        if (binding.shaderIndex != UINT32_MAX) {
+            require(bool((*resource.working).slice().and_then([&](const auto& bufferSlice) { return s.heap->writeStorageBuffer(handles.at(binding.shaderIndex), bufferSlice); })), "replay_descriptor_write_failed");
         }
         if (binding.name == "pixels") { s.pixel = s.resources.size(); }
         if (binding.name == "arguments") { s.arguments = s.resources.size(); }
-        s.evidence["bindings"].push_back({{"name", binding.name}, {"sourceHandle", std::to_string(sourceHandle)}, {"scratchHandle", std::to_string(scratchHandle)},
+        s.evidence["bindings"].push_back({{"name", binding.name}, {"shaderIndex", binding.shaderIndex},
             {"bytes", binding.buffer->desc().size}, {"stride", binding.buffer->desc().structureStride},
             {"sourceAddress", std::to_string(vulkan::nativeBuffer(*binding.buffer).address)},
             {"sourceAllocation", binding.buffer->memoryInfo().allocationId},
@@ -288,12 +272,6 @@ void WorkControlReplay::before(CommandBuffer& commands, const ComputeKernel& ker
         s.resources.push_back(std::move(resource));
     }
     require(s.pixel != SIZE_MAX && s.arguments != SIZE_MAX, "replay_incomplete_closure");
-    for (const auto& [name, field] : fields) { require(names.contains(name), "replay_incomplete_closure"); }
-    auto encoded = writer.encode(relocated, kStreamRasterABI, ParameterTransport::InlinePush);
-    require(bool(encoded), "replay_parameter_encoding_failed");
-    s.replayParameters = std::move(*encoded);
-    const auto replayPush = s.replayParameters.inlineData();
-    write(s.output / "ReplayPush.bin", std::vector<uint8_t>(replayPush.begin(), replayPush.end()));
     s.control = s.buffer(s.resources[s.pixel].binding.buffer->desc(), true);
     barrier(commands);
     s.captured = true;
@@ -338,6 +316,22 @@ Json WorkControlReplay::run(Queue& queue, const Json& frozenIdentity)
             resource.expected = read(*resource.readback);
             write(s.output / (resource.binding.name + "-input.bin"), resource.expected);
         }
+        const auto binding = [&](std::string_view name) -> const Impl::Resource& {
+            for (const auto& resource : s.resources) { if (resource.binding.name == name) { return resource; } }
+            throw std::runtime_error("replay_missing_binding");
+        };
+        const auto word = [](const std::vector<uint8_t>& bytes, size_t index) {
+            require(index < bytes.size() / 4, "replay_binding_bytes_truncated");
+            uint32_t value; std::memcpy(&value, bytes.data() + index * 4, 4); return value;
+        };
+        require(s.push.size() == 136, "replay_push_abi_mismatch");
+        for (const auto& [name, index] : std::map<std::string, size_t>{{"pages", 0}, {"groups", 1},
+             {"pageTable", 2}, {"params", 3}, {"header", 7}, {"rasterBindings", 27}, {"bins", 29}}) {
+            require(word(s.push, index) == binding(name).binding.shaderIndex, "replay_push_binding_mismatch");
+        }
+        require(word(binding("bins").expected, 11) == binding("pixels").binding.shaderIndex &&
+            word(binding("rasterBindings").expected, 16) == binding("instances").binding.shaderIndex,
+            "replay_nested_binding_mismatch");
         const auto& args = s.resources[s.arguments].expected;
         require(args.size() >= 60, "replay_indirect_range_invalid");
         uint32_t dimensions[3];
@@ -392,9 +386,11 @@ Json WorkControlReplay::run(Queue& queue, const Json& frozenIdentity)
                 require(restored == resource.expected, "replay_restore_failed");
             }
             s.submit(queue, "isolated-dispatch", [&](auto& commands) {
+                commands.bindBindlessHeap(*s.heap);
+                require(bool(commands.bindExecution(s.execution, s.push.data(), uint32_t(s.push.size()))), "replay_pipeline_bind_failed");
                 const std::string rangeName = "WorkControl/isolated/" + s.phase;
                 NvPerfRange range(commands, rangeName.c_str());
-                require(bool(s.kernel.dispatchIndirect(commands, s.replayParameters, *s.resources[s.arguments].working, 48)), "replay_dispatch_record_failed");
+                require(bool((*s.resources[s.arguments].working).slice({48, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); })), "replay_dispatch_record_failed");
             });
             s.submit(queue, "compare-output", [&](auto& commands) {
                 barrier(commands);

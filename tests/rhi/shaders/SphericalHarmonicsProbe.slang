@@ -1,10 +1,9 @@
-import ShaderCore;
-#include "../SphericalHarmonicsProbeParameters.h"
+import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
-[[vk::push_constant]] ConstantBuffer<SphericalHarmonicsProbeParameters> gProbe;
-#define gOutput resolveDescriptor(gProbe.output)
-#define gInput resolveDescriptor(gProbe.input)
+#define gOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SphericalHarmonicsProbeResources>().output)
+#define gInput resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<SphericalHarmonicsProbeResources>().input)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

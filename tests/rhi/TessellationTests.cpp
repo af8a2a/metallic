@@ -1,6 +1,5 @@
 #include "RHITest.h"
 #include "Runtime/Render/TessellationPatterns.h"
-#include "Runtime/Render/GPUDrivenTessellation.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -14,31 +13,6 @@
 
 namespace metallic::tests {
 namespace {
-
-class TessellationMaterialHandleTest final : public RHITest {
-public:
-    TessellationMaterialHandleTest() { type = RHITestType::Validation; name = "tessellation_material_full_handle"; }
-    RHITestResult run(RHITestContext&) override
-    {
-        scene::RenderMaterial material;
-        material.displacementTexture.textureIndex = 0;
-        material.displacementTexture.texCoord = 0;
-        material.displacementMagnitude = 2.0f;
-        const render::ShaderSampledImage handle{0x12345678ffffffffull};
-        const auto packed = render::buildTessellationData({&material, 1}, {&handle, 1});
-        const uint64_t restored = uint64_t(packed[16]) | (uint64_t(packed[28]) << 32);
-        if (restored != handle.value || packed[19] != 1u || packed[0] != 32u) {
-            return RHITestResult::fail("Displacement descriptor lost high bits or changed material stride");
-        }
-        const render::ShaderSampledImage invalid{UINT64_MAX};
-        const auto disabled = render::buildTessellationData({&material, 1}, {&invalid, 1});
-        if (disabled[19] != 0u || disabled[16] != UINT32_MAX || disabled[28] != UINT32_MAX) {
-            return RHITestResult::fail("Invalid displacement descriptor must disable sampling");
-        }
-        return RHITestResult::pass("Full descriptor bits and invalid-handle sampling guard preserved");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(TessellationMaterialHandleTest);
 
 class TessellationPatternTest final : public RHITest {
 public:

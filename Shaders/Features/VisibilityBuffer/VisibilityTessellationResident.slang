@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 // Included after VisibilityBuffer.slang's ordinary cluster accessors.
 #include "VisibilityTessellationSplit.slang"
 groupshared float3 g_TessSourcePosition[3];
@@ -9,23 +12,23 @@ groupshared uint4 g_TessPattern;
 [shader("amplification")]
 [numthreads(32, 1, 1)]
 void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    uniform ResidentRasterParameters push)
+    uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> ph =
-        push.resources.paramsBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> ph =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
     GPUDrivenPreviewParams params = ph[0];
-    TessellationData data = TessellationData(push.resources.tessellationData);
+    StructuredBuffer<uint> data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.tessellationBuffer));
     uint draw = hybridFlatGroup(group);
     uint candidate = draw / kTessTasksPerCluster;
     uint first = (draw % kTessTasksPerCluster) * kTessRootsPerTask;
     uint record = 0xffffffffu;
     if (lane == 0u) {
         bool visible;
-        if (push.hasBins != 0u) {
-            DescriptorHandle<StructuredBuffer<uint>> bins = push.resources.bins;
+        if (push.environmentSHBuffer != 0xffffffffu) {
+            StructuredBuffer<uint> bins = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.environmentSHBuffer));
             visible = hybridBinRecord(bins, push.mipLevel, candidate, record);
         } else {
-            record = residentLodRecordIndex(candidate, params, push.resources.lodSelections);
+            record = residentLodRecordIndex(candidate, params, push);
             visible = residentClusterVisible(record, push);
             if (visible) { visible = visibleClusterDrawBucket(residentRasterCluster(record, push).record) == push.mipLevel; }
         }
@@ -43,8 +46,8 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
         }
         if (!enabled) { count = first == 0u && lane == 0u ? 1u : 0u; }
         else if (lane < kTessRootsPerTask && first + lane < c.meshlet.ranges.w) {
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = push.resources.positionBuffer;
-            DescriptorHandle<StructuredBuffer<uint>> vi = push.resources.meshletVertexBuffer;
+            StructuredBuffer<GPUDrivenPreviewVertex> vb = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(push.positionBuffer));
+            StructuredBuffer<uint> vi = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletVertexBuffer));
             uint3 tri = residentClusterTriangle(c, first + lane, push);
             float3 source[3];
             for (uint i = 0u; i < 3u; ++i) {
@@ -68,7 +71,7 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
 void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     in payload TessPatchPayload payload, out vertices TessVertex vertices[128],
     out indices uint3 triangles[128], out primitives TessPrimitive primitives[128],
-    uniform ResidentRasterParameters push)
+    uniform GPUDrivenPreviewPush push)
 {
     uint source = tessPayloadRoot(payload, group.x);
     uint record = payload.record;
@@ -77,13 +80,13 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     uint patchBase = (source * kTessLeavesPerRoot + leaf) * 3u;
     uint3 patch = uint3(payload.patches[patchBase], payload.patches[patchBase + 1u], payload.patches[patchBase + 2u]);
     ResidentRasterCluster c = residentRasterCluster(record, push);
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> ph =
-        push.resources.paramsBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> ph =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
     GPUDrivenPreviewParams params = ph[0];
-    TessellationData data = TessellationData(push.resources.tessellationData);
+    StructuredBuffer<uint> data = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.tessellationBuffer));
     TessMaterial material = tessMaterial(data, c.instance.identity.y);
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = push.resources.positionBuffer;
-    DescriptorHandle<StructuredBuffer<uint>> vi = push.resources.meshletVertexBuffer;
+    StructuredBuffer<GPUDrivenPreviewVertex> vb = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(push.positionBuffer));
+    StructuredBuffer<uint> vi = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletVertexBuffer));
     CameraData camera = push.projectWithCullingCamera != 0u ? cullingCamera(params) : renderCamera(params);
     SceneTransform transform = instanceTransform(c.instance);
     if (material.enabled == 0u) {
@@ -155,11 +158,11 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     }
 }
 
-uint tessResidentVisibility(TessVertex input, uint visibilityId, ResidentRasterParameters push)
+uint tessResidentVisibility(TessVertex input, uint visibilityId, GPUDrivenPreviewPush push)
 {
 #if VISIBILITY_BUFFER_ALPHA_MASKED
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters = push.resources.paramsBuffer;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materials = push.resources.materialBuffer;
+    StructuredBuffer<GPUDrivenPreviewParams> parameters = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenPreviewMaterial> materials = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(push.materialBuffer));
     GPUDrivenPreviewMaterial material = materials[input.material];
     if (materialBaseColorAlpha(material, input.uv, parameters[0], push) < material.params.z) { discard; }
 #endif
@@ -168,7 +171,7 @@ uint tessResidentVisibility(TessVertex input, uint visibilityId, ResidentRasterP
 
 [shader("fragment")]
 TessFragment visibilityTessellationFragment(TessVertex input, uint visibilityId : SV_PrimitiveID, bool front : SV_IsFrontFace,
-    uniform ResidentRasterParameters push)
+    uniform GPUDrivenPreviewPush push)
 {
     TessFragment output;
     output.visibility = tessResidentVisibility(input, visibilityId, push);
@@ -183,7 +186,7 @@ TessFragment visibilityTessellationFragment(TessVertex input, uint visibilityId 
 // masked coverage and source ID, without exporting viewport-only MRTs.
 [shader("fragment")]
 uint visibilityTessellationCullingFragment(TessVertex input, uint visibilityId : SV_PrimitiveID,
-    bool front : SV_IsFrontFace, uniform ResidentRasterParameters push) : SV_Target0
+    bool front : SV_IsFrontFace, uniform GPUDrivenPreviewPush push) : SV_Target0
 {
     return tessResidentVisibility(input, visibilityId, push);
 }

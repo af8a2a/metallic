@@ -1,14 +1,17 @@
-#ifndef METALLIC_STREAM_SCENE_RAY_QUERY
-#define METALLIC_STREAM_SCENE_RAY_QUERY
-#include "StreamSceneDecode.slang"
-
-// Statically specialized at the caller. The query layer owns no descriptor
-// slots, parameter roots, or material/texture globals.
-interface IStreamRayMaterials
+// CLAS IDs are pageIndex * maxPageClusters + localCluster. IDs survive arena moves.
+import GPUDriven;
+using Metallic.GPUDriven;
+#include "../VisibilityBuffer/VisibilityStreamDecode.slang"
+struct StreamRayInstance
 {
-    bool load(uint index, out PathTraceMaterial material);
-    float alpha(PathTraceTextureInfo texture, float2 uv);
+    uint primitiveIndex, materialIndex, visible, gpuSceneInstanceIndex;
+    float4 world0, world1, world2, world3;
+    float4 bounds;
 };
+#define gRayStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamPages)
+#define gRayStreamPageTable resolveBuffer<StructuredBuffer<uint2>>(getResourceParameters<SceneResourceParameters>().rayStreamPageTable)
+#define gRayStreamInstances resolveBuffer<StructuredBuffer<StreamRayInstance>>(getResourceParameters<SceneResourceParameters>().rayStreamInstances)
+#define gRayStreamHeader resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamHeader)
 
 float3 streamRayVector(StreamRayInstance instance, float3 v)
 {
@@ -23,18 +26,23 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
         (dot(instance.world0.xyz, c0) < 0.0 ? -1.0 : 1.0), n);
 }
 
-bool streamRaySurface<Materials : IStreamRayMaterials>(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
-    Ray ray, float t, StreamSceneParameters scene, Materials materials, float bitangentFlip, out HitInfo hit)
+bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
+    Ray ray, float t, ScenePathTracePush push, out HitInfo hit)
 {
     hit = (HitInfo)0;
-    StreamRayInstance instance;
-    if (!loadStreamRayInstance(scene, instanceIndex, instance)) { return false; }
-    PathTraceMaterial material;
-    if (!materials.load(instance.materialIndex, material)) { return false; }
+    uint count, stride;
+    gRayStreamInstances.GetDimensions(count, stride);
+    if (instanceIndex >= count) { return false; }
+    StreamRayInstance instance = gRayStreamInstances[instanceIndex];
+    gMaterials.GetDimensions(count, stride);
+    if (instance.materialIndex >= count) { return false; }
+    uint clusterStride = gRayStreamHeader[2];
+    if (clusterStride == 0u) { return false; }
+    uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
     float3 a, b, c;
+    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameters<SceneResourceParameters>().streamPageCount)), a, b, c)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes;
-    if (!decodeStreamRaySurface(scene, clusterId, triangle, a, b, c, n, uv, tangents, attributes)) { return false; }
+    uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
     float3 localNormal = safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
@@ -57,7 +65,7 @@ bool streamRaySurface<Materials : IStreamRayMaterials>(uint instanceIndex, uint 
             (dot(instance.world0.xyz, cross(instance.world1.xyz, instance.world2.xyz)) < 0.0 ? -1.0 : 1.0);
     } else { sign = dot(cross(hit.normal, tangent), triangleBitangent) < 0.0 ? -1.0 : 1.0; }
     tangent = safeNormalize(tangent - hit.normal * dot(hit.normal, tangent), fallback);
-    hit.tangent = float4(tangent, sign * bitangentFlip);
+    hit.tangent = float4(tangent, sign * push.bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * hit.tangent.w;
     hit.position = ray.origin + ray.direction * t;
     hit.t = t;
@@ -69,30 +77,24 @@ bool streamRaySurface<Materials : IStreamRayMaterials>(uint instanceIndex, uint 
     return true;
 }
 
-bool streamRayAlphaAccepts<Materials : IStreamRayMaterials>(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
-    StreamSceneParameters scene, Materials materials)
+bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
+    Ray ray, float t, ScenePathTracePush push)
 {
-    StreamRayInstance instance;
-    if (!loadStreamRayInstance(scene, instanceIndex, instance)) { return false; }
-    PathTraceMaterial material;
-    if (!materials.load(instance.materialIndex, material)) { return false; }
-    // Validate geometry even for opaque candidates before committing the hit.
-    uint pageIndex, cluster;
-    float3 a, b, c;
-    if (!decodeStreamRayTriangle(scene, clusterId, triangle, pageIndex, cluster, a, b, c)) { return false; }
+    uint count, stride;
+    gRayStreamInstances.GetDimensions(count, stride);
+    if (instanceIndex >= count) { return false; }
+    uint materialIndex = gRayStreamInstances[instanceIndex].materialIndex;
+    gMaterials.GetDimensions(count, stride);
+    if (materialIndex >= count) { return false; }
+    PathTraceMaterial material = gMaterials[materialIndex];
     if (material.textureParams.w < 0.5) { return true; }
-    // Alpha coverage needs UV only, not world transforms, normals or a TBN.
-    float3 normals[3]; float2 uvs[3]; float4 tangents[3];
-    decodeStreamAttributesAtPage(pageIndex, cluster, triangle,
-        StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable), normals, uvs, tangents, 4u);
-    float2 uv = uvs[0] * (1.0 - bary.x - bary.y) + uvs[1] * bary.x + uvs[2] * bary.y;
-    float alpha = material.baseColor.a * materials.alpha(material.baseColorTexture, uv);
+    HitInfo hit;
+    if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push, hit)) { return false; }
+    float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, hit.texcoord, push);
     return material.textureParams.w < 1.5 ? alpha >= material.params.z : alpha > 0.0;
 }
 
-bool traceStreamClosest<Materials : IStreamRayMaterials>(Ray ray, float nearDistance, float farDistance,
-    RaytracingAccelerationStructure accelerationStructure, StreamSceneParameters scene,
-    Materials materials, float bitangentFlip, out HitInfo hit)
+bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push, out HitInfo hit)
 {
     hit = (HitInfo)0;
     RayDesc desc;
@@ -100,17 +102,15 @@ bool traceStreamClosest<Materials : IStreamRayMaterials>(Ray ray, float nearDist
     desc.TMin = nearDistance; desc.TMax = farDistance;
     // Force candidate callbacks even for CLAS built with the opaque default.
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-    query.TraceRayInline(accelerationStructure, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
+    query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
             streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
-                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), scene, materials)) {
+                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), ray, query.CandidateTriangleRayT(), push)) {
             query.CommitNonOpaqueTriangleHit();
         }
     }
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
     return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
-        query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), scene, materials, bitangentFlip, hit);
+        query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), push, hit);
 }
-
-#endif

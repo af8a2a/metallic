@@ -77,6 +77,7 @@ struct StreamlineState {
 #endif
     sl::ViewportHandle viewport{0};
     VkDevice vulkanDevice = VK_NULL_HANDLE;
+    const VolkDeviceTable* functions = nullptr;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
@@ -428,16 +429,16 @@ void destroyDescriptorHeapWorkaround(StreamlineState& state)
         return;
     }
     if (state.descriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(state.vulkanDevice, state.descriptorPool, nullptr);
+        state.functions->vkDestroyDescriptorPool(state.vulkanDevice, state.descriptorPool, nullptr);
         state.descriptorPool = VK_NULL_HANDLE;
         state.descriptorSet = VK_NULL_HANDLE;
     }
     if (state.pipelineLayout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(state.vulkanDevice, state.pipelineLayout, nullptr);
+        state.functions->vkDestroyPipelineLayout(state.vulkanDevice, state.pipelineLayout, nullptr);
         state.pipelineLayout = VK_NULL_HANDLE;
     }
     if (state.descriptorSetLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(state.vulkanDevice, state.descriptorSetLayout, nullptr);
+        state.functions->vkDestroyDescriptorSetLayout(state.vulkanDevice, state.descriptorSetLayout, nullptr);
         state.descriptorSetLayout = VK_NULL_HANDLE;
     }
     state.descriptorHeapWorkaroundEnabled = false;
@@ -449,6 +450,7 @@ Result<> initializeDescriptorHeapWorkaround(
     std::string& log)
 {
     state.vulkanDevice = device.device;
+    state.functions = device.functions;
     if (!device.descriptorHeapEnabled) {
         return {};
     }
@@ -456,7 +458,7 @@ Result<> initializeDescriptorHeapWorkaround(
     const VkDescriptorSetLayoutCreateInfo setLayoutInfo{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
     };
-    VkResult vkResult = vkCreateDescriptorSetLayout(
+    VkResult vkResult = state.functions->vkCreateDescriptorSetLayout(
         device.device,
         &setLayoutInfo,
         nullptr,
@@ -467,7 +469,7 @@ Result<> initializeDescriptorHeapWorkaround(
             .setLayoutCount = 1,
             .pSetLayouts = &state.descriptorSetLayout,
         };
-        vkResult = vkCreatePipelineLayout(
+        vkResult = state.functions->vkCreatePipelineLayout(
             device.device,
             &pipelineLayoutInfo,
             nullptr,
@@ -478,7 +480,7 @@ Result<> initializeDescriptorHeapWorkaround(
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .maxSets = 1,
         };
-        vkResult = vkCreateDescriptorPool(
+        vkResult = state.functions->vkCreateDescriptorPool(
             device.device,
             &poolInfo,
             nullptr,
@@ -491,7 +493,7 @@ Result<> initializeDescriptorHeapWorkaround(
             .descriptorSetCount = 1,
             .pSetLayouts = &state.descriptorSetLayout,
         };
-        vkResult = vkAllocateDescriptorSets(device.device, &allocateInfo, &state.descriptorSet);
+        vkResult = state.functions->vkAllocateDescriptorSets(device.device, &allocateInfo, &state.descriptorSet);
     }
     if (vkResult != VK_SUCCESS) {
         log = "Failed to initialize the Streamline VK_EXT_descriptor_heap workaround (VkResult " +
@@ -515,7 +517,7 @@ void prepareDescriptorStateForStreamline(
     }
 
     const VkCommandBuffer commandBufferHandle = nativeCommandBuffer(commandBuffer);
-    vkCmdBindDescriptorSets(
+    state.functions->vkCmdBindDescriptorSets(
         commandBufferHandle,
         VK_PIPELINE_BIND_POINT_COMPUTE,
         state.pipelineLayout,

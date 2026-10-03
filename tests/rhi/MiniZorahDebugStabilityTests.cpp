@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -60,8 +61,8 @@ public:
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 };
                 if (auto commandResult = commands.synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-                commands.copyTextureToBuffer({.texture = resource.texture, .buffer = copy.get(),
-                    .width = resource.texture->desc().width, .height = resource.texture->desc().height});
+                if (auto commandResult = (copy.get())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = resource.texture, .buffer = bufferSlice,
+                    .width = resource.texture->desc().width, .height = resource.texture->desc().height}); }); !commandResult) { throw std::runtime_error(std::string("copyTextureToBuffer failed: ") + metallic::render::resultToString(commandResult)); }
                 std::swap(barrier.before, barrier.after); std::swap(barrier.oldLayout, barrier.newLayout); if (auto commandResult = commands.synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             } else {
                 BufferBarrierDesc barrier{

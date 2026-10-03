@@ -1,7 +1,10 @@
 #pragma once
 
+#include "RHIHandle.h"
+
 #include <functional>
 #include <array>
+#include <any>
 
 #include <cstdint>
 #include <expected>
@@ -10,8 +13,6 @@
 #include <span>
 
 namespace metallic::render {
-
-namespace vulkan { class ShaderPrintf; }
 
 enum class Error : int8_t {
     Failure = 1,
@@ -139,20 +140,6 @@ enum class MemoryLocation : uint8_t {
     Device,
     HostUpload,
     HostReadback,
-};
-
-enum class ResourceState : uint8_t {
-    Undefined,
-    Present,
-    ColorAttachment,
-    DepthStencilAttachment,
-    ShaderRead,
-    IndirectArgument,
-    TransferSource,
-    TransferDestination,
-    General,
-    DecompressionSource,
-    DecompressionDestination,
 };
 
 enum class PipelineStageBits : uint64_t {
@@ -459,25 +446,20 @@ struct DeviceDesc {
     bool enableRayTracingPositionFetch = true;
     // Optional KHR OMM optimization. Unsupported devices keep shader alpha tests.
     bool enableOpacityMicromap = true;
-    bool enablePushDescriptor = false;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
-    bool enableStreamline = false;
-    bool enableAftermath = false;
     ValidationSink validationSink;
     // Optional separate compute queue; legacy callers keep their universal queue.
     bool enableAsyncCompute = false;
     // Optional: unsupported devices keep ordinary command recording.
     bool enableDeviceGeneratedCommands = true;
     MemoryBudgetPolicy memoryBudget;
-    // Optional backend policy; unsupported devices keep optimal layouts.
-    bool preferUnifiedImageLayouts = true;
-    // Opt-in diagnostics; implies validation, excludes NvPerf. Must outlive this device.
-    vulkan::ShaderPrintf* shaderPrintf = nullptr;
+    // Optional backend-owned configuration value. Copies own independent options;
+    // each backend validates the payload type before initialization. Empty uses defaults.
+    std::any backendExtensions;
 };
 
 struct DeviceCapabilities {
-    bool unifiedImageLayouts = false;
     bool memoryDecompression = false;
     bool deviceGeneratedCommands = false;
     bool dynamicGeneratedPipelineLayout = false;
@@ -502,13 +484,8 @@ struct DeviceCapabilities {
     bool rayQuery = false;
     bool rayTracingPositionFetch = false;
     bool opacityMicromap = false;
-    bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
-    bool streamline = false;
-    bool streamlineDlssSr = false;
-    bool streamlineDlssRr = false;
-    bool aftermath = false;
     bool shaderBufferInt64Atomics = false;
     uint32_t subPixelPrecisionBits = 0;
     bool shaderIntegerDotProduct = false;
@@ -1106,7 +1083,7 @@ struct SemaphoreDesc {
 
 struct RenderingAttachmentDesc {
     class TextureView* view = nullptr;
-    ResourceState state = ResourceState::ColorAttachment;
+    TextureLayout layout = TextureLayout::ColorAttachment;
     LoadOp loadOp = LoadOp::Load;
     StoreOp storeOp = StoreOp::Store;
     ColorValue clearColor;
@@ -1233,11 +1210,10 @@ struct GraphicsPipelineDesc {
     uint32_t taskRequiredSubgroupSize = 0;
     // Full-subgroup mode is accepted only with a fixed required subgroup size.
     bool taskRequireFullSubgroups = false;
-    Format colorFormat = Format::Unknown;
-    // Optional second MRT; single-target callers leave this Unknown.
-    Format secondColorFormat = Format::Unknown;
-    // Optional third MRT; requires the first two color targets.
-    Format thirdColorFormat = Format::Unknown;
+    static constexpr uint32_t kMaxColorAttachments = 8;
+    // Only the first colorAttachmentCount entries participate in creation and hashing.
+    std::array<Format, kMaxColorAttachments> colorFormats{};
+    uint32_t colorAttachmentCount = 0;
     Format depthStencilFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     RasterizationState rasterization;
@@ -1267,39 +1243,6 @@ struct GraphicsShaderObjectProgramDesc {
     bool indirectBindable = false;
 };
 
-struct TextureBufferCopyDesc {
-    class Texture* texture = nullptr;
-    class Buffer* buffer = nullptr;
-    uint64_t bufferOffset = 0;
-    uint32_t bufferRowPitch = 0;
-    uint32_t bufferSlicePitch = 0;
-    int32_t textureOffsetX = 0;
-    int32_t textureOffsetY = 0;
-    int32_t textureOffsetZ = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t depth = 1;
-    uint32_t mipLevel = 0;
-    uint32_t baseLayer = 0;
-    uint32_t layerCount = 1;
-};
-
-struct BufferTextureCopyDesc {
-    class Buffer* buffer = nullptr;
-    class Texture* texture = nullptr;
-    uint64_t bufferOffset = 0;
-    uint32_t bufferRowPitch = 0;
-    uint32_t bufferSlicePitch = 0;
-    int32_t textureOffsetX = 0;
-    int32_t textureOffsetY = 0;
-    int32_t textureOffsetZ = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t depth = 1;
-    uint32_t mipLevel = 0;
-    uint32_t baseLayer = 0;
-    uint32_t layerCount = 1;
-};
 
 struct TextureCopyDesc {
     class Texture* source = nullptr;
@@ -1311,6 +1254,7 @@ struct TextureCopyDesc {
     uint32_t sourceBaseLayer = 0;
     uint32_t destinationMipLevel = 0;
     uint32_t destinationBaseLayer = 0;
+    uint32_t layerCount = 1;
 };
 
 struct BufferDecompressionDesc {
@@ -1320,101 +1264,6 @@ struct BufferDecompressionDesc {
     uint64_t destinationOffset = 0;
     uint64_t compressedBytes = 0;
     uint64_t decodedBytes = 0;
-};
-
-struct StreamDecompressionTile {
-    uint32_t sourceOffset = 0;
-    uint32_t destinationOffset = 0;
-    uint32_t storedBytes = 0;
-    uint32_t decodedBytes = 0;
-    bool compressed = false;
-};
-
-// Called at recording boundaries, under the Streamer lock. Profiling callbacks
-// must not reenter the Streamer. Existing callers may omit the callback.
-using StreamUploadPhaseCallback = std::function<void(const char*)>;
-
-struct BufferOffset {
-    class Buffer* buffer = nullptr;
-    uint64_t offset = 0;
-
-    bool valid() const { return buffer != nullptr; }
-};
-
-struct StreamDataChunk {
-    const void* data = nullptr;
-    uint64_t size = 0;
-};
-
-struct StreamerDesc {
-    uint64_t constantBufferSize = 0;
-    MemoryLocation constantBufferMemoryLocation = MemoryLocation::HostUpload;
-    MemoryLocation dynamicBufferMemoryLocation = MemoryLocation::HostUpload;
-    BufferDesc dynamicBufferDesc{
-        .size = 0,
-        .structureStride = 0,
-        .usage = BufferUsageBits::TransferSource,
-        .memoryLocation = MemoryLocation::HostUpload,
-    };
-    uint64_t dynamicBufferSizePerFrame = 1024ull * 1024ull;
-    uint32_t queuedFrameCount = 2;
-    QueueAccessBits constantBufferQueueAccess = QueueAccessBits::Graphics;
-};
-
-struct StreamerPendingCopyStats {
-    uint32_t bufferCopyCount = 0;
-    uint32_t textureCopyCount = 0;
-    uint64_t bufferCopyBytes = 0;
-    uint64_t textureCopyBytes = 0;
-
-    uint32_t copyCount() const { return bufferCopyCount + textureCopyCount; }
-    uint64_t copyBytes() const { return bufferCopyBytes + textureCopyBytes; }
-};
-
-struct StreamerStats {
-    uint64_t frameIndex = 0;
-    uint32_t frameSlot = 0;
-    uint32_t queuedFrameCount = 0;
-    uint64_t dynamicBufferSizePerFrame = 0;
-    uint64_t dynamicBufferOffset = 0;
-    uint64_t constantBufferOffset = 0;
-    uint64_t currentFrameDynamicBytes = 0;
-    uint64_t lastFrameDynamicBytes = 0;
-    uint64_t peakFrameDynamicBytes = 0;
-    uint64_t totalDynamicBytes = 0;
-    uint64_t currentFrameConstantBytes = 0;
-    uint64_t lastFrameConstantBytes = 0;
-    uint64_t peakFrameConstantBytes = 0;
-    uint64_t totalConstantBytes = 0;
-    uint32_t currentFrameDynamicRequestCount = 0;
-    uint32_t lastFrameDynamicRequestCount = 0;
-    uint32_t currentFrameConstantRequestCount = 0;
-    uint32_t lastFrameConstantRequestCount = 0;
-    uint32_t garbageBufferCount = 0;
-    StreamerPendingCopyStats pendingCopies;
-};
-
-struct StreamBufferDataDesc {
-    std::span<const StreamDataChunk> dataChunks;
-    uint32_t placementAlignment = 1;
-    class Buffer* dstBuffer = nullptr;
-    uint64_t dstOffset = 0;
-};
-
-struct StreamTextureDataDesc {
-    const void* data = nullptr;
-    uint32_t dataRowPitch = 0;
-    uint32_t dataSlicePitch = 0;
-    class Texture* dstTexture = nullptr;
-    uint32_t dstMipLevel = 0;
-    uint32_t dstBaseLayer = 0;
-    uint32_t dstLayerCount = 1;
-    int32_t dstOffsetX = 0;
-    int32_t dstOffsetY = 0;
-    int32_t dstOffsetZ = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t depth = 1;
 };
 
 struct BindlessHeapDesc {
@@ -1476,7 +1325,7 @@ struct BindlessSamplerWrite {
 struct BindlessImageWrite {
     BindlessHandle handle;
     class TextureView* view = nullptr;
-    ResourceState state = ResourceState::ShaderRead;
+    TextureLayout layout = TextureLayout::ShaderRead;
 };
 
 namespace detail {
@@ -1497,28 +1346,27 @@ struct BufferViewImpl;
 struct RayTracingAccelerationStructureImpl;
 struct TextureImpl;
 struct TextureViewImpl;
-struct StreamerImpl;
 struct ShaderModuleImpl;
 struct PipelineCacheImpl;
 struct GraphicsPipelineImpl;
 struct ComputePipelineImpl;
 struct GraphicsShaderObjectProgramImpl;
 struct BindlessHeapImpl;
-struct TrianglePreviewRendererImpl;
 struct VulkanNativeAccess;
 } // namespace detail
 
 class Queue {
-public:
-    Queue() = default;
-    ~Queue();
-    Queue(Queue&&) noexcept;
-    Queue& operator=(Queue&&) noexcept;
-
-    Queue(const Queue&) = delete;
-    Queue& operator=(const Queue&) = delete;
+    METALLIC_RHI_HANDLE(Queue, unique_ptr,
+        friend class Device;
+        friend class Swapchain;
+        friend class CommandPool;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     Result<> submit(const QueueSubmitDesc& desc);
+    // For owners that seal recordings and attach GPU completion tracking.
+    Result<> submitTracked(const QueueSubmitDesc& desc);
     Result<> waitIdle();
     QueueType type() const;
     bool sameQueue(const Queue& other) const;
@@ -1527,89 +1375,44 @@ public:
     [[nodiscard]] Result<GPUClockCalibration> calibrateTimestamps() const;
 
 private:
-    explicit Queue(std::unique_ptr<detail::QueueImpl> impl);
     Result<> submitImpl(const QueueSubmitDesc& desc, bool tracked);
-    friend class QueueSubmissionTracker;
-
-    std::unique_ptr<detail::QueueImpl> impl_;
-
-    friend class Device;
-    friend class Swapchain;
-    friend class CommandPool;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class Fence {
-public:
-    Fence() = default;
-    ~Fence();
-    Fence(Fence&&) noexcept;
-    Fence& operator=(Fence&&) noexcept;
-
-    Fence(const Fence&) = delete;
-    Fence& operator=(const Fence&) = delete;
+    METALLIC_RHI_HANDLE(Fence, unique_ptr,
+        friend class Device;
+        friend class Queue;
+        friend struct detail::DeviceImpl;
+    )
 
     Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX);
     Result<> reset();
     bool isSignaled() const;
-
-private:
-    explicit Fence(std::unique_ptr<detail::FenceImpl> impl);
-
-    std::unique_ptr<detail::FenceImpl> impl_;
-
-    friend class Device;
-    friend class Queue;
-    friend struct detail::DeviceImpl;
 };
 
 class Semaphore {
-public:
-    Semaphore() = default;
-    ~Semaphore();
-    Semaphore(Semaphore&&) noexcept;
-    Semaphore& operator=(Semaphore&&) noexcept;
-
-    Semaphore(const Semaphore&) = delete;
-    Semaphore& operator=(const Semaphore&) = delete;
+    METALLIC_RHI_HANDLE(Semaphore, unique_ptr,
+        friend class Device;
+        friend class Queue;
+        friend class Swapchain;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     Result<> wait(uint64_t value, uint64_t timeoutNanoseconds = UINT64_MAX);
     Result<> signal(uint64_t value);
     uint64_t currentValue() const;
-
-private:
-    explicit Semaphore(std::unique_ptr<detail::SemaphoreImpl> impl);
-
-    std::unique_ptr<detail::SemaphoreImpl> impl_;
-
-    friend class Device;
-    friend class Queue;
-    friend class Swapchain;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class SwapchainSemaphore {
-public:
-    SwapchainSemaphore() = default;
-    ~SwapchainSemaphore();
-    SwapchainSemaphore(SwapchainSemaphore&&) noexcept;
-    SwapchainSemaphore& operator=(SwapchainSemaphore&&) noexcept;
+    METALLIC_RHI_HANDLE(SwapchainSemaphore, unique_ptr,
+        friend class Device;
+        friend class Queue;
+        friend class Swapchain;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
-    SwapchainSemaphore(const SwapchainSemaphore&) = delete;
-    SwapchainSemaphore& operator=(const SwapchainSemaphore&) = delete;
-
-private:
-    explicit SwapchainSemaphore(std::unique_ptr<detail::SwapchainSemaphoreImpl> impl);
-
-    std::unique_ptr<detail::SwapchainSemaphoreImpl> impl_;
-
-    friend class Device;
-    friend class Queue;
-    friend class Swapchain;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 // Value-only allocation diagnostics: taking a snapshot does not retain GPU memory.
@@ -1658,18 +1461,36 @@ private:
     uint64_t offset_ = 0;
     uint64_t size_ = 0;
     friend class Buffer;
+    friend class BindlessHeap;
     friend struct detail::BufferAddressCommandAccess;
 };
 
-class Buffer {
-public:
-    Buffer() = default;
-    ~Buffer();
-    Buffer(Buffer&&) noexcept;
-    Buffer& operator=(Buffer&&) noexcept;
+struct BufferTextureRegion {
+    class Texture* texture = nullptr;
+    BufferSlice buffer;
+    uint32_t bufferRowPitch = 0;
+    uint32_t bufferSlicePitch = 0;
+    int32_t textureOffsetX = 0;
+    int32_t textureOffsetY = 0;
+    int32_t textureOffsetZ = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+    uint32_t mipLevel = 0;
+    uint32_t baseLayer = 0;
+    uint32_t layerCount = 1;
+};
 
-    Buffer(const Buffer&) = delete;
-    Buffer& operator=(const Buffer&) = delete;
+class Buffer {
+    METALLIC_RHI_HANDLE(Buffer, shared_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+        friend class BufferView;
+        friend class BindlessHeap;
+        friend struct detail::DeviceImpl;
+        friend struct detail::BufferAddressCommandAccess;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     const BufferDesc& desc() const;
     ResourceMemoryInfo memoryInfo() const;
@@ -1684,53 +1505,24 @@ public:
     void unmap();
     void flush(BufferRange range = {});
     void invalidate(BufferRange range = {});
-
-private:
-    explicit Buffer(std::unique_ptr<detail::BufferImpl> impl);
-
-    std::shared_ptr<detail::BufferImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend class BufferView;
-    friend class BindlessHeap;
-    friend struct detail::DeviceImpl;
-    friend struct detail::BufferAddressCommandAccess;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class BufferView {
-public:
-    BufferView() = default;
-    ~BufferView();
-    BufferView(BufferView&&) noexcept;
-    BufferView& operator=(BufferView&&) noexcept;
-
-    BufferView(const BufferView&) = delete;
-    BufferView& operator=(const BufferView&) = delete;
+    METALLIC_RHI_HANDLE(BufferView, unique_ptr,
+        friend class Device;
+        friend class BindlessHeap;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     const BufferViewDesc& desc() const;
-
-private:
-    explicit BufferView(std::unique_ptr<detail::BufferViewImpl> impl);
-
-    std::unique_ptr<detail::BufferViewImpl> impl_;
-
-    friend class Device;
-    friend class BindlessHeap;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class TimestampQueryPool {
-public:
-    TimestampQueryPool() = default;
-    ~TimestampQueryPool();
-    TimestampQueryPool(TimestampQueryPool&&) noexcept;
-    TimestampQueryPool& operator=(TimestampQueryPool&&) noexcept;
-
-    TimestampQueryPool(const TimestampQueryPool&) = delete;
-    TimestampQueryPool& operator=(const TimestampQueryPool&) = delete;
+    METALLIC_RHI_HANDLE(TimestampQueryPool, unique_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+    )
 
     const TimestampQueryPoolDesc& desc() const;
     // All submitted work using this range must be complete. Externally synchronize
@@ -1740,54 +1532,28 @@ public:
         uint32_t firstQuery,
         std::span<TimestampQueryResult> outResults) const;
     double durationMilliseconds(uint64_t beginTimestamp, uint64_t endTimestamp) const;
-
-private:
-    explicit TimestampQueryPool(std::unique_ptr<detail::TimestampQueryPoolImpl> impl);
-
-    std::unique_ptr<detail::TimestampQueryPoolImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
 };
 
 class RayTracingAccelerationStructureCompactionQueryPool {
-public:
-    RayTracingAccelerationStructureCompactionQueryPool() = default;
-    ~RayTracingAccelerationStructureCompactionQueryPool();
-    RayTracingAccelerationStructureCompactionQueryPool(
-        RayTracingAccelerationStructureCompactionQueryPool&&) noexcept;
-    RayTracingAccelerationStructureCompactionQueryPool& operator=(
-        RayTracingAccelerationStructureCompactionQueryPool&&) noexcept;
-
-    RayTracingAccelerationStructureCompactionQueryPool(
-        const RayTracingAccelerationStructureCompactionQueryPool&) = delete;
-    RayTracingAccelerationStructureCompactionQueryPool& operator=(
-        const RayTracingAccelerationStructureCompactionQueryPool&) = delete;
+    METALLIC_RHI_HANDLE(RayTracingAccelerationStructureCompactionQueryPool, unique_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+    )
 
     const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc() const;
     Result<> readResults(
         uint32_t firstQuery,
         std::span<uint64_t> outCompactedSizes) const;
-
-private:
-    explicit RayTracingAccelerationStructureCompactionQueryPool(
-        std::unique_ptr<detail::RayTracingAccelerationStructureCompactionQueryPoolImpl> impl);
-
-    std::unique_ptr<detail::RayTracingAccelerationStructureCompactionQueryPoolImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
 };
 
 class RayTracingAccelerationStructure {
-public:
-    RayTracingAccelerationStructure() = default;
-    ~RayTracingAccelerationStructure();
-    RayTracingAccelerationStructure(RayTracingAccelerationStructure&&) noexcept;
-    RayTracingAccelerationStructure& operator=(RayTracingAccelerationStructure&&) noexcept;
-
-    RayTracingAccelerationStructure(const RayTracingAccelerationStructure&) = delete;
-    RayTracingAccelerationStructure& operator=(const RayTracingAccelerationStructure&) = delete;
+    METALLIC_RHI_HANDLE(RayTracingAccelerationStructure, shared_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+        friend class BindlessHeap;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     const RayTracingAccelerationStructureDesc& desc() const;
     ResourceMemoryInfo memoryInfo() const;
@@ -1796,29 +1562,19 @@ public:
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
     const void* deviceIdentity() const;
-
-private:
-    explicit RayTracingAccelerationStructure(
-        std::unique_ptr<detail::RayTracingAccelerationStructureImpl> impl);
-
-    std::shared_ptr<detail::RayTracingAccelerationStructureImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend class BindlessHeap;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class Texture {
-public:
-    Texture() = default;
-    ~Texture();
-    Texture(Texture&&) noexcept;
-    Texture& operator=(Texture&&) noexcept;
-
-    Texture(const Texture&) = delete;
-    Texture& operator=(const Texture&) = delete;
+    METALLIC_RHI_HANDLE(Texture, shared_ptr,
+        friend class Device;
+        friend class Swapchain;
+        friend class CommandBuffer;
+        friend class TextureView;
+        friend class BindlessHeap;
+        friend struct detail::DeviceImpl;
+        friend struct detail::SwapchainImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     const TextureDesc& desc() const;
     uint64_t allocationSize() const;
@@ -1826,31 +1582,16 @@ public:
     // Owns the image allocation; borrowed swapchain images return empty.
     std::shared_ptr<void> retainAllocation() const;
     const void* deviceIdentity() const;
-
-private:
-    explicit Texture(std::unique_ptr<detail::TextureImpl> impl);
-
-    std::shared_ptr<detail::TextureImpl> impl_;
-
-    friend class Device;
-    friend class Swapchain;
-    friend class CommandBuffer;
-    friend class TextureView;
-    friend class BindlessHeap;
-    friend struct detail::DeviceImpl;
-    friend struct detail::SwapchainImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class TextureView {
-public:
-    TextureView() = default;
-    ~TextureView();
-    TextureView(TextureView&&) noexcept;
-    TextureView& operator=(TextureView&&) noexcept;
-
-    TextureView(const TextureView&) = delete;
-    TextureView& operator=(const TextureView&) = delete;
+    METALLIC_RHI_HANDLE(TextureView, shared_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+        friend class BindlessHeap;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     const TextureViewDesc& desc() const;
     // Semantic shader views are cheap. Materialize only for attachments/interop.
@@ -1859,63 +1600,28 @@ public:
     // Owns the image allocation, not this view. Borrowed swapchain images return empty.
     std::shared_ptr<void> retainTexture() const;
     const void* deviceIdentity() const;
-
-private:
-    explicit TextureView(std::unique_ptr<detail::TextureViewImpl> impl);
-
-    std::shared_ptr<detail::TextureViewImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend class BindlessHeap;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class ShaderModule {
-public:
-    ShaderModule() = default;
-    ~ShaderModule();
-    ShaderModule(ShaderModule&&) noexcept;
-    ShaderModule& operator=(ShaderModule&&) noexcept;
-
-    ShaderModule(const ShaderModule&) = delete;
-    ShaderModule& operator=(const ShaderModule&) = delete;
+    METALLIC_RHI_HANDLE(ShaderModule, unique_ptr,
+        friend class Device;
+        friend struct detail::DeviceImpl;
+    )
 
     uint64_t contentHash() const;
-
-private:
-    explicit ShaderModule(std::unique_ptr<detail::ShaderModuleImpl> impl);
-
-    std::unique_ptr<detail::ShaderModuleImpl> impl_;
-
-    friend class Device;
-    friend struct detail::DeviceImpl;
 };
 
 class PipelineCache {
-public:
-    PipelineCache() = default;
-    ~PipelineCache();
-    PipelineCache(PipelineCache&&) noexcept;
-    PipelineCache& operator=(PipelineCache&&) noexcept;
-
-    PipelineCache(const PipelineCache&) = delete;
-    PipelineCache& operator=(const PipelineCache&) = delete;
+    METALLIC_RHI_HANDLE(PipelineCache, unique_ptr,
+        friend class Device;
+        friend struct detail::DeviceImpl;
+    )
 
     const char* filePath() const;
     PipelineCacheStats stats() const;
     // Persists pending cache changes. This is a no-op when no new PSO hash was
     // recorded since loading or the previous save.
     Result<> save();
-
-private:
-    explicit PipelineCache(std::unique_ptr<detail::PipelineCacheImpl> impl);
-
-    std::unique_ptr<detail::PipelineCacheImpl> impl_;
-
-    friend class Device;
-    friend struct detail::DeviceImpl;
 };
 
 struct RasterExecutionState {
@@ -1944,14 +1650,12 @@ private:
 };
 
 class GraphicsPipeline {
-public:
-    GraphicsPipeline() = default;
-    ~GraphicsPipeline();
-    GraphicsPipeline(GraphicsPipeline&&) noexcept;
-    GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept;
-
-    GraphicsPipeline(const GraphicsPipeline&) = delete;
-    GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
+    METALLIC_RHI_HANDLE(GraphicsPipeline, shared_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
     // still perform implementation-defined validation when creating the PSO.
@@ -1959,27 +1663,15 @@ public:
     bool pipelineCacheHit() const;
 
     PreparedExecution execution() const;
-
-private:
-    explicit GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl);
-
-    std::shared_ptr<detail::GraphicsPipelineImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class ComputePipeline {
-public:
-    ComputePipeline() = default;
-    ~ComputePipeline();
-    ComputePipeline(ComputePipeline&&) noexcept;
-    ComputePipeline& operator=(ComputePipeline&&) noexcept;
-
-    ComputePipeline(const ComputePipeline&) = delete;
-    ComputePipeline& operator=(const ComputePipeline&) = delete;
+    METALLIC_RHI_HANDLE(ComputePipeline, shared_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
     // still perform implementation-defined validation when creating the PSO.
@@ -1987,142 +1679,68 @@ public:
     bool pipelineCacheHit() const;
 
     PreparedExecution execution() const;
-
-private:
-    explicit ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> impl);
-
-    std::shared_ptr<detail::ComputePipelineImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class GraphicsShaderObjectProgram {
-public:
-    GraphicsShaderObjectProgram() = default;
-    ~GraphicsShaderObjectProgram();
-    GraphicsShaderObjectProgram(GraphicsShaderObjectProgram&&) noexcept;
-    GraphicsShaderObjectProgram& operator=(GraphicsShaderObjectProgram&&) noexcept;
-
-    GraphicsShaderObjectProgram(const GraphicsShaderObjectProgram&) = delete;
-    GraphicsShaderObjectProgram& operator=(const GraphicsShaderObjectProgram&) = delete;
+    METALLIC_RHI_HANDLE(GraphicsShaderObjectProgram, shared_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     PreparedExecution execution(const RasterExecutionState& state = {}) const;
-
-private:
-    explicit GraphicsShaderObjectProgram(std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl);
-
-    std::shared_ptr<detail::GraphicsShaderObjectProgramImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class BindlessHeap {
-public:
-    BindlessHeap() = default;
-    ~BindlessHeap();
-    BindlessHeap(BindlessHeap&&) noexcept;
-    BindlessHeap& operator=(BindlessHeap&&) noexcept;
-
-    BindlessHeap(const BindlessHeap&) = delete;
-    BindlessHeap& operator=(const BindlessHeap&) = delete;
+    METALLIC_RHI_HANDLE(BindlessHeap, unique_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+        friend struct detail::DeviceImpl;
+    )
 
     const BindlessHeapDesc& desc() const;
 
-    [[nodiscard]] Result<BindlessHandle> allocateSampler();
-    [[nodiscard]] Result<BindlessHandle> allocateSampledImage();
-    [[nodiscard]] Result<BindlessHandle> allocateStorageImage();
-    [[nodiscard]] Result<BindlessHandle> allocateBuffer();
-    [[nodiscard]] Result<BindlessHandle> allocateAccelerationStructure();
+    [[nodiscard]] Result<BindlessHandle> allocate(BindlessHandleKind kind);
     void release(BindlessHandle handle);
     Result<> writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
     Result<> writeSamplers(std::span<const BindlessSamplerWrite> writes);
-    Result<> writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
+    Result<> writeSampledImage(BindlessHandle handle, TextureView& view, TextureLayout layout = TextureLayout::ShaderRead);
     Result<> writeStorageImage(BindlessHandle handle, TextureView& view);
     Result<> writeImages(std::span<const BindlessImageWrite> writes);
     Result<> writeBufferView(BindlessHandle handle, BufferView& view);
     Result<> writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
-    Result<> writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
+    // Writes the complete backing allocation, even when only a slice owner remains.
+    Result<> writeStorageBuffer(BindlessHandle handle, const BufferSlice& buffer);
     Result<> writeAccelerationStructure(
         BindlessHandle handle,
         RayTracingAccelerationStructure& accelerationStructure);
-
-private:
-    explicit BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl);
-
-    std::unique_ptr<detail::BindlessHeapImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend struct detail::DeviceImpl;
 };
 
-class RenderFrameContext;
 class SubmissionTransaction;
-class GPUCompletionPoint;
+class CommandSubmissionContext;
 
-class StreamUploadCompletion;
-
-class Streamer {
-public:
-    Streamer() = default;
-    ~Streamer();
-    Streamer(Streamer&&) noexcept;
-    Streamer& operator=(Streamer&&) noexcept;
-
-    Streamer(const Streamer&) = delete;
-    Streamer& operator=(const Streamer&) = delete;
-
-    const StreamerDesc& desc() const;
-    StreamerStats stats() const;
-    Buffer* constantBuffer() const;
-    BufferOffset streamBufferData(const StreamBufferDataDesc& desc);
-    bool streamDecompressedBufferData(std::span<const uint8_t> stored,
-        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset);
-    BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
-    uint64_t streamConstantData(const void* data, uint64_t byteSize);
-    Result<> beginFrame(RenderFrameContext& frame);
-    // Covers copies currently queued for the next flush. Returns null without
-    // beginFrame(frame), or when no copies are pending. See StreamUploadCompletion.h.
-    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion();
-    [[nodiscard]] Result<> copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
-    void endFrame();
-
-private:
-    explicit Streamer(std::unique_ptr<detail::StreamerImpl> impl);
-
-    std::unique_ptr<detail::StreamerImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-};
 
 class CommandBuffer {
-public:
-    CommandBuffer();
-    ~CommandBuffer();
-    CommandBuffer(CommandBuffer&&) noexcept;
-    CommandBuffer& operator=(CommandBuffer&&) noexcept;
+    METALLIC_RHI_HANDLE(CommandBuffer, unique_ptr,
+        friend class CommandPool;
+        friend class Queue;
+        friend struct detail::CommandPoolImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
-    CommandBuffer(const CommandBuffer&) = delete;
-    CommandBuffer& operator=(const CommandBuffer&) = delete;
-
-    Result<> begin(RenderFrameContext* frameContext = nullptr);
-    RenderFrameContext* frameContext() const { return frameContext_; }
+    Result<> begin(std::shared_ptr<CommandSubmissionContext> context = {});
+    const std::shared_ptr<CommandSubmissionContext>& submissionContext() const { return submissionContext_; }
+    const std::shared_ptr<detail::CommandSubmissionState>& submissionState() const { return submission_; }
     bool recording() const { return recording_; }
     QueueAccessBits queueCapabilities() const;
     const void* deviceIdentity() const;
     // Queue::submit merges these waits and the command buffer retains their
     // timeline lifetimes until its next recording. Call while recording.
-    Result<> addDependency(const GPUCompletionPoint& completion);
+    Result<> addDependency(std::span<const SemaphoreSubmitDesc> waits, std::shared_ptr<const void> lifetime = {});
     Result<> addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
-    // Local while recording. Queue acceptance transfers ownership to the frame
-    // through completion; standalone callers retain until command reset.
+    // Local while recording. Queue acceptance transfers ownership to the
+    // submission context; standalone callers retain until command reset.
     Result<> retainResource(std::shared_ptr<void> resource);
     Result<> end();
     void beginDebugLabel(const DebugLabelDesc& desc);
@@ -2152,17 +1770,16 @@ public:
     [[nodiscard]] Result<> copyBuffer(const BufferSlice& source, const BufferSlice& destination);
     Result<> decompressBuffers(std::span<const BufferDecompressionDesc> regions);
     Result<> validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
-    void copyTexture(const TextureCopyDesc& desc);
-    void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
-    void copyBufferToTexture(const BufferTextureCopyDesc& desc);
-    void clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color = {});
-    [[nodiscard]] Result<> copyStreamedData(Streamer& streamer);
+    [[nodiscard]] Result<> copyTexture(const TextureCopyDesc& desc);
+    [[nodiscard]] Result<> copyTextureToBuffer(const BufferTextureRegion& desc);
+    [[nodiscard]] Result<> copyBufferToTexture(const BufferTextureRegion& desc);
+    [[nodiscard]] Result<> clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color = {});
     Result<> beginRendering(const RenderingDesc& desc);
     // Native SDK consumers retain the view itself as well as its image.
     Result<> useNativeTextureView(TextureView& view);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
     void endRendering();
-    void setViewport(const Viewport& viewport);
+    [[nodiscard]] Result<> setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
     void setDepthStencilState(const DepthStencilState& state);
     [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution);
@@ -2173,12 +1790,11 @@ public:
     // Record compute-only instrumentation, restoring the compute pipeline,
     // descriptor heap and shared push data before returning. No rendering scope.
     Result<> recordIsolatedCompute(const std::function<Result<>()>& record);
-    void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
-    void drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
-    void drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
+    [[nodiscard]] Result<> draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
+    [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    [[nodiscard]] Result<> drawMeshTasksIndirect(const BufferSlice& arguments);
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     // Three GPU-written uint32 group counts; offset is 4-byte aligned.
-    Result<> dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
     Result<> dispatchIndirect(const BufferSlice& arguments);
     Result<> buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
@@ -2194,60 +1810,36 @@ public:
         RayTracingAccelerationStructure& destination);
 
 private:
-    explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
+    enum class BufferTextureCopyDirection { ToBuffer, ToTexture };
+    Result<> copyBufferTexture(const BufferTextureRegion& region, BufferTextureCopyDirection direction);
     void setGraphicsShaderObjectState();
     Result<> bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData);
 
-    std::unique_ptr<detail::CommandBufferImpl> impl_;
     Result<> processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const;
-    RenderFrameContext* frameContext_ = nullptr;
+    std::shared_ptr<CommandSubmissionContext> submissionContext_;
     std::shared_ptr<detail::CommandSubmissionState> submission_;
-    std::shared_ptr<const void> frameRecording_;
     std::vector<SemaphoreSubmitDesc> dependencyWaits_;
     std::vector<std::shared_ptr<const void>> dependencyLifetimes_;
     bool recording_ = false;
-
-    friend class RecordedBatch;
-    friend class QueueSubmissionTracker;
-    friend class CommandPool;
-    friend class StreamUploadCompletion;
-    friend class Queue;
-    friend struct detail::CommandPoolImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class CommandPool {
-public:
-    CommandPool() = default;
-    ~CommandPool();
-    CommandPool(CommandPool&&) noexcept;
-    CommandPool& operator=(CommandPool&&) noexcept;
-
-    CommandPool(const CommandPool&) = delete;
-    CommandPool& operator=(const CommandPool&) = delete;
+    METALLIC_RHI_HANDLE(CommandPool, unique_ptr,
+        friend class Device;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     Result<> reset();
     [[nodiscard]] Result<std::unique_ptr<CommandBuffer>> createCommandBuffer();
-
-private:
-    explicit CommandPool(std::unique_ptr<detail::CommandPoolImpl> impl);
-
-    std::unique_ptr<detail::CommandPoolImpl> impl_;
-
-    friend class Device;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
 class Swapchain {
-public:
-    Swapchain() = default;
-    ~Swapchain();
-    Swapchain(Swapchain&&) noexcept;
-    Swapchain& operator=(Swapchain&&) noexcept;
-
-    Swapchain(const Swapchain&) = delete;
-    Swapchain& operator=(const Swapchain&) = delete;
+    METALLIC_RHI_HANDLE(Swapchain, unique_ptr,
+        friend class Device;
+        friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     uint32_t imageCount() const;
     uint32_t width() const;
@@ -2258,37 +1850,28 @@ public:
     Texture* texture(uint32_t imageIndex);
     [[nodiscard]] Result<uint32_t> acquireNextImage(SwapchainSemaphore& semaphore);
     Result<> present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore);
-
-private:
-    explicit Swapchain(std::unique_ptr<detail::SwapchainImpl> impl);
-
-    std::unique_ptr<detail::SwapchainImpl> impl_;
-
-    friend class Device;
-    friend struct detail::DeviceImpl;
-    friend struct detail::VulkanNativeAccess;
 };
 
-class ResourceRegistry;
 
 class Device {
-public:
-    Device();
-    ~Device();
-    Device(Device&&) noexcept;
-    Device& operator=(Device&&) noexcept;
-
-    Device(const Device&) = delete;
-    Device& operator=(const Device&) = delete;
+    METALLIC_RHI_HANDLE(Device, unique_ptr,
+        friend Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
+        friend class CommandBuffer;
+        friend struct detail::VulkanNativeAccess;
+    )
 
     const DeviceCapabilities& capabilities() const;
     const void* identity() const;
-    [[nodiscard]] Result<std::shared_ptr<ResourceRegistry>> resourceRegistry();
+    // Owner-defined per-device state. Factory runs once under a lock and must
+    // not recursively request shared state. Released before native teardown;
+    // external references and their resources must not outlive Device.
+    [[nodiscard]] Result<std::shared_ptr<void>> sharedState(
+        const void* key, const std::function<Result<std::shared_ptr<void>>()>& factory);
     DeviceMemoryBudget memoryBudget() const;
     void setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy);
     [[nodiscard]] Result<MemoryBudgetReservation> reserveMemoryBudget(uint64_t bytes);
     void logMemoryBudget(const char* phase) const;
-    Queue* getQueue(QueueType type, uint32_t indwriteStorageBufferex = 0);
+    Queue* getQueue(QueueType type, uint32_t index = 0);
     Result<> waitIdle();
     [[nodiscard]] Result<std::unique_ptr<Swapchain>> createSwapchain(const SwapchainDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<CommandPool>> createCommandPool(Queue& queue);
@@ -2327,7 +1910,6 @@ public:
     // the images, views, and retained commands. Failure returns no partial group.
     [[nodiscard]] Result<std::vector<std::unique_ptr<Texture>>> createAliasedTextures(std::span<const TextureDesc> descriptions);
     [[nodiscard]] Result<std::unique_ptr<TextureView>> createTextureView(Texture& texture, const TextureViewDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<Streamer>> createStreamer(const StreamerDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<ShaderModule>> createShaderModule(const ShaderModuleDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<PipelineCache>> createPipelineCache(const PipelineCacheDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> createGraphicsPipeline(const GraphicsPipelineDesc& desc);
@@ -2343,41 +1925,9 @@ public:
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createPartitionedAccelerationStructureInstanceBuffer(std::span<const PartitionedAccelerationStructureInstanceDesc> instances);
 
 private:
-    explicit Device(std::unique_ptr<detail::DeviceImpl> impl);
     bool validShaderStage(const ShaderStageDesc& stage) const;
     static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
-
-    std::unique_ptr<detail::DeviceImpl> impl_;
-
-    friend Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
-    friend class CommandBuffer;
-    friend struct detail::VulkanNativeAccess;
 };
 
 [[nodiscard]] Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
-int runRhiSmokeTest(bool enableValidation);
-int runRhiTrianglePreviewTest(bool enableValidation);
-int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation);
-
-class TrianglePreviewRenderer {
-public:
-    TrianglePreviewRenderer();
-    ~TrianglePreviewRenderer();
-
-    TrianglePreviewRenderer(TrianglePreviewRenderer&&) noexcept;
-    TrianglePreviewRenderer& operator=(TrianglePreviewRenderer&&) noexcept;
-
-    TrianglePreviewRenderer(const TrianglePreviewRenderer&) = delete;
-    TrianglePreviewRenderer& operator=(const TrianglePreviewRenderer&) = delete;
-
-    Result<> initialize(bool enableValidation = false);
-    Result<> render(uint32_t width, uint32_t height);
-    const std::vector<uint32_t>& pixels() const;
-    uint32_t width() const;
-    uint32_t height() const;
-
-private:
-    std::unique_ptr<detail::TrianglePreviewRendererImpl> impl_;
-};
-
 } // namespace metallic::render

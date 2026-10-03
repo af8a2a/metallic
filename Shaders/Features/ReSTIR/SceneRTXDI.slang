@@ -3,10 +3,7 @@
 #define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
 #endif
 
-#include "../../../Source/Runtime/Render/Core/RTXDITraceParameters.h"
-#define METALLIC_PATH_TRACE_TYPED 1
-[[vk::push_constant]] ConstantBuffer<RTXDITraceParameters> gRTXDI;
-#define gPathTraceParameters (*gRTXDI.scene)
+import Core;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
@@ -18,56 +15,107 @@ import NRDEncoding;
 using Metallic.Interop.NRDEncoding;
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
-#include "../../Interop/NeuralTextureBindings.hlsli"
 
-#define gScene resolveDescriptor(gPathTraceParameters.scene)
+#define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
-#define gOutput resolveDescriptor(gRTXDI.output)
+#define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
 
-typealias RTXDIPrimitive = PathTracePrimitive;
-typealias RTXDIInstance = PathTraceInstance;
-typealias RTXDITextureInfo = PathTraceTextureInfo;
-typealias RTXDIMaterial = PathTraceMaterial;
+struct RTXDIPrimitive
+{
+    uint firstVertex;
+    uint vertexCount;
+    uint firstIndex;
+    uint indexCount;
+    uint flags;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+};
 
-#define gIndices gPathTraceParameters.indices
+struct RTXDIInstance
+{
+    uint primitiveIndex;
+    uint materialIndex;
+    uint flags;
+    float padding;
+};
 
-#define gPrimitives gPathTraceParameters.primitives
+struct RTXDITextureInfo
+{
+    uint textureIndex;
+    uint texCoord;
+    uint ntcTextureSetIndex;
+    uint ntcChannelMapping;
+    float4 transform0;
+    float4 transform1;
+};
 
-#define gInstances gPathTraceParameters.instances
+struct RTXDIMaterial
+{
+    float4 baseColor;
+    float4 emissive;
+    float4 params;
+    float4 textureParams;
+    float4 glassParams;
+    float4 attenuationColor;
+    float4 diffuseTransmission;
+    float4 rtxcrHairBaseColor;
+    float4 rtxcrHairParams0;
+    float4 rtxcrHairParams1;
+    float4 rtxcrHairDiffuseTint;
+    RTXDITextureInfo baseColorTexture;
+    RTXDITextureInfo metallicRoughnessTexture;
+    RTXDITextureInfo normalTexture;
+    RTXDITextureInfo occlusionTexture;
+    RTXDITextureInfo emissiveTexture;
+    RTXDITextureInfo transmissionTexture;
+    RTXDITextureInfo thicknessTexture;
+    RTXDITextureInfo diffuseTransmissionTexture;
+    RTXDITextureInfo diffuseTransmissionColorTexture;
+    float4 specular;
+    RTXDITextureInfo specularTexture;
+    RTXDITextureInfo specularColorTexture;
+};
 
-#define gMaterials resolveDescriptor(gPathTraceParameters.materials)
+#define gIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().indices)
 
-#define gMaterialTextures(index) resolveDescriptor(nonuniform(gPathTraceParameters.materialTextures[index]))
+#define gPrimitives resolveBuffer<StructuredBuffer<RTXDIPrimitive>>(getResourceParameters<SceneResourceParameters>().primitives)
 
-#define gReservoirCurrent resolveDescriptor(gRTXDI.reservoirCurrent)
+#define gInstances resolveBuffer<StructuredBuffer<RTXDIInstance>>(getResourceParameters<SceneResourceParameters>().instances)
 
-#define gReservoirPrevious resolveDescriptor(gRTXDI.reservoirPrevious)
+#define gMaterials resolveBuffer<StructuredBuffer<RTXDIMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
 
-#define gPositionCurrent resolveDescriptor(gRTXDI.positionCurrent)
+#define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
 
-#define gPositionPrevious resolveDescriptor(gRTXDI.positionPrevious)
+#define gReservoirCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().reservoirCurrent)
 
-#define gNormalCurrent resolveDescriptor(gRTXDI.normalCurrent)
+#define gReservoirPrevious resolveUniform(getResourceParameters<SceneResourceParameters>().reservoirPrevious)
 
-#define gNormalPrevious resolveDescriptor(gRTXDI.normalPrevious)
+#define gPositionCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().positionCurrent)
 
-#define gNoisyDiffuse resolveDescriptor(gRTXDI.noisyDiffuse)
+#define gPositionPrevious resolveUniform(getResourceParameters<SceneResourceParameters>().positionPrevious)
 
-#define gNoisySpecular resolveDescriptor(gRTXDI.noisySpecular)
+#define gNormalCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().normalCurrent)
 
-#define gNrdNormalRoughness resolveDescriptor(gRTXDI.normalRoughness)
+#define gNormalPrevious resolveUniform(getResourceParameters<SceneResourceParameters>().normalPrevious)
 
-#define gNrdMotionVectors resolveDescriptor(gRTXDI.motionVectors)
+#define gNoisyDiffuse resolveUniform(getResourceParameters<SceneResourceParameters>().noisyDiffuse)
 
-#define gNrdViewZ resolveDescriptor(gRTXDI.viewZ)
+#define gNoisySpecular resolveUniform(getResourceParameters<SceneResourceParameters>().noisySpecular)
 
-#define gBaseColorMetalness resolveDescriptor(gRTXDI.baseColorMetalness)
+#define gNrdNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().nrdNormalRoughness)
 
-#define gEmissive resolveDescriptor(gRTXDI.emissive)
+#define gNrdMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().nrdMotion)
 
-#define gEnvironmentMap resolveDescriptor(gPathTraceParameters.environment)
+#define gNrdViewZ resolveUniform(getResourceParameters<SceneResourceParameters>().nrdViewZ)
 
-#define gEnvironmentPdf resolveDescriptor(gPathTraceParameters.environmentPdf)
+#define gBaseColorMetalness resolveUniform(getResourceParameters<SceneResourceParameters>().baseColorMetalness)
+
+#define gEmissive resolveUniform(getResourceParameters<SceneResourceParameters>().emissive)
+
+#define gEnvironmentMap resolveUniform(getResourceParameters<SceneResourceParameters>().environmentMap)
+
+#define gEnvironmentPdf resolveUniform(getResourceParameters<SceneResourceParameters>().environmentPdf)
 
 
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -296,13 +344,13 @@ bool sampleImportanceMipmap(
 float3 visualizeReGIRCell(float3 worldPosition)
 {
     uint recordCount, stride;
-    resolveDescriptor(gPathTraceParameters.reGIR).GetDimensions(recordCount, stride);
+    resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid).GetDimensions(recordCount, stride);
     if (recordCount < kPunctualReGIRHeaderRecordCount) {
         return float3(0.0);
     }
-    uint4 grid = resolveDescriptor(gPathTraceParameters.reGIR)[0];
-    uint4 centerAndCellSize = resolveDescriptor(gPathTraceParameters.reGIR)[1];
-    uint4 metadata = resolveDescriptor(gPathTraceParameters.reGIR)[2];
+    uint4 grid = resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid)[0];
+    uint4 centerAndCellSize = resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid)[1];
+    uint4 metadata = resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid)[2];
     float cellSize = asfloat(centerAndCellSize.w);
     if (metadata.x != kPunctualReGIRMagic ||
         any(grid.xyz == uint3(0u, 0u, 0u)) ||
@@ -340,10 +388,10 @@ bool sampleLocalLight(
     if (behaviorEnabled(push, kBehaviorReGIR)) {
         // An empty slot in a valid cell stays a zero candidate. Only the
         // shared selector's out-of-grid path falls back to the global PDF.
-        return selectPunctualLight(PunctualSamplingResources(resolveDescriptor(gPathTraceParameters.lights), resolveDescriptor(gPathTraceParameters.reGIR), resolveDescriptor(gPathTraceParameters.punctualPdf)), worldPosition, seed, lightIndex, inverseSourcePdf);
+        return selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), worldPosition, seed, lightIndex, inverseSourcePdf);
     }
     if (behaviorEnabled(push, kBehaviorLocalLightImportance)) {
-        return selectPunctualLightGlobal(PunctualSamplingResources(resolveDescriptor(gPathTraceParameters.lights), resolveDescriptor(gPathTraceParameters.reGIR), resolveDescriptor(gPathTraceParameters.punctualPdf)), seed, lightIndex, inverseSourcePdf);
+        return selectPunctualLightGlobal(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), seed, lightIndex, inverseSourcePdf);
     }
 
     lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
@@ -525,8 +573,7 @@ float4 loadMaterialTexture(
         uint2 dimensions;
         uint mipCount;
         if (!metallicNeuralTextureDimensions(
-            sceneNeuralTextures(),
-            textureInfo.ntcTextureSetIndex,
+                textureInfo.ntcTextureSetIndex,
                 push.ntcTextureSetCount,
                 0u,
                 dimensions,
@@ -538,7 +585,6 @@ float4 loadMaterialTexture(
             uint2(wrappedUv * float2(dimensions)),
             dimensions - uint2(1u, 1u)));
         return metallicSampleNeuralTexture(
-            sceneNeuralTextures(),
             textureInfo.ntcTextureSetIndex,
             push.ntcTextureSetCount,
             textureInfo.ntcChannelMapping,
@@ -561,53 +607,31 @@ float4 loadMaterialTexture(
     return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
 }
 
-// Validate the complete index chain before dereferencing ordinary BDA data.
-// Subtraction-based checks avoid wrapping firstIndex + triangleIndex * 3 and
-// firstVertex + localIndex when scene metadata is malformed or stale.
-bool loadRTXDITriangle(uint instanceIndex, uint triangleIndex,
-    out PathTraceInstance instance, out PathTracePrimitive primitive, out uint3 indices)
+float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
 {
-    instance = (PathTraceInstance)0;
-    primitive = (PathTracePrimitive)0;
-    indices = uint3(0);
-    if (!gInstances.contains(instanceIndex)) { return false; }
-    instance = gInstances.data[instanceIndex];
-    if (!gPrimitives.contains(instance.primitiveIndex)) { return false; }
-    primitive = gPrimitives.data[instance.primitiveIndex];
-    if (triangleIndex >= primitive.indexCount / 3u ||
-        primitive.firstIndex > gIndices.length() ||
-        primitive.indexCount > gIndices.length() - primitive.firstIndex) { return false; }
+    RTXDIInstance instance = gInstances[instanceIndex];
+    RTXDIPrimitive primitive = gPrimitives[instance.primitiveIndex];
     uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-    uint3 local = uint3(gIndices.data[indexOffset], gIndices.data[indexOffset + 1u], gIndices.data[indexOffset + 2u]);
-    DataSpan<SceneShadingVertex> vertices = gPathTraceParameters.vertices;
-    if (primitive.firstVertex > vertices.length() ||
-        primitive.vertexCount > vertices.length() - primitive.firstVertex ||
-        any(local >= primitive.vertexCount)) { return false; }
-    indices = primitive.firstVertex + local;
-    return true;
+    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
+    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
+    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
+    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
+    return resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0].texcoord.xy * weights.x +
+        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1].texcoord.xy * weights.y +
+        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2].texcoord.xy * weights.z;
 }
 
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, SceneRTXDIPush push)
 {
-    RTXDIInstance instance;
-    RTXDIPrimitive primitive;
-    uint3 indices;
-    if (!loadRTXDITriangle(instanceIndex, triangleIndex, instance, primitive, indices)) { return false; }
-    uint materialCount, materialStride;
-    gMaterials.GetDimensions(materialCount, materialStride);
-    if (instance.materialIndex >= materialCount) { return false; }
+    RTXDIInstance instance = gInstances[instanceIndex];
     RTXDIMaterial material = gMaterials[instance.materialIndex];
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
     }
-    float3 weights = float3(1.0 - bary.x - bary.y, bary);
-    float2 texcoord = gPathTraceParameters.vertices.data[indices.x].texcoord * weights.x +
-        gPathTraceParameters.vertices.data[indices.y].texcoord * weights.y +
-        gPathTraceParameters.vertices.data[indices.z].texcoord * weights.z;
     float alpha = material.baseColor.a * loadMaterialTexture(
         material.baseColorTexture,
-        texcoord,
+        triangleTexcoord(instanceIndex, triangleIndex, bary),
         float4(1.0, 1.0, 1.0, 1.0),
         push).a;
     return blend ? saturate(alpha) > 0.0 : saturate(alpha) >= saturate(material.params.z);
@@ -673,17 +697,16 @@ bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit)
     }
 
     uint instanceIndex = query.CommittedInstanceIndex();
-    RTXDIInstance instance;
-    RTXDIPrimitive primitive;
-    uint3 indices;
-    if (!loadRTXDITriangle(instanceIndex, query.CommittedPrimitiveIndex(), instance, primitive, indices)) { return false; }
-    uint materialCount, materialStride;
-    gMaterials.GetDimensions(materialCount, materialStride);
-    if (instance.materialIndex >= materialCount) { return false; }
-    uint i0 = indices.x, i1 = indices.y, i2 = indices.z;
-    SceneShadingVertex v0 = gPathTraceParameters.vertices.data[i0];
-    SceneShadingVertex v1 = gPathTraceParameters.vertices.data[i1];
-    SceneShadingVertex v2 = gPathTraceParameters.vertices.data[i2];
+    RTXDIInstance instance = gInstances[instanceIndex];
+    RTXDIPrimitive primitive = gPrimitives[instance.primitiveIndex];
+    uint triangleIndex = query.CommittedPrimitiveIndex();
+    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
+    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
+    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
+    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
+    SceneShadingVertex v0 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0];
+    SceneShadingVertex v1 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1];
+    SceneShadingVertex v2 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2];
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
 #if SCENE_RAYQUERY_ENABLE_POSITION_FETCH
@@ -692,12 +715,9 @@ bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit)
     float3 p1 = positions[1];
     float3 p2 = positions[2];
 #else
-    if (!gPathTraceParameters.positions.contains(i0) || !gPathTraceParameters.positions.contains(i1) ||
-        !gPathTraceParameters.positions.contains(i2)) { return false; }
-    SceneVertexPosition a = gPathTraceParameters.positions.data[i0], b = gPathTraceParameters.positions.data[i1], c = gPathTraceParameters.positions.data[i2];
-    float3 p0 = float3(a.x, a.y, a.z);
-    float3 p1 = float3(b.x, b.y, b.z);
-    float3 p2 = float3(c.x, c.y, c.z);
+    float3 p0 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i0);
+    float3 p1 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i1);
+    float3 p2 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i2);
 #endif
     float2 uv0 = v0.texcoord;
     float2 uv1 = v1.texcoord;
@@ -871,10 +891,10 @@ Surface makeSurface(HitInfo hit, Ray ray, SceneRTXDIPush push)
 
 LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRTXDIPush push)
 {
-    if (lightIndex >= punctualLightCount(resolveDescriptor(gPathTraceParameters.lights))) {
+    if (lightIndex >= punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))) {
         return emptyLightEvaluation();
     }
-    PunctualLightSample light = samplePunctualLight(resolveDescriptor(gPathTraceParameters.lights), lightIndex, surface.position);
+    PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), lightIndex, surface.position);
     float3 lightDirection = light.direction;
     float nDotL = saturate(dot(surface.normal, lightDirection));
     float3 halfVector = safeNormalize(lightDirection + surface.viewDirection, surface.normal);
@@ -1156,7 +1176,7 @@ float3 skyColor(float3 direction)
 [numthreads(8, 8, 1)]
 void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    SceneRTXDIPush push = *((SceneRTXDIPush*)gRTXDI.settings);
+    SceneRTXDIPush push = getConstants<SceneRTXDIPush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
@@ -1197,7 +1217,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             0.0);
         gNrdViewZ[pixel] = max(push.clipOrtho.y, 1.0);
         gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
-        sky *= push.outputLinear != 0u ? 1.0 : lightingExposure(resolveDescriptor(gPathTraceParameters.lights));
+        sky *= push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
         gEmissive[pixel] = float4(sky, 1.0);
         gOutput[pixel] = float4(push.outputLinear != 0u ? sky : toneMap(sky, push.exposure), 1.0);
         return;
@@ -1216,7 +1236,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         0.0);
     gNrdViewZ[pixel] = cameraLinearDepth(surface.position, push);
     gBaseColorMetalness[pixel] = float4(surface.baseColor, surface.metalness);
-    gEmissive[pixel] = float4(surface.emissive * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveDescriptor(gPathTraceParameters.lights))), 1.0);
+    gEmissive[pixel] = float4(surface.emissive * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
 
     DIReservoir reservoir = emptyReservoir();
     uint localSampleCount = push.lightCount > 0u ? max(push.initialSampleCount, 1u) : 0u;
@@ -1368,7 +1388,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
     }
     // HDR mode keeps all NRD inputs in the same physical space for post exposure.
-    float physicalExposure = push.outputLinear != 0u ? 1.0 : lightingExposure(resolveDescriptor(gPathTraceParameters.lights));
+    float physicalExposure = push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
     noisyDiffuse *= physicalExposure;
     noisySpecular *= physicalExposure;
     color *= physicalExposure;

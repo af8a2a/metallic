@@ -1,25 +1,28 @@
-#include "../../../Source/Runtime/Render/Core/TextureProbeParameters.h"
+import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import Material;
 using Metallic.Material;
 
-[[vk::push_constant]] ConstantBuffer<TextureStreamingProbeParameters> push;
+struct Push { uint slot; uint visible; float nearSourceLod; float farSourceLod; };
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void main()
 {
-    if (!push.output.contains(1u)) { return; }
-    Texture2D<float4> texture = resolveDescriptor(push.texture);
-    uint* feedback = push.feedback.data;
-    float4* output = push.output.data;
-    SamplerState sampler = resolveDescriptor(push.sampler);
-    if (push.slot >= push.feedback.length() / 8u) {
+    Push push = getConstants<Push>();
+    Texture2D<float4> texture = resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<TextureStreamingProbeResources>().textures.load(push.slot)));
+    RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<TextureStreamingProbeResources>().feedback);
+    RWStructuredBuffer<float4> output = resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<TextureStreamingProbeResources>().output);
+    SamplerState sampler = resolveUniform(getResourceParameters<TextureStreamingProbeResources>().sampler);
+    uint count, stride;
+    feedback.GetDimensions(count, stride);
+    uint offset = push.slot * 8u;
+    if (offset + 7u >= count) {
         output[0] = float4(-1.0);
         output[1] = float4(-1.0);
         return;
     }
-    uint offset = push.slot * 8u;
     // Source footprint remains fixed while physical tail index and clamp change.
     // Sample the production helper; do not duplicate its filtering or LOD clamp.
     uint firstMip = feedback[offset + 3u];

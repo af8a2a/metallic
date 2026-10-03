@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Profiling/PacingTrace.h"

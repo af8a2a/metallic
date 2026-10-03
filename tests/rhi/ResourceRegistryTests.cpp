@@ -1,46 +1,6 @@
-#include "BatchBarrierProbeParameters.h"
-#include "DataSliceProbeParameters.h"
-#include "TextureBindingProbeParameters.h"
-#include "StreamProbeParameters.h"
-#include "Runtime/Render/MaterialBinningParams.h"
-#include "Runtime/Render/Core/DeferredShadingParameters.h"
-#include "Runtime/Render/Core/RealtimeLightingParameters.h"
-#include "Runtime/Render/Core/PathTraceGuidesInlineParameters.h"
-#include "Runtime/Render/Core/NRCTraceParameters.h"
-#include "Runtime/Render/Core/SharcTraceParameters.h"
-#include "Runtime/Render/Core/PathTraceInlineParameters.h"
-#include "Runtime/Render/Core/RTXDITraceParameters.h"
-#include "Runtime/Render/Core/ShadowTraceParameters.h"
-#include "Runtime/Render/Core/StreamWorkloadParameters.h"
-#include "Runtime/Render/Core/StreamRasterParameters.h"
-#include "Runtime/Render/Core/HybridResolveParameters.h"
-#include "Runtime/Render/Core/HybridRasterParameters.h"
-#include "Runtime/Render/Core/HybridBinParameters.h"
-#include "Runtime/Render/Core/StreamClusterCullParameters.h"
-#include "Runtime/Render/Core/StreamClassifyParameters.h"
-#include "Runtime/Render/Core/StreamCandidateParameters.h"
-#include "Runtime/Render/Core/StreamBLASParameters.h"
-#include "Runtime/Render/Core/StreamTLASParameters.h"
-#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
-#include "Runtime/Render/Core/StreamActiveBuildParameters.h"
-#include "Runtime/Render/Core/StreamTraversalParameters.h"
-#include "Runtime/Render/Core/StreamPageTableParameters.h"
-#include "Runtime/Render/Core/ResidentLODParameters.h"
-#include "Runtime/Render/Core/StreamInstanceCullParameters.h"
-#include "Runtime/Render/Core/InstanceCullParameters.h"
-#include "Runtime/Render/Core/MaterialVisualizationParameters.h"
-#include "Runtime/Render/Core/StreamDeferredParameters.h"
-#include "Runtime/Render/Core/StreamCompositeParameters.h"
-#include "Runtime/Render/Core/MaterialRasterParameters.h"
-#include "Runtime/Render/Core/BunnyWireframeParameters.h"
-#include "Runtime/Render/Core/ImageSampleParameters.h"
-#include "Runtime/Render/Core/RenderGraphBufferParameters.h"
-#include "Runtime/Render/Core/StreamSceneParameters.h"
-#include "Runtime/Render/Core/DebugProbeParameters.h"
-#include "Runtime/Render/Core/MaterialErrorParameters.h"
-#include "Runtime/Render/Core/VisibilityMaterialParameters.h"
-#include "Runtime/Render/Core/MaterialSampleParameters.h"
-#include "Runtime/Render/Core/DebugVisualizationParameters.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "TestResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -49,7 +9,6 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
-#include "Runtime/Render/Core/PathTraceParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -74,7 +33,7 @@ struct ProbeParams {
     render::ShaderBuffer source, output;
     uint32_t add, index;
 };
-static_assert(sizeof(ProbeParams) == 24 && offsetof(ProbeParams, add) == 16);
+static_assert(sizeof(ProbeParams) == 16 && offsetof(ProbeParams, add) == 8);
 
 render::Result<> makeBuffer(render::Device& device, std::unique_ptr<render::Buffer>& buffer, uint32_t value = 0)
 {
@@ -111,7 +70,7 @@ struct Commands {
     {
         auto result = frame.begin(index);
         if (result) { result = pool->reset(); }
-        return result ? commands->begin(&frame) : result;
+        return result ? commands->begin(frame.submissionContext()) : result;
     }
     render::Result<> submit(render::QueueSubmissionTracker& tracker, render::Semaphore& gate)
     {
@@ -138,7 +97,7 @@ struct Drain {
 
 render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kernel, std::string& log,
     render::SlangDescriptorHeapMode mode = render::SlangDescriptorHeapMode::Default,
-    render::ParameterTransport transport = render::ParameterTransport::DeviceAddress)
+    render::ParameterTransport transport = render::ParameterTransport::DescriptorBuffer)
 {
     const render::SlangMacroDefine defines[] = {{"INLINE_PARAMETERS", transport == render::ParameterTransport::InlinePush ? "1" : "0"}};
     render::ShaderCompileResult shader;
@@ -146,6 +105,15 @@ render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kerne
         .entryPointName = "registryProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
         .macroDefines = defines, .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
+    for (size_t word = 5; word < shader.spirv.size();) {
+        const uint32_t count = shader.spirv[word] >> 16, opcode = shader.spirv[word] & 0xffff;
+        if (!count || count > shader.spirv.size() - word ||
+            (opcode == 17 && count == 2 && shader.spirv[word + 1] == 5347)) {
+            log = "Ordinary resource/parameter access must not require PhysicalStorageBufferAddresses";
+            return render::makeError(render::Error::Failure);
+        }
+        word += count;
+    }
     return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kABI, transport)}, log);
 }
 
@@ -174,7 +142,8 @@ public:
             {"Metallic.ColorGradingLUTParams", {FIELD(ColorGradingLUTParams, output), FIELD(ColorGradingLUTParams, custom0),
                 FIELD(ColorGradingLUTParams, custom1), FIELD(ColorGradingLUTParams, custom2), FIELD(ColorGradingLUTParams, custom3),
                 FIELD(ColorGradingLUTParams, reach), FIELD(ColorGradingLUTParams, gamut), FIELD(ColorGradingLUTParams, gammaTable),
-                FIELD(ColorGradingLUTParams, sampler),
+                FIELD(ColorGradingLUTParams, sampler), FIELD(ColorGradingLUTParams, padding0), FIELD(ColorGradingLUTParams, padding1),
+                FIELD(ColorGradingLUTParams, padding2),
                 FIELD(ColorGradingLUTParams, display)}},
             {"Metallic.ClusterLightGridBuildParams", {FIELD(ClusterLightGridBuildParams, grid), FIELD(ClusterLightGridBuildParams, lights),
                 FIELD(ClusterLightGridBuildParams, candidates), FIELD(ClusterLightGridBuildParams, cells), FIELD(ClusterLightGridBuildParams, indices)}},
@@ -183,7 +152,7 @@ public:
             {"Metallic.PrepareLightsPdfParams", {FIELD(PrepareLightsPdfParams, environment), FIELD(PrepareLightsPdfParams, sourceMip),
                 FIELD(PrepareLightsPdfParams, destinationMip), FIELD(PrepareLightsPdfParams, lights), FIELD(PrepareLightsPdfParams, settings)}},
             {"Metallic.BuildReGIRParams", {FIELD(BuildReGIRParams, localLightPdf), FIELD(BuildReGIRParams, output),
-                FIELD(BuildReGIRParams, lights), FIELD(BuildReGIRParams, padding0), FIELD(BuildReGIRParams, padding1), FIELD(BuildReGIRParams, settings)}},
+                FIELD(BuildReGIRParams, lights), FIELD(BuildReGIRParams, padding0), FIELD(BuildReGIRParams, settings)}},
             {"Metallic.EnvironmentLightingPrecomputeParams", {FIELD(EnvironmentLightingPrecomputeParams, radiance),
                 FIELD(EnvironmentLightingPrecomputeParams, partials), FIELD(EnvironmentLightingPrecomputeParams, coefficients),
                 FIELD(EnvironmentLightingPrecomputeParams, specular), FIELD(EnvironmentLightingPrecomputeParams, settings)}},
@@ -199,65 +168,14 @@ public:
                 FIELD(RTXDICompositeParams, baseColorMetalness), FIELD(RTXDICompositeParams, emissive),
                 FIELD(RTXDICompositeParams, output), FIELD(RTXDICompositeParams, settings)}},
             {"Metallic.SharcMaintenanceParams", {FIELD(SharcMaintenanceParams, hashEntries), FIELD(SharcMaintenanceParams, accumulation),
-                FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0), FIELD(SharcMaintenanceParams, padding1),
+                FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0),
                 FIELD(SharcMaintenanceParams, settings)}},
             {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
                 FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, settings)}},
-            {"Metallic.PathTraceParameters", {FIELD(PathTraceParameters, settings), FIELD(PathTraceParameters, scene), FIELD(PathTraceParameters, output), FIELD(PathTraceParameters, vertices), FIELD(PathTraceParameters, indices), FIELD(PathTraceParameters, primitives), FIELD(PathTraceParameters, instances), FIELD(PathTraceParameters, positions), FIELD(PathTraceParameters, materials), FIELD(PathTraceParameters, historyCurrent), FIELD(PathTraceParameters, historyPrevious), FIELD(PathTraceParameters, materialTextures), FIELD(PathTraceParameters, environment), FIELD(PathTraceParameters, environmentPdf), FIELD(PathTraceParameters, lut2D), FIELD(PathTraceParameters, lut3D), FIELD(PathTraceParameters, lights), FIELD(PathTraceParameters, reGIR), FIELD(PathTraceParameters, punctualPdf), FIELD(PathTraceParameters, albedo), FIELD(PathTraceParameters, specularAlbedo), FIELD(PathTraceParameters, normalRoughness), FIELD(PathTraceParameters, motionVectors), FIELD(PathTraceParameters, linearDepth), FIELD(PathTraceParameters, specularHitDistance), FIELD(PathTraceParameters, depth), FIELD(PathTraceParameters, materialValues), FIELD(PathTraceParameters, ntcLatents), FIELD(PathTraceParameters, ntcConstants), FIELD(PathTraceParameters, ntcWeights), FIELD(PathTraceParameters, ntcInfo), FIELD(PathTraceParameters, ntcSampler)}},
-            {"Metallic.UpscalerGuideResolveParams", {FIELD(UpscalerGuideResolveParams, depth), FIELD(UpscalerGuideResolveParams, motion),
-                FIELD(UpscalerGuideResolveParams, outputDepth), FIELD(UpscalerGuideResolveParams, outputMotion),
-                FIELD(UpscalerGuideResolveParams, jitterX), FIELD(UpscalerGuideResolveParams, jitterY)}},
-            {"Metallic.DLSSSupportParams", {FIELD(DLSSSupportParams, depth), FIELD(DLSSSupportParams, color)}},
-            {"Metallic.SceneRayQueryVisualizationParams", {FIELD(SceneRayQueryVisualizationParams, scene), FIELD(SceneRayQueryVisualizationParams, output), FIELD(SceneRayQueryVisualizationParams, settings)}},
-            {"Metallic.SceneRayQueryVisualizationPush", {FIELD(SceneRayQueryVisualizationPush, eye), FIELD(SceneRayQueryVisualizationPush, center), FIELD(SceneRayQueryVisualizationPush, upProjection), FIELD(SceneRayQueryVisualizationPush, viewport), FIELD(SceneRayQueryVisualizationPush, clipOrtho), FIELD(SceneRayQueryVisualizationPush, mode), FIELD(SceneRayQueryVisualizationPush, width), FIELD(SceneRayQueryVisualizationPush, height), FIELD(SceneRayQueryVisualizationPush, padding)}},
-            {"Metallic.RTXCRMaterialSampleParams", {FIELD(RTXCRMaterialSampleParams, output), FIELD(RTXCRMaterialSampleParams, settings)}},
-            {"Metallic.VisibilityMaterialParams", {FIELD(VisibilityMaterialParams, output), FIELD(VisibilityMaterialParams, visibility), FIELD(VisibilityMaterialParams, instances), FIELD(VisibilityMaterialParams, materials), FIELD(VisibilityMaterialParams, records), FIELD(VisibilityMaterialParams, meshlets), FIELD(VisibilityMaterialParams, vertices), FIELD(VisibilityMaterialParams, vertexIndices), FIELD(VisibilityMaterialParams, triangles), FIELD(VisibilityMaterialParams, geometries), FIELD(VisibilityMaterialParams, streamRecords), FIELD(VisibilityMaterialParams, groups), FIELD(VisibilityMaterialParams, pages), FIELD(VisibilityMaterialParams, pageTable), FIELD(VisibilityMaterialParams, streamParams), FIELD(VisibilityMaterialParams, settings)}},
-            {"Metallic.MaterialErrorParams", {FIELD(MaterialErrorParams, output), FIELD(MaterialErrorParams, color), FIELD(MaterialErrorParams, padding)}},
-            {"Metallic.DebugProbeParams", {FIELD(DebugProbeParams, source), FIELD(DebugProbeParams, output), FIELD(DebugProbeParams, settings), FIELD(DebugProbeParams, padding)}},
-            {"Metallic.ImageSampleParams", {FIELD(ImageSampleParams, source)}},
-            {"Metallic.RenderGraphBufferParams", {FIELD(RenderGraphBufferParams, source), FIELD(RenderGraphBufferParams, output)}},
-            {"Metallic.BunnyWireframeParameters", {FIELD(BunnyWireframeParameters, positions), FIELD(BunnyWireframeParameters, transforms), FIELD(BunnyWireframeParameters, settings)}},
-            {"Metallic.BunnyWireframeGPUParams", {FIELD(BunnyWireframeGPUParams, eye), FIELD(BunnyWireframeGPUParams, center), FIELD(BunnyWireframeGPUParams, upProjection), FIELD(BunnyWireframeGPUParams, viewport), FIELD(BunnyWireframeGPUParams, clipOrtho), FIELD(BunnyWireframeGPUParams, clearColor), FIELD(BunnyWireframeGPUParams, wireColor), FIELD(BunnyWireframeGPUParams, settings)}},
-            {"Metallic.MaterialRasterParameters", {FIELD(MaterialRasterParameters, positions), FIELD(MaterialRasterParameters, materialIndices), FIELD(MaterialRasterParameters, materials), FIELD(MaterialRasterParameters, transforms), FIELD(MaterialRasterParameters, camera), FIELD(MaterialRasterParameters, vertexOffset), FIELD(MaterialRasterParameters, padding0), FIELD(MaterialRasterParameters, padding1), FIELD(MaterialRasterParameters, padding2)}},
-            {"Metallic.StreamCompositeParameters", {FIELD(StreamCompositeParameters, colors), FIELD(StreamCompositeParameters, width), FIELD(StreamCompositeParameters, height)}},
-            {"Metallic.StreamDeferredParameters", {FIELD(StreamDeferredParameters, settings), FIELD(StreamDeferredParameters, records), FIELD(StreamDeferredParameters, groups), FIELD(StreamDeferredParameters, pageTable), FIELD(StreamDeferredParameters, header), FIELD(StreamDeferredParameters, output), FIELD(StreamDeferredParameters, pages), FIELD(StreamDeferredParameters, visibility), FIELD(StreamDeferredParameters, width), FIELD(StreamDeferredParameters, height), FIELD(StreamDeferredParameters, recordBase), FIELD(StreamDeferredParameters, recordCapacity)}},
-            {"Metallic.MaterialVisualizationParameters", {FIELD(MaterialVisualizationParameters, scene), FIELD(MaterialVisualizationParameters, output), FIELD(MaterialVisualizationParameters, vertices), FIELD(MaterialVisualizationParameters, indices), FIELD(MaterialVisualizationParameters, primitives), FIELD(MaterialVisualizationParameters, instances), FIELD(MaterialVisualizationParameters, materials), FIELD(MaterialVisualizationParameters, textures), FIELD(MaterialVisualizationParameters, positions), FIELD(MaterialVisualizationParameters, ntcLatents), FIELD(MaterialVisualizationParameters, ntcConstants), FIELD(MaterialVisualizationParameters, ntcWeights), FIELD(MaterialVisualizationParameters, ntcInfo), FIELD(MaterialVisualizationParameters, ntcSampler), FIELD(MaterialVisualizationParameters, settings)}},
-            {"Metallic.SceneMaterialVisualizationPush", {FIELD(SceneMaterialVisualizationPush, eye), FIELD(SceneMaterialVisualizationPush, center), FIELD(SceneMaterialVisualizationPush, upProjection), FIELD(SceneMaterialVisualizationPush, viewport), FIELD(SceneMaterialVisualizationPush, clipOrtho), FIELD(SceneMaterialVisualizationPush, width), FIELD(SceneMaterialVisualizationPush, height), FIELD(SceneMaterialVisualizationPush, mode), FIELD(SceneMaterialVisualizationPush, materialTextureCount), FIELD(SceneMaterialVisualizationPush, bitangentFlip), FIELD(SceneMaterialVisualizationPush, ntcTextureSetCount), FIELD(SceneMaterialVisualizationPush, padding1), FIELD(SceneMaterialVisualizationPush, padding2)}},
-            {"Metallic.InstanceCullParameters", {FIELD(InstanceCullParameters, settings), FIELD(InstanceCullParameters, instances), FIELD(InstanceCullParameters, visibility), FIELD(InstanceCullParameters, visibleIds), FIELD(InstanceCullParameters, streamOwners), FIELD(InstanceCullParameters, counter), FIELD(InstanceCullParameters, hzb), FIELD(InstanceCullParameters, phase), FIELD(InstanceCullParameters, padding)}},
-            {"Metallic.StreamInstanceCullParameters", {FIELD(StreamInstanceCullParameters, settings), FIELD(StreamInstanceCullParameters, instances), FIELD(StreamInstanceCullParameters, visibility), FIELD(StreamInstanceCullParameters, visibleIds), FIELD(StreamInstanceCullParameters, counter), FIELD(StreamInstanceCullParameters, hzb), FIELD(StreamInstanceCullParameters, phase), FIELD(StreamInstanceCullParameters, width), FIELD(StreamInstanceCullParameters, height), FIELD(StreamInstanceCullParameters, mipCount), FIELD(StreamInstanceCullParameters, hzbValid), FIELD(StreamInstanceCullParameters, cullingFlags), FIELD(StreamInstanceCullParameters, displacementBound), FIELD(StreamInstanceCullParameters, padding)}},
-            {"Metallic.ResidentLODParameters", {FIELD(ResidentLODParameters, eye), FIELD(ResidentLODParameters, forward), FIELD(ResidentLODParameters, projection), FIELD(ResidentLODParameters, clusters), FIELD(ResidentLODParameters, records), FIELD(ResidentLODParameters, instances), FIELD(ResidentLODParameters, groups), FIELD(ResidentLODParameters, output), FIELD(ResidentLODParameters, arguments), FIELD(ResidentLODParameters, scratch), FIELD(ResidentLODParameters, offset), FIELD(ResidentLODParameters, count), FIELD(ResidentLODParameters, capacity), FIELD(ResidentLODParameters, instanceCount), FIELD(ResidentLODParameters, groupCount), FIELD(ResidentLODParameters, manualLevel)}},
-            {"Metallic.StreamPageTableParameters", {FIELD(StreamPageTableParameters, pages), FIELD(StreamPageTableParameters, patches)}},
-            {"Metallic.StreamTraversalParameters", {FIELD(StreamTraversalParameters, settings), FIELD(StreamTraversalParameters, instances), FIELD(StreamTraversalParameters, residentPages), FIELD(StreamTraversalParameters, primitives), FIELD(StreamTraversalParameters, groups), FIELD(StreamTraversalParameters, nodes), FIELD(StreamTraversalParameters, pageTable), FIELD(StreamTraversalParameters, requests), FIELD(StreamTraversalParameters, phase), FIELD(StreamTraversalParameters, threadCount)}},
-            {"Metallic.StreamActiveBuildParameters", {FIELD(StreamActiveBuildParameters, settings), FIELD(StreamActiveBuildParameters, activeGroupBuffer), FIELD(StreamActiveBuildParameters, activeHeaderBuffer), FIELD(StreamActiveBuildParameters, demandBuffer), FIELD(StreamActiveBuildParameters, demandStatsBuffer), FIELD(StreamActiveBuildParameters, drawIndirectBuffer), FIELD(StreamActiveBuildParameters, groupBuffer), FIELD(StreamActiveBuildParameters, instanceBuffer), FIELD(StreamActiveBuildParameters, lodLevelBuffer), FIELD(StreamActiveBuildParameters, lodStateBuffer), FIELD(StreamActiveBuildParameters, lodTopologyBuffer), FIELD(StreamActiveBuildParameters, nodeBuffer), FIELD(StreamActiveBuildParameters, pageBuffer), FIELD(StreamActiveBuildParameters, pageTableBuffer), FIELD(StreamActiveBuildParameters, primitiveBuffer), FIELD(StreamActiveBuildParameters, rasterBindingsBuffer), FIELD(StreamActiveBuildParameters, requestBuffer), FIELD(StreamActiveBuildParameters, traversalHeaderBuffer), FIELD(StreamActiveBuildParameters, traversalWorkBuffer), FIELD(StreamActiveBuildParameters, activeBuildPhase), FIELD(StreamActiveBuildParameters, flags)}},
-            {"Metallic.StreamTLASParameters", {FIELD(StreamTLASParameters, settings), FIELD(StreamTLASParameters, instances), FIELD(StreamTLASParameters, blasRecords), FIELD(StreamTLASParameters, fallbackAddresses), FIELD(StreamTLASParameters, output)}},
-            {"Metallic.StreamBLASParameters", {FIELD(StreamBLASParameters, settings), FIELD(StreamBLASParameters, activeGroupBuffer), FIELD(StreamBLASParameters, activeHeaderBuffer), FIELD(StreamBLASParameters, blasBuildInfoBuffer), FIELD(StreamBLASParameters, blasClusterReferenceBuffer), FIELD(StreamBLASParameters, blasHeaderBuffer), FIELD(StreamBLASParameters, clasAddressBuffer), FIELD(StreamBLASParameters, clasPageTableBuffer), FIELD(StreamBLASParameters, dynamicBlasAddressBuffer), FIELD(StreamBLASParameters, instanceBlasBuffer), FIELD(StreamBLASParameters, scratch), FIELD(StreamBLASParameters, activeBuildPhase), FIELD(StreamBLASParameters, traversalPhase), FIELD(StreamBLASParameters, clasPublicationRevision), FIELD(StreamBLASParameters, padding)}},
-            {"Metallic.StreamCandidateParameters", {FIELD(StreamCandidateParameters, headers), FIELD(StreamCandidateParameters, groups), FIELD(StreamCandidateParameters, arguments), FIELD(StreamCandidateParameters, bins), FIELD(StreamCandidateParameters, visibility), FIELD(StreamCandidateParameters, stage), FIELD(StreamCandidateParameters, late)}},
-            {"Metallic.StreamClassifyParameters", {FIELD(StreamClassifyParameters, settings), FIELD(StreamClassifyParameters, groups), FIELD(StreamClassifyParameters, pages), FIELD(StreamClassifyParameters, instances), FIELD(StreamClassifyParameters, bins), FIELD(StreamClassifyParameters, tessellationEnabled), FIELD(StreamClassifyParameters, padding)}},
-            {"Metallic.StreamClusterCullParameters", {FIELD(StreamClusterCullParameters, settings), FIELD(StreamClusterCullParameters, rasterSettings), FIELD(StreamClusterCullParameters, pages), FIELD(StreamClusterCullParameters, groups), FIELD(StreamClusterCullParameters, header), FIELD(StreamClusterCullParameters, pageTable), FIELD(StreamClusterCullParameters, requests), FIELD(StreamClusterCullParameters, instances), FIELD(StreamClusterCullParameters, visibility), FIELD(StreamClusterCullParameters, records), FIELD(StreamClusterCullParameters, previousHZB), FIELD(StreamClusterCullParameters, currentHZB), FIELD(StreamClusterCullParameters, bins), FIELD(StreamClusterCullParameters, arguments), FIELD(StreamClusterCullParameters, phase), FIELD(StreamClusterCullParameters, stage), FIELD(StreamClusterCullParameters, flags), FIELD(StreamClusterCullParameters, padding)}},
-            {"Metallic.HybridBinParameters", {FIELD(HybridBinParameters, bins), FIELD(HybridBinParameters, arguments), FIELD(HybridBinParameters, width), FIELD(HybridBinParameters, height), FIELD(HybridBinParameters, clusterCapacity), FIELD(HybridBinParameters, maxPixels), FIELD(HybridBinParameters, reversedZ), FIELD(HybridBinParameters, subpixelBits), FIELD(HybridBinParameters, inputClusterCount), FIELD(HybridBinParameters, streamMode)}},
-            {"Metallic.HybridRasterParameters", {FIELD(HybridRasterParameters, queue), FIELD(HybridRasterParameters, pixels), FIELD(HybridRasterParameters, arguments), FIELD(HybridRasterParameters, width), FIELD(HybridRasterParameters, height), FIELD(HybridRasterParameters, capacity), FIELD(HybridRasterParameters, maxPixels), FIELD(HybridRasterParameters, reversedZ), FIELD(HybridRasterParameters, subpixelBits)}},
-            {"Metallic.HybridResolveParameters", {FIELD(HybridResolveParameters, pixels), FIELD(HybridResolveParameters, width), FIELD(HybridResolveParameters, reversedZ)}},
-            {"Metallic.StreamRasterParameters", {FIELD(StreamRasterParameters, settings), FIELD(StreamRasterParameters, pages), FIELD(StreamRasterParameters, groups), FIELD(StreamRasterParameters, header), FIELD(StreamRasterParameters, pageTable), FIELD(StreamRasterParameters, instances), FIELD(StreamRasterParameters, bins), FIELD(StreamRasterParameters, pixels), FIELD(StreamRasterParameters, visibleRecordBase), FIELD(StreamRasterParameters, visibleRecordCapacity), FIELD(StreamRasterParameters, hasInstances), FIELD(StreamRasterParameters, padding)}},
-            {"Metallic.StreamWorkloadParameters", {FIELD(StreamWorkloadParameters, raster), FIELD(StreamWorkloadParameters, counters)}},
-            {"Metallic.ShadowTraceParameters", {FIELD(ShadowTraceParameters, settings), FIELD(ShadowTraceParameters, scene), FIELD(ShadowTraceParameters, streamScene), FIELD(ShadowTraceParameters, depth), FIELD(ShadowTraceParameters, penumbra), FIELD(ShadowTraceParameters, normal), FIELD(ShadowTraceParameters, viewZ), FIELD(ShadowTraceParameters, motion), FIELD(ShadowTraceParameters, shadow), FIELD(ShadowTraceParameters, materialTextureCount), FIELD(ShadowTraceParameters, ntcTextureSetCount)}},
-            {"Metallic.RTXDITraceParameters", {FIELD(RTXDITraceParameters, settings), FIELD(RTXDITraceParameters, scene), FIELD(RTXDITraceParameters, output), FIELD(RTXDITraceParameters, reservoirCurrent), FIELD(RTXDITraceParameters, reservoirPrevious), FIELD(RTXDITraceParameters, positionCurrent), FIELD(RTXDITraceParameters, positionPrevious), FIELD(RTXDITraceParameters, normalCurrent), FIELD(RTXDITraceParameters, normalPrevious), FIELD(RTXDITraceParameters, noisyDiffuse), FIELD(RTXDITraceParameters, noisySpecular), FIELD(RTXDITraceParameters, normalRoughness), FIELD(RTXDITraceParameters, motionVectors), FIELD(RTXDITraceParameters, viewZ), FIELD(RTXDITraceParameters, baseColorMetalness), FIELD(RTXDITraceParameters, emissive)}},
-            {"Metallic.PathTraceInlineParameters", {FIELD(PathTraceInlineParameters, resources), FIELD(PathTraceInlineParameters, settings), FIELD(PathTraceInlineParameters, output), FIELD(PathTraceInlineParameters, historyCurrent), FIELD(PathTraceInlineParameters, historyPrevious)}},
-            {"Metallic.SharcTraceParameters", {FIELD(SharcTraceParameters, path), FIELD(SharcTraceParameters, cacheSettings), FIELD(SharcTraceParameters, hashEntries), FIELD(SharcTraceParameters, accumulation), FIELD(SharcTraceParameters, resolved)}},
-            {"Metallic.NRCTraceParameters", {FIELD(NRCTraceParameters, path), FIELD(NRCTraceParameters, cacheSettings), FIELD(NRCTraceParameters, queryPath), FIELD(NRCTraceParameters, trainingPath), FIELD(NRCTraceParameters, vertices), FIELD(NRCTraceParameters, radiance), FIELD(NRCTraceParameters, counters)}},
-            {"Metallic.PathTraceGuidesInlineParameters", {FIELD(PathTraceGuidesInlineParameters, path), FIELD(PathTraceGuidesInlineParameters, albedo), FIELD(PathTraceGuidesInlineParameters, specularAlbedo), FIELD(PathTraceGuidesInlineParameters, normalRoughness), FIELD(PathTraceGuidesInlineParameters, motionVectors), FIELD(PathTraceGuidesInlineParameters, linearDepth), FIELD(PathTraceGuidesInlineParameters, specularHitDistance), FIELD(PathTraceGuidesInlineParameters, depth)}},
-            {"Metallic.RealtimeLightingParameters", {FIELD(RealtimeLightingParameters, path), FIELD(RealtimeLightingParameters, irradiance)}},
-            {"Metallic.DeferredShadingParameters", {FIELD(DeferredShadingParameters, path), FIELD(DeferredShadingParameters, resources), FIELD(DeferredShadingParameters, visibility), FIELD(DeferredShadingParameters, depth), FIELD(DeferredShadingParameters, domain), FIELD(DeferredShadingParameters, motion), FIELD(DeferredShadingParameters, deviceDepth), FIELD(DeferredShadingParameters, binIndex), FIELD(DeferredShadingParameters, padding)}},
-            {"Metallic.DeferredShadingResources", {FIELD(DeferredShadingResources, vertices), FIELD(DeferredShadingResources, meshlets), FIELD(DeferredShadingResources, records), FIELD(DeferredShadingResources, meshletVertices), FIELD(DeferredShadingResources, triangles), FIELD(DeferredShadingResources, geometries), FIELD(DeferredShadingResources, instances), FIELD(DeferredShadingResources, materials), FIELD(DeferredShadingResources, bins), FIELD(DeferredShadingResources, tiles), FIELD(DeferredShadingResources, irradiance), FIELD(DeferredShadingResources, specular), FIELD(DeferredShadingResources, gridParams), FIELD(DeferredShadingResources, gridLights), FIELD(DeferredShadingResources, gridCandidates), FIELD(DeferredShadingResources, gridCells), FIELD(DeferredShadingResources, gridIndices), FIELD(DeferredShadingResources, shadow), FIELD(DeferredShadingResources, shadowParams), FIELD(DeferredShadingResources, view), FIELD(DeferredShadingResources, streamRecords), FIELD(DeferredShadingResources, streamGroups), FIELD(DeferredShadingResources, streamPages), FIELD(DeferredShadingResources, streamTable), FIELD(DeferredShadingResources, frameInfo), FIELD(DeferredShadingResources, streamParams), FIELD(DeferredShadingResources, feedback), FIELD(DeferredShadingResources, sampler)}},
-            {"Metallic.MaterialBinningParams", {FIELD(MaterialBinningParams, visibility), FIELD(MaterialBinningParams, resources), FIELD(MaterialBinningParams, bins), FIELD(MaterialBinningParams, tiles), FIELD(MaterialBinningParams, arguments), FIELD(MaterialBinningParams, width), FIELD(MaterialBinningParams, height), FIELD(MaterialBinningParams, tileCount), FIELD(MaterialBinningParams, residentRecordCount)}},
-            {"Metallic.MaterialBinningResources", {FIELD(MaterialBinningResources, records), FIELD(MaterialBinningResources, instances), FIELD(MaterialBinningResources, materials), FIELD(MaterialBinningResources, shadingMaterials), FIELD(MaterialBinningResources, streamRecords), FIELD(MaterialBinningResources, streamGroups)}},
         };
 #undef FIELD
-        struct Program { const char* module; const char* entry; uint32_t layout; const char* define = nullptr; };
+        struct Program { const char* module; const char* entry; uint32_t layout; };
         const Program programs[] = {
-            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningResetMain", 56},
-            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningClassifyMain", 56},
-            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningArgumentsMain", 56},
-            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningClassifyMain", 57},
             {"Features/PostProcess/FinalBlit", "finalBlitMain", 0},
             {"Features/PostProcess/FinalBlit", "finalBlitUvMain", 0},
             {"Features/Debug/SliderDebug", "sliderDebugMain", 1},
@@ -276,107 +194,24 @@ public:
             {"Features/PathTracing/SceneSharcMaintenance", "sharcClearMain", 11},
             {"Features/PathTracing/SceneSharcMaintenance", "sharcResolveMain", 11},
             {"Features/PostProcess/ScenePathTraceTonemap", "scenePathTraceTonemapMain", 12},
-            {"Features/PathTracing/OpenPBRRayQueryPathTrace", "openPbrRayQueryPathTraceMain", 13},
-            {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain", 13},
-            {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain", 13},
-            {"Features/PostProcess/UpscalerGuideResolve", "upscalerGuideResolveMain", 14},
-            {"Features/PostProcess/StreamlineDLSSSupport", "streamlineDlssAlphaMain", 15},
-            {"Features/PostProcess/StreamlineDLSSSupport", "streamlineDlssDepthFragmentMain", 15},
-            {"Features/Debug/SceneRayQueryVisualize", "sceneRayQueryVisualizeMain", 16},
-            {"Features/Debug/SceneRayQueryVisualize", "sceneRayQueryVisualizeMain", 17},
-            {"Features/Samples/RTXCRMaterialSample", "rtxcrMaterialSampleMain", 18},
-            {"Features/VisibilityBuffer/VisibilityBufferMaterial", "visibilityBufferMaterialMain", 19},
-            {"Features/Material/MaterialError", "materialErrorMain", 20},
-            {"Features/Debug/GPUProbe", "probe", 21},
-            {"Features/Samples/ImageSample", "imageSampleFragmentMain", 22},
-            {"Features/GPUDriven/StreamComposite", "gpuDrivenStreamAssetCompositeFragmentMain", 27},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetDeferredMain", 28},
-            {"Features/Debug/SceneMaterialVisualize", "sceneMaterialVisualizeMain", 29},
-            {"Features/Debug/SceneMaterialVisualize", "sceneMaterialVisualizeMain", 30},
-            {"Features/Samples/MaterialShaderObject", "materialShaderObjectVertexMain", 26},
-            {"Features/Samples/MaterialShaderObject", "materialShaderObjectFragmentMain", 26},
-            {"Features/Samples/MaterialShaderObject", "materialShaderObjectAlternateFragmentMain", 26},
-            {"Features/Samples/BunnyWireframe", "bunnyWireframeVertexMain", 24},
-            {"Features/Samples/BunnyWireframe", "bunnyWireframeFragmentMain", 24},
-            {"Features/Samples/BunnyWireframe", "bunnyWireframeVertexMain", 25},
-            {"Features/Samples/BunnyWireframe", "bunnyWireframeFragmentMain", 25},
-            {"Features/SmokeTests/RenderGraphBuffer", "renderGraphBufferWriteMain", 23},
-            {"Features/SmokeTests/RenderGraphBuffer", "renderGraphBufferCopyMain", 23},
-            {"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewResetMain", 31},
-            {"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain", 31},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetCullResetMain", 32},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetInstanceCullMain", 32},
-            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodResetMain", 33},
-            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodSelectMain", 33},
-            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodArgumentsMain", 33},
-            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodScatterMain", 33},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetInitializePageTableMain", 34},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetApplyUpdatesMain", 34},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetTraversalMain", 35},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetBuildActiveMain", 36},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamCooperativeLodMain", 36},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamDistributedDemandMain", 36},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetBuildTlasInputMain", 37},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetBuildBlasInputMain", 38},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterPrepareMain", 39},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterBinMain", 40},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterBinP0Main", 40},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterCullMain", 41},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterCullP0Main", 41},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterResetMain", 42},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterHistogramMain", 42},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterArgumentsMain", 42},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterScatterMain", 42},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridResetMain", 43},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridArgumentsMain", 43},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridRasterMain", 43},
-            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridResolveFragmentMain", 44},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterMain", 45},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterLegacyMain", 45},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterPlaneMain", 45},
-            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterCooperativeMain", 45},
-            {"Features/GPUDriven/GPUDrivenStreamWorkRaster", "streamClusterRasterWorkBinsMain", 45},
-            {"Features/GPUDriven/GPUDrivenStreamWorkRaster", "streamClusterRasterWorkControlMain", 45},
-            {"Features/GPUDriven/GPUDrivenStreamWorkload", "streamWorkloadResetMain", 46},
-            {"Features/GPUDriven/GPUDrivenStreamWorkload", "streamWorkloadMain", 46},
-            {"Features/Lighting/ScreenSpaceShadows", "rayTracedShadowsMain", 47},
-            {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain", 48},
-            {"Features/PathTracing/ScenePathTraceInline", "scenePathTraceMain", 49},
-            {"Features/PathTracing/OpenPBRRayQueryPathTrace", "openPbrRayQueryPathTraceMain", 49},
-            {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain", 52},
-            {"Features/Lighting/SceneRealtimeLighting", "sceneRealtimeLightingMain", 53},
-            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredMain", 54, "METALLIC_DEFERRED_LIGHT_GRID"},
-            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredBinnedMain", 54, "METALLIC_DEFERRED_LIGHT_GRID"},
-            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredMain", 55, "METALLIC_DEFERRED_LIGHT_GRID"},
-            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredBinnedMain", 55, "METALLIC_DEFERRED_LIGHT_GRID"},
-            {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain", 52},
-            {"Features/PathTracing/ScenePathTraceSharc", "scenePathTraceMain", 50, "SHARC_UPDATE"},
-            {"Features/PathTracing/ScenePathTraceSharc", "scenePathTraceMain", 50, "SHARC_QUERY"},
-            {"Features/PathTracing/ScenePathTraceNRC", "scenePathTraceMain", 51, "NRC_UPDATE"},
-            {"Features/PathTracing/ScenePathTraceNRC", "scenePathTraceMain", 51, "NRC_QUERY"},
-            {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup32Main", 45},
-            {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup64Main", 45},
-            {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup128Main", 45},
-
-
-
-
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout >= 56 ? 41u : program.layout >= 54 ? 40u : program.layout == 53 ? 39u : program.layout == 52 ? 38u : program.layout == 51 ? 37u : program.layout == 50 ? 36u : program.layout == 49 ? 35u : program.layout == 48 ? 34u : program.layout == 47 ? 33u : program.layout == 46 ? 32u : program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
-                const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"},
-                    {program.define ? program.define : "METALLIC_TEST_PARAMETER_LAYOUT", "1"}};
-                const char* capabilities[] = {"spvRayQueryKHR"};
-                std::span<const char* const> extraPaths;
-#if METALLIC_HAS_RTXCR
-                const char* rtxcrPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
-                if (category == 6) { extraPaths = rtxcrPaths; }
-#endif
+                if ((program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 std::string log;
                 auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
-                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = extraPaths, .capabilities = category >= 4 ? std::span<const char* const>(capabilities) : std::span<const char* const>{}, .macroDefines = defines, .descriptorHeapMode = mode}, log);
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = defines, .descriptorHeapMode = mode}, log);
                 if (!shader) { return RHITestResult::fail(log); }
+                // Raw Load<T> removes storage decorations from the value type.
+                // Keep compiling the real LUT entry above; use the exact shared
+                // type in a storage-layout probe, plus the LUT pixel GPU test.
+                if (program.layout == 3) {
+                    shader = compileSlangShaderToSpirv({.moduleName = "ColorGradingParameterLayout",
+                        .entryPointName = "main", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                        .descriptorHeapMode = mode}, log);
+                    if (!shader) { return RHITestResult::fail(log); }
+                }
                 const auto& layout = layouts[program.layout];
                 std::vector<uint32_t> ids;
                 std::map<uint32_t, std::map<uint32_t, uint32_t>> offsets;
@@ -412,7 +247,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 41 ? "MaterialBinningParams.h" : category == 40 ? "DeferredShadingParameters.h" : category == 39 ? "RealtimeLightingParameters.h" : category == 38 ? "PathTraceGuidesInlineParameters.h" : category == 37 ? "NRCTraceParameters.h" : category == 36 ? "SharcTraceParameters.h" : category == 35 ? "PathTraceInlineParameters.h" : category == 34 ? "RTXDITraceParameters.h" : category == 33 ? "ShadowTraceParameters.h" : category == 32 ? "StreamWorkloadParameters.h" : category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -440,113 +275,6 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(PathTraceStageParameterLayoutTest);
 
-class PathTraceParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    PathTraceParameterLayoutTest() { category = 4; name = "path_trace_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(PathTraceParameterLayoutTest);
-
-class DebugVisualizationParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    DebugVisualizationParameterLayoutTest() { category = 5; name = "debug_visualization_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(DebugVisualizationParameterLayoutTest);
-
-#if METALLIC_HAS_RTXCR
-class MaterialSampleParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    MaterialSampleParameterLayoutTest() { category = 6; name = "material_sample_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(MaterialSampleParameterLayoutTest);
-#endif
-
-class VisibilityMaterialParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    VisibilityMaterialParameterLayoutTest() { category = 7; name = "visibility_material_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(VisibilityMaterialParameterLayoutTest);
-
-class MaterialErrorParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    MaterialErrorParameterLayoutTest() { category = 8; name = "material_error_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(MaterialErrorParameterLayoutTest);
-
-class DebugProbeParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    DebugProbeParameterLayoutTest() { category = 9; name = "debug_probe_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(DebugProbeParameterLayoutTest);
-
-class ImageSampleParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    ImageSampleParameterLayoutTest() { category = 10; name = "image_sample_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(ImageSampleParameterLayoutTest);
-
-class GraphBufferParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    GraphBufferParameterLayoutTest() { category = 11; name = "graph_buffer_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(GraphBufferParameterLayoutTest);
-
-class BunnyWireframeParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    BunnyWireframeParameterLayoutTest() { category = 12; name = "bunny_wireframe_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(BunnyWireframeParameterLayoutTest);
-
-class MaterialRasterParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    MaterialRasterParameterLayoutTest() { category = 13; name = "material_raster_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(MaterialRasterParameterLayoutTest);
-
-class StreamCompositeParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamCompositeParameterLayoutTest() { category = 14; name = "stream_composite_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamCompositeParameterLayoutTest);
-
-class StreamDeferredParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamDeferredParameterLayoutTest() { category = 15; name = "stream_deferred_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamDeferredParameterLayoutTest);
-
-class MaterialVisualizationParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    MaterialVisualizationParameterLayoutTest() { category = 16; name = "material_visualization_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(MaterialVisualizationParameterLayoutTest);
-
-class InstanceCullParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    InstanceCullParameterLayoutTest() { category = 17; name = "instance_cull_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(InstanceCullParameterLayoutTest);
-
-class StreamInstanceCullParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamInstanceCullParameterLayoutTest() { category = 18; name = "stream_instance_cull_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamInstanceCullParameterLayoutTest);
-
-class ResidentLODParameterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    ResidentLODParameterLayoutTest() { category = 19; name = "resident_lod_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(ResidentLODParameterLayoutTest);
-
-
-
-
-
-
-
-
-
-
 class SharcTypedMaintenanceTest final : public RHITest {
 public:
     SharcTypedMaintenanceTest() { type = RHITestType::Resource; name = "sharc_typed_maintenance_bounds_and_eviction"; }
@@ -558,7 +286,7 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
             .transform([&](auto value) { device = std::move(value); }));
         auto& queue = *device->getQueue(QueueType::Graphics);
-        auto registry = device->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device);
         REG_CHECK(registry);
         QueueSubmissionTracker tracker;
         REG_REQUIRE(tracker.initialize(*device, queue));
@@ -692,12 +420,12 @@ public:
         REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::RGBA8Unorm}).transform([&](auto rhiValue) { second = std::move(rhiValue); }));
         render::ResourceLease imageA, imageB, generalImage, storageImage;
         bool written = false;
-        REG_REQUIRE(registry.sampledImage(*first, render::ResourceState::ShaderRead, &written).transform([&](auto value) { imageA = std::move(value); }));
+        REG_REQUIRE(registry.sampledImage(*first, render::TextureLayout::ShaderRead, &written).transform([&](auto value) { imageA = std::move(value); }));
         REG_CHECK(written);
-        REG_REQUIRE(registry.sampledImage(*second, render::ResourceState::ShaderRead, &written).transform([&](auto value) { imageB = std::move(value); }));
+        REG_REQUIRE(registry.sampledImage(*second, render::TextureLayout::ShaderRead, &written).transform([&](auto value) { imageB = std::move(value); }));
         REG_CHECK(!written);
         REG_CHECK(imageA.shaderValue() == imageB.shaderValue());
-        REG_REQUIRE(registry.sampledImage(*second, render::ResourceState::General).transform([&](auto value) { generalImage = std::move(value); }));
+        REG_REQUIRE(registry.sampledImage(*second, render::TextureLayout::General).transform([&](auto value) { generalImage = std::move(value); }));
         REG_CHECK(generalImage.shaderValue() != imageA.shaderValue());
         REG_REQUIRE(registry.storageImage(*second).transform([&](auto value) { storageImage = std::move(value); }));
         REG_CHECK(storageImage.kind() == render::ShaderResourceKind::StorageImage);
@@ -724,12 +452,14 @@ public:
         REG_CHECK(render::hasError(writer.use(bLease), render::Error::InvalidArgument));
         const auto invalid = writer.encode(ProbeParams{}, kABI);
         REG_CHECK(render::hasError(invalid, render::Error::InvalidArgument));
+        render::ParameterWriter exhaustedRoot(*device, frame, registry);
+        REG_CHECK(render::hasError(exhaustedRoot.encode(ProbeParams{}, kABI), render::Error::OutOfMemory));
         render::ParameterWriter staleWriter(*device, frame, registry);
-        const auto encoded = staleWriter.encode(ProbeParams{}, kABI);
+        const auto encoded = staleWriter.encode(ProbeParams{}, kABI, render::ParameterTransport::InlinePush);
         REG_CHECK(encoded && encoded->valid());
         frame.cancel();
         REG_REQUIRE(frame.begin(1));
-        const auto stale = staleWriter.encode(ProbeParams{}, kABI);
+        const auto stale = staleWriter.encode(ProbeParams{}, kABI, render::ParameterTransport::InlinePush);
         REG_CHECK(render::hasError(stale, render::Error::InvalidArgument));
         REG_CHECK(encoded->valid()); // A failed encode cannot overwrite an earlier packet.
         frame.cancel();
@@ -744,7 +474,7 @@ public:
         return bench::gpuMetadata({"parameters.submission.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    explicit RegistrySubmissionTest(render::ParameterTransport transport = render::ParameterTransport::DeviceAddress)
+    explicit RegistrySubmissionTest(render::ParameterTransport transport = render::ParameterTransport::DescriptorBuffer)
         : transport_(transport)
     {
         type = RHITestType::Command;
@@ -758,8 +488,8 @@ public:
             .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry, sameRegistry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { sameRegistry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { sameRegistry = std::move(rhiValue); }));
         REG_CHECK(registry == sameRegistry);
         render::ComputeKernel firstKernel, secondKernel;
         std::string log;
@@ -785,7 +515,7 @@ public:
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
             if (transport_ == render::ParameterTransport::InlinePush) {
-                REG_CHECK(encoded.address() == 0 && encoded.inlineData().size() == sizeof(params));
+                REG_CHECK(encoded.root().count == 0 && encoded.inlineData().size() == sizeof(params));
                 REG_CHECK(registry->stats().parameterBytes == 0 && registry->stats().parameterCapacity == 0);
             }
             stale = encoded;
@@ -803,7 +533,7 @@ public:
             std::array<uint32_t, 17000> burst{};
             render::EncodedParameters oversized;
             REG_REQUIRE(writer.encode(burst, kABI + 2).transform([&](auto value) { oversized = std::move(value); }));
-            REG_CHECK(oversized.address() != stale.address());
+            REG_CHECK(oversized.root() != stale.root());
             params.add = 999; // Encoded packets must not reference this mutable CPU struct.
             render::EncodedParameters wrong;
             REG_REQUIRE(writer.encode(params, kABI + 1, transport_).transform([&](auto value) { wrong = std::move(value); }));
@@ -822,7 +552,7 @@ public:
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 300, 2};
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
-            REG_CHECK(transport_ == render::ParameterTransport::InlinePush || encoded.address() != stale.address());
+            REG_CHECK(transport_ == render::ParameterTransport::InlinePush || encoded.root() != stale.root());
             REG_REQUIRE(secondKernel.dispatch(*second.commands, encoded, 1));
         }
         REG_REQUIRE(second.submit(tracker, *gate));
@@ -844,7 +574,9 @@ public:
         REG_REQUIRE(second.pool->reset());
         REG_REQUIRE(second.frame.reset());
         registry->collect();
-        REG_CHECK(registry->stats().liveDescriptors == 2);
+        // Completed frame arenas retain one descriptor per backing chunk.
+        const uint64_t arenaDescriptors = transport_ == render::ParameterTransport::InlinePush ? 1 : 3;
+        REG_CHECK(registry->stats().liveDescriptors == 2 + arenaDescriptors);
         const uint64_t capacity = registry->stats().parameterCapacity;
 
         REG_REQUIRE(makeKernel(*device, firstKernel, log, render::SlangDescriptorHeapMode::Default, transport_));
@@ -870,7 +602,7 @@ public:
         REG_CHECK(cancelledAllocation.expired());
         REG_CHECK(registry->stats().parameterCapacity == capacity);
         registry->collect();
-        REG_CHECK(registry->stats().liveDescriptors == 1);
+        REG_CHECK(registry->stats().liveDescriptors == 1 + arenaDescriptors);
         return RHITestResult::pass();
     }
 private:
@@ -886,6 +618,105 @@ METALLIC_REGISTER_RHI_TEST(RegistryIdentityTest);
 METALLIC_REGISTER_RHI_TEST(RegistrySubmissionTest);
 METALLIC_REGISTER_RHI_TEST(RegistryInlineSubmissionTest);
 
+class ResourceABIProbeTest final : public RHITest {
+public:
+    ResourceABIProbeTest() { type = RHITestType::Resource; name = "resource_abi_spans_nonuniform_and_lifetime"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"resources.abi32.spans.nonuniform.lifetime"}, bench::Layer::Core,
+            "binding", "binding", {"readback.bin"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        struct Record { uint32_t first, values[3]; };
+        struct Params { GPUBufferSpan sources[2], records, output; };
+        static_assert(sizeof(Params) == 48 && offsetof(Params, output) == 36);
+        constexpr uint64_t abi = 0x44525350414e0001ull;
+        std::atomic_uint validationErrors{0};
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "DR resource ABI",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .validationSink = {[](void* target, const ValidationMessage& message) noexcept {
+                // Loader manifest failures are GENERAL environment messages;
+                // count API validation errors generated by this workload.
+                if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
+                    (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
+                    ++*static_cast<std::atomic_uint*>(target);
+                }
+            }, &validationErrors}})
+            .transform([&](auto value) { device = std::move(value); }));
+        ResourceRegistry registry;
+        REG_REQUIRE(registry.initialize(*device));
+        std::unique_ptr<Buffer> sources[2], output;
+        for (uint32_t i = 0; i < 2; ++i) {
+            REG_REQUIRE(makeBuffer(*device, sources[i]));
+            auto* mapped = static_cast<uint32_t*>(sources[i]->map());
+            REG_CHECK(mapped != nullptr);
+            for (uint32_t j = 0; j < 16; ++j) { mapped[j] = 10 + i * 90 + j; }
+            sources[i]->flush(); sources[i]->unmap();
+        }
+        REG_REQUIRE(makeBuffer(*device, output));
+        auto* mapped = static_cast<uint32_t*>(output->map());
+        REG_CHECK(mapped != nullptr);
+        for (uint32_t i = 0; i < 16; ++i) { mapped[i] = 0xdeadbeefu; }
+        output->flush(); output->unmap();
+        // Bad ranges fail before allocating descriptors, and cannot publish a packet.
+        for (const auto range : {BufferRange{0, 0}, BufferRange{1, 4}, BufferRange{60, 8}, BufferRange{0, 6}}) {
+            ParameterWriter invalid(*device, registry);
+            (void)invalid.bufferSpan<uint32_t>(sources[0].get(), range);
+            REG_CHECK(hasError(invalid.status(), Error::InvalidArgument));
+            REG_CHECK(hasError(invalid.encode(Params{}, abi), Error::InvalidArgument));
+        }
+        REG_CHECK(registry.stats().descriptorWrites == 0);
+        ShaderCompileResult shader;
+        REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "ResourceABIProbe",
+            .entryPointName = "resourceABIProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"},
+            shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
+        ComputeKernel kernel;
+        std::string log;
+        REG_REQUIRE(kernel.initialize(*device, {.spirv = shader.spirv,
+            .parameters = parameterAbi<Params>(abi, ParameterTransport::InlinePush)}, log));
+        std::weak_ptr<void> allocation = sources[0]->retainAllocation();
+        {
+            bench::GPUCommands gpu(*device->getQueue(QueueType::Graphics));
+            REG_REQUIRE(gpu.initialize(*device));
+            {
+                ParameterWriter writer(*device, registry);
+                Params params{{writer.bufferSpan<uint32_t>(sources[0].get(), {4, 16}),
+                    writer.bufferSpan<uint32_t>(sources[1].get(), {20, 16})},
+                    writer.bufferSpan<Record>(sources[0].get(), {16, 16}),
+                    writer.bufferSpan<uint32_t>(output.get(), {4, 40})};
+                REG_CHECK(params.sources[0].resource.index == params.records.resource.index);
+                REG_CHECK(params.sources[0].resource.index != params.sources[1].resource.index);
+                REG_CHECK(registry.stats().descriptorWrites == 3);
+                auto encoded = writer.encode(params, abi, ParameterTransport::InlinePush);
+                REG_CHECK(encoded.has_value());
+                REG_REQUIRE(kernel.dispatch(*gpu.commands, *encoded, 1));
+            }
+            sources[0].reset(); sources[1].reset(); kernel.clear();
+            REG_CHECK(!allocation.expired());
+            REG_REQUIRE(gpu.submitAndWait());
+            output->invalidate();
+            auto* values = static_cast<uint32_t*>(output->map());
+            REG_CHECK(values != nullptr);
+            std::array<uint32_t, 16> actual{};
+            std::memcpy(actual.data(), values, sizeof(actual)); output->unmap();
+            bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual));
+            const std::array<uint32_t, 10> expected{11, 105, 12, 106, 13, 107, 14, 108, 0, 31};
+            REG_CHECK(std::equal(expected.begin(), expected.end(), actual.begin() + 1));
+            REG_CHECK(actual[0] == 0xdeadbeefu);
+            for (uint32_t i = 11; i < 16; ++i) { REG_CHECK(actual[i] == 0xdeadbeefu); }
+        }
+        REG_CHECK(allocation.expired());
+        registry.collect();
+        REG_CHECK(registry.stats().liveDescriptors == 1);
+        REG_CHECK(validationErrors == 0);
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(ResourceABIProbeTest);
+
 class RegistryPipelinedParametersTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
@@ -896,17 +727,16 @@ public:
     RegistryPipelinedParametersTest() { type = RHITestType::Command; name = "registry_pipelined_parameter_append"; }
     RHITestResult run(RHITestContext& context) override
     {
-        for (auto transport : {render::ParameterTransport::DeviceAddress, render::ParameterTransport::InlinePush}) {
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Pipelined parameters", .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
             std::shared_ptr<render::ResourceRegistry> registry;
-            REG_REQUIRE(device->resourceRegistry().transform([&](auto value) { registry = std::move(value); }));
+            REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto value) { registry = std::move(value); }));
             render::ComputeKernel kernel;
             std::string log;
-            REG_REQUIRE(makeKernel(*device, kernel, log, mode, transport));
+            REG_REQUIRE(makeKernel(*device, kernel, log, mode));
             std::unique_ptr<render::Buffer> source, output;
             REG_REQUIRE(makeBuffer(*device, source, 11));
             REG_REQUIRE(makeBuffer(*device, output));
@@ -926,13 +756,9 @@ public:
                 // iteration 2 appends after prior batches complete, frame open.
                 params.add = (i + 1) * 100;
                 params.index = i;
-                REG_REQUIRE(writer.encode(params, kABI, transport).transform([&](auto value) { packets[i] = std::move(value); }));
-                if (transport == render::ParameterTransport::DeviceAddress) {
-                    if (i) { REG_CHECK(packets[i].address() > packets[i - 1].address()); }
-                } else {
-                    REG_CHECK(packets[i].address() == 0 && packets[i].inlineData().size() == sizeof(params));
-                    REG_CHECK(std::memcmp(packets[i].inlineData().data(), &params, sizeof(params)) == 0);
-                }
+                REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { packets[i] = std::move(value); }));
+                if (i) { REG_CHECK(packets[i].root().resource == packets[i - 1].root().resource &&
+                    packets[i].root().byteOffset > packets[i - 1].root().byteOffset); }
                 REG_REQUIRE(recordings[i].initialize(*device, queue));
                 render::CommandBuffer* commands = nullptr;
                 REG_REQUIRE(recordings[i].prepare(frame).transform([&](auto value) { commands = value; }));
@@ -968,7 +794,7 @@ public:
             }
             REG_REQUIRE(frame.sealRecording());
             render::EncodedParameters rejected;
-            REG_CHECK(!writer.encode(params, kABI, transport).transform([&](auto value) { rejected = std::move(value); }));
+            REG_CHECK(!writer.encode(params, kABI).transform([&](auto value) { rejected = std::move(value); }));
             REG_REQUIRE(frame.finishSubmission());
             REG_REQUIRE(frame.wait(5'000'000'000ull));
             output->invalidate();
@@ -980,8 +806,7 @@ public:
             output->unmap();
             REG_CHECK((values == std::array<uint32_t, 3>{111, 211, 311}));
         }
-        }
-        return RHITestResult::pass("Mapped/native inline and BDA packets remain immutable across pending and completed prefix submissions");
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(RegistryPipelinedParametersTest);
@@ -1005,7 +830,7 @@ public:
         auto* copy = device->getQueue(render::QueueType::Copy);
         if (!copy) { return RHITestResult::skip("Requires a copy queue"); }
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         render::ComputeKernel kernel;
         std::string log;
         REG_REQUIRE(makeKernel(*device, kernel, log));
@@ -1070,8 +895,9 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        using Params = RegistryTextureParams;
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        struct Params { render::ShaderStorageImage image; render::GPUBufferSpan samples; render::ShaderBuffer output; };
+        static_assert(sizeof(Params) == 20);
         const char* entries[] = {"registryTextureWriteMain", "registryTextureReadMain"};
         std::array<render::ComputeKernel, 2> kernels;
         std::string log;
@@ -1080,7 +906,7 @@ public:
             REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "RegistryTextureProbe",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
-                .parameters = render::parameterAbi<Params>(kRegistryTextureABI, render::ParameterTransport::InlinePush)}, log));
+                .parameters = render::parameterAbi<Params>(kABI + 3)}, log));
         }
         std::unique_ptr<render::Texture> image;
         std::unique_ptr<render::TextureView> view;
@@ -1103,8 +929,8 @@ public:
             const std::array<render::TextureView*, 3> views{view.get(), view.get(), view.get()};
             Params params{writer.storageImage(view.get()), writer.sampledImages(views), writer.buffer(output.get())};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kRegistryTextureABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); }));
-            REG_CHECK(registry->stats().descriptorWrites == 3); // storage image, sampled image, output
+            REG_REQUIRE(writer.encode(params, kABI + 3).transform([&](auto value) { encoded = std::move(value); }));
+            REG_CHECK(registry->stats().descriptorWrites == 4); // storage image, sampled image, output, array upload
             render::TextureBarrierDesc barrier{
                 .texture = image.get(),
                 .oldLayout = render::TextureLayout::Undefined,
@@ -1197,18 +1023,18 @@ public:
         REG_CHECK(!allocation.expired() && child.deviceAddress() == address);
         parent = {}; invalid = {}; empty = {};
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         render::RenderFrameContext frame;
         REG_REQUIRE(frame.begin(0));
         render::EncodedParameters packet;
         {
             render::ParameterWriter invalidWriter(*other, frame, *registry);
-            invalidWriter.dataBuffer<uint32_t>(child);
+            invalidWriter.bufferSpan<uint32_t>(child);
             REG_CHECK(!invalidWriter.status());
-            REG_CHECK(!invalidWriter.encode(render::ShaderDataSpan{}, kABI + 4).transform([&](auto value) { packet = std::move(value); }) && !packet.valid());
+            REG_CHECK(!invalidWriter.encode(render::GPUBufferSpan{}, kABI + 4).transform([&](auto value) { packet = std::move(value); }) && !packet.valid());
             render::ParameterWriter writer(*device, frame, *registry);
-            const auto data = writer.dataBuffer<uint32_t>(child);
-            REG_CHECK(data.address == address && data.count == 2 && data.stride == 4);
+            const auto data = writer.bufferSpan<uint32_t>(child);
+            REG_CHECK(data.resource.index != UINT32_MAX && data.count == 2 && data.byteOffset == 24);
             REG_REQUIRE(writer.encode(data, kABI + 4).transform([&](auto value) { packet = std::move(value); }));
         }
         child = {};
@@ -1217,7 +1043,7 @@ public:
         frame.cancel();
         REG_REQUIRE(frame.reset());
         REG_CHECK(allocation.expired());
-        REG_CHECK(registry->stats().descriptorWrites == 0);
+        REG_CHECK(registry->stats().descriptorWrites == 2);
         return RHITestResult::pass();
     }
 };
@@ -1227,10 +1053,10 @@ class BufferSliceSubmissionTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"bufferSlice.bda.copy.indirect.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
+        return bench::gpuMetadata({"bufferSlice.dr.copy.indirect.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    BufferSliceSubmissionTest() { type = RHITestType::Rendering; name = "buffer_slice_bda_copy_compute_indirect_lifetime"; }
+    BufferSliceSubmissionTest() { type = RHITestType::Rendering; name = "buffer_slice_dr_copy_compute_indirect_lifetime"; }
     RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
@@ -1238,8 +1064,9 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        using Params = DataProbeParams;
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        struct Params { render::GPUBufferSpan source, output, arguments; uint32_t add; };
+        static_assert(sizeof(Params) == 40 && offsetof(Params, add) == 36);
         std::array<render::ComputeKernel, 2> kernels;
         const char* entries[] = {"dataProduceMain", "dataIndirectMain"};
         std::string log;
@@ -1249,13 +1076,11 @@ public:
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { return RHITestResult::fail(shader.diagnostics); }
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
-                .parameters = render::parameterAbi<Params>(kDataProbeABI, render::ParameterTransport::InlinePush)}, log));
+                .parameters = render::parameterAbi<Params>(kABI + 5)}, log));
         }
-        const render::SlangMacroDefine adapterDefines[] = {{"DATA_PROBE_ADAPTER", "1"}};
         render::ShaderCompileResult shader;
         REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
-            .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-            .macroDefines = adapterDefines}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
+            .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         render::ComputeProgram adapter;
         const render::ComputeProgramBindingDesc layout{.binding = 0,
             .kind = render::ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4};
@@ -1263,13 +1088,14 @@ public:
             .spirv = shader.spirv,
             .bindings = {&layout, 1},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kDataSliceProbeLayout,
         }, log));
         std::unique_ptr<render::Buffer> source, work, output;
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::TransferSource,
             .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { source = std::move(rhiValue); }));
-        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
+        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::Storage |
             render::BufferUsageBits::TransferDestination | render::BufferUsageBits::Indirect}).transform([&](auto rhiValue) { work = std::move(rhiValue); }));
-        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
+        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::Storage |
             render::BufferUsageBits::TransferSource | render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         auto* sourceWords = static_cast<uint32_t*>(source->map());
@@ -1319,10 +1145,10 @@ public:
             };
             if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ParameterWriter writer(*device, recording.frame, *registry);
-            const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
-                writer.dataBuffer<uint32_t>(arguments), 7};
+            const Params params{writer.bufferSpan<uint32_t>(data), writer.bufferSpan<uint32_t>(to),
+                writer.bufferSpan<uint32_t>(arguments), 7};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kDataProbeABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI + 5).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
             outputBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             workBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; workBarrier.after = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead};
@@ -1339,7 +1165,7 @@ public:
         }
         source.reset(); work.reset();
         REG_CHECK(!sourceAllocation.expired() && !workAllocation.expired());
-        REG_CHECK(registry->stats().descriptorWrites == 0 && registry->stats().liveDescriptors == 0);
+        REG_CHECK(registry->stats().descriptorWrites == 3 && registry->stats().liveDescriptors == 3);
         REG_REQUIRE(recording.submit(tracker, *gate));
         kernels = {}; adapter.clear();
         REG_CHECK(!recording.frame.completion().isComplete());
@@ -1364,530 +1190,6 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
-
-class UpscalerGuideInlineTest final : public RHITest {
-public:
-    UpscalerGuideInlineTest() { type = RHITestType::Resource; name = "upscaler_guide_inline_output"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        using namespace render;
-        bench::TestDevice device;
-        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Inline guide resolve",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
-            .transform([&](auto value) { device = std::move(value); }));
-        auto& queue = *device->getQueue(QueueType::Graphics);
-        auto registry = device->resourceRegistry(); REG_CHECK(registry);
-        ComputeKernel fill, resolve;
-        std::string log;
-        auto shader = compileSlangShaderToSpirv({.moduleName = "UpscalerGuideProbe", .entryPointName = "guideFillMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
-        if (!shader) { return RHITestResult::fail(log); }
-        const auto abi = parameterAbi<UpscalerGuideResolveParams>(kUpscalerGuideResolveABI, ParameterTransport::InlinePush);
-        REG_REQUIRE(fill.initialize(*device, {.spirv = shader->spirv, .parameters = abi}, log));
-        shader = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
-            .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log);
-        if (!shader) { return RHITestResult::fail(log); }
-        REG_REQUIRE(resolve.initialize(*device, {.spirv = shader->spirv, .parameters = abi}, log));
-        std::array<std::unique_ptr<Texture>, 4> textures;
-        std::array<std::unique_ptr<TextureView>, 4> views;
-        for (uint32_t i = 0; i < 4; ++i) {
-            REG_REQUIRE(device->createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::Storage | TextureUsageBits::TransferSource,
-                .format = i % 2 == 0 ? Format::R32Sfloat : Format::RG32Sfloat, .width = i < 2 ? 2u : 3u, .height = i < 2 ? 2u : 3u})
-                .transform([&](auto value) { textures[i] = std::move(value); }));
-            REG_REQUIRE(device->createTextureView(*textures[i], {}).transform([&](auto value) { views[i] = std::move(value); }));
-        }
-        std::array<std::unique_ptr<Buffer>, 2> readbacks;
-        for (uint32_t i = 0; i < 2; ++i) {
-            REG_REQUIRE(device->createBuffer({.size = 9u * (i + 1) * sizeof(float), .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { readbacks[i] = std::move(value); }));
-        }
-        QueueSubmissionTracker tracker; REG_REQUIRE(tracker.initialize(*device, queue));
-        Commands recording; REG_REQUIRE(recording.initialize(*device, queue)); REG_REQUIRE(recording.begin(0));
-        for (const auto& texture : textures) {
-            TextureBarrierDesc barrier{.texture = texture.get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
-                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
-            REG_REQUIRE(recording.commands->synchronize({.textures = {&barrier, 1}}));
-        }
-        {
-            ParameterWriter writer(*device, **registry, &recording.frame);
-            UpscalerGuideResolveParams params{};
-            params.outputDepth = writer.storageImage(views[0].get()); params.outputMotion = writer.storageImage(views[1].get());
-            auto encoded = writer.encode(params, kUpscalerGuideResolveABI, ParameterTransport::InlinePush); REG_CHECK(encoded);
-            REG_REQUIRE(fill.dispatch(*recording.commands, *encoded, 1));
-            for (uint32_t i = 0; i < 2; ++i) {
-                TextureBarrierDesc barrier{.texture = textures[i].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
-                    .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
-                REG_REQUIRE(recording.commands->synchronize({.textures = {&barrier, 1}}));
-            }
-            params.depth = writer.sampledImage(views[0].get()); params.motion = writer.sampledImage(views[1].get());
-            params.outputDepth = writer.storageImage(views[2].get()); params.outputMotion = writer.storageImage(views[3].get());
-            params.jitterX = 0.25f; params.jitterY = -0.25f;
-            encoded = writer.encode(params, kUpscalerGuideResolveABI, ParameterTransport::InlinePush); REG_CHECK(encoded);
-            REG_REQUIRE(resolve.dispatch(*recording.commands, *encoded, 1));
-        }
-        for (uint32_t i = 0; i < 2; ++i) {
-            TextureBarrierDesc barrier{.texture = textures[i + 2].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::TransferSource,
-                .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
-            REG_REQUIRE(recording.commands->synchronize({.textures = {&barrier, 1}}));
-            recording.commands->copyTextureToBuffer({.texture = textures[i + 2].get(), .buffer = readbacks[i].get(), .width = 3, .height = 3});
-        }
-        const MemoryBarrierDesc host{{PipelineStageBits::Transfer, AccessBits::TransferWrite}, {PipelineStageBits::Host, AccessBits::HostRead}};
-        REG_REQUIRE(recording.commands->synchronize({.memory = {&host, 1}}));
-        std::unique_ptr<Semaphore> gate; REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
-        Drain drain{queue, *gate}; REG_REQUIRE(recording.submit(tracker, *gate)); REG_REQUIRE(gate->signal(1));
-        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
-        for (uint32_t i = 0; i < 2; ++i) {
-            readbacks[i]->invalidate(); const auto* data = static_cast<const float*>(readbacks[i]->map()); REG_CHECK(data);
-            std::array<float, 18> values{}; std::memcpy(values.data(), data, 9 * (i + 1) * sizeof(float)); readbacks[i]->unmap();
-            for (uint32_t y = 0; y < 3; ++y) { for (uint32_t x = 0; x < 3; ++x) {
-                const bool foreground = x > 0;
-                const uint32_t pixel = y * 3 + x;
-                if (i == 0) { REG_CHECK(values[pixel] == (foreground ? 0.25f : 0.75f)); }
-                else {
-                    REG_CHECK(values[pixel * 2] == (foreground ? 0.125f : 0.0f));
-                    REG_CHECK(values[pixel * 2 + 1] == ((foreground || y == 2) ? 0.125f : 0.0f));
-                }
-            }}
-        }
-        return RHITestResult::pass("Inline handles/jitter, nearest foreground depth, UV motion and partial workgroup");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(UpscalerGuideInlineTest);
-
-class StreamCandidateLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamCandidateLayoutTest() { category = 25; name = "stream_candidate_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamCandidateLayoutTest);
-
-class StreamClassifyLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamClassifyLayoutTest() { category = 26; name = "stream_classify_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamClassifyLayoutTest);
-class StreamClusterCullLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamClusterCullLayoutTest() { category = 27; name = "stream_cluster_cull_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamClusterCullLayoutTest);
-class HybridBinLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    HybridBinLayoutTest() { category = 28; name = "hybrid_bin_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(HybridBinLayoutTest);
-class HybridRasterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    HybridRasterLayoutTest() { category = 29; name = "hybrid_raster_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(HybridRasterLayoutTest);
-class HybridResolveLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    HybridResolveLayoutTest() { category = 30; name = "hybrid_resolve_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(HybridResolveLayoutTest);
-class StreamWorkloadLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamWorkloadLayoutTest() { category = 32; name = "stream_workload_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamWorkloadLayoutTest);
-class ShadowTraceLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    ShadowTraceLayoutTest() { category = 33; name = "shadow_trace_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(ShadowTraceLayoutTest);
-class RTXDITraceLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    RTXDITraceLayoutTest() { category = 34; name = "rtxdi_trace_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(RTXDITraceLayoutTest);
-class PathTraceInlineLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    PathTraceInlineLayoutTest() { category = 35; name = "path_trace_inline_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(PathTraceInlineLayoutTest);
-class SharcTraceLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    SharcTraceLayoutTest() { category = 36; name = "sharc_trace_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(SharcTraceLayoutTest);
-class NRCTraceLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    NRCTraceLayoutTest() { category = 37; name = "nrc_trace_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(NRCTraceLayoutTest);
-class PathTraceGuidesInlineLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    PathTraceGuidesInlineLayoutTest() { category = 38; name = "path_trace_guides_inline_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(PathTraceGuidesInlineLayoutTest);
-class RealtimeLightingLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    RealtimeLightingLayoutTest() { category = 39; name = "realtime_lighting_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(RealtimeLightingLayoutTest);
-class MaterialBinningLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    MaterialBinningLayoutTest() { category = 41; name = "material_binning_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(MaterialBinningLayoutTest);
-
-class DeferredShadingLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    DeferredShadingLayoutTest() { category = 40; name = "deferred_shading_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(DeferredShadingLayoutTest);
-
-
-
-
-
-
-
-
-class StreamRasterLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamRasterLayoutTest() { category = 31; name = "stream_raster_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamRasterLayoutTest);
-
-
-
-
-
-
-
-class StreamBLASLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamBLASLayoutTest() { category = 24; name = "stream_blas_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamBLASLayoutTest);
-
-class StreamTLASLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamTLASLayoutTest() { category = 23; name = "stream_tlas_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamTLASLayoutTest);
-
-class StreamTLASInputTest final : public RHITest {
-public:
-    StreamTLASInputTest() { type = RHITestType::Resource; name = "stream_tlas_inline_inputs"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        using namespace render;
-        bench::TestDevice device;
-        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Stream TLAS inputs",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
-            .transform([&](auto value) { device = std::move(value); }));
-        auto& queue = *device->getQueue(QueueType::Graphics);
-        auto registry = device->resourceRegistry();
-        REG_CHECK(registry);
-        ComputeKernel kernel;
-        std::string log;
-        auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamTLASInputEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, log);
-        if (!shader) { return RHITestResult::fail(log); }
-        REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv,
-            .parameters = parameterAbi<StreamTLASParameters>(kStreamTLASABI, ParameterTransport::InlinePush)}, log));
-        std::unique_ptr<Buffer> output;
-        REG_REQUIRE(device->createBuffer({.size = 8 * 64, .structureStride = 64,
-            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
-            .transform([&](auto value) { output = std::move(value); }));
-        auto* initial = output->map();
-        REG_CHECK(initial);
-        std::memset(initial, 0xcd, 8 * 64);
-        output->flush(); output->unmap();
-        QueueSubmissionTracker tracker;
-        REG_REQUIRE(tracker.initialize(*device, queue));
-        Commands recording;
-        REG_REQUIRE(recording.initialize(*device, queue));
-        REG_REQUIRE(recording.begin(0));
-        {
-            MeshletStreamGPUParams settings{};
-            settings.sceneInstanceCount = 7; settings.scenePrimitiveCount = 1;
-            settings.blasStorageAddressLow = 0xfffffff0u; settings.blasStorageAddressHigh = 4;
-            std::array<MeshletStreamGPUInstance, 7> instances{};
-            for (auto& instance : instances) {
-                instance.visible = 1;
-                for (uint32_t component = 0; component < 4; ++component) {
-                    instance.world0[component] = float(component + 1);
-                    instance.world1[component] = float(component + 5);
-                    instance.world2[component] = float(component + 9);
-                    instance.world3[component] = float(component + 13);
-                }
-            }
-            instances[2].visible = 0;
-            instances[4].primitiveIndex = 99;
-            std::array<MeshletStreamGPUInstanceBLAS, 6> records{};
-            for (auto& record : records) {
-                record.flags = 2; record.selectedClusterCount = record.insertedClusterCount = 1;
-                record.cachedValid = 1; record.storageCapacity = 256; record.storageOffset = 32;
-            }
-            records[1].flags = 1; // Explicit fallback.
-            records[3].flags = 6; // Overflow invalidates an otherwise ready dynamic BLAS.
-            records[4].flags = 0; // Invalid primitive must not read fallback memory.
-            records[5].insertedClusterCount = 0; // Incomplete dynamic build uses fallback.
-            const uint64_t fallback = 0x1122334455667788ull;
-            ParameterWriter writer(*device, **registry, &recording.frame);
-            StreamTLASParameters params{
-                .settings = {writer.data(&settings, sizeof(settings), 16), 1, sizeof(settings)},
-                .instances = {writer.data(instances.data(), sizeof(instances), 16), 7, sizeof(instances[0])},
-                .blasRecords = {writer.data(records.data(), sizeof(records), 16), 6, sizeof(records[0])},
-                .fallbackAddresses = {writer.data(&fallback, sizeof(fallback), 8), 1, 8},
-                .output = writer.dataBuffer(output.get(), 64, 16),
-            };
-            auto encoded = writer.encode(params, kStreamTLASABI, ParameterTransport::InlinePush);
-            REG_CHECK(encoded);
-            REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 1));
-        }
-        const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-            {PipelineStageBits::Host, AccessBits::HostRead}};
-        REG_REQUIRE(recording.commands->synchronize({.memory = {&hostRead, 1}}));
-        std::unique_ptr<Semaphore> gate;
-        REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
-        Drain drain{queue, *gate};
-        REG_REQUIRE(recording.submit(tracker, *gate));
-        REG_REQUIRE(gate->signal(1));
-        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
-        output->invalidate();
-        const auto* mapped = static_cast<const uint32_t*>(output->map());
-        REG_CHECK(mapped);
-        std::array<uint32_t, 128> actual;
-        std::memcpy(actual.data(), mapped, sizeof(actual)); output->unmap();
-        for (uint32_t i = 0; i < 6; ++i) {
-            for (uint32_t row = 0; row < 3; ++row) {
-                for (uint32_t column = 0; column < 4; ++column) {
-                    const float expected = float(row + column * 4 + 1);
-                    uint32_t bits; std::memcpy(&bits, &expected, sizeof(bits));
-                    REG_CHECK(actual[i * 16 + row * 4 + column] == bits);
-                }
-            }
-            REG_CHECK(actual[i * 16 + 12] == (i | ((i == 2 || i == 4) ? 0u : 0xff000000u)));
-            REG_CHECK(actual[i * 16 + 13] == 0);
-            REG_CHECK(actual[i * 16 + 14] == (i == 0 || i == 2 ? 16u : i == 4 ? 0u : 0x55667788u));
-            REG_CHECK(actual[i * 16 + 15] == (i == 0 || i == 2 ? 5u : i == 4 ? 0u : 0x11223344u));
-        }
-        for (uint32_t i = 6 * 16; i < actual.size(); ++i) { REG_CHECK(actual[i] == 0xcdcdcdcdu); }
-        REG_CHECK((*registry)->stats().descriptorWrites == 0);
-        return RHITestResult::pass("TLAS transforms, address carry, dynamic/fallback/hidden/overflow/incomplete cases, BDA bounds and submission lifetime; zero descriptors");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(StreamTLASInputTest);
-
-class StreamActiveBuildLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamActiveBuildLayoutTest() { category = 22; name = "stream_active_build_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamActiveBuildLayoutTest);
-
-class StreamTraversalLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamTraversalLayoutTest() { category = 21; name = "stream_traversal_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamTraversalLayoutTest);
-
-class StreamPageTableLayoutTest final : public PostProcessParameterLayoutTest {
-public:
-    StreamPageTableLayoutTest() { category = 20; name = "stream_page_table_parameter_spirv_layout"; }
-};
-METALLIC_REGISTER_RHI_TEST(StreamPageTableLayoutTest);
-
-class StreamPageTableInlineTest final : public RHITest {
-public:
-    StreamPageTableInlineTest() { type = RHITestType::Resource; name = "stream_page_table_inline_snapshots"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        using namespace render;
-        bench::TestDevice device;
-        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Stream page snapshots",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
-            .transform([&](auto value) { device = std::move(value); }));
-        auto& queue = *device->getQueue(QueueType::Graphics);
-        auto registry = device->resourceRegistry();
-        REG_CHECK(registry);
-        std::array<ComputeKernel, 2> kernels;
-        const char* entries[] = {"gpuDrivenStreamAssetInitializePageTableMain", "gpuDrivenStreamAssetApplyUpdatesMain"};
-        std::string log;
-        for (size_t i = 0; i < kernels.size(); ++i) {
-            auto shader = compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log);
-            if (!shader) { return RHITestResult::fail(log); }
-            REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader->spirv,
-                .parameters = parameterAbi<StreamPageTableParameters>(kStreamPageTableABI, ParameterTransport::InlinePush)}, log));
-        }
-        std::array<std::unique_ptr<Buffer>, 2> outputs;
-        for (size_t i = 0; i < outputs.size(); ++i) {
-            REG_REQUIRE(makeBuffer(*device, outputs[i]));
-            auto* words = static_cast<uint32_t*>(outputs[i]->map());
-            REG_CHECK(words);
-            for (uint32_t page = 0; page < 8; ++page) {
-                words[page * 2] = 0xffffffffu;
-                words[page * 2 + 1] = 73u + page;
-            }
-            outputs[i]->flush();
-            outputs[i]->unmap();
-        }
-        QueueSubmissionTracker tracker;
-        REG_REQUIRE(tracker.initialize(*device, queue));
-        Commands recording;
-        REG_REQUIRE(recording.initialize(*device, queue));
-        REG_REQUIRE(recording.begin(0));
-        const MemoryBarrierDesc compute{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-            {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
-        for (uint32_t stage = 0; stage < 4; ++stage) {
-            ParameterWriter writer(*device, **registry, &recording.frame);
-            // Reuse and overwrite host storage after encoding; each packet must own its bytes.
-            std::array<std::array<uint32_t, 2>, 3> patches{{{2u, stage == 1 ? 17u : 0u}, {5u, 29u}, {99u, 91u}}};
-            StreamPageTableParameters params{.pages = writer.dataBuffer(outputs[stage == 0 ? 0 : 1].get(), 8, 8)};
-            if (stage != 0) {
-                params.patches = {writer.data(patches.data(), sizeof(patches), 8), stage == 2 ? 1u : 3u, 8};
-                if (stage == 3) { params.patches.count = 0; }
-            }
-            auto encoded = writer.encode(params, kStreamPageTableABI, ParameterTransport::InlinePush);
-            REG_CHECK(encoded);
-            patches = {};
-            REG_REQUIRE(kernels[stage == 0 ? 0 : 1].dispatch(*recording.commands, *encoded, 1));
-            REG_REQUIRE(recording.commands->synchronize({.memory = {&compute, 1}}));
-        }
-        const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-            {PipelineStageBits::Host, AccessBits::HostRead}};
-        REG_REQUIRE(recording.commands->synchronize({.memory = {&hostRead, 1}}));
-        std::unique_ptr<Semaphore> gate;
-        REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
-        Drain drain{queue, *gate};
-        REG_REQUIRE(recording.submit(tracker, *gate));
-        REG_REQUIRE(gate->signal(1));
-        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
-        for (size_t i = 0; i < outputs.size(); ++i) {
-            outputs[i]->invalidate();
-            const auto* mapped = static_cast<const uint32_t*>(outputs[i]->map());
-            REG_CHECK(mapped);
-            std::array<uint32_t, 16> actual;
-            std::memcpy(actual.data(), mapped, sizeof(actual));
-            outputs[i]->unmap();
-            for (uint32_t page = 0; page < 8; ++page) {
-                REG_CHECK(actual[page * 2] == (i == 0 || page == 2 ? 0u : page == 5 ? 29u : 0xffffffffu));
-                REG_CHECK(actual[page * 2 + 1] == (i == 0 ? 0u : 73u + page));
-            }
-        }
-        REG_CHECK((*registry)->stats().descriptorWrites == 0);
-        return RHITestResult::pass("Inline page initialization, independent patch snapshots, unload, empty and invalid patches, preserved request frames; zero descriptor writes");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(StreamPageTableInlineTest);
-
-class StreamDataDecodeTest final : public RHITest {
-public:
-    StreamDataDecodeTest() { type = RHITestType::Resource; name = "stream_data_decode_bounds"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-        using namespace render;
-        bench::TestDevice device;
-        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Stream BDA bounds",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
-            .transform([&](auto value) { device = std::move(value); }));
-        auto& queue = *device->getQueue(QueueType::Graphics);
-        auto registry = device->resourceRegistry();
-        REG_CHECK(registry);
-        ComputeKernel kernel, surfaceKernel, uvKernel;
-        std::string log;
-        auto shader = compileSlangShaderToSpirv({.moduleName = "StreamDataDecodeProbe",
-            .entryPointName = "streamDataDecodeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
-        if (!shader) { return RHITestResult::fail(log); }
-        REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
-        auto surfaceShader = compileSlangShaderToSpirv({.moduleName = "StreamRaySurfaceProbe",
-            .entryPointName = "streamRaySurfaceMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
-        if (!surfaceShader) { return RHITestResult::fail(log); }
-        REG_REQUIRE(surfaceKernel.initialize(*device, {.spirv = surfaceShader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
-        auto uvShader = compileSlangShaderToSpirv({.moduleName = "StreamRaySurfaceProbe",
-            .entryPointName = "streamRayUVMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
-        if (!uvShader) { return RHITestResult::fail(log); }
-        REG_REQUIRE(uvKernel.initialize(*device, {.spirv = uvShader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
-        std::unique_ptr<Buffer> output;
-        REG_REQUIRE(device->createBuffer({.size = 52 * sizeof(uint32_t), .structureStride = 4,
-            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
-            .transform([&](auto value) { output = std::move(value); }));
-        // Poison every result so a skipped invocation cannot look like a rejected input.
-        void* initial = output->map();
-        REG_CHECK(initial);
-        std::memset(initial, 0xff, 52 * sizeof(uint32_t));
-        output->flush();
-        output->unmap();
-        QueueSubmissionTracker tracker;
-        REG_REQUIRE(tracker.initialize(*device, queue));
-        Commands recording;
-        REG_REQUIRE(recording.initialize(*device, queue));
-        REG_REQUIRE(recording.begin(0));
-        {
-            // One resident page, one cluster, one triangle with three float3 positions.
-            std::array<uint32_t, 63> words{};
-            words[2] = 1; words[9] = 112; words[10] = 208; words[11] = 244;
-            words[12] = 249; words[14] = 1; words[20] = 4;
-            words[29] = 3; words[31] = 1;
-            words[55] = 0x3f800000; words[59] = 0x3f800000; words[61] = 0x00020100;
-            const std::array<uint32_t, 2> table{2, 0};
-            ParameterWriter writer(*device, **registry, &recording.frame);
-            StreamProbeParameters params{};
-            params.stream.pages = {writer.data(words.data(), sizeof(words)), uint32_t(words.size()), 4};
-            params.stream.pageTable = {writer.data(table.data(), sizeof(table)), 1, 8};
-            std::array<uint32_t, 24> instance{};
-            instance[1] = 17;
-            instance[4] = instance[9] = instance[14] = instance[19] = 0x3f800000; // Identity world transform.
-            const std::array<uint32_t, 4> header{0, 0, 23, 0};
-            params.stream.instances = {writer.data(instance.data(), sizeof(instance)), 1, 96};
-            params.stream.header = {writer.data(header.data(), sizeof(header)), 3, 4};
-            params.output = writer.dataBuffer(output.get(), 4, 4);
-            auto encoded = writer.encode(params, kStreamProbeABI, ParameterTransport::InlinePush);
-            REG_CHECK(encoded);
-            REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 2));
-            REG_REQUIRE(surfaceKernel.dispatch(*recording.commands, *encoded, 1));
-            // Eight independent pages: valid UV, malformed optional ranges/formats,
-            // and two barycentric positions on opposite sides of the alpha cutoff.
-            std::array<uint32_t, 8 * 76> uvPages{};
-            for (uint32_t i = 0; i < 8; ++i) {
-                auto* page = uvPages.data() + i * 76;
-                std::copy(words.begin(), words.end(), page);
-                page[12] = 276; page[14] = 23;
-                page[16] = page[24] = 0xfffffffcu; // Invalid normal/tangent ranges.
-                page[21] = page[25] = 1;
-                page[17] = 252; page[22] = 1;
-                page[65] = page[68] = 0x3f800000; // UV: (0,0), (1,0), (0,1).
-                if (i == 1) { page[17] = 280; }
-                if (i == 2) { page[17] = 253; }
-                if (i == 3) { page[22] = 0; }
-                if (i == 4) { page[12] = 272; }
-                if (i == 5) { page[14] &= ~4u; }
-            }
-            params.stream.pages = {writer.data(uvPages.data(), sizeof(uvPages)), uint32_t(uvPages.size()), 4};
-            auto uvEncoded = writer.encode(params, kStreamProbeABI, ParameterTransport::InlinePush);
-            REG_CHECK(uvEncoded);
-            REG_REQUIRE(uvKernel.dispatch(*recording.commands, *uvEncoded, 1));
-        }
-        const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
-            {PipelineStageBits::Host, AccessBits::HostRead}};
-        REG_REQUIRE(recording.commands->synchronize({.memory = {&hostRead, 1}}));
-        std::unique_ptr<Semaphore> gate;
-        REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
-        Drain drain{queue, *gate};
-        REG_REQUIRE(recording.submit(tracker, *gate));
-        REG_REQUIRE(gate->signal(1));
-        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
-        output->invalidate();
-        const auto* values = static_cast<const uint32_t*>(output->map());
-        REG_CHECK(values);
-        std::array<uint32_t, 52> actual{};
-        std::memcpy(actual.data(), values, sizeof(actual));
-        output->unmap();
-        for (uint32_t i = 0; i < 24; ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : (i == 0 || i == 11) ? 1u : 0u)); }
-        for (uint32_t i = 0; i < 20; ++i) {
-            const bool expected = i <= 2 || i == 7 || i == 10 || i == 11;
-            REG_CHECK(actual[24 + i] == uint32_t(expected));
-        }
-        for (uint32_t i = 44; i < 52; ++i) { REG_CHECK(actual[i] == 1u); }
-        REG_CHECK((*registry)->stats().descriptorWrites == 0);
-        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected; explicit surface/alpha provider, ray-independent normals/TBN, bitangent flip and mask/blend thresholds and invalid opaque geometry; UV-sensitive alpha interpolation and malformed optional UV fallbacks");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(StreamDataDecodeTest);
 
 class ResourceRangeContractTest final : public RHITest {
 public:
@@ -2016,22 +1318,25 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(SynchronizationScopesTest);
 
-// Capture encoding without submitting work. Restore Volk's entry point even on
+// Capture encoding without submitting work. Restore this device's entry point even on
 // an assertion failure; these tests execute serially in the RHI test process.
 struct BarrierEncodingCapture {
     inline static BarrierEncodingCapture* active = nullptr;
-    PFN_vkCmdPipelineBarrier2 original = vkCmdPipelineBarrier2;
+    PFN_vkCmdPipelineBarrier2& entry;
+    PFN_vkCmdPipelineBarrier2 original;
     uint32_t calls = 0;
     std::vector<VkMemoryBarrier2> memory;
     std::vector<VkImageMemoryBarrier2> images;
-    BarrierEncodingCapture()
+    explicit BarrierEncodingCapture(render::Device& device)
+        : entry(const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)->vkCmdPipelineBarrier2),
+          original(entry)
     {
         active = this;
-        vkCmdPipelineBarrier2 = capture;
+        entry = capture;
     }
     ~BarrierEncodingCapture()
     {
-        vkCmdPipelineBarrier2 = original;
+        entry = original;
         active = nullptr;
     }
     static VKAPI_ATTR void VKAPI_CALL capture(VkCommandBuffer, const VkDependencyInfo* dependency)
@@ -2070,7 +1375,7 @@ public:
         REG_CHECK(texture);
         std::unique_ptr<render::Buffer> buffer;
         REG_REQUIRE(makeBuffer(context.device, buffer));
-        BarrierEncodingCapture capture;
+        BarrierEncodingCapture capture(context.device);
 
         render::TextureBarrierDesc image{.texture = texture->get(), .oldLayout = L::General, .newLayout = L::General};
         render::BufferBarrierDesc bytes{.buffer = buffer.get()};
@@ -2091,7 +1396,7 @@ public:
         image.newLayout = L::ShaderRead;
         image.after = {S::ComputeShader, A::ShaderRead};
         REG_REQUIRE(command.synchronize({.textures = {&image, 1}}));
-        if (context.device.capabilities().unifiedImageLayouts) {
+        if (metallic::render::vulkan::deviceCapabilities(context.device).unifiedImageLayouts) {
             REG_CHECK(capture.memory.size() == 1 && capture.images.empty());
             REG_CHECK(capture.memory[0].srcStageMask == 0 && capture.memory[0].srcAccessMask == 0);
         } else {
@@ -2140,17 +1445,18 @@ public:
         std::array<uint8_t, bytes> reference{};
         bool unifiedTested = false;
         std::vector<uint8_t> observations;
-        const auto variants = context.deviceDesc ? std::vector<bool>{context.deviceDesc->preferUnifiedImageLayouts} : std::vector<bool>{false, true};
+        const auto variants = context.deviceDesc ? std::vector<bool>{metallic::render::vulkan::deviceExtensions(*context.deviceDesc).preferUnifiedImageLayouts} : std::vector<bool>{false, true};
         for (bool preferUnified : variants) {
             std::atomic_uint errors{0};
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Prepared execution lifetime", .enableValidation = context.enableValidation,
                 .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
-                    if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                    if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
+                        (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
                         ++*static_cast<std::atomic_uint*>(target);
                     }
-                }, &errors}, .preferUnifiedImageLayouts = preferUnified}).transform([&](auto value) { device = std::move(value); }));
-            const bool unified = device->capabilities().unifiedImageLayouts;
+                }, &errors}, .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{.preferUnifiedImageLayouts = preferUnified}}).transform([&](auto value) { device = std::move(value); }));
+            const bool unified = metallic::render::vulkan::deviceCapabilities(*device).unifiedImageLayouts;
             REG_CHECK(preferUnified || !unified);
             unifiedTested |= unified;
             auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -2186,7 +1492,7 @@ public:
             REG_REQUIRE(device->createGraphicsPipeline({
                 .vertexShader = {modules[0].get()},
                 .fragmentShader = {modules[1].get()},
-                .colorFormat = render::Format::RGBA8Unorm,
+                .colorFormats = {render::Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             }).transform([&](auto value) { pipeline = std::move(value); }));
             std::unique_ptr<render::GraphicsShaderObjectProgram> program;
             REG_REQUIRE(device->createGraphicsShaderObjectProgram({.vertexShader = {modules[0].get()}, .fragmentShader = {modules[1].get()}}).transform([&](auto value) { program = std::move(value); }));
@@ -2216,7 +1522,7 @@ public:
                 REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto value) { view = std::move(value); }));
                 REG_CHECK(!view->hasNativeView());
                 REG_CHECK(render::hasError(device->createTextureView(*texture, {.range = {.baseMip = 1}}).transform([](auto) {}), render::Error::InvalidArgument));
-                REG_CHECK(render::vulkan::nativeImageLayout(*view, render::ResourceState::ColorAttachment) ==
+                REG_CHECK(render::vulkan::nativeImageLayout(*view, render::TextureLayout::ColorAttachment) ==
                     (unified ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
                 REG_CHECK(!view->hasNativeView());
                 allocations[i] = view->retainTexture();
@@ -2230,7 +1536,7 @@ public:
                     .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
                 };
                 REG_REQUIRE(command.synchronize({.textures = {&barrier, 1}}));
-                render::RenderingAttachmentDesc attachment{.view = view.get(), .state = render::ResourceState::ColorAttachment,
+                render::RenderingAttachmentDesc attachment{.view = view.get(), .layout = render::TextureLayout::ColorAttachment,
                     .loadOp = render::LoadOp::Clear, .clearColor = {0, 0, 0, 1}};
                 REG_REQUIRE(command.beginRendering({.renderArea = {0, 0, extent, extent}, .colorAttachments = {&attachment, 1}}));
                 REG_CHECK(view->hasNativeView());
@@ -2239,14 +1545,14 @@ public:
                 // Simulate the SDK/DGC boundary, then explicitly establish the new state.
                 if (i == 1) { render::vulkan::notifyExternalDescriptorSetBinding(command); }
                 REG_REQUIRE(command.bindExecution(executions[i]));
-                command.setViewport({0, 0, float(extent), float(extent), 0, 1});
+                REG_REQUIRE(command.setViewport({0, 0, float(extent), float(extent), 0, 1}));
                 command.setScissor({0, 0, extent, extent});
-                command.draw(3);
+                REG_REQUIRE(command.draw(3));
                 command.endRendering();
                 barrier.oldLayout = render::TextureLayout::ColorAttachment; barrier.before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite};
                 barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
                 REG_REQUIRE(command.synchronize({.textures = {&barrier, 1}}));
-                command.copyTextureToBuffer({.texture = texture.get(), .buffer = readbacks[i].get(), .width = extent, .height = extent});
+                REG_REQUIRE((readbacks[i].get())->slice().and_then([&](const auto& bufferSlice) { return command.copyTextureToBuffer({.texture = texture.get(), .buffer = bufferSlice, .width = extent, .height = extent}); }));
                 view.reset(); texture.reset();
                 REG_CHECK(!allocations[i].expired());
             }
@@ -2291,7 +1597,7 @@ public:
             REG_CHECK(errors.load() == 0);
         }
         bench::comparisonEvidence(context, {{"extent", extent}, {"draws", 3}}, observations,
-            context.deviceDesc && context.deviceDesc->preferUnifiedImageLayouts);
+            context.deviceDesc && metallic::render::vulkan::deviceExtensions(*context.deviceDesc).preferUnifiedImageLayouts);
         if (context.evidence) { return RHITestResult::pass("prepared views and three readbacks passed; parent compares layout policies"); }
         return RHITestResult::pass(unifiedTested ? "GENERAL and optimal layouts produced identical PSO/shader-object readback" :
             "Optimal-layout fallback passed; unified image layouts unavailable on this device");
@@ -2323,7 +1629,7 @@ private:
             .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto value) { registry = std::move(value); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto value) { registry = std::move(value); }));
         render::ComputeKernel kernel;
         std::string log;
         REG_REQUIRE(makeKernel(*device, kernel, log, mode));
@@ -2389,39 +1695,28 @@ public:
     PreparedDispatchParallelTest() { type = RHITestType::Rendering; name = "prepared_dispatch_parallel_snapshot_lifetime"; }
     RHITestResult run(RHITestContext& context) override
     {
-        const std::array variants{
-            std::pair{false, render::SlangDescriptorHeapMode::Mapped},
-            std::pair{false, render::SlangDescriptorHeapMode::Native},
-            std::pair{true, render::SlangDescriptorHeapMode::Mapped},
-            std::pair{true, render::SlangDescriptorHeapMode::Native}};
-        for (const auto& [inlinePush, mode] : variants) {
+        for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Prepared dispatch snapshot",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
-            auto registry = device->resourceRegistry();
-            REG_CHECK(registry);
-            render::ComputeKernel kernels[2];
             render::ShaderCompileResult shader;
-            if (!inlinePush) { REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
-                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); })); }
+            REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             render::ComputeProgram programs[2];
             render::ComputeProgramBindingDesc layout[] = {
                 {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
                 {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
             std::string log;
-            if (inlinePush) {
-                for (auto& kernel : kernels) { REG_REQUIRE(makeKernel(*device, kernel, log, mode, render::ParameterTransport::InlinePush)); }
-            } else {
-                for (auto& program : programs) {
-                    REG_REQUIRE(program.initialize(*device, {
-                        .spirv = shader.spirv,
-                        .pushConstantSize = 4,
-                        .bindings = {layout, 2},
-                        .requiresRayQuery = false,
-                    }, log));
-                    std::swap(layout[0], layout[1]);
-                }
+            for (auto& program : programs) {
+                REG_REQUIRE(program.initialize(*device, {
+                    .spirv = shader.spirv,
+                    .pushConstantSize = 4,
+                    .bindings = {layout, 2},
+                    .requiresRayQuery = false,
+                    .resourceParameters = metallic::tests::kFrameCopyProbeLayout,
+                }, log));
+                std::swap(layout[0], layout[1]);
             }
             std::unique_ptr<render::Buffer> input, output, arguments;
             REG_REQUIRE(makeBuffer(*device, input, 137));
@@ -2445,15 +1740,6 @@ public:
             uint32_t indices[] = {0, 1, 2};
             const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = input.get()}, {.binding = 1, .buffer = output.get()}};
             std::jthread first([&] {
-                if (inlinePush) {
-                    render::ParameterWriter writer(*device, **registry, &frame);
-                    ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 0, indices[0]};
-                    auto encoded = writer.encode(params, kABI, render::ParameterTransport::InlinePush);
-                    outcomes[0] = encoded ? kernels[0].prepareDispatch(*encoded, 1).transform(
-                        [&](auto value) { packets[0] = std::move(value); }) : render::makeError(encoded.error());
-                    params.index = 15; // Encoding owns the bytes, not this stack object.
-                    return;
-                }
                 outcomes[0] = programs[0].prepareDispatch(frame, {
                     .bindings = {bindings, 2},
                     .pushData = &indices[0],
@@ -2461,20 +1747,6 @@ public:
                 }).transform([&](auto value) { packets[0] = std::move(value); });
             });
             std::jthread second([&] {
-                if (inlinePush) {
-                    render::ParameterWriter writer(*device, **registry, &frame);
-                    render::ComputeIndirectParameters items[2];
-                    for (uint32_t i = 0; i < 2; ++i) {
-                        ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 0, indices[i + 1]};
-                        auto encoded = writer.encode(params, kABI, render::ParameterTransport::InlinePush);
-                        auto slice = arguments->slice({12 * i, 12});
-                        if (!encoded || !slice) { outcomes[1] = render::makeError(render::Error::InvalidArgument); return; }
-                        items[i] = {*encoded, *slice, &kernels[i]};
-                        params.index = 15;
-                    }
-                    outcomes[1] = kernels[0].prepareIndirectBatch(items).transform([&](auto value) { packets[1] = std::move(value); });
-                    return;
-                }
                 const render::ComputeIndirectDispatch items[] = {
                     {.pushData = &indices[1]}, {.pushData = &indices[2], .argumentOffset = 12, .program = &programs[1]}};
                 outcomes[1] = programs[0].prepareIndirectBatch(frame, {
@@ -2485,24 +1757,15 @@ public:
             });
             first.join(); second.join();
             for (const auto& outcome : outcomes) { REG_REQUIRE(outcome); }
-            if (inlinePush) {
-                render::ParameterWriter writer(*device, **registry, &frame);
-                ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 0, 0};
-                auto wrongAbi = writer.encode(params, kABI + 1, render::ParameterTransport::InlinePush);
-                REG_CHECK(wrongAbi);
-                REG_CHECK(render::hasError(kernels[0].prepareDispatch(*wrongAbi, 1), render::Error::InvalidArgument) && packets[0].valid());
-            } else {
-                const auto failed = programs[0].prepareDispatch(frame, {
-                    .bindings = {bindings, 2},
-                    .pushData = &indices[0],
-                    .pushDataSize = 3,
-                });
-                REG_CHECK(render::hasError(failed, render::Error::InvalidArgument) && packets[0].valid());
-            }
+            const auto failed = programs[0].prepareDispatch(frame, {
+                .bindings = {bindings, 2},
+                .pushData = &indices[0],
+                .pushDataSize = 3,
+            });
+            REG_CHECK(render::hasError(failed, render::Error::InvalidArgument) && packets[0].valid());
             // Preparation owns constant bytes, permutations, descriptors and argument ranges.
             indices[0] = indices[1] = indices[2] = 15;
             input.reset(); arguments.reset(); programs[0].clear(); programs[1].clear();
-            kernels[0].clear(); kernels[1].clear();
             REG_CHECK(!inputLife.expired() && !argumentLife.expired());
             render::CommandBuffer* commands[2]{};
             for (uint32_t i = 0; i < 2; ++i) {
@@ -2545,7 +1808,7 @@ public:
             frame.cancel();
             REG_REQUIRE(contexts[0].reset()); REG_REQUIRE(frame.reset());
         }
-        return RHITestResult::pass("Adapter/inline, mapped/native: concurrent preparation and recording, frozen constants, indirect permutations, lifetime and stale generation");
+        return RHITestResult::pass("Mapped/native: concurrent preparation and recording, frozen constants, indirect permutations, lifetime and stale generation");
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparedDispatchParallelTest);
@@ -2562,13 +1825,13 @@ public:
     KernelPreparedDispatchTest() { type = RHITestType::Rendering; name = "compute_kernel_prepared_standalone_batch"; }
     RHITestResult run(RHITestContext& context) override
     {
-        for (const auto transport : {render::ParameterTransport::DeviceAddress, render::ParameterTransport::InlinePush}) {
+        for (const auto transport : {render::ParameterTransport::DescriptorBuffer, render::ParameterTransport::InlinePush}) {
             for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
                 bench::TestDevice device;
                 REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Kernel prepared dispatch",
                     .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
                     .transform([&](auto value) { device = std::move(value); }));
-                auto registry = device->resourceRegistry();
+                auto registry = metallic::render::ResourceRegistry::forDevice(*device);
                 REG_CHECK(registry);
                 auto& queue = *device->getQueue(render::QueueType::Graphics);
                 std::unique_ptr<render::Buffer> input, output, arguments;
@@ -2595,13 +1858,13 @@ public:
                     ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 1, 0};
                     auto first = writer.encode(params, kABI, transport);
                     REG_CHECK(first);
-                    REG_CHECK(first->inlineData().empty() == (transport == render::ParameterTransport::DeviceAddress));
+                    REG_CHECK(first->inlineData().empty() == (transport == render::ParameterTransport::DescriptorBuffer));
                     const auto before = (*registry)->stats().parameterBytes;
                     const auto wrongTransport = transport == render::ParameterTransport::InlinePush
-                        ? render::ParameterTransport::DeviceAddress : render::ParameterTransport::InlinePush;
+                        ? render::ParameterTransport::DescriptorBuffer : render::ParameterTransport::InlinePush;
                     auto mismatch = writer.encode(params, kABI, wrongTransport);
                     REG_CHECK(mismatch && !kernels[0].prepareDispatch(*mismatch, 1));
-                    if (transport == render::ParameterTransport::DeviceAddress) {
+                    if (transport == render::ParameterTransport::DescriptorBuffer) {
                         REG_CHECK((*registry)->stats().parameterBytes == before);
                     }
                     REG_REQUIRE(kernels[0].prepareDispatch(*first, 1).transform([&](auto value) { direct = std::move(value); }));
@@ -2661,7 +1924,7 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(KernelPreparedDispatchTest);
 
-// Exercise adapter and inline prepared batches in mapped and native modes.
+// Exercise the common prepared resource-table path in mapped and native modes.
 // Two writes to the same word require a memory-only dependency between dispatches.
 class BatchMemoryBarrierTest final : public RHITest {
 public:
@@ -2673,33 +1936,28 @@ public:
     BatchMemoryBarrierTest() { type = RHITestType::Rendering; name = "compute_batch_memory_barrier_and_error_propagation"; }
     RHITestResult run(RHITestContext& context) override
     {
-        for (uint32_t path = 0; path < 4; ++path) {
+        for (uint32_t path = 0; path < 2; ++path) {
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Batch barriers",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
                 .transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
-            const bool inlineABI = path >= 2;
-            const render::SlangMacroDefine inlineDefine{"BATCH_PROBE_INLINE", "1"};
             render::ShaderCompileResult shader;
             REG_REQUIRE(render::compileSlangShaderToSpirv({
                 .moduleName = "BatchBarrierProbe",
                 .entryPointName = "batchBarrierMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                .macroDefines = {&inlineDefine, inlineABI ? 1u : 0u},
-                .descriptorHeapMode = (path & 1u) != 0 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
+                .descriptorHeapMode = path == 1 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             const render::ComputeProgramBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
             render::ComputeProgram program;
             std::string log;
-            render::ComputeKernel kernel;
-            if (inlineABI) {
-                REG_REQUIRE(kernel.initialize(*device, {.spirv = shader.spirv,
-                    .parameters = render::parameterAbi<BatchBarrierProbeParameters>(kBatchProbeABI, render::ParameterTransport::InlinePush)}, log));
-            } else {
-                REG_REQUIRE(program.initialize(*device, {.spirv = shader.spirv,
-                    .bindings = {&layout, 1}, .requiresRayQuery = false}, log));
-            }
+            REG_REQUIRE(program.initialize(*device, {
+                .spirv = shader.spirv,
+                .bindings = {&layout, 1},
+                .requiresRayQuery = false,
+                .resourceParameters = metallic::tests::kBatchBarrierProbeLayout,
+            }, log));
             std::unique_ptr<render::Buffer> output, arguments;
             REG_REQUIRE(makeBuffer(*device, output));
             REG_REQUIRE(makeBuffer(*device, arguments));
@@ -2726,23 +1984,7 @@ public:
                 .bindings = {&binding, 1},
                 .indirectArguments = arguments.get(),
             };
-            auto dispatchBatch = [&]() -> render::Result<> {
-                if (!inlineABI) { return program.dispatchIndirectBatch(dispatch, items, barrier); }
-                auto registry = device->resourceRegistry();
-                if (!registry) { return render::makeError(registry.error()); }
-                render::ParameterWriter writer(*device, **registry, &recording.frame);
-                const BatchBarrierProbeParameters params{writer.dataBuffer(output.get(), 4, 4)};
-                auto encoded = writer.encode(params, kBatchProbeABI, render::ParameterTransport::InlinePush);
-                if (!encoded) { return render::makeError(encoded.error()); }
-                auto first = arguments->slice({0, 12});
-                auto second = arguments->slice({12, 12});
-                if (!first || !second) { return render::makeError(render::Error::InvalidArgument); }
-                const render::ComputeIndirectParameters batches[] = {{*encoded, *first}, {*encoded, *second}};
-                auto prepared = kernel.prepareIndirectBatch(batches);
-                if (!prepared) { return render::makeError(prepared.error()); }
-                return prepared->record(*recording.commands, barrier);
-            };
-            REG_REQUIRE(dispatchBatch());
+            REG_REQUIRE(program.dispatchIndirectBatch(dispatch, items, barrier));
             REG_CHECK(recording.commands->synchronizationStats().memoryBarriers == 1);
             REG_REQUIRE(recording.submit(tracker, *gate));
             REG_REQUIRE(recording.frame.wait());
@@ -2756,14 +1998,146 @@ public:
 
             REG_REQUIRE(recording.begin(1));
             memory.after = {render::PipelineStageBits::Transfer, render::AccessBits::ShaderRead};
-            REG_CHECK(render::hasError(dispatchBatch(), render::Error::InvalidArgument));
+            REG_CHECK(render::hasError(program.dispatchIndirectBatch(dispatch, items, barrier), render::Error::InvalidArgument));
             REG_CHECK(recording.commands->synchronizationStats().calls == 0);
             recording.frame.cancel(); // Discard the first dispatch of the rejected batch.
         }
-        return RHITestResult::pass("Adapter and inline mapped/native: memory-only ordering and barrier errors");
+        return RHITestResult::pass("Prepared mapped/native: memory-only ordering and barrier errors");
     }
 };
 METALLIC_REGISTER_RHI_TEST(BatchMemoryBarrierTest);
+
+// Direct fields must be independent of CPU binding IDs and retain slice/root storage.
+class NamedResourceParametersTest : public RHITest {
+public:
+    NamedResourceParametersTest() { type = RHITestType::Resource; name = "named_resource_parameters_layout_and_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        auto& device = context.device;
+        ShaderCompileResult shader;
+        REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "NamedResourceProbe", .entryPointName = "main",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
+            .transform([&](auto value) { shader = std::move(value); }));
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 65537, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4},
+            {.binding = 7, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        ComputeResourceField fields[] = {
+            {65537, ComputeResourceBindingKind::DataBuffer, 4, ComputeResourceFieldFormat::DataSpan},
+            {7, ComputeResourceBindingKind::StorageBuffer, 0}};
+        ComputeProgram program;
+        std::string log;
+        ComputeProgramDesc description{.spirv = shader.spirv, .pushConstantSize = 4,
+            .bindings = bindings, .requiresRayQuery = false, .resourceParameters = {16, fields}};
+        auto missingLayout = description;
+        missingLayout.resourceParameters = {};
+        REG_CHECK(hasError(program.initialize(device, missingLayout, log), Error::InvalidArgument));
+        REG_CHECK(log.find("explicit named resource layout") != std::string::npos);
+        fields[1].offset = 4;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[1].offset = 16;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[1].offset = 0;
+        fields[1].kind = ComputeResourceBindingKind::SampledImage;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[1].kind = ComputeResourceBindingKind::StorageBuffer;
+        fields[0].format = ComputeResourceFieldFormat::Handle;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[0].format = ComputeResourceFieldFormat::DataSpan;
+        REG_REQUIRE(program.initialize(device, description, log));
+        // Layout metadata is borrowed only at initialize; mutation cannot change a live program.
+        fields[0].offset = 0;
+        std::unique_ptr<Buffer> input, output;
+        REG_REQUIRE(makeBuffer(device, input));
+        REG_REQUIRE(makeBuffer(device, output));
+        auto* source = static_cast<uint32_t*>(input->map());
+        REG_CHECK(source);
+        source[1] = 40;
+        input->flush(); input->unmap();
+        auto slice = input->slice({4, 4});
+        REG_CHECK(slice.has_value());
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, context.graphicsQueue));
+        REG_REQUIRE(recording.begin(0));
+        ComputeDispatchBinding resources[] = {
+            {.binding = 7, .buffer = output.get()}, {.binding = 65537, .data = *slice}};
+        const uint32_t add = 2;
+        auto prepared = program.prepareDispatch(recording.frame, {.bindings = resources,
+            .pushData = &add, .pushDataSize = sizeof(add)});
+        REG_CHECK(prepared.has_value());
+        input.reset(); slice = BufferSlice{};
+        resources[1].data = {}; // The prepared packet is now the only source allocation owner.
+        REG_REQUIRE(prepared->record(*recording.commands));
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(device, context.graphicsQueue));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{context.graphicsQueue, *gate};
+        REG_REQUIRE(recording.submit(tracker, *gate));
+        REG_REQUIRE(recording.frame.wait());
+        output->invalidate();
+        const auto* values = static_cast<const uint32_t*>(output->map());
+        REG_CHECK(values);
+        const uint32_t actual = values[0], guard = values[1];
+        bench::readbackEvidence(context, "named-resources.bin", std::span<const uint32_t>(values, 16));
+        output->unmap();
+        REG_CHECK(actual == 42 && guard == 0);
+        return RHITestResult::pass("Direct named fields, sparse IDs, bounded slice and retained packet");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(NamedResourceParametersTest);
+
+class RegistryDeviceLifetimeTest final : public RHITest {
+public:
+    RegistryDeviceLifetimeTest()
+    {
+        type = RHITestType::Command;
+        name = "registry_per_device_state_lifetime";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"registry.device.state.lifetime"}, bench::Layer::Core, "binding", "binding");
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        DeviceDesc desc{.applicationName = "Registry device lifetime", .enableValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true};
+        if (context.deviceDesc) { desc = *context.deviceDesc; }
+        auto created = createDevice(desc);
+        REG_CHECK(created);
+        std::weak_ptr<ResourceRegistry> weak;
+        {
+            Device device = std::move(**created);
+            std::array<std::shared_ptr<ResourceRegistry>, 8> registries;
+            std::vector<std::jthread> workers;
+            for (size_t i = 0; i < registries.size(); ++i) {
+                workers.emplace_back([&, i] {
+                    auto registry = ResourceRegistry::forDevice(device);
+                    if (registry) { registries[i] = std::move(*registry); }
+                });
+            }
+            workers.clear();
+            REG_CHECK(registries.front());
+            for (auto& registry : registries) { REG_CHECK(registry == registries.front()); }
+            weak = registries.front();
+            registries.fill(nullptr);
+            REG_CHECK(!weak.expired()); // Device keeps the singleton even without clients.
+            Device moved = std::move(device);
+            auto registry = ResourceRegistry::forDevice(moved);
+            REG_CHECK(registry && *registry == weak.lock());
+            auto other = ResourceRegistry::forDevice(context.device);
+            REG_CHECK(other && *other != *registry);
+            registry->reset();
+            // Move assignment must release attached services before the old VkDevice.
+            moved = Device{};
+            REG_CHECK(weak.expired());
+        }
+        REG_CHECK(hasError(ResourceRegistry::forDevice(**created), Error::InvalidArgument));
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RegistryDeviceLifetimeTest);
 
 #undef REG_REQUIRE
 #undef REG_CHECK

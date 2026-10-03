@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactCLASPool.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
@@ -127,7 +128,7 @@ struct MeshletStreamCompactCLASPool::Impl {
     }
     Result<> retain(CommandBuffer& cmd, Chunk& chunk)
     {
-        const auto point = cmd.frameContext()->completion();
+        const auto point = metallic::render::RenderFrameContext::from(cmd)->completion();
         if (!chunk.uses.empty() && chunk.uses.back()->completion.sameSubmission(point)) { return {}; }
         if (frameUses.empty() || !frameUses.back()->completion.sameSubmission(point)) {
             frameUses.push_back(std::make_shared<FrameUse>(FrameUse{.completion = point}));
@@ -346,7 +347,7 @@ struct MeshletStreamCompactCLASPool::Impl {
     }
     Result<> track(CommandBuffer& cmd, Batch& batch)
     {
-        batch.completion = cmd.frameContext()->completion();
+        batch.completion = metallic::render::RenderFrameContext::from(cmd)->completion();
         batch.submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
         return cmd.addSubmissionTransaction(batch.submission);
     }
@@ -598,7 +599,7 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
     if (!ready() || !log.empty()) {
         return makeError(Error::Failure);
     }
-    if (!cmd.frameContext() || !cmd.frameContext()->recording()) {
+    if (!metallic::render::RenderFrameContext::from(cmd) || !metallic::render::RenderFrameContext::from(cmd)->recording()) {
         log = "Compact CLAS requires tracked frame completion";
         return makeError(Error::InvalidArgument);
     }

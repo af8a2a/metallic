@@ -1,7 +1,4 @@
-#include "../../../Source/Runtime/Render/Core/ShadowTraceParameters.h"
-#define METALLIC_PATH_TRACE_TYPED 1
-[[vk::push_constant]] ConstantBuffer<ShadowTraceParameters> gShadowTrace;
-#define gPathTraceParameters (*gShadowTrace.scene)
+import Core;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
@@ -12,23 +9,29 @@ using Metallic.Lighting;
 import NRDEncoding;
 using Metallic.Interop.NRDEncoding;
 
-#define gShadowParameters gShadowTrace.settings
-#define gDepth resolveDescriptor(gShadowTrace.depth)
-#define gPenumbra resolveDescriptor(gShadowTrace.penumbra)
-#define gNormal resolveDescriptor(gShadowTrace.normal)
-#define gViewZ resolveDescriptor(gShadowTrace.viewZ)
-#define gMotion resolveDescriptor(gShadowTrace.motion)
-#define gShadow resolveDescriptor(gShadowTrace.shadow)
+#define gShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameters<SceneResourceParameters>().shadowParameters)
+#define gDepth resolveUniform(getResourceParameters<SceneResourceParameters>().shadowDepth)
+#define gPenumbra resolveUniform(getResourceParameters<SceneResourceParameters>().penumbra)
+#define gNormal resolveUniform(getResourceParameters<SceneResourceParameters>().shadowNormal)
+#define gViewZ resolveUniform(getResourceParameters<SceneResourceParameters>().shadowViewZ)
+#define gMotion resolveUniform(getResourceParameters<SceneResourceParameters>().shadowMotion)
+#define gShadow resolveUniform(getResourceParameters<SceneResourceParameters>().shadowOutput)
+
+struct ShadowGeometryPush
+{
+    uint materialTextureCount;
+    uint ntcTextureSetCount;
+};
 
 float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
 {
 #if METALLIC_STREAM_SHADOWS && !METALLIC_STREAM_TLAS
     return kNRDFP16Max;
 #else
+    ShadowGeometryPush geometry = getConstants<ShadowGeometryPush>();
     ScenePathTracePush push = (ScenePathTracePush)0;
-    push.materialTextureCount = gShadowTrace.materialTextureCount;
-    push.ntcTextureSetCount = gShadowTrace.ntcTextureSetCount;
-    push.streamScene = gShadowTrace.streamScene;
+    push.materialTextureCount = geometry.materialTextureCount;
+    push.ntcTextureSetCount = geometry.ntcTextureSetCount;
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;
@@ -36,15 +39,14 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
     ray.TMax = max(maxDistance, ray.TMin);
     // SIGMA needs the closest blocker's distance, not the first traversal hit.
 #if METALLIC_STREAM_SHADOWS
-    if (push.streamScene == nullptr) { return kNRDFP16Max; }
-    StreamSceneParameters streamScene = *push.streamScene;
-    SceneStreamRayMaterials streamMaterials = sceneStreamRayMaterials(push);
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
     query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, ray);
+    Ray surfaceRay; surfaceRay.origin = origin; surfaceRay.direction = direction;
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
             streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
-                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), streamScene, streamMaterials)) { query.CommitNonOpaqueTriangleHit(); }
+                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), surfaceRay,
+                query.CandidateTriangleRayT(), push)) { query.CommitNonOpaqueTriangleHit(); }
     }
 #else
     RayQuery<RAY_FLAG_NONE> query;
@@ -146,8 +148,7 @@ float shadowRandom(inout uint seed)
 [numthreads(8, 8, 1)]
 void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
 {
-    if (!gShadowParameters.contains(0)) { return; }
-    ShadowParameters p = gShadowParameters.data[0];
+    ShadowParameters p = gShadowParameters[0];
     uint2 pixel = dispatchId.xy;
     uint2 size = uint2(p.view.current.viewport.yz);
     if (any(pixel >= size)) { return; }

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include <stdexcept>
 #include <string>
@@ -9,7 +10,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
-#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
+#include "Runtime/Render/Streamer/StreamUploadCompletion.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetConfig.h"
@@ -569,10 +570,16 @@ public:
             result = runtime.initialize(*device, desc, log, cache.get());
             if (!result || !runtime.ready()) { return RHITestResult::fail("LOD initialization failed: " + log); }
             const auto stats = cache->stats();
-            // Page-table init/update, traversal, active build, cooperative LOD.
-            if (stats.sessionPsoCount != 5 || stats.hitCount != (pass == 0 ? 0 : 5) ||
-                stats.missCount != (pass == 0 ? 5 : 0)) {
-                return RHITestResult::fail("An internal streaming/LOD pipeline bypassed the persistent cache");
+            // Page-table init/update, traversal, active build, cooperative LOD,
+            // and distributed demand each contribute one persistent PSO.
+            constexpr uint32_t kExpectedPsoCount = 6;
+            if (stats.sessionPsoCount != kExpectedPsoCount ||
+                stats.hitCount != (pass == 0 ? 0 : kExpectedPsoCount) ||
+                stats.missCount != (pass == 0 ? kExpectedPsoCount : 0)) {
+                return RHITestResult::fail("Streaming/LOD cache coverage mismatch: pass=" + std::to_string(pass) +
+                    " expected=" + std::to_string(kExpectedPsoCount) +
+                    " PSOs=" + std::to_string(stats.sessionPsoCount) +
+                    " hits=" + std::to_string(stats.hitCount) + " misses=" + std::to_string(stats.missCount));
             }
             result = cache->save();
             if (!result || cache->stats().backendDataSize == 0) {
@@ -629,7 +636,7 @@ public:
         const auto setup = createCommandResources(*device, *queue, pool, commands, fence);
         if (!setup.passed) { return setup; }
         std::unique_ptr<Streamer> streamer;
-        if (!device->createStreamer(makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); })) {
+        if (!createStreamer(*device, makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); })) {
             return RHITestResult::fail("Cannot create display-pixel streamer");
         }
         struct Case {
@@ -661,7 +668,7 @@ public:
                     return RHITestResult::fail("Display-pixel frame setup failed");
                 }
                 auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
-                if (result) { result = commands->copyStreamedData(*streamer); }
+                if (result) { result = streamer->copyStreamedData(*commands); }
                 if (result) { result = runtime.cmdPreTraversal(*commands, frame); }
                 if (result) { result = runtime.cmdPostTraversal(*commands); }
                 if (result) { result = runtime.cmdEndFrame(*commands); }
@@ -730,7 +737,7 @@ public:
         const auto setup = createCommandResources(*device, *queue, pool, commands, fence);
         if (!setup.passed) { return setup; }
         std::unique_ptr<Streamer> streamer;
-        if (!device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) { return RHITestResult::fail("Cannot create streamer"); }
+        if (!createStreamer(*device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) { return RHITestResult::fail("Cannot create streamer"); }
         MeshletStreamFrameDesc frame{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
         frame.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
             .znear = .001f, .zfar = 10.f};
@@ -748,7 +755,7 @@ public:
             }
             auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
             if (result) {
-                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = streamer->copyStreamedData(*commands); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 // Keep the old CLAS queue entry across unload completion, then
                 // admit a new upload before draining it (e.g. deferred traversal).
                 if (!pressure_ || reloadPage == UINT32_MAX || f % 12 != 1) {
@@ -860,7 +867,7 @@ public:
             std::unique_ptr<Streamer> streamer;
             std::unique_ptr<Buffer> readback;
             require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) &&
-                bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) && bool(device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) &&
+                bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) && bool(createStreamer(*device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) &&
                 bool(device->createBuffer({.size = sizeof(MeshletStreamGPUBLASHeader) + sizeof(MeshletStreamGPUActiveHeader) + 2048 * sizeof(MeshletStreamGPUActiveGroup), .usage = BufferUsageBits::TransferDestination,
                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Frame resources failed");
             MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
@@ -880,10 +887,10 @@ public:
                     "Maintenance advanced recording or consumed feedback twice");
                 require(runtime.profilingStats().feedbackFrame == lastAcceptedFeedback,
                     "Maintenance consumed cancelled/uncompleted feedback or missed completed feedback");
-                require(bool(frame.begin(++frameId)) && bool(pool->reset()) && bool(commands->begin(&frame)) &&
+                require(bool(frame.begin(++frameId)) && bool(pool->reset()) && bool(commands->begin(frame.submissionContext())) &&
                     bool(streamer->beginFrame(frame)), "Frame begin failed");
                 require(bool(runtime.cmdBeginFrame(*commands, *streamer, view)), "Stream begin failed");
-                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { throw std::runtime_error(std::string("copyStreamedData failed: ") + metallic::render::resultToString(commandResult)); }
+                if (auto commandResult = streamer->copyStreamedData(*commands); !commandResult) { throw std::runtime_error(std::string("copyStreamedData failed: ") + metallic::render::resultToString(commandResult)); }
                 require(bool(runtime.cmdPreTraversal(*commands, view)) && bool(runtime.cmdPostTraversal(*commands)) &&
                     bool(runtime.cmdEndFrame(*commands)), "Stream traversal failed");
                 std::vector<DebugResourceBinding> bindings;
@@ -1094,7 +1101,7 @@ public:
                 require(bool(tracker.initialize(*device, queue)) &&
                     bool(device->createCommandPool(queue).transform([&](auto value) { pool = std::move(value); })) &&
                     bool(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); })) &&
-                    bool(device->createStreamer(makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); })) &&
+                    bool(createStreamer(*device, makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); })) &&
                     bool(device->createSemaphore().transform([&](auto value) { gate = std::move(value); })),
                     "Initial loading command resources failed");
                 uint64_t frameId = 0;
@@ -1116,7 +1123,7 @@ public:
                         const uint64_t gateValue = cycle + 1;
                         for (uint32_t attempt = 0; attempt < 2; ++attempt) {
                             require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
-                                bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)),
+                                bool(commands->begin(frame.submissionContext())) && bool(streamer->beginFrame(frame)),
                                 "Initial upload begin failed");
                             const bool metadataBatch = desc.deviceImmutableMetadata && !runtime.immutableMetadataReady();
                             if (metadataBatch) {
@@ -1174,12 +1181,12 @@ public:
                         require(bool(pool->createCommandBuffer().transform([&](auto value) { prefix = std::move(value); })),
                             "Metadata prefix command allocation failed");
                         require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
-                            bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)),
+                            bool(commands->begin(frame.submissionContext())) && bool(streamer->beginFrame(frame)),
                             "Metadata cancelled-tail begin failed");
                         require(bool(runtime.cmdLoadInitialResources(*commands, *streamer)) && bool(commands->end()),
                             "Metadata cancelled-tail recording failed");
                         streamer->endFrame();
-                        require(bool(prefix->begin(&frame)) && bool(prefix->end()), "Metadata prefix recording failed");
+                        require(bool(prefix->begin(frame.submissionContext())) && bool(prefix->end()), "Metadata prefix recording failed");
                         CommandBuffer* prefixCommands[]{prefix.get()};
                         require(bool(tracker.submitSegment({.commandBuffers = {prefixCommands, 1}}, frame)),
                             "Metadata prefix submit failed");
@@ -1240,10 +1247,10 @@ public:
                     view.camera = {.eye = {-.0168404f, .110154f, .22f},
                         .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
                     require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
-                        bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)),
+                        bool(commands->begin(frame.submissionContext())) && bool(streamer->beginFrame(frame)),
                         "Metadata traversal begin failed");
                     require(bool(runtime.cmdBeginFrame(*commands, *streamer, view)) &&
-                        bool(commands->copyStreamedData(*streamer)) &&
+                        bool(streamer->copyStreamedData(*commands)) &&
                         bool(runtime.cmdPreTraversal(*commands, view)) &&
                         bool(runtime.cmdPostTraversal(*commands)) && bool(runtime.cmdEndFrame(*commands)),
                         "Metadata traversal recording failed");
@@ -1316,7 +1323,7 @@ public:
                     }
                     require(refinements.size() == 3, "Initial fixture has insufficient refinement pages");
                     require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
-                        bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)), "Normal frame begin failed");
+                        bool(commands->begin(frame.submissionContext())) && bool(streamer->beginFrame(frame)), "Normal frame begin failed");
                     require(bool(runtime.cmdBeginFrame(*commands, *streamer, MeshletStreamFrameDesc{})),
                         "Normal frame upload failed after initial loading");
                     require(residency.stats().frameScheduledUploadCount == 1 &&
@@ -1361,7 +1368,7 @@ public:
         constexpr uint64_t kByteSize = kExpected.size() * sizeof(uint32_t);
 
         std::unique_ptr<render::Streamer> streamer;
-        render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+        render::Result<> result = createStreamer(context.device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
@@ -1430,7 +1437,7 @@ public:
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = {&toTransfer, 1},
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = streamer->copyStreamedData(*commandBuffer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
@@ -1499,7 +1506,7 @@ public:
         }
 
         std::unique_ptr<render::Streamer> streamer;
-        render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+        render::Result<> result = createStreamer(context.device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
@@ -1571,7 +1578,7 @@ public:
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = {&textureToTransfer, 1},
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = streamer->copyStreamedData(*commandBuffer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         render::TextureBarrierDesc textureToSource{
             .texture = texture.get(),
             .oldLayout = render::TextureLayout::TransferDestination,
@@ -1583,13 +1590,13 @@ public:
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = {&textureToSource, 1},
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = texture.get(),
-            .buffer = readbackBuffer.get(),
+            .buffer = bufferSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
-        });
+        }); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
@@ -1636,7 +1643,7 @@ public:
         std::unique_ptr<render::Streamer> streamer;
         render::StreamerDesc desc = makeTestStreamerDesc();
         desc.constantBufferSize = 4096;
-        render::Result<> result = context.device.createStreamer(desc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+        render::Result<> result = createStreamer(context.device, desc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr || streamer->constantBuffer() == nullptr) {
             return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
@@ -2020,7 +2027,7 @@ public:
         }
 
         std::unique_ptr<render::Streamer> streamer;
-        render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+        render::Result<> result = createStreamer(context.device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
@@ -2126,7 +2133,7 @@ public:
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = {&toTransfer, 1},
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = streamer->copyStreamedData(*commandBuffer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
@@ -2631,7 +2638,7 @@ public:
         // exactly one hit when a complete eligible view first needs it.
         const uint32_t prefetched[] = {missing[0] == pages[0] ? pages[1] : pages[0]};
         std::unique_ptr<Streamer> uploader;
-        auto uploadResult = context.device.createStreamer(makeTestStreamerDesc(2 * asset.maxPagePayloadBytes() + 4096))
+        auto uploadResult = createStreamer(context.device, makeTestStreamerDesc(2 * asset.maxPagePayloadBytes() + 4096))
             .transform([&](auto value) { uploader = std::move(value); });
         if (!uploadResult) { return RHITestResult::fail(toString(uploadResult)); }
         std::unique_ptr<Buffer> destination;
@@ -2726,7 +2733,7 @@ public:
         const uint64_t capacity = alignStreamStorageBytes(asset.maxPagePayloadBytes()) * 4u;
         std::unique_ptr<Streamer> streamer;
         std::unique_ptr<Buffer> destination;
-        if (!context.device.createStreamer(makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }) ||
+        if (!createStreamer(context.device, makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }) ||
             !context.device.createBuffer({.size = capacity, .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); })) {
             return RHITestResult::fail("Cannot create latency lifecycle upload resources");
@@ -3130,7 +3137,7 @@ public:
         render::StreamerDesc streamerDesc = makeTestStreamerDesc(
             (static_cast<uint64_t>(fallbackPages.size()) + 1ull) * asset.maxPagePayloadBytes() + 4096ull);
         std::unique_ptr<render::Streamer> streamer;
-        render::Result<> result = context.device.createStreamer(streamerDesc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+        render::Result<> result = createStreamer(context.device, streamerDesc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
@@ -3443,7 +3450,7 @@ public:
                 .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
             !residency.lockFallbackPages(roots, reason)) { return RHITestResult::fail(reason); }
         std::unique_ptr<Streamer> streamer;
-        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+        auto result = createStreamer(context.device, makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result) { return RHITestResult::fail(toString(result)); }
         std::unique_ptr<Buffer> destination;
         result = context.device.createBuffer({.size = residency.pageBufferSize(),
@@ -3614,7 +3621,7 @@ public:
                 .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
             !residency.lockFallbackPages(roots, reason)) { return RHITestResult::fail(reason); }
         std::unique_ptr<Streamer> streamer;
-        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+        auto result = createStreamer(context.device, makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result) { return RHITestResult::fail(toString(result)); }
         std::unique_ptr<Buffer> destination;
         result = context.device.createBuffer({.size = residency.pageBufferSize(),
@@ -3808,7 +3815,7 @@ public:
         const uint64_t bytes = pageDeviceStorageBytes(asset, roots) + pageDeviceStorageBytes(asset, pages);
         const auto upload = [&](MeshletStreamResidencyManager& residency, uint32_t count) -> RHITestResult {
             std::unique_ptr<Streamer> streamer;
-            auto result = context.device.createStreamer(makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
+            auto result = createStreamer(context.device, makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
                 .transform([&](auto value) { streamer = std::move(value); });
             if (!result) { return RHITestResult::fail(toString(result)); }
             std::unique_ptr<Buffer> destination;
@@ -3931,7 +3938,7 @@ public:
             for (uint32_t id : pages) { (void)residency.requestPage(id); }
             const uint32_t count = static_cast<uint32_t>(roots.size() + pages.size());
             std::unique_ptr<Streamer> streamer;
-            auto result = context.device.createStreamer(makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
+            auto result = createStreamer(context.device, makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
                 .transform([&](auto value) { streamer = std::move(value); });
             if (!result) { return RHITestResult::fail(toString(result)); }
             std::unique_ptr<Buffer> destination;
@@ -4068,7 +4075,7 @@ public:
 #define UPLOAD_REQUIRE(expression) \
         if (!(expression)) { return RHITestResult::fail("Upload completion: " #expression); }
         UPLOAD_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
-        UPLOAD_REQUIRE(context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
+        UPLOAD_REQUIRE(createStreamer(context.device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         UPLOAD_REQUIRE(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
         UPLOAD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         UPLOAD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { prefix = std::move(rhiValue); }));
@@ -4092,7 +4099,7 @@ public:
             for (uint32_t attempt = 0; attempt < (cancel ? 2u : 1u); ++attempt) {
                 UPLOAD_REQUIRE(frame.begin(++frameIndex));
                 UPLOAD_REQUIRE(pool->reset());
-                UPLOAD_REQUIRE(commands->begin(scenario == 5 && attempt == 0 ? nullptr : &frame));
+                UPLOAD_REQUIRE(commands->begin(scenario == 5 && attempt == 0 ? nullptr : frame.submissionContext()));
                 UPLOAD_REQUIRE(streamer->beginFrame(frame));
                 residency.beginFrame();
                 for (uint32_t page = 0; page < pageCount; ++page) {
@@ -4112,7 +4119,7 @@ public:
                         .range = {.size = capacity},
                     };
                     if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    const auto copyResult = commands->copyStreamedData(*streamer);
+                    const auto copyResult = streamer->copyStreamedData(*commands);
                     const bool sameRecording = !(scenario == 5 && attempt == 0);
                     if (sameRecording) { UPLOAD_REQUIRE(copyResult); }
                     else { UPLOAD_REQUIRE(hasError(copyResult, Error::InvalidArgument)); }
@@ -4129,7 +4136,7 @@ public:
                             UPLOAD_REQUIRE(streamPageTablePatchState(*patch) == (page == root && scenario != 2
                                 ? MeshletStreamPageResidencyState::LockedFallback : MeshletStreamPageResidencyState::Resident));
                         }
-                        UPLOAD_REQUIRE(prefix->begin(&frame));
+                        UPLOAD_REQUIRE(prefix->begin(frame.submissionContext()));
                         UPLOAD_REQUIRE(!receipt->isRecordedBefore(*prefix));
                         UPLOAD_REQUIRE(residency.buildOrderedUploadPatches(*prefix, orderedPatches) == 0);
                         UPLOAD_REQUIRE(prefix->end());
@@ -4142,7 +4149,7 @@ public:
                 CommandBuffer* buffers[] = {commands.get()};
                 if (cancel && attempt == 0) {
                     if (scenario == 3) {
-                        UPLOAD_REQUIRE(prefix->begin(&frame));
+                        UPLOAD_REQUIRE(prefix->begin(frame.submissionContext()));
                         UPLOAD_REQUIRE(prefix->end());
                         CommandBuffer* prefixBuffers[] = {prefix.get()};
                         GPUCompletionPoint prefixCompletion;
@@ -4261,7 +4268,7 @@ public:
             .maxActiveGroups = 4096, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
             .pageLoadConcurrency = 0, .queuedFrameCount = 2}, log));
         ORDERED_REQUIRE(!runtime.sceneReadiness().ready);
-        ORDERED_REQUIRE(device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
+        ORDERED_REQUIRE(createStreamer(device, makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         ORDERED_REQUIRE(device.createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
         ORDERED_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         ORDERED_REQUIRE(tracker.initialize(device, queue));
@@ -4274,7 +4281,7 @@ public:
             auto& frame = *frames[attempt % 2];
             ORDERED_REQUIRE(frame.begin(attempt + 1));
             ORDERED_REQUIRE(pool->reset());
-            ORDERED_REQUIRE(commands->begin(&frame));
+            ORDERED_REQUIRE(commands->begin(frame.submissionContext()));
             ORDERED_REQUIRE(streamer->beginFrame(frame));
             ORDERED_REQUIRE(runtime.cmdBeginFrame(*commands, *streamer, view));
             ORDERED_REQUIRE(runtime.cmdPreTraversal(*commands, view));
@@ -4374,7 +4381,7 @@ public:
                         .pageLoadConcurrency = asynchronous ? 2u : 0u, .maxPageLoadsInFlight = 4,
                         .completionDrivenUploads = false}, reason)) { return RHITestResult::fail(reason); }
                 std::unique_ptr<Streamer> streamer;
-                result = context.device.createStreamer(makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
+                result = createStreamer(context.device, makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
                 if (!result) { return RHITestResult::fail(toString(result)); }
                 residency.beginFrame();
                 for (uint32_t page = 0; page < 4; ++page) { (void)residency.requestPage(page); }

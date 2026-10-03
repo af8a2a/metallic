@@ -251,12 +251,12 @@ Result<> ColorGradingResources::initialize(Device& device, const RenderGraphProp
         if (!result) {
             return result;
         }
-        command->copyBufferToTexture({.buffer = uploads[i].get(),
-                                      .texture = textures_[i].get(),
+        if (auto commandResult = (uploads[i].get())->slice().and_then([&](const auto& bufferSlice) { return command->copyBufferToTexture({.texture = textures_[i].get(),
+                                      .buffer = bufferSlice,
                                       .bufferRowPitch = widths[i] * 4,
                                       .bufferSlicePitch = widths[i] * heights[i] * 4,
                                       .width = widths[i],
-                                      .height = heights[i]});
+                                      .height = heights[i]}); }); !commandResult) { return commandResult; }
         barrier.oldLayout = TextureLayout::TransferDestination;
         barrier.newLayout = TextureLayout::ShaderRead;
         barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};

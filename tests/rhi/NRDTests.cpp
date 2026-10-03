@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -202,7 +203,8 @@ protected:
              .enableRayQuery = requiresRayQueries(),
              .validationSink = {.callback =
                                     [](void* context, const render::ValidationMessage& message) noexcept {
-                                        if ((message.severity & 0x1100u) != 0)
+                                        // GENERAL loader registration errors are logged separately from API validation.
+                                        if ((message.severity & 0x1100u) != 0 && (message.type & 0x2u) != 0)
                                             static_cast<std::atomic<uint32_t>*>(context)->fetch_add(1);
                                     },
                                 .context = &validationErrors}}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
@@ -212,7 +214,7 @@ protected:
         queue = device->getQueue(render::QueueType::Graphics);
         require(device->createCommandPool(*queue).transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         require(commands->createCommandBuffer().transform([&](auto rhiValue) { command = std::move(rhiValue); }));
-        require(device->createStreamer({.constantBufferSize = 1024 * 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
+        require(createStreamer(*device, {.constantBufferSize = 1024 * 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         require(device->createBuffer({.size = 63 * 37 * 16,
                                       .usage = render::BufferUsageBits::TransferDestination,
                                       .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
@@ -266,7 +268,7 @@ protected:
                                bool confidence = true, bool discard = false, bool retireRuntime = false)
     {
         require(recording.begin(frameIndex));
-        require(command->begin(&recording));
+        require(command->begin(recording.submissionContext()));
         for (size_t i = 0; i < textures.size(); ++i) {
             render::TextureBarrierDesc barrier{
                 .texture = textures[i].get(),
@@ -292,7 +294,7 @@ protected:
                 value = {1, 0, 0, 0};
             if (resource == rd::ResourceType::IN_PENUMBRA)
                 value = {diffuse, 0, 0, 0};
-            command->clearColorTexture(*textures[i], render::ResourceState::TransferDestination, value);
+            if (auto commandResult = command->clearColorTexture(*textures[i], render::TextureLayout::TransferDestination, value); !commandResult) { throw std::runtime_error(std::string("clearColorTexture failed: ") + metallic::render::resultToString(commandResult)); }
             barrier.oldLayout = render::TextureLayout::TransferDestination; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
             barrier.newLayout = render::TextureLayout::General; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
@@ -331,14 +333,13 @@ protected:
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             };
             if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-            command->copyTextureToBuffer({.texture = output.texture,
-                                          .buffer = readback.get(),
-                                          .bufferOffset = i * 16,
+            if (auto commandResult = (readback.get())->slice({i * 16}).and_then([&](const auto& bufferSlice) { return command->copyTextureToBuffer({.texture = output.texture,
+                                          .buffer = bufferSlice,
                                           .textureOffsetX = w / 2,
                                           .textureOffsetY = h / 2,
                                           .width = 1,
                                           .height = 1,
-                                          .depth = 1});
+                                          .depth = 1}); }); !commandResult) { throw std::runtime_error(std::string("copyTextureToBuffer failed: ") + metallic::render::resultToString(commandResult)); }
             barrier.oldLayout = render::TextureLayout::TransferSource; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
             barrier.newLayout = render::TextureLayout::General; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
@@ -418,7 +419,7 @@ TEST_F(NRDGPU, ReferencePreflightFailureRestartsHistory)
     ASSERT_FLOAT_EQ(first[1], 10);
 
     require(recording.begin(frameIndex));
-    require(command->begin(&recording));
+    require(command->begin(recording.submissionContext()));
     auto settings = commonSettings(w, h);
     settings.frameIndex = frameIndex++;
     require(runtime.setCommonSettings(settings));
@@ -458,7 +459,7 @@ TEST_F(NRDGPU, SharedRegistryAndRetiredRuntimeSubmission)
     EXPECT_FLOAT_EQ(first[0], 2);
     EXPECT_FLOAT_EQ(first[1], 10);
     std::shared_ptr<render::ResourceRegistry> registry;
-    require(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+    require(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
     const auto before = registry->stats().descriptorWrites;
     render::ResourceLease output;
     require(registry->storageImage(*pool[static_cast<size_t>(rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)].view).transform([&](auto value) { output = std::move(value); }));
@@ -647,7 +648,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         upload->flush({0, uint64_t(w) * h * 4});
         upload->unmap();
         require(recording.begin(frameIndex));
-        require(command->begin(&recording));
+        require(command->begin(recording.submissionContext()));
         command->hostWriteBarrier();
         render::TextureBarrierDesc barrier{
             .texture = depth.get(),
@@ -657,7 +658,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
         };
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-        command->copyBufferToTexture({.buffer = upload.get(), .texture = depth.get(), .width = w, .height = h});
+        if (auto commandResult = (upload.get())->slice().and_then([&](const auto& bufferSlice) { return command->copyBufferToTexture({.texture = depth.get(), .buffer = bufferSlice, .width = w, .height = h}); }); !commandResult) { throw std::runtime_error(std::string("copyBufferToTexture failed: ") + metallic::render::resultToString(commandResult)); }
         barrier.oldLayout = render::TextureLayout::TransferDestination; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
         barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
@@ -669,7 +670,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         barrier.oldLayout = render::TextureLayout::ShaderRead; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-        command->copyTextureToBuffer({.texture = output.texture, .buffer = readback.get(), .width = w, .height = h});
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return command->copyTextureToBuffer({.texture = output.texture, .buffer = bufferSlice, .width = w, .height = h}); }); !commandResult) { throw std::runtime_error(std::string("copyTextureToBuffer failed: ") + metallic::render::resultToString(commandResult)); }
         barrier.oldLayout = render::TextureLayout::TransferSource; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
         barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }

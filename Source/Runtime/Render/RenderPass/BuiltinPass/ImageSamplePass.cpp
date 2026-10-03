@@ -1,4 +1,3 @@
-#include "Runtime/Render/Core/ImageSampleParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -40,8 +39,33 @@ public:
             log = "Image resource was not prepared by StreamerSubsystem";
             return makeError(Error::InvalidArgument);
         }
-        device_ = context.device;
         Result<> result;
+        result = context.device->createBindlessHeap(BindlessHeapDesc{
+                .maxSampledImages = 1,
+            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
+        if (!result || bindlessHeap_ == nullptr) {
+            log += resultMessage("createBindlessHeap(ImageSamplePass)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = bindlessHeap_->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { imageHandle_ = std::move(rhiValue); });
+        if (!result || !imageHandle_.valid()) {
+            log += resultMessage("allocateSampledImage(ImageSamplePass)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
+        }
+
+        result = bindlessHeap_->writeSampledImage(
+            imageHandle_,
+            *context.preparedScene->imageView,
+            TextureLayout::ShaderRead);
+        if (!result) {
+            log += resultMessage("writeSampledImage(ImageSamplePass)", result);
+            log += '\n';
+            return result;
+        }
+
         result = createShaderModule(*context.device, kImageSampleVertexEntryPoint, vertexShader_, log);
         if (!result) {
             return result;
@@ -54,7 +78,7 @@ public:
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = {vertexShader_.get()},
             .fragmentShader = {fragmentShader_.get()},
-            .colorFormat = Format::RGBA8Unorm,
+            .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
@@ -69,22 +93,10 @@ public:
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
-            device_ == nullptr ||
+            bindlessHeap_ == nullptr ||
             pipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-
-        const auto* prepared = context.preparedScene();
-        if (!prepared || !prepared->imageView) { return makeError(Error::InvalidArgument); }
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return makeError(registry.error()); }
-        auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
-        const ImageSampleParams params{.source = writer.sampledImage(prepared->imageView)};
-        auto encoded = writer.encode(params, kImageSampleABI, ParameterTransport::InlinePush);
-        if (!encoded) { return makeError(encoded.error()); }
-        if (auto result = encoded->bindResources(commands); !result) { return result; }
-        const auto bytes = encoded->inlineData();
 
         const Rect renderArea{
             .x = 0,
@@ -94,7 +106,7 @@ public:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
@@ -103,20 +115,19 @@ public:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
-        if (auto result = commands.bindExecution(pipeline_->execution(), bytes.data(), uint32_t(bytes.size())); !result) {
-            commands.endRendering();
-            return result;
-        }
-        context.commandBuffer().draw(3);
+        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
+        context.commandBuffer().pushBindlessData(&imageHandle_.shaderIndex, sizeof(imageHandle_.shaderIndex));
+        if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }
@@ -160,7 +171,8 @@ private:
         return result;
     }
 
-    Device* device_ = nullptr;
+    std::unique_ptr<BindlessHeap> bindlessHeap_;
+    BindlessHandle imageHandle_;
     std::unique_ptr<ShaderModule> vertexShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;

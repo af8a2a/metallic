@@ -1,14 +1,29 @@
-#include "Runtime/Render/Core/ResidentLODParameters.h"
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/ResidentMeshletLOD.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include <algorithm>
 
 namespace metallic::render {
+namespace {
+
+struct LODPush {
+    // Camera data starts at push byte zero, matching Slang float4 alignment.
+    MeshletLODView view;
+    uint32_t clusters, records, instances, groups;
+    uint32_t output, arguments, offset, count;
+    uint32_t capacity, instanceCount, groupCount, manualLevel;
+    uint32_t scratch, padding2;
+};
+static_assert(offsetof(LODPush, view) == 0);
+static_assert(offsetof(LODPush, clusters) == 48);
+static_assert(sizeof(LODPush) == 104);
+
+} // namespace
+
 Result<> ResidentMeshletLOD::initialize(Device& device, uint32_t capacity, std::string& log)
 {
     if (capacity == 0 || !visibilityRecordCapacityFitsId(capacity)) { return makeError(Error::InvalidArgument); }
-    device_ = &device;
     capacity_ = capacity;
     Result<> result = device.createBuffer({.size = (uint64_t(capacity) + 1u) * 16u, .structureStride = 16,
         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
@@ -23,62 +38,53 @@ Result<> ResidentMeshletLOD::initialize(Device& device, uint32_t capacity, std::
         .structureStride = 4, .usage = BufferUsageBits::Storage}).transform([&](auto rhiValue) { scratch_ = std::move(rhiValue); });
     if (!result) { return result; }
     const char* entries[] = {"residentLodResetMain", "residentLodSelectMain", "residentLodArgumentsMain", "residentLodScatterMain"};
-    for (size_t i = 0; i < kernels_.size(); ++i) {
+    for (size_t i = 0; i < shaders_.size(); ++i) {
         ShaderCompileResult shader;
         result = compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/ResidentMeshletLOD",
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = kernels_[i].initialize(device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<ResidentLODParameters>(kResidentLODABI, ParameterTransport::InlinePush),
-            .debugName = entries[i]}, log);
+        result = device.createShaderModule({
+            .spirv = shader.spirv,
+            .debugName = entries[i],
+        }).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
+        if (result) {
+            result = device.createComputePipeline({
+                .computeShader = {shaders_[i].get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(LODPush),
+            }).transform([&](auto rhiValue) { pipelines_[i] = std::move(rhiValue); });
+        }
         if (!result) { return result; }
     }
     return {};
 }
 
 Result<> ResidentMeshletLOD::record(CommandBuffer& commands, ResourceRegistry& registry,
-    const GPUSceneGlobalBufferViews& inputs, const MeshletLODView& view,
-    GPUSceneRasterDrawRange candidates, uint32_t instanceCount, uint32_t groupCount, uint32_t manualLevel)
+    const GPUSceneConsumerBindings& bindings, const MeshletLODView& view,
+    GPUSceneRasterDrawRange candidates, uint32_t instanceCount, uint32_t groupCount,
+    ResourceLease output, ResourceLease arguments, ResourceLease scratch, uint32_t manualLevel)
 {
     // Provision for every input record. Selection can never overflow, even when
     // the camera crosses the near plane and requests the finest entire scene.
     if (candidates.count > capacity_) { return makeError(Error::InvalidArgument); }
-    ParameterWriter writer(*device_, registry, commands.frameContext());
-    ResidentLODParameters params{.eye = view.eye, .forward = view.forward, .projection = view.projection,
-        .offset = candidates.offset, .count = candidates.count, .capacity = capacity_,
-        .instanceCount = instanceCount, .groupCount = groupCount, .manualLevel = manualLevel};
-    const GPUSceneBufferView* views[] = {&inputs.meshlets, &inputs.meshletDraws, &inputs.instances, &inputs.lodGroups};
-    ShaderDataSpan* spans[] = {&params.clusters, &params.records, &params.instances, &params.groups};
-    const uint32_t strides[] = {sizeof(GPUSceneGPUMeshletRecord), sizeof(GPUSceneGPUMeshletDrawRecord),
-        sizeof(GPUSceneGPUInstanceRecord), sizeof(MeshletLODGroupRecord)};
-    // A streaming-only scene has no resident inputs. Reset and argument generation
-    // still run to clear results from a previously populated frame.
-    if (candidates.count == 0) {
-        params.offset = params.instanceCount = params.groupCount = 0;
+    for (const auto& lease : bindings.buffers) {
+        if (!lease.valid()) { continue; }
+        auto result = registry.retain(commands, lease);
+        if (!result) { return result; }
     }
-    for (size_t i = 0; candidates.count != 0 && i < std::size(views); ++i) {
-        const auto& input = *views[i];
-        if (input.buffer == nullptr) { return makeError(Error::InvalidArgument); }
-        auto slice = input.buffer->slice({input.offset, input.size});
-        if (!slice) { return makeError(slice.error()); }
-        *spans[i] = writer.dataBuffer(*slice, strides[i], 16);
+    for (const auto& lease : {output, arguments, scratch}) {
+        auto result = registry.retain(commands, lease);
+        if (!result) { return result; }
     }
-    if (params.offset > params.records.count || params.count > params.records.count - params.offset ||
-        params.instanceCount > params.instances.count || params.groupCount > params.groups.count) { return makeError(Error::InvalidArgument); }
-    params.output = writer.dataBuffer(selections_.get(), 16, 16);
-    params.arguments = writer.dataBuffer(arguments_.get(), 4, 4);
-    params.scratch = writer.dataBuffer(scratch_.get(), 4, 4);
-    auto encoded = writer.encode(params, kResidentLODABI, ParameterTransport::InlinePush);
-    if (!encoded) { return makeError(encoded.error()); }
-    std::array<PreparedComputeDispatch, 4> dispatches;
-    for (uint32_t stage = 0; stage < dispatches.size(); ++stage) {
-        const uint32_t groups = (stage == 1 || stage == 3) ? (candidates.count + 63u) / 64u : 1u;
-        if (groups == 0) { continue; }
-        auto dispatch = kernels_[stage].prepareDispatch(*encoded, std::min(groups, 65535u), (groups + 65534u) / 65535u);
-        if (!dispatch) { return makeError(dispatch.error()); }
-        dispatches[stage] = std::move(*dispatch);
-    }
-    Result<> result;
+    auto result = registry.bind(commands);
+    if (!result) { return result; }
+    const LODPush push{view,
+        bindings[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
+        bindings[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
+        bindings[GPUSceneGlobalBufferKind::Instances].shaderIndex(),
+        bindings[GPUSceneGlobalBufferKind::LODGroups].shaderIndex(),
+        output.shaderIndex(), arguments.shaderIndex(), candidates.offset, candidates.count,
+        capacity_, instanceCount, groupCount, manualLevel, scratch.shaderIndex(), 0u};
     using namespace detail;
     using Access = RenderGraphResourceAccess;
     constexpr auto compute = RenderGraphPassKind::Compute;
@@ -110,15 +116,15 @@ Result<> ResidentMeshletLOD::record(CommandBuffer& commands, ResourceRegistry& r
     commands.beginDebugLabel({.name = "Resident adaptive meshlet LOD"});
     for (uint32_t stage = 0; stage < 4; ++stage) {
         result = recordGraphAccessBarriers(commands, plan->passes[stage], resourcesBound);
-        if (!result) { commands.endDebugLabel(); return result; }
-        if (dispatches[stage].valid()) {
-            result = dispatches[stage].record(commands);
-            if (!result) { commands.endDebugLabel(); return result; }
-        }
+        if (!result) { return result; }
+        if (auto commandResult = commands.bindExecution(pipelines_[stage]->execution()); !commandResult) { return commandResult; }
+        commands.pushBindlessData(&push, sizeof(push));
+        uint32_t groups = (stage == 1 || stage == 3) ? (candidates.count + 63u) / 64u : 1u;
+        if (groups != 0) { commands.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u); }
     }
     result = recordGraphAccessBarriers(commands, plan->passes.back(), resourcesBound);
-    commands.endDebugLabel();
     if (!result) { return result; }
+    commands.endDebugLabel();
     initialized_ = true;
     return {};
 }

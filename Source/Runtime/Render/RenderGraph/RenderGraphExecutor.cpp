@@ -1,3 +1,7 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
@@ -570,7 +574,7 @@ struct RenderGraphExecutor::Impl {
         frameView = view->constants(frameIndex, renderWidth, renderHeight, width, height,
             hasPreviousView && previousViewCompletion.isSubmitted() ? &previousView : nullptr);
         frameCameraProperties = view->cameraProperties();
-        RenderFrameContext* frame = commands.frameContext();
+        RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commands);
         const uint32_t slot = frame != nullptr ? frame->slotIndex() : 0;
         if (viewBuffers.size() <= slot) { viewBuffers.resize(slot + 1); }
         if (viewBuffers[slot] == nullptr) {
@@ -1657,7 +1661,7 @@ struct RenderGraphExecutor::Impl {
                 }
 
                 BindlessHandle handle;
-                result = bindlessHeap->allocateSampledImage().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+                result = bindlessHeap->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
                 if (!result) {
                     log += resultMessage(std::string("allocateSampledImage(") + fullName + ")", result);
                     log += '\n';
@@ -1667,7 +1671,7 @@ struct RenderGraphExecutor::Impl {
                 result = bindlessHeap->writeSampledImage(
                     handle,
                     *graphResource->view,
-                    ResourceState::ShaderRead);
+                    TextureLayout::ShaderRead);
                 if (!result) {
                     log += resultMessage(std::string("writeSampledImage(") + fullName + ")", result);
                     log += '\n';
@@ -1685,7 +1689,7 @@ struct RenderGraphExecutor::Impl {
                 }
 
                 BindlessHandle handle;
-                result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+                result = bindlessHeap->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
                 if (!result) {
                     log += resultMessage(std::string("allocateBuffer(") + fullName + ")", result);
                     log += '\n';
@@ -1936,8 +1940,8 @@ struct RenderGraphExecutor::Impl {
         // Raw external recording exposes no GPU completion. Queue acceptance
         // and query availability cannot distinguish an unexecuted reset from
         // a previous query generation, so retain CPU scopes without timestamps.
-        if (!gpuTimestampQueryPools[0] || !commands.frameContext() ||
-            !commands.frameContext()->completion().valid()) { return; }
+        if (!gpuTimestampQueryPools[0] || !metallic::render::RenderFrameContext::from(commands) ||
+            !metallic::render::RenderFrameContext::from(commands)->completion().valid()) { return; }
         const auto resolved = resolveGpuTimings();
         if (!resolved) { return; }
         for (uint32_t offset = 0; offset < kGPUTimingSlotCount; ++offset) {
@@ -1947,7 +1951,7 @@ struct RenderGraphExecutor::Impl {
             slot.stats = {}; slot.profile = {}; slot.used = {};
             slot.nodeTimers.clear(); slot.sectionTimers.clear();
             activeGpuTimingSlot = &slot; activeGpuTimingValid = true;
-            slot.completion = commands.frameContext()->completion();
+            slot.completion = metallic::render::RenderFrameContext::from(commands)->completion();
             // Only reuse ranges after resolveGpuTimings has observed completion.
             // Host reset allows transfer timestamps without a graphics dependency.
             for (const auto& pool : gpuTimestampQueryPools) {
@@ -3207,8 +3211,8 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         return makeError(Error::InvalidArgument);
     }
     if (impl_->hasResourceAliases()) {
-        if (!commandBuffer.frameContext()) { return makeError(Error::Unsupported); }
-        if (!commandBuffer.frameContext()->recording()) { return makeError(Error::InvalidArgument); }
+        if (!metallic::render::RenderFrameContext::from(commandBuffer)) { return makeError(Error::Unsupported); }
+        if (!metallic::render::RenderFrameContext::from(commandBuffer)->recording()) { return makeError(Error::InvalidArgument); }
         if (std::any_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(), [](const auto& point) {
                 return point.valid() && !point.isSubmitted() && !point.isCancelled();
             })) { return makeError(Error::InvalidArgument); }
@@ -3240,11 +3244,11 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     std::erase_if(impl_->externalCompletions, [](const auto& point) { return point.isComplete(); });
     if (impl_->hasResourceAliases()) {
         for (const auto& completion : impl_->externalCompletions) {
-            Result<> result = commandBuffer.addDependency(completion);
+            Result<> result = addCommandDependency(commandBuffer, completion);
             if (!result) { return result; }
         }
     }
-    if (RenderFrameContext* frame = commandBuffer.frameContext()) {
+    if (RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
         if (!frame->recording()) {
             return makeError(Error::InvalidArgument);
         }
@@ -3253,7 +3257,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
             impl_->externalCompletions.push_back(frame->completion());
         }
     }
-    Result<> dependencyResult = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
+    Result<> dependencyResult = addCommandDependency(commandBuffer, impl_->lastSubmittedCompletion);
     if (!dependencyResult) { return dependencyResult; }
     const std::vector<uint32_t> queues(impl_->executionList.size(), 0);
     Result<> planned = impl_->buildAccessPlan(queues);
@@ -3268,7 +3272,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         "Render Graph Execute",
         profiling::NsightCategory::RenderGraph,
         frameIndex);
-    RenderFrameContext* frameResources = commandBuffer.frameContext();
+    RenderFrameContext* frameResources = metallic::render::RenderFrameContext::from(commandBuffer);
     Result<> result = impl_->subsystemHost->beginFrame(
         frameResources != nullptr ? frameResources->frameIndex() : frameIndex,
         frameResources != nullptr ? frameResources->slotIndex()
@@ -3709,10 +3713,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     phase.next("graph.subsystemBegin");
     result = impl_->subsystemHost->beginFrame(frameIndex, slot.frame.slotIndex(),
         desc.historyResources, log, &slot.frame);
-    if (!result) {
-        spdlog::error("[RenderGraph] Subsystem beginFrame failed: {} ({})", log, resultToString(result));
-        return abort(result);
-    }
+    if (!result) { return abort(result); }
     RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
     phase.next("graph.record");
     impl_->beginDebugExecution(frameIndex, slot.frame.slotIndex());
@@ -3744,7 +3745,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (!created) { return created; }
             slot.commandBuffers.push_back(std::move(buffer));
             commands = slot.commandBuffers.back().get();
-            created = commands->begin(&slot.frame);
+            created = commands->begin(slot.frame.submissionContext());
         }
         if (!created) { return created; }
         segments.push_back({.queue = queue, .commandBuffer = commands});
@@ -3792,7 +3793,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             for (size_t i = first; i < last; ++i) { commands.push_back(segments[i].commandBuffer); }
             PendingBatch batch{.end = last, .readyNs = readyNs ? readyNs : schedulingCapture.elapsed()};
             auto sealed = batch.commands.seal(slot.frame, commands);
-            if (!sealed) { spdlog::error("[RenderGraph] Seal batch [{}..{}): {}", first, last, resultToString(sealed)); return sealed; }
+            if (!sealed) { return sealed; }
             if (impl_->activeExecutionCapture) {
                 auto& capture = *impl_->activeExecutionCapture;
                 batch.captureId = uint32_t(capture.batches.size());
@@ -3826,7 +3827,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 for (size_t predecessor : segments[i].predecessors) {
                     if (predecessor >= nextSubmission && predecessor < end) { continue; }
                     const auto& producer = segments[predecessor];
-                    if (!producer.completion.isSubmitted()) { spdlog::error("[RenderGraph] Batch {} predecessor {} not submitted", nextSubmission, predecessor); return makeError(Error::InvalidArgument); }
+                    if (!producer.completion.isSubmitted()) { return makeError(Error::InvalidArgument); }
                     if (!producer.queue->sameQueue(*queue)) {
                         auto appended = producer.completion.appendWaits(waits);
                         if (!appended) { return appended; }
@@ -3843,7 +3844,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             auto accepted = impl_->submissionTrackers.at(queue)->submitBatch(ready->second.commands, {
                 .waitSemaphores = waits,
             }, slot.frame).transform([&](auto value) { receipt = std::move(value); });
-            if (!accepted) { spdlog::error("[RenderGraph] Submit batch [{}..{}): {}", nextSubmission, end, resultToString(accepted)); return accepted; }
+            if (!accepted) { return accepted; }
             if (capturedBatch) {
                 capturedBatch->accepted = true;
                 for (size_t index = nextSubmission; index < end; ++index) {
@@ -4297,9 +4298,9 @@ Result<> RenderGraphExecutor::transitionOutput(
         return makeError(Error::InvalidArgument);
     }
     if (impl_->lastSubmittedCompletion.valid()) {
-        Result<> result = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
+        Result<> result = addCommandDependency(commandBuffer, impl_->lastSubmittedCompletion);
         if (!result) { return result; }
-        if (auto* frame = commandBuffer.frameContext()) {
+        if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
             if (std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
                     [&](const auto& point) { return point.sameSubmission(frame->completion()); })) {
                 impl_->externalCompletions.push_back(frame->completion());
@@ -4553,10 +4554,12 @@ Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enab
             .preferredTaskSubgroupSize = 32,
             .enableRayTracingAccelerationStructure = enableRayQuery,
             .enableRayQuery = enableRayQuery,
-            .enablePushDescriptor = enableRayQuery,
             .enableClusterAccelerationStructure = enableRayQuery,
-            .enableAftermath = enableAftermath,
             .enableAsyncCompute = true,
+            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                .enablePushDescriptor = enableRayQuery,
+                .enableAftermath = enableAftermath,
+            },
         }).transform([&](auto rhiValue) { impl_->device = std::move(rhiValue); });
     if (!result) {
         return result;
@@ -4722,7 +4725,7 @@ Result<> RenderGraphPreviewRenderer::render(
     if (!result) {
         return result;
     }
-    result = impl_->commandBuffer->begin(&impl_->frameContext);
+    result = impl_->commandBuffer->begin(impl_->frameContext.submissionContext());
     if (!result) {
         return result;
     }
@@ -4748,15 +4751,15 @@ Result<> RenderGraphPreviewRenderer::render(
     if (!result) {
         return result;
     }
-    impl_->commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
+    if (auto commandResult = (impl_->readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return impl_->commandBuffer->copyTextureToBuffer(BufferTextureRegion{
         .texture = output->texture,
-        .buffer = impl_->readbackBuffer.get(),
+        .buffer = bufferSlice,
         .width = outputWidth,
         .height = outputHeight,
         .depth = 1,
         .mipLevel = 0,
         .baseLayer = 0,
-    });
+    }); }); !commandResult) { return commandResult; }
 
     result = impl_->commandBuffer->end();
     if (!result) {

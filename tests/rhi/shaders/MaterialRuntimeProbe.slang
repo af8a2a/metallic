@@ -1,12 +1,15 @@
-#include "../MaterialProbeParameters.h"
-[[vk::push_constant]] ConstantBuffer<MaterialProbeParameters> gProbe;
+import Core;
+using Metallic;
+#include "../TestResourceParameters.h"
+import Material;
+using Metallic.Material;
 
 [shader("compute")]
 [numthreads(3, 1, 1)]
 void materialRuntimeProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    PathTraceMaterial m = resolveDescriptor(gProbe.materials)[id.x];
-    RWStructuredBuffer<uint> output = resolveDescriptor(gProbe.output);
+    PathTraceMaterial m = resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialRuntimeProbeResources>().materials)[id.x];
+    RWStructuredBuffer<uint> output = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<MaterialRuntimeProbeResources>().output);
     uint cursor = id.x * 181u;
     { uint4 v = asuint(m.baseColor); for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }
     { uint4 v = asuint(m.emissive); for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }

@@ -292,7 +292,7 @@ public:
             if (!result) { return RHITestResult::fail(toString(result)); }
             result = pool->reset();
             if (!result) { return RHITestResult::fail(toString(result)); }
-            result = commands->begin(&frame);
+            result = commands->begin(frame.submissionContext());
             if (!result) { return RHITestResult::fail(toString(result)); }
             result = executor.execute(*commands);
             if (!result) { return RHITestResult::fail(toString(result)); }

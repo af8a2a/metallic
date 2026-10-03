@@ -9,11 +9,11 @@ using Metallic;
 // query radiance on top, and this pass applies the same Reinhard + gamma
 // curve the inline path uses when no external resolve is needed.
 
-#define gSource resolveDescriptor(gStage.source)
+#define gSource resolveUniform(gStage.source)
 
-#define gOutput resolveDescriptor(gStage.output)
+#define gOutput resolveUniform(gStage.output)
 
-#define gHistoryPrevious resolveDescriptor(gStage.historyPrevious)
+#define gHistoryPrevious resolveUniform(gStage.historyPrevious)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

@@ -1,6 +1,6 @@
 #language slang 2026
 module NeuralTextures;
-import ShaderCore;
+import Core;
 using Metallic;
 
 #ifndef METALLIC_HAS_NTC
@@ -23,16 +23,17 @@ namespace Metallic.Interop.NeuralTextures
 public static const uint kMaxNeuralTextureSets = 64u;
 public static const uint kInvalidNeuralTextureSetIndex = 0xffffffffu;
 
-public typealias NeuralTextureConstantBuffer = StructuredBuffer<NtcTextureSetConstants>;
+#define gNtcLatentTextures(index) resolveNonUniform(ResourceHandle<Texture2DArray<float4>>(getResourceParameters<SceneResourceParameters>().ntcLatents.load(index)))
 
-public struct NeuralTextureBindings
-{
-    public DescriptorHandle<Texture2DArray<float4>>* latents;
-    public NeuralTextureConstantBuffer constants;
-    public ByteAddressBuffer weights;
-    public StructuredBuffer<uint4> info;
-    public SamplerState sampler;
-};
+#define gNtcTextureSetConstants resolveBuffer<StructuredBuffer<NtcTextureSetConstants>>(getResourceParameters<SceneResourceParameters>().ntcConstants)
+
+#define gNtcWeights resolveBuffer<ByteAddressBuffer>(getResourceParameters<SceneResourceParameters>().ntcWeights)
+
+// x is the byte offset of this texture set's weights in gNtcWeights.
+// y is 1 for converted CoopVec FP8 weights and 0 for Generic INT8 weights.
+#define gNtcTextureSetInfo resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().ntcInfo)
+
+#define gNtcLatentSampler resolveUniform(getResourceParameters<SceneResourceParameters>().ntcSampler)
 
 public bool metallicHasNeuralTexture(uint textureSetIndex, uint textureSetCount)
 {
@@ -42,7 +43,6 @@ public bool metallicHasNeuralTexture(uint textureSetIndex, uint textureSetCount)
 }
 
 public bool metallicNeuralTextureDimensions(
-    NeuralTextureBindings resources,
     uint textureSetIndex,
     uint textureSetCount,
     uint mipLevel,
@@ -55,7 +55,7 @@ public bool metallicNeuralTextureDimensions(
         return false;
     }
 
-    NtcTextureSetConstants constants = resources.constants[textureSetIndex];
+    NtcTextureSetConstants constants = gNtcTextureSetConstants[textureSetIndex];
     mipCount = uint(max(NtcGetTextureMipLevels(constants), 1));
     uint clampedMip = min(mipLevel, mipCount - 1u);
     dimensions = uint2(max(NtcGetTextureDimensions(constants, int(clampedMip)), int2(1, 1)));
@@ -63,7 +63,6 @@ public bool metallicNeuralTextureDimensions(
 }
 
 public float4 metallicSampleNeuralTexture(
-    NeuralTextureBindings resources,
     uint textureSetIndex,
     uint textureSetCount,
     uint packedChannelMapping,
@@ -81,16 +80,16 @@ public float4 metallicSampleNeuralTexture(
         channels[channelIndex] = 0.0;
     }
 
-    NtcTextureSetConstants constants = resources.constants[textureSetIndex];
+    NtcTextureSetConstants constants = gNtcTextureSetConstants[textureSetIndex];
     bool sampled = false;
 #if METALLIC_NTC_COOPERATIVE_VECTOR
-    if (resources.info[textureSetIndex].y != 0u) {
+    if (gNtcTextureSetInfo[textureSetIndex].y != 0u) {
         sampled = NtcSampleTextureSet_CoopVec_FP8(
             constants,
-            resolveDescriptor(nonuniform(resources.latents[textureSetIndex])),
-            resources.sampler,
-            resources.weights,
-            resources.info[textureSetIndex].x,
+            gNtcLatentTextures(textureSetIndex),
+            gNtcLatentSampler,
+            gNtcWeights,
+            gNtcTextureSetInfo[textureSetIndex].x,
             texel,
             mipLevel,
             false,
@@ -100,10 +99,10 @@ public float4 metallicSampleNeuralTexture(
     {
         sampled = NtcSampleTextureSet(
             constants,
-            resolveDescriptor(nonuniform(resources.latents[textureSetIndex])),
-            resources.sampler,
-            resources.weights,
-            resources.info[textureSetIndex].x,
+            gNtcLatentTextures(textureSetIndex),
+            gNtcLatentSampler,
+            gNtcWeights,
+            gNtcTextureSetInfo[textureSetIndex].x,
             texel,
             mipLevel,
             false,
@@ -128,8 +127,6 @@ public float4 metallicSampleNeuralTexture(
 #else
 namespace Metallic.Interop.NeuralTextures
 {
-public typealias NeuralTextureConstantBuffer = ByteAddressBuffer;
-public struct NeuralTextureBindings { uint unused; };
 
 public static const uint kInvalidNeuralTextureSetIndex = 0xffffffffu;
 
@@ -139,7 +136,6 @@ public bool metallicHasNeuralTexture(uint textureSetIndex, uint textureSetCount)
 }
 
 public bool metallicNeuralTextureDimensions(
-    NeuralTextureBindings resources,
     uint textureSetIndex,
     uint textureSetCount,
     uint mipLevel,
@@ -152,7 +148,6 @@ public bool metallicNeuralTextureDimensions(
 }
 
 public float4 metallicSampleNeuralTexture(
-    NeuralTextureBindings resources,
     uint textureSetIndex,
     uint textureSetCount,
     uint packedChannelMapping,

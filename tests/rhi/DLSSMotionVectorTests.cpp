@@ -1,6 +1,6 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "MotionProbeParameters.h"
-#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -34,25 +34,28 @@ public:
             .capabilities = {capabilities, 1},
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        device_ = context.device;
-        return program_.initialize(*context.device, {.spirv = shader.spirv,
-            .parameters = render::parameterAbi<MotionProbeParameters>(kMotionProbeABI, render::ParameterTransport::InlinePush)}, log);
+        const render::ComputeProgramBindingDesc binding{
+            .binding = 63, .kind = render::ComputeResourceBindingKind::StorageBuffer};
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {&binding, 1},
+            .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kDLSSMotionVectorProbeLayout,
+        }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        auto registry = device_->resourceRegistry();
-        if (!registry) { return render::makeError(registry.error()); }
-        render::ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
-        const MotionProbeParameters params{writer.dataBuffer(context.outputBuffer("motion").buffer(), 16, 4)};
-        auto encoded = writer.encode(params, kMotionProbeABI, render::ParameterTransport::InlinePush);
-        if (!encoded) { return render::makeError(encoded.error()); }
-        return program_.dispatch(context.commandBuffer(), *encoded, 1);
+        const render::ComputeDispatchBinding binding{
+            .binding = 63, .buffer = context.outputBuffer("motion").buffer()};
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {&binding, 1},
+        });
     }
 
 private:
-    render::Device* device_ = nullptr;
-    render::ComputeKernel program_;
+    render::ComputeProgram program_;
 };
 
 class DLSSMotionVectorReprojectionTest final : public RHITest {

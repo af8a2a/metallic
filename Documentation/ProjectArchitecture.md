@@ -80,7 +80,7 @@ flowchart TB
 | `Source/Runtime/Render/Core/` | RHI 上层通用图形封装：shader 编译、compute、资源注册与同步、帧和历史资源、视图与显示输出 |
 | `Source/Runtime/Render/RenderGraph/` | 图模型、Pass 接口、序列化、编译器、执行器和流送帧作用域 |
 | `Source/Runtime/Render/RenderPass/` | 内置 Pass 注册和实现 |
-| `Source/Runtime/Render/GAPI/` | RHI 公共接口、后端内部的 pipeline cache/hash、格式及上传完成工具 |
+| `Source/Runtime/Render/GAPI/` | RHI 公共接口、中性提交状态、后端内部的 pipeline cache/hash 与格式工具 |
 | `Source/Runtime/Render/GAPI/Vulkan/` | Vulkan RHI、场景光追、NRD、Streamline、CLAS 的具体实现 |
 | `Source/Runtime/Render/Profiling/` | Nsight/NVTX 标记与 Aftermath GPU 崩溃转储 |
 | `Shaders/` | `Libraries/` 公共库与 `Features/` 功能 Shader，见 [目录说明](../Shaders/README.md) |
@@ -257,7 +257,7 @@ Pass 通过 `executeStages()` 声明 compute、raster、transfer 或 Unsafe 内�
 
 `HistoryResourceManager` 按名字维护纹理/缓冲的 Current/Previous 双槽，负责尺寸变化后的重建、有效性、写入标记、失效和状态转换。相机、环境或带 `invalidateHistory` 的运行时参数变化时，编辑器会清空相关历史。
 
-`StreamerSubsystem`（`render.streamer`）统一拥有场景资源、流式会话及上传环；内部 `StreamingUploads` 管理 RHI `Streamer`。每帧 `beginFrame()`，每个成功 Pass 后 `flush()`，帧末 `endFrame()`，并统计 buffer/texture 传输次数和字节数。Pass 应优先使用 `RenderGraphExecutionContext::streamer()`，避免各自维护重复上传环。
+`StreamerSubsystem`（`render.streamer`）统一拥有场景资源、流式会话及上传环；内部 `StreamingUploads` 管理 `Streamer/UploadStreamer.h` 中的 `Streamer`。每帧 `beginFrame()`，每个成功 Pass 后 `flush()`，帧末 `endFrame()`，并统计 buffer/texture 传输次数和字节数。Pass 应优先使用 `RenderGraphExecutionContext::streamer()`，避免各自维护重复上传环。
 
 ## 7. 内置 Render Pass
 
@@ -317,7 +317,7 @@ flowchart LR
     Readback["Request readback"]
     Residency["ResidencyManager<br/>状态、预算、淘汰、page table patch"]
     Loader["PageLoader<br/>TaskGraph 异步读取/解压"]
-    Upload["RHI Streamer<br/>上传 page payload"]
+    Upload["Streamer<br/>上传 page payload"]
     PageBuffer["GPU page buffer<br/>page table / active groups"]
     Draw["Mesh Shader indirect draw"]
     AS["可选 CLAS/BLAS/TLAS"]
@@ -360,6 +360,15 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 独立 `MetallicShaderCompiler` 与运行时共享 `Core/SlangCompiler.cpp`，
 shader warmup 仍为手动目标。
 
+GAPI 不依赖 Core。Core 通过 `CommandSubmissionContext` 注册录制、提交准入与资源保活钩子；
+RHI 只发布队列接受/取消状态，GPU 完成由 Core 的 timeline 与 `GPUCompletionPoint` 表示。
+调用方使用 `commands.begin(frame.submissionContext())`，通过 `RenderFrameContext::from(commands)`
+查询所属帧，通过 `addCommandDependency(commands, completion)` 导入 GPU 完成依赖。
+`ResourceRegistry::forDevice(device)` 在 Core 创建每设备共享注册表；RHI 的 `Device::sharedState()`
+只保存不透明的所有者状态，在设备空闲后、原生 allocator/device 销毁前释放。
+`Streamer` 与 `StreamUploadCompletion` 位于 `Streamer/`，通过 `createStreamer(device, desc)` 创建；
+使用 Slang 编译器的冒烟/三角形预览工具位于 `Core/RHISmokeTests`。
+
 ### 10.1 公共 RHI
 
 [`RHI.h`](../Source/Runtime/Render/GAPI/RHI.h) 提供 move-only RAII 对象：
@@ -369,15 +378,38 @@ shader warmup 仍为手动目标。
 - `Fence`、timeline `Semaphore` 和 Swapchain binary semaphore；
 - `Buffer/BufferView`、`Texture/TextureView`；
 - graphics/compute pipeline、shader object program；
-- `BindlessHeap` 和跨帧动态 `Streamer`。
+- `BindlessHeap`。
 
 命令接口覆盖动态渲染、barrier、buffer/texture copy、传统 draw、Mesh Task indirect draw 和 compute dispatch。能力以 `DeviceCapabilities` 暴露，调用方通过软请求创建设备，再对实际 capability 做降级处理。
 
+21 个 RHI 包装与 Streamer 层的 `Streamer`（共 22 个公共 PImpl 包装）统一使用
+[`RHIHandle.h`](../Source/Runtime/Render/GAPI/RHIHandle.h)
+中的 `METALLIC_RHI_HANDLE` 声明 move-only 生命周期、私有 Impl 接收构造和存储；每类显式选择
+`unique_ptr` / `shared_ptr` 并列出原有 friend。宏不增加继承、虚表或额外字段。
+默认构造、析构和移动定义在 Impl 完整的各自实现文件中，通过
+`METALLIC_RHI_HANDLE_DEFINITIONS` 生成；仅包含公共头的调用方也能构造、移动和销毁空包装。
+普通资源的原生释放由 Impl 析构承担，因此对存活对象移动赋值也会释放旧所有者；
+Buffer/Texture/Pipeline 等共享存储继续支持提交保活。`CommandBuffer` 只复用构造宏，
+保留取消提交、迁移 submission owner 及回收原生命令缓冲的自定义析构/移动逻辑。
+
 命令同步统一使用返回 `Result<>` 的 `synchronize()`；pipeline 与 shader object 通过 `execution()` 快照交给 `bindExecution()`；buffer copy 使用两个经过范围校验的 `BufferSlice`。这些入口的失败必须传回调用方，禁止用忽略结果的兼容包装。`Streamer::copyStreamedData()` 和上传 flush 同样返回结果；失败会取消对应上传发布事务，调用方必须放弃失败的录制。
+
+纹理拷贝（含 buffer/texture 双向拷贝）、`clearColorTexture()`、`setViewport()` 和 `draw*()` 也返回 `[[nodiscard]] Result<>`。入口检查发现参数、资源归属或录制状态非法时返回 `InvalidArgument`，mesh draw 所需能力或设备入口不可用时返回 `Unsupported`，不会静默跳过命令。上层 pass、上传和读回辅助函数必须传播错误；成功表示命令已录制，不代表 GPU 已完成，也不替代 Vulkan validation 对完整命令合法性的检查。
+
+`GraphicsPipelineDesc` 用自持有的 `colorFormats[8]` 和 `colorAttachmentCount` 描述颜色附件，仅有效前缀参与 Vulkan 创建和 pipeline 哈希；计数为 0 可用于 depth-only pipeline。有效前缀禁止 `Unknown` 或深度格式，并受设备的 `maxColorAttachments` 限制。`TextureCopyDesc::layerCount` 默认 1，可一次复制连续多层；源、目标各自使用 mip/base layer，录制前检查层范围及对应 mip 的 extent。
+
+`dispatchIndirect()`（含 `ComputeKernel`）、`drawMeshTasksIndirect()` 和 `BufferTextureRegion::buffer` 只接受 `BufferSlice`，不再另外传 buffer 指针与 offset。调用方检查 `Buffer::slice()` / `BufferSlice::subslice()` 的结果；拷贝 footprint 以 slice 长度为上限，间接命令校验 slice 的设备、usage、绝对地址对齐及最小长度，录制后保活其 allocation。`writeStorageBuffer()` 也只接受 slice，但 DR 描述符仍写入完整 allocation：shader span 的 offset 相对于 allocation，不能再次加上 slice 偏移。
 
 同步优先由 RenderGraph 的资源访问声明驱动：跨 pass 使用 reflection，pass 内多阶段使用 `executeStages()`；私有 helper 使用同一个 `GraphAccessPlan` 声明每个阶段的读、写、间接参数或传输访问。stage/access、RAW/WAR/WAW、layout 和跨队列前置依赖由规划器推导。材质分桶、Resident LOD、GPUScene HZB 的内部阶段也走该规划器，不再各自维护 barrier 数组。图外上传、调试读回及未纳入图的历史资源仍需在边界明确同步，不能依靠 CPU 等待代替 GPU 依赖。
 
 RHI 的 `MemoryBarrierDesc`、`BufferBarrierDesc` 和 `TextureBarrierDesc` 只接受一套 `before/after: SyncScope`；纹理另以 `oldLayout/newLayout: TextureLayout` 表达布局。空 scope 始终为空，有 stage 而 access 为空表示仅约束执行顺序，不再按 `ResourceState` 推导或通过 `acquireFromQueue` 覆盖。已被 semaphore wait 覆盖的远端生产者使用空源 scope；资源仍须满足队列共享约束，此接口不做 queue-family ownership transfer。RHI 保留显式依赖，只合并同一 stage 对的 memory barrier；省略冗余依赖由图规划器负责。与 [Vulkan synchronization2 的同步范围语义](https://docs.vulkan.org/spec/latest/chapters/synchronization.html) 保持一致。
+
+`ResourceState` 定义在 `Core/ResourceState.h`，只表达 RenderGraph、历史资源等上层的粗粒度用途。
+Core 通过 `resourceSyncScope()` 生成同步范围，在纹理边界通过 `textureLayoutForResourceState()`
+单向选择布局；buffer 专属用途不能转换为合法纹理布局。RHI 不接受 `ResourceState`，也不从布局反推同步范围。
+`RenderingAttachmentDesc::layout`、`BindlessImageWrite::layout`、`clearColorTexture()`、
+`writeSampledImage()`、`nativeImageLayout()` 以及 Core 注册表的采样图像参数均使用 `TextureLayout`。
+Vulkan 只保留一个 `imageLayout(TextureLayout, unified)` 映射，统一布局策略仍由设备能力决定。
 
 RHI 上层同样用 `Result<T>` 返回一次操作产生的值：资源注册返回 `ResourceLease`，参数编码返回 `EncodedParameters`，Compute 预录制返回 `PreparedComputeDispatch`，批次提交返回 `SubmissionReceipt`。场景资源获取、GPUScene View/绑定创建、着色器重载准备、编译产物和 GPU 统计也直接返回值；没有产物的操作继续返回 `Result<>`。失败时只有 `Error`，不会产生可误用的默认句柄、回执或部分产物，也不会覆盖调用方已有的成功值。异步轮询返回 `Result<bool>`：`false` 表示尚未完成，错误分支表示失败。日志、编译诊断、进度和统计信息仍可独立传出，原地更新的输入输出对象保持原语义。
 
@@ -390,6 +422,75 @@ buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，�
 `ShaderModuleDesc` 与 `ComputeProgramDesc` 统一接收 `std::span<const uint32_t> spirv`，大小由 word span 确定。graphics/compute pipeline 与 shader object 使用同一个 `ShaderStageDesc { module, entryPoint }`；省略 entry point 时为 `main`，显式空指针或空字符串无效。模块复制输入并保留设备实际使用的 SPIR-V，OMM 转换只在模块创建时执行，shader object 复用同一份结果。阶段模块必须属于创建设备，创建完成后可释放输入 words 和模块包装对象。
 
 ### 10.2 Vulkan 实现
+
+设备创建把通用功能与后端配置分开。`DeviceDesc::backendExtensions` 是拥有值语义的
+`std::any`，空值使用后端默认配置；Vulkan 只接受
+[`VulkanDeviceExtensions`](../Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h)。
+`enablePushDescriptor`、`enableStreamline`、`enableAftermath`、
+`preferUnifiedImageLayouts` 和 `ShaderPrintf*` 均放在这个独立结构中，`RHI.h`
+不再声明 `vulkan::ShaderPrintf`。这些配置的使用方显式包含后端头文件，无需包含 Vulkan SDK。
+
+```cpp
+DeviceDesc desc{
+    .enableBindlessDescriptorHeap = true,
+    .backendExtensions = vulkan::VulkanDeviceExtensions{
+        .enablePushDescriptor = true,
+        .enableStreamline = true,
+    },
+};
+auto device = createDevice(desc);
+```
+
+复制 `DeviceDesc` 会复制扩展配置值；`vulkan::deviceExtensions(desc)` 可编辑该副本，
+const 重载在空配置上返回默认值。错误类型在 `createDevice` 的任何 loader/SDK 初始化之前
+返回 `InvalidArgument`；配置访问 helper 对错误类型抛出 `std::bad_any_cast`。
+后端在创建入口快照配置，成功后调用方可释放扩展值。`ShaderPrintf` 捕获对象仍是显式借用，
+必须比设备活得更久；它并不会因配置值被复制而取得所有权。
+
+`Device::capabilities()` 只报告通用 RHI 功能；Vulkan 图片布局、push descriptor、
+Streamline/DLSS-SR/DLSS-RR 和 Aftermath 的实际启用状态通过
+`vulkan::deviceCapabilities(device)` 返回 `VulkanDeviceCapabilities` 值快照。
+配置请求与实际启用能力是两个独立概念；缺少可选 SDK/设备能力时保留已有回退规则。
+测试 profile 同时携带通用和后端能力，避免将 Vulkan 能力重新塞回公共能力结构。
+
+设备特性协商由后端内部的
+[`VulkanDeviceFeatureCatalog.inl`](../Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceFeatureCatalog.inl)
+集中描述；[`VulkanDeviceFeatures.h`](../Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceFeatures.h)
+据此生成扩展查询、请求映射、支持条件、候选匹配/评分、探测与启用 pNext 链和能力发布。
+普通单 bit 扩展使用 `MT_VK_SIMPLE`；cluster / partitioned AS 使用 `MT_VK_AS_FEATURE`，
+同一条记录还声明隐含的 AS 请求。共享多 bit 结构（如 mesh/task、DGC）用 `MT_VK_NODE`
+与 `MT_VK_FEATURE` 分别描述结构和逻辑特性，避免同一结构重复挂链。
+新增通用功能仍需显式声明公共 Desc/Capabilities；公共头不导入 Vulkan 特性清单。
+
+清单中的特性按依赖顺序求值；请求依赖先展开，再判断扩展、探测位和前置能力。
+`preferred` 只影响候选匹配，不把软请求升级成创建失败条件；设备选择的评分回退保持原规则。
+OMM 的 KHR/EXT 互斥、验证层兼容性限制、Streamline 组合要求和 Aftermath 环境策略继续保留。
+驱动调用、descriptor heap 属性查询、SDK 初始化和日志留在 `VulkanRHI.cpp`；协商模型可独立做 CPU 测试。
+持有内部 pNext 指针的 probe/enable storage 禁止复制和移动；运行时直接读取已发布能力，
+不再为 shader object、ray query、AS、cluster/partitioned AS、push descriptor 维护第二份 enabled 标志。
+`MetallicVulkanDeviceFeaturesTests` 覆盖缺失扩展/探测位/依赖、软回退、共享链、OMM 路由和能力发布，
+无需创建 Vulkan 设备；实际设备能力仍由 RHI/GPU 回归验证。
+
+2026-10-03 协商重构验证：CPU 测试 12/12；与重构前实现比较 10,000 组确定性模拟输入，
+选择、评分、匹配、扩展集合、pNext 节点和所有启用位一致。mapped/native 各 90 项 RHI 回归中
+87 通过、3 跳过，无 VUID；两项 OMM GPU 路径因当前配置不可用而跳过（回退通过），另一个为
+MiniZorah 大场景显式 opt-in。NRD 双模式各 11/11，editor smoke 均完成呈现。
+这些检查不替代完整场景视觉/时序验证，也未验证关闭构建的 Streamline SDK 运行路径。
+本轮日志和 XML 位于 `.cache/device-features-*`。
+
+2026-10-03 后端配置拆分验证：现有 MSVC Release/NRD 配置下，renderer、RHI/NRD 测试、
+ShaderPrintf 工具和单元测试均构建成功；只添加 `Source` include 路径即可独立编译
+公共 RHI 与扩展配置头。mapped/native 各 75 项 RHI 回归中 71 通过、4 跳过；
+跳过项为未启用的 DLSS 运行路径及 MiniZorah 大场景。框架自测 10/10，
+ShaderPrintf 单元测试 6/6，NRD 双模式各 11/11。两次 editor smoke 均完成呈现，
+各 210 个 warmup 请求全部命中缓存，无失败或 VUID。
+
+ShaderPrintf GPU 探针确认扩展配置成功、messenger 已连接、GPU 完成、echo 和读回匹配；
+它的整体状态仍为 `incomplete`，因为本机 loader 报告失效的 EOS overlay JSON 和
+`E:\Validation.json` 注册路径。保留该结果，不把它算作完整探针通过，也不修改系统注册。
+本次构建的 Streamline 集成关闭，不能据此声称验证了 DLSS 实际运行。
+原始证据位于 `.cache/device-extensions-*`；GPU 报告及原始消息分别在
+`device-extensions-printf-gpu/Report.json` 与 `RawMessages.json`。
 
 `VulkanRHI.cpp` 使用 Volk 加载 Vulkan，并用 VMA 管理资源内存。PImpl 隔离大多数 Vulkan 类型，但以下位置仍显式依赖 Vulkan：
 
