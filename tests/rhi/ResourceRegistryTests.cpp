@@ -1492,7 +1492,7 @@ public:
             REG_REQUIRE(device->createGraphicsPipeline({
                 .vertexShader = {modules[0].get()},
                 .fragmentShader = {modules[1].get()},
-                .colorFormat = render::Format::RGBA8Unorm,
+                .colorFormats = {render::Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             }).transform([&](auto value) { pipeline = std::move(value); }));
             std::unique_ptr<render::GraphicsShaderObjectProgram> program;
             REG_REQUIRE(device->createGraphicsShaderObjectProgram({.vertexShader = {modules[0].get()}, .fragmentShader = {modules[1].get()}}).transform([&](auto value) { program = std::move(value); }));

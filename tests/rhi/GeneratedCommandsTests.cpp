@@ -39,6 +39,25 @@ TEST(DeviceGeneratedCommands, IndirectBindingChangesPipelineHash)
     EXPECT_NE(graphicsHash, render::detail::graphicsPipelineStateHash(graphics));
 }
 
+TEST(PipelineStateHash, ColorAttachmentArray)
+{
+    render::GraphicsPipelineDesc desc{.colorFormats = {render::Format::RGBA8Unorm, render::Format::R32Uint,
+        render::Format::RGBA16Sfloat, render::Format::RGBA32Sfloat}, .colorAttachmentCount = 4};
+    const auto hash = render::detail::graphicsPipelineStateHash(desc);
+    auto changed = desc;
+    changed.colorFormats[3] = render::Format::RGBA8Unorm;
+    EXPECT_NE(hash, render::detail::graphicsPipelineStateHash(changed));
+    changed = desc;
+    std::swap(changed.colorFormats[0], changed.colorFormats[1]);
+    EXPECT_NE(hash, render::detail::graphicsPipelineStateHash(changed));
+    changed = desc;
+    changed.colorAttachmentCount = 3;
+    EXPECT_NE(hash, render::detail::graphicsPipelineStateHash(changed));
+    changed = desc;
+    changed.colorFormats[7] = render::Format::R32Uint;
+    EXPECT_EQ(hash, render::detail::graphicsPipelineStateHash(changed));
+}
+
 TEST(DeviceGeneratedCommands, ProbeShaderCompiles)
 {
     render::ShaderCompileResult shader;

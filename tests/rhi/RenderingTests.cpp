@@ -167,7 +167,7 @@ public:
         render::Result<> result = context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
             .vertexShader = {vertexShader.get()},
             .fragmentShader = {fragmentShader.get()},
-            .colorFormat = render::Format::RGBA8Unorm,
+            .colorFormats = {render::Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = render::PrimitiveTopology::TriangleList,
         }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
@@ -410,7 +410,7 @@ public:
             render::Result<> result = context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
                 .vertexShader = {&vertexShader},
                 .fragmentShader = {&fragmentShader},
-                .colorFormat = render::Format::RGBA8Unorm,
+                .colorFormats = {render::Format::RGBA8Unorm}, .colorAttachmentCount = 1,
                 .depthStencilFormat = render::Format::D32Sfloat,
                 .topology = render::PrimitiveTopology::TriangleList,
                 .depthStencil = render::DepthStencilState{
@@ -1097,7 +1097,7 @@ public:
             return context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
                 .vertexShader = {vertexShader.get()},
                 .fragmentShader = {&fragment},
-                .colorFormat = render::Format::RGBA8Unorm,
+                .colorFormats = {render::Format::RGBA8Unorm}, .colorAttachmentCount = 1,
                 .topology = render::PrimitiveTopology::TriangleList,
                 .rasterization = rasterization,
                 .pipelineCache = &cache,

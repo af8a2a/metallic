@@ -650,9 +650,8 @@ public:
                     ? kGPUDrivenPreviewAmplificationGroupSize
                     : 0u,
                 .taskRequireFullSubgroups = amplificationWave32_,
-                .colorFormat = Format::R32Uint,
-                .secondColorFormat = tessellationEnabled() ? Format::RGBA32Sfloat : Format::Unknown,
-                .thirdColorFormat = tessellationEnabled() ? Format::RGBA8Unorm : Format::Unknown,
+                .colorFormats = {Format::R32Uint, Format::RGBA32Sfloat, Format::RGBA8Unorm},
+                .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
                 .depthStencilFormat = Format::D32Sfloat,
                 .rasterization = RasterizationState{
                     .cullMode = doubleSided ? CullMode::None : CullMode::Back,
@@ -677,8 +676,7 @@ public:
             // single-target PSO so it cannot overwrite viewport domain/colors.
             if (result && tessellationEnabled()) {
                 pipelineDesc.fragmentShader.module = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
-                pipelineDesc.secondColorFormat = Format::Unknown;
-                pipelineDesc.thirdColorFormat = Format::Unknown;
+                pipelineDesc.colorAttachmentCount = 1;
                 result = context.device->createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { frozenStandardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
                 if (result) {
                     pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(true);
@@ -696,7 +694,7 @@ public:
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = {compositeVertexShader_.get()},
             .fragmentShader = {compositeFragmentShader_.get()},
-            .colorFormat = Format::RGBA8Unorm,
+            .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
             .pipelineCache = pipelineCache_.get(),
@@ -1717,9 +1715,8 @@ private:
             .taskShader = {streamTaskShader_.get()},
             .meshShader = {streamMeshShader_.get()},
             .fragmentShader = {streamFragmentShader_.get()},
-            .colorFormat = Format::R32Uint,
-            .secondColorFormat = tessellationEnabled() ? Format::RGBA32Sfloat : Format::Unknown,
-            .thirdColorFormat = tessellationEnabled() ? Format::RGBA8Unorm : Format::Unknown,
+            .colorFormats = {Format::R32Uint, Format::RGBA32Sfloat, Format::RGBA8Unorm},
+            .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = RasterizationState{
                 .cullMode = CullMode::None,

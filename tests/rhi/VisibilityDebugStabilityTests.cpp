@@ -65,7 +65,7 @@ public:
         DEBUG_REQUIRE(device->createGraphicsPipeline({
             .vertexShader = {vertex.get()},
             .fragmentShader = {fragment.get()},
-            .colorFormat = Format::RGBA8Unorm,
+            .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .rasterization = {.cullMode = CullMode::None},
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));

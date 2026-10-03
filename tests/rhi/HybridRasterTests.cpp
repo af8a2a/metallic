@@ -223,7 +223,7 @@ public:
                 HYBRID_REQUIRE(device->createGraphicsPipeline({
                     .meshShader = {shaders[0].get()},
                     .fragmentShader = {shaders[1].get()},
-                    .colorFormat = Format::R32Uint,
+                    .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
                     .depthStencilFormat = Format::D32Sfloat,
                     .rasterization = {.cullMode = doubleSided ? CullMode::None : CullMode::Back, .frontFace = FrontFace::CounterClockwise},
                     .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,

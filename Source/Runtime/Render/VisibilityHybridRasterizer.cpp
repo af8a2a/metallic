@@ -108,7 +108,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         result = device.createGraphicsPipeline({
             .vertexShader = {shaders_[3].get()},
             .fragmentShader = {shaders_[4].get()},
-            .colorFormat = Format::R32Uint,
+            .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = {.cullMode = CullMode::None},
             .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,

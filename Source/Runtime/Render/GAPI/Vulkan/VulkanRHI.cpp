@@ -4901,8 +4901,20 @@ Result<> CommandBuffer::copyTexture(const TextureCopyDesc& desc)
         desc.destination->impl_ == nullptr ||
         desc.width == 0 ||
         desc.height == 0 ||
-        desc.depth == 0 || desc.source->impl_->device != impl_->device ||
+        desc.depth == 0 || desc.layerCount == 0 || desc.source->impl_->device != impl_->device ||
         desc.destination->impl_->device != impl_->device) {
+        return makeError(Error::InvalidArgument);
+    }
+
+    const auto validRegion = [&](const TextureDesc& texture, uint32_t mip, uint32_t baseLayer) {
+        return mip < texture.mipCount && mip < 32 && baseLayer < texture.layerCount &&
+            desc.layerCount <= texture.layerCount - baseLayer &&
+            desc.width <= std::max(1u, texture.width >> mip) &&
+            desc.height <= std::max(1u, texture.height >> mip) &&
+            desc.depth <= std::max(1u, texture.depth >> mip);
+    };
+    if (!validRegion(desc.source->desc(), desc.sourceMipLevel, desc.sourceBaseLayer) ||
+        !validRegion(desc.destination->desc(), desc.destinationMipLevel, desc.destinationBaseLayer)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -4917,14 +4929,14 @@ Result<> CommandBuffer::copyTexture(const TextureCopyDesc& desc)
             .aspectMask = sourceAspect,
             .mipLevel = desc.sourceMipLevel,
             .baseArrayLayer = desc.sourceBaseLayer,
-            .layerCount = 1,
+            .layerCount = desc.layerCount,
         },
         .srcOffset = {0, 0, 0},
         .dstSubresource = {
             .aspectMask = destinationAspect,
             .mipLevel = desc.destinationMipLevel,
             .baseArrayLayer = desc.destinationBaseLayer,
-            .layerCount = 1,
+            .layerCount = desc.layerCount,
         },
         .dstOffset = {0, 0, 0},
         .extent = {desc.width, desc.height, desc.depth},
@@ -8929,11 +8941,16 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     if (desc.usesBindlessHeap && !impl_->capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
     }
-    const bool hasColorFormat = desc.colorFormat != Format::Unknown;
-    const uint32_t colorCount = desc.thirdColorFormat != Format::Unknown ? 3u :
-        (desc.secondColorFormat != Format::Unknown ? 2u : (hasColorFormat ? 1u : 0u));
-    if ((colorCount >= 2u && !hasColorFormat) ||
-        (colorCount == 3u && desc.secondColorFormat == Format::Unknown)) { return makeError(Error::InvalidArgument); }
+    const uint32_t colorCount = desc.colorAttachmentCount;
+    if (colorCount > desc.colorFormats.size()) { return makeError(Error::InvalidArgument); }
+    for (uint32_t index = 0; index < colorCount; ++index) {
+        if (toVkFormat(desc.colorFormats[index]) == VK_FORMAT_UNDEFINED ||
+            aspectForFormat(desc.colorFormats[index]) != VK_IMAGE_ASPECT_COLOR_BIT) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    if (colorCount > impl_->physicalProperties.core.limits.maxColorAttachments) { return makeError(Error::Unsupported); }
+    const bool hasColorFormat = colorCount != 0;
     const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
     if (!hasColorFormat && !hasDepthStencilFormat) {
         return makeError(Error::InvalidArgument);
@@ -9066,11 +9083,12 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
             VK_COLOR_COMPONENT_B_BIT |
             VK_COLOR_COMPONENT_A_BIT,
     };
-    const VkPipelineColorBlendAttachmentState colorBlendAttachments[] = {colorBlendAttachment, colorBlendAttachment, colorBlendAttachment};
+    std::array<VkPipelineColorBlendAttachmentState, GraphicsPipelineDesc::kMaxColorAttachments> colorBlendAttachments;
+    colorBlendAttachments.fill(colorBlendAttachment);
     VkPipelineColorBlendStateCreateInfo colorBlendState{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = colorCount,
-        .pAttachments = colorBlendAttachments,
+        .pAttachments = colorBlendAttachments.data(),
     };
     std::array<VkDynamicState, 2> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT,
@@ -9088,12 +9106,13 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     const VkPipelineLayout layout = pipelineImpl->layout;
     VkResult result = VK_SUCCESS;
 
-    const VkFormat colorFormats[] = {toVkFormat(desc.colorFormat), toVkFormat(desc.secondColorFormat), toVkFormat(desc.thirdColorFormat)};
+    std::array<VkFormat, GraphicsPipelineDesc::kMaxColorAttachments> colorFormats{};
+    for (uint32_t index = 0; index < colorCount; ++index) { colorFormats[index] = toVkFormat(desc.colorFormats[index]); }
     const VkFormat depthStencilFormat = toVkFormat(desc.depthStencilFormat);
     VkPipelineRenderingCreateInfo renderingInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount = colorCount,
-        .pColorAttachmentFormats = colorFormats,
+        .pColorAttachmentFormats = colorFormats.data(),
         .depthAttachmentFormat = depthStencilFormat,
     };
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{

@@ -539,7 +539,7 @@ public:
             result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
                 .meshShader = {meshShader_.get()},
                 .fragmentShader = {fragmentShader_.get()},
-                .colorFormat = Format::R32Uint,
+                .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
                 .depthStencilFormat = Format::D32Sfloat,
                 .depthStencil = DepthStencilState{
                         .depthTestEnable = true,
@@ -568,7 +568,7 @@ public:
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = {compositeVertexShader_.get()},
             .fragmentShader = {compositeFragmentShader_.get()},
-            .colorFormat = context.defaultFormat,
+            .colorFormats = {context.defaultFormat}, .colorAttachmentCount = 1,
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { compositePipeline_ = std::move(rhiValue); });
         if (!result || compositePipeline_ == nullptr) {

@@ -1210,11 +1210,10 @@ struct GraphicsPipelineDesc {
     uint32_t taskRequiredSubgroupSize = 0;
     // Full-subgroup mode is accepted only with a fixed required subgroup size.
     bool taskRequireFullSubgroups = false;
-    Format colorFormat = Format::Unknown;
-    // Optional second MRT; single-target callers leave this Unknown.
-    Format secondColorFormat = Format::Unknown;
-    // Optional third MRT; requires the first two color targets.
-    Format thirdColorFormat = Format::Unknown;
+    static constexpr uint32_t kMaxColorAttachments = 8;
+    // Only the first colorAttachmentCount entries participate in creation and hashing.
+    std::array<Format, kMaxColorAttachments> colorFormats{};
+    uint32_t colorAttachmentCount = 0;
     Format depthStencilFormat = Format::Unknown;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     RasterizationState rasterization;
@@ -1255,6 +1254,7 @@ struct TextureCopyDesc {
     uint32_t sourceBaseLayer = 0;
     uint32_t destinationMipLevel = 0;
     uint32_t destinationBaseLayer = 0;
+    uint32_t layerCount = 1;
 };
 
 struct BufferDecompressionDesc {

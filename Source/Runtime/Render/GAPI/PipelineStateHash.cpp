@@ -9,7 +9,7 @@ namespace {
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
 // Increment when an implicit RHI pipeline state changes without a desc change.
-constexpr uint32_t kPipelineStateHashVersion = 5;
+constexpr uint32_t kPipelineStateHashVersion = 6;
 constexpr uint32_t kGraphicsPipelineTag = 0x4750534fu;
 constexpr uint32_t kComputePipelineTag = 0x4350534fu;
 
@@ -78,9 +78,10 @@ uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc)
     }
     hash = hashValue(hash, desc.fragmentShader.module != nullptr ? desc.fragmentShader.module->contentHash() : 0ull);
     hash = hashString(hash, desc.fragmentShader.entryPoint);
-    hash = hashValue(hash, static_cast<uint32_t>(desc.colorFormat));
-    hash = hashValue(hash, static_cast<uint32_t>(desc.secondColorFormat));
-    hash = hashValue(hash, static_cast<uint32_t>(desc.thirdColorFormat));
+    hash = hashValue(hash, desc.colorAttachmentCount);
+    for (uint32_t index = 0; index < desc.colorAttachmentCount && index < desc.colorFormats.size(); ++index) {
+        hash = hashValue(hash, static_cast<uint32_t>(desc.colorFormats[index]));
+    }
     hash = hashValue(hash, static_cast<uint32_t>(desc.depthStencilFormat));
     hash = hashValue(hash, static_cast<uint32_t>(desc.topology));
     hash = hashValue(hash, static_cast<uint32_t>(desc.rasterization.cullMode));

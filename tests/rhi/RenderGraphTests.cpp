@@ -418,7 +418,7 @@ public:
         result = context.device->createGraphicsPipeline(render::GraphicsPipelineDesc{
             .vertexShader = {vertexShader_.get()},
             .fragmentShader = {fragmentShader_.get()},
-            .colorFormat = render::Format::RGBA8Unorm,
+            .colorFormats = {render::Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = render::PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });

@@ -81,7 +81,7 @@ public:
                 MESH_REQUIRE(device->createGraphicsPipeline({
                     .meshShader = {shaders[indexed * 2].get()},
                     .fragmentShader = {shaders[indexed * 2 + 1].get()},
-                    .colorFormat = Format::R32Uint,
+                    .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
                     .depthStencilFormat = Format::D32Sfloat,
                     .rasterization = {.cullMode = CullMode::None, .frontFace = FrontFace::CounterClockwise},
                     .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,

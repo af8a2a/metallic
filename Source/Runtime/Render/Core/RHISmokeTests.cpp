@@ -141,7 +141,7 @@ Result<> TrianglePreviewRendererImpl::initialize(bool enableValidation)
     return device->createGraphicsPipeline(GraphicsPipelineDesc{
         .vertexShader = {vertexShader.get()},
         .fragmentShader = {fragmentShader.get()},
-        .colorFormat = Format::RGBA8Unorm,
+        .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
         .topology = PrimitiveTopology::TriangleList,
     }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
 }
@@ -587,7 +587,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     result = device->createGraphicsPipeline(GraphicsPipelineDesc{
                         .vertexShader = {vertexShader.get()},
                         .fragmentShader = {fragmentShader.get()},
-                        .colorFormat = Format::RGBA8Unorm,
+                        .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
                         .topology = PrimitiveTopology::TriangleList,
                         .usesBindlessHeap = true,
                     }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
