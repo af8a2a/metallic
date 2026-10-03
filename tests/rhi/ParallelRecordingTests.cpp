@@ -522,8 +522,8 @@ public:
                 for (const char* output : {"CopyRed.color", "CopyGreen.color"}) {
                     auto result = executor.transitionOutput(*commands, output, render::ResourceState::TransferSource);
                     if (!result) { return result; }
-                    commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture,
-                        .buffer = readback.get(), .bufferOffset = offset, .width = 4, .height = 4});
+                    if (auto commandResult = commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture,
+                        .buffer = readback.get(), .bufferOffset = offset, .width = 4, .height = 4}); !commandResult) { return commandResult; }
                     offset += 64;
                 }
                 return commands->end();

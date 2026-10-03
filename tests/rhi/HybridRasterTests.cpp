@@ -277,12 +277,12 @@ public:
                         .colorAttachments = {&color, 1},
                         .depthStencilAttachment = &depth,
                     }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-                    commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
+                    if (auto commandResult = commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f}); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
                     commands->setScissor({.width = width, .height = height});
                     commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
                     commands->pushBindlessData(push, sizeof(push));
-                    commands->drawMeshTasks(uint32_t(vertices.size() / 3)); commands->endRendering();
+                    if (auto commandResult = commands->drawMeshTasks(uint32_t(vertices.size() / 3)); !commandResult) { return RHITestResult::fail(std::string("drawMeshTasks failed: ") + render::resultToString(commandResult)); } commands->endRendering();
                     if (hybrid) {
                         HYBRID_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
                         const BufferBarrierDesc bufferTransitions[] = {
@@ -324,7 +324,7 @@ public:
                     }
                     if (auto commandResult = commands->synchronize({.textures = {outputTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     for (size_t i = 0; i < 2; ++i) {
-                        commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readback[i].get(), .width = width, .height = height});
+                        if (auto commandResult = commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readback[i].get(), .width = width, .height = height}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                     }
                     HYBRID_REQUIRE(commands->end());
                     CommandBuffer* list[] = {commands.get()};

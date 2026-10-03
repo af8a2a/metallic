@@ -242,14 +242,14 @@ public:
             context.commandBuffer().endRendering();
             return {};
         }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         const auto execution = program_->execution({.depthStencil = {
@@ -262,7 +262,7 @@ public:
             .transformBuffer = transformHandle_.shaderIndex,
         };
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().draw(drawVertexCount_);
+        if (auto commandResult = context.commandBuffer().draw(drawVertexCount_); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }

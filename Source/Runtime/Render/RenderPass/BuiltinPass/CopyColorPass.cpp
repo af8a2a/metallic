@@ -32,7 +32,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
-        context.commandBuffer().copyTexture(TextureCopyDesc{
+        if (auto commandResult = context.commandBuffer().copyTexture(TextureCopyDesc{
             .source = source.texture(),
             .destination = color.texture(),
             .width = context.width(),
@@ -42,7 +42,7 @@ public:
             .sourceBaseLayer = 0,
             .destinationMipLevel = 0,
             .destinationBaseLayer = 0,
-        });
+        }); !commandResult) { return commandResult; }
         return {};
     }
 };

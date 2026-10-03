@@ -103,7 +103,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
             }); !commandResult) { return commandResult; }
             imageState_ = ResourceState::TransferDestination;
 
-            commands.copyBufferToTexture(BufferTextureRegion{
+            if (auto commandResult = commands.copyBufferToTexture(BufferTextureRegion{
                 .texture = imageTexture_.get(),
                 .buffer = uploadBuffer_.get(),
                 .width = imageWidth_,
@@ -111,7 +111,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
                 .depth = 1,
                 .mipLevel = 0,
                 .baseLayer = 0,
-            });
+            }); !commandResult) { return commandResult; }
 
             TextureBarrierDesc toShaderRead{
                 .texture = imageTexture_.get(),

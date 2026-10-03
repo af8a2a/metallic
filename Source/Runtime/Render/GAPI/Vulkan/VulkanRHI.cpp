@@ -865,20 +865,13 @@ uint32_t formatTexelByteSize(Format format)
 }
 
 bool fillBufferImageLayout(
-    Format format,
-    uint32_t width,
-    uint32_t height,
-    uint32_t bufferRowPitch,
-    uint32_t bufferSlicePitch,
+    const BufferTextureRegion& desc,
     uint32_t& outBufferRowLength,
     uint32_t& outBufferImageHeight)
 {
     outBufferRowLength = 0;
     outBufferImageHeight = 0;
-    if (bufferRowPitch == 0 && bufferSlicePitch == 0) {
-        return true;
-    }
-
+    const Format format = desc.texture->desc().format;
     const uint32_t blockBytes = compressedBlockBytes(format);
     const uint32_t blockExtent = blockBytes ? 4 : 1;
     const uint32_t bytesPerTexel = blockBytes ? blockBytes : formatTexelByteSize(format);
@@ -886,25 +879,37 @@ bool fillBufferImageLayout(
         return false;
     }
 
-    const uint64_t tightRowPitch = ((uint64_t(width) + blockExtent - 1) / blockExtent) * bytesPerTexel;
-    const uint64_t rowPitch = bufferRowPitch == 0
+    const uint64_t tightRowPitch = ((uint64_t(desc.width) + blockExtent - 1) / blockExtent) * bytesPerTexel;
+    const uint64_t rowPitch = desc.bufferRowPitch == 0
         ? tightRowPitch
-        : static_cast<uint64_t>(bufferRowPitch);
+        : static_cast<uint64_t>(desc.bufferRowPitch);
     if (rowPitch < tightRowPitch || rowPitch % bytesPerTexel != 0) {
         return false;
     }
-    outBufferRowLength = bufferRowPitch == 0
+    const uint64_t rowLength = rowPitch / bytesPerTexel * blockExtent;
+    if (desc.bufferRowPitch != 0 && rowLength > std::numeric_limits<uint32_t>::max()) { return false; }
+    outBufferRowLength = desc.bufferRowPitch == 0
         ? 0
-        : static_cast<uint32_t>(rowPitch / bytesPerTexel) * blockExtent;
+        : static_cast<uint32_t>(rowLength);
 
-    if (bufferSlicePitch != 0) {
-        const uint64_t tightSlicePitch = rowPitch * ((uint64_t(height) + blockExtent - 1) / blockExtent);
-        if (bufferSlicePitch < tightSlicePitch || bufferSlicePitch % rowPitch != 0) {
+    const uint64_t rows = (uint64_t(desc.height) + blockExtent - 1) / blockExtent;
+    if (rowPitch > std::numeric_limits<uint64_t>::max() / rows) { return false; }
+    const uint64_t tightSlicePitch = rowPitch * rows;
+    const uint64_t slicePitch = desc.bufferSlicePitch == 0 ? tightSlicePitch : desc.bufferSlicePitch;
+    if (desc.bufferSlicePitch != 0) {
+        if (slicePitch < tightSlicePitch || slicePitch % rowPitch != 0) {
             return false;
         }
-        outBufferImageHeight = static_cast<uint32_t>(bufferSlicePitch / rowPitch) * blockExtent;
+        const uint64_t imageHeight = slicePitch / rowPitch * blockExtent;
+        if (imageHeight > std::numeric_limits<uint32_t>::max()) { return false; }
+        outBufferImageHeight = static_cast<uint32_t>(imageHeight);
     }
-    return true;
+    // The last row needs only its texels, not its trailing row/slice padding.
+    // Divide before multiplying to reject oversized regions without overflow.
+    const uint64_t lastSliceBytes = rowPitch * (rows - 1) + tightRowPitch;
+    const uint64_t availableBytes = desc.buffer->desc().size - desc.bufferOffset;
+    const uint64_t slices = uint64_t(desc.depth) * desc.layerCount;
+    return lastSliceBytes <= availableBytes && slices - 1 <= (availableBytes - lastSliceBytes) / slicePitch;
 }
 
 VkImageType toVkImageType(TextureType type)
@@ -4893,23 +4898,24 @@ Result<> CommandBuffer::processDecompressionBuffers(std::span<const BufferDecomp
     return {};
 }
 
-void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
+Result<> CommandBuffer::copyTexture(const TextureCopyDesc& desc)
 {
-    if (impl_ == nullptr ||
+    if (impl_ == nullptr || !recording_ ||
         desc.source == nullptr ||
         desc.source->impl_ == nullptr ||
         desc.destination == nullptr ||
         desc.destination->impl_ == nullptr ||
         desc.width == 0 ||
         desc.height == 0 ||
-        desc.depth == 0) {
-        return;
+        desc.depth == 0 || desc.source->impl_->device != impl_->device ||
+        desc.destination->impl_->device != impl_->device) {
+        return makeError(Error::InvalidArgument);
     }
 
     const VkImageAspectFlags sourceAspect = aspectForFormat(desc.source->impl_->desc.format);
     const VkImageAspectFlags destinationAspect = aspectForFormat(desc.destination->impl_->desc.format);
     if (sourceAspect != destinationAspect) {
-        return;
+        return makeError(Error::InvalidArgument);
     }
 
     VkImageCopy copyRegion{
@@ -4938,21 +4944,22 @@ void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
         imageLayout(TextureLayout::TransferDestination, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         1,
         &copyRegion);
+    return {};
 }
 
-void CommandBuffer::copyTextureToBuffer(const BufferTextureRegion& region)
+Result<> CommandBuffer::copyTextureToBuffer(const BufferTextureRegion& region)
 {
-    copyBufferTexture(region, BufferTextureCopyDirection::ToBuffer);
+    return copyBufferTexture(region, BufferTextureCopyDirection::ToBuffer);
 }
 
-void CommandBuffer::copyBufferToTexture(const BufferTextureRegion& region)
+Result<> CommandBuffer::copyBufferToTexture(const BufferTextureRegion& region)
 {
-    copyBufferTexture(region, BufferTextureCopyDirection::ToTexture);
+    return copyBufferTexture(region, BufferTextureCopyDirection::ToTexture);
 }
 
-void CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, BufferTextureCopyDirection direction)
+Result<> CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, BufferTextureCopyDirection direction)
 {
-    if (impl_ == nullptr ||
+    if (impl_ == nullptr || !recording_ ||
         desc.texture == nullptr ||
         desc.texture->impl_ == nullptr ||
         desc.buffer == nullptr ||
@@ -4960,21 +4967,15 @@ void CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, BufferTex
         desc.width == 0 ||
         desc.height == 0 ||
         desc.depth == 0 ||
-        desc.layerCount == 0 || desc.bufferOffset >= desc.buffer->desc().size) {
-        return;
+        desc.layerCount == 0 || desc.bufferOffset >= desc.buffer->desc().size ||
+        desc.texture->impl_->device != impl_->device || desc.buffer->impl_->device != impl_->device) {
+        return makeError(Error::InvalidArgument);
     }
 
     uint32_t bufferRowLength = 0;
     uint32_t bufferImageHeight = 0;
-    if (!fillBufferImageLayout(
-            desc.texture->impl_->desc.format,
-            desc.width,
-            desc.height,
-            desc.bufferRowPitch,
-            desc.bufferSlicePitch,
-            bufferRowLength,
-            bufferImageHeight)) {
-        return;
+    if (!fillBufferImageLayout(desc, bufferRowLength, bufferImageHeight)) {
+        return makeError(Error::InvalidArgument);
     }
 
     const VkDeviceMemoryImageCopyKHR copyRegion{
@@ -5008,6 +5009,7 @@ void CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, BufferTex
     } else {
         impl_->device->functions.vkCmdCopyImageToMemoryKHR(impl_->commandBuffer, &copyInfo);
     }
+    return {};
 }
 
 void CommandBuffer::hostWriteBarrier()
@@ -5031,14 +5033,16 @@ void CommandBuffer::hostWriteBarrier()
     vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
 }
 
-void CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color)
+Result<> CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color)
 {
-    if (impl_ == nullptr || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE) {
-        return;
+    if (impl_ == nullptr || !recording_ || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE ||
+        texture.impl_->device != impl_->device ||
+        (layout != TextureLayout::TransferDestination && layout != TextureLayout::General)) {
+        return makeError(Error::InvalidArgument);
     }
     const TextureDesc& desc = texture.impl_->desc;
     if (aspectForFormat(desc.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
-        return;
+        return makeError(Error::InvalidArgument);
     }
 
     const VkClearColorValue clearValue{{color.r, color.g, color.b, color.a}};
@@ -5056,6 +5060,7 @@ void CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, co
         &clearValue,
         1,
         &range);
+    return {};
 }
 
 Result<> CommandBuffer::useNativeTextureView(TextureView& view)
@@ -5170,12 +5175,19 @@ void CommandBuffer::endRendering()
     }
 }
 
-void CommandBuffer::setViewport(const Viewport& viewport)
+Result<> CommandBuffer::setViewport(const Viewport& viewport)
 {
-    if (impl_ == nullptr) {
-        return;
+    if (impl_ == nullptr || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        return makeError(Error::InvalidArgument);
     }
 
+    if (!std::isfinite(viewport.x) || !std::isfinite(viewport.y) ||
+        !std::isfinite(viewport.width) || !std::isfinite(viewport.height) ||
+        !std::isfinite(viewport.minDepth) || !std::isfinite(viewport.maxDepth) ||
+        viewport.width <= 0 || viewport.height == 0 || viewport.minDepth < 0 || viewport.minDepth > 1 ||
+        viewport.maxDepth < 0 || viewport.maxDepth > 1) {
+        return makeError(Error::InvalidArgument);
+    }
     VkViewport vkViewport{
         .x = viewport.x,
         .y = viewport.y,
@@ -5190,6 +5202,7 @@ void CommandBuffer::setViewport(const Viewport& viewport)
     if (impl_->currentGraphicsShaderObjectBound && impl_->device->functions.vkCmdSetViewportWithCountEXT != nullptr) {
         impl_->device->functions.vkCmdSetViewportWithCountEXT(impl_->commandBuffer, 1, &vkViewport);
     }
+    return {};
 }
 
 void CommandBuffer::setScissor(const Rect& scissor)
@@ -5540,52 +5553,62 @@ Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& r
     } catch (...) { restore(); throw; }
 }
 
-void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
+Result<> CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 {
-    if (impl_ != nullptr) {
-        impl_->device->functions.vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
-        if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+    if (!impl_ || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        return makeError(Error::InvalidArgument);
     }
+    impl_->device->functions.vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+    if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+    return {};
 }
 
-void CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+Result<> CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 {
-    if (impl_ == nullptr || groupCountX == 0 || groupCountY == 0 || groupCountZ == 0) {
-        return;
+    if (impl_ == nullptr || !recording_ || groupCountX == 0 || groupCountY == 0 || groupCountZ == 0 ||
+        !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        return makeError(Error::InvalidArgument);
     }
 #ifdef VK_EXT_mesh_shader
-    if (impl_->device->functions.vkCmdDrawMeshTasksEXT != nullptr) {
-        impl_->device->functions.vkCmdDrawMeshTasksEXT(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
-        if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+    if (!impl_->device->capabilities.meshShader || impl_->device->functions.vkCmdDrawMeshTasksEXT == nullptr) {
+        return makeError(Error::Unsupported);
     }
+    impl_->device->functions.vkCmdDrawMeshTasksEXT(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
+    if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+#else
+    return makeError(Error::Unsupported);
 #endif
+    return {};
 }
 
-void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
+Result<> CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
 {
-    if (impl_ == nullptr ||
+    if (impl_ == nullptr || !recording_ ||
         buffer.impl_ == nullptr ||
         buffer.impl_->device != impl_->device ||
-        !impl_->device->capabilities.meshShader ||
         (impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 ||
         !hasFlag(buffer.impl_->desc.usage, BufferUsageBits::Indirect) ||
         (offset & 3u) != 0 ||
         offset > buffer.impl_->desc.size ||
         sizeof(VkDrawMeshTasksIndirectCommandEXT) > buffer.impl_->desc.size - offset) {
-        return;
+        return makeError(Error::InvalidArgument);
     }
 #ifdef VK_EXT_mesh_shader
+    if (!impl_->device->capabilities.meshShader || impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT == nullptr) {
+        return makeError(Error::Unsupported);
+    }
     const VkDrawIndirect2InfoKHR info{
         .sType = VK_STRUCTURE_TYPE_DRAW_INDIRECT_2_INFO_KHR,
         .addressRange = {buffer.deviceAddress() + offset, sizeof(VkDrawMeshTasksIndirectCommandEXT), 0},
         .addressFlags = detail::BufferAddressCommandAccess::flags(buffer),
         .drawCount = 1,
     };
-    if (impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT != nullptr) {
-        impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
-        if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
-    }
+    impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
+    if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+#else
+    return makeError(Error::Unsupported);
 #endif
+    return {};
 }
 
 void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)

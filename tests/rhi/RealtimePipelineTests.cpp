@@ -263,10 +263,10 @@ public:
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
             .buffer = context.outputBuffer("pixels").buffer(), .bufferRowPitch = context.width() * 4,
             .bufferSlicePitch = context.width() * context.height() * 4,
-            .width = context.width(), .height = context.height()});
+            .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
         auto* motion = context.inputTexture("motion").view();
         auto* depth = context.inputTexture("depth").view();
         const render::ComputeDispatchBinding bindings[] = {

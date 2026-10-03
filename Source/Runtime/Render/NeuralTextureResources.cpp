@@ -684,7 +684,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
         if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return commandResult; }
         set.state = ResourceState::TransferDestination;
         for (const Impl::TextureUpload& upload : set.uploads) {
-            commandBuffer.copyBufferToTexture(BufferTextureRegion{
+            if (auto commandResult = commandBuffer.copyBufferToTexture(BufferTextureRegion{
                 .texture = set.texture.get(),
                 .buffer = set.uploadBuffer.get(),
                 .bufferOffset = upload.bufferOffset,
@@ -696,7 +696,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
                 .mipLevel = upload.mipLevel,
                 .baseLayer = upload.layer,
                 .layerCount = 1,
-            });
+            }); !commandResult) { return commandResult; }
         }
         TextureBarrierDesc toShaderRead{
             .texture = set.texture.get(),

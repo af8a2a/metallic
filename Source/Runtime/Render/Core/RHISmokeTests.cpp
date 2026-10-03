@@ -257,17 +257,17 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .renderArea = renderArea,
         .colorAttachments = {&colorAttachment, 1},
     }); !commandResult) { return commandResult; }
-    commandBuffer->setViewport(Viewport{
+    if (auto commandResult = commandBuffer->setViewport(Viewport{
         .x = 0.0f,
         .y = 0.0f,
         .width = static_cast<float>(width),
         .height = static_cast<float>(height),
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
-    });
+    }); !commandResult) { return commandResult; }
     commandBuffer->setScissor(renderArea);
     if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return commandResult; }
-    commandBuffer->draw(3);
+    if (auto commandResult = commandBuffer->draw(3); !commandResult) { return commandResult; }
     commandBuffer->endRendering();
 
     TextureBarrierDesc toTransfer{
@@ -279,7 +279,7 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
     };
     if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return commandResult; }
-    commandBuffer->copyTextureToBuffer(BufferTextureRegion{
+    if (auto commandResult = commandBuffer->copyTextureToBuffer(BufferTextureRegion{
         .texture = colorTexture.get(),
         .buffer = readbackBuffer.get(),
         .width = width,
@@ -287,7 +287,7 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .depth = 1,
         .mipLevel = 0,
         .baseLayer = 0,
-    });
+    }); !commandResult) { return commandResult; }
 
     result = commandBuffer->end();
     if (!result) {
@@ -682,19 +682,19 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .renderArea = renderArea,
                         .colorAttachments = {&outputAttachment, 1},
                     }); !commandResult) { return 1; }
-                    commandBuffer->setViewport(Viewport{
+                    if (auto commandResult = commandBuffer->setViewport(Viewport{
                         .x = 0.0f,
                         .y = 0.0f,
                         .width = static_cast<float>(kWidth),
                         .height = static_cast<float>(kHeight),
                         .minDepth = 0.0f,
                         .maxDepth = 1.0f,
-                    });
+                    }); !commandResult) { return 1; }
                     commandBuffer->setScissor(renderArea);
                     if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return 1; }
                     commandBuffer->bindBindlessHeap(*bindlessHeap);
                     commandBuffer->pushBindlessData(&sourceImageHandle.shaderIndex, sizeof(sourceImageHandle.shaderIndex));
-                    commandBuffer->draw(3);
+                    if (auto commandResult = commandBuffer->draw(3); !commandResult) { return 1; }
                     commandBuffer->endRendering();
 
                     TextureBarrierDesc outputToTransfer{
@@ -706,7 +706,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
                     };
                     if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = {&outputToTransfer, 1}}); !commandResult) { return 1; }
-                    commandBuffer->copyTextureToBuffer(BufferTextureRegion{
+                    if (auto commandResult = commandBuffer->copyTextureToBuffer(BufferTextureRegion{
                         .texture = outputTexture.get(),
                         .buffer = readbackBuffer.get(),
                         .width = kWidth,
@@ -714,7 +714,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .depth = 1,
                         .mipLevel = 0,
                         .baseLayer = 0,
-                    });
+                    }); !commandResult) { return 1; }
 
                     result = commandBuffer->end();
                     if (!checkResult(result, "commandBuffer end")) {

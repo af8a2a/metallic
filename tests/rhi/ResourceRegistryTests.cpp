@@ -1545,14 +1545,14 @@ public:
                 // Simulate the SDK/DGC boundary, then explicitly establish the new state.
                 if (i == 1) { render::vulkan::notifyExternalDescriptorSetBinding(command); }
                 REG_REQUIRE(command.bindExecution(executions[i]));
-                command.setViewport({0, 0, float(extent), float(extent), 0, 1});
+                REG_REQUIRE(command.setViewport({0, 0, float(extent), float(extent), 0, 1}));
                 command.setScissor({0, 0, extent, extent});
-                command.draw(3);
+                REG_REQUIRE(command.draw(3));
                 command.endRendering();
                 barrier.oldLayout = render::TextureLayout::ColorAttachment; barrier.before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite};
                 barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
                 REG_REQUIRE(command.synchronize({.textures = {&barrier, 1}}));
-                command.copyTextureToBuffer({.texture = texture.get(), .buffer = readbacks[i].get(), .width = extent, .height = extent});
+                REG_REQUIRE(command.copyTextureToBuffer({.texture = texture.get(), .buffer = readbacks[i].get(), .width = extent, .height = extent}));
                 view.reset(); texture.reset();
                 REG_CHECK(!allocations[i].expired());
             }

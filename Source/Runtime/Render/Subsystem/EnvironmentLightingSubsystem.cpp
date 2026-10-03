@@ -631,7 +631,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     }); !commandResult) { return commandResult; }
 
     for (uint32_t mip = 0; mip < mipCount; ++mip) {
-        context.commandBuffer->copyBufferToTexture(BufferTextureRegion{
+        if (auto commandResult = context.commandBuffer->copyBufferToTexture(BufferTextureRegion{
             .texture = next->radiance.get(),
             .buffer = staging->radiance.get(),
             .bufferOffset = decoded.mipOffsets[mip] * sizeof(float),
@@ -639,7 +639,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
             .height = std::max(next->height >> mip, 1u),
             .depth = 1,
             .mipLevel = mip,
-        });
+        }); !commandResult) { return commandResult; }
     }
 
     TextureBarrierDesc textureToRead{

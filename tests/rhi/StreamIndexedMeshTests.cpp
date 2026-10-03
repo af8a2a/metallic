@@ -216,7 +216,7 @@ public:
                         .colorAttachments = {&color, 1},
                         .depthStencilAttachment = &depth,
                     }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-                    commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
+                    if (auto commandResult = commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f}); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
                     commands->setScissor({.width = width, .height = height});
                     commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipelines[(reversed ? 2 : 0) + indexed])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     MeshletStreamUserPush push{.pageBuffer = handles[Pages].shaderIndex, .activeGroupBuffer = handles[Groups].shaderIndex,
@@ -226,7 +226,7 @@ public:
                         .hybridQueueBuffer = hybridQueue ? handles[Queue].shaderIndex : UINT32_MAX,
                         .hybridClusterBuffer = prebinned && (!fallback || indexed != 0) ? handles[Bins].shaderIndex : UINT32_MAX};
                     commands->pushBindlessData(&push, sizeof(push));
-                    commands->drawMeshTasks(prebinned && indexed ? capacity : capacity * 2);
+                    if (auto commandResult = commands->drawMeshTasks(prebinned && indexed ? capacity : capacity * 2); !commandResult) { return RHITestResult::fail(std::string("drawMeshTasks failed: ") + render::resultToString(commandResult)); }
                     commands->endRendering();
                     if (hybridQueue) {
                         MESH_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
@@ -259,7 +259,7 @@ public:
                             .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                         };
                         if (auto commandResult = commands->synchronize({.textures = {&copy, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                        commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readbacks[i].get(), .width = width, .height = height});
+                        if (auto commandResult = commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readbacks[i].get(), .width = width, .height = height}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                     }
                     MESH_REQUIRE(commands->end());
                     CommandBuffer* list[] = {commands.get()};

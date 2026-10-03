@@ -456,18 +456,18 @@ public:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !commandResult) { return commandResult; }
-        context.commandBuffer().setViewport(render::Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(render::Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         context.commandBuffer().pushBindlessData(&sourceHandle->shaderIndex, sizeof(sourceHandle->shaderIndex));
-        context.commandBuffer().draw(3);
+        if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }
@@ -3354,15 +3354,15 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
-        reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 4)
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA32Sfloat;
+        reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 16)
             .transferWrite().hostReadback();
         return reflection;
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
-            .buffer = context.outputBuffer("data").buffer(), .width = context.width(), .height = context.height()});
+        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+            .buffer = context.outputBuffer("data").buffer(), .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -3377,7 +3377,9 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
         .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
         .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
         .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
-            if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+            // General loader diagnostics are still logged; count command validation here.
+            if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
+                (message.type & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT))) {
                 ++*static_cast<std::atomic_uint*>(target);
             }
         }, &validationErrors}, .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{.preferUnifiedImageLayouts = false}})
@@ -3443,12 +3445,13 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
             }
             auto* output = executor.outputResource("Readback.data");
             if (!output || !output->buffer) { return "cache readback output missing"; }
-            std::array<uint32_t, kWidth * kHeight> pixels{};
+            std::array<std::array<float, 4>, kWidth * kHeight> pixels{};
             if (!readHostBuffer(*output->buffer, pixels.data(), sizeof(pixels))) { return "cache readback map failed"; }
             bool visible = false;
-            for (uint32_t pixel : pixels) {
-                if ((pixel >> 24u) != 255u) { return "cache stages left unwritten output pixels"; }
-                visible = visible || (pixel & 0x00ffffffu) != 0;
+            for (const auto& pixel : pixels) {
+                if (!std::all_of(pixel.begin(), pixel.end(), [](float value) { return std::isfinite(value); }) ||
+                    pixel[3] != 1.0f) { return "cache stages left invalid or unwritten output pixels"; }
+                visible = visible || pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0;
             }
             return visible ? std::string{} : "cache output contains no visible light";
         };
@@ -7295,7 +7298,7 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
             .buffer = readbackBuffer.get(),
             .width = kWidth,
@@ -7303,7 +7306,7 @@ public:
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
-        });
+        }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -8081,7 +8084,7 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
             .buffer = readbackBuffer.get(),
             .width = kWidth,
@@ -8089,7 +8092,7 @@ public:
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
-        });
+        }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -8268,8 +8271,8 @@ public:
         render::BufferTextureRegion visibilityCopy = colorCopy;
         visibilityCopy.texture = rasterVisibility->texture;
         visibilityCopy.buffer = rasterVisibilityReadback.get();
-        rasterCommandBuffer->copyTextureToBuffer(colorCopy);
-        rasterCommandBuffer->copyTextureToBuffer(visibilityCopy);
+        if (auto commandResult = rasterCommandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
+        if (auto commandResult = rasterCommandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
         result = rasterCommandBuffer->end();
         if (!result) {
             return RHITestResult::fail(
@@ -8382,7 +8385,7 @@ public:
                     render::ResourceState::TransferSource);
             }
             if (result) {
-                captureCommandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
+                if (auto commandResult = captureCommandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
                     .texture = captureOutput->texture,
                     .buffer = captureReadback.get(),
                     .width = width,
@@ -8390,7 +8393,7 @@ public:
                     .depth = 1,
                     .mipLevel = 0,
                     .baseLayer = 0,
-                });
+                }); !commandResult) { error = render::resultToString(commandResult); return false; }
                 result = captureCommandBuffer->end();
             }
             if (!result) {
@@ -9060,9 +9063,9 @@ public:
         render::BufferTextureRegion depthCopy = colorCopy;
         depthCopy.texture = depth->texture;
         depthCopy.buffer = depthReadback.get();
-        commandBuffer->copyTextureToBuffer(colorCopy);
-        commandBuffer->copyTextureToBuffer(visibilityCopy);
-        commandBuffer->copyTextureToBuffer(depthCopy);
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(depthCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         const render::BufferBarrierDesc residentRecordsToCopy{
             .buffer = globalViews.meshletDraws.buffer,
@@ -9268,9 +9271,9 @@ public:
                 }
             }
             if (result) {
-                commandBuffer->copyTextureToBuffer(colorCopy);
-                commandBuffer->copyTextureToBuffer(visibilityCopy);
-                commandBuffer->copyTextureToBuffer(depthCopy);
+                if (auto commandResult = commandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commandBuffer->copyTextureToBuffer(depthCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                 result = commandBuffer->end();
             }
             if (result) {

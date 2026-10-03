@@ -226,11 +226,11 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
         .colorAttachments = {&color, 1},
         .depthStencilAttachment = &z,
     }); !rendering) { return rendering; }
-    commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f});
+    if (auto commandResult = commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f}); !commandResult) { return commandResult; }
     commands.setScissor(area);
     if (auto commandResult = commands.bindExecution((resolve_[push_.reversedZ])->execution()); !commandResult) { return commandResult; }
     commands.pushBindlessData(&push_, sizeof(push_));
-    commands.draw(3);
+    if (auto commandResult = commands.draw(3); !commandResult) { return commandResult; }
     commands.endRendering();
     commands.endDebugLabel();
     initialized_ = true;

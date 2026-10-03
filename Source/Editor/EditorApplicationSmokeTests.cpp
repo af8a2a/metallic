@@ -242,8 +242,8 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
             !device_->createCommandPool(*graphicsQueue_).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
             !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(frame.submissionContext()) ||
             !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
-        commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
-            .width = output->desc.width, .height = output->desc.height});
+        if (auto commandResult = commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
+            .width = output->desc.width, .height = output->desc.height}); !commandResult) { return false; }
         if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
             !commands->end()) { return false; }
         render::CommandBuffer* buffers[] = {commands.get()};
@@ -382,8 +382,8 @@ bool EditorApplication::runSceneSwitchSmokeTest()
             !device_->createCommandPool(*graphicsQueue_).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
             !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(frame.submissionContext()) ||
             !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
-        commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
-            .width = output->desc.width, .height = output->desc.height});
+        if (auto commandResult = commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
+            .width = output->desc.width, .height = output->desc.height}); !commandResult) { return false; }
         if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
             !commands->end()) { return false; }
         render::CommandBuffer* buffers[] = {commands.get()};

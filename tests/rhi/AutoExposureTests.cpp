@@ -105,8 +105,8 @@ public:
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
-        commands.copyTextureToBuffer({.texture = color.texture(), .buffer = data.buffer(),
-            .bufferOffset = 16 + histogram.desc().size, .width = context.width(), .height = context.height()});
+        if (auto commandResult = commands.copyTextureToBuffer({.texture = color.texture(), .buffer = data.buffer(),
+            .bufferOffset = 16 + histogram.desc().size, .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
         return {};
     }
 };

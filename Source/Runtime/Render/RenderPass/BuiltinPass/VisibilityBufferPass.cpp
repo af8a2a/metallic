@@ -2281,14 +2281,14 @@ private:
                 .colorAttachments = {colors, tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u},
                 .depthStencilAttachment = &depthAttachment,
             }); !rendering) { return rendering; }
-            commands.setViewport(Viewport{
+            if (auto commandResult = commands.setViewport(Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
                 .width = static_cast<float>(frameWidth_),
                 .height = static_cast<float>(frameHeight_),
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
-            });
+            }); !commandResult) { return commandResult; }
             commands.setScissor(renderArea);
             commands.bindBindlessHeap(*registry_->heap());
             for (uint32_t bucketIndex = 0;
@@ -2302,9 +2302,9 @@ private:
                     makePush(passIndex, bucketIndex, projectWithCullingCamera);
                 commands.pushBindlessData(&push, sizeof(push));
                 if (prebin) {
-                    commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments(), bucketIndex * 3u * sizeof(uint32_t));
+                    if (auto commandResult = commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments(), bucketIndex * 3u * sizeof(uint32_t)); !commandResult) { return commandResult; }
                 } else {
-                    commands.drawMeshTasksIndirect(residentLods_[activeFrameSlot_]->arguments(), tessellationEnabled() ? 24u : 12u);
+                    if (auto commandResult = commands.drawMeshTasksIndirect(residentLods_[activeFrameSlot_]->arguments(), tessellationEnabled() ? 24u : 12u); !commandResult) { return commandResult; }
                 }
             }
             commands.endRendering();
@@ -2411,14 +2411,14 @@ private:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
-        commandBuffer.setViewport(Viewport{
+        if (auto commandResult = commandBuffer.setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(frameWidth_),
             .height = static_cast<float>(frameHeight_),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         commandBuffer.setScissor(renderArea);
         // Stream rasterization binds its own heap; the frozen-camera path does
         // not run a final viewport HZB dispatch to restore this pass's heap.
@@ -2438,7 +2438,7 @@ private:
         };
         commandBuffer.pushBindlessData(&push, sizeof(push));
         if (previousParams_.mode != kVisibilityModeNone) {
-            commandBuffer.draw(3);
+            if (auto commandResult = commandBuffer.draw(3); !commandResult) { return commandResult; }
         }
         commandBuffer.endRendering();
         return {};
@@ -3011,22 +3011,22 @@ private:
                 .colorAttachments = {colors, tessellationEnabled() ? 3u : 1u},
                 .depthStencilAttachment = &depthAttachment,
             }); !rendering) { return rendering; }
-            commands.setViewport(Viewport{
+            if (auto commandResult = commands.setViewport(Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
                 .width = static_cast<float>(frameWidth_),
                 .height = static_cast<float>(frameHeight_),
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
-            });
+            }); !commandResult) { return commandResult; }
             commands.setScissor(renderArea);
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution()); !commandResult) { return commandResult; }
             commands.pushBindlessData(&push, sizeof(push));
             if (prebin) {
-                commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments());
+                if (auto commandResult = commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments()); !commandResult) { return commandResult; }
             } else {
-                streamRuntime_->cmdDrawMeshTasks(commands, tessellationEnabled());
+                if (auto commandResult = streamRuntime_->cmdDrawMeshTasks(commands, tessellationEnabled()); !commandResult) { return commandResult; }
             }
             commands.endRendering();
             commands.endDebugLabel();

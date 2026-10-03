@@ -3185,11 +3185,12 @@ Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint3
     return {};
 }
 
-void MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation) const
+Result<> MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation) const
 {
-    if (ready() && drawTaskCount() > 0 && prepareImmutableMetadataRead(commandBuffer)) {
-        commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGPUDrawIndirect) : 0u);
-    }
+    if (!ready() || drawTaskCount() == 0) { return {}; }
+    auto result = prepareImmutableMetadataRead(commandBuffer);
+    return result ? commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGPUDrawIndirect) : 0u)
+                  : result;
 }
 
 uint32_t MeshletStreamRuntime::computeMaxActiveGroups(uint32_t capacity) const

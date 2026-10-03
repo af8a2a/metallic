@@ -152,7 +152,7 @@ public:
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                     };
                     if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    commands->copyBufferToTexture({.texture = textures[i].get(), .buffer = uploads[i].get(), .width = width, .height = 1});
+                    if (auto commandResult = commands->copyBufferToTexture({.texture = textures[i].get(), .buffer = uploads[i].get(), .width = width, .height = 1}); !commandResult) { return RHITestResult::fail(std::string("copyBufferToTexture failed: ") + render::resultToString(commandResult)); }
                     barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; barrier.newLayout = TextureLayout::ShaderRead; barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
                     if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
@@ -167,16 +167,16 @@ public:
                 const RenderingAttachmentDesc color{.view = views[2].get(), .layout = TextureLayout::ColorAttachment,
                     .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
                 if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = {&color, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-                commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f});
+                if (auto commandResult = commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f}); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
                 commands->setScissor({.width = width, .height = 1});
                 commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 const VisibilityBufferCompositeUserPush push{.paramsBuffer = handles[Params].shaderIndex, .visibilityImage = images[0].shaderIndex,
                     .depthImage = images[1].shaderIndex, .residentRecords = handles[Resident].shaderIndex, .meshletBuffer = handles[Clusters].shaderIndex,
                     .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
-                commands->pushBindlessData(&push, sizeof(push)); commands->draw(3); commands->endRendering();
+                commands->pushBindlessData(&push, sizeof(push)); if (auto commandResult = commands->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); } commands->endRendering();
                 barrier.oldLayout = TextureLayout::ColorAttachment; barrier.before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite}; barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1});
+                if (auto commandResult = commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                 DEBUG_REQUIRE(commands->end());
                 CommandBuffer* list[] = {commands.get()};
                 DEBUG_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));

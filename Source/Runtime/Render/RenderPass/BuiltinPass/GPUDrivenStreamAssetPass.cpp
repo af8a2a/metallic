@@ -1417,14 +1417,14 @@ private:
             .colorAttachments = {&attachment, 1},
             .depthStencilAttachment = &depthAttachment,
         }); !rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         if (streamRuntime_->drawTaskCount() > 0) {
             context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
@@ -1432,7 +1432,7 @@ private:
             MeshletStreamUserPush push = streamRuntime_->userPush();
             push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
-            streamRuntime_->cmdDrawMeshTasks(context.commandBuffer());
+            if (auto commandResult = streamRuntime_->cmdDrawMeshTasks(context.commandBuffer()); !commandResult) { return commandResult; }
         }
         context.commandBuffer().endRendering();
         return {};
@@ -1474,20 +1474,20 @@ private:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(frameWidth_),
             .height = static_cast<float>(frameHeight_),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
         if (auto commandResult = context.commandBuffer().bindExecution((compositePipeline_)->execution()); !commandResult) { return commandResult; }
         const MeshletStreamUserPush push = streamRuntime_->userPush();
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().draw(3u, 1u, 0u, 0u);
+        if (auto commandResult = context.commandBuffer().draw(3u, 1u, 0u, 0u); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }

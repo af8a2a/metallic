@@ -670,7 +670,7 @@ struct StreamerImpl {
             }
 
             for (const TextureCopyRequest& request : textureRequests) {
-                commandBuffer.copyBufferToTexture(request.copy);
+                if (auto commandResult = commandBuffer.copyBufferToTexture(request.copy); !commandResult) { return commandResult; }
             }
             if (!decompressions.empty()) {
                 if (phase) { phase("Decompression input barrier"); }

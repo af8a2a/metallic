@@ -517,7 +517,7 @@ Result<> NRDRuntime::record(uint32_t index, CommandBuffer& commands)
         result = recordBoundary(0);
         if (!result) { return result; }
         for (const auto& use : accessPlan->passes.front().uses) {
-            commands.clearColorTexture(*bindings[use.resource].texture, TextureLayout::TransferDestination, {0, 0, 0, 0});
+            if (auto commandResult = commands.clearColorTexture(*bindings[use.resource].texture, TextureLayout::TransferDestination, {0, 0, 0, 0}); !commandResult) { return commandResult; }
         }
         impl_->clearPending = false;
     }

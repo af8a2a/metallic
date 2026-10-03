@@ -27,12 +27,12 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto& command = context.commandBuffer();
-        command.clearColorTexture(*context.outputTexture("color").texture(), render::TextureLayout::TransferDestination,
-            {0.25f, 0.5f, 0.75f, 1.0f});
-        command.clearColorTexture(*context.outputTexture("motion").texture(), render::TextureLayout::TransferDestination,
-            {0.0f, 0.0f, 0.0f, 0.0f});
-        command.clearColorTexture(*context.outputTexture("depth").texture(), render::TextureLayout::TransferDestination,
-            {0.5f, 0.0f, 0.0f, 0.0f});
+        if (auto commandResult = command.clearColorTexture(*context.outputTexture("color").texture(), render::TextureLayout::TransferDestination,
+            {0.25f, 0.5f, 0.75f, 1.0f}); !commandResult) { return commandResult; }
+        if (auto commandResult = command.clearColorTexture(*context.outputTexture("motion").texture(), render::TextureLayout::TransferDestination,
+            {0.0f, 0.0f, 0.0f, 0.0f}); !commandResult) { return commandResult; }
+        if (auto commandResult = command.clearColorTexture(*context.outputTexture("depth").texture(), render::TextureLayout::TransferDestination,
+            {0.5f, 0.0f, 0.0f, 0.0f}); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -49,10 +49,10 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().copyTextureToBuffer({
+        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({
             .texture = context.inputTexture("color").texture(), .buffer = context.outputBuffer("pixels").buffer(),
             .bufferRowPitch = context.width() * 4, .bufferSlicePitch = context.width() * context.height() * 4,
-            .width = context.width(), .height = context.height()});
+            .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
         return {};
     }
 };

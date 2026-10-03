@@ -4751,7 +4751,7 @@ Result<> RenderGraphPreviewRenderer::render(
     if (!result) {
         return result;
     }
-    impl_->commandBuffer->copyTextureToBuffer(BufferTextureRegion{
+    if (auto commandResult = impl_->commandBuffer->copyTextureToBuffer(BufferTextureRegion{
         .texture = output->texture,
         .buffer = impl_->readbackBuffer.get(),
         .width = outputWidth,
@@ -4759,7 +4759,7 @@ Result<> RenderGraphPreviewRenderer::render(
         .depth = 1,
         .mipLevel = 0,
         .baseLayer = 0,
-    });
+    }); !commandResult) { return commandResult; }
 
     result = impl_->commandBuffer->end();
     if (!result) {

@@ -92,10 +92,10 @@ public:
     {
         const auto source = context.inputTexture("color");
         const uint32_t bytes = source.desc().format == render::Format::RGBA16Sfloat ? 8 : 4;
-        context.commandBuffer().copyTextureToBuffer({.texture = source.texture(),
+        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({.texture = source.texture(),
             .buffer = context.outputBuffer("pixels").buffer(), .bufferRowPitch = context.width() * bytes,
             .bufferSlicePitch = context.width() * context.height() * bytes,
-            .width = context.width(), .height = context.height()});
+            .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
         return {};
     }
 };

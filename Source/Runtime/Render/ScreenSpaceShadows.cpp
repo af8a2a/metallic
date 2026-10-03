@@ -297,7 +297,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         result = enterStage(0);
         if (!result) { return makeError(result.error()); }
         for (size_t i = 0; i < accessResources.size(); ++i) {
-            commands.clearColorTexture(*state->textures[i], TextureLayout::TransferDestination, {1, 1, 1, 1});
+            if (auto commandResult = commands.clearColorTexture(*state->textures[i], TextureLayout::TransferDestination, {1, 1, 1, 1}); !commandResult) { return makeError(commandResult.error()); }
         }
     }
     profile.next("Prepare dispatch bindings");

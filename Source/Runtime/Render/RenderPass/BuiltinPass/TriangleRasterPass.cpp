@@ -75,18 +75,18 @@ public:
             .colorAttachments = {&attachment, 1},
         });
         if (!rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         auto bound = context.commandBuffer().bindExecution(execution_);
         if (!bound) { context.commandBuffer().endRendering(); return bound; }
-        context.commandBuffer().draw(3);
+        if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }

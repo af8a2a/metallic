@@ -117,23 +117,23 @@ public:
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 3, 0, layers}};
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
             for (const auto& r : regions) {
-                commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = r.offset,
+                CASE_REQUIRE(commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = r.offset,
                     .bufferRowPitch = r.row, .bufferSlicePitch = r.slice, .width = r.width, .height = r.height,
-                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer});
+                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}));
             }
             barrier.oldLayout = TextureLayout::TransferDestination;
             barrier.before = barrier.after;
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-            commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = size,
+            CASE_REQUIRE(commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = size,
                 .textureOffsetX = 1, .textureOffsetY = 1, .textureOffsetZ = int32_t(targetZ),
-                .width = 3, .height = 2, .depth = 1, .mipLevel = target.mip, .baseLayer = target.layer});
+                .width = 3, .height = 2, .depth = 1, .mipLevel = target.mip, .baseLayer = target.layer}));
             barrier.newLayout = TextureLayout::TransferSource;
             barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
             for (const auto& r : regions) {
-                commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .bufferOffset = r.offset,
+                CASE_REQUIRE(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .bufferOffset = r.offset,
                     .bufferRowPitch = r.row, .bufferSlicePitch = r.slice, .width = r.width, .height = r.height,
-                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer});
+                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}));
             }
             CASE_REQUIRE(recording.submitAndWait());
             const std::string prefix = volume ? "volume" : "array";
@@ -243,15 +243,15 @@ public:
         CASE_REQUIRE(commands.beginRendering({.renderArea = {0, 0, width, height}, .colorAttachments = {&attachment, 1}}));
         for (uint32_t i = 0; i < 3; ++i) {
             CASE_REQUIRE(commands.bindExecution(i == 1 ? (*shaders)->execution() : (*pipeline)->execution()));
-            commands.setViewport({float(i * 13), 0, 13, float(height), 0, 1});
+            CASE_REQUIRE(commands.setViewport({float(i * 13), 0, 13, float(height), 0, 1}));
             commands.setScissor({int32_t(i * 13 + 1), 1, 11, height - 2});
-            commands.draw(3);
+            CASE_REQUIRE(commands.draw(3));
         }
         commands.endRendering();
         barrier.oldLayout = TextureLayout::ColorAttachment; barrier.newLayout = TextureLayout::TransferSource;
         barrier.before = barrier.after; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
         CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-        commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .width = width, .height = height});
+        CASE_REQUIRE(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .width = width, .height = height}));
         CASE_REQUIRE(recording.submitAndWait());
         std::vector<std::byte> expected(width * height * 4);
         for (uint32_t y = 0; y < height; ++y) {
@@ -393,8 +393,8 @@ public:
                     .before = iteration ? SyncScope{PipelineStageBits::ComputeShader, AccessBits::ShaderRead} : SyncScope{},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 1, 0, 1}};
                 CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-                commands.clearColorTexture(*images[i], TextureLayout::TransferDestination,
-                    i == iteration ? ColorValue{1, 0, 0, 1} : ColorValue{0, 1, 0, 1});
+                CASE_REQUIRE(commands.clearColorTexture(*images[i], TextureLayout::TransferDestination,
+                    i == iteration ? ColorValue{1, 0, 0, 1} : ColorValue{0, 1, 0, 1}));
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.newLayout = TextureLayout::ShaderRead;
                 barrier.before = barrier.after; barrier.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
                 CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));

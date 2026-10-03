@@ -164,8 +164,8 @@ public:
             RenderGraphStageUse{"privateShadow", RenderGraphResourceAccess::TextureTransferRead},
             RenderGraphStageUse{"shadow", RenderGraphResourceAccess::TextureTransferWrite}};
         const std::array stages{RenderGraphStage{"Publish shadow", uses, [&](CommandBuffer& stageCommands) -> Result<> {
-            stageCommands.copyTexture({.source = shadow.texture, .destination = output.texture(),
-                .width = context.width(), .height = context.height(), .depth = 1});
+            if (auto commandResult = stageCommands.copyTexture({.source = shadow.texture, .destination = output.texture(),
+                .width = context.width(), .height = context.height(), .depth = 1}); !commandResult) { return commandResult; }
             return {};
         }}};
         result = context.executeStages(stages, {}, imports);

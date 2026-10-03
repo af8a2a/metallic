@@ -504,7 +504,7 @@ private:
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[0], bindings);
         if (!result) { return result; }
 
-        commandBuffer.copyBufferToTexture(BufferTextureRegion{
+        if (auto commandResult = commandBuffer.copyBufferToTexture(BufferTextureRegion{
             .texture = texture.texture.get(),
             .buffer = texture.uploadBuffer.get(),
             .width = texture.width,
@@ -512,7 +512,7 @@ private:
             .depth = texture.depth,
             .mipLevel = 0,
             .baseLayer = 0,
-        });
+        }); !commandResult) { return commandResult; }
 
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[1], bindings);
         if (!result) { return result; }

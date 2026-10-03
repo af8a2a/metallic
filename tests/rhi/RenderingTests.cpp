@@ -255,7 +255,7 @@ public:
                 .renderArea = renderArea,
                 .colorAttachments = {&colorAttachment, 1},
             }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->setViewport(
+        if (auto commandResult = commandBuffer->setViewport(
             render::Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
@@ -263,10 +263,10 @@ public:
                 .height = static_cast<float>(kHeight),
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
-            });
+            }); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setScissor(renderArea);
         if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->draw(3);
+        if (auto commandResult = commandBuffer->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); }
         commandBuffer->endRendering();
 
         render::TextureBarrierDesc toTransfer{
@@ -278,7 +278,7 @@ public:
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->copyTextureToBuffer(
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(
             render::BufferTextureRegion{
                 .texture = colorTexture.get(),
                 .buffer = readbackBuffer.get(),
@@ -287,7 +287,7 @@ public:
                 .depth = 1,
                 .mipLevel = 0,
                 .baseLayer = 0,
-            });
+            }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -565,7 +565,7 @@ public:
                 .colorAttachments = {&colorAttachment, 1},
                 .depthStencilAttachment = &depthAttachment,
             }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->setViewport(
+        if (auto commandResult = commandBuffer->setViewport(
             render::Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
@@ -573,12 +573,12 @@ public:
                 .height = static_cast<float>(kHeight),
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
-            });
+            }); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setScissor(renderArea);
         if (auto commandResult = commandBuffer->bindExecution((nearGreenPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->draw(3);
+        if (auto commandResult = commandBuffer->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->bindExecution((farRedPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->draw(3);
+        if (auto commandResult = commandBuffer->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); }
         commandBuffer->endRendering();
 
         render::TextureBarrierDesc toTransfer{
@@ -590,7 +590,7 @@ public:
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->copyTextureToBuffer(
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(
             render::BufferTextureRegion{
                 .texture = colorTexture.get(),
                 .buffer = readbackBuffer.get(),
@@ -599,7 +599,7 @@ public:
                 .depth = 1,
                 .mipLevel = 0,
                 .baseLayer = 0,
-            });
+            }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -929,7 +929,7 @@ public:
             }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         if (auto commandResult = commandBuffer->bindExecution((defaultProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->setViewport(
+        if (auto commandResult = commandBuffer->setViewport(
             render::Viewport{
                 .x = 0.0f,
                 .y = 0.0f,
@@ -937,7 +937,7 @@ public:
                 .height = static_cast<float>(kHeight),
                 .minDepth = 0.0f,
                 .maxDepth = 1.0f,
-            });
+            }); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setScissor(renderArea);
 
         MaterialUserPush push{
@@ -948,13 +948,13 @@ public:
             .vertexOffset = 0,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->draw(3);
+        if (auto commandResult = commandBuffer->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); }
 
         if (auto commandResult = commandBuffer->bindExecution((alternateProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.vertexOffset = 3;
         push.materialVariant = 1;
         commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->draw(3);
+        if (auto commandResult = commandBuffer->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); }
         commandBuffer->endRendering();
 
         render::TextureBarrierDesc toTransfer{
@@ -966,14 +966,14 @@ public:
             .range = {.mipCount = 1, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->copyTextureToBuffer(
+        if (auto commandResult = commandBuffer->copyTextureToBuffer(
             render::BufferTextureRegion{
                 .texture = colorTexture.get(),
                 .buffer = readbackBuffer.get(),
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
-            });
+            }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {

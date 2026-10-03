@@ -29,10 +29,10 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().clearColorTexture(*context.outputTexture("source").texture(),
-            render::TextureLayout::TransferDestination, {4.0f, 2.0f, 1.0f, 0.0f});
-        context.commandBuffer().clearColorTexture(*context.outputTexture("previous").texture(),
-            render::TextureLayout::TransferDestination, {0.0f, 2.0f, 3.0f, 0.0f});
+        if (auto commandResult = context.commandBuffer().clearColorTexture(*context.outputTexture("source").texture(),
+            render::TextureLayout::TransferDestination, {4.0f, 2.0f, 1.0f, 0.0f}); !commandResult) { return commandResult; }
+        if (auto commandResult = context.commandBuffer().clearColorTexture(*context.outputTexture("previous").texture(),
+            render::TextureLayout::TransferDestination, {0.0f, 2.0f, 3.0f, 0.0f}); !commandResult) { return commandResult; }
         return {};
     }
 };

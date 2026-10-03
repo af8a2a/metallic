@@ -2620,7 +2620,7 @@ struct ScenePathTraceResources::Impl {
                 return makeError(Error::InvalidArgument);
             }
 
-            commandBuffer.copyBufferToTexture(BufferTextureRegion{
+            if (auto commandResult = commandBuffer.copyBufferToTexture(BufferTextureRegion{
                 .texture = texture.texture.get(),
                 .buffer = texture.uploadBuffer.get(),
                 .bufferOffset = texture.uploadBufferOffset + upload.bufferOffset,
@@ -2629,7 +2629,7 @@ struct ScenePathTraceResources::Impl {
                 .depth = 1,
                 .mipLevel = mipIndex,
                 .baseLayer = 0,
-            });
+            }); !commandResult) { return commandResult; }
         }
 
         texture.uploaded = true;

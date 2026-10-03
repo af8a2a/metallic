@@ -6,6 +6,7 @@
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #include <type_traits>
+#include <limits>
 #include <utility>
 
 namespace metallic::tests {
@@ -522,6 +523,96 @@ public:
         return RHITestResult::pass();
     }
 };
+
+class CommandRecordingResultsTest final : public RHITest {
+public:
+    CommandRecordingResultsTest() { type = RHITestType::Validation; name = "command_recording_results"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        CommandBuffer empty;
+        Texture emptyTexture;
+        Buffer emptyBuffer;
+        const Viewport viewport{0, 0, 16, 16, 0, 1};
+        if (!hasError(empty.copyTexture({}), Error::InvalidArgument) ||
+            !hasError(empty.copyTextureToBuffer({}), Error::InvalidArgument) ||
+            !hasError(empty.copyBufferToTexture({}), Error::InvalidArgument) ||
+            !hasError(empty.clearColorTexture(emptyTexture, TextureLayout::TransferDestination), Error::InvalidArgument) ||
+            !hasError(empty.setViewport(viewport), Error::InvalidArgument) ||
+            !hasError(empty.draw(3), Error::InvalidArgument) ||
+            !hasError(empty.drawMeshTasks(1), Error::InvalidArgument) ||
+            !hasError(empty.drawMeshTasksIndirect(emptyBuffer), Error::InvalidArgument)) {
+            return RHITestResult::fail("empty command objects did not report InvalidArgument");
+        }
+        auto device = createDevice({.applicationName = "Command recording results",
+            .enableValidation = context.enableValidation, .enableMeshShader = false});
+        if (!device) { return RHITestResult::fail(resultToString(device)); }
+        auto pool = (*device)->createCommandPool(*(*device)->getQueue(QueueType::Graphics));
+        if (!pool) { return RHITestResult::fail(resultToString(pool)); }
+        auto commands = (*pool)->createCommandBuffer();
+        auto texture = (*device)->createTexture({.usage = TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,
+            .format = Format::RGBA8Unorm, .width = 16, .height = 16});
+        auto buffer = (*device)->createBuffer({.size = 1024,
+            .usage = BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination | BufferUsageBits::Indirect});
+        if (!commands || !texture || !buffer) { return RHITestResult::fail("command test resource setup failed"); }
+        auto& command = **commands;
+        const BufferTextureRegion valid{.texture = texture->get(), .buffer = buffer->get(), .width = 16, .height = 16};
+        if (!hasError(command.copyBufferToTexture(valid), Error::InvalidArgument) ||
+            !hasError(command.setViewport(viewport), Error::InvalidArgument) ||
+            !hasError(command.draw(3), Error::InvalidArgument)) {
+            return RHITestResult::fail("commands outside recording did not report InvalidArgument");
+        }
+        if (!command.begin()) { return RHITestResult::fail("begin failed"); }
+        auto zeroExtent = valid; zeroExtent.width = 0;
+        auto badOffset = valid; badOffset.bufferOffset = 1024;
+        auto badPitch = valid; badPitch.bufferRowPitch = 1;
+        auto tooSmall = valid; tooSmall.bufferOffset = 4;
+        auto padded = valid; padded.bufferRowPitch = 80;
+        auto overflow = valid; overflow.depth = overflow.layerCount = std::numeric_limits<uint32_t>::max();
+        for (const auto& region : {zeroExtent, badOffset, badPitch, tooSmall, padded, overflow}) {
+            if (!hasError(command.copyBufferToTexture(region), Error::InvalidArgument) ||
+                !hasError(command.copyTextureToBuffer(region), Error::InvalidArgument)) {
+                return RHITestResult::fail("invalid copy region did not report InvalidArgument");
+            }
+        }
+        if (!hasError(command.copyTexture({.source = texture->get(), .destination = texture->get()}), Error::InvalidArgument) ||
+            !hasError(command.clearColorTexture(**texture, TextureLayout::ShaderRead), Error::InvalidArgument)) {
+            return RHITestResult::fail("invalid texture command did not report InvalidArgument");
+        }
+        for (const float width : {0.0f, -1.0f, std::numeric_limits<float>::quiet_NaN()}) {
+            auto invalid = viewport; invalid.width = width;
+            if (!hasError(command.setViewport(invalid), Error::InvalidArgument)) {
+                return RHITestResult::fail("invalid viewport did not report InvalidArgument");
+            }
+        }
+        if (!hasError(command.drawMeshTasks(0), Error::InvalidArgument) ||
+            !hasError(command.drawMeshTasks(1), Error::Unsupported) ||
+            !hasError(command.drawMeshTasksIndirect(**buffer, 1), Error::InvalidArgument) ||
+            !hasError(command.drawMeshTasksIndirect(**buffer, 1024), Error::InvalidArgument) ||
+            !hasError(command.drawMeshTasksIndirect(**buffer), Error::Unsupported)) {
+            return RHITestResult::fail("mesh draw argument and capability errors were not distinguished");
+        }
+        auto foreignTexture = context.device.createTexture({.usage = TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,
+            .format = Format::RGBA8Unorm, .width = 16, .height = 16});
+        if (!foreignTexture) { return RHITestResult::fail(resultToString(foreignTexture)); }
+        auto foreignRegion = valid; foreignRegion.texture = foreignTexture->get();
+        if (!hasError(command.copyTextureToBuffer(foreignRegion), Error::InvalidArgument) ||
+            !hasError(command.copyBufferToTexture(foreignRegion), Error::InvalidArgument) ||
+            !hasError(command.copyTexture({.source = foreignTexture->get(), .destination = texture->get(),
+                .width = 16, .height = 16}), Error::InvalidArgument) ||
+            !hasError(command.clearColorTexture(**foreignTexture, TextureLayout::TransferDestination), Error::InvalidArgument)) {
+            return RHITestResult::fail("foreign textures were accepted");
+        }
+        // Vulkan permits negative viewport height and reversed depth; keep these legal cases.
+        if (!command.setViewport({0, 16, 16, -16, 1, 0}) || !command.end() ||
+            !hasError(command.setViewport(viewport), Error::InvalidArgument) ||
+            !hasError(command.draw(3), Error::InvalidArgument)) {
+            return RHITestResult::fail("valid viewport or completed recording contract failed");
+        }
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(CommandRecordingResultsTest);
 
 class VulkanDeviceExtensionsTest final : public RHITest {
 public:

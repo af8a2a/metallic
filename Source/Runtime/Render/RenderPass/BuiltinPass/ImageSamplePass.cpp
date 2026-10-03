@@ -115,19 +115,19 @@ public:
             .renderArea = renderArea,
             .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
-        context.commandBuffer().setViewport(Viewport{
+        if (auto commandResult = context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(context.width()),
             .height = static_cast<float>(context.height()),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         context.commandBuffer().pushBindlessData(&imageHandle_.shaderIndex, sizeof(imageHandle_.shaderIndex));
-        context.commandBuffer().draw(3);
+        if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }

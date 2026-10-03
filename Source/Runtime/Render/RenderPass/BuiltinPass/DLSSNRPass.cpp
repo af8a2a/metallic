@@ -265,9 +265,9 @@ private:
         return sliderProgram_.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 
-    static void copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)
+    static Result<> copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)
     {
-        command.copyTexture({.source = input.texture(), .destination = output.texture(),
+        return command.copyTexture({.source = input.texture(), .destination = output.texture(),
             .width = output.desc().width, .height = output.desc().height, .depth = 1});
     }
 
@@ -303,7 +303,7 @@ private:
         if (!plan) { return makeError(plan.error()); }
         auto result = recordGraphAccessBarriers(command, plan->passes.front(), bindings);
         if (!result) { return result; }
-        copyColor(command, input, output);
+        if (auto result = copyColor(command, input, output); !result) { return result; }
         return recordGraphAccessBarriers(command, plan->passes.back(), bindings);
     }
 
@@ -312,7 +312,7 @@ private:
         const std::array uses{RenderGraphStageUse{"inputColor", RenderGraphResourceAccess::TextureTransferRead},
             RenderGraphStageUse{"color", RenderGraphResourceAccess::TextureTransferWrite}};
         const std::array stages{RenderGraphStage{"DLSS NR pass through", uses,
-            [&](CommandBuffer& command) -> Result<> { copyColor(command, input, output); return {}; }}};
+            [&](CommandBuffer& command) -> Result<> { return copyColor(command, input, output); }}};
         return context.executeStages(stages);
     }
 

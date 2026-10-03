@@ -28,8 +28,8 @@ public:
             const std::string_view field(name);
             const float value = field == "base" ? 1.0f : field == "motion" ? 0.0f
                 : field == "emissive" ? 0.25f : signal;
-            context.commandBuffer().clearColorTexture(*context.outputTexture(name).texture(),
-                render::TextureLayout::TransferDestination, {value, value, value, 0.0f});
+            if (auto commandResult = context.commandBuffer().clearColorTexture(*context.outputTexture(name).texture(),
+                render::TextureLayout::TransferDestination, {value, value, value, 0.0f}); !commandResult) { return commandResult; }
         }
         return {};
     }

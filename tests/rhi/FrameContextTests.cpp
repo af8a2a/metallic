@@ -582,8 +582,8 @@ public:
                         .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                     };
                     if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    commands.buffer->clearColorTexture(*images->textures[j], render::TextureLayout::TransferDestination,
-                        {float((j + 1) * 10), 0, 0, 0});
+                    if (auto commandResult = commands.buffer->clearColorTexture(*images->textures[j], render::TextureLayout::TransferDestination,
+                        {float((j + 1) * 10), 0, 0, 0}); !commandResult) { return RHITestResult::fail(std::string("clearColorTexture failed: ") + render::resultToString(commandResult)); }
                     barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
                     barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
                     if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
@@ -787,10 +787,10 @@ public:
             // so the graph also exercises a same-state write-after-write barrier.
             if (index % 2 == 0 || index == 5) {
                 FRAME_REQUIRE(executor.transitionOutput(*commands.buffer, "Triangle.color", render::ResourceState::TransferSource));
-                commands.buffer->copyTextureToBuffer({
+                if (auto commandResult = commands.buffer->copyTextureToBuffer({
                     .texture = executor.outputResource("Triangle.color")->texture,
                     .buffer = imageReadbacks[index].get(), .width = kWidth, .height = kWidth,
-                });
+                }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
             }
             FRAME_REQUIRE(commands.submit(tracker, index == 0 ? gate.get() : index == 5 ? rebuildGate.get() : nullptr));
             if (index == 0) { firstPoint = commands.frame.completion(); }
@@ -1091,8 +1091,8 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
-            render::TextureLayout::TransferDestination, {0.25f, 0.5f, 0.75f, 1.0f});
+        if (auto commandResult = context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
+            render::TextureLayout::TransferDestination, {0.25f, 0.5f, 0.75f, 1.0f}); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -1549,8 +1549,8 @@ public:
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { pixels = std::move(rhiValue); }));
         FRAME_REQUIRE(readback.begin(6));
         FRAME_REQUIRE(executor.transitionOutput(*readback.buffer, "TextureCopy.color", render::ResourceState::TransferSource));
-        readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
-            .buffer = pixels.get(), .width = 16, .height = 16});
+        if (auto commandResult = readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
+            .buffer = pixels.get(), .width = 16, .height = 16}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         FRAME_REQUIRE(readback.submit(tracker));
         FRAME_REQUIRE(readback.frame.wait(kWaitTimeout));
         std::array<uint32_t, 256> image{};

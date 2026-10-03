@@ -334,7 +334,7 @@ public:
                 RenderGraphStageUse{"output.motionVectors", RenderGraphResourceAccess::TextureStorageWrite},
                 RenderGraphStageUse{"output.depth", RenderGraphResourceAccess::TextureStorageWrite}};
             std::vector<RenderGraphStage> stages{{"DLSS pass through", copyUses,
-                [&](CommandBuffer& command) -> Result<> { copyInputToOutput(command, inputColor, outputColor); return {}; }}};
+                [&](CommandBuffer& command) -> Result<> { return copyInputToOutput(command, inputColor, outputColor); }}};
             if (boolProperty(&properties(), "exportOutputGuides", false)) {
                 stages.push_back({"DLSS output guides", guideUses,
                     [&](CommandBuffer&) { return resolveOutputGuides(context, motionVectors, depth, {}); }});
@@ -803,9 +803,9 @@ private:
         return vulkan::StreamlineDLSSRRMode::Balanced;
     }
 
-    static void copyInputToOutput(CommandBuffer& commandBuffer, TextureHandle inputColor, TextureHandle outputColor)
+    static Result<> copyInputToOutput(CommandBuffer& commandBuffer, TextureHandle inputColor, TextureHandle outputColor)
     {
-        commandBuffer.copyTexture(TextureCopyDesc{
+        return commandBuffer.copyTexture(TextureCopyDesc{
             .source = inputColor.texture(),
             .destination = outputColor.texture(),
             .width = outputColor.desc().width,
@@ -993,19 +993,19 @@ private:
             .renderArea = renderArea,
             .depthStencilAttachment = &depthAttachment,
         }); !rendering) { return rendering; }
-        commandBuffer.setViewport(Viewport{
+        if (auto commandResult = commandBuffer.setViewport(Viewport{
             .x = 0.0f,
             .y = 0.0f,
             .width = static_cast<float>(renderWidth),
             .height = static_cast<float>(renderHeight),
             .minDepth = 0.0f,
             .maxDepth = 1.0f,
-        });
+        }); !commandResult) { return commandResult; }
         commandBuffer.setScissor(renderArea);
         commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
         if (auto commandResult = commandBuffer.bindExecution((depthExportPipeline_)->execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&depthGuideHandle_.shaderIndex, sizeof(depthGuideHandle_.shaderIndex));
-        commandBuffer.draw(3);
+        if (auto commandResult = commandBuffer.draw(3); !commandResult) { return commandResult; }
         commandBuffer.endRendering();
 
         return {};

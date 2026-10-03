@@ -639,7 +639,7 @@ public:
     uint32_t visibleClusterCapacity() const;
     uint32_t rasterCandidateCapacity() const { return rasterCandidateCapacity_; }
     uint32_t drawTaskCount() const;
-    void cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation = false) const;
+    [[nodiscard]] Result<> cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation = false) const;
     const scene::Bounds& bounds() const { return drawBounds_; }
     const scene::MeshletStreamAsset& asset() const { return asset_; }
     const MeshletStreamResidencyManager& residency() const { return residency_; }

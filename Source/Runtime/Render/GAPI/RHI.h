@@ -1771,16 +1771,16 @@ class CommandBuffer {
     [[nodiscard]] Result<> copyBuffer(const BufferSlice& source, const BufferSlice& destination);
     Result<> decompressBuffers(std::span<const BufferDecompressionDesc> regions);
     Result<> validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
-    void copyTexture(const TextureCopyDesc& desc);
-    void copyTextureToBuffer(const BufferTextureRegion& desc);
-    void copyBufferToTexture(const BufferTextureRegion& desc);
-    void clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color = {});
+    [[nodiscard]] Result<> copyTexture(const TextureCopyDesc& desc);
+    [[nodiscard]] Result<> copyTextureToBuffer(const BufferTextureRegion& desc);
+    [[nodiscard]] Result<> copyBufferToTexture(const BufferTextureRegion& desc);
+    [[nodiscard]] Result<> clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color = {});
     Result<> beginRendering(const RenderingDesc& desc);
     // Native SDK consumers retain the view itself as well as its image.
     Result<> useNativeTextureView(TextureView& view);
     void clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect);
     void endRendering();
-    void setViewport(const Viewport& viewport);
+    [[nodiscard]] Result<> setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
     void setDepthStencilState(const DepthStencilState& state);
     [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution);
@@ -1791,9 +1791,9 @@ class CommandBuffer {
     // Record compute-only instrumentation, restoring the compute pipeline,
     // descriptor heap and shared push data before returning. No rendering scope.
     Result<> recordIsolatedCompute(const std::function<Result<>()>& record);
-    void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
-    void drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
-    void drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
+    [[nodiscard]] Result<> draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
+    [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    [[nodiscard]] Result<> drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     // Three GPU-written uint32 group counts; offset is 4-byte aligned.
     Result<> dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
@@ -1813,7 +1813,7 @@ class CommandBuffer {
 
 private:
     enum class BufferTextureCopyDirection { ToBuffer, ToTexture };
-    void copyBufferTexture(const BufferTextureRegion& region, BufferTextureCopyDirection direction);
+    Result<> copyBufferTexture(const BufferTextureRegion& region, BufferTextureCopyDirection direction);
     void setGraphicsShaderObjectState();
     Result<> bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData);
 

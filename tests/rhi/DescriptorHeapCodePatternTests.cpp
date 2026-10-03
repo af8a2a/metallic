@@ -410,7 +410,7 @@ public:
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             }};
         if (auto commandResult = commands.buffer->synchronize({.textures = {&toTransfer, 1}, .buffers = {toGeneral, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commands.buffer->copyBufferToTexture({.texture = texture.get(), .buffer = upload.get(), .width = 1, .height = 1});
+        if (auto commandResult = commands.buffer->copyBufferToTexture({.texture = texture.get(), .buffer = upload.get(), .width = 1, .height = 1}); !commandResult) { return RHITestResult::fail(std::string("copyBufferToTexture failed: ") + render::resultToString(commandResult)); }
         const render::TextureBarrierDesc toRead{
             .texture = texture.get(),
             .oldLayout = render::TextureLayout::TransferDestination,
