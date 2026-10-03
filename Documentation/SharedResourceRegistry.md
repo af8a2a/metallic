@@ -2,6 +2,8 @@
 
 当前契约见 [ResourceAccessABI.md](ResourceAccessABI.md)：renderer image/buffer 句柄统一为 32 位，
 普通数据、资源表、常量表和 ParameterRoot 均通过 DR buffer 读取。
+设备后端配置现已移入 `VulkanDeviceExtensions`，当前入口及能力查询见
+[项目架构的 Vulkan 章节](ProjectArchitecture.md#102-vulkan-实现)；下文的旧 DeviceDesc 字段同样属于历史记录。
 
 **以下章节是迁移历史记录，不是当前 API 指南。** 其中的 64 位 image/buffer handle、
 `DataSpan`、`writer.dataBuffer()`、BDA 参数根和旧布局已被移除；历史测试数字只适用于当时版本。

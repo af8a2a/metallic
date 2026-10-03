@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Fixtures.h"
 #include "TraceRecorder.h"
@@ -154,7 +155,7 @@ public:
             if (context.trace) {
                 const auto identity = context.trace->textureId(**texture);
                 bool initial = false, toRead = false;
-                const bool unified = context.device.capabilities().unifiedImageLayouts;
+                const bool unified = metallic::render::vulkan::deviceCapabilities(context.device).unifiedImageLayouts;
                 const auto snapshot = context.trace->snapshot();
                 for (const auto& event : snapshot.at("events")) {
                     if (event.at("kind") != "barrier") { continue; }

@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
@@ -1395,7 +1396,7 @@ public:
         image.newLayout = L::ShaderRead;
         image.after = {S::ComputeShader, A::ShaderRead};
         REG_REQUIRE(command.synchronize({.textures = {&image, 1}}));
-        if (context.device.capabilities().unifiedImageLayouts) {
+        if (metallic::render::vulkan::deviceCapabilities(context.device).unifiedImageLayouts) {
             REG_CHECK(capture.memory.size() == 1 && capture.images.empty());
             REG_CHECK(capture.memory[0].srcStageMask == 0 && capture.memory[0].srcAccessMask == 0);
         } else {
@@ -1444,7 +1445,7 @@ public:
         std::array<uint8_t, bytes> reference{};
         bool unifiedTested = false;
         std::vector<uint8_t> observations;
-        const auto variants = context.deviceDesc ? std::vector<bool>{context.deviceDesc->preferUnifiedImageLayouts} : std::vector<bool>{false, true};
+        const auto variants = context.deviceDesc ? std::vector<bool>{metallic::render::vulkan::deviceExtensions(*context.deviceDesc).preferUnifiedImageLayouts} : std::vector<bool>{false, true};
         for (bool preferUnified : variants) {
             std::atomic_uint errors{0};
             bench::TestDevice device;
@@ -1454,8 +1455,8 @@ public:
                         (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
                         ++*static_cast<std::atomic_uint*>(target);
                     }
-                }, &errors}, .preferUnifiedImageLayouts = preferUnified}).transform([&](auto value) { device = std::move(value); }));
-            const bool unified = device->capabilities().unifiedImageLayouts;
+                }, &errors}, .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{.preferUnifiedImageLayouts = preferUnified}}).transform([&](auto value) { device = std::move(value); }));
+            const bool unified = metallic::render::vulkan::deviceCapabilities(*device).unifiedImageLayouts;
             REG_CHECK(preferUnified || !unified);
             unifiedTested |= unified;
             auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -1596,7 +1597,7 @@ public:
             REG_CHECK(errors.load() == 0);
         }
         bench::comparisonEvidence(context, {{"extent", extent}, {"draws", 3}}, observations,
-            context.deviceDesc && context.deviceDesc->preferUnifiedImageLayouts);
+            context.deviceDesc && metallic::render::vulkan::deviceExtensions(*context.deviceDesc).preferUnifiedImageLayouts);
         if (context.evidence) { return RHITestResult::pass("prepared views and three readbacks passed; parent compares layout policies"); }
         return RHITestResult::pass(unifiedTested ? "GENERAL and optimal layouts produced identical PSO/shader-object readback" :
             "Optimal-layout fallback passed; unified image layouts unavailable on this device");

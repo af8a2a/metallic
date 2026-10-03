@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDLSSNR.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -285,7 +286,7 @@ Result<> DLSSNRContext::initialize(Device& device, std::string& log)
         log = "DLSS-NR context cannot be moved between devices";
         return makeError(Error::InvalidArgument);
     }
-    if (!device.capabilities().streamline) {
+    if (!metallic::render::vulkan::deviceCapabilities(device).streamline) {
         log = "DLSS-NR requires a device created with enableStreamline and supported NVIDIA Vulkan extensions";
         return makeError(Error::Unsupported);
     }

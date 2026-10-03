@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -4553,10 +4554,12 @@ Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enab
             .preferredTaskSubgroupSize = 32,
             .enableRayTracingAccelerationStructure = enableRayQuery,
             .enableRayQuery = enableRayQuery,
-            .enablePushDescriptor = enableRayQuery,
             .enableClusterAccelerationStructure = enableRayQuery,
-            .enableAftermath = enableAftermath,
             .enableAsyncCompute = true,
+            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                .enablePushDescriptor = enableRayQuery,
+                .enableAftermath = enableAftermath,
+            },
         }).transform([&](auto rhiValue) { impl_->device = std::move(rhiValue); });
     if (!result) {
         return result;

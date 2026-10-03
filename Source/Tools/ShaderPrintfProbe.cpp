@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
@@ -163,7 +164,11 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     report["phase"] = "device-create";
     save(directory / "Report.json", report);
     auto device = require(render::createDevice({.applicationName = "Metallic Shader Printf P0",
-        .enableBindlessDescriptorHeap = heapMode, .shaderPrintf = &capture}), "createDevice");
+        .enableBindlessDescriptorHeap = heapMode,
+        .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+            .shaderPrintf = &capture,
+        },
+    }), "createDevice");
     const auto native = vk::nativeDevice(*device);
     VkPhysicalDeviceDriverProperties driver{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};

@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <array>
+#include <any>
 
 #include <cstdint>
 #include <expected>
@@ -10,8 +11,6 @@
 #include <span>
 
 namespace metallic::render {
-
-namespace vulkan { class ShaderPrintf; }
 
 enum class Error : int8_t {
     Failure = 1,
@@ -445,25 +444,20 @@ struct DeviceDesc {
     bool enableRayTracingPositionFetch = true;
     // Optional KHR OMM optimization. Unsupported devices keep shader alpha tests.
     bool enableOpacityMicromap = true;
-    bool enablePushDescriptor = false;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
-    bool enableStreamline = false;
-    bool enableAftermath = false;
     ValidationSink validationSink;
     // Optional separate compute queue; legacy callers keep their universal queue.
     bool enableAsyncCompute = false;
     // Optional: unsupported devices keep ordinary command recording.
     bool enableDeviceGeneratedCommands = true;
     MemoryBudgetPolicy memoryBudget;
-    // Optional backend policy; unsupported devices keep optimal layouts.
-    bool preferUnifiedImageLayouts = true;
-    // Opt-in diagnostics; implies validation, excludes NvPerf. Must outlive this device.
-    vulkan::ShaderPrintf* shaderPrintf = nullptr;
+    // Optional backend-owned configuration value. Copies own independent options;
+    // each backend validates the payload type before initialization. Empty uses defaults.
+    std::any backendExtensions;
 };
 
 struct DeviceCapabilities {
-    bool unifiedImageLayouts = false;
     bool memoryDecompression = false;
     bool deviceGeneratedCommands = false;
     bool dynamicGeneratedPipelineLayout = false;
@@ -488,13 +482,8 @@ struct DeviceCapabilities {
     bool rayQuery = false;
     bool rayTracingPositionFetch = false;
     bool opacityMicromap = false;
-    bool pushDescriptor = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
-    bool streamline = false;
-    bool streamlineDlssSr = false;
-    bool streamlineDlssRr = false;
-    bool aftermath = false;
     bool shaderBufferInt64Atomics = false;
     uint32_t subPixelPrecisionBits = 0;
     bool shaderIntegerDotProduct = false;

@@ -44,6 +44,11 @@ void requirements()
     EXPECT_TRUE(sync.desc.enableValidation && sync.desc.enableSynchronizationValidation);
     EXPECT_EQ(std::string(name(Validation::Synchronization)), "sync");
     EXPECT_THROW(parseValidation("typo"), std::invalid_argument);
+    const auto unified = profile("core-unified", Validation::Core).value();
+    Requirements unifiedRequired{.capabilities = {Capability::UnifiedLayouts}};
+    EXPECT_EQ(evaluate(unifiedRequired, unified, caps, {render::QueueType::Graphics}, Validation::Core).status, Status::SkipUnsupported);
+    EXPECT_EQ(evaluate(unifiedRequired, unified, caps, {render::QueueType::Graphics}, Validation::Core,
+        {.unifiedImageLayouts = true}).status, Status::Pass);
 }
 
 void recorderLifetime()

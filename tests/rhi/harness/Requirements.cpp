@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Requirements.h"
 
 #include <algorithm>
@@ -94,7 +95,7 @@ render::Result<Profile> profile(std::string id, Validation validation)
     value.desc.enableOpacityMicromap = false;
     value.desc.enableRayTracingPositionFetch = false;
     value.desc.enableDeviceGeneratedCommands = false;
-    value.desc.preferUnifiedImageLayouts = value.id == "core-unified";
+    metallic::render::vulkan::deviceExtensions(value.desc).preferUnifiedImageLayouts = value.id == "core-unified";
     value.desc.enableRayTracingAccelerationStructure = value.id.starts_with("ray-query");
     value.desc.enableRayQuery = value.desc.enableRayTracingAccelerationStructure;
     value.desc.enableRayTracingPositionFetch = value.id == "ray-query-position";
@@ -105,7 +106,8 @@ render::Result<Profile> profile(std::string id, Validation validation)
     return value;
 }
 
-bool enabled(Capability capability, const render::DeviceCapabilities& caps)
+bool enabled(Capability capability, const render::DeviceCapabilities& caps,
+    const render::vulkan::VulkanDeviceCapabilities& backendCaps)
 {
     switch (capability) {
     case Capability::ShaderObject: return caps.shaderObject;
@@ -116,7 +118,7 @@ bool enabled(Capability capability, const render::DeviceCapabilities& caps)
     case Capability::RayQuery: return caps.rayQuery;
     case Capability::PositionFetch: return caps.rayTracingPositionFetch;
     case Capability::OpacityMicromap: return caps.opacityMicromap;
-    case Capability::UnifiedLayouts: return caps.unifiedImageLayouts;
+    case Capability::UnifiedLayouts: return backendCaps.unifiedImageLayouts;
     case Capability::PartitionedAS: return caps.partitionedAccelerationStructure;
     case Capability::ClusterAS: return caps.clusterAccelerationStructure;
     case Capability::GeneratedCommands: return caps.deviceGeneratedCommands;
@@ -134,7 +136,7 @@ bool requested(Capability capability, const Profile& value)
     case Capability::RayQuery: return value.desc.enableRayQuery;
     case Capability::PositionFetch: return value.desc.enableRayTracingPositionFetch;
     case Capability::OpacityMicromap: return value.desc.enableOpacityMicromap;
-    case Capability::UnifiedLayouts: return value.desc.preferUnifiedImageLayouts;
+    case Capability::UnifiedLayouts: return metallic::render::vulkan::deviceExtensions(value.desc).preferUnifiedImageLayouts;
     case Capability::PartitionedAS: return value.desc.enablePartitionedAccelerationStructure;
     case Capability::ClusterAS: return value.desc.enableClusterAccelerationStructure;
     case Capability::GeneratedCommands: return value.desc.enableDeviceGeneratedCommands;
@@ -145,7 +147,7 @@ bool requested(Capability capability, const Profile& value)
 
 Verdict evaluate(const Requirements& requirements, const Profile& value,
     const render::DeviceCapabilities& caps, const std::vector<render::QueueType>& queues,
-    Validation activeValidation)
+    Validation activeValidation, const render::vulkan::VulkanDeviceCapabilities& backendCaps)
 {
     if (activeValidation < requirements.validation) {
         return {Status::EnvironmentFailure, "required validation mode/layer/messenger is not active"};
@@ -154,7 +156,7 @@ Verdict evaluate(const Requirements& requirements, const Profile& value,
         if (!requested(capability, value)) {
             return {Status::SkipNotEnabled, name(capability)};
         }
-        if (!enabled(capability, caps)) {
+        if (!enabled(capability, caps, backendCaps)) {
             return {Status::SkipUnsupported, name(capability)};
         }
     }

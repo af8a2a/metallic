@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
@@ -2657,15 +2658,17 @@ bool EditorApplication::initializeRhi()
                 .preferredTaskSubgroupSize = 32,
                 .enableRayTracingAccelerationStructure = true,
                 .enableRayQuery = true,
-                .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
                 .enablePartitionedAccelerationStructure = true,
-                .enableStreamline = enableStreamline,
-                .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
                 .enableAsyncCompute = true,
                 .memoryBudget = {.enabled = gpuDrivenScenesOnly_},
-                .shaderPrintf = shaderTrace_ ? &shaderTrace_->capture() : nullptr,
+                .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                    .enablePushDescriptor = true,
+                    .enableStreamline = enableStreamline,
+                    .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
+                    .shaderPrintf = shaderTrace_ ? &shaderTrace_->capture() : nullptr,
+                },
             }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
     }
     if (!result || device_ == nullptr) {

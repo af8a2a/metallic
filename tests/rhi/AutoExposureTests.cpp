@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -140,7 +141,11 @@ public:
                             ++*static_cast<std::atomic_uint*>(target);
                         }
                     }
-                }, &validationErrors}, .preferUnifiedImageLayouts = preferUnified})
+                }, &validationErrors},
+                .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                    .preferUnifiedImageLayouts = preferUnified,
+                },
+            })
                 .transform([&](auto value) { device = std::move(value); });
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RHITestResult::skip("requires bindless descriptors");

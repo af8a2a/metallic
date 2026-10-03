@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+
 #include "Runtime/Render/GAPI/RHI.h"
 
 #include <chrono>
@@ -62,10 +64,11 @@ const char* name(Validation value);
 Validation parseValidation(const std::string& value);
 bool failed(Status value);
 render::Result<Profile> profile(std::string id, Validation validation);
-bool enabled(Capability capability, const render::DeviceCapabilities& caps);
+bool enabled(Capability capability, const render::DeviceCapabilities& caps,
+    const render::vulkan::VulkanDeviceCapabilities& backendCaps = {});
 bool requested(Capability capability, const Profile& profile);
 Verdict evaluate(const Requirements& requirements, const Profile& profile,
     const render::DeviceCapabilities& caps, const std::vector<render::QueueType>& queues,
-    Validation activeValidation);
+    Validation activeValidation, const render::vulkan::VulkanDeviceCapabilities& backendCaps = {});
 
 } // namespace metallic::tests::bench

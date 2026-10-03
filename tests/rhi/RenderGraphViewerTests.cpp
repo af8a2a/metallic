@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
@@ -96,7 +97,11 @@ public:
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "Render graph viewer regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
-            .enableAsyncCompute = true, .preferUnifiedImageLayouts = false}).transform([&](auto value) { device = std::move(value); });
+            .enableAsyncCompute = true,
+            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                .preferUnifiedImageLayouts = false,
+            },
+        }).transform([&](auto value) { device = std::move(value); });
         if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("bindless device unavailable"); }
         if (!result) { return RHITestResult::fail("viewer device creation failed"); }
         render::registerRenderGraphPassType("ViewerComputeFixture", "Viewer compute fixture",

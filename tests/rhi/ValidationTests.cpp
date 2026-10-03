@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
@@ -5,6 +6,7 @@
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #include <type_traits>
+#include <utility>
 
 namespace metallic::tests {
 namespace {
@@ -63,9 +65,11 @@ public:
                 .enableShaderObject = true,
                 .enableRayTracingAccelerationStructure = true,
                 .enableRayQuery = true,
-                .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
                 .enablePartitionedAccelerationStructure = true,
+                .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                    .enablePushDescriptor = true,
+                },
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return RHITestResult::fail(
@@ -442,6 +446,62 @@ public:
     }
 };
 
+class VulkanDeviceExtensionsTest final : public RHITest {
+public:
+    VulkanDeviceExtensionsTest()
+    {
+        type = RHITestType::Validation;
+        name = "vulkan_device_extensions_contract";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        DeviceDesc description{.applicationName = "Device extension contract",
+            .enableValidation = context.enableValidation};
+        const auto& defaults = vulkan::deviceExtensions(std::as_const(description));
+        if (!defaults.preferUnifiedImageLayouts || defaults.enableStreamline ||
+            defaults.enableAftermath || defaults.enablePushDescriptor || defaults.shaderPrintf ||
+            description.backendExtensions.has_value()) {
+            return RHITestResult::fail("Empty extensions must preserve defaults without mutating the descriptor");
+        }
+
+        description.backendExtensions = 42;
+        auto rejected = createDevice(description);
+        if (!hasError(rejected, Error::InvalidArgument)) {
+            return RHITestResult::fail("An unrelated extension payload must be rejected before initialization");
+        }
+        {
+            DeviceDesc original{.backendExtensions = vulkan::VulkanDeviceExtensions{
+                .enablePushDescriptor = true, .enableStreamline = true, .enableAftermath = true}};
+            description.backendExtensions = original.backendExtensions;
+            auto& copied = vulkan::deviceExtensions(description);
+            copied.enablePushDescriptor = false;
+            copied.enableStreamline = false;
+            copied.enableAftermath = false;
+            copied.preferUnifiedImageLayouts = false;
+            const auto& source = vulkan::deviceExtensions(std::as_const(original));
+            if (!source.enablePushDescriptor || !source.enableStreamline || !source.enableAftermath ||
+                !source.preferUnifiedImageLayouts) {
+                return RHITestResult::fail("Editing a descriptor copy changed the source extension value");
+            }
+        }
+        auto created = createDevice(description);
+        if (!created) { return RHITestResult::fail("Create device from independently owned extension copy"); }
+        // Initialization snapshots configuration; the caller can discard its payload.
+        description.backendExtensions.reset();
+        const auto capabilities = vulkan::deviceCapabilities(**created);
+        if (capabilities.unifiedImageLayouts || capabilities.pushDescriptor || capabilities.streamline ||
+            capabilities.streamlineDlssSr || capabilities.streamlineDlssRr || capabilities.aftermath ||
+            !(**created).capabilities().shaderObject) {
+            return RHITestResult::fail("Backend capabilities did not reflect the copied request");
+        }
+        if (!(**created).waitIdle()) { return RHITestResult::fail("Extension-configured device failed waitIdle"); }
+        return RHITestResult::pass("Owned extension copies, invalid payload rejection and independent capability snapshot");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VulkanDeviceExtensionsTest);
 METALLIC_REGISTER_RHI_TEST(ExpectedResourceResultsTest);
 METALLIC_REGISTER_RHI_TEST(ExpectedBindlessResultsTest);
 METALLIC_REGISTER_RHI_TEST(ValidateDeviceTest);

@@ -8,6 +8,7 @@
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
@@ -1604,7 +1605,7 @@ struct VulkanDeviceFeatureRequest {
     bool streamline = false;
     bool aftermath = false;
 
-    static VulkanDeviceFeatureRequest from(const DeviceDesc& desc)
+    static VulkanDeviceFeatureRequest from(const DeviceDesc& desc, const vulkan::VulkanDeviceExtensions& vulkanOptions)
     {
         return VulkanDeviceFeatureRequest{
             .deviceGeneratedCommands = desc.enableDeviceGeneratedCommands,
@@ -1615,7 +1616,7 @@ struct VulkanDeviceFeatureRequest {
                 desc.enableTaskShaderSubgroupBallot ||
                 desc.preferredTaskSubgroupSize != 0,
             .taskShaderSubgroupBallot = desc.enableTaskShaderSubgroupBallot,
-            .preferUnifiedImageLayouts = desc.preferUnifiedImageLayouts,
+            .preferUnifiedImageLayouts = vulkanOptions.preferUnifiedImageLayouts,
             .geometryShader = desc.enableGeometryShader,
             .subgroupSizeControl = desc.enableSubgroupSizeControl ||
                 desc.preferredTaskSubgroupSize != 0,
@@ -1625,11 +1626,11 @@ struct VulkanDeviceFeatureRequest {
             .rayQuery = desc.enableRayQuery,
             .rayTracingPositionFetch = desc.enableRayTracingPositionFetch,
             .opacityMicromap = desc.enableOpacityMicromap,
-            .pushDescriptor = desc.enablePushDescriptor,
+            .pushDescriptor = vulkanOptions.enablePushDescriptor,
             .clusterAccelerationStructure = desc.enableClusterAccelerationStructure,
             .partitionedAccelerationStructure = desc.enablePartitionedAccelerationStructure,
-            .streamline = desc.enableStreamline,
-            .aftermath = desc.enableAftermath && profiling::nsightAftermathInitialized(),
+            .streamline = vulkanOptions.enableStreamline,
+            .aftermath = vulkanOptions.enableAftermath && profiling::nsightAftermathInitialized(),
         };
     }
 };
@@ -3396,6 +3397,7 @@ struct DeviceImpl {
         MemoryBudgetDomain domain);
     void trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add);
     DeviceCapabilities capabilities;
+    vulkan::VulkanDeviceCapabilities vulkanCapabilities;
     PipelineCacheFileIdentity pipelineCacheFileIdentity;
     DescriptorHeapWriter descriptorHeapWriter;
     uint32_t graphicsFamily = 0;
@@ -5606,7 +5608,7 @@ Result<> BindlessHeap::writeImages(std::span<const BindlessImageWrite> writes)
         imageInfos[index] = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT,
             .pView = &viewInfos[index],
-            .layout = imageLayout(write.layout, impl_->device->capabilities.unifiedImageLayouts),
+            .layout = imageLayout(write.layout, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         };
         resourceInfos[index] = {
             .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
@@ -6046,8 +6048,8 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
         const auto after = scopeInfo(barrier.after);
         if (barrier.oldLayout > TextureLayout::General || barrier.newLayout > TextureLayout::General ||
             barrier.newLayout == TextureLayout::Undefined) { return makeError(Error::InvalidArgument); }
-        const auto oldLayout = imageLayout(barrier.oldLayout, impl_->device->capabilities.unifiedImageLayouts);
-        const auto newLayout = imageLayout(barrier.newLayout, impl_->device->capabilities.unifiedImageLayouts);
+        const auto oldLayout = imageLayout(barrier.oldLayout, impl_->device->vulkanCapabilities.unifiedImageLayouts);
+        const auto newLayout = imageLayout(barrier.newLayout, impl_->device->vulkanCapabilities.unifiedImageLayouts);
         if (newLayout == VK_IMAGE_LAYOUT_UNDEFINED) { return makeError(Error::InvalidArgument); }
         if (oldLayout == newLayout) { resourceMemory(before, after); continue; }
         images.push_back({.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -6222,9 +6224,9 @@ void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
     impl_->device->functions.vkCmdCopyImage(
         impl_->commandBuffer,
         desc.source->impl_->image,
-        imageLayout(TextureLayout::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
+        imageLayout(TextureLayout::TransferSource, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         desc.destination->impl_->image,
-        imageLayout(TextureLayout::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
+        imageLayout(TextureLayout::TransferDestination, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         1,
         &copyRegion);
 }
@@ -6269,7 +6271,7 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
-        .imageLayout = imageLayout(TextureLayout::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
+        .imageLayout = imageLayout(TextureLayout::TransferSource, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
@@ -6323,7 +6325,7 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
-        .imageLayout = imageLayout(TextureLayout::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
+        .imageLayout = imageLayout(TextureLayout::TransferDestination, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
@@ -6379,7 +6381,7 @@ void CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, co
     impl_->device->functions.vkCmdClearColorImage(
         impl_->commandBuffer,
         texture.impl_->image,
-        imageLayout(layout, impl_->device->capabilities.unifiedImageLayouts),
+        imageLayout(layout, impl_->device->vulkanCapabilities.unifiedImageLayouts),
         &clearValue,
         1,
         &range);
@@ -6419,7 +6421,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
         colorAttachments.push_back({
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             .imageView = attachment.view->impl_->view,
-            .imageLayout = imageLayout(attachment.layout, impl_->device->capabilities.unifiedImageLayouts),
+            .imageLayout = imageLayout(attachment.layout, impl_->device->vulkanCapabilities.unifiedImageLayouts),
             .loadOp = toVkLoadOp(attachment.loadOp),
             .storeOp = toVkStoreOp(attachment.storeOp),
             .clearValue = {
@@ -6436,7 +6438,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
             depthAttachment = {
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = attachment.view->impl_->view,
-                .imageLayout = imageLayout(attachment.layout, impl_->device->capabilities.unifiedImageLayouts),
+                .imageLayout = imageLayout(attachment.layout, impl_->device->vulkanCapabilities.unifiedImageLayouts),
                 .loadOp = toVkLoadOp(attachment.loadOp),
                 .storeOp = toVkStoreOp(attachment.storeOp),
                 .clearValue = {
@@ -11005,6 +11007,13 @@ Result<std::unique_ptr<BindlessHeap>> Device::createBindlessHeap(const BindlessH
 
 Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 {
+    const auto* suppliedExtensions = std::any_cast<vulkan::VulkanDeviceExtensions>(&desc.backendExtensions);
+    if (desc.backendExtensions.has_value() && !suppliedExtensions) {
+        spdlog::error("Vulkan createDevice requires VulkanDeviceExtensions or an empty backendExtensions value.");
+        return makeError(Error::InvalidArgument);
+    }
+    // Snapshot options before invoking loaders, callbacks or optional integrations.
+    const auto vulkanOptions = suppliedExtensions ? *suppliedExtensions : vulkan::VulkanDeviceExtensions{};
 
     if (!desc.enableShaderObject) {
         spdlog::error("Shader Object is required: DeviceDesc::enableShaderObject must be true.");
@@ -11030,12 +11039,12 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     std::lock_guard initializationLock(volkInitializationMutex());
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
     deviceImpl->logPipelineKeys = logPipelineKeys;
-    if (desc.enableAftermath && profiling::nsightAftermathSdkAvailable()) {
+    if (vulkanOptions.enableAftermath && profiling::nsightAftermathSdkAvailable()) {
         profiling::initializeNsightAftermath(desc.applicationName);
     }
 
     PFN_vkGetInstanceProcAddr streamlineVkGetInstanceProcAddr = nullptr;
-    if (desc.enableStreamline && vulkan::streamlineSdkAvailable()) {
+    if (vulkanOptions.enableStreamline && vulkan::streamlineSdkAvailable()) {
         const char* const vulkanLibraryName = vulkan::streamlineVulkanLibraryName();
         streamlineVkGetInstanceProcAddr =
             loadVulkanLoaderProcAddr(vulkanLibraryName, deviceImpl->vulkanLoaderHandle);
@@ -11112,16 +11121,16 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     std::string nvPerfError;
-    if ((profiling::nvPerfRequested() && (desc.enableValidation || desc.enableSynchronizationValidation || desc.shaderPrintf != nullptr)) ||
+    if ((profiling::nvPerfRequested() && (desc.enableValidation || desc.enableSynchronizationValidation || vulkanOptions.shaderPrintf != nullptr)) ||
         !profiling::nvPerfInstanceExtensions(instanceExtensions, kVulkanAPIVersion, nvPerfError)) {
         spdlog::error("[NvPerf] {}", nvPerfError.empty() ? "Validation incompatible with NvPerf" : nvPerfError);
         return makeError(Error::Unsupported);
     }
     std::vector<const char*> instanceLayers;
     const std::vector<VkLayerProperties> availableLayers = enumerateInstanceLayers();
-    const bool validationRequested = desc.enableValidation || desc.enableSynchronizationValidation || desc.shaderPrintf != nullptr;
-    if (desc.shaderPrintf) {
-        auto& printf = *desc.shaderPrintf;
+    const bool validationRequested = desc.enableValidation || desc.enableSynchronizationValidation || vulkanOptions.shaderPrintf != nullptr;
+    if (vulkanOptions.shaderPrintf) {
+        auto& printf = *vulkanOptions.shaderPrintf;
         for (const auto& layer : availableLayers) {
             if (std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
                 printf.layerDiscovered = true;
@@ -11156,7 +11165,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     // Keep this mode explicit and fail closed; ShaderPrintf owns a different
     // validation configuration and cannot be combined with conformance checks.
     if (desc.enableSynchronizationValidation) {
-        if (!deviceImpl->validationEnabled || !debugUtilsAvailable || desc.shaderPrintf) {
+        if (!deviceImpl->validationEnabled || !debugUtilsAvailable || vulkanOptions.shaderPrintf) {
             return makeError(Error::Unsupported);
         }
         uint32_t count = 0;
@@ -11186,22 +11195,22 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         .apiVersion = kVulkanAPIVersion,
     };
 
-    deviceImpl->debugContext = {desc.validationSink, desc.shaderPrintf};
+    deviceImpl->debugContext = {desc.validationSink, vulkanOptions.shaderPrintf};
     VkDebugUtilsMessengerCreateInfoEXT earlyMessages{
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-        .pNext = desc.enableSynchronizationValidation ? &syncSettings : desc.shaderPrintf ? desc.shaderPrintf->settings() : nullptr,
+        .pNext = desc.enableSynchronizationValidation ? &syncSettings : vulkanOptions.shaderPrintf ? vulkanOptions.shaderPrintf->settings() : nullptr,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
         .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
         .pfnUserCallback = debugCallback,
         .pUserData = &deviceImpl->debugContext,
     };
-    if (desc.shaderPrintf && desc.shaderPrintf->options().subscribeInfo) {
+    if (vulkanOptions.shaderPrintf && vulkanOptions.shaderPrintf->options().subscribeInfo) {
         earlyMessages.messageSeverity |= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
     }
     VkInstanceCreateInfo instanceInfo{
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext = desc.enableSynchronizationValidation || desc.shaderPrintf || (validationRequested && debugUtilsAvailable && desc.validationSink.callback)
+        .pNext = desc.enableSynchronizationValidation || vulkanOptions.shaderPrintf || (validationRequested && debugUtilsAvailable && desc.validationSink.callback)
             ? &earlyMessages : nullptr,
         .pApplicationInfo = &applicationInfo,
         .enabledLayerCount = static_cast<uint32_t>(instanceLayers.size()),
@@ -11224,10 +11233,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         if (!deviceImpl->debugMessenger) { return makeError(Error::Unsupported); }
         deviceImpl->synchronizationValidationEnabled = true;
     }
-    if (desc.shaderPrintf) {
-        desc.shaderPrintf->instanceConfigured = true;
-        desc.shaderPrintf->messengerConfigured = deviceImpl->debugMessenger != VK_NULL_HANDLE;
-        if (!desc.shaderPrintf->messengerConfigured) { return makeError(Error::Unsupported); }
+    if (vulkanOptions.shaderPrintf) {
+        vulkanOptions.shaderPrintf->instanceConfigured = true;
+        vulkanOptions.shaderPrintf->messengerConfigured = deviceImpl->debugMessenger != VK_NULL_HANDLE;
+        if (!vulkanOptions.shaderPrintf->messengerConfigured) { return makeError(Error::Unsupported); }
     }
 
     uint32_t physicalDeviceCount = 0;
@@ -11242,7 +11251,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
-    const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc);
+    const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc, vulkanOptions);
     bool validationSupportsOpacityMicromap = true;
     if (deviceImpl->validationEnabled && !profiling::NsightGraphicsCapture::vulkanInjectionActive()) {
         for (const auto& layer : availableLayers) {
@@ -11282,7 +11291,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 
         VulkanDeviceFeatureProbe probe;
         probe.query(physicalDevice, extensions);
-        if (desc.shaderPrintf && (!probe.features.features.fragmentStoresAndAtomics ||
+        if (vulkanOptions.shaderPrintf && (!probe.features.features.fragmentStoresAndAtomics ||
             !probe.features.features.vertexPipelineStoresAndAtomics ||
             !probe.vulkan12Features.vulkanMemoryModel || !probe.vulkan12Features.vulkanMemoryModelDeviceScope ||
             !probe.vulkan12Features.storageBuffer8BitAccess || !probe.vulkan12Features.shaderInt8 ||
@@ -11475,7 +11484,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
-    if (desc.shaderPrintf) {
+    if (vulkanOptions.shaderPrintf) {
         enabledFeatureChain.features.features.fragmentStoresAndAtomics = VK_TRUE;
         enabledFeatureChain.features.features.vertexPipelineStoresAndAtomics = VK_TRUE;
         enabledFeatureChain.vulkan12Features.vulkanMemoryModel = VK_TRUE;
@@ -11608,7 +11617,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     volkLoadDeviceTable(&deviceImpl->functions, deviceImpl->device);
-    if (desc.shaderPrintf) { desc.shaderPrintf->deviceConfigured = true; }
+    if (vulkanOptions.shaderPrintf) { vulkanOptions.shaderPrintf->deviceConfigured = true; }
 
     VkPhysicalDeviceProperties selectedProperties{};
     if (calibratedTimestamps) {
@@ -11706,7 +11715,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->capabilities.deviceGeneratedCommands = selectedFeatures.deviceGeneratedCommands;
     deviceImpl->capabilities.dynamicGeneratedPipelineLayout = selectedFeatures.dynamicGeneratedPipelineLayout;
-    deviceImpl->capabilities.unifiedImageLayouts = selectedFeatures.unifiedImageLayouts;
+    deviceImpl->vulkanCapabilities.unifiedImageLayouts = selectedFeatures.unifiedImageLayouts;
     deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
     deviceImpl->shaderObjectEnabled = selectedFeatures.shaderObject;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
@@ -11746,7 +11755,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     if (selectedFeatures.rayTracingPositionFetch) {
         spdlog::info("[Vulkan] VK_KHR_ray_tracing_position_fetch enabled");
     }
-    deviceImpl->capabilities.pushDescriptor = selectedFeatures.pushDescriptor;
+    deviceImpl->vulkanCapabilities.pushDescriptor = selectedFeatures.pushDescriptor;
     deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
     deviceImpl->capabilities.clusterAccelerationStructure = selectedFeatures.clusterAccelerationStructure;
     deviceImpl->clusterAccelerationStructureEnabled = selectedFeatures.clusterAccelerationStructure;
@@ -11754,7 +11763,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         selectedFeatures.partitionedAccelerationStructure;
     deviceImpl->partitionedAccelerationStructureEnabled =
         selectedFeatures.partitionedAccelerationStructure;
-    deviceImpl->capabilities.aftermath = selectedFeatures.aftermath;
+    deviceImpl->vulkanCapabilities.aftermath = selectedFeatures.aftermath;
     deviceImpl->capabilities.shaderBufferInt64Atomics =
         selectedFeatures.shaderInt64 && selectedFeatures.shaderBufferInt64Atomics;
     deviceImpl->capabilities.subPixelPrecisionBits = selectedProperties.limits.subPixelPrecisionBits;
@@ -11861,13 +11870,13 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             },
             streamlineLog);
         if (streamlineResult) {
-            deviceImpl->capabilities.streamline = true;
-            deviceImpl->capabilities.streamlineDlssSr = vulkan::streamlineDlssSrSupported();
-            deviceImpl->capabilities.streamlineDlssRr = vulkan::streamlineDlssRrSupported();
-            if (!deviceImpl->capabilities.streamlineDlssSr && !streamlineLog.empty()) {
+            deviceImpl->vulkanCapabilities.streamline = true;
+            deviceImpl->vulkanCapabilities.streamlineDlssSr = vulkan::streamlineDlssSrSupported();
+            deviceImpl->vulkanCapabilities.streamlineDlssRr = vulkan::streamlineDlssRrSupported();
+            if (!deviceImpl->vulkanCapabilities.streamlineDlssSr && !streamlineLog.empty()) {
                 spdlog::warn("NVIDIA Streamline DLSS-SR unsupported: {}", streamlineLog);
             }
-            if (!deviceImpl->capabilities.streamlineDlssRr && !streamlineLog.empty()) {
+            if (!deviceImpl->vulkanCapabilities.streamlineDlssRr && !streamlineLog.empty()) {
                 spdlog::warn("NVIDIA Streamline DLSS-RR unsupported: {}", streamlineLog);
             }
         } else {
@@ -11875,10 +11884,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
                 "NVIDIA Streamline Vulkan setup failed: {}",
                 streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog);
         }
-    } else if (deviceImpl->streamlineInitialized && desc.enableStreamline) {
+    } else if (deviceImpl->streamlineInitialized && vulkanOptions.enableStreamline) {
         spdlog::warn("NVIDIA Streamline initialized, but the selected Vulkan device is missing required extensions.");
     }
-    if (desc.enableAftermath &&
+    if (vulkanOptions.enableAftermath &&
         profiling::nsightAftermathInitialized() &&
         !selectedFeatures.aftermath) {
         spdlog::warn(
@@ -11894,6 +11903,11 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 namespace detail {
 
 struct VulkanNativeAccess {
+    static vulkan::VulkanDeviceCapabilities deviceCapabilities(const Device& device)
+    {
+        return device.impl_ ? device.impl_->vulkanCapabilities : vulkan::VulkanDeviceCapabilities{};
+    }
+
     static vulkan::NativeDevice nativeDevice(Device& device)
     {
         if (device.impl_ == nullptr) {
@@ -12054,7 +12068,7 @@ struct VulkanNativeAccess {
 
     static VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout)
     {
-        return view.impl_ ? imageLayout(layout, view.impl_->device->capabilities.unifiedImageLayouts) : VK_IMAGE_LAYOUT_UNDEFINED;
+        return view.impl_ ? imageLayout(layout, view.impl_->device->vulkanCapabilities.unifiedImageLayouts) : VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     static VkImageView nativeImageView(TextureView& view)
@@ -12067,6 +12081,11 @@ struct VulkanNativeAccess {
 } // namespace detail
 
 namespace vulkan {
+
+VulkanDeviceCapabilities deviceCapabilities(const Device& device)
+{
+    return detail::VulkanNativeAccess::deviceCapabilities(device);
+}
 
 NativeDevice nativeDevice(Device& device)
 {

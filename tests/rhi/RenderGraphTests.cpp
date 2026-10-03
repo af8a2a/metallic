@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
@@ -3379,7 +3380,7 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
             if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
                 ++*static_cast<std::atomic_uint*>(target);
             }
-        }, &validationErrors}, .preferUnifiedImageLayouts = false})
+        }, &validationErrors}, .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{.preferUnifiedImageLayouts = false}})
         .transform([&](auto value) { device = std::move(value); });
     if (render::hasError(result, render::Error::Unsupported)) {
         return RHITestResult::skip("cache stages require ray query and bindless resources");

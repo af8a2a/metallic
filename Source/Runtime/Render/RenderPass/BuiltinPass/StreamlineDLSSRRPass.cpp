@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -240,9 +241,9 @@ public:
             if (!result) { return result; }
         }
         const bool featureSupported = variant_ == DLSSVariant::RayReconstruction
-            ? context.device->capabilities().streamlineDlssRr
-            : context.device->capabilities().streamlineDlssSr;
-        if (!context.device->capabilities().streamline || !featureSupported) {
+            ? metallic::render::vulkan::deviceCapabilities(*context.device).streamlineDlssRr
+            : metallic::render::vulkan::deviceCapabilities(*context.device).streamlineDlssSr;
+        if (!metallic::render::vulkan::deviceCapabilities(*context.device).streamline || !featureSupported) {
             log = std::string(passTypeName()) + " requires DeviceCapabilities::" +
                 (variant_ == DLSSVariant::RayReconstruction ? "streamlineDlssRr" : "streamlineDlssSr");
             return makeError(Error::Unsupported);

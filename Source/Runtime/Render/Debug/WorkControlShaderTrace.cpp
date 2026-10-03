@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "WorkControlShaderTrace.h"
@@ -130,7 +131,7 @@ void WorkControlShaderTrace::qualify(Device& device, Queue& queue, const std::fi
         {"slang",session->getBuildTagString()},{"gpu",properties.deviceName},{"driverVersionRaw",properties.driverVersion},
         {"settingsTransport","isolated process layer-settings file"},
         {"settingsFileSha256",hashFile(output_/"layer-settings/vk_layer_settings.txt")},
-        {"streamline",device.capabilities().streamline},
+        {"streamline",metallic::render::vulkan::deviceCapabilities(device).streamline},
         {"layerSpecVersion",capture_.layerSpecVersion},{"bufferBytes",capture_.options().bufferBytes},
         {"backendEchoCount",echoes},{"backendEchoRaw",raw},{"performanceEligible",false}};
     session->release(); save(output_/"Backend.json",evidence_);

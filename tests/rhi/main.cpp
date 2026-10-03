@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "harness/GTestHtmlReport.h"
 #include "harness/VulkanDiagnostics.h"
 #include "RHITest.h"
@@ -220,15 +221,17 @@ public:
                 .enableRayTracingAccelerationStructure = options_.enableStreamline,
                 .enableRayQuery = options_.enableStreamline,
                 .enableClusterAccelerationStructure = options_.enableRealtime,
-                .enableStreamline = options_.enableStreamline,
-                .enableAftermath = options_.enableAftermath,
                 .validationSink = {.callback = [](void* data, const render::ValidationMessage& message) noexcept {
                     if (message.messageIdName != nullptr && std::strstr(message.messageIdName, "VUID-") != nullptr) {
                         ++*static_cast<std::atomic_uint*>(data);
                     }
                 }, .context = &validationMessageCount_},
                 .enableAsyncCompute = options_.enableAsyncCompute,
-                .preferUnifiedImageLayouts = options_.preferUnifiedImageLayouts,
+                .backendExtensions = render::vulkan::VulkanDeviceExtensions{
+                    .enableStreamline = options_.enableStreamline,
+                    .enableAftermath = options_.enableAftermath,
+                    .preferUnifiedImageLayouts = options_.preferUnifiedImageLayouts,
+                },
             }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
         if (!result) {
             const std::string message = std::string("createDevice returned ") + metallic::tests::toString(result);

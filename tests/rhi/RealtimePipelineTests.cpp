@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
@@ -312,7 +313,7 @@ public:
         }
         // Streamline owns process-wide Vulkan state: use one device for the test.
         auto* device = &context.device;
-        if (!device->capabilities().streamlineDlssSr || !device->capabilities().meshShader) {
+        if (!metallic::render::vulkan::deviceCapabilities(*device).streamlineDlssSr || !device->capabilities().meshShader) {
             return RHITestResult::skip("Requires --rhi-realtime and supported mesh shaders/DLSS-SR");
         }
         const uint32_t initialValidationCount = context.validationMessageCount != nullptr
@@ -627,7 +628,7 @@ public:
             return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the default full scene");
         }
         if (!context.device.capabilities().meshShader || !context.device.capabilities().clusterAccelerationStructure ||
-            (miniZorah_ && !context.device.capabilities().streamlineDlssSr)) {
+            (miniZorah_ && !metallic::render::vulkan::deviceCapabilities(context.device).streamlineDlssSr)) {
             return RHITestResult::skip("Requires --rhi-realtime with mesh shaders, CLAS and DLSS-SR");
         }
         try {

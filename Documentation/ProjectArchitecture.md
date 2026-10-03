@@ -407,6 +407,50 @@ buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，�
 
 ### 10.2 Vulkan 实现
 
+设备创建把通用功能与后端配置分开。`DeviceDesc::backendExtensions` 是拥有值语义的
+`std::any`，空值使用后端默认配置；Vulkan 只接受
+[`VulkanDeviceExtensions`](../Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h)。
+`enablePushDescriptor`、`enableStreamline`、`enableAftermath`、
+`preferUnifiedImageLayouts` 和 `ShaderPrintf*` 均放在这个独立结构中，`RHI.h`
+不再声明 `vulkan::ShaderPrintf`。这些配置的使用方显式包含后端头文件，无需包含 Vulkan SDK。
+
+```cpp
+DeviceDesc desc{
+    .enableBindlessDescriptorHeap = true,
+    .backendExtensions = vulkan::VulkanDeviceExtensions{
+        .enablePushDescriptor = true,
+        .enableStreamline = true,
+    },
+};
+auto device = createDevice(desc);
+```
+
+复制 `DeviceDesc` 会复制扩展配置值；`vulkan::deviceExtensions(desc)` 可编辑该副本，
+const 重载在空配置上返回默认值。错误类型在 `createDevice` 的任何 loader/SDK 初始化之前
+返回 `InvalidArgument`；配置访问 helper 对错误类型抛出 `std::bad_any_cast`。
+后端在创建入口快照配置，成功后调用方可释放扩展值。`ShaderPrintf` 捕获对象仍是显式借用，
+必须比设备活得更久；它并不会因配置值被复制而取得所有权。
+
+`Device::capabilities()` 只报告通用 RHI 功能；Vulkan 图片布局、push descriptor、
+Streamline/DLSS-SR/DLSS-RR 和 Aftermath 的实际启用状态通过
+`vulkan::deviceCapabilities(device)` 返回 `VulkanDeviceCapabilities` 值快照。
+配置请求与实际启用能力是两个独立概念；缺少可选 SDK/设备能力时保留已有回退规则。
+测试 profile 同时携带通用和后端能力，避免将 Vulkan 能力重新塞回公共能力结构。
+
+2026-10-03 验证：现有 MSVC Release/NRD 配置下，renderer、RHI/NRD 测试、
+ShaderPrintf 工具和单元测试均构建成功；只添加 `Source` include 路径即可独立编译
+公共 RHI 与扩展配置头。mapped/native 各 75 项 RHI 回归中 71 通过、4 跳过；
+跳过项为未启用的 DLSS 运行路径及 MiniZorah 大场景。框架自测 10/10，
+ShaderPrintf 单元测试 6/6，NRD 双模式各 11/11。两次 editor smoke 均完成呈现，
+各 210 个 warmup 请求全部命中缓存，无失败或 VUID。
+
+ShaderPrintf GPU 探针确认扩展配置成功、messenger 已连接、GPU 完成、echo 和读回匹配；
+它的整体状态仍为 `incomplete`，因为本机 loader 报告失效的 EOS overlay JSON 和
+`E:\Validation.json` 注册路径。保留该结果，不把它算作完整探针通过，也不修改系统注册。
+本次构建的 Streamline 集成关闭，不能据此声称验证了 DLSS 实际运行。
+原始证据位于 `.cache/device-extensions-*`；GPU 报告及原始消息分别在
+`device-extensions-printf-gpu/Report.json` 与 `RawMessages.json`。
+
 `VulkanRHI.cpp` 使用 Volk 加载 Vulkan，并用 VMA 管理资源内存。PImpl 隔离大多数 Vulkan 类型，但以下位置仍显式依赖 Vulkan：
 
 - `SceneRtx.h` 直接把公共光追类型别名到 `vulkan::*`；
