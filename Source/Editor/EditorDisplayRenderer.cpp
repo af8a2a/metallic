@@ -10,6 +10,16 @@
 
 namespace metallic {
 
+bool EditorDisplayRenderer::loadBackendFunctions(render::vulkan::NativeDevice device)
+{
+    // ImGui keeps its own loader table; never populate or switch volk globals.
+    return ImGui_ImplVulkan_LoadFunctions(device.apiVersion, [](const char* name, void* context) {
+        const auto& native = *static_cast<render::vulkan::NativeDevice*>(context);
+        auto function = native.instanceFunctions->vkGetDeviceProcAddr(native.device, name);
+        return function ? function : native.getInstanceProcAddr(native.instance, name);
+    }, &device);
+}
+
 EditorDisplayRenderer::~EditorDisplayRenderer()
 {
     shutdown();
@@ -19,15 +29,15 @@ void EditorDisplayRenderer::shutdown()
 {
     if (device_ == VK_NULL_HANDLE) { return; }
     for (VkPipeline pipeline : {mainPipeline_, mainImagePipeline_, pqPipeline_}) {
-        if (pipeline) { vkDestroyPipeline(device_, pipeline, nullptr); }
+        if (pipeline) { functions_->vkDestroyPipeline(device_, pipeline, nullptr); }
     }
     for (const auto& [format, pipeline] : secondaryImagePipelines_) {
-        if (pipeline) { vkDestroyPipeline(device_, pipeline, nullptr); }
+        if (pipeline) { functions_->vkDestroyPipeline(device_, pipeline, nullptr); }
     }
     secondaryImagePipelines_.clear();
-    if (layout_) { vkDestroyPipelineLayout(device_, layout_, nullptr); }
+    if (layout_) { functions_->vkDestroyPipelineLayout(device_, layout_, nullptr); }
     for (VkDescriptorSetLayout layout : setLayouts_) {
-        if (layout) { vkDestroyDescriptorSetLayout(device_, layout, nullptr); }
+        if (layout) { functions_->vkDestroyDescriptorSetLayout(device_, layout, nullptr); }
     }
     mainPipeline_ = mainImagePipeline_ = pqPipeline_ = VK_NULL_HANDLE;
     layout_ = VK_NULL_HANDLE;
@@ -35,14 +45,16 @@ void EditorDisplayRenderer::shutdown()
     device_ = VK_NULL_HANDLE;
 }
 
-bool EditorDisplayRenderer::initialize(VkDevice device, VkFormat mainFormat, bool hdr, float paperWhiteNits,
+bool EditorDisplayRenderer::initialize(const render::vulkan::NativeDevice& native, VkFormat mainFormat, bool hdr, float paperWhiteNits,
     VkFormat pqOutputFormat)
 {
+    const VkDevice device = native.device;
     if (device_ == device && mainPipeline_ && mainImagePipeline_ && mainFormat_ == mainFormat &&
         hdr_ == hdr && paperWhiteNits_ == paperWhiteNits && pqOutputFormat_ == pqOutputFormat &&
         (pqOutputFormat == VK_FORMAT_UNDEFINED || pqPipeline_)) { return true; }
     shutdown();
     device_ = device;
+    functions_ = native.functions;
     mainFormat_ = mainFormat;
     hdr_ = hdr;
     paperWhiteNits_ = paperWhiteNits;
@@ -53,12 +65,12 @@ bool EditorDisplayRenderer::initialize(VkDevice device, VkFormat mainFormat, boo
             .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
         VkDescriptorSetLayoutCreateInfo info{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             .bindingCount = 1, .pBindings = &binding};
-        if (vkCreateDescriptorSetLayout(device_, &info, nullptr, &setLayouts_[index]) != VK_SUCCESS) { return false; }
+        if (functions_->vkCreateDescriptorSetLayout(device_, &info, nullptr, &setLayouts_[index]) != VK_SUCCESS) { return false; }
     }
     VkPushConstantRange push{.stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = 16};
     VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 2, .pSetLayouts = setLayouts_, .pushConstantRangeCount = 1, .pPushConstantRanges = &push};
-    if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &layout_) != VK_SUCCESS) { return false; }
+    if (functions_->vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &layout_) != VK_SUCCESS) { return false; }
     mainPipeline_ = createPipeline(mainFormat, hdr, false, paperWhiteNits);
     mainImagePipeline_ = createPipeline(mainFormat, hdr, true, paperWhiteNits);
     if (pqOutputFormat != VK_FORMAT_UNDEFINED) {
@@ -78,7 +90,7 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
     };
     VkShaderModule modules[2]{};
     auto destroyModules = [&] {
-        for (auto module : modules) { if (module) { vkDestroyShaderModule(device_, module, nullptr); } }
+        for (auto module : modules) { if (module) { functions_->vkDestroyShaderModule(device_, module, nullptr); } }
     };
     const char* entries[] = {encodePQ ? "editorOutputVertex" : "editorDisplayVertex",
         encodePQ ? "editorOutputPQFragment" : "editorDisplayFragment"};
@@ -97,7 +109,7 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         }
         VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
             .codeSize = shader.spirv.size() * sizeof(uint32_t), .pCode = shader.spirv.data()};
-        if (vkCreateShaderModule(device_, &info, nullptr, &modules[index]) != VK_SUCCESS) {
+        if (functions_->vkCreateShaderModule(device_, &info, nullptr, &modules[index]) != VK_SUCCESS) {
             destroyModules();
             return VK_NULL_HANDLE;
         }
@@ -148,7 +160,7 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         .pInputAssemblyState = &assembly, .pViewportState = &viewport, .pRasterizationState = &raster,
         .pMultisampleState = &multisample, .pColorBlendState = &blend, .pDynamicState = &dynamic, .layout = layout_};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    const VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+    const VkResult result = functions_->vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
     destroyModules();
     if (result != VK_SUCCESS) { spdlog::error("Editor display pipeline creation failed: {}", int(result)); }
     return pipeline;
@@ -169,7 +181,7 @@ void EditorDisplayRenderer::bindImagePipeline(const ImDrawList*, const ImDrawCmd
         }
         pipeline = cached;
     }
-    if (pipeline) { vkCmdBindPipeline(state->CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline); }
+    if (pipeline) { renderer.functions_->vkCmdBindPipeline(state->CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline); }
 }
 
 void EditorDisplayRenderer::beginScRgbImage(ImDrawList& list, ImGuiViewport* viewport)
@@ -182,11 +194,11 @@ void EditorDisplayRenderer::encodeHDR10(VkCommandBuffer commands, VkDescriptorSe
 {
     VkViewport viewport{0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f};
     VkRect2D scissor{{0, 0}, {width, height}};
-    vkCmdSetViewport(commands, 0, 1, &viewport);
-    vkCmdSetScissor(commands, 0, 1, &scissor);
-    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pqPipeline_);
-    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &source, 0, nullptr);
-    vkCmdDraw(commands, 3, 1, 0, 0);
+    functions_->vkCmdSetViewport(commands, 0, 1, &viewport);
+    functions_->vkCmdSetScissor(commands, 0, 1, &scissor);
+    functions_->vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pqPipeline_);
+    functions_->vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &source, 0, nullptr);
+    functions_->vkCmdDraw(commands, 3, 1, 0, 0);
 }
 
 } // namespace metallic

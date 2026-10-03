@@ -9,9 +9,142 @@
 #include <fstream>
 #include <memory>
 #include <type_traits>
+#include <array>
+#include <barrier>
+#include <future>
+#include <stdexcept>
 
 namespace metallic::tests {
 namespace {
+
+// Deliberately disable legacy device dispatch. Device creation must not reload
+// it, and normal work must keep using its owner's table. Restore for other tests.
+struct DisabledGlobalDeviceDispatch {
+    VolkDeviceTable saved{};
+    DisabledGlobalDeviceDispatch()
+    {
+#define DISABLE_DEVICE_CALL(name) saved.name = std::exchange(name, nullptr)
+        DISABLE_DEVICE_CALL(vkCreateFence);
+        DISABLE_DEVICE_CALL(vkDestroyFence);
+        DISABLE_DEVICE_CALL(vkCreateSemaphore);
+        DISABLE_DEVICE_CALL(vkGetSemaphoreCounterValue);
+        DISABLE_DEVICE_CALL(vkCreateCommandPool);
+        DISABLE_DEVICE_CALL(vkAllocateCommandBuffers);
+        DISABLE_DEVICE_CALL(vkBeginCommandBuffer);
+        DISABLE_DEVICE_CALL(vkCmdCopyMemoryKHR);
+        DISABLE_DEVICE_CALL(vkQueueSubmit2);
+        DISABLE_DEVICE_CALL(vkDeviceWaitIdle);
+#undef DISABLE_DEVICE_CALL
+    }
+    ~DisabledGlobalDeviceDispatch()
+    {
+#define RESTORE_DEVICE_CALL(name) name = saved.name
+        RESTORE_DEVICE_CALL(vkCreateFence);
+        RESTORE_DEVICE_CALL(vkDestroyFence);
+        RESTORE_DEVICE_CALL(vkCreateSemaphore);
+        RESTORE_DEVICE_CALL(vkGetSemaphoreCounterValue);
+        RESTORE_DEVICE_CALL(vkCreateCommandPool);
+        RESTORE_DEVICE_CALL(vkAllocateCommandBuffers);
+        RESTORE_DEVICE_CALL(vkBeginCommandBuffer);
+        RESTORE_DEVICE_CALL(vkCmdCopyMemoryKHR);
+        RESTORE_DEVICE_CALL(vkQueueSubmit2);
+        RESTORE_DEVICE_CALL(vkDeviceWaitIdle);
+#undef RESTORE_DEVICE_CALL
+    }
+    bool unchanged() const
+    {
+        return !vkCreateFence && !vkDestroyFence && !vkCreateSemaphore && !vkGetSemaphoreCounterValue &&
+            !vkCreateCommandPool && !vkAllocateCommandBuffers && !vkBeginCommandBuffer &&
+            !vkCmdCopyMemoryKHR && !vkQueueSubmit2 && !vkDeviceWaitIdle;
+    }
+};
+
+class ConcurrentDeviceDispatchTest final : public RHITest {
+public:
+    ConcurrentDeviceDispatchTest() { type = RHITestType::Resource; name = "concurrent_device_dispatch_tables"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        DisabledGlobalDeviceDispatch globals;
+        std::array<bench::ValidationRecorder, 2> validation;
+        std::array<const VolkDeviceTable*, 2> tables{};
+        std::barrier ready(2);
+        auto worker = [&](uint32_t index) -> std::string {
+            auto created = render::createDevice({.applicationName = "Concurrent Vulkan dispatch",
+                .enableValidation = true, .validationSink = validation[index].sink()});
+            // Both devices must stay alive during the concurrent workload.
+            if (created) { tables[index] = render::vulkan::nativeDevice(**created).functions; }
+            ready.arrive_and_wait();
+            if (!created) { return "concurrent device creation failed"; }
+            auto device = std::move(*created);
+            const auto native = render::vulkan::nativeDevice(*device);
+            if (!native.validationEnabled || !native.validationMessengerActive) { return "validation unavailable"; }
+            auto take = [](auto result) {
+                if (!result) { throw std::runtime_error("resource creation failed"); }
+                return std::move(*result);
+            };
+            auto check = [](render::Result<> result) {
+                if (!result) { throw std::runtime_error("concurrent device operation failed"); }
+            };
+            try {
+                auto& queue = *device->getQueue(render::QueueType::Graphics);
+                auto semaphore = take(device->createSemaphore());
+                auto upload = take(device->createBuffer({.size = 256,
+                    .usage = render::BufferUsageBits::TransferSource,
+                    .memoryLocation = render::MemoryLocation::HostUpload}));
+                auto readback = take(device->createBuffer({.size = 256,
+                    .usage = render::BufferUsageBits::TransferDestination,
+                    .memoryLocation = render::MemoryLocation::HostReadback}));
+                for (uint32_t iteration = 1; iteration <= 64; ++iteration) {
+                    const uint32_t expected = (index + 1) * 1000 + iteration;
+                    auto* source = static_cast<uint32_t*>(upload->map());
+                    if (!source) { throw std::runtime_error("upload map failed"); }
+                    for (uint32_t word = 0; word < 64; ++word) { source[word] = expected + word; }
+                    upload->unmap();
+                    bench::GPUCommands commands(queue);
+                    check(commands.initialize(*device));
+                    check(commands.commands->copyBuffer(take(upload->slice()), take(readback->slice())));
+                    check(commands.submitAndWait());
+                    check(semaphore->signal(iteration));
+                    if (semaphore->currentValue() != iteration) { throw std::runtime_error("timeline crossed devices"); }
+                    auto* output = static_cast<const uint32_t*>(readback->map());
+                    if (!output) { throw std::runtime_error("readback map failed"); }
+                    bool equal = true;
+                    for (uint32_t word = 0; word < 64; ++word) { equal &= output[word] == expected + word; }
+                    readback->unmap();
+                    if (!equal) { throw std::runtime_error("readback crossed devices"); }
+                }
+                check(device->waitIdle());
+            } catch (const std::exception& error) {
+                return error.what();
+            }
+            return {};
+        };
+        auto first = std::async(std::launch::async, worker, 0);
+        auto second = std::async(std::launch::async, worker, 1);
+        const auto firstError = first.get();
+        const auto secondError = second.get();
+        for (size_t i = 0; i < validation.size(); ++i) {
+            const auto evidence = validation[i].snapshot();
+            std::filesystem::create_directories(context.outputDirectory);
+            std::ofstream(context.outputDirectory / (std::string(name) + std::to_string(i) + ".json")) << evidence.dump(2);
+            if (evidence.at("captureFailed").get<bool>()) { return RHITestResult::fail("validation capture failed"); }
+            for (const auto& message : evidence.at("messages")) {
+                if ((message.at("severity").get<uint32_t>() & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
+                    (message.at("type").get<uint32_t>() & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
+                    return RHITestResult::fail(message.at("text").get<std::string>());
+                }
+            }
+        }
+        if (!globals.unchanged()) { return RHITestResult::fail("device creation rewrote global device dispatch"); }
+        if (firstError == "validation unavailable" || secondError == "validation unavailable") {
+            return RHITestResult::skip("validation required for concurrent device dispatch test");
+        }
+        if (!firstError.empty() || !secondError.empty()) { return RHITestResult::fail(firstError + " " + secondError); }
+        if (!tables[0] || !tables[1] || tables[0] == tables[1]) { return RHITestResult::fail("devices share dispatch table storage"); }
+        return RHITestResult::pass("two concurrent devices, 128 validated copy submissions with global dispatch disabled");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(ConcurrentDeviceDispatchTest);
 
 enum class MoveResource { Fence, Semaphore, SwapchainSemaphore, ShaderModule, CommandPool, Timestamp, Compaction };
 

@@ -343,7 +343,7 @@ Result<> DLSSNRContext::initialize(Device& device, std::string& log)
                 return makeError(Error::Unsupported);
             }
             initialized = runtime->init(kApplicationId, directory.c_str(), native.instance,
-                native.physicalDevice, native.device, vkGetInstanceProcAddr, vkGetDeviceProcAddr, kAPIVersion, nullptr);
+                native.physicalDevice, native.device, native.getInstanceProcAddr, native.instanceFunctions->vkGetDeviceProcAddr, kAPIVersion, nullptr);
         }
         auto result = ngxResult(initialized, "Vulkan Init_Ext2 (API 0x15)", log);
         if (!result) { return result; }

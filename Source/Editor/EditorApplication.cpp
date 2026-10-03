@@ -2854,7 +2854,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             pipelineInfo.PipelineRenderingCreateInfo = renderingInfo;
             ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
         }
-        if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_).device, colorFormat,
+        if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_), colorFormat,
                 render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED)) {
             return false;
@@ -2925,12 +2925,13 @@ bool EditorApplication::initializeImGuiBackends()
 #endif
     initInfo.CheckVkResultFn = checkVkResult;
 
-    imguiRendererInitialized_ = ImGui_ImplVulkan_Init(&initInfo);
+    imguiRendererInitialized_ = EditorDisplayRenderer::loadBackendFunctions(nativeDevice) &&
+        ImGui_ImplVulkan_Init(&initInfo);
     if (!imguiRendererInitialized_) {
         spdlog::error("ImGui Vulkan renderer backend initialization failed");
         return false;
     }
-    return displayRenderer_.initialize(nativeDevice.device, colorFormat,
+    return displayRenderer_.initialize(nativeDevice, colorFormat,
         render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED);
 }
@@ -2955,7 +2956,7 @@ bool EditorApplication::createViewportSampler()
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .maxLod = 1.0f,
     };
-    const VkResult result = vkCreateSampler(nativeDevice.device, &samplerInfo, nullptr, &viewportSampler_);
+    const VkResult result = nativeDevice.functions->vkCreateSampler(nativeDevice.device, &samplerInfo, nullptr, &viewportSampler_);
     if (result != VK_SUCCESS) {
         spdlog::error("vkCreateSampler(viewport) failed with VkResult {}", static_cast<int>(result));
         return false;
@@ -3018,7 +3019,7 @@ void EditorApplication::shutdown()
     if (viewportSampler_ != VK_NULL_HANDLE && device_ != nullptr) {
         const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
         if (nativeDevice.device != VK_NULL_HANDLE) {
-            vkDestroySampler(nativeDevice.device, viewportSampler_, nullptr);
+            nativeDevice.functions->vkDestroySampler(nativeDevice.device, viewportSampler_, nullptr);
         }
         viewportSampler_ = VK_NULL_HANDLE;
     }

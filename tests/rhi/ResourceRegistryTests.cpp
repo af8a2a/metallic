@@ -1314,22 +1314,25 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(SynchronizationScopesTest);
 
-// Capture encoding without submitting work. Restore Volk's entry point even on
+// Capture encoding without submitting work. Restore this device's entry point even on
 // an assertion failure; these tests execute serially in the RHI test process.
 struct BarrierEncodingCapture {
     inline static BarrierEncodingCapture* active = nullptr;
-    PFN_vkCmdPipelineBarrier2 original = vkCmdPipelineBarrier2;
+    PFN_vkCmdPipelineBarrier2& entry;
+    PFN_vkCmdPipelineBarrier2 original;
     uint32_t calls = 0;
     std::vector<VkMemoryBarrier2> memory;
     std::vector<VkImageMemoryBarrier2> images;
-    BarrierEncodingCapture()
+    explicit BarrierEncodingCapture(render::Device& device)
+        : entry(const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)->vkCmdPipelineBarrier2),
+          original(entry)
     {
         active = this;
-        vkCmdPipelineBarrier2 = capture;
+        entry = capture;
     }
     ~BarrierEncodingCapture()
     {
-        vkCmdPipelineBarrier2 = original;
+        entry = original;
         active = nullptr;
     }
     static VKAPI_ATTR void VKAPI_CALL capture(VkCommandBuffer, const VkDependencyInfo* dependency)
@@ -1368,7 +1371,7 @@ public:
         REG_CHECK(texture);
         std::unique_ptr<render::Buffer> buffer;
         REG_REQUIRE(makeBuffer(context.device, buffer));
-        BarrierEncodingCapture capture;
+        BarrierEncodingCapture capture(context.device);
 
         render::TextureBarrierDesc image{.texture = texture->get(), .oldLayout = L::General, .newLayout = L::General};
         render::BufferBarrierDesc bytes{.buffer = buffer.get()};

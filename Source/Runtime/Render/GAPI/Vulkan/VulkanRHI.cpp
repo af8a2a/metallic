@@ -195,39 +195,12 @@ PFN_vkGetInstanceProcAddr loadVulkanLoaderProcAddr(
     return reinterpret_cast<PFN_vkGetInstanceProcAddr>(procAddr);
 }
 
-std::mutex& volkDeviceMutex()
+// Volk loader/instance initialization still writes global loader state. Serialize
+// creation only; normal device operations use immutable per-device dispatch.
+std::mutex& volkInitializationMutex()
 {
     static std::mutex mutex;
     return mutex;
-}
-
-VkDevice& activeVolkDevice()
-{
-    static VkDevice device = VK_NULL_HANDLE;
-    return device;
-}
-
-void activateVolkDevice(VkDevice device)
-{
-    if (device == VK_NULL_HANDLE) {
-        return;
-    }
-
-    std::lock_guard lock(volkDeviceMutex());
-    VkDevice& activeDevice = activeVolkDevice();
-    if (activeDevice != device) {
-        volkLoadDevice(device);
-        activeDevice = device;
-    }
-}
-
-void clearActiveVolkDevice(VkDevice device)
-{
-    std::lock_guard lock(volkDeviceMutex());
-    VkDevice& activeDevice = activeVolkDevice();
-    if (activeDevice == device) {
-        activeDevice = VK_NULL_HANDLE;
-    }
 }
 
 std::vector<VkExtensionProperties> enumerateInstanceExtensions()
@@ -603,7 +576,7 @@ VkAccelerationStructureTypeKHR toVkAccelerationStructureType(
 }
 
 VkPhysicalDeviceOpacityMicromapPropertiesKHR queryOpacityMicromapProperties(
-    VkPhysicalDevice physicalDevice, bool useExt)
+    VkPhysicalDevice physicalDevice, bool useExt, PFN_vkGetPhysicalDeviceProperties2 getProperties)
 {
     VkPhysicalDeviceOpacityMicromapPropertiesKHR properties{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_KHR,
@@ -615,7 +588,7 @@ VkPhysicalDeviceOpacityMicromapPropertiesKHR queryOpacityMicromapProperties(
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = useExt ? static_cast<void*>(&extProperties) : &properties,
     };
-    vkGetPhysicalDeviceProperties2(physicalDevice, &properties2);
+    getProperties(physicalDevice, &properties2);
     if (useExt) {
         properties.maxOpacity2StateSubdivisionLevel = extProperties.maxOpacity2StateSubdivisionLevel;
         properties.maxOpacity4StateSubdivisionLevel = extProperties.maxOpacity4StateSubdivisionLevel;
@@ -649,7 +622,7 @@ Result<> makeOpacityMicromapGeometry(
         // The public compaction query pool holds AS queries, not EXT micromap queries.
         return makeError(Error::Unsupported);
     }
-    const auto properties = queryOpacityMicromapProperties(physicalDevice, useExt);
+    const auto properties = queryOpacityMicromapProperties(physicalDevice, useExt, vkGetPhysicalDeviceProperties2);
     uint64_t count = 0;
     usages.reserve(input->usages.size());
     for (uint32_t i = 0; i < input->usages.size(); ++i) {
@@ -1165,18 +1138,6 @@ VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance, DebugCallback
     return messenger;
 }
 
-void destroyDebugMessenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger)
-{
-    if (messenger == VK_NULL_HANDLE) {
-        return;
-    }
-
-    auto destroy = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-        vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
-    if (destroy != nullptr) {
-        destroy(instance, messenger, nullptr);
-    }
-}
 
 VkDeviceSize alignUp(VkDeviceSize value, VkDeviceSize alignment)
 {
@@ -1198,6 +1159,7 @@ uint32_t capacityFromBytes(VkDeviceSize byteSize, VkDeviceSize descriptorSize)
 
 class DescriptorHeapWriter {
 public:
+    const VolkDeviceTable& functions() const { return *functions_; }
     static bool isSupported(VkPhysicalDevice physicalDevice)
     {
         VkPhysicalDeviceDescriptorHeapFeaturesEXT heapFeatures{
@@ -1231,7 +1193,7 @@ public:
             heapProperties.maxPushDataSize > 0;
     }
 
-    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device)
+    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device, const VolkDeviceTable& functions, const VolkInstanceTable& instanceFunctions)
     {
         *this = {};
         if (device == VK_NULL_HANDLE) {
@@ -1245,7 +1207,7 @@ public:
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
             .pNext = &heapProperties,
         };
-        vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+        instanceFunctions.vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
         if (heapProperties.samplerDescriptorSize == 0 ||
             heapProperties.imageDescriptorSize == 0 ||
             heapProperties.bufferDescriptorSize == 0 ||
@@ -1266,6 +1228,7 @@ public:
         }
 
         device_ = device;
+        functions_ = &functions;
         samplerDescriptorSize_ = heapProperties.samplerDescriptorSize;
         imageDescriptorSize_ = heapProperties.imageDescriptorSize;
         bufferDescriptorSize_ = heapProperties.bufferDescriptorSize;
@@ -1350,7 +1313,7 @@ public:
             .address = dst,
             .size = static_cast<size_t>(samplerDescriptorSize_),
         };
-        return vkWriteSamplerDescriptorsEXT(device_, 1, &samplerCreateInfo, &dstRange);
+        return functions_->vkWriteSamplerDescriptorsEXT(device_, 1, &samplerCreateInfo, &dstRange);
     }
 
     VkResult writeSamplerDescriptors(
@@ -1361,7 +1324,7 @@ public:
         if (!initialized() || descriptorCount == 0 || samplerCreateInfos == nullptr || dstRanges == nullptr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
-        return vkWriteSamplerDescriptorsEXT(
+        return functions_->vkWriteSamplerDescriptorsEXT(
             device_,
             descriptorCount,
             samplerCreateInfos,
@@ -1401,7 +1364,7 @@ public:
             .address = dst,
             .size = static_cast<size_t>(imageDescriptorSize_),
         };
-        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+        return functions_->vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
     }
 
     VkResult writeResourceDescriptors(
@@ -1412,7 +1375,7 @@ public:
         if (!initialized() || descriptorCount == 0 || resourceInfos == nullptr || dstRanges == nullptr) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
-        return vkWriteResourceDescriptorsEXT(device_, descriptorCount, resourceInfos, dstRanges);
+        return functions_->vkWriteResourceDescriptorsEXT(device_, descriptorCount, resourceInfos, dstRanges);
     }
 
     VkResult writeBufferDescriptor(
@@ -1441,7 +1404,7 @@ public:
             .address = dst,
             .size = static_cast<size_t>(bufferDescriptorSize_),
         };
-        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+        return functions_->vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
     }
 
     VkResult writeAccelerationStructureDescriptor(
@@ -1470,7 +1433,7 @@ public:
             .address = dst,
             .size = static_cast<size_t>(bufferDescriptorSize_),
         };
-        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+        return functions_->vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
     }
 
     VkResult writePartitionedAccelerationStructureDescriptor(
@@ -1495,10 +1458,11 @@ public:
             .address = dst,
             .size = static_cast<size_t>(bufferDescriptorSize_),
         };
-        return vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
+        return functions_->vkWriteResourceDescriptorsEXT(device_, 1, &resourceInfo, &dstRange);
     }
 
 private:
+    const VolkDeviceTable* functions_ = nullptr;
     VkDevice device_ = VK_NULL_HANDLE;
     VkDeviceSize samplerDescriptorSize_ = 0;
     VkDeviceSize imageDescriptorSize_ = 0;
@@ -2594,10 +2558,10 @@ struct VulkanPhysicalDeviceCandidate {
 
 class DescriptorHeap {
 public:
-    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device)
+    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device, const VolkDeviceTable& functions, const VolkInstanceTable& instanceFunctions)
     {
         *this = {};
-        const VkResult result = writer_.initialize(physicalDevice, device);
+        const VkResult result = writer_.initialize(physicalDevice, device, functions, instanceFunctions);
         if (result != VK_SUCCESS) {
             return result;
         }
@@ -3004,7 +2968,7 @@ public:
                 .reservedRangeOffset = writer_.samplerDescriptorSize() * maxSamplers_,
                 .reservedRangeSize = writer_.minSamplerHeapReservedRange(),
             };
-            vkCmdBindSamplerHeapEXT(commandBuffer, &samplerBind);
+            writer_.functions().vkCmdBindSamplerHeapEXT(commandBuffer, &samplerBind);
         }
 
         if (resourceHeapAddress != 0 && (maxImages_ > 0 || maxBuffers_ > 0)) {
@@ -3017,7 +2981,7 @@ public:
                 .reservedRangeOffset = resourceReservedRangeOffsetBytes_,
                 .reservedRangeSize = writer_.minResourceHeapReservedRange(),
             };
-            vkCmdBindResourceHeapEXT(commandBuffer, &resourceBind);
+            writer_.functions().vkCmdBindResourceHeapEXT(commandBuffer, &resourceBind);
         }
     }
 
@@ -3415,6 +3379,9 @@ struct DeviceImpl {
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    VolkDeviceTable functions{};
+    VolkInstanceTable instanceFunctions{};
+    PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
     VmaAllocator allocator = VK_NULL_HANDLE;
     std::array<VmaPool, VK_MAX_MEMORY_TYPES> materialImagePools{};
     std::shared_ptr<MemoryBudgetState> memoryBudgetState = std::make_shared<MemoryBudgetState>();
@@ -3568,7 +3535,7 @@ Result<> DeviceImpl::prepareBufferAllocationLocked(
     if (result != VK_SUCCESS) { return resultFromVk(result); }
     VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
     const VkDeviceBufferMemoryRequirements request{.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &info};
-    vkGetDeviceBufferMemoryRequirements(device, &request, &requirements);
+    functions.vkGetDeviceBufferMemoryRequirements(device, &request, &requirements);
     if (!admitMemoryLocked(memoryType, requirements.memoryRequirements.size, domain)) { return makeError(Error::OutOfMemory); }
     allocationInfo.memoryTypeBits = 1u << memoryType;
     if (memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
@@ -3580,8 +3547,8 @@ Result<> DeviceImpl::prepareBufferAllocationLocked(
 FenceImpl::~FenceImpl()
 {
     if (fence != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
-        vkDestroyFence(device->device, fence, nullptr);
+
+        device->functions.vkDestroyFence(device->device, fence, nullptr);
         fence = VK_NULL_HANDLE;
     }
 }
@@ -3589,8 +3556,8 @@ FenceImpl::~FenceImpl()
 TimestampQueryPoolImpl::~TimestampQueryPoolImpl()
 {
     if (queryPool != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
-        vkDestroyQueryPool(device->device, queryPool, nullptr);
+
+        device->functions.vkDestroyQueryPool(device->device, queryPool, nullptr);
         queryPool = VK_NULL_HANDLE;
     }
 }
@@ -3598,8 +3565,8 @@ TimestampQueryPoolImpl::~TimestampQueryPoolImpl()
 RayTracingAccelerationStructureCompactionQueryPoolImpl::~RayTracingAccelerationStructureCompactionQueryPoolImpl()
 {
     if (queryPool != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
-        vkDestroyQueryPool(device->device, queryPool, nullptr);
+
+        device->functions.vkDestroyQueryPool(device->device, queryPool, nullptr);
         queryPool = VK_NULL_HANDLE;
     }
 }
@@ -3607,9 +3574,9 @@ RayTracingAccelerationStructureCompactionQueryPoolImpl::~RayTracingAccelerationS
 SemaphoreImpl::~SemaphoreImpl()
 {
     if (semaphore != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
+
         vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(semaphore));
-        vkDestroySemaphore(device->device, semaphore, nullptr);
+        device->functions.vkDestroySemaphore(device->device, semaphore, nullptr);
         semaphore = VK_NULL_HANDLE;
     }
 }
@@ -3617,9 +3584,9 @@ SemaphoreImpl::~SemaphoreImpl()
 SwapchainSemaphoreImpl::~SwapchainSemaphoreImpl()
 {
     if (semaphore != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
+
         vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(semaphore));
-        vkDestroySemaphore(device->device, semaphore, nullptr);
+        device->functions.vkDestroySemaphore(device->device, semaphore, nullptr);
         semaphore = VK_NULL_HANDLE;
     }
 }
@@ -3627,8 +3594,8 @@ SwapchainSemaphoreImpl::~SwapchainSemaphoreImpl()
 ShaderModuleImpl::~ShaderModuleImpl()
 {
     if (module != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
-        vkDestroyShaderModule(device->device, module, nullptr);
+
+        device->functions.vkDestroyShaderModule(device->device, module, nullptr);
         module = VK_NULL_HANDLE;
     }
 }
@@ -3636,14 +3603,14 @@ ShaderModuleImpl::~ShaderModuleImpl()
 CommandPoolImpl::~CommandPoolImpl()
 {
     if (pool != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
+
         if (recycleForCapture) {
-            (void)vkResetCommandPool(device->device, pool, 0);
+            (void)device->functions.vkResetCommandPool(device->device, pool, 0);
             std::lock_guard lock(device->captureCommandPoolMutex);
             device->captureCommandPools.push_back({
                 pool, queueFamilyIndex, std::move(availableBuffers)});
         } else {
-            vkDestroyCommandPool(device->device, pool, nullptr);
+            device->functions.vkDestroyCommandPool(device->device, pool, nullptr);
         }
         pool = VK_NULL_HANDLE;
         submissions->cancel();
@@ -3665,7 +3632,7 @@ BufferImpl::~BufferImpl()
     // Alias members and temporary unbound buffers own only their native handle.
     // The last retained member releases and accounts for the backing allocation.
     if (aliasAllocation || allocation == VK_NULL_HANDLE) {
-        vkDestroyBuffer(device->device, buffer, nullptr);
+        device->functions.vkDestroyBuffer(device->device, buffer, nullptr);
         return;
     }
     std::lock_guard lock(device->memoryBudgetState->mutex);
@@ -3698,7 +3665,7 @@ TextureImpl::~TextureImpl()
     // Aliased images retain the allocation owner; unbound images are temporary
     // members of a group being created. Neither frees memory or tracks it here.
     if (aliasAllocation || allocation == VK_NULL_HANDLE) {
-        vkDestroyImage(device->device, image, nullptr);
+        device->functions.vkDestroyImage(device->device, image, nullptr);
         return;
     }
     std::lock_guard lock(device->memoryBudgetState->mutex);
@@ -3726,27 +3693,27 @@ Result<> TextureViewImpl::materialize()
     std::lock_guard lock(mutex);
     if (view != VK_NULL_HANDLE) { return {}; }
     const auto info = createInfo();
-    activateVolkDevice(device->device);
-    return resultFromVk(vkCreateImageView(device->device, &info, nullptr, &view));
+
+    return resultFromVk(device->functions.vkCreateImageView(device->device, &info, nullptr, &view));
 }
 
 TextureViewImpl::~TextureViewImpl()
 {
     if (device && view != VK_NULL_HANDLE) {
-        vkDestroyImageView(device->device, view, nullptr);
+        device->functions.vkDestroyImageView(device->device, view, nullptr);
     }
 }
 
 RayTracingAccelerationStructureImpl::~RayTracingAccelerationStructureImpl()
 {
     if (device != nullptr && micromap != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
-        vkDestroyMicromapEXT(device->device, micromap, nullptr);
+
+        device->functions.vkDestroyMicromapEXT(device->device, micromap, nullptr);
         micromap = VK_NULL_HANDLE;
     }
     if (device != nullptr && accelerationStructure != VK_NULL_HANDLE) {
-        activateVolkDevice(device->device);
-        vkDestroyAccelerationStructureKHR(device->device, accelerationStructure, nullptr);
+
+        device->functions.vkDestroyAccelerationStructureKHR(device->device, accelerationStructure, nullptr);
         accelerationStructure = VK_NULL_HANDLE;
     }
 }
@@ -3756,8 +3723,8 @@ DeviceImpl::~DeviceImpl()
     queues.clear();
 
     if (device != VK_NULL_HANDLE) {
-        activateVolkDevice(device);
-        const VkResult waitResult = vkDeviceWaitIdle(device);
+
+        const VkResult waitResult = functions.vkDeviceWaitIdle(device);
         if (waitResult == VK_ERROR_DEVICE_LOST) {
             profiling::handleNsightAftermathDeviceLost();
         }
@@ -3782,23 +3749,23 @@ DeviceImpl::~DeviceImpl()
     }
 
     if (device != VK_NULL_HANDLE) {
-        activateVolkDevice(device);
+
         for (const auto& pool : captureCommandPools) {
-            vkDestroyCommandPool(device, pool.pool, nullptr);
+            functions.vkDestroyCommandPool(device, pool.pool, nullptr);
         }
         captureCommandPools.clear();
-        vkDestroyDevice(device, nullptr);
-        clearActiveVolkDevice(device);
+        functions.vkDestroyDevice(device, nullptr);
+
         device = VK_NULL_HANDLE;
     }
 
     if (debugMessenger != VK_NULL_HANDLE) {
-        destroyDebugMessenger(instance, debugMessenger);
+        instanceFunctions.vkDestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         debugMessenger = VK_NULL_HANDLE;
     }
 
     if (instance != VK_NULL_HANDLE) {
-        vkDestroyInstance(instance, nullptr);
+        instanceFunctions.vkDestroyInstance(instance, nullptr);
         instance = VK_NULL_HANDLE;
     }
 
@@ -3818,7 +3785,7 @@ PipelineCacheImpl::~PipelineCacheImpl()
     if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
         return;
     }
-    activateVolkDevice(device->device);
+
     {
         std::lock_guard lock(mutex);
         if (saveOnDestroy && dirty && !filePath.empty()) {
@@ -3827,7 +3794,7 @@ PipelineCacheImpl::~PipelineCacheImpl()
                 spdlog::warn("Failed to save pipeline cache '{}'", filePath.string());
             }
         }
-        vkDestroyPipelineCache(device->device, pipelineCache, nullptr);
+        device->functions.vkDestroyPipelineCache(device->device, pipelineCache, nullptr);
         pipelineCache = VK_NULL_HANDLE;
     }
 }
@@ -3876,7 +3843,7 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
             ? fileData.backendData.data()
             : nullptr,
     };
-    VkResult vkResult = vkCreatePipelineCache(
+    VkResult vkResult = device->functions.vkCreatePipelineCache(
         owningDevice.device,
         &createInfo,
         nullptr,
@@ -3886,7 +3853,7 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
         fileData = {};
         createInfo.initialDataSize = 0;
         createInfo.pInitialData = nullptr;
-        vkResult = vkCreatePipelineCache(
+        vkResult = device->functions.vkCreatePipelineCache(
             owningDevice.device,
             &createInfo,
             nullptr,
@@ -3927,9 +3894,8 @@ Result<> PipelineCacheImpl::saveLocked()
         return {};
     }
 
-    activateVolkDevice(device->device);
     size_t byteSize = 0;
-    VkResult vkResult = vkGetPipelineCacheData(
+    VkResult vkResult = device->functions.vkGetPipelineCacheData(
         device->device,
         pipelineCache,
         &byteSize,
@@ -3941,7 +3907,7 @@ Result<> PipelineCacheImpl::saveLocked()
     std::vector<uint8_t> backendData(byteSize);
     for (uint32_t attempt = 0; attempt < 3; ++attempt) {
         size_t writtenSize = backendData.size();
-        vkResult = vkGetPipelineCacheData(
+        vkResult = device->functions.vkGetPipelineCacheData(
             device->device,
             pipelineCache,
             &writtenSize,
@@ -3955,7 +3921,7 @@ Result<> PipelineCacheImpl::saveLocked()
         }
 
         byteSize = 0;
-        vkResult = vkGetPipelineCacheData(
+        vkResult = device->functions.vkGetPipelineCacheData(
             device->device,
             pipelineCache,
             &byteSize,
@@ -4116,7 +4082,7 @@ Result<> ensureMicromapIdentityIndices(
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .buffer = indices->buffer,
     };
-    indices->address = vkGetBufferDeviceAddress(device.device, &addressInfo);
+    indices->address = device.functions.vkGetBufferDeviceAddress(device.device, &addressInfo);
     if (indices->address == 0) {
         return makeError(Error::Failure);
     }
@@ -4150,7 +4116,7 @@ Result<> BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHe
     device = &owningDevice;
     desc = heapDesc;
 
-    VkResult vkResult = heap.initialize(device->physicalDevice, device->device);
+    VkResult vkResult = heap.initialize(device->physicalDevice, device->device, device->functions, device->instanceFunctions);
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
@@ -4223,7 +4189,7 @@ Result<> BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alig
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .buffer = buffer,
     };
-    const VkDeviceAddress rawAddress = vkGetBufferDeviceAddress(device->device, &addressInfo);
+    const VkDeviceAddress rawAddress = device->functions.vkGetBufferDeviceAddress(device->device, &addressInfo);
     const VkDeviceAddress address = alignUp(rawAddress, alignment);
     const VkDeviceSize mappedOffset = static_cast<VkDeviceSize>(address - rawAddress);
     if (rawAddress == 0 || address == 0 || mappedOffset + size > paddedSize || allocatedInfo.pMappedData == nullptr) {
@@ -4297,7 +4263,7 @@ SwapchainImpl::~SwapchainImpl()
     textures.clear();
 
     if (swapchain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(device->device, swapchain, nullptr);
+        device->functions.vkDestroySwapchainKHR(device->device, swapchain, nullptr);
         swapchain = VK_NULL_HANDLE;
     }
 
@@ -4346,7 +4312,7 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
     }
 
     VkBool32 presentSupported = VK_FALSE;
-    VkResult vkResult = vkGetPhysicalDeviceSurfaceSupportKHR(
+    VkResult vkResult = device->instanceFunctions.vkGetPhysicalDeviceSurfaceSupportKHR(
         device->physicalDevice,
         device->graphicsFamily,
         surface,
@@ -4359,19 +4325,19 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
     }
 
     VkSurfaceCapabilitiesKHR capabilities{};
-    vkResult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device->physicalDevice, surface, &capabilities);
+    vkResult = device->instanceFunctions.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device->physicalDevice, surface, &capabilities);
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
 
     uint32_t surfaceFormatCount = 0;
-    vkResult = vkGetPhysicalDeviceSurfaceFormatsKHR(device->physicalDevice, surface, &surfaceFormatCount, nullptr);
+    vkResult = device->instanceFunctions.vkGetPhysicalDeviceSurfaceFormatsKHR(device->physicalDevice, surface, &surfaceFormatCount, nullptr);
     if (vkResult != VK_SUCCESS) { return resultFromVk(vkResult); }
     if (surfaceFormatCount == 0) {
         return makeError(Error::Unsupported);
     }
     std::vector<VkSurfaceFormatKHR> surfaceFormats(surfaceFormatCount);
-    vkResult = vkGetPhysicalDeviceSurfaceFormatsKHR(
+    vkResult = device->instanceFunctions.vkGetPhysicalDeviceSurfaceFormatsKHR(
         device->physicalDevice,
         surface,
         &surfaceFormatCount,
@@ -4392,10 +4358,10 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
         static_cast<int>(selectedFormat.format), static_cast<int>(selectedFormat.colorSpace));
 
     uint32_t presentModeCount = 0;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(device->physicalDevice, surface, &presentModeCount, nullptr);
+    device->instanceFunctions.vkGetPhysicalDeviceSurfacePresentModesKHR(device->physicalDevice, surface, &presentModeCount, nullptr);
     std::vector<VkPresentModeKHR> presentModes(presentModeCount);
     if (presentModeCount > 0) {
-        vkGetPhysicalDeviceSurfacePresentModesKHR(
+        device->instanceFunctions.vkGetPhysicalDeviceSurfacePresentModesKHR(
             device->physicalDevice,
             surface,
             &presentModeCount,
@@ -4453,12 +4419,12 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
         .clipped = VK_TRUE,
     };
 
-    vkResult = vkCreateSwapchainKHR(device->device, &createInfo, nullptr, &swapchain);
+    vkResult = device->functions.vkCreateSwapchainKHR(device->device, &createInfo, nullptr, &swapchain);
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
 
-    if (outputMode == DisplayOutputMode::HDR10_PQ && device->hdrMetadataExtension && vkSetHdrMetadataEXT) {
+    if (outputMode == DisplayOutputMode::HDR10_PQ && device->hdrMetadataExtension && device->functions.vkSetHdrMetadataEXT) {
         const float peak = std::isfinite(desc.peakNits) ? std::clamp(desc.peakNits, 80.0f, 10000.0f) : 1000.0f;
         VkHdrMetadataEXT metadata{.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
             .displayPrimaryRed = {0.708f, 0.292f}, .displayPrimaryGreen = {0.170f, 0.797f},
@@ -4466,13 +4432,13 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
             .maxLuminance = peak, .minLuminance = 0.0f,
             .maxContentLightLevel = 0.0f, .maxFrameAverageLightLevel = 0.0f};
         // Content light levels are unknown until measured, not guessed from mastering peak.
-        vkSetHdrMetadataEXT(device->device, 1, &swapchain, &metadata);
+        device->functions.vkSetHdrMetadataEXT(device->device, 1, &swapchain, &metadata);
     }
 
     uint32_t actualImageCount = 0;
-    vkGetSwapchainImagesKHR(device->device, swapchain, &actualImageCount, nullptr);
+    device->functions.vkGetSwapchainImagesKHR(device->device, swapchain, &actualImageCount, nullptr);
     std::vector<VkImage> images(actualImageCount);
-    vkGetSwapchainImagesKHR(device->device, swapchain, &actualImageCount, images.data());
+    device->functions.vkGetSwapchainImagesKHR(device->device, swapchain, &actualImageCount, images.data());
 
     vkFormat = selectedFormat.format;
     format = fromVkFormat(selectedFormat.format);
@@ -4636,7 +4602,7 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
     const Result<> result = [&] {
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::nativeSubmitNs);
         if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->nativeSubmits; }
-        const auto nativeResult = vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence);
+        const auto nativeResult = impl_->device->functions.vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence);
         vulkan::emitTrace({.kind = vulkan::TraceKind::Submit, .device = impl_->device->device,
             .queue = impl_->queue, .queueFamily = impl_->familyIndex, .submit = &submitInfo, .result = nativeResult});
         return resultFromVk(nativeResult);
@@ -4669,7 +4635,7 @@ Result<> Queue::waitIdle()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    return resultFromVk(vkQueueWaitIdle(impl_->queue));
+    return resultFromVk(impl_->device->functions.vkQueueWaitIdle(impl_->queue));
 }
 
 QueueType Queue::type() const
@@ -4736,7 +4702,7 @@ Result<> Fence::wait(uint64_t timeoutNanoseconds)
         profiling::NsightCategory::FenceWait,
         timeoutNanoseconds);
 
-    const VkResult result = vkWaitForFences(
+    const VkResult result = impl_->device->functions.vkWaitForFences(
         impl_->device->device,
         1,
         &impl_->fence,
@@ -4753,13 +4719,13 @@ Result<> Fence::reset()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    return resultFromVk(vkResetFences(impl_->device->device, 1, &impl_->fence));
+    return resultFromVk(impl_->device->functions.vkResetFences(impl_->device->device, 1, &impl_->fence));
 }
 
 bool Fence::isSignaled() const
 {
     return impl_ != nullptr &&
-        vkGetFenceStatus(impl_->device->device, impl_->fence) == VK_SUCCESS;
+        impl_->device->functions.vkGetFenceStatus(impl_->device->device, impl_->fence) == VK_SUCCESS;
 }
 
 TimestampQueryPool::TimestampQueryPool(std::unique_ptr<detail::TimestampQueryPoolImpl> impl)
@@ -4785,8 +4751,8 @@ Result<> TimestampQueryPool::reset(uint32_t firstQuery, uint32_t queryCount)
         queryCount > impl_->desc.queryCount - firstQuery) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device->device);
-    vkResetQueryPool(impl_->device->device, impl_->queryPool, firstQuery, queryCount);
+
+    impl_->device->functions.vkResetQueryPool(impl_->device->device, impl_->queryPool, firstQuery, queryCount);
     return {};
 }
 
@@ -4807,8 +4773,8 @@ Result<> TimestampQueryPool::readResults(
         uint64_t available = 0;
     };
     std::vector<RawTimestampQueryResult> rawResults(outResults.size());
-    activateVolkDevice(impl_->device->device);
-    const VkResult result = vkGetQueryPoolResults(
+
+    const VkResult result = impl_->device->functions.vkGetQueryPoolResults(
         impl_->device->device,
         impl_->queryPool,
         firstQuery,
@@ -4882,8 +4848,7 @@ Result<> RayTracingAccelerationStructureCompactionQueryPool::readResults(
         return makeError(Error::InvalidArgument);
     }
 
-    activateVolkDevice(impl_->device->device);
-    return resultFromVk(vkGetQueryPoolResults(
+    return resultFromVk(impl_->device->functions.vkGetQueryPoolResults(
         impl_->device->device,
         impl_->queryPool,
         firstQuery,
@@ -4923,7 +4888,7 @@ Result<> Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
         .pSemaphores = &impl_->semaphore,
         .pValues = &value,
     };
-    const VkResult result = vkWaitSemaphores(impl_->device->device, &waitInfo, timeoutNanoseconds);
+    const VkResult result = impl_->device->functions.vkWaitSemaphores(impl_->device->device, &waitInfo, timeoutNanoseconds);
     if (result == VK_TIMEOUT) {
         return makeError(Error::Failure);
     }
@@ -4941,7 +4906,7 @@ Result<> Semaphore::signal(uint64_t value)
         .semaphore = impl_->semaphore,
         .value = value,
     };
-    return resultFromVk(vkSignalSemaphore(impl_->device->device, &signalInfo));
+    return resultFromVk(impl_->device->functions.vkSignalSemaphore(impl_->device->device, &signalInfo));
 }
 
 uint64_t Semaphore::currentValue() const
@@ -4951,7 +4916,7 @@ uint64_t Semaphore::currentValue() const
     }
 
     uint64_t value = 0;
-    const VkResult result = vkGetSemaphoreCounterValue(impl_->device->device, impl_->semaphore, &value);
+    const VkResult result = impl_->device->functions.vkGetSemaphoreCounterValue(impl_->device->device, impl_->semaphore, &value);
     if (result != VK_SUCCESS) {
         return 0;
     }
@@ -5361,11 +5326,11 @@ GraphicsPipelineImpl::~GraphicsPipelineImpl()
 {
     if (device != nullptr) {
         if (pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device->device, pipeline, nullptr);
+            device->functions.vkDestroyPipeline(device->device, pipeline, nullptr);
             pipeline = VK_NULL_HANDLE;
         }
         if (layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device->device, layout, nullptr);
+            device->functions.vkDestroyPipelineLayout(device->device, layout, nullptr);
             layout = VK_NULL_HANDLE;
         }
     }
@@ -5397,11 +5362,11 @@ ComputePipelineImpl::~ComputePipelineImpl()
 {
     if (device != nullptr) {
         if (pipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device->device, pipeline, nullptr);
+            device->functions.vkDestroyPipeline(device->device, pipeline, nullptr);
             pipeline = VK_NULL_HANDLE;
         }
         if (layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device->device, layout, nullptr);
+            device->functions.vkDestroyPipelineLayout(device->device, layout, nullptr);
             layout = VK_NULL_HANDLE;
         }
     }
@@ -5434,11 +5399,11 @@ GraphicsShaderObjectProgramImpl::~GraphicsShaderObjectProgramImpl()
 {
     if (device != nullptr) {
         if (vertexShader != VK_NULL_HANDLE) {
-            vkDestroyShaderEXT(device->device, vertexShader, nullptr);
+            device->functions.vkDestroyShaderEXT(device->device, vertexShader, nullptr);
             vertexShader = VK_NULL_HANDLE;
         }
         if (fragmentShader != VK_NULL_HANDLE) {
-            vkDestroyShaderEXT(device->device, fragmentShader, nullptr);
+            device->functions.vkDestroyShaderEXT(device->device, fragmentShader, nullptr);
             fragmentShader = VK_NULL_HANDLE;
         }
     }
@@ -5690,7 +5655,7 @@ Result<> BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .buffer = buffer.impl_->buffer,
     };
-    const VkDeviceAddress address = vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+    const VkDeviceAddress address = impl_->device->functions.vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
         address,
@@ -5722,7 +5687,7 @@ Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, const BufferSli
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .buffer = buffer.allocation_->buffer,
     };
-    const VkDeviceAddress address = vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+    const VkDeviceAddress address = impl_->device->functions.vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
         address,
@@ -5747,7 +5712,6 @@ Result<> BindlessHeap::writeAccelerationStructure(
         return makeError(Error::InvalidArgument);
     }
 
-    activateVolkDevice(impl_->device->device);
     const VkDeviceAddress address = accelerationStructure.deviceAddress();
     const VkResult result = accelerationStructure.desc().topLevelBackend == RayTracingTopLevelBackend::Partitioned
         ? impl_->heap.writePartitionedAccelerationStructureDescriptor(handle, address, 0, impl_->resourceHeap.mapped)
@@ -5778,10 +5742,10 @@ CommandBuffer::~CommandBuffer()
             // lifetimes. Callers must still complete work before destruction.
             // TODO: Remove after an updated Nsight passes the full-size capture
             // and resize regression without reuse; see the capture investigation.
-            (void)vkResetCommandBuffer(impl_->commandBuffer, 0);
+            (void)impl_->device->functions.vkResetCommandBuffer(impl_->commandBuffer, 0);
             impl_->capturePool->availableBuffers.push_back(impl_->commandBuffer);
         } else {
-            vkFreeCommandBuffers(impl_->device->device, impl_->pool, 1, &impl_->commandBuffer);
+            impl_->device->functions.vkFreeCommandBuffers(impl_->device->device, impl_->pool, 1, &impl_->commandBuffer);
         }
         impl_->commandBuffer = VK_NULL_HANDLE;
     }
@@ -5839,7 +5803,7 @@ Result<> CommandBuffer::begin(RenderFrameContext* frameContext)
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     impl_->synchronizationStats = {};
-    Result<> result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
+    Result<> result = resultFromVk(impl_->device->functions.vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
     recording_ = result.has_value();
     if (result) {
         vulkan::emitTrace({.kind = vulkan::TraceKind::CommandBegin, .device = impl_->device->device,
@@ -5862,7 +5826,7 @@ Result<> CommandBuffer::end()
     if (impl_ == nullptr || !recording_ || !submission_) {
         return makeError(Error::InvalidArgument);
     }
-    Result<> result = resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
+    Result<> result = resultFromVk(impl_->device->functions.vkEndCommandBuffer(impl_->commandBuffer));
     if (result) {
         recording_ = false;
         submission_->finished.store(true, std::memory_order_release);
@@ -5919,7 +5883,7 @@ Result<> CommandBuffer::resetTimestampQueries(
         return makeError(Error::InvalidArgument);
     }
 
-    vkCmdResetQueryPool(
+    impl_->device->functions.vkCmdResetQueryPool(
         impl_->commandBuffer,
         queryPool.impl_->queryPool,
         firstQuery,
@@ -5942,7 +5906,7 @@ Result<> CommandBuffer::writeTimestamp(
 
     const auto nativeStage = toVkPipelineStages(stage);
     if (!nativeStage || (nativeStage & (nativeStage - 1)) != 0) { return makeError(Error::InvalidArgument); }
-    vkCmdWriteTimestamp2(
+    impl_->device->functions.vkCmdWriteTimestamp2(
         impl_->commandBuffer,
         nativeStage,
         queryPool.impl_->queryPool,
@@ -5969,7 +5933,7 @@ Result<> CommandBuffer::resetRayTracingAccelerationStructureCompactionQueries(
         return makeError(Error::Unsupported);
     }
 
-    vkCmdResetQueryPool(
+    impl_->device->functions.vkCmdResetQueryPool(
         impl_->commandBuffer,
         queryPool.impl_->queryPool,
         firstQuery,
@@ -6013,11 +5977,11 @@ Result<> CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &barrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
 
     const VkAccelerationStructureKHR nativeAccelerationStructure =
         accelerationStructure.impl_->accelerationStructure;
-    vkCmdWriteAccelerationStructuresPropertiesKHR(
+    impl_->device->functions.vkCmdWriteAccelerationStructuresPropertiesKHR(
         impl_->commandBuffer,
         1,
         &nativeAccelerationStructure,
@@ -6130,7 +6094,7 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
     const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .memoryBarrierCount = uint32_t(memory.size()), .pMemoryBarriers = memory.data(),
         .imageMemoryBarrierCount = uint32_t(images.size()), .pImageMemoryBarriers = images.data()};
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency, &desc);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency, &desc);
     auto& stats = impl_->synchronizationStats;
     ++stats.calls; stats.memoryBarriers += memory.size(); stats.imageTransitions += images.size(); stats.coalescedResources += coalesced;
     return {};
@@ -6154,7 +6118,7 @@ Result<> CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice&
     };
     const VkCopyDeviceMemoryInfoKHR copyInfo{.sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_INFO_KHR,
         .regionCount = 1, .pRegions = &copyRegion};
-    vkCmdCopyMemoryKHR(impl_->commandBuffer, &copyInfo);
+    impl_->device->functions.vkCmdCopyMemoryKHR(impl_->commandBuffer, &copyInfo);
     return {};
 }
 
@@ -6214,7 +6178,7 @@ Result<> CommandBuffer::processDecompressionBuffers(std::span<const BufferDecomp
         .regionCount = uint32_t(native.size()),
         .pRegions = native.data(),
     };
-    if (record) { vkCmdDecompressMemoryEXT(impl_->commandBuffer, &info); }
+    if (record) { impl_->device->functions.vkCmdDecompressMemoryEXT(impl_->commandBuffer, &info); }
     return {};
 }
 
@@ -6255,7 +6219,7 @@ void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
         .extent = {desc.width, desc.height, desc.depth},
     };
 
-    vkCmdCopyImage(
+    impl_->device->functions.vkCmdCopyImage(
         impl_->commandBuffer,
         desc.source->impl_->image,
         imageLayout(ResourceState::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
@@ -6316,7 +6280,7 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
         .regionCount = 1,
         .pRegions = &copyRegion,
     };
-    vkCmdCopyImageToMemoryKHR(impl_->commandBuffer, &copyInfo);
+    impl_->device->functions.vkCmdCopyImageToMemoryKHR(impl_->commandBuffer, &copyInfo);
 }
 
 void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
@@ -6370,7 +6334,7 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         .regionCount = 1,
         .pRegions = &copyRegion,
     };
-    vkCmdCopyMemoryToImageKHR(impl_->commandBuffer, &copyInfo);
+    impl_->device->functions.vkCmdCopyMemoryToImageKHR(impl_->commandBuffer, &copyInfo);
 }
 
 void CommandBuffer::hostWriteBarrier()
@@ -6391,7 +6355,7 @@ void CommandBuffer::hostWriteBarrier()
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &barrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
 }
 
 void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color)
@@ -6412,7 +6376,7 @@ void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, con
         .baseArrayLayer = 0,
         .layerCount = desc.layerCount,
     };
-    vkCmdClearColorImage(
+    impl_->device->functions.vkCmdClearColorImage(
         impl_->commandBuffer,
         texture.impl_->image,
         imageLayout(state, impl_->device->capabilities.unifiedImageLayouts),
@@ -6494,7 +6458,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
         .pColorAttachments = colorAttachments.data(),
         .pDepthAttachment = depthAttachmentPtr,
     };
-    vkCmdBeginRendering(impl_->commandBuffer, &renderingInfo);
+    impl_->device->functions.vkCmdBeginRendering(impl_->commandBuffer, &renderingInfo);
     if (auto* capture = profiling::SchedulingCapture::active) { capture->beginRendering(this); }
     return {};
 }
@@ -6522,13 +6486,13 @@ void CommandBuffer::clearColorAttachment(uint32_t attachmentIndex, const ColorVa
         .layerCount = 1,
     };
 
-    vkCmdClearAttachments(impl_->commandBuffer, 1, &attachment, 1, &clearRect);
+    impl_->device->functions.vkCmdClearAttachments(impl_->commandBuffer, 1, &attachment, 1, &clearRect);
 }
 
 void CommandBuffer::endRendering()
 {
     if (impl_ != nullptr) {
-        vkCmdEndRendering(impl_->commandBuffer);
+        impl_->device->functions.vkCmdEndRendering(impl_->commandBuffer);
         if (auto* capture = profiling::SchedulingCapture::active) { capture->endRendering(this); }
     }
 }
@@ -6549,9 +6513,9 @@ void CommandBuffer::setViewport(const Viewport& viewport)
     };
     impl_->currentViewport = viewport;
     impl_->hasCurrentViewport = true;
-    vkCmdSetViewport(impl_->commandBuffer, 0, 1, &vkViewport);
-    if (impl_->currentGraphicsShaderObjectBound && vkCmdSetViewportWithCountEXT != nullptr) {
-        vkCmdSetViewportWithCountEXT(impl_->commandBuffer, 1, &vkViewport);
+    impl_->device->functions.vkCmdSetViewport(impl_->commandBuffer, 0, 1, &vkViewport);
+    if (impl_->currentGraphicsShaderObjectBound && impl_->device->functions.vkCmdSetViewportWithCountEXT != nullptr) {
+        impl_->device->functions.vkCmdSetViewportWithCountEXT(impl_->commandBuffer, 1, &vkViewport);
     }
 }
 
@@ -6567,9 +6531,9 @@ void CommandBuffer::setScissor(const Rect& scissor)
     };
     impl_->currentScissor = scissor;
     impl_->hasCurrentScissor = true;
-    vkCmdSetScissor(impl_->commandBuffer, 0, 1, &vkScissor);
-    if (impl_->currentGraphicsShaderObjectBound && vkCmdSetScissorWithCountEXT != nullptr) {
-        vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &vkScissor);
+    impl_->device->functions.vkCmdSetScissor(impl_->commandBuffer, 0, 1, &vkScissor);
+    if (impl_->currentGraphicsShaderObjectBound && impl_->device->functions.vkCmdSetScissorWithCountEXT != nullptr) {
+        impl_->device->functions.vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &vkScissor);
     }
 }
 
@@ -6579,18 +6543,18 @@ void CommandBuffer::setDepthStencilState(const DepthStencilState& state)
         return;
     }
 
-    if (vkCmdSetDepthTestEnableEXT != nullptr) {
-        vkCmdSetDepthTestEnableEXT(
+    if (impl_->device->functions.vkCmdSetDepthTestEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthTestEnableEXT(
             impl_->commandBuffer,
             state.depthTestEnable ? VK_TRUE : VK_FALSE);
     }
-    if (vkCmdSetDepthWriteEnableEXT != nullptr) {
-        vkCmdSetDepthWriteEnableEXT(
+    if (impl_->device->functions.vkCmdSetDepthWriteEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthWriteEnableEXT(
             impl_->commandBuffer,
             state.depthWriteEnable ? VK_TRUE : VK_FALSE);
     }
-    if (vkCmdSetDepthCompareOpEXT != nullptr) {
-        vkCmdSetDepthCompareOpEXT(
+    if (impl_->device->functions.vkCmdSetDepthCompareOpEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthCompareOpEXT(
             impl_->commandBuffer,
             toVkCompareOp(state.depthCompareOp));
     }
@@ -6603,7 +6567,7 @@ void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
     if (!commandBuffer.currentGraphicsShaderObjectBound ||
         commandBuffer.device == nullptr ||
         !commandBuffer.device->shaderObjectEnabled ||
-        vkCmdBindShadersEXT == nullptr) {
+        commandBuffer.device->functions.vkCmdBindShadersEXT == nullptr) {
         commandBuffer.currentGraphicsShaderObjectBound = false;
         commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap = false;
         return;
@@ -6616,7 +6580,7 @@ void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
         VK_SHADER_STAGE_GEOMETRY_BIT,
         VK_SHADER_STAGE_FRAGMENT_BIT,
     };
-    vkCmdBindShadersEXT(
+    commandBuffer.device->functions.vkCmdBindShadersEXT(
         commandBuffer.commandBuffer,
         static_cast<uint32_t>(stages.size()),
         stages.data(),
@@ -6639,7 +6603,7 @@ void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer)
         commandBuffer.device != nullptr &&
         commandBuffer.device->bindlessDescriptorHeapEnabled &&
         commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= payload.size() &&
-        vkCmdPushDataEXT != nullptr) {
+        commandBuffer.device->functions.vkCmdPushDataEXT != nullptr) {
         const VkPushDataInfoEXT pushInfo{
             .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
             .offset = 0,
@@ -6648,7 +6612,7 @@ void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer)
                 .size = payload.size(),
             },
         };
-        vkCmdPushDataEXT(commandBuffer.commandBuffer, &pushInfo);
+        commandBuffer.device->functions.vkCmdPushDataEXT(commandBuffer.commandBuffer, &pushInfo);
     }
 }
 
@@ -6674,7 +6638,7 @@ Result<> CommandBuffer::bindExecutionImpl(
         auto result = retainResource(execution.compute_);
         if (!result) { return result; }
         const auto& pipeline = *execution.compute_;
-        vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+        impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
         impl_->currentComputePipeline = pipeline.pipeline;
         impl_->currentComputePipelineLayout = pipeline.layout;
         impl_->currentComputePipelineUsesBindlessHeap = pipeline.usesBindlessHeap;
@@ -6683,11 +6647,11 @@ Result<> CommandBuffer::bindExecutionImpl(
         if (!result) { return result; }
         const auto& pipeline = *execution.graphics_;
         clearGraphicsShaderObjects(*impl_);
-        vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
+        impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
         impl_->currentGraphicsPipelineLayout = pipeline.layout;
         impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.usesBindlessHeap;
     } else {
-        if (!impl_->device->shaderObjectEnabled || !vkCmdBindShadersEXT) { return makeError(Error::Unsupported); }
+        if (!impl_->device->shaderObjectEnabled || !impl_->device->functions.vkCmdBindShadersEXT) { return makeError(Error::Unsupported); }
         auto result = retainResource(execution.shaders_);
         if (!result) { return result; }
         const auto& program = *execution.shaders_;
@@ -6695,23 +6659,23 @@ Result<> CommandBuffer::bindExecutionImpl(
             VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
             VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
         const std::array<VkShaderEXT, 5> shaders{program.vertexShader, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, program.fragmentShader};
-        vkCmdBindShadersEXT(impl_->commandBuffer, uint32_t(stages.size()), stages.data(), shaders.data());
+        impl_->device->functions.vkCmdBindShadersEXT(impl_->commandBuffer, uint32_t(stages.size()), stages.data(), shaders.data());
         impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
         impl_->currentGraphicsPipelineUsesBindlessHeap = false;
         impl_->currentGraphicsShaderObjectBound = true;
         impl_->currentGraphicsShaderObjectUsesBindlessHeap = program.usesBindlessHeap;
         setGraphicsShaderObjectState();
         setDepthStencilState(execution.raster_.depthStencil);
-        vkCmdSetCullModeEXT(impl_->commandBuffer, toVkCullMode(execution.raster_.rasterization.cullMode));
-        vkCmdSetFrontFaceEXT(impl_->commandBuffer, toVkFrontFace(execution.raster_.rasterization.frontFace));
+        impl_->device->functions.vkCmdSetCullModeEXT(impl_->commandBuffer, toVkCullMode(execution.raster_.rasterization.cullMode));
+        impl_->device->functions.vkCmdSetFrontFaceEXT(impl_->commandBuffer, toVkFrontFace(execution.raster_.rasterization.frontFace));
         for (uint32_t i = 0; i < execution.raster_.colorAttachmentCount; ++i) {
             const VkBool32 blend = VK_FALSE;
             const VkColorBlendEquationEXT equation{VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD,
                 VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD};
             const VkColorComponentFlags mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-            vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, i, 1, &blend);
-            vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, i, 1, &equation);
-            vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, i, 1, &mask);
+            impl_->device->functions.vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, i, 1, &blend);
+            impl_->device->functions.vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, i, 1, &equation);
+            impl_->device->functions.vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, i, 1, &mask);
         }
 
     }
@@ -6736,67 +6700,67 @@ void CommandBuffer::setGraphicsShaderObjectState()
         return;
     }
 
-    if (vkCmdSetVertexInputEXT != nullptr) {
-        vkCmdSetVertexInputEXT(impl_->commandBuffer, 0, nullptr, 0, nullptr);
+    if (impl_->device->functions.vkCmdSetVertexInputEXT != nullptr) {
+        impl_->device->functions.vkCmdSetVertexInputEXT(impl_->commandBuffer, 0, nullptr, 0, nullptr);
     }
-    if (vkCmdSetPrimitiveTopologyEXT != nullptr) {
-        vkCmdSetPrimitiveTopologyEXT(impl_->commandBuffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    if (impl_->device->functions.vkCmdSetPrimitiveTopologyEXT != nullptr) {
+        impl_->device->functions.vkCmdSetPrimitiveTopologyEXT(impl_->commandBuffer, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
     }
-    if (vkCmdSetPrimitiveRestartEnableEXT != nullptr) {
-        vkCmdSetPrimitiveRestartEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetPrimitiveRestartEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetPrimitiveRestartEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetRasterizerDiscardEnableEXT != nullptr) {
-        vkCmdSetRasterizerDiscardEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetRasterizerDiscardEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetRasterizerDiscardEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetPolygonModeEXT != nullptr) {
-        vkCmdSetPolygonModeEXT(impl_->commandBuffer, VK_POLYGON_MODE_FILL);
+    if (impl_->device->functions.vkCmdSetPolygonModeEXT != nullptr) {
+        impl_->device->functions.vkCmdSetPolygonModeEXT(impl_->commandBuffer, VK_POLYGON_MODE_FILL);
     }
-    if (vkCmdSetCullModeEXT != nullptr) {
-        vkCmdSetCullModeEXT(impl_->commandBuffer, VK_CULL_MODE_NONE);
+    if (impl_->device->functions.vkCmdSetCullModeEXT != nullptr) {
+        impl_->device->functions.vkCmdSetCullModeEXT(impl_->commandBuffer, VK_CULL_MODE_NONE);
     }
-    if (vkCmdSetFrontFaceEXT != nullptr) {
-        vkCmdSetFrontFaceEXT(impl_->commandBuffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    if (impl_->device->functions.vkCmdSetFrontFaceEXT != nullptr) {
+        impl_->device->functions.vkCmdSetFrontFaceEXT(impl_->commandBuffer, VK_FRONT_FACE_COUNTER_CLOCKWISE);
     }
-    if (vkCmdSetDepthClampEnableEXT != nullptr) {
-        vkCmdSetDepthClampEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetDepthClampEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthClampEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetDepthBiasEnableEXT != nullptr) {
-        vkCmdSetDepthBiasEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetDepthBiasEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthBiasEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    vkCmdSetLineWidth(impl_->commandBuffer, 1.0f);
-    if (vkCmdSetRasterizationSamplesEXT != nullptr) {
-        vkCmdSetRasterizationSamplesEXT(impl_->commandBuffer, VK_SAMPLE_COUNT_1_BIT);
+    impl_->device->functions.vkCmdSetLineWidth(impl_->commandBuffer, 1.0f);
+    if (impl_->device->functions.vkCmdSetRasterizationSamplesEXT != nullptr) {
+        impl_->device->functions.vkCmdSetRasterizationSamplesEXT(impl_->commandBuffer, VK_SAMPLE_COUNT_1_BIT);
     }
-    if (vkCmdSetSampleMaskEXT != nullptr) {
+    if (impl_->device->functions.vkCmdSetSampleMaskEXT != nullptr) {
         const VkSampleMask sampleMask = 0xffffffffu;
-        vkCmdSetSampleMaskEXT(impl_->commandBuffer, VK_SAMPLE_COUNT_1_BIT, &sampleMask);
+        impl_->device->functions.vkCmdSetSampleMaskEXT(impl_->commandBuffer, VK_SAMPLE_COUNT_1_BIT, &sampleMask);
     }
-    if (vkCmdSetAlphaToCoverageEnableEXT != nullptr) {
-        vkCmdSetAlphaToCoverageEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetAlphaToCoverageEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetAlphaToCoverageEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetAlphaToOneEnableEXT != nullptr) {
-        vkCmdSetAlphaToOneEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetAlphaToOneEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetAlphaToOneEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetDepthTestEnableEXT != nullptr) {
-        vkCmdSetDepthTestEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetDepthTestEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthTestEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetDepthWriteEnableEXT != nullptr) {
-        vkCmdSetDepthWriteEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetDepthWriteEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthWriteEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetDepthCompareOpEXT != nullptr) {
-        vkCmdSetDepthCompareOpEXT(impl_->commandBuffer, VK_COMPARE_OP_ALWAYS);
+    if (impl_->device->functions.vkCmdSetDepthCompareOpEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthCompareOpEXT(impl_->commandBuffer, VK_COMPARE_OP_ALWAYS);
     }
-    if (vkCmdSetDepthBoundsTestEnableEXT != nullptr) {
-        vkCmdSetDepthBoundsTestEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetDepthBoundsTestEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetDepthBoundsTestEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetStencilTestEnableEXT != nullptr) {
-        vkCmdSetStencilTestEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetStencilTestEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetStencilTestEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetColorBlendEnableEXT != nullptr) {
+    if (impl_->device->functions.vkCmdSetColorBlendEnableEXT != nullptr) {
         const VkBool32 blendEnable = VK_FALSE;
-        vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, 0, 1, &blendEnable);
+        impl_->device->functions.vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, 0, 1, &blendEnable);
     }
-    if (vkCmdSetColorBlendEquationEXT != nullptr) {
+    if (impl_->device->functions.vkCmdSetColorBlendEquationEXT != nullptr) {
         const VkColorBlendEquationEXT blendEquation{
             .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
             .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
@@ -6805,24 +6769,24 @@ void CommandBuffer::setGraphicsShaderObjectState()
             .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
             .alphaBlendOp = VK_BLEND_OP_ADD,
         };
-        vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, 0, 1, &blendEquation);
+        impl_->device->functions.vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, 0, 1, &blendEquation);
     }
-    if (vkCmdSetColorWriteMaskEXT != nullptr) {
+    if (impl_->device->functions.vkCmdSetColorWriteMaskEXT != nullptr) {
         const VkColorComponentFlags colorWriteMask =
             VK_COLOR_COMPONENT_R_BIT |
             VK_COLOR_COMPONENT_G_BIT |
             VK_COLOR_COMPONENT_B_BIT |
             VK_COLOR_COMPONENT_A_BIT;
-        vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, 0, 1, &colorWriteMask);
+        impl_->device->functions.vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, 0, 1, &colorWriteMask);
     }
-    if (vkCmdSetLogicOpEnableEXT != nullptr) {
-        vkCmdSetLogicOpEnableEXT(impl_->commandBuffer, VK_FALSE);
+    if (impl_->device->functions.vkCmdSetLogicOpEnableEXT != nullptr) {
+        impl_->device->functions.vkCmdSetLogicOpEnableEXT(impl_->commandBuffer, VK_FALSE);
     }
-    if (vkCmdSetLogicOpEXT != nullptr) {
-        vkCmdSetLogicOpEXT(impl_->commandBuffer, VK_LOGIC_OP_COPY);
+    if (impl_->device->functions.vkCmdSetLogicOpEXT != nullptr) {
+        impl_->device->functions.vkCmdSetLogicOpEXT(impl_->commandBuffer, VK_LOGIC_OP_COPY);
     }
 
-    if (impl_->hasCurrentViewport && vkCmdSetViewportWithCountEXT != nullptr) {
+    if (impl_->hasCurrentViewport && impl_->device->functions.vkCmdSetViewportWithCountEXT != nullptr) {
         const VkViewport viewport{
             .x = impl_->currentViewport.x,
             .y = impl_->currentViewport.y,
@@ -6831,14 +6795,14 @@ void CommandBuffer::setGraphicsShaderObjectState()
             .minDepth = impl_->currentViewport.minDepth,
             .maxDepth = impl_->currentViewport.maxDepth,
         };
-        vkCmdSetViewportWithCountEXT(impl_->commandBuffer, 1, &viewport);
+        impl_->device->functions.vkCmdSetViewportWithCountEXT(impl_->commandBuffer, 1, &viewport);
     }
-    if (impl_->hasCurrentScissor && vkCmdSetScissorWithCountEXT != nullptr) {
+    if (impl_->hasCurrentScissor && impl_->device->functions.vkCmdSetScissorWithCountEXT != nullptr) {
         const VkRect2D scissor{
             .offset = {impl_->currentScissor.x, impl_->currentScissor.y},
             .extent = {impl_->currentScissor.width, impl_->currentScissor.height},
         };
-        vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &scissor);
+        impl_->device->functions.vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &scissor);
     }
 }
 
@@ -6890,7 +6854,7 @@ Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& r
         impl_->currentComputePipelineUsesBindlessHeap = usesHeap;
         impl_->currentBindlessHeap = heap;
         impl_->currentBindlessUserData = std::move(data);
-        if (pipeline) { vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
+        if (pipeline) { impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
         if (heap) {
             heap->heap.bind(impl_->commandBuffer, heap->samplerHeap.address, heap->resourceHeap.address);
             pushCurrentBindlessData(*impl_);
@@ -6906,7 +6870,7 @@ Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& r
 void CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 {
     if (impl_ != nullptr) {
-        vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+        impl_->device->functions.vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
         if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
     }
 }
@@ -6917,8 +6881,8 @@ void CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, ui
         return;
     }
 #ifdef VK_EXT_mesh_shader
-    if (vkCmdDrawMeshTasksEXT != nullptr) {
-        vkCmdDrawMeshTasksEXT(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
+    if (impl_->device->functions.vkCmdDrawMeshTasksEXT != nullptr) {
+        impl_->device->functions.vkCmdDrawMeshTasksEXT(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
         if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
     }
 #endif
@@ -6944,8 +6908,8 @@ void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
         .addressFlags = detail::BufferAddressCommandAccess::flags(buffer),
         .drawCount = 1,
     };
-    if (vkCmdDrawMeshTasksIndirect2EXT != nullptr) {
-        vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
+    if (impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT != nullptr) {
+        impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
         if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
     }
 #endif
@@ -6954,7 +6918,7 @@ void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
 void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 {
     if (impl_ != nullptr && groupCountX > 0 && groupCountY > 0 && groupCountZ > 0) {
-        vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
+        impl_->device->functions.vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
         if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
     }
 }
@@ -6979,7 +6943,7 @@ Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
         .addressRange = {arguments.deviceAddress(), sizeof(VkDispatchIndirectCommand)},
         .addressFlags = detail::BufferAddressCommandAccess::flags(arguments),
     };
-    vkCmdDispatchIndirect2KHR(impl_->commandBuffer, &info);
+    impl_->device->functions.vkCmdDispatchIndirect2KHR(impl_->commandBuffer, &info);
     if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
     return {};
 }
@@ -7198,7 +7162,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &properties,
     };
-    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
+    impl_->device->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
     const uint64_t scratchAlignment = std::max<uint64_t>(
         isMicromap && impl_->device->opacityMicromapExt ? 128 : 1,
         properties.minAccelerationStructureScratchOffsetAlignment);
@@ -7232,7 +7196,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         buildInfo.dstMicromap = desc.destination->impl_->micromap;
         buildInfo.scratchData.deviceAddress = scratchAddress;
         VkMicromapBuildSizesInfoEXT sizes{.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT};
-        vkGetMicromapBuildSizesEXT(impl_->device->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &sizes);
+        impl_->device->functions.vkGetMicromapBuildSizesEXT(impl_->device->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &sizes);
         if (alignedScratchOffset >= desc.scratchBuffer->desc().size ||
             sizes.buildScratchSize > desc.scratchBuffer->desc().size - alignedScratchOffset ||
             sizes.micromapSize > destinationDesc.size) {
@@ -7253,14 +7217,14 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
             .memoryBarrierCount = 1,
             .pMemoryBarriers = &barrier,
         };
-        vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
-        vkCmdBuildMicromapsEXT(impl_->commandBuffer, 1, &buildInfo);
+        vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
+        impl_->device->functions.vkCmdBuildMicromapsEXT(impl_->commandBuffer, 1, &buildInfo);
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
         barrier.srcAccessMask = VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
         barrier.dstAccessMask = VK_ACCESS_2_MICROMAP_READ_BIT_EXT | VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
+        vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
         return {};
     }
 
@@ -7287,7 +7251,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     VkAccelerationStructureBuildSizesInfoKHR sizes{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
     };
-    vkGetAccelerationStructureBuildSizesKHR(
+    impl_->device->functions.vkGetAccelerationStructureBuildSizesKHR(
         impl_->device->device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo,
@@ -7312,7 +7276,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     const VkAccelerationStructureBuildRangeInfoKHR* noRanges = nullptr;
     const auto retained = retainBuildResources();
     if (!retained) { return retained; }
-    vkCmdBuildAccelerationStructuresKHR(
+    impl_->device->functions.vkCmdBuildAccelerationStructuresKHR(
         impl_->commandBuffer,
         1,
         &buildInfo,
@@ -7335,7 +7299,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &barrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
     return {};
 }
 
@@ -7375,7 +7339,7 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &beforeCopyBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, beforeCopyDependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, beforeCopyDependency);
 
     const VkCopyAccelerationStructureInfoKHR copyInfo{
         .sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
@@ -7383,7 +7347,7 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         .dst = destination.impl_->accelerationStructure,
         .mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR,
     };
-    vkCmdCopyAccelerationStructureKHR(impl_->commandBuffer, &copyInfo);
+    impl_->device->functions.vkCmdCopyAccelerationStructureKHR(impl_->commandBuffer, &copyInfo);
 
     const VkMemoryBarrier2 afterCopyBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -7399,7 +7363,7 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &afterCopyBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, afterCopyDependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, afterCopyDependency);
     return {};
 }
 
@@ -7413,7 +7377,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
     if (impl_ == nullptr ||
         impl_->device == nullptr ||
         !impl_->device->clusterAccelerationStructureEnabled ||
-        vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
+        impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
     if (desc.clusters.empty() ||
@@ -7650,8 +7614,8 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &inputBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, inputDependency);
-    vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, inputDependency);
+    impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
 
     const VkMemoryBarrier2 outputBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -7667,7 +7631,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &outputBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, outputDependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, outputDependency);
     return {};
 #endif
 }
@@ -7682,7 +7646,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 #else
     if (!impl_ || !impl_->clusterAccelerationStructureEnabled) { return makeError(Error::Unsupported); }
     if (!maxCount || !maxBytes) { return makeError(Error::InvalidArgument); }
-    activateVolkDevice(impl_->device);
+
     VkClusterAccelerationStructureMoveObjectsInputNV move{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV,
         .type = VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV,
@@ -7694,7 +7658,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
         .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
         .opInput = {.pMoveObjects = &move}};
     VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &input, &sizes);
+    impl_->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &input, &sizes);
     buildSizes = {sizes.accelerationStructureSize, sizes.updateScratchSize, sizes.buildScratchSize};
     return buildSizes;
 #endif
@@ -7726,7 +7690,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     VkPhysicalDeviceClusterAccelerationStructurePropertiesNV limits{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
     VkPhysicalDeviceProperties2 deviceProperties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &limits};
-    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &deviceProperties);
+    impl_->device->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &deviceProperties);
     for (uint32_t i = 0; i < desc.objects.size(); ++i) {
         const auto& item = desc.objects[i];
         if (!item.size || item.sourceBuffer == item.destinationBuffer ||
@@ -7771,7 +7735,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
         .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
         .opInput = {.pMoveObjects = &move}};
     VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &input, &sizes);
+    impl_->device->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &input, &sizes);
     const uint64_t scratchAddress = desc.scratchBuffer->deviceAddress() + desc.scratchBufferOffset;
     // MOVE_OBJECTS reports its scratch requirement in updateScratchSize.
     // Checking buildScratchSize here would allow undersized buffers on NVIDIA.
@@ -7793,7 +7757,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR};
     VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
     VkClusterAccelerationStructureCommandsInfoNV commands{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
         .input = input, .scratchData = scratchAddress,
@@ -7805,12 +7769,12 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
             commands.scratchData, sources.front(), destinations.front(), totalBytes,
             desc.scratchBuffer->desc().size - desc.scratchBufferOffset, sizes.updateScratchSize);
     }
-    vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
+    impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
     return {};
 #endif
 }
@@ -7824,7 +7788,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
 #else
     if (impl_ == nullptr || impl_->device == nullptr ||
         !impl_->device->clusterAccelerationStructureEnabled ||
-        vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
+        impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
     if (desc.maxClusterCountPerAccelerationStructure == 0 ||
@@ -7933,7 +7897,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &properties,
     };
-    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
+    impl_->device->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
     const uint64_t scratchAlignment = std::max<uint64_t>(
         1,
         properties.clusterScratchByteAlignment);
@@ -8008,8 +7972,8 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &inputBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, inputDependency);
-    vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, inputDependency);
+    impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
 
     const VkMemoryBarrier2 outputBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -8026,7 +7990,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &outputBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, outputDependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, outputDependency);
     return {};
 #endif
 }
@@ -8040,7 +8004,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
 #else
     if (impl_ == nullptr || impl_->device == nullptr ||
         !impl_->device->partitionedAccelerationStructureEnabled ||
-        vkCmdBuildPartitionedAccelerationStructuresNV == nullptr) {
+        impl_->device->functions.vkCmdBuildPartitionedAccelerationStructuresNV == nullptr) {
         return makeError(Error::Unsupported);
     }
     if (!recording_ || (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
@@ -8165,8 +8129,8 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &inputBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, inputDependency);
-    vkCmdBuildPartitionedAccelerationStructuresNV(impl_->commandBuffer, &buildInfo);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, inputDependency);
+    impl_->device->functions.vkCmdBuildPartitionedAccelerationStructuresNV(impl_->commandBuffer, &buildInfo);
 
     if (desc.graphManagedSynchronization) { return {}; }
 
@@ -8184,7 +8148,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &outputBarrier,
     };
-    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, outputDependency);
+    vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, outputDependency);
     return {};
 #endif
 }
@@ -8204,7 +8168,7 @@ Result<> CommandPool::reset()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    const Result<> result = resultFromVk(vkResetCommandPool(impl_->device->device, impl_->pool, 0));
+    const Result<> result = resultFromVk(impl_->device->functions.vkResetCommandPool(impl_->device->device, impl_->pool, 0));
     if (result) { impl_->submissions->cancel(); }
     return result;
 }
@@ -8227,7 +8191,7 @@ Result<std::unique_ptr<CommandBuffer>> CommandPool::createCommandBuffer()
         commandBuffer = impl_->availableBuffers.back();
         impl_->availableBuffers.pop_back();
     } else {
-        const VkResult result = vkAllocateCommandBuffers(impl_->device->device, &allocateInfo, &commandBuffer);
+        const VkResult result = impl_->device->functions.vkAllocateCommandBuffers(impl_->device->device, &allocateInfo, &commandBuffer);
         if (result != VK_SUCCESS) {
             return std::unexpected(resultFromVk(result).error());
         }
@@ -8293,7 +8257,7 @@ Result<uint32_t> Swapchain::acquireNextImage(SwapchainSemaphore& semaphore)
         return makeError(Error::InvalidArgument);
     }
 
-    const VkResult result = vkAcquireNextImageKHR(
+    const VkResult result = impl_->device->functions.vkAcquireNextImageKHR(
         impl_->device->device,
         impl_->swapchain,
         kAcquireTimeoutNanoseconds,
@@ -8329,10 +8293,10 @@ Result<> Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphor
     };
 
     if (profiling::nvPerfPassActive()) {
-        const auto idle = vkQueueWaitIdle(queue.impl_->queue);
+        const auto idle = impl_->device->functions.vkQueueWaitIdle(queue.impl_->queue);
         if (idle != VK_SUCCESS) { return resultFromVk(idle); }
     }
-    const VkResult result = vkQueuePresentKHR(queue.impl_->queue, &presentInfo);
+    const VkResult result = impl_->device->functions.vkQueuePresentKHR(queue.impl_->queue, &presentInfo);
     if (result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
         return makeError(Error::OutOfDate);
     }
@@ -8464,13 +8428,13 @@ Result<RayTracingAccelerationStructureProperties> Device::queryRayTracingAcceler
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
     };
     const auto micromapProperties = impl_->capabilities.opacityMicromap
-        ? queryOpacityMicromapProperties(impl_->physicalDevice, impl_->opacityMicromapExt)
+        ? queryOpacityMicromapProperties(impl_->physicalDevice, impl_->opacityMicromapExt, impl_->instanceFunctions.vkGetPhysicalDeviceProperties2)
         : VkPhysicalDeviceOpacityMicromapPropertiesKHR{};
     VkPhysicalDeviceProperties2 properties2{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &properties,
     };
-    vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties2);
+    impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties2);
     queriedProperties = RayTracingAccelerationStructureProperties{
         .scratchAlignment = std::max<uint64_t>(
             impl_->opacityMicromapExt ? 128 : 1,
@@ -8500,7 +8464,6 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
         return makeError(Error::Unsupported);
     }
 
-    activateVolkDevice(impl_->device);
     const bool isMicromap = inputs.type == RayTracingAccelerationStructureType::OpacityMicromap;
     if (!isMicromap && inputs.micromap != nullptr) {
         return makeError(Error::InvalidArgument);
@@ -8631,7 +8594,7 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
         std::vector<VkMicromapUsageEXT> extUsages;
         const auto buildInfo = makeExtMicromapBuildInfo(micromapData, inputs.flags, extUsages);
         VkMicromapBuildSizesInfoEXT sizes{.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT};
-        vkGetMicromapBuildSizesEXT(impl_->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &sizes);
+        impl_->functions.vkGetMicromapBuildSizesEXT(impl_->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &sizes);
         if (sizes.micromapSize == 0) {
             return makeError(Error::Failure);
         }
@@ -8650,7 +8613,7 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
     VkAccelerationStructureBuildSizesInfoKHR sizes{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
     };
-    vkGetAccelerationStructureBuildSizesKHR(
+    impl_->functions.vkGetAccelerationStructureBuildSizesKHR(
         impl_->device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo,
@@ -8708,7 +8671,6 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracin
         return std::unexpected(result.error());
     }
 
-    activateVolkDevice(impl_->device);
     if (isMicromap && impl_->opacityMicromapExt) {
         const VkMicromapCreateInfoEXT micromapInfo{
             .sType = VK_STRUCTURE_TYPE_MICROMAP_CREATE_INFO_EXT,
@@ -8720,7 +8682,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracin
         micromapImpl->device = impl_.get();
         micromapImpl->desc = desc;
         micromapImpl->storage = std::move(storage);
-        const VkResult result = vkCreateMicromapEXT(impl_->device, &micromapInfo, nullptr, &micromapImpl->micromap);
+        const VkResult result = impl_->functions.vkCreateMicromapEXT(impl_->device, &micromapInfo, nullptr, &micromapImpl->micromap);
         if (result != VK_SUCCESS) {
             return std::unexpected(resultFromVk(result).error());
         }
@@ -8736,7 +8698,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracin
     VkResult vkResult;
     if (isMicromap) {
         auto createMicromap = reinterpret_cast<PFN_vkCreateAccelerationStructure2KHR>(
-            vkGetDeviceProcAddr(impl_->device, "vkCreateAccelerationStructure2KHR"));
+            impl_->instanceFunctions.vkGetDeviceProcAddr(impl_->device, "vkCreateAccelerationStructure2KHR"));
         if (createMicromap == nullptr) {
             return makeError(Error::Unsupported);
         }
@@ -8747,7 +8709,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracin
         };
         vkResult = createMicromap(impl_->device, &micromapInfo, nullptr, &accelerationStructure);
     } else {
-        vkResult = vkCreateAccelerationStructureKHR(impl_->device, &createInfo, nullptr, &accelerationStructure);
+        vkResult = impl_->functions.vkCreateAccelerationStructureKHR(impl_->device, &createInfo, nullptr, &accelerationStructure);
     }
     if (vkResult != VK_SUCCESS) {
         return std::unexpected(resultFromVk(vkResult).error());
@@ -8757,11 +8719,11 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracin
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
         .accelerationStructure = accelerationStructure,
     };
-    const VkDeviceAddress address = vkGetAccelerationStructureDeviceAddressKHR(
+    const VkDeviceAddress address = impl_->functions.vkGetAccelerationStructureDeviceAddressKHR(
         impl_->device,
         &addressInfo);
     if (address == 0) {
-        vkDestroyAccelerationStructureKHR(impl_->device, accelerationStructure, nullptr);
+        impl_->functions.vkDestroyAccelerationStructureKHR(impl_->device, accelerationStructure, nullptr);
         return makeError(Error::Failure);
     }
 
@@ -8871,7 +8833,7 @@ Result<ClusterAccelerationStructureProperties> Device::queryClusterAccelerationS
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &properties,
     };
-    vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &deviceProperties);
+    impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &deviceProperties);
     if (properties.clusterByteAlignment == 0 ||
         properties.clusterScratchByteAlignment == 0) {
         return makeError(Error::Failure);
@@ -8912,8 +8874,8 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
 #else
-    activateVolkDevice(impl_->device);
-    if (vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
+
+    if (impl_->functions.vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
         return makeError(Error::Unsupported);
     }
     const VkFormat vertexFormat = toVkFormat(desc.vertexFormat);
@@ -8942,7 +8904,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
     VkAccelerationStructureBuildSizesInfoKHR sizes{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
     };
-    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &inputInfo, &sizes);
+    impl_->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &inputInfo, &sizes);
     buildSizes = ClusterAccelerationStructureBuildSizes{
         .accelerationStructureSize = sizes.accelerationStructureSize,
         .updateScratchSize = sizes.updateScratchSize,
@@ -8969,8 +8931,8 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
 #else
-    activateVolkDevice(impl_->device);
-    if (vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
+
+    if (impl_->functions.vkGetClusterAccelerationStructureBuildSizesNV == nullptr) {
         return makeError(Error::Unsupported);
     }
     VkClusterAccelerationStructureClustersBottomLevelInputNV bottomLevelInput{
@@ -8990,7 +8952,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
     VkAccelerationStructureBuildSizesInfoKHR sizes{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
     };
-    vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &inputInfo, &sizes);
+    impl_->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &inputInfo, &sizes);
     if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
         return makeError(Error::Failure);
     }
@@ -9019,8 +8981,8 @@ Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccel
 #ifndef VK_NV_partitioned_acceleration_structure
     return makeError(Error::Unsupported);
 #else
-    activateVolkDevice(impl_->device);
-    if (vkGetPartitionedAccelerationStructuresBuildSizesNV == nullptr) {
+
+    if (impl_->functions.vkGetPartitionedAccelerationStructuresBuildSizesNV == nullptr) {
         return makeError(Error::Unsupported);
     }
     VkPartitionedAccelerationStructureFlagsNV partitionedFlags{
@@ -9039,7 +9001,7 @@ Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccel
     VkAccelerationStructureBuildSizesInfoKHR sizes{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
     };
-    vkGetPartitionedAccelerationStructuresBuildSizesNV(impl_->device, &inputInfo, &sizes);
+    impl_->functions.vkGetPartitionedAccelerationStructuresBuildSizesNV(impl_->device, &inputInfo, &sizes);
     if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
         return makeError(Error::Failure);
     }
@@ -9190,8 +9152,8 @@ Result<> Device::waitIdle()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
-    return resultFromVk(vkDeviceWaitIdle(impl_->device));
+
+    return resultFromVk(impl_->functions.vkDeviceWaitIdle(impl_->device));
 }
 
 Result<std::unique_ptr<Swapchain>> Device::createSwapchain(const SwapchainDesc& desc)
@@ -9199,7 +9161,7 @@ Result<std::unique_ptr<Swapchain>> Device::createSwapchain(const SwapchainDesc& 
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     auto swapchainImpl = std::make_unique<detail::SwapchainImpl>();
     swapchainImpl->device = impl_.get();
@@ -9218,7 +9180,7 @@ Result<std::unique_ptr<CommandPool>> Device::createCommandPool(Queue& queue)
         queue.impl_->device != impl_.get()) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     auto poolImpl = std::make_unique<detail::CommandPoolImpl>();
     poolImpl->device = impl_.get();
@@ -9248,7 +9210,7 @@ Result<std::unique_ptr<CommandPool>> Device::createCommandPool(Queue& queue)
     };
 
     VkCommandPool pool = VK_NULL_HANDLE;
-    const VkResult result = vkCreateCommandPool(impl_->device, &createInfo, nullptr, &pool);
+    const VkResult result = impl_->functions.vkCreateCommandPool(impl_->device, &createInfo, nullptr, &pool);
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -9262,7 +9224,7 @@ Result<std::unique_ptr<Fence>> Device::createFence(bool signaled)
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     VkFenceCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -9270,7 +9232,7 @@ Result<std::unique_ptr<Fence>> Device::createFence(bool signaled)
     };
 
     VkFence fence = VK_NULL_HANDLE;
-    const VkResult result = vkCreateFence(impl_->device, &createInfo, nullptr, &fence);
+    const VkResult result = impl_->functions.vkCreateFence(impl_->device, &createInfo, nullptr, &fence);
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -9295,14 +9257,13 @@ Result<std::unique_ptr<TimestampQueryPool>> Device::createTimestampQueryPool(Que
         return makeError(Error::Unsupported);
     }
 
-    activateVolkDevice(impl_->device);
     VkQueryPoolCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
         .queryType = VK_QUERY_TYPE_TIMESTAMP,
         .queryCount = desc.queryCount,
     };
     VkQueryPool queryPool = VK_NULL_HANDLE;
-    const VkResult result = vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
+    const VkResult result = impl_->functions.vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -9328,14 +9289,13 @@ Result<std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>> Devi
         return makeError(Error::Unsupported);
     }
 
-    activateVolkDevice(impl_->device);
     VkQueryPoolCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
         .queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
         .queryCount = desc.queryCount,
     };
     VkQueryPool queryPool = VK_NULL_HANDLE;
-    const VkResult result = vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
+    const VkResult result = impl_->functions.vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -9358,7 +9318,7 @@ Result<std::unique_ptr<Semaphore>> Device::createSemaphore(const SemaphoreDesc& 
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     VkSemaphoreTypeCreateInfo typeCreateInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -9371,7 +9331,7 @@ Result<std::unique_ptr<Semaphore>> Device::createSemaphore(const SemaphoreDesc& 
     };
 
     VkSemaphore semaphore = VK_NULL_HANDLE;
-    const VkResult result = vkCreateSemaphore(impl_->device, &createInfo, nullptr, &semaphore);
+    const VkResult result = impl_->functions.vkCreateSemaphore(impl_->device, &createInfo, nullptr, &semaphore);
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -9387,14 +9347,14 @@ Result<std::unique_ptr<SwapchainSemaphore>> Device::createSwapchainSemaphore()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     VkSemaphoreCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
     VkSemaphore semaphore = VK_NULL_HANDLE;
-    const VkResult result = vkCreateSemaphore(impl_->device, &createInfo, nullptr, &semaphore);
+    const VkResult result = impl_->functions.vkCreateSemaphore(impl_->device, &createInfo, nullptr, &semaphore);
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -9486,7 +9446,7 @@ Result<> validateAliasBufferDesc(const detail::DeviceImpl& device, const BufferD
     }
     VkPhysicalDeviceMaintenance4Properties maintenance{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
     VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &maintenance};
-    vkGetPhysicalDeviceProperties2(device.physicalDevice, &properties);
+    device.instanceFunctions.vkGetPhysicalDeviceProperties2(device.physicalDevice, &properties);
     if (desc.size > maintenance.maxBufferSize) { return makeError(Error::InvalidArgument); }
     return {};
 }
@@ -9511,7 +9471,7 @@ Result<std::unique_ptr<Buffer>> Device::createBuffer(detail::DeviceImpl* impl_, 
     if (impl_ == nullptr || desc.size == 0) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     const auto usageResult = nativeBufferUsage(*impl_, desc.usage);
     if (!usageResult) { return std::unexpected(usageResult.error()); }
@@ -9567,7 +9527,7 @@ Result<std::unique_ptr<Buffer>> Device::createBuffer(detail::DeviceImpl* impl_, 
     bufferImpl->buffer = buffer;
     if ((usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
         const VkBufferDeviceAddressInfo addressInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer};
-        bufferImpl->address = vkGetBufferDeviceAddress(impl_->device, &addressInfo);
+        bufferImpl->address = impl_->functions.vkGetBufferDeviceAddress(impl_->device, &addressInfo);
     }
     bufferImpl->allocation = allocation;
     bufferImpl->memoryInfo = allocationMemoryInfo(allocatedInfo, impl_->memoryProperties,
@@ -9592,10 +9552,10 @@ Result<uint64_t> Device::bufferAllocationSize(const BufferDesc& requestedDesc)
         size_t(desc.memoryDomain) >= size_t(MemoryBudgetDomain::Count)) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
     VkPhysicalDeviceMaintenance4Properties maintenance{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
     VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &maintenance};
-    vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+    impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
     if (desc.size > maintenance.maxBufferSize) { return makeError(Error::InvalidArgument); }
     const auto usage = nativeBufferUsage(*impl_, desc.usage);
     if (!usage) { return std::unexpected(usage.error()); }
@@ -9606,7 +9566,7 @@ Result<uint64_t> Device::bufferAllocationSize(const BufferDesc& requestedDesc)
     VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
     const VkDeviceBufferMemoryRequirements request{
         .sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &info};
-    vkGetDeviceBufferMemoryRequirements(impl_->device, &request, &requirements);
+    impl_->functions.vkGetDeviceBufferMemoryRequirements(impl_->device, &request, &requirements);
     if (!requirements.memoryRequirements.size) { return makeError(Error::Unsupported); }
     return requirements.memoryRequirements.size;
 }
@@ -9617,7 +9577,7 @@ Result<BufferAllocationRequirements> Device::bufferAliasAllocationRequirements(c
     const auto desc = effectiveBufferDesc(requestedDesc);
     const auto valid = validateAliasBufferDesc(*impl_, desc);
     if (!valid) { return std::unexpected(valid.error()); }
-    activateVolkDevice(impl_->device);
+
     const auto usage = nativeBufferUsage(*impl_, desc.usage);
     if (!usage) { return std::unexpected(usage.error()); }
     const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
@@ -9628,7 +9588,7 @@ Result<BufferAllocationRequirements> Device::bufferAliasAllocationRequirements(c
     VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
     const VkDeviceBufferMemoryRequirements request{
         .sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &info};
-    vkGetDeviceBufferMemoryRequirements(impl_->device, &request, &requirements);
+    impl_->functions.vkGetDeviceBufferMemoryRequirements(impl_->device, &request, &requirements);
     if (!requirements.memoryRequirements.size || !requirements.memoryRequirements.alignment ||
         !requirements.memoryRequirements.memoryTypeBits) { return makeError(Error::Unsupported); }
     return aliasBufferRequirements(requirements.memoryRequirements, dedicated);
@@ -9637,7 +9597,7 @@ Result<BufferAllocationRequirements> Device::bufferAliasAllocationRequirements(c
 Result<std::vector<std::unique_ptr<Buffer>>> Device::createAliasedBuffers(std::span<const BufferDesc> descriptions)
 {
     if (!impl_ || descriptions.empty()) { return makeError(Error::InvalidArgument); }
-    activateVolkDevice(impl_->device);
+
     const auto domain = descriptions.front().memoryDomain;
     std::vector<std::unique_ptr<detail::BufferImpl>> buffers;
     std::vector<BufferAllocationRequirements> bufferRequirements;
@@ -9660,13 +9620,13 @@ Result<std::vector<std::unique_ptr<Buffer>>> Device::createAliasedBuffers(std::s
         auto buffer = std::make_unique<detail::BufferImpl>();
         buffer->device = impl_.get();
         buffer->desc = desc;
-        const VkResult created = vkCreateBuffer(impl_->device, &info, nullptr, &buffer->buffer);
+        const VkResult created = impl_->functions.vkCreateBuffer(impl_->device, &info, nullptr, &buffer->buffer);
         if (created != VK_SUCCESS) { return std::unexpected(resultFromVk(created).error()); }
         VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
         VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
         const VkBufferMemoryRequirementsInfo2 request{
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, .buffer = buffer->buffer};
-        vkGetBufferMemoryRequirements2(impl_->device, &request, &requirements);
+        impl_->functions.vkGetBufferMemoryRequirements2(impl_->device, &request, &requirements);
         const auto& memory = requirements.memoryRequirements;
         if (dedicated.requiresDedicatedAllocation || !memory.size || !memory.alignment || !memory.memoryTypeBits) {
             return makeError(Error::Unsupported);
@@ -9722,7 +9682,7 @@ Result<std::vector<std::unique_ptr<Buffer>>> Device::createAliasedBuffers(std::s
         if ((bufferUsages[index] & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
             const VkBufferDeviceAddressInfo addressInfo{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer.buffer};
-            buffer.address = vkGetBufferDeviceAddress(impl_->device, &addressInfo);
+            buffer.address = impl_->functions.vkGetBufferDeviceAddress(impl_->device, &addressInfo);
             if (!buffer.address) { return makeError(Error::Failure); }
         }
         buffer.memoryInfo = allocationMemoryInfo(allocated, impl_->memoryProperties, buffer.memoryInfo.allocationId);
@@ -9743,7 +9703,7 @@ Result<std::unique_ptr<BufferView>> Device::createBufferView(Buffer& buffer,
     if (impl_ == nullptr || buffer.impl_ == nullptr || buffer.impl_->device != impl_.get()) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
     if (!impl_->capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
     }
@@ -9785,7 +9745,7 @@ Result<std::unique_ptr<BufferView>> Device::createBufferView(Buffer& buffer,
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
         .buffer = buffer.impl_->buffer,
     };
-    const VkDeviceAddress bufferAddress = vkGetBufferDeviceAddress(impl_->device, &addressInfo);
+    const VkDeviceAddress bufferAddress = impl_->functions.vkGetBufferDeviceAddress(impl_->device, &addressInfo);
     if (bufferAddress == 0) {
         return makeError(Error::Failure);
     }
@@ -9842,7 +9802,7 @@ Result<VkImageCreateInfo> aliasTextureImageInfo(detail::DeviceImpl& device, cons
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     VkImageFormatProperties properties{};
-    const VkResult supported = vkGetPhysicalDeviceImageFormatProperties(device.physicalDevice, info.format,
+    const VkResult supported = device.instanceFunctions.vkGetPhysicalDeviceImageFormatProperties(device.physicalDevice, info.format,
         info.imageType, info.tiling, info.usage, info.flags, &properties);
     if (supported == VK_ERROR_FORMAT_NOT_SUPPORTED) { return makeError(Error::Unsupported); }
     if (supported != VK_SUCCESS) { return std::unexpected(resultFromVk(supported).error()); }
@@ -9867,7 +9827,7 @@ TextureAllocationRequirements aliasTextureRequirements(const VkMemoryRequirement
 Result<TextureAllocationRequirements> Device::textureAliasAllocationRequirements(const TextureDesc& desc)
 {
     if (!impl_) { return makeError(Error::InvalidArgument); }
-    activateVolkDevice(impl_->device);
+
     const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
     const auto info = aliasTextureImageInfo(*impl_, desc, families);
     if (!info) { return std::unexpected(info.error()); }
@@ -9875,7 +9835,7 @@ Result<TextureAllocationRequirements> Device::textureAliasAllocationRequirements
     VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
     const VkDeviceImageMemoryRequirements request{
         .sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = &*info};
-    vkGetDeviceImageMemoryRequirements(impl_->device, &request, &requirements);
+    impl_->functions.vkGetDeviceImageMemoryRequirements(impl_->device, &request, &requirements);
     if (!requirements.memoryRequirements.size || !requirements.memoryRequirements.alignment ||
         !requirements.memoryRequirements.memoryTypeBits) { return makeError(Error::Unsupported); }
     return aliasTextureRequirements(requirements.memoryRequirements, dedicated);
@@ -9884,7 +9844,7 @@ Result<TextureAllocationRequirements> Device::textureAliasAllocationRequirements
 Result<std::vector<std::unique_ptr<Texture>>> Device::createAliasedTextures(std::span<const TextureDesc> descriptions)
 {
     if (!impl_ || descriptions.empty()) { return makeError(Error::InvalidArgument); }
-    activateVolkDevice(impl_->device);
+
     std::vector<std::unique_ptr<detail::TextureImpl>> images;
     std::vector<TextureAllocationRequirements> imageRequirements;
     images.reserve(descriptions.size());
@@ -9899,7 +9859,7 @@ Result<std::vector<std::unique_ptr<Texture>>> Device::createAliasedTextures(std:
         image->desc = desc;
         image->desc.memoryDomain = MemoryBudgetDomain::FrameResources;
         image->ownsImage = true;
-        const VkResult created = vkCreateImage(impl_->device, &*info, nullptr, &image->image);
+        const VkResult created = impl_->functions.vkCreateImage(impl_->device, &*info, nullptr, &image->image);
         if (created != VK_SUCCESS) { return std::unexpected(resultFromVk(created).error()); }
         image->flags = info->flags;
         image->usage = info->usage;
@@ -9907,7 +9867,7 @@ Result<std::vector<std::unique_ptr<Texture>>> Device::createAliasedTextures(std:
         VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
         const VkImageMemoryRequirementsInfo2 request{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, .image = image->image};
-        vkGetImageMemoryRequirements2(impl_->device, &request, &requirements);
+        impl_->functions.vkGetImageMemoryRequirements2(impl_->device, &request, &requirements);
         const auto& memory = requirements.memoryRequirements;
         if (dedicated.requiresDedicatedAllocation || !memory.size || !memory.alignment || !memory.memoryTypeBits) {
             return makeError(Error::Unsupported);
@@ -9976,7 +9936,7 @@ Result<uint64_t> Device::textureAllocationSize(const TextureDesc& desc)
     if (!impl_ || desc.format == Format::Unknown || !desc.width || !desc.height || !desc.mipCount) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
     const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
     const VkImageCreateInfo info{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -9989,11 +9949,11 @@ Result<uint64_t> Device::textureAllocationSize(const TextureDesc& desc)
         .pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr,
     };
     VkImage image = VK_NULL_HANDLE;
-    const auto result = vkCreateImage(impl_->device, &info, nullptr, &image);
+    const auto result = impl_->functions.vkCreateImage(impl_->device, &info, nullptr, &image);
     if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
     VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(impl_->device, image, &requirements);
-    vkDestroyImage(impl_->device, image, nullptr);
+    impl_->functions.vkGetImageMemoryRequirements(impl_->device, image, &requirements);
+    impl_->functions.vkDestroyImage(impl_->device, image, nullptr);
     allocationSize = requirements.size;
     return allocationSize;
 }
@@ -10003,7 +9963,7 @@ Result<std::unique_ptr<Texture>> Device::createTexture(const TextureDesc& desc)
     if (impl_ == nullptr || desc.format == Format::Unknown) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     const std::vector<uint32_t> queueFamilies = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
     VkImageCreateInfo imageInfo{
@@ -10038,7 +9998,7 @@ Result<std::unique_ptr<Texture>> Device::createTexture(const TextureDesc& desc)
     VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
     VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
     const VkDeviceImageMemoryRequirements request{.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = &imageInfo};
-    vkGetDeviceImageMemoryRequirements(impl_->device, &request, &requirements);
+    impl_->functions.vkGetDeviceImageMemoryRequirements(impl_->device, &request, &requirements);
     uint64_t heapGrowth = requirements.memoryRequirements.size;
     constexpr uint64_t kMaterialBlockBytes = 16ull * 1024 * 1024;
     if (domain == MemoryBudgetDomain::MaterialTextures && desc.memoryLocation == MemoryLocation::Device &&
@@ -10134,7 +10094,7 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
         }
         offset += count;
     }
-    activateVolkDevice(impl_->device);
+
 
     std::vector<uint32_t> heapCode, opacityCode;
     ShaderModuleDesc deviceDesc = desc;
@@ -10159,7 +10119,7 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
     };
 
     VkShaderModule module = VK_NULL_HANDLE;
-    const VkResult result = vkCreateShaderModule(impl_->device, &createInfo, nullptr, &module);
+    const VkResult result = impl_->functions.vkCreateShaderModule(impl_->device, &createInfo, nullptr, &module);
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -10207,7 +10167,7 @@ Result<std::unique_ptr<PipelineCache>> Device::createPipelineCache(const Pipelin
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
 
     auto cacheImpl = std::make_unique<detail::PipelineCacheImpl>();
     Result<> result = cacheImpl->initialize(*impl_, desc);
@@ -10243,7 +10203,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     if (usesMeshShader && !validShaderStage(desc.meshShader)) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
     if (desc.indirectBindable) {
         if (!impl_->capabilities.deviceGeneratedCommands) {
             return makeError(Error::Unsupported);
@@ -10252,7 +10212,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
         };
         VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
-        vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
         const VkShaderStageFlags stages = (usesMeshShader ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT) | VK_SHADER_STAGE_FRAGMENT_BIT | (usesTaskShader ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
         if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
             return makeError(Error::Unsupported);
@@ -10493,7 +10453,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkResult result = VK_SUCCESS;
     if (!desc.usesBindlessHeap) {
-        result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
+        result = impl_->functions.vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
         if (result != VK_SUCCESS) {
             return std::unexpected(resultFromVk(result).error());
         }
@@ -10531,7 +10491,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     };
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    result = vkCreateGraphicsPipelines(
+    result = impl_->functions.vkCreateGraphicsPipelines(
         impl_->device,
         pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
         1,
@@ -10540,7 +10500,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         &pipeline);
     if (result != VK_SUCCESS) {
         if (layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+            impl_->functions.vkDestroyPipelineLayout(impl_->device, layout, nullptr);
         }
         return std::unexpected(resultFromVk(result).error());
     }
@@ -10564,7 +10524,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         (!desc.usesBindlessHeap && desc.bindingMappings.size() > 0)) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
     if (desc.indirectBindable) {
         if (!impl_->capabilities.deviceGeneratedCommands) {
             return makeError(Error::Unsupported);
@@ -10573,7 +10533,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
         };
         VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
-        vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
         const VkShaderStageFlags stages = VK_SHADER_STAGE_COMPUTE_BIT;
         if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
             return makeError(Error::Unsupported);
@@ -10755,7 +10715,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkResult result = VK_SUCCESS;
     if (!desc.usesBindlessHeap) {
-        result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
+        result = impl_->functions.vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
         if (result != VK_SUCCESS) {
             return std::unexpected(resultFromVk(result).error());
         }
@@ -10781,11 +10741,11 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_INFO_KHR,
             .pNext = &pipelineInfo,
         };
-        VkResult keyResult = vkGetPipelineKeyKHR != nullptr
-            ? vkGetPipelineKeyKHR(impl_->device, nullptr, &globalKey)
+        VkResult keyResult = impl_->functions.vkGetPipelineKeyKHR != nullptr
+            ? impl_->functions.vkGetPipelineKeyKHR(impl_->device, nullptr, &globalKey)
             : VK_ERROR_EXTENSION_NOT_PRESENT;
         if (keyResult == VK_SUCCESS) {
-            keyResult = vkGetPipelineKeyKHR(impl_->device, &keyInfo, &pipelineKey);
+            keyResult = impl_->functions.vkGetPipelineKeyKHR(impl_->device, &keyInfo, &pipelineKey);
         }
         if (keyResult != VK_SUCCESS || globalKey.keySize == 0 || pipelineKey.keySize == 0 ||
             globalKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR ||
@@ -10793,7 +10753,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             spdlog::error("Pipeline key diagnostic failed: VkResult={}, globalSize={}, pipelineSize={}.",
                 static_cast<int>(keyResult), globalKey.keySize, pipelineKey.keySize);
             if (layout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+                impl_->functions.vkDestroyPipelineLayout(impl_->device, layout, nullptr);
             }
             return makeError(keyResult != VK_SUCCESS ? resultFromVk(keyResult).error() : Error::Failure);
         }
@@ -10821,7 +10781,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         }
     }
     VkPipeline pipeline = VK_NULL_HANDLE;
-    result = vkCreateComputePipelines(
+    result = impl_->functions.vkCreateComputePipelines(
         impl_->device,
         pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
         1,
@@ -10830,12 +10790,12 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         &pipeline);
     if (result != VK_SUCCESS) {
         if (layout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(impl_->device, layout, nullptr);
+            impl_->functions.vkDestroyPipelineLayout(impl_->device, layout, nullptr);
         }
         return std::unexpected(resultFromVk(result).error());
     }
 
-    if (impl_->pipelineExecutableStatistics && vkGetPipelineExecutablePropertiesKHR && vkGetPipelineExecutableStatisticsKHR) {
+    if (impl_->pipelineExecutableStatistics && impl_->functions.vkGetPipelineExecutablePropertiesKHR && impl_->functions.vkGetPipelineExecutableStatisticsKHR) {
         // The cache key includes metadata and may hash rewritten OMM SPIR-V.
         // Keep both byte fingerprints to join the caller's binding evidence.
         const auto& shader = *desc.computeShader.module->impl_;
@@ -10843,19 +10803,19 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             shader.contentHash, shader.inputSpirvFnv1a64, shader.deviceSpirvFnv1a64, shader.diagnosticName, stage.pName);
         VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
         uint32_t count = 0;
-        VkResult query = vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, nullptr);
+        VkResult query = impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, nullptr);
         std::vector<VkPipelineExecutablePropertiesKHR> executables(count, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
         if (query == VK_SUCCESS && count) {
-            query = vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, executables.data());
+            query = impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, executables.data());
         }
         if (query != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] properties unavailable: {}", int(query)); }
         for (uint32_t i = 0; query == VK_SUCCESS && i < count; ++i) {
             VkPipelineExecutableInfoKHR executable{.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = pipeline, .executableIndex = i};
             uint32_t statCount = 0;
-            VkResult statQuery = vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, nullptr);
+            VkResult statQuery = impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, nullptr);
             std::vector<VkPipelineExecutableStatisticKHR> stats(statCount, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
             if (statQuery == VK_SUCCESS && statCount) {
-                statQuery = vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, stats.data());
+                statQuery = impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, stats.data());
             }
             if (statQuery != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] statistics unavailable: {}", int(statQuery)); continue; }
             for (uint32_t j = 0; j < statCount; ++j) {
@@ -10893,7 +10853,7 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
     if (!validShaderStage(desc.vertexShader) || !validShaderStage(desc.fragmentShader)) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
     if (desc.indirectBindable) {
         if (!impl_->capabilities.deviceGeneratedCommands) {
             return makeError(Error::Unsupported);
@@ -10902,7 +10862,7 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
         };
         VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
-        vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
         const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         if ((dgc.supportedIndirectCommandsShaderStagesShaderBinding & stages) != stages) {
             return makeError(Error::Unsupported);
@@ -11000,7 +10960,7 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
         VK_NULL_HANDLE,
         VK_NULL_HANDLE,
     };
-    const VkResult result = vkCreateShadersEXT(
+    const VkResult result = impl_->functions.vkCreateShadersEXT(
         impl_->device,
         static_cast<uint32_t>(shaderInfos.size()),
         shaderInfos.data(),
@@ -11009,7 +10969,7 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
     if (result != VK_SUCCESS) {
         for (VkShaderEXT shader : shaders) {
             if (shader != VK_NULL_HANDLE) {
-                vkDestroyShaderEXT(impl_->device, shader, nullptr);
+                impl_->functions.vkDestroyShaderEXT(impl_->device, shader, nullptr);
             }
         }
         return std::unexpected(resultFromVk(result).error());
@@ -11030,7 +10990,7 @@ Result<std::unique_ptr<BindlessHeap>> Device::createBindlessHeap(const BindlessH
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    activateVolkDevice(impl_->device);
+
     if (!impl_->capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
     }
@@ -11068,6 +11028,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         return makeError(Error::InvalidArgument);
     }
 
+    std::lock_guard initializationLock(volkInitializationMutex());
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
     deviceImpl->logPipelineKeys = logPipelineKeys;
     if (desc.enableAftermath && profiling::nsightAftermathSdkAvailable()) {
@@ -11120,6 +11081,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         }
     }
 
+    deviceImpl->getInstanceProcAddr = vkGetInstanceProcAddr;
     Uint32 sdlExtensionCount = 0;
     const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
     if (sdlExtensions == nullptr || sdlExtensionCount == 0) {
@@ -11253,7 +11215,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     if (vkResult != VK_SUCCESS) {
         return std::unexpected(resultFromVk(vkResult).error());
     }
-    volkLoadInstance(deviceImpl->instance);
+    volkLoadInstanceOnly(deviceImpl->instance);
+    volkLoadInstanceTable(&deviceImpl->instanceFunctions, deviceImpl->instance);
 
     if (deviceImpl->validationEnabled && debugUtilsAvailable) {
         deviceImpl->debugMessenger = createDebugMessenger(deviceImpl->instance, &deviceImpl->debugContext);
@@ -11644,7 +11607,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     if (vkResult != VK_SUCCESS) {
         return std::unexpected(resultFromVk(vkResult).error());
     }
-    activateVolkDevice(deviceImpl->device);
+
+    volkLoadDeviceTable(&deviceImpl->functions, deviceImpl->device);
     if (desc.shaderPrintf) { desc.shaderPrintf->deviceConfigured = true; }
 
     VkPhysicalDeviceProperties selectedProperties{};
@@ -11710,7 +11674,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         std::max<uint64_t>(selectedProperties.limits.minUniformBufferOffsetAlignment, 1);
 
     if (selectedFeatures.bindlessDescriptorHeap) {
-        vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalDevice, deviceImpl->device);
+        vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalDevice, deviceImpl->device, deviceImpl->functions, deviceImpl->instanceFunctions);
         if (vkResult != VK_SUCCESS) {
             return std::unexpected(resultFromVk(vkResult).error());
         }
@@ -11740,7 +11704,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             deviceImpl->descriptorHeapWriter.resourceDescriptorStride());
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
-    deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && vkCmdDecompressMemoryEXT != nullptr;
+    deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->capabilities.deviceGeneratedCommands = selectedFeatures.deviceGeneratedCommands;
     deviceImpl->capabilities.dynamicGeneratedPipelineLayout = selectedFeatures.dynamicGeneratedPipelineLayout;
     deviceImpl->capabilities.unifiedImageLayouts = selectedFeatures.unifiedImageLayouts;
@@ -11833,7 +11797,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(deviceImpl->device, deviceImpl->graphicsFamily, 0, &graphicsQueue);
+    deviceImpl->functions.vkGetDeviceQueue(deviceImpl->device, deviceImpl->graphicsFamily, 0, &graphicsQueue);
     deviceImpl->addQueue(
         graphicsQueue,
         deviceImpl->graphicsFamily,
@@ -11842,7 +11806,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         QueueType::Graphics);
 
     VkQueue computeQueue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, deviceImpl->computeQueueIndex, &computeQueue);
+    deviceImpl->functions.vkGetDeviceQueue(deviceImpl->device, deviceImpl->computeFamily, deviceImpl->computeQueueIndex, &computeQueue);
     deviceImpl->capabilities.independentComputeQueue = computeQueue != graphicsQueue;
     if (deviceImpl->capabilities.independentComputeQueue) {
         spdlog::info("[Vulkan] Independent compute queue enabled: graphics family {}, compute family {} index {}",
@@ -11857,7 +11821,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 
     if (deviceImpl->copyQueueIndex != UINT32_MAX) {
         VkQueue copyQueue = VK_NULL_HANDLE;
-        vkGetDeviceQueue(
+        deviceImpl->functions.vkGetDeviceQueue(
             deviceImpl->device,
             deviceImpl->copyFamily,
             deviceImpl->copyQueueIndex,
@@ -11879,6 +11843,9 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         std::string streamlineLog;
         Result<> streamlineResult = setStreamlineVulkanDevice(
             vulkan::NativeDevice{
+                .functions = &deviceImpl->functions,
+                .instanceFunctions = &deviceImpl->instanceFunctions,
+                .getInstanceProcAddr = deviceImpl->getInstanceProcAddr,
                 .instance = deviceImpl->instance,
                 .physicalDevice = deviceImpl->physicalDevice,
                 .device = deviceImpl->device,
@@ -11934,6 +11901,9 @@ struct VulkanNativeAccess {
             return {};
         }
         return vulkan::NativeDevice{
+            .functions = &device.impl_->functions,
+            .instanceFunctions = &device.impl_->instanceFunctions,
+            .getInstanceProcAddr = device.impl_->getInstanceProcAddr,
             .instance = device.impl_->instance,
             .physicalDevice = device.impl_->physicalDevice,
             .device = device.impl_->device,
@@ -11977,12 +11947,12 @@ struct VulkanNativeAccess {
         if (expectsAddress &&
             buffer.impl_->device != nullptr &&
             buffer.impl_->buffer != VK_NULL_HANDLE) {
-            activateVolkDevice(buffer.impl_->device->device);
+
             VkBufferDeviceAddressInfo addressInfo{
                 .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                 .buffer = buffer.impl_->buffer,
             };
-            address = vkGetBufferDeviceAddress(buffer.impl_->device->device, &addressInfo);
+            address = buffer.impl_->device->functions.vkGetBufferDeviceAddress(buffer.impl_->device->device, &addressInfo);
         }
 
         return vulkan::NativeBuffer{
@@ -12036,6 +12006,12 @@ struct VulkanNativeAccess {
     {
         return program.impl_ ? vulkan::NativeGraphicsShaders{program.impl_->device->device,
             program.impl_->vertexShader, program.impl_->fragmentShader} : vulkan::NativeGraphicsShaders{};
+    }
+
+    static const VolkDeviceTable& nativeCommandBufferFunctions(CommandBuffer& commands)
+    {
+        assert(commands.impl_ != nullptr);
+        return commands.impl_->device->functions;
     }
 
     static VkDevice nativeCommandBufferDevice(CommandBuffer& commands)
@@ -12141,6 +12117,11 @@ NativePipeline nativePipeline(GraphicsPipeline& pipeline)
 NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program)
 {
     return detail::VulkanNativeAccess::nativeShaders(program);
+}
+
+const VolkDeviceTable& nativeCommandBufferFunctions(CommandBuffer& commands)
+{
+    return detail::VulkanNativeAccess::nativeCommandBufferFunctions(commands);
 }
 
 VkDevice nativeCommandBufferDevice(CommandBuffer& commands)

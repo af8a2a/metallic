@@ -7,6 +7,10 @@
 namespace metallic::render::vulkan {
 
 struct NativeDevice {
+    // Borrowed immutable dispatch table; valid for the lifetime of the Device.
+    const VolkDeviceTable* functions = nullptr;
+    const VolkInstanceTable* instanceFunctions = nullptr;
+    PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -66,6 +70,8 @@ NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program);
 NativeTexture nativeTexture(Texture& texture);
 VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
 VkDevice nativeCommandBufferDevice(CommandBuffer& commandBuffer);
+// Requires a live command buffer. The owning Device must outlive the borrowed table.
+const VolkDeviceTable& nativeCommandBufferFunctions(CommandBuffer& commandBuffer);
 // DGC leaves affected state undefined. Rebind pipeline/shaders, heap and push data afterwards.
 void notifyGeneratedCommandsExecution(CommandBuffer& commandBuffer);
 // Compatibility name: invalidates all tracked execution state after external commands.

@@ -49,8 +49,8 @@ public:
         init.PipelineInfoMain.PipelineRenderingCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
-        ui.initialized = ImGui_ImplVulkan_Init(&init);
-        if (!ui.initialized || !ui.display.initialize(native.device, format, true, 203.0f,
+        ui.initialized = EditorDisplayRenderer::loadBackendFunctions(native) && ImGui_ImplVulkan_Init(&init);
+        if (!ui.initialized || !ui.display.initialize(native, format, true, 203.0f,
                 VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
             return RHITestResult::fail("HDR ImGui initialization failed");
         }

@@ -27,7 +27,7 @@ void barrier(CommandBuffer& commands)
         .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .memoryBarrierCount = 1, .pMemoryBarriers = &memory};
-    vkCmdPipelineBarrier2(vulkan::nativeCommandBuffer(commands), &dependency);
+    vulkan::nativeCommandBufferFunctions(commands).vkCmdPipelineBarrier2(vulkan::nativeCommandBuffer(commands), &dependency);
 }
 void copy(CommandBuffer& commands, Buffer& source, Buffer& destination)
 {

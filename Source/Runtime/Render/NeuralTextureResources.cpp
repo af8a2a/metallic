@@ -805,7 +805,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .memoryBarrierCount = 1,
             .pMemoryBarriers = &memoryBarrier,
         };
-        vkCmdPipelineBarrier2(nativeCommandBuffer, &dependencyInfo);
+        vulkan::nativeCommandBufferFunctions(commandBuffer).vkCmdPipelineBarrier2(nativeCommandBuffer, &dependencyInfo);
 #else
         return makeError(Error::Unsupported);
 #endif

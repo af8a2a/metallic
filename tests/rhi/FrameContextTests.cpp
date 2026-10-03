@@ -33,7 +33,8 @@ namespace {
 constexpr uint64_t kWaitTimeout = 5'000'000'000ull;
 
 struct ScopedTimelineWaitResult {
-    PFN_vkWaitSemaphores original = vkWaitSemaphores;
+    PFN_vkWaitSemaphores& entry;
+    PFN_vkWaitSemaphores original;
     static inline VkResult result = VK_SUCCESS;
     static inline uint32_t calls = 0;
     static VKAPI_ATTR VkResult VKAPI_CALL wait(VkDevice, const VkSemaphoreWaitInfo*, uint64_t)
@@ -41,8 +42,15 @@ struct ScopedTimelineWaitResult {
         ++calls;
         return result;
     }
-    ScopedTimelineWaitResult() { calls = 0; vkWaitSemaphores = wait; }
-    ~ScopedTimelineWaitResult() { vkWaitSemaphores = original; }
+    explicit ScopedTimelineWaitResult(render::Device& device)
+        : entry(const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)->vkWaitSemaphores),
+          original(entry)
+    {
+        // Quiescent, test-only fault injection into this device's dispatch.
+        calls = 0;
+        entry = wait;
+    }
+    ~ScopedTimelineWaitResult() { entry = original; }
 };
 
 struct Commands {
@@ -252,7 +260,7 @@ public:
 
         // Drain actual GPU work first; inject only the host API result so the
         // test covers terminal teardown without deliberately faulting the GPU.
-        ScopedTimelineWaitResult injected;
+        ScopedTimelineWaitResult injected(context.device);
         ScopedTimelineWaitResult::result = VK_TIMEOUT;
         if (commands.frame.reset() || tracker.reset() || deferred.drain() ||
             !commands.frame.completion().valid() || retainedWeak.expired() || retiredWeak.expired()) {

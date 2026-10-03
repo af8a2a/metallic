@@ -121,7 +121,7 @@ void WorkControlShaderTrace::qualify(Device& device, Queue& queue, const std::fi
             std::string_view(message.text.data()).find("MTQ1 backend-ready") != std::string_view::npos) { ++echoes; }
     }
     const auto native = vulkan::nativeDevice(device);
-    VkPhysicalDeviceProperties properties{}; vkGetPhysicalDeviceProperties(native.physicalDevice,&properties);
+    VkPhysicalDeviceProperties properties{}; native.instanceFunctions->vkGetPhysicalDeviceProperties(native.physicalDevice,&properties);
     slang::IGlobalSession* session = nullptr;
     require(SLANG_SUCCEEDED(slang::createGlobalSession(&session)),"Slang version unavailable");
     evidence_ = {{"backend","VVL.DebugPrintf"},{"collectionBoundary","case-process-instance-destroyed"},

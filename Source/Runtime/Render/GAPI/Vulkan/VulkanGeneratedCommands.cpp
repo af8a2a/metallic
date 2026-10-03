@@ -30,7 +30,7 @@ Result<VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT> queryGeneratedComma
     if (!native.device) { return makeError(Error::InvalidArgument); }
     if (!device.capabilities().deviceGeneratedCommands) { return makeError(Error::Unsupported); }
     VkPhysicalDeviceProperties2 query{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &properties};
-    vkGetPhysicalDeviceProperties2(native.physicalDevice, &query);
+    native.instanceFunctions->vkGetPhysicalDeviceProperties2(native.physicalDevice, &query);
     return properties;
 }
 
@@ -196,7 +196,7 @@ Result<> GeneratedCommands::initialize(Device& device, const GeneratedCommandsDe
     }
     auto impl = std::make_unique<Impl>();
     impl->device = nativeDevice(device);
-    volkLoadDeviceTable(&impl->vk, impl->device.device);
+    impl->vk = *impl->device.functions;
     if (!impl->vk.vkCreateIndirectCommandsLayoutEXT || !impl->vk.vkCreateIndirectExecutionSetEXT ||
         !impl->vk.vkGetGeneratedCommandsMemoryRequirementsEXT || !impl->vk.vkCmdExecuteGeneratedCommandsEXT ||
         !impl->vk.vkCmdPreprocessGeneratedCommandsEXT) { return makeError(Error::Unsupported); }
@@ -271,7 +271,7 @@ Result<> GeneratedCommands::prepare()
     impl.vk.vkGetBufferMemoryRequirements2(impl.device.device, &bufferQuery, &bufferRequirements);
     const uint32_t allowedTypes = bufferRequirements.memoryRequirements.memoryTypeBits & impl.requirements.memoryTypeBits;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
-    vkGetPhysicalDeviceMemoryProperties(impl.device.physicalDevice, &memoryProperties);
+    impl.device.instanceFunctions->vkGetPhysicalDeviceMemoryProperties(impl.device.physicalDevice, &memoryProperties);
     uint32_t memoryType = UINT32_MAX;
     for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
         if ((allowedTypes & (1u << i)) == 0) { continue; }

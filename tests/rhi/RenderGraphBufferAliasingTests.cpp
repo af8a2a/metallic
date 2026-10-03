@@ -76,7 +76,7 @@ public:
         if (auto retained = context.commandBuffer().retainResource(output.buffer()->retainAllocation()); !retained) {
             return retained;
         }
-        vkCmdFillBuffer(vulkan::nativeCommandBuffer(context.commandBuffer()),
+        vulkan::nativeCommandBufferFunctions(context.commandBuffer()).vkCmdFillBuffer(vulkan::nativeCommandBuffer(context.commandBuffer()),
             vulkan::nativeBuffer(*output.buffer()).buffer, 0, output.buffer()->desc().size,
             bufferAliasPattern(context.frameIndex()));
         return {};

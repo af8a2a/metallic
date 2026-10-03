@@ -167,7 +167,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     const auto native = vk::nativeDevice(*device);
     VkPhysicalDeviceDriverProperties driver{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
-    vkGetPhysicalDeviceProperties2(native.physicalDevice, &properties);
+    native.instanceFunctions->vkGetPhysicalDeviceProperties2(native.physicalDevice, &properties);
     report["device"] = {{"name", properties.properties.deviceName}, {"apiVersion", version(properties.properties.apiVersion)},
         {"driverVersionRaw", properties.properties.driverVersion}, {"driverName", driver.driverName},
         {"driverInfo", driver.driverInfo}, {"vendorId", properties.properties.vendorID}, {"deviceId", properties.properties.deviceID},
@@ -230,7 +230,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
             .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
         VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-        vkCmdPipelineBarrier2(vk::nativeCommandBuffer(*commands), &dependency);
+        native.functions->vkCmdPipelineBarrier2(vk::nativeCommandBuffer(*commands), &dependency);
     }
     require(commands->end(), "endCommands");
     report["phase"] = "submit";
