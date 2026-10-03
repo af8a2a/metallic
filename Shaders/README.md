@@ -13,6 +13,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
+| `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |
 | `Modules/ColorGrading.slang`、`Modules/ColorGrading/` | ACES 2.0 / UE Film、全局调色、custom LUT 与三维 LUT 编解码 |
 | `Interop/NeuralTextures.slang` | NTC 的唯一模块适配入口，封装 Generic/CoopVec 和无 NTC 的回退 |
 | `Interop/NRDEncoding.slang` | NRD 前端编码的唯一模块适配入口 |
@@ -22,7 +23,8 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Licenses/` | 第三方 shader 许可证 |
 
 测试探针放在 `tests/rhi/shaders/`。OpenPBR、RTXCR、RTXTF、NTC 等 SDK 继续使用
-`External/` 下的源码。ShaderToHuman 的固定版本头文件仍在 `Features/Debug/ShaderToHuman/`。
+`External/` 下的源码。ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
+来源记录、许可证和使用说明见 [ShaderToHuman](Modules/ShaderToHuman/README.md)。
 所有 vendor 文件与许可证保持原有内容。
 
 ## 使用库
@@ -127,7 +129,7 @@ Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `Punctua
   SDK 全局排列使用 `SlangShaderDesc::macroDefines`，它们也参与缓存键。
 - 同一程序中，每个 vendor header 有一个 canonical owner。其他模块导入 owner，
   不重复包含 vendor header；include guard 不能跨 module 去重。
-- NRD pass、OpenPBR 的纹理回调和 feature 宏、SHARC/NRC、ShaderToHuman 等仍允许
+- NRD pass、OpenPBR 的纹理回调和 feature 宏、SHARC/NRC 等仍允许
   程序内 `#define` + `#include`。`Features/` 中复用这些配置的路径追踪、引导图和实时着色
   文件仍属于程序组合层，不能被 `Modules/` 反向引用。
 - 新的 Metallic 子系统使用 `import`，不要通过 `#include` 引入 `Modules/` 的实现文件。

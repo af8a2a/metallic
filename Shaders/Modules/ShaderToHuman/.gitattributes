@@ -1,0 +1,3 @@
+# Preserve the upstream license and notice bytes.
+LICENSE.txt -text
+NOTICE.txt -text

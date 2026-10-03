@@ -3,7 +3,8 @@ using Metallic;
 
 // Standalone linear-color example. A 320x192 output shows the entire overlay.
 // Compile either the compute or fragment entry; only compute binds gOutput.
-#include "ShaderToHuman.slang"
+import ShaderToHuman;
+using Metallic.ShaderDebug;
 
 #define gOutput resolveUniform(getResourceParameters<OutputImageResourceParameters>().output)
 
@@ -42,7 +43,7 @@ float4 shaderToHumanExampleColor(float2 pixelCenter)
 
     s2h_drawLine(ui, float2(8.5f, 72.5f), float2(160.5f, 72.5f), float4(0.2f, 0.7f, 1.0f, 1.0f));
     s2h_drawCrosshair(ui, float2(80.5f, 112.5f), 12.0f, float4(1.0f, 0.5f, 0.1f, 1.0f));
-    return ShaderDebug::composite(background, ui);
+    return composite(background, ui);
 }
 
 [shader("compute")]
