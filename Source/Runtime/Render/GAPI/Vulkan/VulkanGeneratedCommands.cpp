@@ -24,14 +24,10 @@ Result<> convertResult(VkResult result)
 
 Result<VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT> queryGeneratedCommandsProperties(Device& device)
 {
-    VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};
     const auto native = nativeDevice(device);
     if (!native.device) { return makeError(Error::InvalidArgument); }
     if (!device.capabilities().deviceGeneratedCommands) { return makeError(Error::Unsupported); }
-    VkPhysicalDeviceProperties2 query{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &properties};
-    native.instanceFunctions->vkGetPhysicalDeviceProperties2(native.physicalDevice, &query);
-    return properties;
+    return native.properties->generatedCommands;
 }
 
 struct GeneratedCommands::Impl {

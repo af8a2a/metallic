@@ -523,8 +523,11 @@ if(METALLIC_HAS_DLSS_NR)
     set_tests_properties(MetallicDLSSNRRuntimeTests PROPERTIES LABELS "rhi;dlss-nr" SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 
-# Pure feature negotiation tests; no Vulkan loader, GPU, or optional SDK required.
-add_executable(MetallicVulkanDeviceFeaturesTests rhi/VulkanDeviceFeaturesTests.cpp)
+# Pure feature negotiation and property snapshot tests; no Vulkan loader, GPU, or optional SDK required.
+add_executable(MetallicVulkanDeviceFeaturesTests
+    rhi/VulkanDeviceFeaturesTests.cpp
+    rhi/VulkanDevicePropertiesTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceProperties.cpp")
 target_include_directories(MetallicVulkanDeviceFeaturesTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
 target_link_libraries(MetallicVulkanDeviceFeaturesTests PRIVATE metallic::volk GTest::gtest_main)
 if(MSVC)

@@ -2,7 +2,7 @@
 
 #include "Runtime/Render/GAPI/RHI.h"
 
-#include <volk.h>
+#include "VulkanDeviceProperties.h"
 
 namespace metallic::render::vulkan {
 
@@ -10,6 +10,7 @@ struct NativeDevice {
     // Borrowed immutable dispatch table; valid for the lifetime of the Device.
     const VolkDeviceTable* functions = nullptr;
     const VolkInstanceTable* instanceFunctions = nullptr;
+    const VulkanDeviceProperties* properties = nullptr;
     PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;

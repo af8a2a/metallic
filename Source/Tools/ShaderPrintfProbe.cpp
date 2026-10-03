@@ -170,12 +170,11 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         },
     }), "createDevice");
     const auto native = vk::nativeDevice(*device);
-    VkPhysicalDeviceDriverProperties driver{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-    VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
-    native.instanceFunctions->vkGetPhysicalDeviceProperties2(native.physicalDevice, &properties);
-    report["device"] = {{"name", properties.properties.deviceName}, {"apiVersion", version(properties.properties.apiVersion)},
-        {"driverVersionRaw", properties.properties.driverVersion}, {"driverName", driver.driverName},
-        {"driverInfo", driver.driverInfo}, {"vendorId", properties.properties.vendorID}, {"deviceId", properties.properties.deviceID},
+    const auto& driver = native.properties->driver;
+    const auto& properties = native.properties->core;
+    report["device"] = {{"name", properties.deviceName}, {"apiVersion", version(properties.apiVersion)},
+        {"driverVersionRaw", properties.driverVersion}, {"driverName", driver.driverName},
+        {"driverInfo", driver.driverInfo}, {"vendorId", properties.vendorID}, {"deviceId", properties.deviceID},
         {"descriptorHeap", native.descriptorHeapEnabled}};
     report["loadedLayerModule"] = loadedModule(L"VkLayer_khronos_validation.dll");
     auto shader = require(device->createShaderModule({

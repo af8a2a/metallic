@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactCLASPool.h"
@@ -19,6 +20,31 @@
 
 namespace metallic::tests {
 namespace {
+// Instrument only this test's privately owned device, restoring dispatch before destruction.
+class ScopedPropertyQueryCounter {
+public:
+    explicit ScopedPropertyQueryCounter(render::Device& device)
+        : table_(*const_cast<VolkInstanceTable*>(render::vulkan::nativeDevice(device).instanceFunctions))
+    {
+        original_ = table_.vkGetPhysicalDeviceProperties2;
+        count_ = 0;
+        table_.vkGetPhysicalDeviceProperties2 = countQuery;
+    }
+    ~ScopedPropertyQueryCounter() { table_.vkGetPhysicalDeviceProperties2 = original_; }
+    ScopedPropertyQueryCounter(const ScopedPropertyQueryCounter&) = delete;
+    ScopedPropertyQueryCounter& operator=(const ScopedPropertyQueryCounter&) = delete;
+    uint32_t count() const { return count_; }
+private:
+    static VKAPI_ATTR void VKAPI_CALL countQuery(VkPhysicalDevice device, VkPhysicalDeviceProperties2* properties)
+    {
+        ++count_;
+        original_(device, properties);
+    }
+    VolkInstanceTable& table_;
+    inline static thread_local PFN_vkGetPhysicalDeviceProperties2 original_ = nullptr;
+    inline static thread_local uint32_t count_ = 0;
+};
+
 class CLASSizeMoveTest final : public RHITest {
   public:
     CLASSizeMoveTest()
@@ -43,6 +69,7 @@ class CLASSizeMoveTest final : public RHITest {
         };
         try {
             require(bool(result), "Device creation failed");
+            ScopedPropertyQueryCounter propertyQueries(*device);
             auto* queue = device->getQueue(QueueType::Graphics);
             constexpr auto usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
                                    BufferUsageBits::AccelerationStructureBuildInput |
@@ -189,8 +216,10 @@ class CLASSizeMoveTest final : public RHITest {
             require(bool(commands->moveClusterAccelerationStructures(move)), "Relocating compact CLAS failed");
             submit();
             std::filesystem::create_directories(context.outputDirectory);
+            require(propertyQueries.count() == 0, "CLAS runtime re-queried fixed physical-device properties");
             std::ofstream(context.outputDirectory / "CLASSizeMove.txt")
                 << "worstCaseBytes=" << stride * 2 << " actualBytes=" << actual[0] + actual[1]
+                << " runtimePropertyQueries=" << propertyQueries.count()
                 << " moveScratchBytes=" << exactMoveSizes.updateScratchSize << '\n';
             return RHITestResult::pass(
                 "Actual GPU sizes, compact relocation, second relocation and invalid-range rejection");

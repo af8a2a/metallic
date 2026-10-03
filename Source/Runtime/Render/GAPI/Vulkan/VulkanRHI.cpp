@@ -575,31 +575,8 @@ VkAccelerationStructureTypeKHR toVkAccelerationStructureType(
         : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 }
 
-VkPhysicalDeviceOpacityMicromapPropertiesKHR queryOpacityMicromapProperties(
-    VkPhysicalDevice physicalDevice, bool useExt, PFN_vkGetPhysicalDeviceProperties2 getProperties)
-{
-    VkPhysicalDeviceOpacityMicromapPropertiesKHR properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_KHR,
-    };
-    VkPhysicalDeviceOpacityMicromapPropertiesEXT extProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT,
-    };
-    VkPhysicalDeviceProperties2 properties2{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = useExt ? static_cast<void*>(&extProperties) : &properties,
-    };
-    getProperties(physicalDevice, &properties2);
-    if (useExt) {
-        properties.maxOpacity2StateSubdivisionLevel = extProperties.maxOpacity2StateSubdivisionLevel;
-        properties.maxOpacity4StateSubdivisionLevel = extProperties.maxOpacity4StateSubdivisionLevel;
-        // EXT has no equivalent property; our triangle indices/counts are uint32.
-        properties.maxMicromapTriangles = std::numeric_limits<uint32_t>::max();
-    }
-    return properties;
-}
-
 Result<> makeOpacityMicromapGeometry(
-    VkPhysicalDevice physicalDevice,
+    const VkPhysicalDeviceOpacityMicromapPropertiesKHR& properties,
     bool enabled,
     bool useExt,
     const OpacityMicromapBuildInput* input,
@@ -622,7 +599,6 @@ Result<> makeOpacityMicromapGeometry(
         // The public compaction query pool holds AS queries, not EXT micromap queries.
         return makeError(Error::Unsupported);
     }
-    const auto properties = queryOpacityMicromapProperties(physicalDevice, useExt, vkGetPhysicalDeviceProperties2);
     uint64_t count = 0;
     usages.reserve(input->usages.size());
     for (uint32_t i = 0; i < input->usages.size(); ++i) {
@@ -1193,21 +1169,13 @@ public:
             heapProperties.maxPushDataSize > 0;
     }
 
-    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device, const VolkDeviceTable& functions, const VolkInstanceTable& instanceFunctions)
+    VkResult initialize(const VkPhysicalDeviceDescriptorHeapPropertiesEXT& heapProperties, VkDevice device, const VolkDeviceTable& functions)
     {
         *this = {};
         if (device == VK_NULL_HANDLE) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
 
-        VkPhysicalDeviceDescriptorHeapPropertiesEXT heapProperties{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT,
-        };
-        VkPhysicalDeviceProperties2 properties{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-            .pNext = &heapProperties,
-        };
-        instanceFunctions.vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
         if (heapProperties.samplerDescriptorSize == 0 ||
             heapProperties.imageDescriptorSize == 0 ||
             heapProperties.bufferDescriptorSize == 0 ||
@@ -1531,10 +1499,10 @@ struct VulkanPhysicalDeviceCandidate {
 
 class DescriptorHeap {
 public:
-    VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device, const VolkDeviceTable& functions, const VolkInstanceTable& instanceFunctions)
+    VkResult initialize(const VkPhysicalDeviceDescriptorHeapPropertiesEXT& heapProperties, VkDevice device, const VolkDeviceTable& functions)
     {
         *this = {};
-        const VkResult result = writer_.initialize(physicalDevice, device, functions, instanceFunctions);
+        const VkResult result = writer_.initialize(heapProperties, device, functions);
         if (result != VK_SUCCESS) {
             return result;
         }
@@ -2354,6 +2322,7 @@ struct DeviceImpl {
     VkDevice device = VK_NULL_HANDLE;
     VolkDeviceTable functions{};
     VolkInstanceTable instanceFunctions{};
+    vulkan::VulkanDeviceProperties physicalProperties;
     PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
     VmaAllocator allocator = VK_NULL_HANDLE;
     std::array<VmaPool, VK_MAX_MEMORY_TYPES> materialImagePools{};
@@ -3084,7 +3053,7 @@ Result<> BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHe
     device = &owningDevice;
     desc = heapDesc;
 
-    VkResult vkResult = heap.initialize(device->physicalDevice, device->device, device->functions, device->instanceFunctions);
+    VkResult vkResult = heap.initialize(device->physicalProperties.descriptorHeap, device->device, device->functions);
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
     }
@@ -5938,7 +5907,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         }
         VkAccelerationStructureGeometryKHR geometry{};
         const Result<> result = makeOpacityMicromapGeometry(
-            impl_->device->physicalDevice, impl_->device->capabilities.opacityMicromap,
+            impl_->device->physicalProperties.opacityMicromap, impl_->device->capabilities.opacityMicromap,
             impl_->device->opacityMicromapExt, desc.micromap, destinationDesc.buildFlags, true,
             micromapUsages, micromapData, geometry);
         if (!result) {
@@ -5979,14 +5948,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     if (scratchBase == 0 || desc.scratchBufferOffset >= desc.scratchBuffer->desc().size) {
         return makeError(Error::Failure);
     }
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
-    };
-    VkPhysicalDeviceProperties2 properties2{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &properties,
-    };
-    impl_->device->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
+    const auto& properties = impl_->device->physicalProperties.accelerationStructure;
     const uint64_t scratchAlignment = std::max<uint64_t>(
         isMicromap && impl_->device->opacityMicromapExt ? 128 : 1,
         properties.minAccelerationStructureScratchOffsetAlignment);
@@ -6510,11 +6472,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     }
     std::vector<uint64_t> sources(desc.objects.size()), destinations(desc.objects.size());
     uint64_t totalBytes = 0;
-    // These limits are physical-device properties, with no queue synchronization.
-    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV limits{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
-    VkPhysicalDeviceProperties2 deviceProperties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &limits};
-    impl_->device->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &deviceProperties);
+    const auto& limits = impl_->device->physicalProperties.cluster;
     for (uint32_t i = 0; i < desc.objects.size(); ++i) {
         const auto& item = desc.objects[i];
         if (!item.size || item.sourceBuffer == item.destinationBuffer ||
@@ -6714,14 +6672,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         return makeError(Error::Failure);
     }
 
-    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
-    };
-    VkPhysicalDeviceProperties2 properties2{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &properties,
-    };
-    impl_->device->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
+    const auto& properties = impl_->device->physicalProperties.cluster;
     const uint64_t scratchAlignment = std::max<uint64_t>(
         1,
         properties.clusterScratchByteAlignment);
@@ -7222,17 +7173,8 @@ Result<RayTracingAccelerationStructureProperties> Device::queryRayTracingAcceler
         return makeError(Error::Unsupported);
     }
 
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
-    };
-    const auto micromapProperties = impl_->capabilities.opacityMicromap
-        ? queryOpacityMicromapProperties(impl_->physicalDevice, impl_->opacityMicromapExt, impl_->instanceFunctions.vkGetPhysicalDeviceProperties2)
-        : VkPhysicalDeviceOpacityMicromapPropertiesKHR{};
-    VkPhysicalDeviceProperties2 properties2{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &properties,
-    };
-    impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties2);
+    const auto& properties = impl_->physicalProperties.accelerationStructure;
+    const auto& micromapProperties = impl_->physicalProperties.opacityMicromap;
     queriedProperties = RayTracingAccelerationStructureProperties{
         .scratchAlignment = std::max<uint64_t>(
             impl_->opacityMicromapExt ? 128 : 1,
@@ -7364,7 +7306,7 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
         }
         VkAccelerationStructureGeometryKHR geometry{};
         const Result<> result = makeOpacityMicromapGeometry(
-            impl_->physicalDevice, impl_->capabilities.opacityMicromap,
+            impl_->physicalProperties.opacityMicromap, impl_->capabilities.opacityMicromap,
             impl_->opacityMicromapExt, inputs.micromap, inputs.flags, false,
             micromapUsages, micromapData, geometry);
         if (!result) {
@@ -7621,14 +7563,7 @@ Result<ClusterAccelerationStructureProperties> Device::queryClusterAccelerationS
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
 #else
-    VkPhysicalDeviceClusterAccelerationStructurePropertiesNV properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV,
-    };
-    VkPhysicalDeviceProperties2 deviceProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &properties,
-    };
-    impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &deviceProperties);
+    const auto& properties = impl_->physicalProperties.cluster;
     if (properties.clusterByteAlignment == 0 ||
         properties.clusterScratchByteAlignment == 0) {
         return makeError(Error::Failure);
@@ -8235,9 +8170,7 @@ Result<> validateAliasBufferDesc(const detail::DeviceImpl& device, const BufferD
         (desc.memoryDomain != MemoryBudgetDomain::Other && desc.memoryDomain != MemoryBudgetDomain::FrameResources)) {
         return makeError(Error::Unsupported);
     }
-    VkPhysicalDeviceMaintenance4Properties maintenance{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
-    VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &maintenance};
-    device.instanceFunctions.vkGetPhysicalDeviceProperties2(device.physicalDevice, &properties);
+    const auto& maintenance = device.physicalProperties.maintenance4;
     if (desc.size > maintenance.maxBufferSize) { return makeError(Error::InvalidArgument); }
     return {};
 }
@@ -8344,9 +8277,7 @@ Result<uint64_t> Device::bufferAllocationSize(const BufferDesc& requestedDesc)
         return makeError(Error::InvalidArgument);
     }
 
-    VkPhysicalDeviceMaintenance4Properties maintenance{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
-    VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &maintenance};
-    impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+    const auto& maintenance = impl_->physicalProperties.maintenance4;
     if (desc.size > maintenance.maxBufferSize) { return makeError(Error::InvalidArgument); }
     const auto usage = nativeBufferUsage(*impl_, desc.usage);
     if (!usage) { return std::unexpected(usage.error()); }
@@ -8999,11 +8930,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         if (!impl_->capabilities.deviceGeneratedCommands) {
             return makeError(Error::Unsupported);
         }
-        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT dgc{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
-        };
-        VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
-        impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        const auto& dgc = impl_->physicalProperties.generatedCommands;
         const VkShaderStageFlags stages = (usesMeshShader ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT) | VK_SHADER_STAGE_FRAGMENT_BIT | (usesTaskShader ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
         if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
             return makeError(Error::Unsupported);
@@ -9320,11 +9247,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         if (!impl_->capabilities.deviceGeneratedCommands) {
             return makeError(Error::Unsupported);
         }
-        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT dgc{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
-        };
-        VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
-        impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        const auto& dgc = impl_->physicalProperties.generatedCommands;
         const VkShaderStageFlags stages = VK_SHADER_STAGE_COMPUTE_BIT;
         if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
             return makeError(Error::Unsupported);
@@ -9649,11 +9572,7 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
         if (!impl_->capabilities.deviceGeneratedCommands) {
             return makeError(Error::Unsupported);
         }
-        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT dgc{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
-        };
-        VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &dgc};
-        impl_->instanceFunctions.vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+        const auto& dgc = impl_->physicalProperties.generatedCommands;
         const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         if ((dgc.supportedIndirectCommandsShaderStagesShaderBinding & stages) != stages) {
             return makeError(Error::Unsupported);
@@ -10213,6 +10132,9 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         return makeError(Error::Unsupported);
     }
 
+    deviceImpl->physicalProperties = vulkan::queryDeviceProperties(
+        deviceImpl->physicalDevice, selectedFeatures, deviceImpl->instanceFunctions.vkGetPhysicalDeviceProperties2);
+
     uint32_t selectedQueueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(
         deviceImpl->physicalDevice,
@@ -10412,7 +10334,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     volkLoadDeviceTable(&deviceImpl->functions, deviceImpl->device);
     if (vulkanOptions.shaderPrintf) { vulkanOptions.shaderPrintf->deviceConfigured = true; }
 
-    VkPhysicalDeviceProperties selectedProperties{};
+    const auto& selectedProperties = deviceImpl->physicalProperties.core;
     if (calibratedTimestamps) {
         const auto getDomains = reinterpret_cast<PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT>(
             vkGetInstanceProcAddr(deviceImpl->instance, "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT"));
@@ -10435,7 +10357,6 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             }
         }
     }
-    vkGetPhysicalDeviceProperties(deviceImpl->physicalDevice, &selectedProperties);
     deviceImpl->pipelineCacheFileIdentity.backendTag = kVulkanPipelineCacheBackendTag;
     std::memcpy(
         deviceImpl->pipelineCacheFileIdentity.compatibilityKey.data() + 0,
@@ -10475,7 +10396,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         std::max<uint64_t>(selectedProperties.limits.minUniformBufferOffsetAlignment, 1);
 
     if (selectedFeatures.bindlessDescriptorHeap) {
-        vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalDevice, deviceImpl->device, deviceImpl->functions, deviceImpl->instanceFunctions);
+        vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalProperties.descriptorHeap, deviceImpl->device, deviceImpl->functions);
         if (vkResult != VK_SUCCESS) {
             return std::unexpected(resultFromVk(vkResult).error());
         }
@@ -10601,6 +10522,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             vulkan::NativeDevice{
                 .functions = &deviceImpl->functions,
                 .instanceFunctions = &deviceImpl->instanceFunctions,
+                .properties = &deviceImpl->physicalProperties,
                 .getInstanceProcAddr = deviceImpl->getInstanceProcAddr,
                 .instance = deviceImpl->instance,
                 .physicalDevice = deviceImpl->physicalDevice,
@@ -10664,6 +10586,7 @@ struct VulkanNativeAccess {
         return vulkan::NativeDevice{
             .functions = &device.impl_->functions,
             .instanceFunctions = &device.impl_->instanceFunctions,
+            .properties = &device.impl_->physicalProperties,
             .getInstanceProcAddr = device.impl_->getInstanceProcAddr,
             .instance = device.impl_->instance,
             .physicalDevice = device.impl_->physicalDevice,
