@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SpirvWalker.h"
+
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -10,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-namespace metallic::render {
+namespace metallic::render::vulkan {
 
 // Slang 2026.18.2 emits typed OpBufferPointerEXT + OpAccessChain. On GB203
 // this loses nested struct offsets, corrupting material/texture indices and
@@ -54,10 +56,11 @@ inline bool normalizeNativeDescriptorHeapSpirv(
         error = std::string("Native descriptor heap normalization: ") + reason;
         return false;
     };
-    if (code.size() < 5 || code[0] != 0x07230203u || code[3] == 0) {
+    const SpirvWalker walker(code);
+    if (!walker.valid()) { return fail(walker.error()); }
+    if (code[3] == 0) {
         return fail("invalid SPIR-V header");
     }
-    std::vector<size_t> instructions;
     std::unordered_map<uint32_t, PointerType> pointerTypes;
     std::unordered_map<uint32_t, PointerInfo> pointers;
     std::unordered_map<uint32_t, IntegerType> integers;
@@ -66,11 +69,7 @@ inline bool normalizeNativeDescriptorHeapSpirv(
     std::unordered_map<uint32_t, uint32_t> untypedTypes;
     bool native = false, untyped = false;
     size_t functionsBegin = code.size();
-    for (size_t offset = 5; offset < code.size();) {
-        const uint32_t count = code[offset] >> 16, op = code[offset] & 0xffffu;
-        if (count == 0 || count > code.size() - offset) {
-            return fail("truncated instruction");
-        }
+    for (const auto& [offset, count, op] : walker.instructions()) {
         uint32_t minimum = 1;
         switch (op) {
         case Capability: case TypeStruct: minimum = 2; break;
@@ -96,7 +95,6 @@ inline bool normalizeNativeDescriptorHeapSpirv(
         // OpStore has no result type or result id.
         if (op == Store) { minimum = 3; }
         if (count < minimum) { return fail("incomplete instruction operands"); }
-        instructions.push_back(offset);
         if (op == Capability) {
             native |= code[offset + 1] == DescriptorHeap;
             untyped |= code[offset + 1] == UntypedPointers;
@@ -122,14 +120,12 @@ inline bool normalizeNativeDescriptorHeapSpirv(
         } else if (op == Function && functionsBegin == code.size()) {
             functionsBegin = offset;
         }
-        offset += count;
     }
     // Reject the unsafe stdlib AS heap lowering even if a new caller bypasses
     // Core's resolver. The backend's AS handle ABI is a 64-bit device address.
     if (native && untypedTypes.contains(0)) {
         std::unordered_set<uint32_t> heapPointers, heapLoads;
-        for (size_t offset : instructions) {
-            const uint32_t op = code[offset] & 0xffffu;
+        for (const auto& [offset, count, op] : walker.instructions()) {
             if ((op == UntypedAccessChain || op == UntypedInBoundsAccessChain) &&
                 code[offset + 1] == untypedTypes.at(0)) {
                 heapPointers.insert(code[offset + 2]);
@@ -168,8 +164,8 @@ inline bool normalizeNativeDescriptorHeapSpirv(
         }
         return false;
     };
-    for (size_t offset : instructions) {
-        if ((code[offset] & 0xffffu) != BufferPointer) { continue; }
+    for (const auto& [offset, count, op] : walker.instructions()) {
+        if (op != BufferPointer) { continue; }
         PointerType type{};
         if (!pointerType(code[offset + 1], type) || !untyped ||
             (type.storage != Uniform && type.storage != StorageBuffer)) {
@@ -183,8 +179,7 @@ inline bool normalizeNativeDescriptorHeapSpirv(
     bool changed = true;
     while (changed) {
         changed = false;
-        for (size_t offset : instructions) {
-            const uint32_t op = code[offset] & 0xffffu, count = code[offset] >> 16;
+        for (const auto& [offset, count, op] : walker.instructions()) {
             uint32_t policy = 0;
             auto inherit = [&](uint32_t id) {
                 if (const auto source = pointers.find(id); source != pointers.end()) { policy |= source->second.policy; }
@@ -238,16 +233,14 @@ inline bool normalizeNativeDescriptorHeapSpirv(
     // Only integer value types are needed for OpAtomicStore, which has no result
     // type. Other atomics carry their scalar result type directly.
     std::unordered_map<uint32_t, uint32_t> integerValues;
-    for (size_t offset : instructions) {
-        const uint32_t op = code[offset] & 0xffffu, count = code[offset] >> 16;
+    for (const auto& [offset, count, op] : walker.instructions()) {
         if (count >= 3 && integers.contains(code[offset + 1]) &&
             (offset >= functionsBegin || op == Constant || op == SpecConstant || op == SpecConstantOp || op == ConstantNull || op == Undef)) {
             integerValues[code[offset + 2]] = code[offset + 1];
         }
     }
     bool untypedAtomic32 = false, untypedAtomic64 = false;
-    for (size_t offset : instructions) {
-        const uint32_t op = code[offset] & 0xffffu, count = code[offset] >> 16;
+    for (const auto& [offset, count, op] : walker.instructions()) {
         if ((op == AccessChain || op == InBoundsAccessChain || op == CopyObject ||
              op == UntypedAccessChain || op == UntypedInBoundsAccessChain) && pointers.contains(code[offset + 2])) {
             const uint32_t base = code[offset + ((op == UntypedAccessChain || op == UntypedInBoundsAccessChain) ? 4 : 3)];
@@ -301,7 +294,7 @@ inline bool normalizeNativeDescriptorHeapSpirv(
         return true;
     }
     if (functionsBegin == code.size()) { return fail("missing function section"); }
-    std::vector<uint32_t> normalized(code.begin(), code.begin() + 5);
+    std::vector<uint32_t> normalized(code.begin(), code.begin() + SpirvWalker::kHeaderWords);
     std::vector<uint32_t> declarations;
     constexpr std::array<uint32_t, 2> storageClasses{Uniform, StorageBuffer};
     for (size_t i = 0; i < storageClasses.size(); ++i) {
@@ -313,8 +306,7 @@ inline bool normalizeNativeDescriptorHeapSpirv(
             declarations.insert(declarations.end(), {(3u << 16) | TypeUntypedPointer, id, storage});
         }
     }
-    for (size_t offset : instructions) {
-        const uint32_t op = code[offset] & 0xffffu, count = code[offset] >> 16;
+    for (const auto& [offset, count, op] : walker.instructions()) {
         if (offset == functionsBegin) {
             normalized.insert(normalized.end(), declarations.begin(), declarations.end());
         }
@@ -340,4 +332,4 @@ inline bool normalizeNativeDescriptorHeapSpirv(
     return true;
 }
 
-} // namespace metallic::render
+} // namespace metallic::render::vulkan

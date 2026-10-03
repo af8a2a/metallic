@@ -1,5 +1,6 @@
-#include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/GAPI/Vulkan/DescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <initializer_list>
@@ -63,12 +64,76 @@ void expectRejected(const Words& code, const char* diagnostic)
 {
     Words output{12345};
     std::string error;
-    EXPECT_FALSE(render::normalizeNativeDescriptorHeapSpirv(code, output, error));
+    EXPECT_FALSE(render::vulkan::normalizeNativeDescriptorHeapSpirv(code, output, error));
     EXPECT_EQ(output, Words{12345});
     EXPECT_NE(error.find(diagnostic), std::string::npos) << error;
     Words alias = code;
-    EXPECT_FALSE(render::normalizeNativeDescriptorHeapSpirv(alias, alias, error));
+    EXPECT_FALSE(render::vulkan::normalizeNativeDescriptorHeapSpirv(alias, alias, error));
     EXPECT_EQ(alias, code);
+}
+
+TEST(SpirvWalker, RejectsMalformedFramingWithoutExposingPartialInstructions)
+{
+    using render::vulkan::SpirvWalker;
+    for (const Words& code : std::vector<Words>{{}, {0x07230203, 0, 0, 1},
+             {0, 0x10600, 0, 1, 0}, {0x07230203, 0x10600, 0, 1, 0, 0},
+             {0x07230203, 0x10600, 0, 1, 0, (1u << 16), (65535u << 16) | 17u}}) {
+        const SpirvWalker walker(code);
+        EXPECT_FALSE(walker.valid());
+        EXPECT_NE(walker.error(), nullptr);
+        EXPECT_TRUE(walker.instructions().empty());
+    }
+}
+
+TEST(SpirvWalker, DecodesOffsetsAndUnknownOpcodesWithoutSemanticValidation)
+{
+    using render::vulkan::SpirvWalker;
+    Words code{0x07230203, 0x10600, 0, 0, 0};
+    EXPECT_TRUE(SpirvWalker(code).valid()); // ID-bound policy belongs to the transform.
+    emit(code, 17, {4472});
+    emit(code, 65535, {});
+    const SpirvWalker walker(code);
+    ASSERT_TRUE(walker.valid());
+    ASSERT_EQ(walker.instructions().size(), 2u);
+    EXPECT_EQ(walker.instructions()[0].offset, 5u);
+    EXPECT_EQ(walker.instructions()[0].wordCount, 2u);
+    EXPECT_EQ(walker.instructions()[0].opcode, 17u);
+    EXPECT_EQ(walker.instructions()[1].offset, 7u);
+    EXPECT_EQ(walker.instructions()[1].wordCount, 1u);
+    EXPECT_EQ(walker.instructions()[1].opcode, 65535u);
+}
+
+TEST(OpacityMicromapSPIRV, InPlaceTransformIsIdempotentAndFailuresPreserveOutput)
+{
+    using render::vulkan::enableOpacityMicromapSpirv;
+    Words code{0x07230203, 0x10600, 0, 32, 0};
+    emit(code, 17, {4472}); // RayQuery capability
+    emit(code, 14, {0, 1});
+    emit(code, 15, {5, 10, 0});
+    emit(code, 54, {1, 10, 0, 2});
+    emit(code, 56, {});
+    for (bool useExt : {false, true}) {
+        Words expected;
+        ASSERT_TRUE(enableOpacityMicromapSpirv(code, expected, useExt));
+        EXPECT_NE(expected, code);
+        auto alias = code;
+        ASSERT_TRUE(enableOpacityMicromapSpirv(alias, alias, useExt));
+        EXPECT_EQ(alias, expected);
+        ASSERT_TRUE(enableOpacityMicromapSpirv(alias, alias, useExt));
+        EXPECT_EQ(alias, expected);
+        auto malformed = code;
+        malformed.push_back((4u << 16) | 17u);
+        auto preserved = malformed;
+        EXPECT_FALSE(enableOpacityMicromapSpirv(malformed, malformed, useExt));
+        EXPECT_EQ(malformed, preserved);
+        EXPECT_FALSE(enableOpacityMicromapSpirv(malformed, alias, useExt));
+        EXPECT_EQ(alias, expected);
+    }
+    // Semantic failure after a valid instruction walk is also transactional.
+    code[3] = 0xffffffffu;
+    const auto original = code;
+    EXPECT_FALSE(enableOpacityMicromapSpirv(code, code));
+    EXPECT_EQ(code, original);
 }
 
 TEST(NativeDescriptorHeapSPIRV, PreservesEntireUInt64ChainAndNormalizesUInt32)
@@ -76,7 +141,7 @@ TEST(NativeDescriptorHeapSPIRV, PreservesEntireUInt64ChainAndNormalizesUInt32)
     auto input = mixedModule();
     Words output;
     std::string error;
-    ASSERT_TRUE(render::normalizeNativeDescriptorHeapSpirv(input, output, error)) << error;
+    ASSERT_TRUE(render::vulkan::normalizeNativeDescriptorHeapSpirv(input, output, error)) << error;
     for (auto [op, id] : {std::pair{5119u, 20u}, {65u, 21u}, {83u, 22u},
             {169u, 23u}, {245u, 24u}, {83u, 26u}, {68u, 30u}, {234u, 40u}}) {
         EXPECT_EQ(instruction(input, op, id), instruction(output, op, id));
@@ -86,10 +151,10 @@ TEST(NativeDescriptorHeapSPIRV, PreservesEntireUInt64ChainAndNormalizesUInt32)
     EXPECT_FALSE(instruction(output, 4419, 51).empty());
     Words second;
     error = "stale diagnostic";
-    ASSERT_TRUE(render::normalizeNativeDescriptorHeapSpirv(output, second, error)) << error;
+    ASSERT_TRUE(render::vulkan::normalizeNativeDescriptorHeapSpirv(output, second, error)) << error;
     EXPECT_EQ(output, second);
     EXPECT_TRUE(error.empty());
-    ASSERT_TRUE(render::normalizeNativeDescriptorHeapSpirv(input, input, error));
+    ASSERT_TRUE(render::vulkan::normalizeNativeDescriptorHeapSpirv(input, input, error));
     EXPECT_EQ(output, input);
 }
 
@@ -177,7 +242,7 @@ TEST(NativeDescriptorHeapSPIRV, MappedIsByteIdenticalAndMalformedInputIsTransact
     emit(mapped, 21, {1, 32, 0});
     Words output;
     std::string error;
-    ASSERT_TRUE(render::normalizeNativeDescriptorHeapSpirv(mapped, output, error));
+    ASSERT_TRUE(render::vulkan::normalizeNativeDescriptorHeapSpirv(mapped, output, error));
     EXPECT_EQ(output, mapped);
     expectRejected({0x07230203, 0x10600, 0, 10, 0, 0}, "truncated instruction");
     auto incomplete = mixedModule(); incomplete.push_back((3u << 16) | 230); incomplete.insert(incomplete.end(), {2, 99});

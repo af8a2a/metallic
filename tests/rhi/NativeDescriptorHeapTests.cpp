@@ -2,7 +2,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
-#include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -32,7 +32,7 @@ public:
         std::string log;
         std::vector<uint32_t> untouched{0x12345678};
         const std::vector<uint32_t> malformed{0x07230203, 0x10600, 0, 10, 0, 0};
-        if (render::normalizeNativeDescriptorHeapSpirv(malformed, untouched, log) ||
+        if (render::vulkan::normalizeNativeDescriptorHeapSpirv(malformed, untouched, log) ||
             untouched != std::vector<uint32_t>{0x12345678}) {
             return RHITestResult::fail("malformed SPIR-V modified output or was accepted");
         }
@@ -61,7 +61,7 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
             }, {.enableDiskCache = false}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             std::vector<uint32_t> normalized;
-            if (!render::normalizeNativeDescriptorHeapSpirv(shader.spirv, normalized, log) || normalized != shader.spirv) {
+            if (!render::vulkan::normalizeNativeDescriptorHeapSpirv(shader.spirv, normalized, log) || normalized != shader.spirv) {
                 return RHITestResult::fail("normalization is not idempotent: " + log);
             }
             std::filesystem::create_directories(context.outputDirectory / name);
@@ -291,7 +291,7 @@ public:
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "NativeDescriptorAtomics", .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, {.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
             std::vector<uint32_t> normalized;
-            if (!render::normalizeNativeDescriptorHeapSpirv(compiled.spirv, normalized, log) || normalized != compiled.spirv) {
+            if (!render::vulkan::normalizeNativeDescriptorHeapSpirv(compiled.spirv, normalized, log) || normalized != compiled.spirv) {
                 return RHITestResult::fail("mixed atomic normalization is not idempotent: " + log);
             }
             std::filesystem::create_directories(context.outputDirectory / name);

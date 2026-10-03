@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SpirvWalker.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -18,13 +20,12 @@ namespace metallic::render::vulkan {
 inline bool specializeDescriptorHeapSizes(std::span<const uint32_t> code, std::vector<uint32_t>& output,
     uint32_t imageSize, uint32_t bufferSize, uint32_t samplerSize)
 {
-    if (code.size() < 5 || code[0] != 0x07230203u) { return false; }
+    const SpirvWalker walker(code);
+    if (!walker.valid()) { return false; }
     constexpr uint32_t kTypeInt = 21, kTypeImage = 25, kTypeSampler = 26;
     constexpr uint32_t kTypeBuffer = 5115, kConstantSizeOf = 5129, kConstant = 43;
     std::unordered_map<uint32_t, uint32_t> sizes, widths;
-    for (size_t offset = 5; offset < code.size();) {
-        const uint32_t count = code[offset] >> 16, op = code[offset] & 0xffffu;
-        if (!count || count > code.size() - offset) { return false; }
+    for (const auto& [offset, count, op] : walker.instructions()) {
         if (op == kTypeInt) {
             if (count != 4) { return false; }
             widths[code[offset + 1]] = code[offset + 2];
@@ -32,11 +33,9 @@ inline bool specializeDescriptorHeapSizes(std::span<const uint32_t> code, std::v
             if (count < (op == kTypeImage ? 9u : op == kTypeBuffer ? 3u : 2u)) { return false; }
             sizes[code[offset + 1]] = op == kTypeImage ? imageSize : op == kTypeBuffer ? bufferSize : samplerSize;
         } else if (op == kConstantSizeOf && count != 4) { return false; }
-        offset += count;
     }
-    std::vector<uint32_t> result(code.begin(), code.begin() + 5);
-    for (size_t offset = 5; offset < code.size();) {
-        const uint32_t count = code[offset] >> 16, op = code[offset] & 0xffffu;
+    std::vector<uint32_t> result(code.begin(), code.begin() + SpirvWalker::kHeaderWords);
+    for (const auto& [offset, count, op] : walker.instructions()) {
         const auto size = op == kConstantSizeOf ? sizes.find(code[offset + 3]) : sizes.end();
         if (size != sizes.end()) {
             const auto width = widths.find(code[offset + 1]);
@@ -51,7 +50,6 @@ inline bool specializeDescriptorHeapSizes(std::span<const uint32_t> code, std::v
         } else {
             result.insert(result.end(), code.begin() + offset, code.begin() + offset + count);
         }
-        offset += count;
     }
     output = std::move(result);
     return true;

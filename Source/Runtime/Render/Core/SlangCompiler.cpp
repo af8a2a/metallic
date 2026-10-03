@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 
 #include <slang-com-ptr.h>
 #include <slang-tag-version.h>
@@ -1129,7 +1129,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     outResult.spirv.resize(byteSize / sizeof(uint32_t));
     std::memcpy(outResult.spirv.data(), shaderCode->getBufferPointer(), byteSize);
     std::string normalizationError;
-    if (!normalizeNativeDescriptorHeapSpirv(outResult.spirv, outResult.spirv, normalizationError)) {
+    if (!vulkan::normalizeNativeDescriptorHeapSpirv(outResult.spirv, outResult.spirv, normalizationError)) {
         outResult.spirv.clear();
         log += normalizationError + "\n";
         return makeError(Error::Failure);
