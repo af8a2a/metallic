@@ -2291,7 +2291,7 @@ public:
     void setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy);
     [[nodiscard]] Result<MemoryBudgetReservation> reserveMemoryBudget(uint64_t bytes);
     void logMemoryBudget(const char* phase) const;
-    Queue* getQueue(QueueType type, uint32_t indwriteStorageBufferex = 0);
+    Queue* getQueue(QueueType type, uint32_t index = 0);
     Result<> waitIdle();
     [[nodiscard]] Result<std::unique_ptr<Swapchain>> createSwapchain(const SwapchainDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<CommandPool>> createCommandPool(Queue& queue);
