@@ -5,7 +5,7 @@ struct ErrorParameters { uint color; };
 [numthreads(8, 8, 1)]
 void materialErrorMain(uint3 id : SV_DispatchThreadID)
 {
-    let output = getResource<RWTexture2D<float4>>(0);
+    let output = resolveUniform(getResourceParameters<OutputImageResourceParameters>().output);
     uint width, height;
     output.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) { return; }

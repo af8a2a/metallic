@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -168,6 +169,7 @@ public:
                 .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
                 .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "SceneRayQueryVisualizationPass",
+                .resourceParameters = kSceneVisualizationResourceLayout,
             },
             log);
         if (!result) {

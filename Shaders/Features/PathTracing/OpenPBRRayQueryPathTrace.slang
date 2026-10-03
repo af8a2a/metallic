@@ -10,9 +10,9 @@ using Metallic;
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
-#define gOpenPBRLut2D(index) getResourceArray<Texture2D<float4>>(11, index)
+#define gOpenPBRLut2D(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().openPBRLut2D.load(index)))
 
-#define gOpenPBRLut3D(index) getResourceArray<Texture3D<float4>>(12, index)
+#define gOpenPBRLut3D(index) resolveNonUniform(ResourceHandle<Texture3D<float4>>(getResourceParameters<SceneResourceParameters>().openPBRLut3D.load(index)))
 
 uint openPBRLut2DSlot(int lutId)
 {
@@ -672,8 +672,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
             uint punctualLightIndex;
             float punctualInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), punctualLightIndex, hit.position);
+            if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), punctualLightIndex, hit.position);
                 float3 weight = max(openpbr_get_sum_of_diffuse_specular(
                     evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
                 if (luminanceMax(weight * light.illuminance) > 0.0) {
@@ -849,7 +849,7 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (debugViewEnabled) {
         color = saturate(color);
     } else if (push.outputLinear == 0u) {
-        color *= lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50));
+        color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

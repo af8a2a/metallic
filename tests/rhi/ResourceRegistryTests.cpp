@@ -1998,6 +1998,82 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(BatchMemoryBarrierTest);
 
+// Direct fields must be independent of CPU binding IDs and retain slice/root storage.
+class NamedResourceParametersTest : public RHITest {
+public:
+    NamedResourceParametersTest() { type = RHITestType::Resource; name = "named_resource_parameters_layout_and_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        auto& device = context.device;
+        ShaderCompileResult shader;
+        REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "NamedResourceProbe", .entryPointName = "main",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
+            .transform([&](auto value) { shader = std::move(value); }));
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 213, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4},
+            {.binding = 7, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        ComputeResourceField fields[] = {
+            {213, ComputeResourceBindingKind::DataBuffer, 4, ComputeResourceFieldFormat::DataSpan},
+            {7, ComputeResourceBindingKind::StorageBuffer, 0}};
+        ComputeProgram program;
+        std::string log;
+        ComputeProgramDesc description{.spirv = shader.spirv, .pushConstantSize = 4,
+            .bindings = bindings, .requiresRayQuery = false, .resourceParameters = {16, fields}};
+        fields[1].offset = 4;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[1].offset = 16;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[1].offset = 0;
+        fields[1].kind = ComputeResourceBindingKind::SampledImage;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[1].kind = ComputeResourceBindingKind::StorageBuffer;
+        fields[0].format = ComputeResourceFieldFormat::Handle;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        fields[0].format = ComputeResourceFieldFormat::DataSpan;
+        REG_REQUIRE(program.initialize(device, description, log));
+        // Layout metadata is borrowed only at initialize; mutation cannot change a live program.
+        fields[0].offset = 0;
+        std::unique_ptr<Buffer> input, output;
+        REG_REQUIRE(makeBuffer(device, input));
+        REG_REQUIRE(makeBuffer(device, output));
+        auto* source = static_cast<uint32_t*>(input->map());
+        REG_CHECK(source);
+        source[1] = 40;
+        input->flush(); input->unmap();
+        auto slice = input->slice({4, 4});
+        REG_CHECK(slice.has_value());
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, context.graphicsQueue));
+        REG_REQUIRE(recording.begin(0));
+        ComputeDispatchBinding resources[] = {
+            {.binding = 7, .buffer = output.get()}, {.binding = 213, .data = *slice}};
+        const uint32_t add = 2;
+        auto prepared = program.prepareDispatch(recording.frame, {.bindings = resources,
+            .pushData = &add, .pushDataSize = sizeof(add)});
+        REG_CHECK(prepared.has_value());
+        input.reset(); slice = BufferSlice{};
+        resources[1].data = {}; // The prepared packet is now the only source allocation owner.
+        REG_REQUIRE(prepared->record(*recording.commands));
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(device, context.graphicsQueue));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{context.graphicsQueue, *gate};
+        REG_REQUIRE(recording.submit(tracker, *gate));
+        REG_REQUIRE(recording.frame.wait());
+        output->invalidate();
+        const auto* values = static_cast<const uint32_t*>(output->map());
+        REG_CHECK(values);
+        const uint32_t actual = values[0], guard = values[1];
+        bench::readbackEvidence(context, "named-resources.bin", std::span<const uint32_t>(values, 16));
+        output->unmap();
+        REG_CHECK(actual == 42 && guard == 0);
+        return RHITestResult::pass("Direct named fields, sparse IDs, bounded slice and retained packet");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(NamedResourceParametersTest);
+
 #undef REG_REQUIRE
 #undef REG_CHECK
 } // namespace

@@ -23,17 +23,17 @@ namespace Metallic.Interop.NeuralTextures
 public static const uint kMaxNeuralTextureSets = 64u;
 public static const uint kInvalidNeuralTextureSetIndex = 0xffffffffu;
 
-#define gNtcLatentTextures(index) getResourceArray<Texture2DArray<float4>>(29, index)
+#define gNtcLatentTextures(index) resolveNonUniform(ResourceHandle<Texture2DArray<float4>>(getResourceParameters<SceneResourceParameters>().ntcLatents.load(index)))
 
-#define gNtcTextureSetConstants getResource<StructuredBuffer<NtcTextureSetConstants>>(30)
+#define gNtcTextureSetConstants resolveBuffer<StructuredBuffer<NtcTextureSetConstants>>(getResourceParameters<SceneResourceParameters>().ntcConstants)
 
-#define gNtcWeights getResource<ByteAddressBuffer>(31)
+#define gNtcWeights resolveBuffer<ByteAddressBuffer>(getResourceParameters<SceneResourceParameters>().ntcWeights)
 
 // x is the byte offset of this texture set's weights in gNtcWeights.
 // y is 1 for converted CoopVec FP8 weights and 0 for Generic INT8 weights.
-#define gNtcTextureSetInfo getResource<StructuredBuffer<uint4>>(32)
+#define gNtcTextureSetInfo resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().ntcInfo)
 
-#define gNtcLatentSampler getResource<SamplerState>(33)
+#define gNtcLatentSampler resolveUniform(getResourceParameters<SceneResourceParameters>().ntcSampler)
 
 public bool metallicHasNeuralTexture(uint textureSetIndex, uint textureSetCount)
 {

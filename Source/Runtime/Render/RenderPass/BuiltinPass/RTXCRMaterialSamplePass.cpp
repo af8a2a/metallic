@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -172,6 +173,7 @@ public:
                 .pushConstantSize = sizeof(RTXCRMaterialSamplePush),
                 .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "RTXCRMaterialSamplePass",
+                .resourceParameters = kOutputImageResourceLayout,
             },
             programLog);
         if (!programLog.empty()) {

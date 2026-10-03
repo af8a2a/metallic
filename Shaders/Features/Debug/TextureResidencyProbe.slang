@@ -6,7 +6,7 @@ struct Push { uint slot; uint wantedMip; uint samples; uint unused; };
 void main()
 {
     Push push = getConstants<Push>();
-    RWStructuredBuffer<uint> feedback = getResource<RWStructuredBuffer<uint>>(0);
+    RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<TextureFeedbackResourceParameters>().feedback);
     uint count, stride;
     feedback.GetDimensions(count, stride);
     uint offset = push.slot * 8;

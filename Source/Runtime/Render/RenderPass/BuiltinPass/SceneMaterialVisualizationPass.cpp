@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -220,6 +221,7 @@ public:
                 .pushConstantSize = sizeof(SceneMaterialVisualizationPush),
                 .bindings = bindings,
                 .debugName = "SceneMaterialVisualizationPass",
+                .resourceParameters = kSceneVisualizationResourceLayout,
             },
             programLog);
         if (!programLog.empty()) {

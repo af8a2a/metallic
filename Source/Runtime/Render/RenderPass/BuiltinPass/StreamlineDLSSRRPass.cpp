@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -233,6 +234,7 @@ public:
                 .bindings = {bindings, 4},
                 .debugName = "UpscalerGuideResolve",
                 .requiresRayQuery = false,
+                .resourceParameters = kUpscalerGuideResourceLayout,
             }, log);
             if (!result) { return result; }
         }

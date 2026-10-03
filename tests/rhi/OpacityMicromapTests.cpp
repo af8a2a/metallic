@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 
@@ -213,6 +214,7 @@ public:
                 .spirv = compiled.spirv,
                 .pushConstantSize = 4,
                 .bindings = {layout, uint32_t(std::size(layout))},
+                .resourceParameters = render::kSceneProbeResourceLayout,
             }, log));
             std::unique_ptr<render::Buffer> output;
             OMM_REQUIRE(device->createBuffer({.size = sizeof(Probe), .structureStride = 8,

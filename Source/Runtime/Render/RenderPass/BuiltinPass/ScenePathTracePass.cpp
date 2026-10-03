@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -1208,7 +1209,8 @@ public:
                     .searchPath = kTriangleShaderSearchPath, .additionalSearchPaths = additionalSearchPaths,
                     .capabilities = capabilities, .macroDefines = defines},
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
-                    .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get()},
+                    .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get(),
+                    .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
                 outProgram, artifact, diagnostics);
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {

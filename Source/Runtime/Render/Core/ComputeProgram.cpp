@@ -61,11 +61,15 @@ struct ComputeProgram::Impl {
     std::vector<ComputeProgramBindingDesc> bindings;
     uint32_t pushConstantSize = 0;
     uint32_t resourceSlotCount = 0;
+    uint32_t resourceParameterSize = 0;
+    uint32_t resourceParameterAlignment = 4;
+    std::vector<ComputeResourceField> resourceFields;
     std::string debugName;
 
     bool hasCompatibleBindings(const Impl& other) const
     {
-        return device == other.device && pushConstantSize == other.pushConstantSize && bindings == other.bindings;
+        return device == other.device && pushConstantSize == other.pushConstantSize && bindings == other.bindings &&
+            resourceParameterSize == other.resourceParameterSize && resourceFields == other.resourceFields;
     }
 };
 
@@ -107,6 +111,45 @@ Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& de
     }
     // Resource slots are independent of declaration and descriptor allocation order.
     std::ranges::sort(impl->bindings, {}, &ComputeProgramBindingDesc::binding);
+    if (desc.resourceParameters.size || !desc.resourceParameters.fields.empty()) {
+        const auto& layout = desc.resourceParameters;
+        if (!layout.size || layout.size > 65536 || (layout.size & 3u) || layout.fields.empty()) {
+            return makeError(Error::InvalidArgument);
+        }
+        impl->resourceParameterSize = layout.size;
+        for (const auto& binding : impl->bindings) {
+            const ComputeResourceField* selected = nullptr;
+            for (const auto& field : layout.fields) {
+                if (field.binding != binding.binding || field.kind != binding.kind) { continue; }
+                if (selected) { log = "Duplicate named resource input " + std::to_string(binding.binding); return makeError(Error::InvalidArgument); }
+                selected = &field;
+            }
+            if (!selected) { log = "Missing named resource field for input " + std::to_string(binding.binding); return makeError(Error::InvalidArgument); }
+            const auto& field = *selected;
+            const bool span = field.format != ComputeResourceFieldFormat::Handle;
+            const uint32_t size = span ? sizeof(GPUBufferSpan) :
+                field.kind == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
+            const uint32_t alignment = !span && size == 8 ? 8u : 4u;
+            if (field.format > ComputeResourceFieldFormat::DataSpan || field.offset % alignment || layout.size % alignment ||
+                field.offset > layout.size || size > layout.size - field.offset ||
+                (field.format == ComputeResourceFieldFormat::IndexSpan && !usesImageHeap(field.kind)) ||
+                (field.format == ComputeResourceFieldFormat::DataSpan) != (field.kind == ComputeResourceBindingKind::DataBuffer) ||
+                (field.format == ComputeResourceFieldFormat::Handle && binding.descriptorCount != 1)) {
+                log = "Invalid named resource field for input " + std::to_string(binding.binding);
+                return makeError(Error::InvalidArgument);
+            }
+            for (const auto& previous : impl->resourceFields) {
+                const uint32_t previousSize = previous.format != ComputeResourceFieldFormat::Handle ? sizeof(GPUBufferSpan) :
+                    previous.kind == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
+                if (field.offset < previous.offset + previousSize && previous.offset < field.offset + size) {
+                    log = "Overlapping named resource inputs " + std::to_string(previous.binding) + " and " + std::to_string(binding.binding);
+                    return makeError(Error::InvalidArgument);
+                }
+            }
+            impl->resourceFields.push_back(field);
+            impl->resourceParameterAlignment = std::max(impl->resourceParameterAlignment, alignment);
+        }
+    }
     auto registry = device.resourceRegistry();
     if (!registry) { return makeError(registry.error()); }
     impl->registry = std::move(*registry);
@@ -313,7 +356,9 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
         }
         auto& slot = slots[expected.binding];
         slot.handle = handles.front();
-        if (usesImageHeap(expected.kind)) {
+        const auto field = std::ranges::find(impl_->resourceFields, expected.binding, &ComputeResourceField::binding);
+        if (usesImageHeap(expected.kind) && (!impl_->resourceParameterSize ||
+            (field != impl_->resourceFields.end() && field->format == ComputeResourceFieldFormat::IndexSpan))) {
             std::vector<uint32_t> indices;
             indices.reserve(handles.size());
             for (auto handle : handles) { indices.push_back(static_cast<uint32_t>(handle)); }
@@ -322,7 +367,30 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
         if (!result) { return makeError(result.error()); }
     }
     ComputeResourceParameters push;
-    push.resources = upload(slots.data(), slots.size() * sizeof(ResourceSlot), sizeof(ResourceSlot), alignof(ResourceSlot));
+    if (impl_->resourceParameterSize) {
+        // Absent optional fields are invalid sentinel bytes, never descriptor slot zero.
+        std::vector<uint8_t> parameters(impl_->resourceParameterSize, 0xff);
+        for (const auto& field : impl_->resourceFields) {
+            const auto& slot = slots[field.binding];
+            if (field.format == ComputeResourceFieldFormat::Handle) {
+                const uint32_t size = field.kind == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
+                std::memcpy(parameters.data() + field.offset, &slot.handle, size);
+            } else {
+                auto span = slot.payload;
+                if (field.format == ComputeResourceFieldFormat::DataSpan) {
+                    // Named raw spans count words; typedBufferSpan restores element count.
+                    const uint64_t words = uint64_t(span.count) * slot.dataStride / 4;
+                    if (words > UINT32_MAX) { return makeError(Error::InvalidArgument); }
+                    span.count = static_cast<uint32_t>(words);
+                }
+                std::memcpy(parameters.data() + field.offset, &span, sizeof(span));
+            }
+        }
+        push.resources = upload(parameters.data(), parameters.size(), impl_->resourceParameterSize, impl_->resourceParameterAlignment);
+        push.resources.count = impl_->resourceParameterSize / 4;
+    } else {
+        push.resources = upload(slots.data(), slots.size() * sizeof(ResourceSlot), sizeof(ResourceSlot), alignof(ResourceSlot));
+    }
     const uint64_t stride = (uint64_t(impl_->pushConstantSize) + 15) & ~uint64_t(15);
     const size_t count = std::max<size_t>(1, dispatches.size());
     if (stride && (count > SIZE_MAX / stride || count > UINT32_MAX / stride)) { return makeError(Error::InvalidArgument); }

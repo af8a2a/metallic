@@ -314,7 +314,7 @@ public:
             require(blendRed>samples*70 && blendBlue>samples*70,"BLEND did not retain both front and background radiance");
             require(glassBlue>samples*70 && cutoutRed>100 && cutoutBlue>100,
                 "Stream CLAS glass/MASK continuation lost cutout or background coverage: " +
-                std::to_string(cutoutRed) + "/" + std::to_string(cutoutBlue));
+                std::to_string(cutoutRed) + "/" + std::to_string(cutoutBlue) + "\n" + preview.lastLog());
             const auto unbinned=preview.pixels();
             graph.setNodeRuntimeProperty(deferred,"materialBinning",true);
             for(uint32_t frame=0;frame<8;++frame) { require(bool(preview.render(graph,256,128)),preview.lastLog()); }

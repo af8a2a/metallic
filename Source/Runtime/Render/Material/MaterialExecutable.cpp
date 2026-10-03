@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 
 namespace metallic::render {
@@ -27,6 +28,10 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     hash(candidate->parameterABI);
     hash(candidate->constantsSize);
     hash(layout.requiresRayQuery);
+    hash(layout.resourceParameters.size);
+    for (const auto& field : layout.resourceParameters.fields) {
+        hash(field.binding); hash(uint64_t(field.kind)); hash(field.offset); hash(uint64_t(field.format));
+    }
     for (auto word : candidate->shader.spirv) { hash(word); }
     for (const auto& resource : candidate->resources) {
         hash(resource.binding); hash(uint64_t(resource.kind)); hash(resource.descriptorCount);
@@ -45,7 +50,7 @@ Result<> initializeMaterialErrorProgram(Device& device, ComputeProgram& program,
     return compileMaterialExecutable(device,
         {.moduleName = "Features/Material/MaterialError", .entryPointName = "materialErrorMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-        {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false},
+        {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false, .resourceParameters = kOutputImageResourceLayout},
         program, artifact, log);
 }
 

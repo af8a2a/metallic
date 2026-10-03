@@ -6,8 +6,8 @@ struct TextureProbePush { uint textureIndex; uint mip; uint flags; uint unused; 
 void main()
 {
     TextureProbePush push = getConstants<TextureProbePush>();
-    Texture2D<float4> texture = getResourceArray<Texture2D<float4>>(0,push.textureIndex);
-    RWStructuredBuffer<float4> output = getResource<RWStructuredBuffer<float4>>(1);
+    Texture2D<float4> texture = resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<TextureProbeResourceParameters>().textures.load(push.textureIndex)));
+    RWStructuredBuffer<float4> output = resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<TextureProbeResourceParameters>().output);
     float4 sample = texture.Load(int3(0,0,push.mip));
     output[0] = sample;
     output[1] = decodeMaterialTextureSample(sample,float(push.flags));

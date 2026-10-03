@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
@@ -200,6 +201,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             .bindings = layout,
             .debugName = "Ray-traced shadows",
             .requiresRayQuery = true,
+            .resourceParameters = kShadowResourceLayout,
         }, log);
         if (!result) { return makeError(result.error()); }
     }

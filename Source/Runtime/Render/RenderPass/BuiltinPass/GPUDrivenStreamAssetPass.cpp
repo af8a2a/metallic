@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -1318,6 +1319,7 @@ private:
                 .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
                 .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "GPUDrivenStreamAssetPass RTAS visualization",
+                .resourceParameters = kSceneVisualizationResourceLayout,
             },
             log);
     }

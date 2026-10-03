@@ -10,9 +10,9 @@ using Metallic;
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
 
-#define gScene getResource<RaytracingAccelerationStructure>(0)
+#define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
-#define gOutput getResource<RWTexture2D<float4>>(1)
+#define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
 
 struct MaterialVisualizePrimitive
 {
@@ -71,15 +71,15 @@ struct MaterialVisualizeMaterial
     MaterialVisualizeTextureInfo specularColorTexture;
 };
 
-#define gIndices getResource<StructuredBuffer<uint>>(3)
+#define gIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().indices)
 
-#define gPrimitives getResource<StructuredBuffer<MaterialVisualizePrimitive>>(4)
+#define gPrimitives resolveBuffer<StructuredBuffer<MaterialVisualizePrimitive>>(getResourceParameters<SceneResourceParameters>().primitives)
 
-#define gInstances getResource<StructuredBuffer<MaterialVisualizeInstance>>(5)
+#define gInstances resolveBuffer<StructuredBuffer<MaterialVisualizeInstance>>(getResourceParameters<SceneResourceParameters>().instances)
 
-#define gMaterials getResource<StructuredBuffer<MaterialVisualizeMaterial>>(6)
+#define gMaterials resolveBuffer<StructuredBuffer<MaterialVisualizeMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
 
-#define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(7, index)
+#define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
 
 
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -294,9 +294,9 @@ float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    return getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0].texcoord.xy * weights.x +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1].texcoord.xy * weights.y +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2].texcoord.xy * weights.z;
+    return resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0].texcoord.xy * weights.x +
+        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1].texcoord.xy * weights.y +
+        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2].texcoord.xy * weights.z;
 }
 
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, SceneMaterialVisualizationPush push)
@@ -396,9 +396,9 @@ bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
     uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0];
-    SceneShadingVertex v1 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1];
-    SceneShadingVertex v2 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2];
+    SceneShadingVertex v0 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0];
+    SceneShadingVertex v1 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1];
+    SceneShadingVertex v2 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2];
 
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
@@ -409,9 +409,9 @@ bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
     float3 p1 = positions[1];
     float3 p2 = positions[2];
 #else
-    float3 p0 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i0);
-    float3 p1 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i1);
-    float3 p2 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i2);
+    float3 p0 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i0);
+    float3 p1 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i1);
+    float3 p2 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i2);
 #endif
     float2 uv0 = v0.texcoord;
     float2 uv1 = v1.texcoord;

@@ -20,7 +20,7 @@ enum class ComputeResourceBindingKind : uint8_t {
 };
 
 struct ComputeProgramBindingDesc {
-    // Application resource-table slot, not a Vulkan descriptor binding.
+    // CPU input ID. Named layouts map it to a field; legacy tests use it as a slot.
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
@@ -28,6 +28,21 @@ struct ComputeProgramBindingDesc {
     uint32_t dataStride = 0;
     uint32_t dataAlignment = 0;
     bool operator==(const ComputeProgramBindingDesc&) const = default;
+};
+
+enum class ComputeResourceFieldFormat : uint8_t { Handle, IndexSpan, DataSpan };
+
+struct ComputeResourceField {
+    uint32_t binding = 0;
+    ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
+    uint32_t offset = 0;
+    ComputeResourceFieldFormat format = ComputeResourceFieldFormat::Handle;
+    bool operator==(const ComputeResourceField&) const = default;
+};
+
+struct ComputeResourceLayout {
+    uint32_t size = 0;
+    std::span<const ComputeResourceField> fields;
 };
 
 struct ComputeProgramDesc {
@@ -38,6 +53,8 @@ struct ComputeProgramDesc {
     bool requiresRayQuery = true;
     // Optional cache borrowed only during pipeline creation.
     PipelineCache* pipelineCache = nullptr;
+    // Direct CPU/Slang resource struct. Empty preserves the low-level test adapter.
+    ComputeResourceLayout resourceParameters;
 };
 
 struct CPUProfileRecorder;
@@ -97,7 +114,7 @@ struct ComputeIndirectDispatch {
     const ComputeProgram* program = nullptr;
 };
 
-// Resource-table input adapter for Core shaders. ComputeKernel owns all execution.
+// CPU binding adapter for Core resource parameters. ComputeKernel owns execution.
 class ComputeProgram {
 public:
     ComputeProgram();

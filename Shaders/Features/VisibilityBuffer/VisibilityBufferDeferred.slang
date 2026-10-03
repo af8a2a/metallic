@@ -19,7 +19,7 @@ ScenePathTracePush deferredViewPush()
 {
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
 #if METALLIC_GLOBAL_VIEW
-    ViewConstants view = getResource<StructuredBuffer<ViewConstants>>(80)[0];
+    ViewConstants view = resolveBuffer<StructuredBuffer<ViewConstants>>(getResourceParameters<SceneResourceParameters>().view)[0];
     push.eye = view.current.eye;
     push.center = view.current.center;
     push.upProjection = view.current.upProjection;
@@ -38,23 +38,23 @@ ScenePathTracePush deferredViewPush()
     return push;
 }
 
-#define gVisibility getResource<Texture2D<uint>>(60)
-#define gVisibilityDepth getResource<Texture2D<float>>(61)
-#define gRasterVertices getResource<StructuredBuffer<GPUDrivenPreviewVertex>>(62)
-#define gRasterMeshlets getResource<StructuredBuffer<GPUDrivenPreviewMeshlet>>(63)
-#define gRasterRecords getResource<StructuredBuffer<VisibleClusterRecord>>(64)
-#define gRasterMeshletVertices getResource<StructuredBuffer<uint>>(65)
-#define gRasterTriangles getResource<StructuredBuffer<uint>>(66)
-#define gRasterGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(67)
-#define gRasterInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(68)
-#define gRasterMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(69)
+#define gVisibility resolveUniform(getResourceParameters<SceneResourceParameters>().visibility)
+#define gVisibilityDepth resolveUniform(getResourceParameters<SceneResourceParameters>().visibilityDepth)
+#define gRasterVertices resolveBuffer<StructuredBuffer<GPUDrivenPreviewVertex>>(getResourceParameters<SceneResourceParameters>().rasterVertices)
+#define gRasterMeshlets resolveBuffer<StructuredBuffer<GPUDrivenPreviewMeshlet>>(getResourceParameters<SceneResourceParameters>().rasterMeshlets)
+#define gRasterRecords resolveBuffer<StructuredBuffer<VisibleClusterRecord>>(getResourceParameters<SceneResourceParameters>().rasterRecords)
+#define gRasterMeshletVertices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rasterVertexIndices)
+#define gRasterTriangles resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rasterTriangles)
+#define gRasterGeometries resolveBuffer<StructuredBuffer<GPUDrivenPreviewGeometry>>(getResourceParameters<SceneResourceParameters>().rasterGeometries)
+#define gRasterInstances resolveBuffer<StructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<SceneResourceParameters>().rasterInstances)
+#define gRasterMaterials resolveBuffer<StructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<SceneResourceParameters>().rasterMaterials)
 #include "VisibilityStreamDecode.slang"
-#define gStreamRecords getResource<StructuredBuffer<CompactStreamVisibleRecord>>(83)
-#define gStreamGroups getResource<StructuredBuffer<StreamActiveGroup>>(84)
-#define gStreamPages getResource<StructuredBuffer<uint>>(85)
-#define gStreamPageTable getResource<StructuredBuffer<uint2>>(86)
-#define gRasterFrameInfo getResource<ByteAddressBuffer>(87)
-#define gRasterDomain getResource<Texture2D<float4>>(88)
+#define gStreamRecords resolveBuffer<StructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<SceneResourceParameters>().streamRecords)
+#define gStreamGroups resolveBuffer<StructuredBuffer<StreamActiveGroup>>(getResourceParameters<SceneResourceParameters>().streamGroups)
+#define gStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().streamPages)
+#define gStreamPageTable resolveBuffer<StructuredBuffer<uint2>>(getResourceParameters<SceneResourceParameters>().streamPageTable)
+#define gRasterFrameInfo resolveBuffer<ByteAddressBuffer>(getResourceParameters<SceneResourceParameters>().rasterFrameInfo)
+#define gRasterDomain resolveUniform(getResourceParameters<SceneResourceParameters>().rasterDomain)
 
 float4 rasterDomain(uint2 pixel)
 {
@@ -77,11 +77,11 @@ float rasterRayDistance(uint2 pixel, Ray ray, ScenePathTracePush push)
     float3 forward = cameraForwardFrom(push.eye, push.center);
     return (viewDepth - dot(ray.origin - push.eye.xyz, forward)) / max(dot(ray.direction, forward), 1e-6);
 }
-#define gMaterialBins getData<MaterialBin>(70)
-#define gMaterialTiles getData<MaterialTile>(71)
+#define gMaterialBins typedBufferSpan<MaterialBin>(getResourceParameters<SceneResourceParameters>().materialBins)
+#define gMaterialTiles typedBufferSpan<MaterialTile>(getResourceParameters<SceneResourceParameters>().materialTiles)
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
-#define gUpscalerMotion getResource<RWTexture2D<float2>>(72)
-#define gUpscalerDepth getResource<RWTexture2D<float>>(73)
+#define gUpscalerMotion resolveUniform(getResourceParameters<SceneResourceParameters>().upscalerMotion)
+#define gUpscalerDepth resolveUniform(getResourceParameters<SceneResourceParameters>().upscalerDepth)
 #endif
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)
@@ -118,7 +118,7 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     VisibleClusterRecord record;
     float3 a, b, c;
     if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
-        gStreamPages, gStreamPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(94)), record, a, b, c)) { return false; }
+        gStreamPages, gStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameters<SceneResourceParameters>().streamPageCount)), record, a, b, c)) { return false; }
     uint count, stride;
     gRasterInstances.GetDimensions(count, stride);
     if (record.instanceIndex >= count) { return false; }
@@ -351,10 +351,10 @@ void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
 {
     ScenePathTracePush push = deferredViewPush();
     uint binIndex = push.deferredSettings & 0xffffu;
-    if (!getData<MaterialBin>(70).contains(binIndex)) { return; }
+    if (!typedBufferSpan<MaterialBin>(getResourceParameters<SceneResourceParameters>().materialBins).contains(binIndex)) { return; }
     MaterialBin bin = gMaterialBins[binIndex];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
-    uint tileCount = getData<MaterialTile>(71).length();
+    uint tileCount = typedBufferSpan<MaterialTile>(getResourceParameters<SceneResourceParameters>().materialTiles).length();
     if (index >= bin.count || bin.offset >= tileCount || index >= tileCount - bin.offset) { return; }
     MaterialTile tile = gMaterialTiles[bin.offset + index];
     uint lane = WaveGetLaneIndex();

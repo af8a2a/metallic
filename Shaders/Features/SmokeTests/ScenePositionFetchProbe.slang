@@ -3,7 +3,7 @@ using Metallic;
 
 #include "../PathTracing/ScenePathTrace.slang"
 
-#define gProbeOutput getResource<RWStructuredBuffer<float4>>(63)
+#define gProbeOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().probeOutput)
 struct ProbePush { float translationX; };
 #define gProbePush getConstants<ProbePush>()
 

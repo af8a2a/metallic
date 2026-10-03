@@ -29,7 +29,7 @@ struct RTXCRMaterialSamplePush
     float padding1;
 };
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
+#define gOutput resolveUniform(getResourceParameters<OutputImageResourceParameters>().output)
 
 static const float kPi = 3.14159265358979323846;
 

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -209,7 +210,11 @@ public:
         if (!result) { return result; }
         const std::array bindings{ComputeProgramBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
             ComputeProgramBindingDesc{.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv, .bindings = bindings, .requiresRayQuery = false}, log);
+        const ComputeResourceField fields[] = {
+            {0, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, probeOutput)},
+            {kMaterialValueBinding, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, materialValues)}};
+        return program_.initialize(*context.device, {.spirv = shader.spirv, .bindings = bindings, .requiresRayQuery = false,
+            .resourceParameters = {sizeof(SceneResourceParameters), fields}}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {

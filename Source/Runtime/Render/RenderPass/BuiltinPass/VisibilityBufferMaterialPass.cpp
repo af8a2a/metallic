@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -68,6 +69,7 @@ public:
             .bindings = bindings,
             .debugName = "VisibilityBufferMaterial",
             .requiresRayQuery = false,
+            .resourceParameters = kVisibilityMaterialResourceLayout,
         }, log);
     }
 

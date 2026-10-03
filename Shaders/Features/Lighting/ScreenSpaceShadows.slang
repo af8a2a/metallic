@@ -9,13 +9,13 @@ using Metallic.Lighting;
 import NRDEncoding;
 using Metallic.Interop.NRDEncoding;
 
-#define gShadowParameters getResource<StructuredBuffer<ShadowParameters>>(80)
-#define gDepth getResource<Texture2D<float>>(81)
-#define gPenumbra getResource<RWTexture2D<float>>(82)
-#define gNormal getResource<RWTexture2D<float4>>(83)
-#define gViewZ getResource<RWTexture2D<float>>(84)
-#define gMotion getResource<RWTexture2D<float4>>(85)
-#define gShadow getResource<RWTexture2D<float>>(86)
+#define gShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameters<SceneResourceParameters>().shadowParameters)
+#define gDepth resolveUniform(getResourceParameters<SceneResourceParameters>().shadowDepth)
+#define gPenumbra resolveUniform(getResourceParameters<SceneResourceParameters>().penumbra)
+#define gNormal resolveUniform(getResourceParameters<SceneResourceParameters>().shadowNormal)
+#define gViewZ resolveUniform(getResourceParameters<SceneResourceParameters>().shadowViewZ)
+#define gMotion resolveUniform(getResourceParameters<SceneResourceParameters>().shadowMotion)
+#define gShadow resolveUniform(getResourceParameters<SceneResourceParameters>().shadowOutput)
 
 struct ShadowGeometryPush
 {

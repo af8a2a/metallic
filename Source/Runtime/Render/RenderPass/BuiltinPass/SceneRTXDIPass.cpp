@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
@@ -334,6 +335,7 @@ public:
                 .pushConstantSize = sizeof(SceneRTXDIPush),
                 .bindings = bindings,
                 .debugName = "SceneRTXDIPass",
+                .resourceParameters = kRTXDIResourceLayout,
             },
             programLog);
         if (!programLog.empty()) {

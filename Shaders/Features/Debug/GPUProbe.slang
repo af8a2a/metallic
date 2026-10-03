@@ -30,8 +30,8 @@ struct Partial
     uint firstIndex;
     uint firstBits;
 };
-#define gInput getResource<ByteAddressBuffer>(0)
-#define gOutput getResource<RWStructuredBuffer<Partial>>(1)
+#define gInput resolveBuffer<ByteAddressBuffer>(getResourceParameters<GPUProbeResourceParameters>().input)
+#define gOutput resolveBuffer<RWStructuredBuffer<Partial>>(getResourceParameters<GPUProbeResourceParameters>().output)
 groupshared Partial partials[128];
 
 bool lessValue(uint a, uint b, uint type)

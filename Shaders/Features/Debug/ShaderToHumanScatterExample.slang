@@ -5,7 +5,7 @@ using Metallic;
 // between this dispatch and earlier image writes. One invocation owns all text.
 #include "ShaderToHumanScatter.slang"
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
+#define gOutput resolveUniform(getResourceParameters<OutputImageResourceParameters>().output)
 
 void onGfxForAllScatter(int2 pxPos, float4 color)
 {

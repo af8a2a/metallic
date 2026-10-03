@@ -458,7 +458,10 @@ public:
         }
         const auto events = runtime.core().events("validation");
         for (const auto& event : events["events"]) {
-            if (event["severity"].get<uint32_t>() & 4096) { return RHITestResult::fail("Probe validation error: " + event.dump()); }
+            // Keep loader GENERAL events in captured evidence; fail on API validation errors.
+            if ((event["severity"].get<uint32_t>() & 4096) && (event["type"].get<uint32_t>() & 2)) {
+                return RHITestResult::fail("Probe validation error: " + event.dump());
+            }
         }
         runtime.drain();
         return RHITestResult::pass("GPU count, OOB, NaN/Inf, extrema, packed fields, checkpoint isolation and watch verified");

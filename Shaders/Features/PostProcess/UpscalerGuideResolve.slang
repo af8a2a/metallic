@@ -1,10 +1,10 @@
 import Core;
 using Metallic;
 
-#define gMotion getResource<Texture2D<float2>>(0)
-#define gDepth getResource<Texture2D<float>>(1)
-#define gOutputMotion getResource<RWTexture2D<float2>>(2)
-#define gOutputDepth getResource<RWTexture2D<float>>(3)
+#define gMotion resolveUniform(getResourceParameters<UpscalerGuideResourceParameters>().inputMotion)
+#define gDepth resolveUniform(getResourceParameters<UpscalerGuideResourceParameters>().inputDepth)
+#define gOutputMotion resolveUniform(getResourceParameters<UpscalerGuideResourceParameters>().outputMotion)
+#define gOutputDepth resolveUniform(getResourceParameters<UpscalerGuideResourceParameters>().outputDepth)
 
 struct UpscalerGuideResolvePush { float2 jitter; };
 

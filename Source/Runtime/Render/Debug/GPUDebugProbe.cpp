@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/GPUDebugProbe.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -131,6 +132,7 @@ Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::stri
         .bindings = {bindings, 2},
         .debugName = "DebugGPUProbe",
         .requiresRayQuery = false,
+        .resourceParameters = kGPUProbeResourceLayout,
     }, log);
 }
 

@@ -3,7 +3,7 @@ using Metallic;
 
 #include "../PathTracing/ScenePathTrace.slang"
 
-#define gProbeOutput getResource<RWStructuredBuffer<uint2>>(63)
+#define gProbeOutput resolveBuffer<RWStructuredBuffer<uint2>>(getResourceParameters<SceneResourceParameters>().probeOutput)
 struct ProbePush { uint materialTextureCount; };
 #define gProbePush getConstants<ProbePush>()
 

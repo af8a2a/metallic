@@ -36,11 +36,22 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   payload is a 12-byte `GPUBufferSpan` (index, byte offset, word count).
   `ParameterRoot.getParameters<T>()` performs a raw descriptor load; neither large
   parameter blocks nor resource/constant/texture-index tables use BDA.
-- `ComputeProgram` remains a compatibility adapter for numeric logical slots.
-  Its 24-byte root contains two DR spans; each 24-byte slot carries a resource
-  value (only AS needs both words), a DR payload span and a checked data stride.
-  Image arrays contain 32-bit indices, and indirect-batch constants use bounded
-  offsets within one immutable upload. `getData<T>` rejects stride mismatches.
+- Production `ComputeProgram` shaders read named resource structs through
+  `getResourceParameters<T>()`, then resolve their explicit handles/spans. The
+  shared `NamedResourceParameters.h` declares the CPU/Slang wire fields.
+  `NamedResourceLayouts.h` maps CPU input IDs to field offsets; those IDs never
+  reach the production GPU packet. The scene block is 440 bytes, replacing the
+  sparse 24-byte-per-slot table. Scalar images no longer allocate index arrays.
+- `ComputeProgramDesc.resourceParameters` validates field type, bounds, alignment,
+  overlap and array representation before pipeline creation. The encoder copies
+  layout metadata and preserves immutable prepared dispatch/submission leases.
+  Its 24-byte root still carries resource and constant DR spans. Image arrays
+  contain 32-bit indices; named data spans count words and `typedBufferSpan<T>`
+  validates divisibility before exposing typed elements. AS fields remain 64-bit.
+- The slot adapter remains available for low-level RHI test shaders only. There
+  are no `getResource`, `getResourceArray` or `getData` calls in production
+  Features/Interop or generated material source. CPU input IDs remain compatible
+  with existing pass setup; they are not shader descriptor indices.
 - `ShaderDataSpan`, `DataSpan`, `dataBuffer`, and address-returning `data` /
   `EncodedParameters::address` APIs are removed. `dataSpan` and `sampledImages`
   return descriptor spans. BufferSlice registration retains the allocation after
@@ -90,8 +101,8 @@ remain explicit and independent of descriptor resolution.
   to `ResourceHandle`. Genuine GPU-VA API operations remain physical-address
   capabilities; ordinary shader data and parameter roots no longer use them.
 - Range-specific SRV/UAV/CBV views, universal null slot, separate transient
-  descriptor arenas, and removal of logical ComputeProgram slots remain future
-  architecture work. They are not required to make existing image/buffer accesses
+  descriptor arenas, and removal of the remaining CPU input/test adapter remain
+  future architecture work. They are not required to make existing image/buffer accesses
   use DR. Invalid indices remain `UINT32_MAX`; zero is still allocatable.
 - Descriptors retain stable registry identity and submission leases. Parameter
   arena backing buffers now each retain one descriptor; growing an arena never
@@ -119,7 +130,61 @@ Registry root probes also reject PhysicalStorageBufferAddresses capability.
 Compiler option reference: [Slang compilation options](https://docs.shader-slang.org/en/stable/external/slang/docs/user-guide/08-compiling.html).
 Descriptor size semantics: [Vulkan shader descriptor sizes](https://docs.vulkan.org/spec/latest/chapters/interfaces.html).
 
-## Full image/buffer and parameter-root verification on 2026-10-03
+## Named production resource parameters: verification on 2026-10-03
+
+The remaining numeric shader lookups are migrated to shared named fields, for example:
+
+```slang
+let resources = getResourceParameters<SceneResourceParameters>();
+StructuredBuffer<uint> indices = resolveBuffer<StructuredBuffer<uint>>(resources.indices);
+Texture2D<float4> materialTexture = resolveNonUniform(
+    ResourceHandle<Texture2D<float4>>(resources.materialTextures.load(textureIndex)));
+```
+
+CPU program initialization supplies the matching `resourceParameters` layout.
+Path tracing, deferred lighting, RTXDI, scene visualization, stream RTAS
+visualization, shadows, NTC, material-value generation, visibility materials,
+upscaler guides and GPU probes use this path. New standalone passes can continue
+to use `ComputeKernel` with a directly authored typed parameter packet.
+
+- Reused the same MSVC Release/NRD-enabled tree. Final renderer, RHI and NRD
+  executables build successfully; `git diff --check` passes.
+- In each of mapped and native modes, the related RHI suite ran 53 cases:
+  50 passed and 3 skipped. An additional 3/3 run covers stream RTAS visualization,
+  visibility-material serial/parallel pixels, and the strengthened named-resource
+  lifetime test. The latter repeats one case, for **52 distinct passing cases
+  and 3 skips per mode** across the two runs. No VUIDs were observed.
+- The new encoder test uses sparse CPU input IDs 7/213 with a 16-byte GPU block,
+  checks overlap/out-of-range/type/representation rejection, mutates borrowed
+  layout metadata after initialization, and releases every caller-owned source
+  wrapper/slice before recording. GPU readback verifies a nonzero slice offset,
+  constants and bounded access after packet retention.
+- The skipped Zorah stream-material probe requires an unavailable local asset.
+  Both opacity-micromap probes pass their fallback path but skip OMM because the
+  installed validation layer cannot validate the required extension. These skips
+  do not validate the unavailable paths.
+- NRD passes 11/11 in each mode. Both final editor smoke runs exit 0 after
+  submitting/presenting a frame; each reports 210 shader warmup requests,
+  210 existing cache hits and zero failures. Earlier manual warmup also completed
+  all 210 requests with zero failures in each mode (73 existing cache hits).
+- Stream transmission/cutout output was visually inspected. The initial RHI run
+  rendered error material during an overlapping shared-module edit; its standalone
+  rerun and both fixed-source suites pass. Initial evidence remains available.
+- An expanded run additionally exposed a failure in the unchanged, copy-only
+  `DebugControl checkpoint capture and lifetime` fixture at its submitted-prefix
+  evidence assertion. Its root cause was not investigated as part of this migration;
+  it is excluded from the related-suite totals above and retained in `final-native.log`.
+  The migrated GPUProbe's separate numeric/watch/binding-restoration test passes.
+  Its validation assertion now distinguishes API VALIDATION errors from the local
+  loader GENERAL registration messages, which remain in captured evidence.
+
+Evidence is under `.cache/dr-named-resources/`: `verified-{mapped,native}.{xml,log}`,
+`supplement-{mapped,native}.{xml,log}`, `nrd-{mapped,native}.{xml,log}`,
+`smoke-final-{mapped,native}.log`, and the `build-*.log` files. The original expanded
+run and transmission diagnostic are preserved separately. No long-session editor,
+full-scene memory-stability or optional NTC/Streamline/DLSS/NRC runtime claim is made.
+
+## Earlier full image/buffer and parameter-root verification on 2026-10-03
 
 - Reused `build-pass-stages-nrd` (MSVC Release, NRD/tests enabled); built
   `Metallic`, `MetallicRHITests`, `MetallicNRDTests` and `MetallicShaderCompiler`.

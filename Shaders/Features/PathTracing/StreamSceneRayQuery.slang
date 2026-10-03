@@ -8,10 +8,10 @@ struct StreamRayInstance
     float4 world0, world1, world2, world3;
     float4 bounds;
 };
-#define gRayStreamPages getResource<StructuredBuffer<uint>>(90)
-#define gRayStreamPageTable getResource<StructuredBuffer<uint2>>(91)
-#define gRayStreamInstances getResource<StructuredBuffer<StreamRayInstance>>(92)
-#define gRayStreamHeader getResource<StructuredBuffer<uint>>(93)
+#define gRayStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamPages)
+#define gRayStreamPageTable resolveBuffer<StructuredBuffer<uint2>>(getResourceParameters<SceneResourceParameters>().rayStreamPageTable)
+#define gRayStreamInstances resolveBuffer<StructuredBuffer<StreamRayInstance>>(getResourceParameters<SceneResourceParameters>().rayStreamInstances)
+#define gRayStreamHeader resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamHeader)
 
 float3 streamRayVector(StreamRayInstance instance, float3 v)
 {
@@ -40,7 +40,7 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     if (clusterStride == 0u) { return false; }
     uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
     float3 a, b, c;
-    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(94)), a, b, c)) { return false; }
+    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameters<SceneResourceParameters>().streamPageCount)), a, b, c)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);

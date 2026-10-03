@@ -150,7 +150,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             result->source_ += emitProgram(Json::parse(source), id, result->manifests_.back());
         }
         result->source_ += "PathTraceMaterial evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material)\n{\n"
-            "    MaterialValueInstance instance = getResource<StructuredBuffer<MaterialValueInstance>>(97)[materialIndex];\n"
+            "    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex];\n"
             "    switch (instance.programId) {\n";
         for (const auto& [source, id] : programs) {
             const auto name = std::to_string(id);

@@ -220,8 +220,8 @@ inline constexpr uint32_t kScenePathTraceDebugStochasticTextureFiltering = 1u <<
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
 inline constexpr uint32_t kScenePathTraceCacheModeNRC = 2;
-// Extra descriptor bindings used by the radiance-cache permutations of
-// ScenePathTrace.slang. Must match its getResource<T>() application slots.
+// CPU input IDs for radiance-cache permutations. NamedResourceLayouts maps
+// these to direct SceneResourceParameters fields; shaders do not see these IDs.
 inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 20;
 inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
 inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;

@@ -9,7 +9,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | 目录 | 职责 |
 | --- | --- |
 | `Modules/ShaderCore.slang`、`Modules/Core/` | ResourceHandle、BufferSpan、旧资源兼容接口、相机、顶点解码、SH、显示颜色；不声明 push constant |
-| `Modules/Core.slang` | 旧 ComputeProgram 资源表兼容入口，重新导出 ShaderCore |
+| `Modules/Core.slang` | ComputeProgram 具名资源参数、常量和底层测试兼容入口，重新导出 ShaderCore |
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
@@ -37,7 +37,8 @@ using Metallic.GPUDriven;
 [numthreads(64, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
-    RWStructuredBuffer<uint> output = getResource<RWStructuredBuffer<uint>>(0);
+    let resources = getResourceParameters<GPUProbeResourceParameters>();
+    RWStructuredBuffer<uint> output = resolveBuffer<RWStructuredBuffer<uint>>(resources.output);
     output[id.x] = packVisibilityId(id.x, 0);
 }
 ```
@@ -93,13 +94,20 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 [PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（80 字节）
 和 NRC 输出累积/tonemap（36 字节）的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
-主追踪及其 OpenPBR、NTC、VisibilityBuffer 共享资源表仍使用下述兼容入口。
+主追踪及其 OpenPBR、NTC、VisibilityBuffer 使用共享的 `SceneResourceParameters` 具名 DR 字段。
 
-`Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
-作为 ComputeProgram / SDK 的逻辑 slot 适配入口，内部同样全部使用 DR。
-它导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。
-资源表、常量和纹理数组使用 descriptor span；数组内存放 32 位 index，
-再由 `resolveNonUniform` 选择 descriptor，不要求连续分配。RHI 不在用户 push 数据前插入 heap header。
+`Core` 的生产用法是 `getResourceParameters<Params>()` 加显式 resolver：buffer 使用
+`resolveBuffer<StructuredBuffer<T>>(resources.indices)`，图像和 sampler 使用 `resolveUniform`，
+纹理数组使用 `resolveNonUniform(ResourceHandle<Texture2D<float4>>(resources.materialTextures.load(index)))`。
+[NamedResourceParameters.h](../Source/Runtime/Render/Core/NamedResourceParameters.h) 共用 C++/Slang 字段；
+CPU 初始化 `ComputeProgramDesc.resourceParameters`，使用
+[NamedResourceLayouts.h](../Source/Runtime/Render/Core/NamedResourceLayouts.h) 的对应布局（如 `kGPUProbeResourceLayout`）。
+编码器检查字段范围、对齐、重叠、资源类型和数组形式，并将 CPU 输入 ID 写入具名字段。
+生产 GPU 参数块没有逻辑 slot table；场景结构为 440 字节，buffer/image/sampler 字段为 4 字节，
+数组和原始数据字段为 12 字节 span，AS 独立保留完整地址。常量仍通过 `getConstants<T>()` 读取。
+`getResource<T>(slot)` / `getResourceArray<T>(slot, index)` / `getData<T>(slot)` 仅用于未迁移的底层测试适配器，
+不要在 `Features`、`Interop` 或生成的材质代码中新增调用。
+`Core` 导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。RHI 不在用户 push 数据前插入 heap header。
 
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；

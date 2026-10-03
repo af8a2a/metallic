@@ -3,19 +3,19 @@ using Metallic;
 
 #include "OpenPBRRayQueryPathTrace.slang"
 
-#define gDlssRrAlbedo getResource<RWTexture2D<float4>>(14)
+#define gDlssRrAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideAlbedo)
 
-#define gDlssRrSpecularAlbedo getResource<RWTexture2D<float4>>(15)
+#define gDlssRrSpecularAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularAlbedo)
 
-#define gDlssRrNormalRoughness getResource<RWTexture2D<float4>>(16)
+#define gDlssRrNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().guideNormalRoughness)
 
-#define gDlssRrMotionVectors getResource<RWTexture2D<float2>>(17)
+#define gDlssRrMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().guideMotion)
 
-#define gDlssRrLinearDepth getResource<RWTexture2D<float>>(18)
+#define gDlssRrLinearDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideLinearDepth)
 
-#define gDlssRrSpecularHitDistance getResource<RWTexture2D<float>>(19)
+#define gDlssRrSpecularHitDistance resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularHitDistance)
 
-#define gDlssDepth getResource<RWTexture2D<float>>(20)
+#define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
 
 struct DLSSRRGuideData
 {
@@ -164,6 +164,6 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
         gHistoryCurrent[pixel] = float4(color, 1.0);
     }
 
-    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50))), 1.0);
+    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
     writeDlssRrGuides(pixel, guides, push);
 }

@@ -1,9 +1,9 @@
 import Core;
 using Metallic;
 
-#define gScene getResource<RaytracingAccelerationStructure>(0)
+#define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
-#define gOutput getResource<RWTexture2D<float4>>(1)
+#define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
 
 #ifndef SCENE_RAYQUERY_ENABLE_CLUSTER_ID
 #define SCENE_RAYQUERY_ENABLE_CLUSTER_ID 0

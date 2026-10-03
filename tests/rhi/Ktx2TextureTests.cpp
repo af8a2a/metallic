@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
@@ -160,6 +161,7 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                    .pushConstantSize = 16,
                                    .bindings = {layout, 2},
                                    .requiresRayQuery = false,
+                                   .resourceParameters = kTextureProbeResourceLayout,
                                },
                                log),
             log);
@@ -578,6 +580,7 @@ public:
             .pushConstantSize = 16,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
+            .resourceParameters = kTextureFeedbackResourceLayout,
         },log),log);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -712,7 +715,7 @@ public:
         ComputeProgram program;
         const ComputeProgramBindingDesc layout{.binding = 0};
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = {&layout,1}, .requiresRayQuery = false}, log), log);
+            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameters = kTextureFeedbackResourceLayout}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::array<std::unique_ptr<CommandBuffer>, 3> commands;
         QueueSubmissionTracker tracker;

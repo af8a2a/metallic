@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -823,7 +824,7 @@ public:
         const render::ComputeProgramBindingDesc binding{.binding = 0};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
-            .requiresRayQuery = false}, log);
+            .requiresRayQuery = false, .resourceParameters = render::kTextureFeedbackResourceLayout}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

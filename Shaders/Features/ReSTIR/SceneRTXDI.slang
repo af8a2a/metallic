@@ -16,9 +16,9 @@ using Metallic.Interop.NRDEncoding;
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
 
-#define gScene getResource<RaytracingAccelerationStructure>(0)
+#define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
-#define gOutput getResource<RWTexture2D<float4>>(1)
+#define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
 
 struct RTXDIPrimitive
 {
@@ -77,45 +77,45 @@ struct RTXDIMaterial
     RTXDITextureInfo specularColorTexture;
 };
 
-#define gIndices getResource<StructuredBuffer<uint>>(3)
+#define gIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().indices)
 
-#define gPrimitives getResource<StructuredBuffer<RTXDIPrimitive>>(4)
+#define gPrimitives resolveBuffer<StructuredBuffer<RTXDIPrimitive>>(getResourceParameters<SceneResourceParameters>().primitives)
 
-#define gInstances getResource<StructuredBuffer<RTXDIInstance>>(5)
+#define gInstances resolveBuffer<StructuredBuffer<RTXDIInstance>>(getResourceParameters<SceneResourceParameters>().instances)
 
-#define gMaterials getResource<StructuredBuffer<RTXDIMaterial>>(6)
+#define gMaterials resolveBuffer<StructuredBuffer<RTXDIMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
 
-#define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(7, index)
+#define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
 
-#define gReservoirCurrent getResource<RWTexture2D<uint4>>(8)
+#define gReservoirCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().reservoirCurrent)
 
-#define gReservoirPrevious getResource<RWTexture2D<uint4>>(9)
+#define gReservoirPrevious resolveUniform(getResourceParameters<SceneResourceParameters>().reservoirPrevious)
 
-#define gPositionCurrent getResource<RWTexture2D<float4>>(10)
+#define gPositionCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().positionCurrent)
 
-#define gPositionPrevious getResource<RWTexture2D<float4>>(11)
+#define gPositionPrevious resolveUniform(getResourceParameters<SceneResourceParameters>().positionPrevious)
 
-#define gNormalCurrent getResource<RWTexture2D<float4>>(12)
+#define gNormalCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().normalCurrent)
 
-#define gNormalPrevious getResource<RWTexture2D<float4>>(13)
+#define gNormalPrevious resolveUniform(getResourceParameters<SceneResourceParameters>().normalPrevious)
 
-#define gNoisyDiffuse getResource<RWTexture2D<float4>>(14)
+#define gNoisyDiffuse resolveUniform(getResourceParameters<SceneResourceParameters>().noisyDiffuse)
 
-#define gNoisySpecular getResource<RWTexture2D<float4>>(15)
+#define gNoisySpecular resolveUniform(getResourceParameters<SceneResourceParameters>().noisySpecular)
 
-#define gNrdNormalRoughness getResource<RWTexture2D<float4>>(16)
+#define gNrdNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().nrdNormalRoughness)
 
-#define gNrdMotionVectors getResource<RWTexture2D<float4>>(17)
+#define gNrdMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().nrdMotion)
 
-#define gNrdViewZ getResource<RWTexture2D<float>>(18)
+#define gNrdViewZ resolveUniform(getResourceParameters<SceneResourceParameters>().nrdViewZ)
 
-#define gBaseColorMetalness getResource<RWTexture2D<float4>>(19)
+#define gBaseColorMetalness resolveUniform(getResourceParameters<SceneResourceParameters>().baseColorMetalness)
 
-#define gEmissive getResource<RWTexture2D<float4>>(20)
+#define gEmissive resolveUniform(getResourceParameters<SceneResourceParameters>().emissive)
 
-#define gEnvironmentMap getResource<Texture2D<float4>>(21)
+#define gEnvironmentMap resolveUniform(getResourceParameters<SceneResourceParameters>().environmentMap)
 
-#define gEnvironmentPdf getResource<Texture2D<float>>(23)
+#define gEnvironmentPdf resolveUniform(getResourceParameters<SceneResourceParameters>().environmentPdf)
 
 
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -344,13 +344,13 @@ bool sampleImportanceMipmap(
 float3 visualizeReGIRCell(float3 worldPosition)
 {
     uint recordCount, stride;
-    getResource<StructuredBuffer<uint4>>(52).GetDimensions(recordCount, stride);
+    resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid).GetDimensions(recordCount, stride);
     if (recordCount < kPunctualReGIRHeaderRecordCount) {
         return float3(0.0);
     }
-    uint4 grid = getResource<StructuredBuffer<uint4>>(52)[0];
-    uint4 centerAndCellSize = getResource<StructuredBuffer<uint4>>(52)[1];
-    uint4 metadata = getResource<StructuredBuffer<uint4>>(52)[2];
+    uint4 grid = resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid)[0];
+    uint4 centerAndCellSize = resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid)[1];
+    uint4 metadata = resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid)[2];
     float cellSize = asfloat(centerAndCellSize.w);
     if (metadata.x != kPunctualReGIRMagic ||
         any(grid.xyz == uint3(0u, 0u, 0u)) ||
@@ -388,10 +388,10 @@ bool sampleLocalLight(
     if (behaviorEnabled(push, kBehaviorReGIR)) {
         // An empty slot in a valid cell stays a zero candidate. Only the
         // shared selector's out-of-grid path falls back to the global PDF.
-        return selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), worldPosition, seed, lightIndex, inverseSourcePdf);
+        return selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), worldPosition, seed, lightIndex, inverseSourcePdf);
     }
     if (behaviorEnabled(push, kBehaviorLocalLightImportance)) {
-        return selectPunctualLightGlobal(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), seed, lightIndex, inverseSourcePdf);
+        return selectPunctualLightGlobal(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), seed, lightIndex, inverseSourcePdf);
     }
 
     lightIndex = min(uint(randomFloat(seed) * float(push.lightCount)), push.lightCount - 1u);
@@ -616,9 +616,9 @@ float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    return getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0].texcoord.xy * weights.x +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1].texcoord.xy * weights.y +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2].texcoord.xy * weights.z;
+    return resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0].texcoord.xy * weights.x +
+        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1].texcoord.xy * weights.y +
+        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2].texcoord.xy * weights.z;
 }
 
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, SceneRTXDIPush push)
@@ -704,9 +704,9 @@ bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit)
     uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0];
-    SceneShadingVertex v1 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1];
-    SceneShadingVertex v2 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2];
+    SceneShadingVertex v0 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0];
+    SceneShadingVertex v1 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1];
+    SceneShadingVertex v2 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2];
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
 #if SCENE_RAYQUERY_ENABLE_POSITION_FETCH
@@ -715,9 +715,9 @@ bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit)
     float3 p1 = positions[1];
     float3 p2 = positions[2];
 #else
-    float3 p0 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i0);
-    float3 p1 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i1);
-    float3 p2 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i2);
+    float3 p0 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i0);
+    float3 p1 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i1);
+    float3 p2 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i2);
 #endif
     float2 uv0 = v0.texcoord;
     float2 uv1 = v1.texcoord;
@@ -891,10 +891,10 @@ Surface makeSurface(HitInfo hit, Ray ray, SceneRTXDIPush push)
 
 LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRTXDIPush push)
 {
-    if (lightIndex >= punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50))) {
+    if (lightIndex >= punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))) {
         return emptyLightEvaluation();
     }
-    PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), lightIndex, surface.position);
+    PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), lightIndex, surface.position);
     float3 lightDirection = light.direction;
     float nDotL = saturate(dot(surface.normal, lightDirection));
     float3 halfVector = safeNormalize(lightDirection + surface.viewDirection, surface.normal);
@@ -1217,7 +1217,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             0.0);
         gNrdViewZ[pixel] = max(push.clipOrtho.y, 1.0);
         gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
-        sky *= push.outputLinear != 0u ? 1.0 : lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50));
+        sky *= push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
         gEmissive[pixel] = float4(sky, 1.0);
         gOutput[pixel] = float4(push.outputLinear != 0u ? sky : toneMap(sky, push.exposure), 1.0);
         return;
@@ -1236,7 +1236,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         0.0);
     gNrdViewZ[pixel] = cameraLinearDepth(surface.position, push);
     gBaseColorMetalness[pixel] = float4(surface.baseColor, surface.metalness);
-    gEmissive[pixel] = float4(surface.emissive * (push.outputLinear != 0u ? 1.0 : lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50))), 1.0);
+    gEmissive[pixel] = float4(surface.emissive * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
 
     DIReservoir reservoir = emptyReservoir();
     uint localSampleCount = push.lightCount > 0u ? max(push.initialSampleCount, 1u) : 0u;
@@ -1388,7 +1388,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
     }
     // HDR mode keeps all NRD inputs in the same physical space for post exposure.
-    float physicalExposure = push.outputLinear != 0u ? 1.0 : lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50));
+    float physicalExposure = push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
     noisyDiffuse *= physicalExposure;
     noisySpecular *= physicalExposure;
     color *= physicalExposure;

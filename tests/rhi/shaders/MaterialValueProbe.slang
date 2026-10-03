@@ -8,8 +8,8 @@ using Metallic.Material;
 [numthreads(4, 1, 1)]
 void materialValueProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    MaterialValueInstance instance = getResource<StructuredBuffer<MaterialValueInstance>>(97)[id.x];
-    RWStructuredBuffer<float> output = getResource<RWStructuredBuffer<float>>(0);
+    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[id.x];
+    RWStructuredBuffer<float> output = resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<SceneResourceParameters>().probeOutput);
     uint cursor = id.x * 25;
     output[cursor++] = float(instance.programId);
     for (uint p = 0; p < 4; ++p) {

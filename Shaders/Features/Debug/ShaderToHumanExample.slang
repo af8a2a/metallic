@@ -5,7 +5,7 @@ using Metallic;
 // Compile either the compute or fragment entry; only compute binds gOutput.
 #include "ShaderToHuman.slang"
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
+#define gOutput resolveUniform(getResourceParameters<OutputImageResourceParameters>().output)
 
 float4 shaderToHumanExampleColor(float2 pixelCenter)
 {
