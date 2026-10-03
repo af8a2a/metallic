@@ -8905,6 +8905,86 @@ bool Device::validShaderStage(const ShaderStageDesc& stage) const
         stage.entryPoint && stage.entryPoint[0] != '\0';
 }
 
+namespace {
+
+enum class IndirectBinding { Pipeline, ShaderObject };
+
+bool supportsIndirectBinding(const detail::DeviceImpl& device, VkShaderStageFlags stages, IndirectBinding binding)
+{
+    const auto& properties = device.physicalProperties.generatedCommands;
+    const VkShaderStageFlags supported = binding == IndirectBinding::Pipeline
+        ? properties.supportedIndirectCommandsShaderStagesPipelineBinding
+        : properties.supportedIndirectCommandsShaderStagesShaderBinding;
+    return device.capabilities.deviceGeneratedCommands && (supported & stages) == stages;
+}
+
+std::array<VkDescriptorSetAndBindingMappingEXT, 3> defaultHeapMappings(const DescriptorHeapWriter& writer)
+{
+    std::array<VkDescriptorSetAndBindingMappingEXT, 3> bindlessMappings{};
+    auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
+        VkDescriptorSetAndBindingMappingEXT mapping{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+            .descriptorSet = 0,
+            .firstBinding = binding,
+            .bindingCount = 1,
+            .resourceMask = resourceMask,
+            .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+        };
+        mapping.sourceData.constantOffset.heapOffset = 0;
+        mapping.sourceData.constantOffset.heapArrayStride = stride;
+        mapping.sourceData.constantOffset.samplerHeapOffset = 0;
+        mapping.sourceData.constantOffset.samplerHeapArrayStride = stride;
+        return mapping;
+    };
+
+    bindlessMappings[0] = makeHeapMapping(
+        0,
+        VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
+        static_cast<uint32_t>(writer.samplerDescriptorSize()));
+    bindlessMappings[1] = makeHeapMapping(
+        2,
+        VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
+            VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
+            VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
+        static_cast<uint32_t>(writer.resourceDescriptorStride()));
+    bindlessMappings[2] = makeHeapMapping(
+        2,
+        VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
+            VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
+            VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
+        static_cast<uint32_t>(writer.resourceDescriptorStride()));
+    return bindlessMappings;
+}
+
+// The returned lock stays alive through Vulkan creation and recordPsoLocked().
+Result<std::unique_lock<std::mutex>> lockPipelineCache(
+    const detail::DeviceImpl& device, bool requested, detail::PipelineCacheImpl* cache)
+{
+    if (!requested) { return std::unique_lock<std::mutex>{}; }
+    if (cache == nullptr || cache->device != &device || cache->pipelineCache == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+    return std::unique_lock<std::mutex>(cache->mutex);
+}
+
+template<class PipelineImpl>
+Result<std::unique_ptr<PipelineImpl>> createPipelineOwner(detail::DeviceImpl& device, bool usesBindlessHeap)
+{
+    auto pipeline = std::make_unique<PipelineImpl>();
+    pipeline->device = &device;
+    pipeline->usesBindlessHeap = usesBindlessHeap;
+    if (!usesBindlessHeap) {
+        const VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        const VkResult result = device.functions.vkCreatePipelineLayout(
+            device.device, &layoutInfo, nullptr, &pipeline->layout);
+        if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+    }
+    // The Impl owns layout and pipeline throughout creation, including every early return.
+    return pipeline;
+}
+
+} // namespace
+
 Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const GraphicsPipelineDesc& desc)
 {
     const bool usesTaskShader = desc.taskShader.module != nullptr;
@@ -8926,15 +9006,9 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         return makeError(Error::InvalidArgument);
     }
 
-    if (desc.indirectBindable) {
-        if (!impl_->capabilities.deviceGeneratedCommands) {
-            return makeError(Error::Unsupported);
-        }
-        const auto& dgc = impl_->physicalProperties.generatedCommands;
-        const VkShaderStageFlags stages = (usesMeshShader ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT) | VK_SHADER_STAGE_FRAGMENT_BIT | (usesTaskShader ? VK_SHADER_STAGE_TASK_BIT_EXT : 0);
-        if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
-            return makeError(Error::Unsupported);
-        }
+    if (desc.indirectBindable && !supportsIndirectBinding(*impl_,
+        (usesMeshShader ? VK_SHADER_STAGE_MESH_BIT_EXT : VK_SHADER_STAGE_VERTEX_BIT) | VK_SHADER_STAGE_FRAGMENT_BIT | (usesTaskShader ? VK_SHADER_STAGE_TASK_BIT_EXT : 0), IndirectBinding::Pipeline)) {
+        return makeError(Error::Unsupported);
     }
     if (usesMeshShader && !impl_->capabilities.meshShader) {
         return makeError(Error::Unsupported);
@@ -8988,17 +9062,9 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
-    if (desc.pipelineCache != nullptr &&
-        (pipelineCache == nullptr ||
-         pipelineCache->device != impl_.get() ||
-         pipelineCache->pipelineCache == VK_NULL_HANDLE)) {
-        return makeError(Error::InvalidArgument);
-    }
+    auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
+    if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
     const uint64_t psoHash = detail::graphicsPipelineStateHash(desc);
-    std::unique_lock<std::mutex> pipelineCacheLock;
-    if (pipelineCache != nullptr) {
-        pipelineCacheLock = std::unique_lock<std::mutex>(pipelineCache->mutex);
-    }
 
     const char* vertexEntryPoint = desc.vertexShader.entryPoint;
     const char* taskEntryPoint = desc.taskShader.entryPoint;
@@ -9050,38 +9116,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
     };
     if (desc.usesBindlessHeap) {
-        auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
-            VkDescriptorSetAndBindingMappingEXT mapping{
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
-                .descriptorSet = 0,
-                .firstBinding = binding,
-                .bindingCount = 1,
-                .resourceMask = resourceMask,
-                .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
-            };
-            mapping.sourceData.constantOffset.heapOffset = 0;
-            mapping.sourceData.constantOffset.heapArrayStride = stride;
-            mapping.sourceData.constantOffset.samplerHeapOffset = 0;
-            mapping.sourceData.constantOffset.samplerHeapArrayStride = stride;
-            return mapping;
-        };
-
-        bindlessMappings[0] = makeHeapMapping(
-            0,
-            VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
-        bindlessMappings[1] = makeHeapMapping(
-            2,
-            VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
-        bindlessMappings[2] = makeHeapMapping(
-            2,
-            VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
+        bindlessMappings = defaultHeapMappings(impl_->descriptorHeapWriter);
         bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
         bindlessMappingInfo.pMappings = bindlessMappings.data();
         for (VkPipelineShaderStageCreateInfo& stage : stages) {
@@ -9165,17 +9200,11 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         .pDynamicStates = dynamicStates.data(),
     };
 
-    VkPipelineLayoutCreateInfo layoutInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-    };
-    VkPipelineLayout layout = VK_NULL_HANDLE;
+    auto owner = createPipelineOwner<detail::GraphicsPipelineImpl>(*impl_, desc.usesBindlessHeap);
+    if (!owner) { return std::unexpected(owner.error()); }
+    auto pipelineImpl = std::move(*owner);
+    const VkPipelineLayout layout = pipelineImpl->layout;
     VkResult result = VK_SUCCESS;
-    if (!desc.usesBindlessHeap) {
-        result = impl_->functions.vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
-        if (result != VK_SUCCESS) {
-            return std::unexpected(resultFromVk(result).error());
-        }
-    }
 
     const VkFormat colorFormats[] = {toVkFormat(desc.colorFormat), toVkFormat(desc.secondColorFormat), toVkFormat(desc.thirdColorFormat)};
     const VkFormat depthStencilFormat = toVkFormat(desc.depthStencilFormat);
@@ -9208,7 +9237,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         .layout = layout,
     };
 
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipeline& pipeline = pipelineImpl->pipeline;
     result = impl_->functions.vkCreateGraphicsPipelines(
         impl_->device,
         pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
@@ -9217,17 +9246,9 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         nullptr,
         &pipeline);
     if (result != VK_SUCCESS) {
-        if (layout != VK_NULL_HANDLE) {
-            impl_->functions.vkDestroyPipelineLayout(impl_->device, layout, nullptr);
-        }
         return std::unexpected(resultFromVk(result).error());
     }
 
-    auto pipelineImpl = std::make_unique<detail::GraphicsPipelineImpl>();
-    pipelineImpl->device = impl_.get();
-    pipelineImpl->layout = layout;
-    pipelineImpl->pipeline = pipeline;
-    pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
     pipelineImpl->psoHash = psoHash;
     pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
         pipelineCache->recordPsoLocked(psoHash);
@@ -9243,15 +9264,9 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         return makeError(Error::InvalidArgument);
     }
 
-    if (desc.indirectBindable) {
-        if (!impl_->capabilities.deviceGeneratedCommands) {
-            return makeError(Error::Unsupported);
-        }
-        const auto& dgc = impl_->physicalProperties.generatedCommands;
-        const VkShaderStageFlags stages = VK_SHADER_STAGE_COMPUTE_BIT;
-        if ((dgc.supportedIndirectCommandsShaderStagesPipelineBinding & stages) != stages) {
-            return makeError(Error::Unsupported);
-        }
+    if (desc.indirectBindable && !supportsIndirectBinding(*impl_,
+        VK_SHADER_STAGE_COMPUTE_BIT, IndirectBinding::Pipeline)) {
+        return makeError(Error::Unsupported);
     }
     if (desc.usesBindlessHeap) {
         if (!impl_->capabilities.bindlessDescriptorHeap) {
@@ -9266,17 +9281,9 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
-    if (desc.pipelineCache != nullptr &&
-        (pipelineCache == nullptr ||
-         pipelineCache->device != impl_.get() ||
-         pipelineCache->pipelineCache == VK_NULL_HANDLE)) {
-        return makeError(Error::InvalidArgument);
-    }
+    auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
+    if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
     const uint64_t psoHash = detail::computePipelineStateHash(desc);
-    std::unique_lock<std::mutex> pipelineCacheLock;
-    if (pipelineCache != nullptr) {
-        pipelineCacheLock = std::unique_lock<std::mutex>(pipelineCache->mutex);
-    }
 
     const char* computeEntryPoint = desc.computeShader.entryPoint;
     VkPipelineShaderStageCreateInfo stage{
@@ -9291,40 +9298,9 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
     };
     if (desc.usesBindlessHeap && desc.computeShader.module->impl_->hasDescriptorBindings) {
-        auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
-            VkDescriptorSetAndBindingMappingEXT mapping{
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
-                .descriptorSet = 0,
-                .firstBinding = binding,
-                .bindingCount = 1,
-                .resourceMask = resourceMask,
-                .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
-            };
-            mapping.sourceData.constantOffset.heapOffset = 0;
-            mapping.sourceData.constantOffset.heapArrayStride = stride;
-            mapping.sourceData.constantOffset.samplerHeapOffset = 0;
-            mapping.sourceData.constantOffset.samplerHeapArrayStride = stride;
-            return mapping;
-        };
-
         if (desc.bindingMappings.size() == 0) {
-            bindlessMappings.resize(3);
-            bindlessMappings[0] = makeHeapMapping(
-                0,
-                VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
-                static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
-            bindlessMappings[1] = makeHeapMapping(
-                2,
-                VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
-                    VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
-                    VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
-                static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
-            bindlessMappings[2] = makeHeapMapping(
-                2,
-                VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
-                    VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
-                    VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
-                static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
+            const auto defaults = defaultHeapMappings(impl_->descriptorHeapWriter);
+            bindlessMappings.assign(defaults.begin(), defaults.end());
         } else {
             bindlessMappings.reserve(desc.bindingMappings.size());
             for (uint32_t index = 0; index < desc.bindingMappings.size(); ++index) {
@@ -9423,17 +9399,11 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         stage.pNext = &bindlessMappingInfo;
     }
 
-    VkPipelineLayoutCreateInfo layoutInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-    };
-    VkPipelineLayout layout = VK_NULL_HANDLE;
+    auto owner = createPipelineOwner<detail::ComputePipelineImpl>(*impl_, desc.usesBindlessHeap);
+    if (!owner) { return std::unexpected(owner.error()); }
+    auto pipelineImpl = std::move(*owner);
+    const VkPipelineLayout layout = pipelineImpl->layout;
     VkResult result = VK_SUCCESS;
-    if (!desc.usesBindlessHeap) {
-        result = impl_->functions.vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
-        if (result != VK_SUCCESS) {
-            return std::unexpected(resultFromVk(result).error());
-        }
-    }
 
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
@@ -9466,9 +9436,6 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             pipelineKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) {
             spdlog::error("Pipeline key diagnostic failed: VkResult={}, globalSize={}, pipelineSize={}.",
                 static_cast<int>(keyResult), globalKey.keySize, pipelineKey.keySize);
-            if (layout != VK_NULL_HANDLE) {
-                impl_->functions.vkDestroyPipelineLayout(impl_->device, layout, nullptr);
-            }
             return makeError(keyResult != VK_SUCCESS ? resultFromVk(keyResult).error() : Error::Failure);
         }
         const auto keyHex = [](const VkPipelineBinaryKeyKHR& key) {
@@ -9494,7 +9461,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             pipelineInfo.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
         }
     }
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipeline& pipeline = pipelineImpl->pipeline;
     result = impl_->functions.vkCreateComputePipelines(
         impl_->device,
         pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
@@ -9503,9 +9470,6 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         nullptr,
         &pipeline);
     if (result != VK_SUCCESS) {
-        if (layout != VK_NULL_HANDLE) {
-            impl_->functions.vkDestroyPipelineLayout(impl_->device, layout, nullptr);
-        }
         return std::unexpected(resultFromVk(result).error());
     }
 
@@ -9548,13 +9512,8 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             }
         }
     }
-    auto pipelineImpl = std::make_unique<detail::ComputePipelineImpl>();
     pipelineImpl->replayInputSpirv = desc.computeShader.module->impl_->replayInputSpirv;
     pipelineImpl->replayDeviceSpirv = desc.computeShader.module->impl_->replayDeviceSpirv;
-    pipelineImpl->device = impl_.get();
-    pipelineImpl->layout = layout;
-    pipelineImpl->pipeline = pipeline;
-    pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
     pipelineImpl->psoHash = psoHash;
     pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
         pipelineCache->recordPsoLocked(psoHash);
@@ -9568,15 +9527,9 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
         return makeError(Error::InvalidArgument);
     }
 
-    if (desc.indirectBindable) {
-        if (!impl_->capabilities.deviceGeneratedCommands) {
-            return makeError(Error::Unsupported);
-        }
-        const auto& dgc = impl_->physicalProperties.generatedCommands;
-        const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        if ((dgc.supportedIndirectCommandsShaderStagesShaderBinding & stages) != stages) {
-            return makeError(Error::Unsupported);
-        }
+    if (desc.indirectBindable && !supportsIndirectBinding(*impl_,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, IndirectBinding::ShaderObject)) {
+        return makeError(Error::Unsupported);
     }
     if (!impl_->capabilities.shaderObject) {
         return makeError(Error::Unsupported);
@@ -9597,38 +9550,7 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
         .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
     };
     if (desc.usesBindlessHeap) {
-        auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
-            VkDescriptorSetAndBindingMappingEXT mapping{
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
-                .descriptorSet = 0,
-                .firstBinding = binding,
-                .bindingCount = 1,
-                .resourceMask = resourceMask,
-                .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
-            };
-            mapping.sourceData.constantOffset.heapOffset = 0;
-            mapping.sourceData.constantOffset.heapArrayStride = stride;
-            mapping.sourceData.constantOffset.samplerHeapOffset = 0;
-            mapping.sourceData.constantOffset.samplerHeapArrayStride = stride;
-            return mapping;
-        };
-
-        bindlessMappings[0] = makeHeapMapping(
-            0,
-            VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()));
-        bindlessMappings[1] = makeHeapMapping(
-            2,
-            VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
-        bindlessMappings[2] = makeHeapMapping(
-            2,
-            VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
-                VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
+        bindlessMappings = defaultHeapMappings(impl_->descriptorHeapWriter);
         bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
         bindlessMappingInfo.pMappings = bindlessMappings.data();
     }
