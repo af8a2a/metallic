@@ -25,9 +25,10 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   existing pipeline content hash and shader-object code use the specialized
   device binary. This avoids the observed native task/mesh payload validation
   failure caused by specialization expressions referencing opaque sizes.
-- All renderer image/buffer accesses use DR: postprocessing, lighting, scene and
+- Scene renderer image/buffer accesses use DR: postprocessing, lighting, scene and
   material data, GPU-driven culling/raster/streaming, path tracing, RTXDI, SHaRC,
-  and the maintained NRD adapter. Production shaders construct engine handles
+  and the maintained NRD adapter. EditorDisplay remains the ImGui boundary
+  described below. Production scene shaders construct engine handles
   and explicitly resolve resources; Slang descriptor representation stays in Core.
 - Lighting and material binning use raw bounded spans, including atomic updates
   to bin counts. Typed StructuredBuffer DR objects remain where appropriate,
@@ -48,7 +49,8 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   Its 24-byte root still carries resource and constant DR spans. Image arrays
   contain 32-bit indices; named data spans count words and `typedBufferSpan<T>`
   validates divisibility before exposing typed elements. AS fields remain 64-bit.
-- The slot adapter remains available for low-level RHI test shaders only. There
+- The slot adapter remains available for RHI test shaders, including rendering
+  fixtures that have not yet adopted named parameters. There
   are no `getResource`, `getResourceArray` or `getData` calls in production
   Features/Interop or generated material source. CPU input IDs remain compatible
   with existing pass setup; they are not shader descriptor indices.
@@ -109,6 +111,62 @@ remain explicit and independent of descriptor resolution.
   relocates live indices. Completed arenas keep that descriptor for reuse.
 - No D3D12 backend or physical-pointer emulation is introduced. Both mapped and
   native Vulkan modes implement this same shader-facing ABI.
+
+## Remaining shader audit on 2026-10-03
+
+Static inspection covered 231 tracked shader/include files under `Shaders/`,
+45 under `tests/rhi/shaders/`, and resource expressions in `Source/`, `Tools/`
+and `scripts/`. Vendor submodule implementations are outside this inventory.
+Comments were excluded from the legacy-call, descriptor-handle and fixed-binding
+counts. These categories describe different migration layers; they are not all
+evidence of non-DR resource access.
+
+- `Features/PostProcess/EditorDisplay.slang` is the only fixed image/sampler
+  binding found under `Shaders/`. Its two sets match `EditorDisplayRenderer`'s
+  Vulkan layouts, ImGui draw callbacks and HDR10 output descriptor-set binding.
+  Migrating it requires a coordinated editor/ImGui binding change, including
+  detached windows; changing the shader declarations alone is insufficient.
+- Production Features/Interop and generated material source have no legacy
+  `getResource<T>`, `getResourceArray<T>` or `getData<T>` calls. Core retains
+  their definitions. NRD's generated bindings resolve engine handles and its
+  resource/constants tables use DR spans.
+- The only physical pointer declaration found in Metallic's shader modules is
+  the explicit `PhysicalPtr<T>` capability. It has no shader call sites. The AS
+  resolver retains its separate 64-bit address path; 64-bit raster atomics and
+  counters are buffer contents, not physical addresses.
+
+The **24 test shaders still using the numeric-slot adapter** are listed below.
+All names are relative to `tests/rhi/shaders/` and have the `.slang` suffix.
+Their image/buffer accesses already resolve through DR in `ComputeResources`;
+the remaining migration is to named parameter fields with matching CPU layouts.
+
+| Area | Shaders |
+| --- | --- |
+| Postprocess/debug | `AutoExposureFixture`, `HZBSPDFixture`, `SliderDebugFixture` |
+| Lighting/environment | `ClusterLightGridLookupProbe`, `EnvironmentPrefilterFieldProbe`, `FrameEnvironmentProbe`, `PhotometricProbe`, `ReGIRVirtualLightProbe`, `SphericalHarmonicsProbe` |
+| Materials/guides | `DLSSMotionVectorProbe`, `MaterialBinningProbe`, `MaterialRuntimeProbe`, `RealtimeGuideProbe` |
+| Geometry/view | `GPUDrivenConeProbe`, `TwoPassOcclusionProbe`, `UnifiedTopLevelProbe`, `ViewConstantsProbe` |
+| Textures/uploads | `SceneUploadProbe`, `TextureFootprintProbe`, `TextureStreamingProbe` |
+| Resource/dispatch fixtures | `BatchBarrierProbe`, `DataSliceProbe`, `FrameResourceProbe`, `NativeDescriptorHandles` |
+
+Another category contains **12 test shaders exposing Slang `DescriptorHandle`**:
+
+- Algorithm/render fixtures that can adopt engine handles are `HybridClusterProbe`,
+  `HybridRasterProbe`, `PreparedRasterProbe`, `StreamClusterClassificationProbe`,
+  `StreamMeshProbe`, `TessellationSplitProbe` and `WaveWorkProbe`.
+- Backend/debug probes are `FinalDescriptorIndices`, `NativeDescriptorAtomics`,
+  `NativeDescriptorHandles`, `ShaderPrintfEcho` and `ShaderTraceFixture`.
+  Preserve their compiler/heap/debug coverage when changing their spelling.
+  In particular, `NativeDescriptorHandles.unsafeNativeAsMain` deliberately bypasses
+  the AS resolver and must be rejected by compilation; it is not a production leak.
+
+`NativeDescriptorHandles` appears in both categories. Two additional tests use
+fixed bindings: `DescriptorHeapCodePattern` and `GeneratedCommandsProbe`.
+Their C++ fixtures explicitly create conventional Vulkan descriptor layouts;
+these are separate from the production named-resource migration.
+
+This follow-up audit changed documentation only. It did not rerun compilation or
+GPU tests; runtime results below belong to the preceding implementation validation.
 
 ## Validation entry points
 
