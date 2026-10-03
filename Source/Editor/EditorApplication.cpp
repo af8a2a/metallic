@@ -7139,7 +7139,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         if (composition && !composition->descriptor) {
             composition->descriptor = ImGui_ImplVulkan_AddTexture(
                 render::vulkan::nativeImageView(*composition->view),
-                render::vulkan::nativeImageLayout(*composition->view, render::ResourceState::ShaderRead));
+                render::vulkan::nativeImageLayout(*composition->view, render::TextureLayout::ShaderRead));
             if (!composition->descriptor) { return false; }
         }
         render::TextureBarrierDesc toColor{
@@ -7163,7 +7163,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         };
         render::RenderingAttachmentDesc colorAttachment{
             .view = composition ? composition->view.get() : swapchainImageViews_[imageIndex].get(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{
@@ -8138,7 +8138,7 @@ bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
     viewportDescriptor_ = ImGui_ImplVulkan_AddTexture(
         viewportSampler_,
         imageView,
-        render::vulkan::nativeImageLayout(*output->view, render::ResourceState::ShaderRead));
+        render::vulkan::nativeImageLayout(*output->view, render::TextureLayout::ShaderRead));
     if (viewportDescriptor_ == VK_NULL_HANDLE) {
         renderGraphStatus_ = "ImGui failed to allocate viewport descriptor";
         return false;

@@ -245,7 +245,7 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
     };
     RenderingAttachmentDesc colorAttachment{
         .view = colorTextureView.get(),
-        .state = ResourceState::ColorAttachment,
+        .layout = TextureLayout::ColorAttachment,
         .loadOp = LoadOp::Clear,
         .storeOp = StoreOp::Store,
         .clearColor = ColorValue{0.04f, 0.06f, 0.09f, 1.0f},
@@ -553,7 +553,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     result = bindlessHeap->writeSampledImage(
                         sourceImageHandle,
                         *sourceTextureView,
-                        ResourceState::ShaderRead);
+                        TextureLayout::ShaderRead);
                     if (!checkResult(result, "writeSampledImage")) {
                         exitCode = resultToExitCode(result);
                     }
@@ -635,7 +635,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     };
                     RenderingAttachmentDesc sourceAttachment{
                         .view = sourceTextureView.get(),
-                        .state = ResourceState::ColorAttachment,
+                        .layout = TextureLayout::ColorAttachment,
                         .loadOp = LoadOp::Clear,
                         .storeOp = StoreOp::Store,
                         .clearColor = ColorValue{0.25f, 0.50f, 0.75f, 1.0f},
@@ -668,7 +668,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 
                     RenderingAttachmentDesc outputAttachment{
                         .view = outputTextureView.get(),
-                        .state = ResourceState::ColorAttachment,
+                        .layout = TextureLayout::ColorAttachment,
                         .loadOp = LoadOp::Clear,
                         .storeOp = StoreOp::Store,
                         .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
@@ -951,7 +951,7 @@ int runRhiSmokeTest(bool enableValidation)
     const ColorValue clearColor{0.04f, 0.08f, 0.13f, 1.0f};
     RenderingAttachmentDesc colorAttachment{
         .view = swapchainViews[imageIndex].get(),
-        .state = ResourceState::ColorAttachment,
+        .layout = TextureLayout::ColorAttachment,
         .loadOp = LoadOp::DontCare,
         .storeOp = StoreOp::Store,
         .clearColor = clearColor,

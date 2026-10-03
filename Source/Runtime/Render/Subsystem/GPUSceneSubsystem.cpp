@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"

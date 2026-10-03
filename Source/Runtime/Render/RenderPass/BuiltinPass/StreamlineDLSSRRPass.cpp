@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -969,7 +970,7 @@ private:
         Result<> result = auxiliaryHeap_->writeSampledImage(
             depthGuideHandle_,
             *depthGuide.view(),
-            ResourceState::ShaderRead);
+            TextureLayout::ShaderRead);
         if (!result) {
             return result;
         }
@@ -982,7 +983,7 @@ private:
         };
         RenderingAttachmentDesc depthAttachment{
             .view = dlssDepthView_.get(),
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearDepth = 1.0f,

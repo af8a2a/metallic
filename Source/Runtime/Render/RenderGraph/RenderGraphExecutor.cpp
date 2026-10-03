@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
@@ -1669,7 +1670,7 @@ struct RenderGraphExecutor::Impl {
                 result = bindlessHeap->writeSampledImage(
                     handle,
                     *graphResource->view,
-                    ResourceState::ShaderRead);
+                    TextureLayout::ShaderRead);
                 if (!result) {
                     log += resultMessage(std::string("writeSampledImage(") + fullName + ")", result);
                     log += '\n';

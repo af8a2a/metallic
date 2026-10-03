@@ -141,20 +141,6 @@ enum class MemoryLocation : uint8_t {
     HostReadback,
 };
 
-enum class ResourceState : uint8_t {
-    Undefined,
-    Present,
-    ColorAttachment,
-    DepthStencilAttachment,
-    ShaderRead,
-    IndirectArgument,
-    TransferSource,
-    TransferDestination,
-    General,
-    DecompressionSource,
-    DecompressionDestination,
-};
-
 enum class PipelineStageBits : uint64_t {
     None = 0,
     TopOfPipe = 1ull << 0,
@@ -1106,7 +1092,7 @@ struct SemaphoreDesc {
 
 struct RenderingAttachmentDesc {
     class TextureView* view = nullptr;
-    ResourceState state = ResourceState::ColorAttachment;
+    TextureLayout layout = TextureLayout::ColorAttachment;
     LoadOp loadOp = LoadOp::Load;
     StoreOp storeOp = StoreOp::Store;
     ColorValue clearColor;
@@ -1381,7 +1367,7 @@ struct BindlessSamplerWrite {
 struct BindlessImageWrite {
     BindlessHandle handle;
     class TextureView* view = nullptr;
-    ResourceState state = ResourceState::ShaderRead;
+    TextureLayout layout = TextureLayout::ShaderRead;
 };
 
 namespace detail {
@@ -1947,7 +1933,7 @@ public:
     void release(BindlessHandle handle);
     Result<> writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
     Result<> writeSamplers(std::span<const BindlessSamplerWrite> writes);
-    Result<> writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
+    Result<> writeSampledImage(BindlessHandle handle, TextureView& view, TextureLayout layout = TextureLayout::ShaderRead);
     Result<> writeStorageImage(BindlessHandle handle, TextureView& view);
     Result<> writeImages(std::span<const BindlessImageWrite> writes);
     Result<> writeBufferView(BindlessHandle handle, BufferView& view);
@@ -2027,7 +2013,7 @@ public:
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
-    void clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color = {});
+    void clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color = {});
     Result<> beginRendering(const RenderingDesc& desc);
     // Native SDK consumers retain the view itself as well as its image.
     Result<> useNativeTextureView(TextureView& view);

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"

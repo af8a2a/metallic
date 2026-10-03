@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -542,7 +543,7 @@ public:
             {"ValidatedPrefix", {}, [&](render::CommandBuffer&) -> render::Result<> { ++probe.callbacks; return {}; }},
             {"Clear", clearUses, [&](render::CommandBuffer& commands) -> render::Result<> {
                 ++probe.callbacks;
-                commands.clearColorTexture(*texture, render::ResourceState::TransferDestination,
+                commands.clearColorTexture(*texture, render::TextureLayout::TransferDestination,
                     render::ColorValue{1.0f, 0.0f, 1.0f, 1.0f});
                 return {};
             }, Kind::Unsafe},

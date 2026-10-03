@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Render/Core/ResourceState.h"
 
 namespace metallic::render {
 
@@ -27,6 +28,8 @@ constexpr SyncScope resourceSyncScope(ResourceState state, PipelineStageBits sha
     return {static_cast<PipelineStageBits>(UINT64_MAX), AccessBits::None};
 }
 
+// One-way lowering at a Core/graph boundary. Buffer-only usages are not layouts.
+// Never derive access scopes from TextureLayout: General may be read-only or writable.
 constexpr TextureLayout textureLayoutForResourceState(ResourceState state)
 {
     switch (state) {

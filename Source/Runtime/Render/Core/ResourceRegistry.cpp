@@ -211,7 +211,7 @@ Result<ResourceLease> ResourceRegistry::storageBuffer(const BufferSlice& buffer)
 Result<ResourceLease> ResourceRegistry::image(
     TextureView& view,
     ShaderResourceKind kind,
-    ResourceState layout,
+    TextureLayout layout,
     bool* descriptorWritten)
 {
     if (descriptorWritten) { *descriptorWritten = false; }
@@ -238,10 +238,10 @@ Result<ResourceLease> ResourceRegistry::image(
     });
 }
 
-Result<ResourceLease> ResourceRegistry::sampledImage(TextureView& view, ResourceState layout, bool* descriptorWritten)
+Result<ResourceLease> ResourceRegistry::sampledImage(TextureView& view, TextureLayout layout, bool* descriptorWritten)
 {
     if (descriptorWritten) { *descriptorWritten = false; }
-    if (layout != ResourceState::ShaderRead && layout != ResourceState::General) {
+    if (layout != TextureLayout::ShaderRead && layout != TextureLayout::General) {
         return makeError(Error::InvalidArgument);
     }
     return image(view, ShaderResourceKind::SampledImage, layout, descriptorWritten);
@@ -249,7 +249,7 @@ Result<ResourceLease> ResourceRegistry::sampledImage(TextureView& view, Resource
 
 Result<ResourceLease> ResourceRegistry::storageImage(TextureView& view)
 {
-    return image(view, ShaderResourceKind::StorageImage, ResourceState::General);
+    return image(view, ShaderResourceKind::StorageImage, TextureLayout::General);
 }
 
 Result<ResourceLease> ResourceRegistry::sampler(const SamplerDesc& sampler)
@@ -361,7 +361,7 @@ ShaderBuffer ParameterWriter::buffer(Buffer* buffer)
 }
 
 GPUResourceHandle<ResourceViewKind::SampledImage> ParameterWriter::sampledImageHandle(
-    TextureView* view, ResourceState layout)
+    TextureView* view, TextureLayout layout)
 {
     return {static_cast<uint32_t>(sampledImage(view, layout).index)};
 }
@@ -407,7 +407,7 @@ GPUBufferSpan ParameterWriter::bufferSpan(Buffer* buffer, uint32_t stride, uint3
     return bufferSpan(buffer, {}, stride, alignment);
 }
 
-ShaderSampledImage ParameterWriter::sampledImage(TextureView* view, ResourceState layout)
+ShaderSampledImage ParameterWriter::sampledImage(TextureView* view, TextureLayout layout)
 {
     ResourceRegistry registry; registry.state_ = registry_;
     auto result = result_ && view ? registry.sampledImage(*view, layout) : makeError(Error::InvalidArgument);

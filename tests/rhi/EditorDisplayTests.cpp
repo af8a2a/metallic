@@ -88,7 +88,7 @@ public:
             },
         };
         if (auto commandResult = commands->synchronize({.textures = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        render::RenderingAttachmentDesc attachment{.view = sourceView.get(), .state = render::ResourceState::ColorAttachment,
+        render::RenderingAttachmentDesc attachment{.view = sourceView.get(), .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear, .storeOp = render::StoreOp::Store, .clearColor = {12.5f, 5.0f, 1.0f, 1.0f}};
         if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commands->endRendering();
@@ -100,7 +100,7 @@ public:
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
         if (auto commandResult = commands->synchronize({.textures = {&readable, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::ResourceState::ShaderRead));
+        const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::TextureLayout::ShaderRead));
         ImGui_ImplVulkan_NewFrame();
         ImGui::NewFrame();
         auto* list = ImGui::GetBackgroundDrawList();
@@ -158,7 +158,7 @@ public:
             return RHITestResult::fail("PQ fixture allocation failed");
         }
         const auto outputDescriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*outputView),
-            render::vulkan::nativeImageLayout(*outputView, render::ResourceState::ShaderRead));
+            render::vulkan::nativeImageLayout(*outputView, render::TextureLayout::ShaderRead));
         const render::TextureBarrierDesc encodeBarriers[] = {
             {.texture = output.get(), .oldLayout = render::TextureLayout::TransferSource,
                 .newLayout = render::TextureLayout::ShaderRead,

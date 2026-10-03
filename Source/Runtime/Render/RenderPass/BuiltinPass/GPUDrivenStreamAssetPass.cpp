@@ -767,11 +767,11 @@ public:
         }
 
         const MeshletStreamFrameDesc frame = frameDescFromContext(context);
-        result = streamRuntime_->resourceRegistry()->sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); });
+        result = streamRuntime_->resourceRegistry()->sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); });
         if (!result) {
             return result;
         }
-        result = streamRuntime_->resourceRegistry()->sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
+        result = streamRuntime_->resourceRegistry()->sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
         if (!result) {
             return result;
         }
@@ -1400,14 +1400,14 @@ private:
         };
         RenderingAttachmentDesc attachment{
             .view = &visibility,
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
         };
         RenderingAttachmentDesc depthAttachment{
             .view = depth.view(),
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
@@ -1465,7 +1465,7 @@ private:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},

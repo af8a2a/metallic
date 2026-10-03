@@ -59,7 +59,7 @@ public:
         result = bindlessHeap_->writeSampledImage(
             imageHandle_,
             *context.preparedScene->imageView,
-            ResourceState::ShaderRead);
+            TextureLayout::ShaderRead);
         if (!result) {
             log += resultMessage("writeSampledImage(ImageSamplePass)", result);
             log += '\n';
@@ -106,7 +106,7 @@ public:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 1.0f},

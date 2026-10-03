@@ -118,7 +118,7 @@ public:
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
         if (auto commandResult = context.commandBuffer().synchronize({.textures = {&depthBarrier, 1}, .buffers = {&counterBarrier, 1}}); !commandResult) { return commandResult; }
-        result = heap_->writeSampledImage(depth_, *depth.view(), render::ResourceState::ShaderRead);
+        result = heap_->writeSampledImage(depth_, *depth.view(), render::TextureLayout::ShaderRead);
         if (result) { result = heap_->writeStorageBuffer(data_, *data); }
         if (result) { result = heap_->writeStorageBuffer(counter_, *counter); }
         if (!result) { return result; }

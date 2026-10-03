@@ -78,6 +78,6 @@ void notifyGeneratedCommandsExecution(CommandBuffer& commandBuffer);
 void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 // Exporters use the backend policy, rather than hard-coding an optimal layout.
-VkImageLayout nativeImageLayout(TextureView& view, ResourceState usage);
+VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout);
 VkImageView nativeImageView(TextureView& view);
 } // namespace metallic::render::vulkan

@@ -237,7 +237,7 @@ public:
             .newLayout = TextureLayout::ColorAttachment, .before = {},
             .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorWrite}, .range = {0, 1, 0, 1}};
         CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-        RenderingAttachmentDesc attachment{.view = view->get(), .state = ResourceState::ColorAttachment,
+        RenderingAttachmentDesc attachment{.view = view->get(), .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearColor = {0, 0, 0, 1}};
         CASE_REQUIRE(commands.beginRendering({.renderArea = {0, 0, width, height}, .colorAttachments = {&attachment, 1}}));
         for (uint32_t i = 0; i < 3; ++i) {
@@ -392,7 +392,7 @@ public:
                     .before = iteration ? SyncScope{PipelineStageBits::ComputeShader, AccessBits::ShaderRead} : SyncScope{},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 1, 0, 1}};
                 CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-                commands.clearColorTexture(*images[i], ResourceState::TransferDestination,
+                commands.clearColorTexture(*images[i], TextureLayout::TransferDestination,
                     i == iteration ? ColorValue{1, 0, 0, 1} : ColorValue{0, 1, 0, 1});
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.newLayout = TextureLayout::ShaderRead;
                 barrier.before = barrier.after; barrier.after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead};

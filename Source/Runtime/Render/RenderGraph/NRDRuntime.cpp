@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -516,7 +517,7 @@ Result<> NRDRuntime::record(uint32_t index, CommandBuffer& commands)
         result = recordBoundary(0);
         if (!result) { return result; }
         for (const auto& use : accessPlan->passes.front().uses) {
-            commands.clearColorTexture(*bindings[use.resource].texture, ResourceState::TransferDestination, {0, 0, 0, 0});
+            commands.clearColorTexture(*bindings[use.resource].texture, TextureLayout::TransferDestination, {0, 0, 0, 0});
         }
         impl_->clearPending = false;
     }
@@ -555,7 +556,7 @@ Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
         if (output)
             indices.storage[storage++] = static_cast<uint32_t>(writer.storageImage(texture.view).index);
         else
-            indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, ResourceState::General).index);
+            indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, TextureLayout::General).index);
     }
     if (!writer.status()) { return writer.status(); }
     const NRDPushData params{stage.constantBufferDataSize ? writer.dataSpan(stage.constantBufferData, stage.constantBufferDataSize) : GPUBufferSpan{},

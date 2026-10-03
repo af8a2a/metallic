@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Editor/EditorRenderGraphViewer.h"
 
 #include <imgui.h>

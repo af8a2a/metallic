@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Editor/EditorProfiler.h"
 #include "Editor/EditorRenderGraphViewer.h"
 #include "Editor/EditorDisplayRenderer.h"

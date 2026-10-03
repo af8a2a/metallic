@@ -90,7 +90,7 @@ public:
     [[nodiscard]] Result<ResourceLease> storageBuffer(const BufferSlice& buffer);
     [[nodiscard]] Result<ResourceLease> sampledImage(
         TextureView& view,
-        ResourceState layout = ResourceState::ShaderRead,
+        TextureLayout layout = TextureLayout::ShaderRead,
         bool* descriptorWritten = nullptr);
     [[nodiscard]] Result<ResourceLease> storageImage(TextureView& view);
     [[nodiscard]] Result<ResourceLease> sampler(const SamplerDesc& sampler);
@@ -107,7 +107,7 @@ private:
     [[nodiscard]] Result<ResourceLease> image(
         TextureView& view,
         ShaderResourceKind kind,
-        ResourceState layout,
+        TextureLayout layout,
         bool* descriptorWritten = nullptr);
     std::shared_ptr<detail::RegistryState> state_;
     friend class ParameterWriter;
@@ -123,7 +123,7 @@ public:
     ParameterWriter(Device& device, ResourceRegistry& registry, RenderFrameContext* frame = nullptr);
     ShaderBuffer buffer(Buffer* buffer);
     GPUResourceHandle<ResourceViewKind::SampledImage> sampledImageHandle(
-        TextureView* view, ResourceState layout = ResourceState::ShaderRead);
+        TextureView* view, TextureLayout layout = TextureLayout::ShaderRead);
     GPUResourceHandle<ResourceViewKind::StorageImage> storageImageHandle(TextureView* view);
     GPUSamplerHandle samplerHandle(const SamplerDesc& sampler);
     // One full-allocation descriptor is shared by all subranges. Offset/count
@@ -143,7 +143,7 @@ public:
         static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
         return bufferSpan(slice, sizeof(T), alignof(T));
     }
-    ShaderSampledImage sampledImage(TextureView* view, ResourceState layout = ResourceState::ShaderRead);
+    ShaderSampledImage sampledImage(TextureView* view, TextureLayout layout = TextureLayout::ShaderRead);
     ShaderStorageImage storageImage(TextureView* view);
     ShaderSampler sampler(const SamplerDesc& sampler);
     ShaderAccelerationStructure accelerationStructure(RayTracingAccelerationStructure* structure);

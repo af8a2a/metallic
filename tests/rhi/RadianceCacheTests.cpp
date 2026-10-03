@@ -30,9 +30,9 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         context.commandBuffer().clearColorTexture(*context.outputTexture("source").texture(),
-            render::ResourceState::TransferDestination, {4.0f, 2.0f, 1.0f, 0.0f});
+            render::TextureLayout::TransferDestination, {4.0f, 2.0f, 1.0f, 0.0f});
         context.commandBuffer().clearColorTexture(*context.outputTexture("previous").texture(),
-            render::ResourceState::TransferDestination, {0.0f, 2.0f, 3.0f, 0.0f});
+            render::TextureLayout::TransferDestination, {0.0f, 2.0f, 3.0f, 0.0f});
         return {};
     }
 };

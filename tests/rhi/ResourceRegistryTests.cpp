@@ -418,12 +418,12 @@ public:
         REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::RGBA8Unorm}).transform([&](auto rhiValue) { second = std::move(rhiValue); }));
         render::ResourceLease imageA, imageB, generalImage, storageImage;
         bool written = false;
-        REG_REQUIRE(registry.sampledImage(*first, render::ResourceState::ShaderRead, &written).transform([&](auto value) { imageA = std::move(value); }));
+        REG_REQUIRE(registry.sampledImage(*first, render::TextureLayout::ShaderRead, &written).transform([&](auto value) { imageA = std::move(value); }));
         REG_CHECK(written);
-        REG_REQUIRE(registry.sampledImage(*second, render::ResourceState::ShaderRead, &written).transform([&](auto value) { imageB = std::move(value); }));
+        REG_REQUIRE(registry.sampledImage(*second, render::TextureLayout::ShaderRead, &written).transform([&](auto value) { imageB = std::move(value); }));
         REG_CHECK(!written);
         REG_CHECK(imageA.shaderValue() == imageB.shaderValue());
-        REG_REQUIRE(registry.sampledImage(*second, render::ResourceState::General).transform([&](auto value) { generalImage = std::move(value); }));
+        REG_REQUIRE(registry.sampledImage(*second, render::TextureLayout::General).transform([&](auto value) { generalImage = std::move(value); }));
         REG_CHECK(generalImage.shaderValue() != imageA.shaderValue());
         REG_REQUIRE(registry.storageImage(*second).transform([&](auto value) { storageImage = std::move(value); }));
         REG_CHECK(storageImage.kind() == render::ShaderResourceKind::StorageImage);
@@ -1519,7 +1519,7 @@ public:
                 REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto value) { view = std::move(value); }));
                 REG_CHECK(!view->hasNativeView());
                 REG_CHECK(render::hasError(device->createTextureView(*texture, {.range = {.baseMip = 1}}).transform([](auto) {}), render::Error::InvalidArgument));
-                REG_CHECK(render::vulkan::nativeImageLayout(*view, render::ResourceState::ColorAttachment) ==
+                REG_CHECK(render::vulkan::nativeImageLayout(*view, render::TextureLayout::ColorAttachment) ==
                     (unified ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
                 REG_CHECK(!view->hasNativeView());
                 allocations[i] = view->retainTexture();
@@ -1533,7 +1533,7 @@ public:
                     .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
                 };
                 REG_REQUIRE(command.synchronize({.textures = {&barrier, 1}}));
-                render::RenderingAttachmentDesc attachment{.view = view.get(), .state = render::ResourceState::ColorAttachment,
+                render::RenderingAttachmentDesc attachment{.view = view.get(), .layout = render::TextureLayout::ColorAttachment,
                     .loadOp = render::LoadOp::Clear, .clearColor = {0, 0, 0, 1}};
                 REG_REQUIRE(command.beginRendering({.renderArea = {0, 0, extent, extent}, .colorAttachments = {&attachment, 1}}));
                 REG_CHECK(view->hasNativeView());

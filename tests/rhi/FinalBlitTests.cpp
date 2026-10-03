@@ -25,7 +25,7 @@ public:
         const render::TextureHandle color = context.outputTexture("color");
         render::RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.2f, 0.4f, 0.8f, 0.0f},

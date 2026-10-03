@@ -245,7 +245,7 @@ public:
         };
         render::RenderingAttachmentDesc colorAttachment{
             .view = colorTextureView.get(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.04f, 0.06f, 0.09f, 1.0f},
@@ -547,14 +547,14 @@ public:
         };
         render::RenderingAttachmentDesc colorAttachment{
             .view = colorTextureView.get(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
         };
         render::RenderingAttachmentDesc depthAttachment{
             .view = depthTextureView.get(),
-            .state = render::ResourceState::DepthStencilAttachment,
+            .layout = render::TextureLayout::DepthStencilAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearDepth = 0.0f,
@@ -917,7 +917,7 @@ public:
         const render::Rect renderArea{.x = 0, .y = 0, .width = kWidth, .height = kHeight};
         render::RenderingAttachmentDesc colorAttachment{
             .view = colorTextureView.get(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.02f, 0.02f, 0.02f, 1.0f},

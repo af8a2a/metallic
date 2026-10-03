@@ -26,11 +26,11 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto& command = context.commandBuffer();
-        command.clearColorTexture(*context.outputTexture("color").texture(), render::ResourceState::TransferDestination,
+        command.clearColorTexture(*context.outputTexture("color").texture(), render::TextureLayout::TransferDestination,
             {0.25f, 0.5f, 0.75f, 1.0f});
-        command.clearColorTexture(*context.outputTexture("motion").texture(), render::ResourceState::TransferDestination,
+        command.clearColorTexture(*context.outputTexture("motion").texture(), render::TextureLayout::TransferDestination,
             {0.0f, 0.0f, 0.0f, 0.0f});
-        command.clearColorTexture(*context.outputTexture("depth").texture(), render::ResourceState::TransferDestination,
+        command.clearColorTexture(*context.outputTexture("depth").texture(), render::TextureLayout::TransferDestination,
             {0.5f, 0.0f, 0.0f, 0.0f});
         return {};
     }

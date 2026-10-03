@@ -216,9 +216,9 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
             .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
         }};
     if (auto commandResult = commands.synchronize({.textures = {attachments, 2}}); !commandResult) { return commandResult; }
-    const RenderingAttachmentDesc color{.view = &visibility, .state = ResourceState::ColorAttachment,
+    const RenderingAttachmentDesc color{.view = &visibility, .layout = TextureLayout::ColorAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
-    const RenderingAttachmentDesc z{.view = &depth, .state = ResourceState::DepthStencilAttachment,
+    const RenderingAttachmentDesc z{.view = &depth, .layout = TextureLayout::DepthStencilAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
     const Rect area{.width = push_.width, .height = push_.height};
     if (auto rendering = commands.beginRendering({

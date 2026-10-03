@@ -294,7 +294,7 @@ protected:
                 value = {1, 0, 0, 0};
             if (resource == rd::ResourceType::IN_PENUMBRA)
                 value = {diffuse, 0, 0, 0};
-            command->clearColorTexture(*textures[i], render::ResourceState::TransferDestination, value);
+            command->clearColorTexture(*textures[i], render::TextureLayout::TransferDestination, value);
             barrier.oldLayout = render::TextureLayout::TransferDestination; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
             barrier.newLayout = render::TextureLayout::General; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }

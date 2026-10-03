@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
@@ -445,7 +446,7 @@ public:
         };
         render::RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = render::ResourceState::ColorAttachment,
+            .layout = render::TextureLayout::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.0f, 0.0f, 0.0f, 1.0f},

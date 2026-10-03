@@ -237,7 +237,7 @@ public:
         };
         RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
@@ -245,7 +245,7 @@ public:
         constexpr bool kMaterialReversedZ = kDefaultReversedZ;
         RenderingAttachmentDesc depthAttachment{
             .view = depth.view(),
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(kMaterialReversedZ),

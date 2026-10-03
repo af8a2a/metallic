@@ -388,6 +388,13 @@ RHI 只发布队列接受/取消状态，GPU 完成由 Core 的 timeline 与 `GP
 
 RHI 的 `MemoryBarrierDesc`、`BufferBarrierDesc` 和 `TextureBarrierDesc` 只接受一套 `before/after: SyncScope`；纹理另以 `oldLayout/newLayout: TextureLayout` 表达布局。空 scope 始终为空，有 stage 而 access 为空表示仅约束执行顺序，不再按 `ResourceState` 推导或通过 `acquireFromQueue` 覆盖。已被 semaphore wait 覆盖的远端生产者使用空源 scope；资源仍须满足队列共享约束，此接口不做 queue-family ownership transfer。RHI 保留显式依赖，只合并同一 stage 对的 memory barrier；省略冗余依赖由图规划器负责。与 [Vulkan synchronization2 的同步范围语义](https://docs.vulkan.org/spec/latest/chapters/synchronization.html) 保持一致。
 
+`ResourceState` 定义在 `Core/ResourceState.h`，只表达 RenderGraph、历史资源等上层的粗粒度用途。
+Core 通过 `resourceSyncScope()` 生成同步范围，在纹理边界通过 `textureLayoutForResourceState()`
+单向选择布局；buffer 专属用途不能转换为合法纹理布局。RHI 不接受 `ResourceState`，也不从布局反推同步范围。
+`RenderingAttachmentDesc::layout`、`BindlessImageWrite::layout`、`clearColorTexture()`、
+`writeSampledImage()`、`nativeImageLayout()` 以及 Core 注册表的采样图像参数均使用 `TextureLayout`。
+Vulkan 只保留一个 `imageLayout(TextureLayout, unified)` 映射，统一布局策略仍由设备能力决定。
+
 RHI 上层同样用 `Result<T>` 返回一次操作产生的值：资源注册返回 `ResourceLease`，参数编码返回 `EncodedParameters`，Compute 预录制返回 `PreparedComputeDispatch`，批次提交返回 `SubmissionReceipt`。场景资源获取、GPUScene View/绑定创建、着色器重载准备、编译产物和 GPU 统计也直接返回值；没有产物的操作继续返回 `Result<>`。失败时只有 `Error`，不会产生可误用的默认句柄、回执或部分产物，也不会覆盖调用方已有的成功值。异步轮询返回 `Result<bool>`：`false` 表示尚未完成，错误分支表示失败。日志、编译诊断、进度和统计信息仍可独立传出，原地更新的输入输出对象保持原语义。
 
 `ParameterWriter` 的资源字段构造仍保留首个错误，以便直接组装 Shader 参数结构；必须检查最终的 `encode()` 或 `status()`。`encode()` 只有在所有资源注册和上传成功时才返回不可变参数包。着色器编译通过独立诊断字符串保留失败详情，不能只在成功结果中保存错误日志。

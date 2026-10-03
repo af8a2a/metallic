@@ -81,7 +81,7 @@ public:
             DEBUG_REQUIRE(device->createTextureView(*textures[i], {.format = format}).transform([&](auto rhiValue) { views[i] = std::move(rhiValue); }));
             if (i < 2) {
                 DEBUG_REQUIRE(heap->allocateSampledImage().transform([&](auto rhiValue) { images[i] = std::move(rhiValue); }));
-                DEBUG_REQUIRE(heap->writeSampledImage(images[i], *views[i], ResourceState::ShaderRead));
+                DEBUG_REQUIRE(heap->writeSampledImage(images[i], *views[i], TextureLayout::ShaderRead));
                 DEBUG_REQUIRE(device->createBuffer({.size = width * 4, .usage = BufferUsageBits::TransferSource,
                     .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { uploads[i] = std::move(rhiValue); }));
             }
@@ -164,7 +164,7 @@ public:
                     .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
                 };
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                const RenderingAttachmentDesc color{.view = views[2].get(), .state = ResourceState::ColorAttachment,
+                const RenderingAttachmentDesc color{.view = views[2].get(), .layout = TextureLayout::ColorAttachment,
                     .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
                 if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = {&color, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                 commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f});

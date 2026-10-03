@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include <stdexcept>
 #include <string>
@@ -578,7 +579,7 @@ public:
                         .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                     };
                     if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    commands.buffer->clearColorTexture(*images->textures[j], render::ResourceState::TransferDestination,
+                    commands.buffer->clearColorTexture(*images->textures[j], render::TextureLayout::TransferDestination,
                         {float((j + 1) * 10), 0, 0, 0});
                     barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
                     barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
@@ -1088,7 +1089,7 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
-            render::ResourceState::TransferDestination, {0.25f, 0.5f, 0.75f, 1.0f});
+            render::TextureLayout::TransferDestination, {0.25f, 0.5f, 0.75f, 1.0f});
         return {};
     }
 };

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
@@ -835,8 +836,8 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
-        result = registry_->sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
-        if (result) { result = registry_->sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); }); }
+        result = registry_->sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
+        if (result) { result = registry_->sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); }); }
         std::shared_ptr<PreparedBindings> bindings;
         if (result) { result = prepareFrame(context, bindings); }
         if (!result) { return result; }
@@ -2193,7 +2194,7 @@ private:
         };
         const RenderingAttachmentDesc visibilityAttachment{
             .view = &visibility,
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
@@ -2201,13 +2202,13 @@ private:
         TextureHandle domain = context.outputTexture("domain");
         TextureHandle debugColor = context.outputTexture("color");
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
-            .view = domain.view(), .state = ResourceState::ColorAttachment,
+            .view = domain.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
-            .view = debugColor.view(), .state = ResourceState::ColorAttachment,
+            .view = debugColor.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
@@ -2401,7 +2402,7 @@ private:
         };
         const RenderingAttachmentDesc attachment{
             .view = color.view(),
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
@@ -2649,9 +2650,9 @@ private:
             Result<> tessResult = heap.storageBuffer(*tessellationBuffer_).transform([&](auto value) { streamTessellationHandle_ = std::move(value); });
             if (!tessResult) { return tessResult; }
         }
-        Result<> result = heap.sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { streamVisibilityImageHandle_ = std::move(value); });
+        Result<> result = heap.sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { streamVisibilityImageHandle_ = std::move(value); });
         if (result) {
-            result = heap.sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { streamDepthImageHandle_ = std::move(value); });
+            result = heap.sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { streamDepthImageHandle_ = std::move(value); });
         }
         if (result) {
             result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer).transform([&](auto value) { streamInstanceVisibilityHandle_ = std::move(value); });
@@ -2840,7 +2841,7 @@ private:
         };
         const RenderingAttachmentDesc visibilityAttachment{
             .view = &visibility,
-            .state = ResourceState::ColorAttachment,
+            .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 0.0f},
@@ -2848,13 +2849,13 @@ private:
         TextureHandle domain = context.outputTexture("domain");
         TextureHandle debugColor = context.outputTexture("color");
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
-            .view = domain.view(), .state = ResourceState::ColorAttachment,
+            .view = domain.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
-            .view = debugColor.view(), .state = ResourceState::ColorAttachment,
+            .view = debugColor.view(), .layout = TextureLayout::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f}}};
         const RenderingAttachmentDesc depthAttachment{
             .view = &depth,
-            .state = ResourceState::DepthStencilAttachment,
+            .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(reversedZ),
@@ -3195,7 +3196,7 @@ private:
         auto writeImage = [&](ResourceLease& handle, TextureView& view,
                               std::string_view label) -> Result<> {
             Result<> writeResult =
-                bundle.registry->sampledImage(view, ResourceState::ShaderRead).transform([&](auto value) { handle = std::move(value); });
+                bundle.registry->sampledImage(view, TextureLayout::ShaderRead).transform([&](auto value) { handle = std::move(value); });
             if (!writeResult) {
                 log += resultMessage(std::string("writeSampledImage(VisibilityBufferPass ") +
                                          std::string(label) + ")",

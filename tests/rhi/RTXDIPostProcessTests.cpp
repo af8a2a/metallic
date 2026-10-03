@@ -29,7 +29,7 @@ public:
             const float value = field == "base" ? 1.0f : field == "motion" ? 0.0f
                 : field == "emissive" ? 0.25f : signal;
             context.commandBuffer().clearColorTexture(*context.outputTexture(name).texture(),
-                render::ResourceState::TransferDestination, {value, value, value, 0.0f});
+                render::TextureLayout::TransferDestination, {value, value, value, 0.0f});
         }
         return {};
     }

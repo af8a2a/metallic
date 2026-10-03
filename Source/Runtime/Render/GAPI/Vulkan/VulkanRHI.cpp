@@ -5551,12 +5551,12 @@ Result<BindlessHandle> BindlessHeap::allocateAccelerationStructure()
     return handle;
 }
 
-Result<> BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
+Result<> BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, TextureLayout layout)
 {
     const BindlessImageWrite write{
         .handle = handle,
         .view = &view,
-        .state = state,
+        .layout = layout,
     };
     return writeImages({&write, 1});
 }
@@ -5566,7 +5566,7 @@ Result<> BindlessHeap::writeStorageImage(BindlessHandle handle, TextureView& vie
     const BindlessImageWrite write{
         .handle = handle,
         .view = &view,
-        .state = ResourceState::General,
+        .layout = TextureLayout::General,
     };
     return writeImages({&write, 1});
 }
@@ -5606,7 +5606,7 @@ Result<> BindlessHeap::writeImages(std::span<const BindlessImageWrite> writes)
         imageInfos[index] = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT,
             .pView = &viewInfos[index],
-            .layout = imageLayout(write.state, impl_->device->capabilities.unifiedImageLayouts),
+            .layout = imageLayout(write.layout, impl_->device->capabilities.unifiedImageLayouts),
         };
         resourceInfos[index] = {
             .sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
@@ -6222,9 +6222,9 @@ void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
     impl_->device->functions.vkCmdCopyImage(
         impl_->commandBuffer,
         desc.source->impl_->image,
-        imageLayout(ResourceState::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
+        imageLayout(TextureLayout::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
         desc.destination->impl_->image,
-        imageLayout(ResourceState::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
+        imageLayout(TextureLayout::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
         1,
         &copyRegion);
 }
@@ -6269,7 +6269,7 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
-        .imageLayout = imageLayout(ResourceState::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
+        .imageLayout = imageLayout(TextureLayout::TransferSource, impl_->device->capabilities.unifiedImageLayouts),
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
@@ -6323,7 +6323,7 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
-        .imageLayout = imageLayout(ResourceState::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
+        .imageLayout = imageLayout(TextureLayout::TransferDestination, impl_->device->capabilities.unifiedImageLayouts),
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
@@ -6358,7 +6358,7 @@ void CommandBuffer::hostWriteBarrier()
     vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
 }
 
-void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color)
+void CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color)
 {
     if (impl_ == nullptr || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE) {
         return;
@@ -6379,7 +6379,7 @@ void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, con
     impl_->device->functions.vkCmdClearColorImage(
         impl_->commandBuffer,
         texture.impl_->image,
-        imageLayout(state, impl_->device->capabilities.unifiedImageLayouts),
+        imageLayout(layout, impl_->device->capabilities.unifiedImageLayouts),
         &clearValue,
         1,
         &range);
@@ -6419,7 +6419,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
         colorAttachments.push_back({
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             .imageView = attachment.view->impl_->view,
-            .imageLayout = imageLayout(attachment.state, impl_->device->capabilities.unifiedImageLayouts),
+            .imageLayout = imageLayout(attachment.layout, impl_->device->capabilities.unifiedImageLayouts),
             .loadOp = toVkLoadOp(attachment.loadOp),
             .storeOp = toVkStoreOp(attachment.storeOp),
             .clearValue = {
@@ -6436,7 +6436,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
             depthAttachment = {
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = attachment.view->impl_->view,
-                .imageLayout = imageLayout(attachment.state, impl_->device->capabilities.unifiedImageLayouts),
+                .imageLayout = imageLayout(attachment.layout, impl_->device->capabilities.unifiedImageLayouts),
                 .loadOp = toVkLoadOp(attachment.loadOp),
                 .storeOp = toVkStoreOp(attachment.storeOp),
                 .clearValue = {
@@ -12052,9 +12052,9 @@ struct VulkanNativeAccess {
         return swapchain.impl_ != nullptr ? swapchain.impl_->vkFormat : VK_FORMAT_UNDEFINED;
     }
 
-    static VkImageLayout nativeImageLayout(TextureView& view, ResourceState usage)
+    static VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout)
     {
-        return view.impl_ ? imageLayout(usage, view.impl_->device->capabilities.unifiedImageLayouts) : VK_IMAGE_LAYOUT_UNDEFINED;
+        return view.impl_ ? imageLayout(layout, view.impl_->device->capabilities.unifiedImageLayouts) : VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     static VkImageView nativeImageView(TextureView& view)
@@ -12138,9 +12138,9 @@ VkFormat nativeSwapchainFormat(Swapchain& swapchain)
     return detail::VulkanNativeAccess::nativeSwapchainFormat(swapchain);
 }
 
-VkImageLayout nativeImageLayout(TextureView& view, ResourceState usage)
+VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout)
 {
-    return detail::VulkanNativeAccess::nativeImageLayout(view, usage);
+    return detail::VulkanNativeAccess::nativeImageLayout(view, layout);
 }
 
 VkImageView nativeImageView(TextureView& view)

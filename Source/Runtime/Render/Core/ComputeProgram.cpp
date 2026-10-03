@@ -343,7 +343,7 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
                 if (!view) { return makeError(Error::InvalidArgument); }
                 bool written = false;
                 lease = expected.kind == ComputeResourceBindingKind::SampledImage
-                    ? registry.sampledImage(*view, ResourceState::ShaderRead, &written) : registry.storageImage(*view);
+                    ? registry.sampledImage(*view, TextureLayout::ShaderRead, &written) : registry.storageImage(*view);
                 if (lease && desc.stats && expected.kind == ComputeResourceBindingKind::SampledImage) {
                     if (written) { ++desc.stats->sampledImageWrites; }
                     else { ++desc.stats->sampledImageCacheHits; }

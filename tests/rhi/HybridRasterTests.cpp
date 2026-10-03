@@ -268,9 +268,9 @@ public:
                     if (auto commandResult = commands->synchronize({.textures = {transitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     const bool hybrid = configuration != 0;
                     if (hybrid) { if (auto commandResult = rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f, reversed); !commandResult) { return RHITestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
-                    const RenderingAttachmentDesc color{.view = views[0].get(), .state = ResourceState::ColorAttachment,
+                    const RenderingAttachmentDesc color{.view = views[0].get(), .layout = TextureLayout::ColorAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
-                    const RenderingAttachmentDesc depth{.view = views[1].get(), .state = ResourceState::DepthStencilAttachment,
+                    const RenderingAttachmentDesc depth{.view = views[1].get(), .layout = TextureLayout::DepthStencilAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = reversed ? 0.f : 1.f};
                     if (auto commandResult = commands->beginRendering({
                         .renderArea = {.width = width, .height = height},

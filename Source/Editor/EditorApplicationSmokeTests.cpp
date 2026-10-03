@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"

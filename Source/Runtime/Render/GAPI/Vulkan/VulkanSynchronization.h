@@ -15,7 +15,6 @@ struct SyncSupport {
     bool rayTracingPipeline = false;
     bool bindless = false;
 };
-VkImageLayout imageLayout(ResourceState usage, bool unified);
 VkImageLayout imageLayout(TextureLayout usage, bool unified);
 VkPipelineStageFlags2 toVkPipelineStages(PipelineStageBits stages);
 VkAccessFlags2 accessFlags(AccessBits access);

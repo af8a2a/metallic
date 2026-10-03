@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 
 #include <memory>

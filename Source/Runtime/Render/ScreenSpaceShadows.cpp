@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
@@ -296,7 +297,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         result = enterStage(0);
         if (!result) { return makeError(result.error()); }
         for (size_t i = 0; i < accessResources.size(); ++i) {
-            commands.clearColorTexture(*state->textures[i], ResourceState::TransferDestination, {1, 1, 1, 1});
+            commands.clearColorTexture(*state->textures[i], TextureLayout::TransferDestination, {1, 1, 1, 1});
         }
     }
     profile.next("Prepare dispatch bindings");
