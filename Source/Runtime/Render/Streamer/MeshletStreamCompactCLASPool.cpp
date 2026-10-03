@@ -677,12 +677,21 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             uint64_t offset = 0;
             for (uint32_t i = 0; i < item.sizes.size(); ++i) {
                 page.offsets.push_back(uint32_t(offset));
-                moves.push_back({.sourceBuffer = batch.builder->storageBuffer(),
-                                 .sourceOffset = batch.builder->clusterAddress(item.page, i) -
-                                                 batch.builder->storageBuffer()->deviceAddress(),
-                                 .destinationBuffer = page.chunk->buffer.get(),
-                                 .destinationOffset = page.allocation.offset + offset,
-                                 .size = item.sizes[i]});
+                auto source = batch.builder->storageBuffer()->slice({
+                    batch.builder->clusterAddress(item.page, i) - batch.builder->storageBuffer()->deviceAddress(), item.sizes[i]});
+                auto destination = page.chunk->buffer->slice({page.allocation.offset + offset, item.sizes[i]});
+                if (!source || !destination) {
+                    // This page has not contributed to the aggregate counters yet.
+                    page.encodedBytes = 0;
+                    page.offsets.clear();
+                    p.release(page);
+                    for (auto& previous : batch.items) {
+                        if (previous.moving) { p.release(p.pages.at(previous.page)); previous.moving = false; }
+                    }
+                    log = "Compact CLAS move range is invalid";
+                    return makeError(Error::InvalidArgument);
+                }
+                moves.push_back({.sourceBuffer = *source, .destinationBuffer = *destination});
                 offset += compactAlign(item.sizes[i], p.alignment);
                 page.encodedBytes += item.sizes[i];
             }
@@ -703,13 +712,19 @@ Result<> MeshletStreamCompactCLASPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
         }
         if (!p.error.empty()) { result = makeError(Error::Failure); log = p.error; }
         if (result) {
-            result = cmd.moveClusterAccelerationStructures({
-                .objects = moves,
-                .sourceAddressBuffer = batch.moveSources.get(),
-                .destinationAddressBuffer = batch.moveDestinations.get(),
-                .scratchBuffer = p.scratch.get(),
-                .scratchBufferOffset = p.scratchOffset,
-            });
+            auto sources = batch.moveSources->slice();
+            auto destinations = batch.moveDestinations->slice();
+            auto scratch = p.scratch->slice({p.scratchOffset});
+            if (!sources || !destinations || !scratch) {
+                result = makeError(Error::InvalidArgument);
+            } else {
+                result = cmd.moveClusterAccelerationStructures({
+                    .objects = moves,
+                    .sourceAddressBuffer = *sources,
+                    .destinationAddressBuffer = *destinations,
+                    .scratchBuffer = *scratch,
+                });
+            }
         }
         if (result) {
             result = p.track(cmd, batch);

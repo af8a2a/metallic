@@ -686,6 +686,15 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
     clasBuildInfos.reserve(clusterCount);
     for (uint32_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
         const ClusterBuildInput& cluster = inputs.clusters[clusterIndex];
+        auto indices = impl_->clusterIndexBuffer->slice({cluster.firstIndex, uint64_t(cluster.triangleCount) * 3});
+        auto vertices = impl_->clusterVertexBuffer->slice({uint64_t(cluster.firstVertex) * sizeof(RayTracingVertex),
+            uint64_t(cluster.vertexCount) * sizeof(RayTracingVertex)});
+        auto destination = impl_->clasStorageBuffer->slice({uint64_t(clusterIndex) * clasStride, clasStride});
+        if (!indices || !vertices || !destination) {
+            log = "Scene CLAS geometry range is invalid.";
+            clear();
+            return makeError(Error::InvalidArgument);
+        }
         clasBuildInfos.push_back(ClusterAccelerationStructureTriangleBuildInfo{
             .clusterId = clusterIndex,
             .triangleCount = cluster.triangleCount,
@@ -695,15 +704,9 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
             .indexFormat = ClusterAccelerationStructureIndexFormat::Uint8,
             .indexBufferStride = 1,
             .vertexBufferStride = sizeof(RayTracingVertex),
-            .indexBuffer = impl_->clusterIndexBuffer.get(),
-            .indexBufferOffset = cluster.firstIndex,
-            .vertexBuffer = impl_->clusterVertexBuffer.get(),
-            .vertexBufferOffset =
-                static_cast<uint64_t>(cluster.firstVertex) * sizeof(RayTracingVertex),
-            .destinationBuffer = impl_->clasStorageBuffer.get(),
-            .destinationBufferOffset =
-                static_cast<uint64_t>(clusterIndex) * clasStride,
-            .destinationSize = clasStride,
+            .indexBuffer = *indices,
+            .vertexBuffer = *vertices,
+            .destinationBuffer = *destination,
             .opaque = cluster.opaque,
         });
     }
@@ -946,6 +949,16 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
         *commandPool,
         "cluster acceleration-structure build",
         [&](CommandBuffer& commandBuffer) -> Result<> {
+            auto scratch = impl_->scratchBuffer->slice({scratchOffset});
+            auto clasInfos = impl_->clasBuildInfoBuffer->slice();
+            auto clasAddresses = impl_->clasAddressBuffer->slice();
+            auto blasInfos = impl_->clusterBlasBuildInfoBuffer->slice({0,
+                checkedByteSize(instanceCount, clusterProperties.bottomLevelBuildInfoSize)});
+            auto blasAddresses = impl_->clusterBlasAddressBuffer->slice({0, checkedByteSize(instanceCount, sizeof(uint64_t))});
+            auto instances = impl_->tlasInstanceBuffer->slice();
+            if (!scratch || !clasInfos || !clasAddresses || !blasInfos || !blasAddresses || !instances) {
+                return makeError(Error::InvalidArgument);
+            }
             Result<> buildResult =
                 commandBuffer.buildClusterAccelerationStructureTriangles(
                     ClusterAccelerationStructureTriangleBuildDesc{
@@ -956,10 +969,9 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
                         .maxGeometryIndexValue = 0,
                         .minPositionTruncateBitCount = 0,
                         .vertexFormat = Format::RGB32Sfloat,
-                        .scratchBuffer = impl_->scratchBuffer.get(),
-                        .scratchBufferOffset = scratchOffset,
-                        .buildInfoBuffer = impl_->clasBuildInfoBuffer.get(),
-                        .destinationAddressBuffer = impl_->clasAddressBuffer.get(),
+                        .scratchBuffer = *scratch,
+                        .buildInfoBuffer = *clasInfos,
+                        .destinationAddressBuffer = *clasAddresses,
                     });
             if (!buildResult) {
                 return buildResult;
@@ -977,20 +989,12 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
                         .maxTotalClusterCount =
                             static_cast<uint32_t>(selectedClusterReferenceCount),
                         .maxAccelerationStructureCount = instanceCount,
-                        .buildInfoBuffer =
-                            impl_->clusterBlasBuildInfoBuffer.get(),
+                        .buildInfoBuffer = *blasInfos,
                         .buildInfoStride =
                             clusterProperties.bottomLevelBuildInfoSize,
-                        .buildInfoSize = checkedByteSize(
-                            instanceCount,
-                            clusterProperties.bottomLevelBuildInfoSize),
-                        .destinationAddressBuffer =
-                            impl_->clusterBlasAddressBuffer.get(),
+                        .destinationAddressBuffer = *blasAddresses,
                         .destinationAddressStride = sizeof(uint64_t),
-                        .destinationAddressSize =
-                            checkedByteSize(instanceCount, sizeof(uint64_t)),
-                        .scratchBuffer = impl_->scratchBuffer.get(),
-                        .scratchBufferOffset = scratchOffset,
+                        .scratchBuffer = *scratch,
                     });
             if (!buildResult) {
                 return buildResult;
@@ -999,9 +1003,9 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
             return commandBuffer.buildRayTracingAccelerationStructure(
                 RayTracingAccelerationStructureBuildDesc{
                     .destination = impl_->tlas.get(),
-                    .instanceBuffer = impl_->tlasInstanceBuffer.get(),
+                    .instanceBuffer = *instances,
                     .instanceCount = instanceCount,
-                    .scratchBuffer = impl_->scratchBuffer.get(),
+                    .scratchBuffer = *scratch,
                 });
         },
         log);

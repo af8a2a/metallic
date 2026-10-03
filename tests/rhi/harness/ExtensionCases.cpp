@@ -65,7 +65,7 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
     {
         GPUCommands build(queue); checked(build.initialize(device));
         checked(build.commands->buildRayTracingAccelerationStructure({.destination = tlas.get(),
-            .instanceBuffer = instances.get(), .instanceCount = 1, .scratchBuffer = scratch.get()}));
+            .instanceBuffer = checked(instances->slice()), .instanceCount = 1, .scratchBuffer = checked(scratch->slice())}));
         checked(build.submitAndWait());
     }
     const char* capabilities[]{"spvRayQueryKHR"};
@@ -128,7 +128,7 @@ private:
         upload(*vertices, kRayVertices);
         Json observations = Json::array();
         if (!clusters) {
-            const RayTracingTriangleGeometryDesc geometry{.vertexBuffer = vertices.get(), .vertexStride = 12,
+            const RayTracingTriangleGeometryDesc geometry{.vertexBuffer = checked(vertices->slice()), .vertexStride = 12,
                 .vertexCount = 3, .indexType = RayTracingIndexType::None, .primitiveCount = 1};
             const auto sizes = checked(device.queryRayTracingAccelerationStructureBuildSizes({.geometries = {&geometry, 1}}));
             auto blas = checked(device.createRayTracingAccelerationStructure({.size = sizes.accelerationStructureSize}));
@@ -136,7 +136,7 @@ private:
             {
                 GPUCommands build(context.graphicsQueue); checked(build.initialize(device));
                 checked(build.commands->buildRayTracingAccelerationStructure({.destination = blas.get(),
-                    .geometries = {&geometry, 1}, .scratchBuffer = scratch.get()}));
+                    .geometries = {&geometry, 1}, .scratchBuffer = checked(scratch->slice())}));
                 checked(build.submitAndWait());
             }
             for (unsigned i = 0; i < 2; ++i) { observations.push_back(trace(context, blas->deviceAddress())); }
@@ -155,13 +155,13 @@ private:
                 auto encodedSize = buffer(device, 4, MemoryLocation::HostReadback);
                 auto scratch = buffer(device, sizes.buildScratchSize + properties.scratchAlignment);
                 const ClusterAccelerationStructureTriangleBuildInfo input{.triangleCount = 1, .vertexCount = 3,
-                    .vertexBufferStride = 12, .indexBuffer = indices.get(), .vertexBuffer = vertices.get(),
-                    .destinationBuffer = storage.get(), .destinationBufferOffset = offset, .destinationSize = sizes.accelerationStructureSize};
+                    .vertexBufferStride = 12, .indexBuffer = checked(indices->slice()), .vertexBuffer = checked(vertices->slice()),
+                    .destinationBuffer = checked(storage->slice({offset, sizes.accelerationStructureSize}))};
                 GPUCommands build(context.graphicsQueue); checked(build.initialize(device));
                 checked(build.commands->buildClusterAccelerationStructureTriangles({.clusters = {&input, 1},
                     .maxClusterTriangleCount = 128, .maxClusterVertexCount = 128,
-                    .scratchBuffer = scratch.get(), .scratchBufferOffset = alignedOffset(*scratch, properties.scratchAlignment),
-                    .buildInfoBuffer = infos.get(), .destinationAddressBuffer = addresses.get(), .destinationSizeBuffer = encodedSize.get()}));
+                    .scratchBuffer = checked(scratch->slice({alignedOffset(*scratch, properties.scratchAlignment)})),
+                    .buildInfoBuffer = checked(infos->slice()), .destinationAddressBuffer = checked(addresses->slice()), .destinationSizeBuffer = checked(encodedSize->slice())}));
                 checked(build.submitAndWait());
                 actualSize = read<uint32_t>(*encodedSize);
                 if (!actualSize || actualSize >= sizes.accelerationStructureSize || actualSize % properties.clusterStorageAlignment) {
@@ -176,12 +176,12 @@ private:
                     const auto moveSizes = checked(device.queryClusterAccelerationStructureMoveSizes(1, actualSize));
                     auto scratch = buffer(device, moveSizes.updateScratchSize + properties.scratchAlignment);
                     auto sources = buffer(device, 8, MemoryLocation::HostUpload), destinations = buffer(device, 8, MemoryLocation::HostUpload);
-                    const ClusterAccelerationStructureMoveInfo move{.sourceBuffer = storage.get(), .sourceOffset = offset,
-                        .destinationBuffer = destination.get(), .destinationOffset = destinationOffset, .size = actualSize};
+                    const ClusterAccelerationStructureMoveInfo move{.sourceBuffer = checked(storage->slice({offset, actualSize})),
+                        .destinationBuffer = checked(destination->slice({destinationOffset, actualSize}))};
                     GPUCommands commands(context.graphicsQueue); checked(commands.initialize(device));
                     checked(commands.commands->moveClusterAccelerationStructures({.objects = {&move, 1},
-                        .sourceAddressBuffer = sources.get(), .destinationAddressBuffer = destinations.get(),
-                        .scratchBuffer = scratch.get(), .scratchBufferOffset = alignedOffset(*scratch, properties.scratchAlignment)}));
+                        .sourceAddressBuffer = checked(sources->slice()), .destinationAddressBuffer = checked(destinations->slice()),
+                        .scratchBuffer = checked(scratch->slice({alignedOffset(*scratch, properties.scratchAlignment)}))}));
                     checked(commands.submitAndWait());
                 }
                 std::weak_ptr<void> retired = storage->retainAllocation();
@@ -204,7 +204,7 @@ private:
                     checked(commands.commands->buildClusterAccelerationStructureBottomLevels({
                         .destinationMode = ClusterAccelerationStructureDestinationMode::Explicit,
                         .maxClusterCountPerAccelerationStructure = 1, .maxTotalClusterCount = 1,
-                        .buildInfoBuffer = infos.get(), .destinationAddressBuffer = addresses.get(), .scratchBuffer = scratch.get()}));
+                        .buildInfoBuffer = checked(infos->slice()), .destinationAddressBuffer = checked(addresses->slice()), .scratchBuffer = checked(scratch->slice())}));
                     checked(commands.submitAndWait());
                 }
                 observations.push_back(trace(context, blasAddress));

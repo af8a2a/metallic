@@ -205,18 +205,20 @@ struct TopLevelBuildStrategy {
         Buffer& instances, uint32_t count, Buffer& scratch, uint64_t offset, bool update = false,
         bool graphManagedSynchronization = false) const
     {
+        auto instanceSlice = instances.slice();
+        if (!instanceSlice) { return makeError(instanceSlice.error()); }
+        auto scratchSlice = scratch.slice({offset});
+        if (!scratchSlice) { return makeError(scratchSlice.error()); }
         if (backend == RayTracingTopLevelBackend::Partitioned) {
             // The current RHI writes all instances with a null source, including
             // transform updates. BLAS and OMM allocations remain unchanged.
             return commands.buildPartitionedAccelerationStructure({.destination = &destination,
-                .instanceBuffer = &instances, .instanceCount = count, .scratchBuffer = &scratch,
-                .scratchBufferOffset = offset, .graphManagedSynchronization = graphManagedSynchronization});
+                .instanceBuffer = *instanceSlice, .instanceCount = count, .scratchBuffer = *scratchSlice, .graphManagedSynchronization = graphManagedSynchronization});
         }
         return commands.buildRayTracingAccelerationStructure({.destination = &destination,
             .source = update ? &destination : nullptr,
             .mode = update ? RayTracingAccelerationStructureBuildMode::Update : RayTracingAccelerationStructureBuildMode::Build,
-            .instanceBuffer = &instances, .instanceCount = count, .scratchBuffer = &scratch,
-            .scratchBufferOffset = offset, .graphManagedSynchronization = graphManagedSynchronization});
+            .instanceBuffer = *instanceSlice, .instanceCount = count, .scratchBuffer = *scratchSlice, .graphManagedSynchronization = graphManagedSynchronization});
     }
 };
 
@@ -806,7 +808,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             clear();
             return result;
         }
-        const auto upload = [&](const auto& values, Buffer*& buffer, uint64_t& offset) -> Result<> {
+        const auto upload = [&](const auto& values, BufferSlice& buffer) -> Result<> {
             const uint64_t bytes = values.size() * sizeof(values[0]);
             std::unique_ptr<Buffer> storage;
             Result<> uploadResult = createBuffer(device, bytes + 127,
@@ -815,7 +817,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             if (!uploadResult) {
                 return uploadResult;
             }
-            offset = alignUp(storage->deviceAddress(), 128) - storage->deviceAddress();
+            const uint64_t offset = alignUp(storage->deviceAddress(), 128) - storage->deviceAddress();
             auto* mapped = static_cast<uint8_t*>(storage->map());
             if (mapped == nullptr) {
                 return makeError(Error::Failure);
@@ -823,12 +825,14 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             std::memcpy(mapped + offset, values.data(), size_t(bytes));
             storage->flush({0, storage->desc().size});
             storage->unmap();
-            buffer = storage.get();
+            auto slice = storage->slice({offset, bytes});
+            if (!slice) { return makeError(slice.error()); }
+            buffer = *slice;
             impl_->micromapUploadBuffers.push_back(std::move(storage));
             return {};
         };
-        if (!(result = upload(baked.data, input.dataBuffer, input.dataOffset)) ||
-            !(result = upload(baked.triangles, input.triangleBuffer, input.triangleOffset))) {
+        if (!(result = upload(baked.data, input.dataBuffer)) ||
+            !(result = upload(baked.triangles, input.triangleBuffer))) {
             log = resultMessage("upload scene opacity micromap", result);
             clear();
             return result;
@@ -854,14 +858,21 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
     uint64_t maxScratchSize = micromapScratchSize;
     uint64_t originalBlasBytes = 0;
     for (const PrimitiveInput& input : primitiveInputs) {
+        auto vertices = impl_->vertexBuffer->slice({uint64_t(input.firstVertex) * sizeof(RayTracingVertex),
+            uint64_t(input.vertexCount) * sizeof(RayTracingVertex)});
+        auto indices = impl_->indexBuffer->slice({uint64_t(input.firstIndex) * sizeof(uint32_t),
+            uint64_t(input.triangleCount) * 3 * sizeof(uint32_t)});
+        if (!vertices || !indices) {
+            log = "Scene BLAS geometry range is invalid.";
+            clear();
+            return makeError(Error::InvalidArgument);
+        }
         geometries.push_back(RayTracingTriangleGeometryDesc{
-            .vertexBuffer = impl_->vertexBuffer.get(),
-            .vertexOffset = static_cast<uint64_t>(input.firstVertex) * sizeof(RayTracingVertex),
+            .vertexBuffer = *vertices,
             .vertexStride = sizeof(RayTracingVertex),
             .vertexFormat = Format::RGB32Sfloat,
             .vertexCount = input.vertexCount,
-            .indexBuffer = impl_->indexBuffer.get(),
-            .indexOffset = static_cast<uint64_t>(input.firstIndex) * sizeof(uint32_t),
+            .indexBuffer = *indices,
             .indexType = RayTracingIndexType::Uint32,
             .primitiveCount = input.triangleCount,
             .flags = input.opaque ? RayTracingGeometryFlags::Opaque : RayTracingGeometryFlags::None,
@@ -1002,14 +1013,19 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             impl_->compactionQueryPool.reset();
         }
     }
+    auto scratchSlice = impl_->scratchBuffer->slice({impl_->scratchOffset});
+    if (!scratchSlice) {
+        log = "Scene AS scratch range is invalid.";
+        clear();
+        return makeError(scratchSlice.error());
+    }
     for (size_t index = 0; index < impl_->micromaps.size(); ++index) {
         if (impl_->micromaps[index] == nullptr) {
             continue;
         }
         result = commandBuffer->buildRayTracingAccelerationStructure({
             .destination = impl_->micromaps[index].get(),
-            .scratchBuffer = impl_->scratchBuffer.get(),
-            .scratchBufferOffset = impl_->scratchOffset,
+            .scratchBuffer = *scratchSlice,
             .micromap = &micromapInputs[index],
         });
         if (!result) {
@@ -1023,8 +1039,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             RayTracingAccelerationStructureBuildDesc{
                 .destination = impl_->blases[index].get(),
                 .geometries = {&geometries[index], 1},
-                .scratchBuffer = impl_->scratchBuffer.get(),
-                .scratchBufferOffset = impl_->scratchOffset,
+                .scratchBuffer = *scratchSlice,
             });
         if (!result) {
             log = resultMessage("buildRayTracingAccelerationStructure(BLAS)", result);

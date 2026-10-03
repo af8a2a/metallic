@@ -543,6 +543,42 @@ struct BufferRange {
     }
 };
 
+namespace detail {
+struct BufferImpl;
+struct BufferAddressCommandAccess;
+}
+struct ResourceMemoryInfo;
+
+// CPU range with allocation provenance. It owns the native allocation, not the
+// movable Buffer wrapper; no constructor accepts an arbitrary GPU address.
+// Device must outlive all slices and GPU work. Ownership does not imply synchronization.
+class BufferSlice {
+public:
+    bool valid() const { return allocation_ != nullptr; }
+    uint64_t offset() const { return offset_; }
+    uint64_t size() const { return size_; }
+    const BufferDesc& allocationDesc() const;
+    // Describes the complete backing allocation; offset()/size() describe this slice.
+    ResourceMemoryInfo memoryInfo() const;
+    const void* allocationIdentity() const { return allocation_.get(); }
+    const void* deviceIdentity() const;
+    uint64_t deviceAddress() const;
+    std::shared_ptr<void> retainAllocation() const;
+    // UINT64_MAX takes the remainder; failure returns an error. Empty CPU slices are valid.
+    [[nodiscard]] Result<BufferSlice> subslice(BufferRange range = {}) const;
+    // Requires a nonempty addressed range, all usage bits, and absolute alignment.
+    Result<> validate(const void* device, BufferUsageBits usage, uint64_t alignment = 1,
+        uint64_t minimumSize = 1) const;
+    Result<> validateData(const void* device, uint32_t stride, uint32_t alignment) const;
+private:
+    std::shared_ptr<detail::BufferImpl> allocation_;
+    uint64_t offset_ = 0;
+    uint64_t size_ = 0;
+    friend class Buffer;
+    friend class BindlessHeap;
+    friend struct detail::BufferAddressCommandAccess;
+};
+
 struct TextureSubresourceRange {
     uint32_t baseMip = 0;
     uint32_t mipCount = 1;
@@ -706,13 +742,9 @@ struct ClusterAccelerationStructureTriangleBuildInfo {
         ClusterAccelerationStructureIndexFormat::Uint8;
     uint16_t indexBufferStride = 1;
     uint16_t vertexBufferStride = 0;
-    class Buffer* indexBuffer = nullptr;
-    uint64_t indexBufferOffset = 0;
-    class Buffer* vertexBuffer = nullptr;
-    uint64_t vertexBufferOffset = 0;
-    class Buffer* destinationBuffer = nullptr;
-    uint64_t destinationBufferOffset = 0;
-    uint64_t destinationSize = 0;
+    BufferSlice indexBuffer;
+    BufferSlice vertexBuffer;
+    BufferSlice destinationBuffer;
     bool opaque = true;
 };
 
@@ -724,29 +756,25 @@ struct ClusterAccelerationStructureTriangleBuildDesc {
     uint32_t maxGeometryIndexValue = 0;
     uint32_t minPositionTruncateBitCount = 0;
     Format vertexFormat = Format::RGB32Sfloat;
-    class Buffer* scratchBuffer = nullptr;
-    uint64_t scratchBufferOffset = 0;
-    class Buffer* buildInfoBuffer = nullptr;
-    class Buffer* destinationAddressBuffer = nullptr;
+    BufferSlice scratchBuffer;
+    BufferSlice buildInfoBuffer;
+    BufferSlice destinationAddressBuffer;
     // Optional GPU output: one uint32_t actual encoded size per cluster.
-    class Buffer* destinationSizeBuffer = nullptr;
+    BufferSlice destinationSizeBuffer;
 };
 
+// The source slice size is the encoded object size; destination must cover it.
 struct ClusterAccelerationStructureMoveInfo {
-    class Buffer* sourceBuffer = nullptr;
-    uint64_t sourceOffset = 0;
-    class Buffer* destinationBuffer = nullptr;
-    uint64_t destinationOffset = 0;
-    uint64_t size = 0;
+    BufferSlice sourceBuffer;
+    BufferSlice destinationBuffer;
 };
 
 // Non-overlapping copies of triangle CLAS, with driver relocation of their contents.
 struct ClusterAccelerationStructureMoveDesc {
     std::span<const ClusterAccelerationStructureMoveInfo> objects;
-    class Buffer* sourceAddressBuffer = nullptr;
-    class Buffer* destinationAddressBuffer = nullptr;
-    class Buffer* scratchBuffer = nullptr;
-    uint64_t scratchBufferOffset = 0;
+    BufferSlice sourceAddressBuffer;
+    BufferSlice destinationAddressBuffer;
+    BufferSlice scratchBuffer;
 };
 
 enum class RayTracingAccelerationStructureType : uint8_t {
@@ -860,21 +888,17 @@ struct OpacityMicromapUsage {
 
 struct OpacityMicromapBuildInput {
     std::span<const OpacityMicromapUsage> usages;
-    class Buffer* dataBuffer = nullptr;
-    uint64_t dataOffset = 0;
-    class Buffer* triangleBuffer = nullptr;
-    uint64_t triangleOffset = 0;
+    BufferSlice dataBuffer;
+    BufferSlice triangleBuffer;
     uint64_t triangleStride = sizeof(OpacityMicromapTriangle);
 };
 
 struct RayTracingTriangleGeometryDesc {
-    class Buffer* vertexBuffer = nullptr;
-    uint64_t vertexOffset = 0;
+    BufferSlice vertexBuffer;
     uint64_t vertexStride = 0;
     Format vertexFormat = Format::RGB32Sfloat;
     uint32_t vertexCount = 0;
-    class Buffer* indexBuffer = nullptr;
-    uint64_t indexOffset = 0;
+    BufferSlice indexBuffer;
     RayTracingIndexType indexType = RayTracingIndexType::Uint32;
     uint32_t primitiveCount = 0;
     RayTracingGeometryFlags flags = RayTracingGeometryFlags::Opaque;
@@ -948,16 +972,17 @@ struct RayTracingGPUInstance {
 
 static_assert(sizeof(RayTracingGPUInstance) == 64);
 
+// Build commands retain all supplied slice allocations through submission completion.
+// Scratch alignment is applied within the supplied slice, consuming its leading padding.
 struct RayTracingAccelerationStructureBuildDesc {
     class RayTracingAccelerationStructure* destination = nullptr;
     class RayTracingAccelerationStructure* source = nullptr;
     RayTracingAccelerationStructureBuildMode mode =
         RayTracingAccelerationStructureBuildMode::Build;
     std::span<const RayTracingTriangleGeometryDesc> geometries;
-    class Buffer* instanceBuffer = nullptr;
+    BufferSlice instanceBuffer;
     uint32_t instanceCount = 0;
-    class Buffer* scratchBuffer = nullptr;
-    uint64_t scratchBufferOffset = 0;
+    BufferSlice scratchBuffer;
     const OpacityMicromapBuildInput* micromap = nullptr;
     // RenderGraph declares the AS write and synchronizes subsequent consumers.
     // Standalone builds retain the legacy post-build dependency by default.
@@ -995,24 +1020,15 @@ struct ClusterAccelerationStructureBottomLevelBuildDesc {
     uint32_t maxClusterCountPerAccelerationStructure = 0;
     uint32_t maxTotalClusterCount = 0;
     uint32_t maxAccelerationStructureCount = 1;
-    class Buffer* buildInfoBuffer = nullptr;
-    uint64_t buildInfoBufferOffset = 0;
+    BufferSlice buildInfoBuffer;
     uint64_t buildInfoStride = sizeof(ClusterAccelerationStructureBottomLevelBuildInfo);
-    uint64_t buildInfoSize = 0;
-    class Buffer* buildInfoCountBuffer = nullptr;
-    uint64_t buildInfoCountBufferOffset = 0;
-    class Buffer* destinationStorageBuffer = nullptr;
-    uint64_t destinationStorageBufferOffset = 0;
-    class Buffer* destinationAddressBuffer = nullptr;
-    uint64_t destinationAddressBufferOffset = 0;
+    BufferSlice buildInfoCountBuffer;
+    BufferSlice destinationStorageBuffer;
+    BufferSlice destinationAddressBuffer;
     uint64_t destinationAddressStride = sizeof(uint64_t);
-    uint64_t destinationAddressSize = 0;
-    class Buffer* destinationSizeBuffer = nullptr;
-    uint64_t destinationSizeBufferOffset = 0;
+    BufferSlice destinationSizeBuffer;
     uint64_t destinationSizeStride = sizeof(uint32_t);
-    uint64_t destinationSizeSize = 0;
-    class Buffer* scratchBuffer = nullptr;
-    uint64_t scratchBufferOffset = 0;
+    BufferSlice scratchBuffer;
 };
 
 struct PartitionedAccelerationStructureBuildInputs {
@@ -1062,10 +1078,9 @@ struct PartitionedAccelerationStructureInstanceDesc {
 
 struct PartitionedAccelerationStructureBuildDesc {
     class RayTracingAccelerationStructure* destination = nullptr;
-    class Buffer* instanceBuffer = nullptr;
+    BufferSlice instanceBuffer;
     uint32_t instanceCount = 0;
-    class Buffer* scratchBuffer = nullptr;
-    uint64_t scratchBufferOffset = 0;
+    BufferSlice scratchBuffer;
     bool graphManagedSynchronization = false;
 };
 
@@ -1257,13 +1272,10 @@ struct TextureCopyDesc {
     uint32_t layerCount = 1;
 };
 
+// Slice sizes are the compressed input size and exact decoded output size.
 struct BufferDecompressionDesc {
-    class Buffer* source = nullptr;
-    class Buffer* destination = nullptr;
-    uint64_t sourceOffset = 0;
-    uint64_t destinationOffset = 0;
-    uint64_t compressedBytes = 0;
-    uint64_t decodedBytes = 0;
+    BufferSlice source;
+    BufferSlice destination;
 };
 
 struct BindlessHeapDesc {
@@ -1433,36 +1445,6 @@ struct ResourceMemoryInfo {
     uint32_t memoryTypeIndex = UINT32_MAX;
     uint32_t heapIndex = UINT32_MAX;
     bool known = false;
-};
-
-// CPU range with allocation provenance. It owns the native allocation, not the
-// movable Buffer wrapper; no constructor accepts an arbitrary GPU address.
-// Device must outlive all slices and GPU work. Ownership does not imply synchronization.
-class BufferSlice {
-public:
-    bool valid() const { return allocation_ != nullptr; }
-    uint64_t offset() const { return offset_; }
-    uint64_t size() const { return size_; }
-    const BufferDesc& allocationDesc() const;
-    // Describes the complete backing allocation; offset()/size() describe this slice.
-    ResourceMemoryInfo memoryInfo() const;
-    const void* allocationIdentity() const { return allocation_.get(); }
-    const void* deviceIdentity() const;
-    uint64_t deviceAddress() const;
-    std::shared_ptr<void> retainAllocation() const;
-    // UINT64_MAX takes the remainder; failure returns an error. Empty CPU slices are valid.
-    [[nodiscard]] Result<BufferSlice> subslice(BufferRange range = {}) const;
-    // Requires a nonempty addressed range, all usage bits, and absolute alignment.
-    Result<> validate(const void* device, BufferUsageBits usage, uint64_t alignment = 1,
-        uint64_t minimumSize = 1) const;
-    Result<> validateData(const void* device, uint32_t stride, uint32_t alignment) const;
-private:
-    std::shared_ptr<detail::BufferImpl> allocation_;
-    uint64_t offset_ = 0;
-    uint64_t size_ = 0;
-    friend class Buffer;
-    friend class BindlessHeap;
-    friend struct detail::BufferAddressCommandAccess;
 };
 
 struct BufferTextureRegion {
@@ -1815,7 +1797,6 @@ private:
     void setGraphicsShaderObjectState();
     Result<> bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData);
 
-    Result<> processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const;
     std::shared_ptr<CommandSubmissionContext> submissionContext_;
     std::shared_ptr<detail::CommandSubmissionState> submission_;
     std::vector<SemaphoreSubmitDesc> dependencyWaits_;

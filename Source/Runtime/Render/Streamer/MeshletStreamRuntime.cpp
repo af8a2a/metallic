@@ -4045,6 +4045,18 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
         blasSizeBuffer_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    auto infos = blasBuildInfoBuffer_->slice();
+    if (!infos) { return makeError(infos.error()); }
+    auto count = blasHeaderBuffer_->slice({offsetof(MeshletStreamGPUBLASHeader, blasBuildCount), sizeof(uint32_t)});
+    if (!count) { return makeError(count.error()); }
+    auto storage = blasStorageBuffer_->slice();
+    if (!storage) { return makeError(storage.error()); }
+    auto addresses = blasAddressBuffer_->slice();
+    if (!addresses) { return makeError(addresses.error()); }
+    auto sizes = blasSizeBuffer_->slice();
+    if (!sizes) { return makeError(sizes.error()); }
+    auto scratch = blasScratchBuffer_->slice();
+    if (!scratch) { return makeError(scratch.error()); }
     return commandBuffer.buildClusterAccelerationStructureBottomLevels(
         ClusterAccelerationStructureBottomLevelBuildDesc{
             .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
@@ -4052,19 +4064,13 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
             .maxClusterCountPerAccelerationStructure = maxBlasClustersPerBuild_,
             .maxTotalClusterCount = blasClusterReferenceCapacity_,
             .maxAccelerationStructureCount = blasBuildCapacity_,
-            .buildInfoBuffer = blasBuildInfoBuffer_.get(),
+            .buildInfoBuffer = *infos,
             .buildInfoStride = sizeof(MeshletStreamGPUBLASBuildInfo),
-            .buildInfoSize = blasBuildInfoBuffer_->desc().size,
-            .buildInfoCountBuffer = blasHeaderBuffer_.get(),
-            .buildInfoCountBufferOffset = offsetof(
-                MeshletStreamGPUBLASHeader,
-                blasBuildCount),
-            .destinationStorageBuffer = blasStorageBuffer_.get(),
-            .destinationAddressBuffer = blasAddressBuffer_.get(),
-            .destinationAddressSize = blasAddressBuffer_->desc().size,
-            .destinationSizeBuffer = blasSizeBuffer_.get(),
-            .destinationSizeSize = blasSizeBuffer_->desc().size,
-            .scratchBuffer = blasScratchBuffer_.get(),
+            .buildInfoCountBuffer = *count,
+            .destinationStorageBuffer = *storage,
+            .destinationAddressBuffer = *addresses,
+            .destinationSizeBuffer = *sizes,
+            .scratchBuffer = *scratch,
         });
 }
 
@@ -4161,6 +4167,10 @@ Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer
     for (uint32_t fallbackIndex : readyFallbackIndices) {
         FallbackBLASPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         const uint32_t clusterCount = fallback.referenceCount;
+        auto infos = fallbackBlasBuildInfoBuffer_->slice({uint64_t(fallbackIndex) * sizeof(MeshletStreamGPUBLASBuildInfo), sizeof(MeshletStreamGPUBLASBuildInfo)});
+        auto destinations = fallbackBlasDestinationBuffer_->slice({uint64_t(fallbackIndex) * sizeof(uint64_t), sizeof(uint64_t)});
+        auto scratch = fallbackBlasScratchBuffer_->slice();
+        if (!infos || !destinations || !scratch) { return makeError(Error::InvalidArgument); }
         const Result<> result = commandBuffer.buildClusterAccelerationStructureBottomLevels(
             ClusterAccelerationStructureBottomLevelBuildDesc{
                 .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
@@ -4168,17 +4178,10 @@ Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer
                 .maxClusterCountPerAccelerationStructure = clusterCount,
                 .maxTotalClusterCount = clusterCount,
                 .maxAccelerationStructureCount = 1,
-                .buildInfoBuffer = fallbackBlasBuildInfoBuffer_.get(),
-                .buildInfoBufferOffset =
-                    static_cast<uint64_t>(fallbackIndex) *
-                    sizeof(MeshletStreamGPUBLASBuildInfo),
+                .buildInfoBuffer = *infos,
                 .buildInfoStride = sizeof(MeshletStreamGPUBLASBuildInfo),
-                .buildInfoSize = sizeof(MeshletStreamGPUBLASBuildInfo),
-                .destinationAddressBuffer = fallbackBlasDestinationBuffer_.get(),
-                .destinationAddressBufferOffset =
-                    static_cast<uint64_t>(fallbackIndex) * sizeof(uint64_t),
-                .destinationAddressSize = sizeof(uint64_t),
-                .scratchBuffer = fallbackBlasScratchBuffer_.get(),
+                .destinationAddressBuffer = *destinations,
+                .scratchBuffer = *scratch,
             });
         if (!result) {
             return result;
@@ -4220,13 +4223,16 @@ Result<> MeshletStreamRuntime::cmdBuildTlas(CommandBuffer& commandBuffer)
         asset_.instanceCount() == 0) {
         return makeError(Error::InvalidArgument);
     }
+    auto instances = tlasInstanceBuffer_->slice();
+    auto scratch = tlasScratchBuffer_->slice();
+    if (!instances || !scratch) { return makeError(Error::InvalidArgument); }
     const Result<> result = commandBuffer.buildRayTracingAccelerationStructure(
         RayTracingAccelerationStructureBuildDesc{
             .destination = tlas_.get(),
             .mode = RayTracingAccelerationStructureBuildMode::Build,
-            .instanceBuffer = tlasInstanceBuffer_.get(),
+            .instanceBuffer = *instances,
             .instanceCount = asset_.instanceCount(),
-            .scratchBuffer = tlasScratchBuffer_.get(),
+            .scratchBuffer = *scratch,
             .graphManagedSynchronization = true,
         });
     if (!result) {

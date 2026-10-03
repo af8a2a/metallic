@@ -127,6 +127,104 @@ public:
     }
 };
 
+class BufferSliceDecompressionTest final : public RHITest {
+public:
+    BufferSliceDecompressionTest() { name = "buffer_slice_decompression_ranges_and_lifetime"; type = RHITestType::Command; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        if (!context.device.capabilities().memoryDecompression) { return RHITestResult::skip("EXT GDeflate unavailable"); }
+        try {
+            const auto checked = []<typename T>(Result<T> result) -> T {
+                if (!result) { throw std::runtime_error(resultToString(result)); }
+                if constexpr (!std::is_void_v<T>) { return std::move(*result); }
+            };
+            std::string reason;
+            const auto decoded = makeMixedTileGpuPagePayload();
+            std::vector<uint8_t> stored;
+            requireGpuPage(scene::encodeMeshletStreamGpuPage(decoded, true, stored, reason), reason);
+            scene::MeshletStreamPageInfo page;
+            page.clusterCount = 1; page.vertexCount = 3; page.triangleIndexCount = 3;
+            page.attributeFlags = scene::kMeshletStreamPayloadAttributePosition;
+            page.payloadFlags |= scene::kMeshletStreamPayloadCompactPositions;
+            page.payloadSize = stored.size(); page.uncompressedSize = decoded.size();
+            page.compressionMode = uint32_t(scene::MeshletStreamPayloadCompression::GPUTiles);
+            scene::MeshletStreamGPUPage metadata;
+            requireGpuPage(scene::inspectMeshletStreamGpuPage(page, stored, metadata, reason), reason);
+            const auto tile = metadata.tiles.front();
+            requireGpuPage(tile.codec != 0 && tile.decodedBytes == 65536, "Expected a compressed 64 KiB tile");
+            auto& device = context.device;
+            auto source = checked(device.createBuffer({.size = tile.storedBytes + 32,
+                .usage = BufferUsageBits::MemoryDecompression, .memoryLocation = MemoryLocation::HostUpload}));
+            auto destination = checked(device.createBuffer({.size = tile.decodedBytes + 64,
+                .usage = BufferUsageBits::MemoryDecompression | BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostReadback}));
+            auto readback = checked(device.createBuffer({.size = destination->desc().size,
+                .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}));
+            auto wrongUsage = checked(device.createBuffer({.size = tile.storedBytes, .usage = BufferUsageBits::Storage}));
+            auto pool = checked(device.createCommandPool(context.graphicsQueue));
+            auto commands = checked(pool->createCommandBuffer());
+            auto fence = checked(device.createFence(false));
+            struct Drain { Queue& queue; ~Drain() { (void)queue.waitIdle(); } } drain{context.graphicsQueue};
+            auto* mapped = static_cast<uint8_t*>(source->map());
+            requireGpuPage(mapped != nullptr, "Source map failed");
+            std::memcpy(mapped + 16, stored.data() + tile.sourceOffset, tile.storedBytes);
+            source->flush(); source->unmap();
+            mapped = static_cast<uint8_t*>(destination->map());
+            requireGpuPage(mapped != nullptr, "Destination map failed");
+            std::memset(mapped, 0x5a, size_t(destination->desc().size));
+            destination->flush(); destination->unmap();
+            std::weak_ptr<void> sourceLifetime = source->retainAllocation();
+            std::weak_ptr<void> destinationLifetime = destination->retainAllocation();
+            checked(commands->begin());
+            commands->hostWriteBarrier();
+            {
+                BufferDecompressionDesc region{checked(source->slice({16, tile.storedBytes})),
+                    checked(destination->slice({32, tile.decodedBytes}))};
+                checked(commands->validateDecompressionBuffers({&region, 1}));
+                auto invalid = region;
+                invalid.source = checked(source->slice({17, tile.storedBytes}));
+                requireGpuPage(hasError(commands->decompressBuffers({&invalid, 1}), Error::InvalidArgument), "Unaligned source accepted");
+                invalid = region; invalid.destination = checked(destination->slice({32, 65537}));
+                requireGpuPage(hasError(commands->decompressBuffers({&invalid, 1}), Error::InvalidArgument), "Oversized decoded slice accepted");
+                invalid = region; invalid.source = checked(wrongUsage->slice());
+                requireGpuPage(hasError(commands->decompressBuffers({&invalid, 1}), Error::InvalidArgument), "Wrong source usage accepted");
+                invalid = region; invalid.source = {};
+                requireGpuPage(hasError(commands->decompressBuffers({&invalid, 1}), Error::InvalidArgument), "Empty source accepted");
+                const BufferDecompressionDesc overlaps[]{region, region};
+                requireGpuPage(hasError(commands->decompressBuffers(overlaps), Error::InvalidArgument), "Overlapping outputs accepted");
+                checked(commands->decompressBuffers({&region, 1}));
+                const BufferBarrierDesc barrier{.buffer = destination.get(),
+                    .before = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                checked(commands->synchronize({.buffers = {&barrier, 1}}));
+                checked(commands->copyBuffer(checked(destination->slice()), checked(readback->slice())));
+            }
+            source.reset(); destination.reset();
+            requireGpuPage(!sourceLifetime.expired() && !destinationLifetime.expired(), "Recorded decompression lost allocation ownership");
+            checked(commands->end());
+            CommandBuffer* list[]{commands.get()};
+            checked(context.graphicsQueue.submit({.commandBuffers = list, .signalFence = fence.get()}));
+            checked(fence->wait(5'000'000'000ull));
+            mapped = static_cast<uint8_t*>(readback->map());
+            requireGpuPage(mapped != nullptr, "Readback map failed");
+            readback->invalidate();
+            const bool equal = std::memcmp(mapped + 32, decoded.data() + tile.destinationOffset, tile.decodedBytes) == 0;
+            const bool guards = std::all_of(mapped, mapped + 32, [](uint8_t value) { return value == 0x5a; }) &&
+                std::all_of(mapped + 32 + tile.decodedBytes, mapped + 64 + tile.decodedBytes, [](uint8_t value) { return value == 0x5a; });
+            readback->unmap();
+            requireGpuPage(equal && guards, "Slice offsets or decoded boundaries changed output");
+            checked(pool->reset());
+            checked(commands->begin());
+            requireGpuPage(sourceLifetime.expired() && destinationLifetime.expired(), "Retired decompression allocations leaked");
+            checked(commands->end());
+            return RHITestResult::pass("Nonzero offsets, bounds/usage/overlap validation, byte oracle and allocation lifetime");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(BufferSliceDecompressionTest);
+
 METALLIC_REGISTER_RHI_TEST(GPUPageCodecTest);
 METALLIC_REGISTER_RHI_TEST(GPUPageDecompressionTest);
 

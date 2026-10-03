@@ -54,7 +54,9 @@ public:
         std::memcpy(mapped, bench::kRayVertices.data(), sizeof(bench::kRayVertices));
         vertex_->flush();
         vertex_->unmap();
-        geometry_ = {.vertexBuffer = vertex_.get(), .vertexStride = 12,
+        auto vertexSlice = vertex_->slice();
+        if (!vertexSlice) { return makeError(vertexSlice.error()); }
+        geometry_ = {.vertexBuffer = *vertexSlice, .vertexStride = 12,
             .vertexCount = 3, .indexType = RayTracingIndexType::None, .primitiveCount = 1};
         auto bottomSizes = device_->queryRayTracingAccelerationStructureBuildSizes({.geometries = {&geometry_, 1}});
         if (!bottomSizes) { return makeError(bottomSizes.error()); }
@@ -145,12 +147,12 @@ private:
         auto result = recordGraphAccessBarriers(commands, plan->passes[0], bindings);
         if (!result) { return result; }
         result = commands.buildRayTracingAccelerationStructure({.destination = bottom_.get(),
-            .geometries = {&geometry_, 1}, .scratchBuffer = scratch_.get(), .graphManagedSynchronization = true});
+            .geometries = {&geometry_, 1}, .scratchBuffer = *scratch, .graphManagedSynchronization = true});
         if (!result) { return result; }
         result = recordGraphAccessBarriers(commands, plan->passes[1], bindings);
         if (!result) { return result; }
         return commands.buildRayTracingAccelerationStructure({.destination = top_.get(),
-            .instanceBuffer = instances_.get(), .instanceCount = 1, .scratchBuffer = scratch_.get(), .graphManagedSynchronization = true});
+            .instanceBuffer = *instances, .instanceCount = 1, .scratchBuffer = *scratch, .graphManagedSynchronization = true});
     }
     Device* device_ = nullptr;
     uint64_t topSize_ = 0;

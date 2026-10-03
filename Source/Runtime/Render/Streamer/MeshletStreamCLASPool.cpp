@@ -584,6 +584,16 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
             const MeshletStreamCLASClusterInput& cluster = plan.clusters[clusterIndex];
             const uint64_t destinationOffset = allocation.offset +
                 static_cast<uint64_t>(clusterIndex) * impl_->clusterStride;
+            auto indices = pageBuffer.slice({request.deviceOffsetBytes + cluster.triangleOffsetBytes, uint64_t(cluster.triangleCount) * 3});
+            auto vertices = pageBuffer.slice({request.deviceOffsetBytes + cluster.vertexOffsetBytes,
+                uint64_t(cluster.vertexCount) * cluster.vertexStrideBytes});
+            auto destination = impl_->storageBuffer->slice({destinationOffset, impl_->clusterStride});
+            if (!indices || !vertices || !destination) {
+                impl_->storage.release(allocation);
+                rollback();
+                log = "MeshletStreamCLASPool geometry range is invalid";
+                return makeError(Error::InvalidArgument);
+            }
             buildInfos.push_back(ClusterAccelerationStructureTriangleBuildInfo{
                 .clusterId = cluster.clusterId,
                 .triangleCount = cluster.triangleCount,
@@ -593,13 +603,9 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
                 .indexFormat = ClusterAccelerationStructureIndexFormat::Uint8,
                 .indexBufferStride = 1,
                 .vertexBufferStride = static_cast<uint16_t>(cluster.vertexStrideBytes),
-                .indexBuffer = &pageBuffer,
-                .indexBufferOffset = request.deviceOffsetBytes + cluster.triangleOffsetBytes,
-                .vertexBuffer = &pageBuffer,
-                .vertexBufferOffset = request.deviceOffsetBytes + cluster.vertexOffsetBytes,
-                .destinationBuffer = impl_->storageBuffer.get(),
-                .destinationBufferOffset = destinationOffset,
-                .destinationSize = impl_->clusterStride,
+                .indexBuffer = *indices,
+                .vertexBuffer = *vertices,
+                .destinationBuffer = *destination,
                 .opaque = true,
             });
             pending.addresses.push_back(impl_->storageAddress + destinationOffset);
@@ -628,6 +634,15 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
     impl_->addressBuffer->unmap();
 
     Impl::FrameResources& frame = impl_->frames[impl_->frameIndex % impl_->frames.size()];
+    auto scratch = impl_->scratchBuffer->slice({impl_->scratchOffset});
+    auto infos = frame.buildInfoBuffer->slice();
+    auto addresses = frame.destinationAddressBuffer->slice();
+    Result<BufferSlice> sizes = sizeOutput ? sizeOutput->slice() : Result<BufferSlice>{BufferSlice{}};
+    if (!scratch || !infos || !addresses || !sizes) {
+        rollback();
+        log = "MeshletStreamCLASPool build buffer range is invalid";
+        return makeError(Error::InvalidArgument);
+    }
     Result<> result = commandBuffer.buildClusterAccelerationStructureTriangles(
         ClusterAccelerationStructureTriangleBuildDesc{
             .clusters = buildInfos,
@@ -637,11 +652,10 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
             .maxGeometryIndexValue = 0,
             .minPositionTruncateBitCount = 0,
             .vertexFormat = Format::RGB32Sfloat,
-            .scratchBuffer = impl_->scratchBuffer.get(),
-            .scratchBufferOffset = impl_->scratchOffset,
-            .buildInfoBuffer = frame.buildInfoBuffer.get(),
-            .destinationAddressBuffer = frame.destinationAddressBuffer.get(),
-            .destinationSizeBuffer = sizeOutput,
+            .scratchBuffer = *scratch,
+            .buildInfoBuffer = *infos,
+            .destinationAddressBuffer = *addresses,
+            .destinationSizeBuffer = *sizes,
         });
     if (!result) {
         rollback();

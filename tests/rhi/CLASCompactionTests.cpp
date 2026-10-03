@@ -69,6 +69,11 @@ class CLASSizeMoveTest final : public RHITest {
         };
         try {
             require(bool(result), "Device creation failed");
+            const auto slice = [&](Buffer* buffer, BufferRange range = {}) {
+                auto result = buffer->slice(range);
+                require(bool(result), "Buffer slice failed");
+                return *result;
+            };
             ScopedPropertyQueryCounter propertyQueries(*device);
             auto* queue = device->getQueue(QueueType::Graphics);
             constexpr auto usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
@@ -108,10 +113,10 @@ class CLASSizeMoveTest final : public RHITest {
             std::memcpy(indices->map(), ix, sizeof(ix));
             indices->flush();
             indices->unmap();
-            auto infos = buffer(properties.triangleBuildInfoSize * 2, MemoryLocation::HostUpload);
+            auto infos = buffer(properties.triangleBuildInfoSize * 2 + 64, MemoryLocation::HostUpload);
             auto destinations = buffer(16, MemoryLocation::HostUpload),
                  sources = buffer(16, MemoryLocation::HostUpload);
-            auto sizes = buffer(8, MemoryLocation::HostReadback);
+            auto sizes = buffer(16, MemoryLocation::HostReadback);
             std::unique_ptr<CommandPool> commandsPool;
             std::unique_ptr<CommandBuffer> commands;
             std::unique_ptr<Fence> fence;
@@ -135,28 +140,37 @@ class CLASSizeMoveTest final : public RHITest {
                             .indexFormat = ClusterAccelerationStructureIndexFormat::Uint8,
                             .indexBufferStride = 1,
                             .vertexBufferStride = 12,
-                            .indexBuffer = indices.get(),
-                            .vertexBuffer = vertices.get(),
-                            .destinationBuffer = temp.get(),
-                            .destinationBufferOffset = i * stride,
-                            .destinationSize = stride};
+                            .indexBuffer = slice(indices.get()),
+                            .vertexBuffer = slice(vertices.get()),
+                            .destinationBuffer = slice(temp.get(), {i * stride, stride})};
             }
-            require(bool(commands->buildClusterAccelerationStructureTriangles(
-                        {
-                            .clusters = {input, 2},
-                            .maxClusterTriangleCount = 128,
-                            .maxClusterVertexCount = 128,
-                            .scratchBuffer = scratch.get(),
-                            .scratchBufferOffset = scratchOffset,
-                            .buildInfoBuffer = infos.get(),
-                            .destinationAddressBuffer = destinations.get(),
-                            .destinationSizeBuffer = sizes.get(),
-                        })),
-                    "Build with size output failed");
+            const ClusterAccelerationStructureTriangleBuildDesc build{
+                .clusters = {input, 2},
+                .maxClusterTriangleCount = 128,
+                .maxClusterVertexCount = 128,
+                .scratchBuffer = slice(scratch.get(), {scratchOffset}),
+                .buildInfoBuffer = slice(infos.get(), {64, properties.triangleBuildInfoSize * 2}),
+                .destinationAddressBuffer = slice(destinations.get()),
+                .destinationSizeBuffer = slice(sizes.get(), {8, 8}),
+            };
+            auto invalidBuild = build;
+            invalidBuild.buildInfoBuffer = slice(infos.get(), {64, properties.triangleBuildInfoSize * 2 - 1});
+            require(hasError(commands->buildClusterAccelerationStructureTriangles(invalidBuild), Error::InvalidArgument),
+                "Undersized build info slice accepted");
+            invalidBuild = build;
+            invalidBuild.scratchBuffer = slice(scratch.get(), {scratchOffset, 1});
+            require(hasError(commands->buildClusterAccelerationStructureTriangles(invalidBuild), Error::InvalidArgument),
+                "Undersized build scratch slice accepted");
+            const auto destinationSlice = input[0].destinationBuffer;
+            input[0].destinationBuffer = slice(temp.get(), {0, 1});
+            require(hasError(commands->buildClusterAccelerationStructureTriangles(build), Error::InvalidArgument),
+                "Undersized CLAS destination slice accepted");
+            input[0].destinationBuffer = destinationSlice;
+            require(bool(commands->buildClusterAccelerationStructureTriangles(build)), "Build with size output failed");
             submit();
             sizes->invalidate();
             uint32_t actual[2];
-            std::memcpy(actual, sizes->map(), sizeof(actual));
+            std::memcpy(actual, static_cast<const uint8_t*>(sizes->map()) + 8, sizeof(actual));
             sizes->unmap();
             require(actual[0] > 0 && actual[0] < stride && actual[0] % properties.clusterStorageAlignment == 0 &&
                         actual[0] == actual[1],
@@ -164,39 +178,28 @@ class CLASSizeMoveTest final : public RHITest {
             auto compact = buffer(uint64_t(actual[0]) + actual[1], MemoryLocation::Device);
             require(bool(commandsPool->reset()) && bool(fence->reset()) && bool(commands->begin()),
                     "Move begin failed");
-            ClusterAccelerationStructureMoveInfo moves[] = {{.sourceBuffer = temp.get(),
-                                                             .sourceOffset = 0,
-                                                             .destinationBuffer = compact.get(),
-                                                             .destinationOffset = 0,
-                                                             .size = actual[0]},
-                                                            {.sourceBuffer = temp.get(),
-                                                             .sourceOffset = stride,
-                                                             .destinationBuffer = compact.get(),
-                                                             .destinationOffset = actual[0],
-                                                             .size = actual[1]}};
+            ClusterAccelerationStructureMoveInfo moves[] = {
+                {.sourceBuffer = slice(temp.get(), {0, actual[0]}), .destinationBuffer = slice(compact.get(), {0, actual[0]})},
+                {.sourceBuffer = slice(temp.get(), {stride, actual[1]}), .destinationBuffer = slice(compact.get(), {actual[0], actual[1]})}};
             auto move = ClusterAccelerationStructureMoveDesc{
                 .objects = {moves, 2},
-                .sourceAddressBuffer = sources.get(),
-                .destinationAddressBuffer = destinations.get(),
-                .scratchBuffer = scratch.get(),
-                .scratchBufferOffset = scratchOffset,
+                .sourceAddressBuffer = slice(sources.get()),
+                .destinationAddressBuffer = slice(destinations.get()),
+                .scratchBuffer = slice(scratch.get(), {scratchOffset}),
             };
-            moves[1].destinationOffset += 1;
+            moves[1].destinationBuffer = slice(compact.get(), {actual[0] + 1, actual[1] - 1});
             require(hasError(commands->moveClusterAccelerationStructures(move), Error::InvalidArgument),
                     "Unaligned move accepted");
-            moves[1].destinationOffset = 0;
+            moves[1].destinationBuffer = slice(compact.get(), {0, actual[1]});
             require(hasError(commands->moveClusterAccelerationStructures(move), Error::InvalidArgument),
                     "Overlapping destinations accepted");
-            moves[1].destinationOffset = actual[0];
+            moves[1].destinationBuffer = slice(compact.get(), {actual[0], actual[1]});
             ClusterAccelerationStructureBuildSizes exactMoveSizes;
             require(bool(device->queryClusterAccelerationStructureMoveSizes(2, uint64_t(actual[0]) + actual[1]).transform([&](auto rhiValue) { exactMoveSizes = std::move(rhiValue); })),
                     "Exact move sizes failed");
             if (exactMoveSizes.updateScratchSize > 1) {
-                auto smallScratch = buffer(exactMoveSizes.updateScratchSize - 1, MemoryLocation::Device);
                 auto invalidMove = move;
-                invalidMove.scratchBuffer = smallScratch.get();
-                invalidMove.scratchBufferOffset = (properties.scratchAlignment -
-                    smallScratch->deviceAddress() % properties.scratchAlignment) % properties.scratchAlignment;
+                invalidMove.scratchBuffer = slice(scratch.get(), {scratchOffset, exactMoveSizes.updateScratchSize - 1});
                 require(hasError(commands->moveClusterAccelerationStructures(invalidMove), Error::InvalidArgument),
                         "Undersized move scratch accepted");
             }
@@ -207,14 +210,23 @@ class CLASSizeMoveTest final : public RHITest {
             require(bool(commandsPool->reset()) && bool(fence->reset()) && bool(commands->begin()),
                     "Second move begin failed");
             for (uint32_t i = 0; i < 2; ++i) {
-                moves[i] = {.sourceBuffer = compact.get(),
-                            .sourceOffset = uint64_t(i) * actual[0],
-                            .destinationBuffer = temp.get(),
-                            .destinationOffset = i * stride,
-                            .size = actual[i]};
+                moves[i] = {.sourceBuffer = slice(compact.get(), {uint64_t(i) * actual[0], actual[i]}),
+                            .destinationBuffer = slice(temp.get(), {i * stride, actual[i]})};
             }
+            auto retainedSources = buffer(32, MemoryLocation::HostUpload);
+            auto retainedDestinations = buffer(32, MemoryLocation::HostUpload);
+            std::weak_ptr<void> sourceTableLifetime = retainedSources->retainAllocation();
+            std::weak_ptr<void> destinationTableLifetime = retainedDestinations->retainAllocation();
+            move.sourceAddressBuffer = slice(retainedSources.get(), {16, 16});
+            move.destinationAddressBuffer = slice(retainedDestinations.get(), {16, 16});
             require(bool(commands->moveClusterAccelerationStructures(move)), "Relocating compact CLAS failed");
+            move.sourceAddressBuffer = {}; move.destinationAddressBuffer = {};
+            retainedSources.reset(); retainedDestinations.reset();
+            require(!sourceTableLifetime.expired() && !destinationTableLifetime.expired(), "Move did not retain sliced address tables");
             submit();
+            require(bool(commandsPool->reset()) && bool(commands->begin()), "Retirement reset failed");
+            require(sourceTableLifetime.expired() && destinationTableLifetime.expired(), "Move address tables leaked after retirement");
+            require(bool(commands->end()), "Retirement end failed");
             std::filesystem::create_directories(context.outputDirectory);
             require(propertyQueries.count() == 0, "CLAS runtime re-queried fixed physical-device properties");
             std::ofstream(context.outputDirectory / "CLASSizeMove.txt")

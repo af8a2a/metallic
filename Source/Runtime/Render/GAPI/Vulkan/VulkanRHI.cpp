@@ -596,20 +596,14 @@ Result<> makeOpacityMicromapGeometry(
         .usageCountsCount = static_cast<uint32_t>(usages.size()), .pUsageCounts = usages.data(),
         .triangleArrayStride = input->triangleStride};
     if (requireBuffers) {
-        if (input->dataBuffer == nullptr || input->triangleBuffer == nullptr ||
-            !hasFlag(input->dataBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
-            !hasFlag(input->triangleBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
-            input->dataBuffer->deviceAddress() == 0 || input->triangleBuffer->deviceAddress() == 0 ||
-            input->dataOffset >= input->dataBuffer->desc().size ||
-            input->triangleOffset >= input->triangleBuffer->desc().size ||
-            count > (input->triangleBuffer->desc().size - input->triangleOffset) / input->triangleStride) {
+        const auto owner = input->dataBuffer.deviceIdentity();
+        if (!input->dataBuffer.validate(owner, BufferUsageBits::AccelerationStructureBuildInput, 128) ||
+            !input->triangleBuffer.validate(owner, BufferUsageBits::AccelerationStructureBuildInput, 128) ||
+            count > input->triangleBuffer.size() / input->triangleStride) {
             return makeError(Error::InvalidArgument);
         }
-        data.data = input->dataBuffer->deviceAddress() + input->dataOffset;
-        data.triangleArray = input->triangleBuffer->deviceAddress() + input->triangleOffset;
-        if (data.data % 128 != 0 || data.triangleArray % 128 != 0) {
-            return makeError(Error::InvalidArgument);
-        }
+        data.data = input->dataBuffer.deviceAddress();
+        data.triangleArray = input->triangleBuffer.deviceAddress();
     }
     geometry = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
         .pNext = &data, .geometryType = VK_GEOMETRY_TYPE_MICROMAP_KHR};
@@ -1925,6 +1919,7 @@ struct BufferImpl {
 };
 
 struct BufferAddressCommandAccess {
+    static BufferImpl* allocation(const BufferSlice& slice) { return slice.allocation_.get(); }
     static VkAddressCommandFlagsKHR flags(const Buffer& buffer)
     {
         return flags(buffer.impl_.get());
@@ -4722,23 +4717,86 @@ Result<> CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice&
     return {};
 }
 
-Result<> CommandBuffer::decompressBuffers(std::span<const BufferDecompressionDesc> regions)
+namespace {
+
+bool queueCanAccessBuffer(const detail::CommandBufferImpl& commands, const BufferDesc& buffer)
 {
-    return processDecompressionBuffers(regions, true);
+    const auto families = detail::queueFamiliesForAccess(*commands.device, buffer.queueAccess);
+    return std::find(families.begin(), families.end(), commands.queueFamilyIndex) != families.end();
 }
 
-Result<> CommandBuffer::validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const
+bool validCommandSlice(const detail::CommandBufferImpl& commands, const BufferSlice& slice,
+    BufferUsageBits usage, uint64_t minimumBytes = 1, uint64_t alignment = 1)
 {
-    return processDecompressionBuffers(regions, false);
+    return slice.validate(commands.device, usage, alignment, minimumBytes) &&
+        queueCanAccessBuffer(commands, slice.allocationDesc());
 }
 
-Result<> CommandBuffer::processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const
+bool validTriangleGeometry(const detail::DeviceImpl* device, const RayTracingTriangleGeometryDesc& source)
 {
-    if (!impl_ || !recording_ || !impl_->device->capabilities.memoryDecompression ||
-        !(impl_->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
+    const auto info = formatInfo(source.vertexFormat);
+    if (!source.vertexCount || !source.vertexStride || !source.primitiveCount ||
+        info.blockExtent != 1 || !info.bytesPerBlock || source.vertexStride < info.bytesPerBlock ||
+        uint64_t(source.vertexCount - 1) > (UINT64_MAX - info.bytesPerBlock) / source.vertexStride ||
+        !source.vertexBuffer.validate(device, BufferUsageBits::AccelerationStructureBuildInput, 1,
+            uint64_t(source.vertexCount - 1) * source.vertexStride + info.bytesPerBlock)) {
+        return false;
+    }
+    if (source.indexType == RayTracingIndexType::None) { return uint64_t(source.primitiveCount) * 3 <= source.vertexCount; }
+    const uint64_t indexBytes = source.indexType == RayTracingIndexType::Uint16 ? 2 :
+        source.indexType == RayTracingIndexType::Uint32 ? 4 : 0;
+    return indexBytes && source.indexBuffer.validate(device, BufferUsageBits::AccelerationStructureBuildInput,
+        indexBytes, uint64_t(source.primitiveCount) * 3 * indexBytes).has_value();
+}
+
+Result<BufferSlice> alignedBuildScratch(const detail::CommandBufferImpl& commands,
+    const BufferSlice& scratch, uint64_t alignment, uint64_t minimumBytes)
+{
+    if (!validCommandSlice(commands, scratch, BufferUsageBits::Storage) ||
+        !alignment || (alignment & (alignment - 1))) { return makeError(Error::InvalidArgument); }
+    const uint64_t padding = (0 - scratch.deviceAddress()) & (alignment - 1);
+    auto aligned = scratch.subslice({padding});
+    if (!aligned || !aligned->validate(commands.device, BufferUsageBits::Storage, alignment, minimumBytes)) {
+        return makeError(Error::InvalidArgument);
+    }
+    return aligned;
+}
+
+Result<> retainBufferSlices(CommandBuffer& commands, std::initializer_list<BufferSlice> slices)
+{
+    for (const auto& slice : slices) {
+        if (slice.valid()) {
+            auto result = commands.retainResource(slice.retainAllocation());
+            if (!result) { return result; }
+        }
+    }
+    return {};
+}
+
+// CLAS indirect tables may occupy a subrange of an already mapped upload buffer.
+Result<> uploadBufferSlice(const BufferSlice& slice, const void* data, uint64_t byteSize)
+{
+    auto* allocation = detail::BufferAddressCommandAccess::allocation(slice);
+    if (!allocation || !allocation->allocation || !data || byteSize > slice.size()) {
+        return makeError(Error::InvalidArgument);
+    }
+    void* mapped = nullptr;
+    auto result = resultFromVk(vmaMapMemory(allocation->device->allocator, allocation->allocation, &mapped));
+    if (!result) { return result; }
+    std::memcpy(static_cast<uint8_t*>(mapped) + slice.offset(), data, size_t(byteSize));
+    result = resultFromVk(vmaFlushAllocation(allocation->device->allocator, allocation->allocation, slice.offset(), byteSize));
+    vmaUnmapMemory(allocation->device->allocator, allocation->allocation);
+    return result;
+}
+
+Result<std::vector<VkDecompressMemoryRegionEXT>> prepareDecompressionRegions(
+    const detail::CommandBufferImpl* commands, bool recording, std::span<const BufferDecompressionDesc> regions)
+{
+    if (!commands || !recording || !commands->device->capabilities.memoryDecompression ||
+        !(commands->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
         return makeError(Error::Unsupported);
     }
-    if (regions.empty()) { return {}; }
+    if (regions.empty()) { return std::vector<VkDecompressMemoryRegionEXT>{}; }
     if (regions.size() > UINT32_MAX) { return makeError(Error::InvalidArgument); }
     std::vector<VkDecompressMemoryRegionEXT> native;
     struct Range { uint64_t begin, end; bool destination; };
@@ -4746,22 +4804,16 @@ Result<> CommandBuffer::processDecompressionBuffers(std::span<const BufferDecomp
     native.reserve(regions.size());
     ranges.reserve(regions.size() * 2);
     for (const auto& region : regions) {
-        const auto validBuffer = [&](Buffer* buffer, uint64_t offset, uint64_t size) {
-            return buffer && buffer->impl_ && buffer->impl_->device == impl_->device &&
-                hasFlag(buffer->desc().usage, BufferUsageBits::MemoryDecompression) &&
-                buffer->deviceAddress() && size && offset % 4 == 0 &&
-                offset <= buffer->desc().size && size <= buffer->desc().size - offset;
-        };
-        if (region.decodedBytes > 65536 ||
-            !validBuffer(region.source, region.sourceOffset, region.compressedBytes) ||
-            !validBuffer(region.destination, region.destinationOffset, region.decodedBytes)) {
+        if (region.destination.size() > 65536 ||
+            !validCommandSlice(*commands, region.source, BufferUsageBits::MemoryDecompression, 1, 4) ||
+            !validCommandSlice(*commands, region.destination, BufferUsageBits::MemoryDecompression, 1, 4)) {
             return makeError(Error::InvalidArgument);
         }
-        const uint64_t source = region.source->deviceAddress() + region.sourceOffset;
-        const uint64_t destination = region.destination->deviceAddress() + region.destinationOffset;
-        native.push_back({source, destination, region.compressedBytes, region.decodedBytes});
-        ranges.push_back({source, source + region.compressedBytes, false});
-        ranges.push_back({destination, destination + region.decodedBytes, true});
+        const uint64_t source = region.source.deviceAddress();
+        const uint64_t destination = region.destination.deviceAddress();
+        native.push_back({source, destination, region.source.size(), region.destination.size()});
+        ranges.push_back({source, source + region.source.size(), false});
+        ranges.push_back({destination, destination + region.destination.size(), true});
     }
     std::sort(ranges.begin(), ranges.end(), [](const Range& a, const Range& b) { return a.begin < b.begin; });
     uint64_t sourceEnd = 0, destinationEnd = 0;
@@ -4772,14 +4824,34 @@ Result<> CommandBuffer::processDecompressionBuffers(std::span<const BufferDecomp
         if (range.destination) { destinationEnd = std::max(destinationEnd, range.end); }
         else { sourceEnd = std::max(sourceEnd, range.end); }
     }
+    return native;
+}
+
+} // namespace
+
+Result<> CommandBuffer::decompressBuffers(std::span<const BufferDecompressionDesc> regions)
+{
+    auto native = prepareDecompressionRegions(impl_.get(), recording_, regions);
+    if (!native) { return makeError(native.error()); }
+    if (native->empty()) { return {}; }
+    for (const auto& region : regions) {
+        auto retained = retainBufferSlices(*this, {region.source, region.destination});
+        if (!retained) { return retained; }
+    }
     const VkDecompressMemoryInfoEXT info{
         .sType = VK_STRUCTURE_TYPE_DECOMPRESS_MEMORY_INFO_EXT,
         .decompressionMethod = VK_MEMORY_DECOMPRESSION_METHOD_GDEFLATE_1_0_BIT_EXT,
-        .regionCount = uint32_t(native.size()),
-        .pRegions = native.data(),
+        .regionCount = uint32_t(native->size()),
+        .pRegions = native->data(),
     };
-    if (record) { impl_->device->functions.vkCmdDecompressMemoryEXT(impl_->commandBuffer, &info); }
+    impl_->device->functions.vkCmdDecompressMemoryEXT(impl_->commandBuffer, &info);
     return {};
+}
+
+Result<> CommandBuffer::validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const
+{
+    auto native = prepareDecompressionRegions(impl_.get(), recording_, regions);
+    return native ? Result<>{} : makeError(native.error());
 }
 
 Result<> CommandBuffer::copyTexture(const TextureCopyDesc& desc)
@@ -5542,20 +5614,17 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         desc.destination->impl_ == nullptr || !desc.destination->valid() ||
         desc.destination->impl_->device != impl_->device ||
         desc.destination->desc().topLevelBackend != RayTracingTopLevelBackend::Standard ||
-        desc.scratchBuffer == nullptr || desc.scratchBuffer->impl_ == nullptr ||
-        desc.scratchBuffer->impl_->device != impl_->device ||
-        !hasFlag(desc.scratchBuffer->desc().usage, BufferUsageBits::Storage)) {
+        !validCommandSlice(*impl_, desc.scratchBuffer, BufferUsageBits::Storage)) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->device->capabilities.rayTracingAccelerationStructure ||
-        !impl_->device->capabilities.rayTracingAccelerationStructure) {
+    if (!impl_->device->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
     const auto queueCanAccess = [&](const Buffer& buffer) {
         const auto families = detail::queueFamiliesForAccess(*impl_->device, buffer.desc().queueAccess);
         return std::find(families.begin(), families.end(), impl_->queueFamilyIndex) != families.end();
     };
-    if (!queueCanAccess(*desc.destination->impl_->storage) || !queueCanAccess(*desc.scratchBuffer)) {
+    if (!queueCanAccess(*desc.destination->impl_->storage)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -5590,46 +5659,21 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
     if (destinationDesc.type == RayTracingAccelerationStructureType::BottomLevel) {
         if (desc.geometries.empty() || desc.geometries.size() > UINT32_MAX ||
-            desc.instanceBuffer != nullptr || desc.instanceCount != 0) {
+            desc.instanceBuffer.valid() || desc.instanceCount != 0) {
             return makeError(Error::InvalidArgument);
         }
         geometries.reserve(desc.geometries.size());
         ranges.reserve(desc.geometries.size());
         for (uint32_t index = 0; index < desc.geometries.size(); ++index) {
             const RayTracingTriangleGeometryDesc& source = desc.geometries[index];
-            if (source.vertexBuffer == nullptr || source.vertexBuffer->impl_ == nullptr ||
-                source.vertexBuffer->impl_->device != impl_->device ||
-                source.vertexCount == 0 || source.vertexStride == 0 ||
-                source.primitiveCount == 0 || source.vertexFormat == Format::Unknown ||
-                source.vertexOffset >= source.vertexBuffer->desc().size ||
-                !queueCanAccess(*source.vertexBuffer) ||
-                !hasFlag(
-                    source.vertexBuffer->desc().usage,
-                    BufferUsageBits::AccelerationStructureBuildInput)) {
+            if (!validTriangleGeometry(impl_->device, source) ||
+                !queueCanAccessBuffer(*impl_, source.vertexBuffer.allocationDesc()) ||
+                (source.indexType != RayTracingIndexType::None && !queueCanAccessBuffer(*impl_, source.indexBuffer.allocationDesc()))) {
                 return makeError(Error::InvalidArgument);
             }
-            const VkDeviceAddress vertexAddress = source.vertexBuffer->deviceAddress();
+            const VkDeviceAddress vertexAddress = source.vertexBuffer.deviceAddress();
             const VkFormat vertexFormat = toVkFormat(source.vertexFormat);
-            if (vertexAddress == 0 || vertexFormat == VK_FORMAT_UNDEFINED) {
-                return makeError(Error::Failure);
-            }
-
-            VkDeviceAddress indexAddress = 0;
-            if (source.indexType != RayTracingIndexType::None) {
-                if (source.indexBuffer == nullptr || source.indexBuffer->impl_ == nullptr ||
-                    source.indexBuffer->impl_->device != impl_->device ||
-                    source.indexOffset >= source.indexBuffer->desc().size ||
-                    !queueCanAccess(*source.indexBuffer) ||
-                    !hasFlag(
-                        source.indexBuffer->desc().usage,
-                        BufferUsageBits::AccelerationStructureBuildInput)) {
-                    return makeError(Error::InvalidArgument);
-                }
-                indexAddress = source.indexBuffer->deviceAddress();
-                if (indexAddress == 0) {
-                    return makeError(Error::Failure);
-                }
-            }
+            const VkDeviceAddress indexAddress = source.indexType == RayTracingIndexType::None ? 0 : source.indexBuffer.deviceAddress();
 
             const void* opacityAttachment = nullptr;
             if (source.opacityMicromap != nullptr) {
@@ -5667,11 +5711,11 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
                 .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
                 .pNext = opacityAttachment,
                 .vertexFormat = vertexFormat,
-                .vertexData = {.deviceAddress = vertexAddress + source.vertexOffset},
+                .vertexData = {.deviceAddress = vertexAddress},
                 .vertexStride = source.vertexStride,
                 .maxVertex = source.vertexCount - 1,
                 .indexType = toVkRayTracingIndexType(source.indexType),
-                .indexData = {.deviceAddress = indexAddress == 0 ? 0 : indexAddress + source.indexOffset},
+                .indexData = {.deviceAddress = indexAddress},
             };
             VkAccelerationStructureGeometryKHR geometry{
                 .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
@@ -5686,15 +5730,12 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         }
     } else if (isMicromap) {
         if (!desc.geometries.empty() || desc.instanceCount != 0 ||
-            desc.instanceBuffer != nullptr || desc.mode != RayTracingAccelerationStructureBuildMode::Build) {
+            desc.instanceBuffer.valid() || desc.mode != RayTracingAccelerationStructureBuildMode::Build) {
             return makeError(Error::InvalidArgument);
         }
-        if (desc.micromap == nullptr || desc.micromap->dataBuffer == nullptr ||
-            desc.micromap->triangleBuffer == nullptr || desc.micromap->dataBuffer->impl_ == nullptr ||
-            desc.micromap->triangleBuffer->impl_ == nullptr ||
-            desc.micromap->dataBuffer->impl_->device != impl_->device ||
-            desc.micromap->triangleBuffer->impl_->device != impl_->device ||
-            !queueCanAccess(*desc.micromap->dataBuffer) || !queueCanAccess(*desc.micromap->triangleBuffer)) {
+        if (!desc.micromap ||
+            !validCommandSlice(*impl_, desc.micromap->dataBuffer, BufferUsageBits::AccelerationStructureBuildInput) ||
+            !validCommandSlice(*impl_, desc.micromap->triangleBuffer, BufferUsageBits::AccelerationStructureBuildInput)) {
             return makeError(Error::InvalidArgument);
         }
         VkAccelerationStructureGeometryKHR geometry{};
@@ -5708,18 +5749,11 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         geometries.push_back(geometry);
     } else {
         if (destinationDesc.type != RayTracingAccelerationStructureType::TopLevel || !desc.geometries.empty() ||
-            desc.instanceBuffer == nullptr || desc.instanceBuffer->impl_ == nullptr ||
-            desc.instanceBuffer->impl_->device != impl_->device || desc.instanceCount == 0 ||
-            !queueCanAccess(*desc.instanceBuffer) ||
-            !hasFlag(
-                desc.instanceBuffer->desc().usage,
-                BufferUsageBits::AccelerationStructureBuildInput)) {
+            !desc.instanceCount || !validCommandSlice(*impl_, desc.instanceBuffer,
+                BufferUsageBits::AccelerationStructureBuildInput, uint64_t(desc.instanceCount) * sizeof(VkAccelerationStructureInstanceKHR), 16)) {
             return makeError(Error::InvalidArgument);
         }
-        const VkDeviceAddress instanceAddress = desc.instanceBuffer->deviceAddress();
-        if (instanceAddress == 0 || (instanceAddress & 15u) != 0) {
-            return makeError(Error::Failure);
-        }
+        const VkDeviceAddress instanceAddress = desc.instanceBuffer.deviceAddress();
         VkAccelerationStructureGeometryInstancesDataKHR instances{
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
             .arrayOfPointers = VK_FALSE,
@@ -5736,32 +5770,27 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         });
     }
 
-    const VkDeviceAddress scratchBase = desc.scratchBuffer->deviceAddress();
-    if (scratchBase == 0 || desc.scratchBufferOffset >= desc.scratchBuffer->desc().size) {
-        return makeError(Error::Failure);
-    }
     const auto& properties = impl_->device->physicalProperties.accelerationStructure;
     const uint64_t scratchAlignment = std::max<uint64_t>(
         isMicromap && impl_->device->opacityMicromapExt ? 128 : 1,
         properties.minAccelerationStructureScratchOffsetAlignment);
-    const VkDeviceAddress unalignedScratchAddress = scratchBase + desc.scratchBufferOffset;
-    const VkDeviceAddress scratchAddress =
-        (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
-    const uint64_t alignedScratchOffset = scratchAddress - scratchBase;
+    auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, scratchAlignment, 1);
+    if (!scratch) { return makeError(scratch.error()); }
+    const VkDeviceAddress scratchAddress = scratch->deviceAddress();
 
     const auto retainBuildResources = [&]() -> Result<> {
         auto result = retainResource(desc.destination->retainAllocation());
-        if (result) { result = retainResource(desc.scratchBuffer->retainAllocation()); }
+        if (result) { result = retainResource(desc.scratchBuffer.retainAllocation()); }
         if (result && desc.source) { result = retainResource(desc.source->retainAllocation()); }
-        if (result && desc.instanceBuffer) { result = retainResource(desc.instanceBuffer->retainAllocation()); }
+        if (result && desc.instanceBuffer.valid()) { result = retainResource(desc.instanceBuffer.retainAllocation()); }
         if (result && desc.micromap) {
-            result = retainResource(desc.micromap->dataBuffer->retainAllocation());
-            if (result) { result = retainResource(desc.micromap->triangleBuffer->retainAllocation()); }
+            result = retainResource(desc.micromap->dataBuffer.retainAllocation());
+            if (result) { result = retainResource(desc.micromap->triangleBuffer.retainAllocation()); }
         }
         for (const auto& geometry : desc.geometries) {
-            if (result) { result = retainResource(geometry.vertexBuffer->retainAllocation()); }
+            if (result) { result = retainResource(geometry.vertexBuffer.retainAllocation()); }
             if (result && geometry.indexType != RayTracingIndexType::None) {
-                result = retainResource(geometry.indexBuffer->retainAllocation());
+                result = retainResource(geometry.indexBuffer.retainAllocation());
             }
             if (result && geometry.opacityMicromap) { result = retainResource(geometry.opacityMicromap->retainAllocation()); }
         }
@@ -5775,8 +5804,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         buildInfo.scratchData.deviceAddress = scratchAddress;
         VkMicromapBuildSizesInfoEXT sizes{.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT};
         impl_->device->functions.vkGetMicromapBuildSizesEXT(impl_->device->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &sizes);
-        if (alignedScratchOffset >= desc.scratchBuffer->desc().size ||
-            sizes.buildScratchSize > desc.scratchBuffer->desc().size - alignedScratchOffset ||
+        if (sizes.buildScratchSize > scratch->size() ||
             sizes.micromapSize > destinationDesc.size) {
             return makeError(Error::InvalidArgument);
         }
@@ -5840,8 +5868,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         ? sizes.updateScratchSize
         : sizes.buildScratchSize;
     if ((!isMicromap && requiredScratchSize == 0) ||
-        alignedScratchOffset >= desc.scratchBuffer->desc().size ||
-        requiredScratchSize > desc.scratchBuffer->desc().size - alignedScratchOffset ||
+        requiredScratchSize > scratch->size() ||
         sizes.accelerationStructureSize > destinationDesc.size) {
         return makeError(Error::InvalidArgument);
     }
@@ -5958,52 +5985,24 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
-    if (desc.clusters.empty() ||
-        desc.clusters.size() > UINT32_MAX ||
-        desc.maxClusterTriangleCount == 0 ||
-        desc.maxClusterVertexCount == 0 ||
-        desc.maxClusterUniqueGeometryCount == 0 ||
-        desc.vertexFormat == Format::Unknown ||
-        desc.scratchBuffer == nullptr ||
-        desc.buildInfoBuffer == nullptr ||
-        desc.destinationAddressBuffer == nullptr) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
+        desc.clusters.empty() || desc.clusters.size() > UINT32_MAX ||
+        !desc.maxClusterTriangleCount || !desc.maxClusterVertexCount ||
+        !desc.maxClusterUniqueGeometryCount || desc.vertexFormat == Format::Unknown) {
         return makeError(Error::InvalidArgument);
     }
-
-    Buffer* scratchBuffer = desc.scratchBuffer;
-    Buffer* buildInfoBuffer = desc.buildInfoBuffer;
-    Buffer* destinationAddressBuffer = desc.destinationAddressBuffer;
-    if (scratchBuffer->impl_ == nullptr ||
-        buildInfoBuffer->impl_ == nullptr ||
-        destinationAddressBuffer->impl_ == nullptr ||
-        scratchBuffer->impl_->device != impl_->device ||
-        buildInfoBuffer->impl_->device != impl_->device ||
-        destinationAddressBuffer->impl_->device != impl_->device ||
-        !hasFlag(scratchBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
-        !hasFlag(buildInfoBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
-        !hasFlag(buildInfoBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
-        !hasFlag(destinationAddressBuffer->desc().usage, BufferUsageBits::AccelerationStructureStorage) ||
-        !hasFlag(destinationAddressBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress)) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    const uint64_t buildInfoBytes = static_cast<uint64_t>(desc.clusters.size()) *
+    const uint64_t buildInfoBytes = uint64_t(desc.clusters.size()) *
         sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV);
-    const uint64_t destinationAddressBytes =
-        static_cast<uint64_t>(desc.clusters.size()) * sizeof(uint64_t);
-    if (buildInfoBytes > buildInfoBuffer->desc().size ||
-        destinationAddressBytes > destinationAddressBuffer->desc().size ||
-        desc.scratchBufferOffset > scratchBuffer->desc().size) {
+    const uint64_t destinationAddressBytes = uint64_t(desc.clusters.size()) * sizeof(uint64_t);
+    if (!validCommandSlice(*impl_, desc.buildInfoBuffer, BufferUsageBits::AccelerationStructureBuildInput, buildInfoBytes, 8) ||
+        !validCommandSlice(*impl_, desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage, destinationAddressBytes, 8) ||
+        (desc.destinationSizeBuffer.valid() && !validCommandSlice(*impl_, desc.destinationSizeBuffer,
+            BufferUsageBits::AccelerationStructureStorage, uint64_t(desc.clusters.size()) * sizeof(uint32_t), 4))) {
         return makeError(Error::InvalidArgument);
     }
-
-    Buffer* sizeBuffer = desc.destinationSizeBuffer;
-    if (sizeBuffer && (sizeBuffer->impl_ == nullptr || sizeBuffer->impl_->device != impl_->device ||
-        !hasFlag(sizeBuffer->desc().usage, BufferUsageBits::AccelerationStructureStorage) ||
-        !hasFlag(sizeBuffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
-        sizeBuffer->desc().size < uint64_t(desc.clusters.size()) * sizeof(uint32_t) || sizeBuffer->deviceAddress() == 0)) {
-        return makeError(Error::InvalidArgument);
-    }
+    const auto& limits = impl_->device->physicalProperties.cluster;
+    const auto vertexInfo = formatInfo(desc.vertexFormat);
+    if (!vertexInfo.bytesPerBlock || vertexInfo.blockExtent != 1) { return makeError(Error::InvalidArgument); }
 
     std::vector<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> buildInfos(
         desc.clusters.size());
@@ -6022,52 +6021,18 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
             source.geometryIndex > desc.maxGeometryIndexValue ||
             source.geometryIndex > 0xffffffu ||
             source.indexBufferStride == 0 ||
-            source.vertexBufferStride == 0 ||
-            source.indexBuffer == nullptr ||
-            source.vertexBuffer == nullptr ||
-            source.destinationBuffer == nullptr ||
-            source.destinationSize == 0) {
+            source.vertexBufferStride < vertexInfo.bytesPerBlock) {
             return makeError(Error::InvalidArgument);
         }
-        Buffer* indexBuffer = source.indexBuffer;
-        Buffer* vertexBuffer = source.vertexBuffer;
-        Buffer* destinationBuffer = source.destinationBuffer;
-        if (indexBuffer->impl_ == nullptr ||
-            vertexBuffer->impl_ == nullptr ||
-            destinationBuffer->impl_ == nullptr ||
-            indexBuffer->impl_->device != impl_->device ||
-            vertexBuffer->impl_->device != impl_->device ||
-            destinationBuffer->impl_->device != impl_->device ||
-            !hasFlag(indexBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
-            !hasFlag(vertexBuffer->desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
-            !hasFlag(destinationBuffer->desc().usage, BufferUsageBits::AccelerationStructureStorage)) {
-            return makeError(Error::InvalidArgument);
-        }
-
         const uint64_t indexElementSize = clusterIndexByteSize(source.indexFormat);
-        const uint64_t indexCount = static_cast<uint64_t>(source.triangleCount) * 3u;
-        const uint64_t requiredIndexBytes = indexCount == 0
-            ? 0
-            : (indexCount - 1u) * source.indexBufferStride + indexElementSize;
-        const uint64_t requiredVertexBytes =
-            static_cast<uint64_t>(source.vertexCount) * source.vertexBufferStride;
-        if (indexElementSize == 0 ||
-            source.indexBufferStride < indexElementSize ||
-            source.indexBufferOffset > indexBuffer->desc().size ||
-            requiredIndexBytes > indexBuffer->desc().size - source.indexBufferOffset ||
-            source.vertexBufferOffset > vertexBuffer->desc().size ||
-            requiredVertexBytes > vertexBuffer->desc().size - source.vertexBufferOffset ||
-            source.destinationBufferOffset > destinationBuffer->desc().size ||
-            source.destinationSize >
-                destinationBuffer->desc().size - source.destinationBufferOffset) {
+        const uint64_t indexCount = uint64_t(source.triangleCount) * 3u;
+        const uint64_t requiredIndexBytes = (indexCount - 1u) * source.indexBufferStride + indexElementSize;
+        const uint64_t requiredVertexBytes = uint64_t(source.vertexCount - 1u) * source.vertexBufferStride + vertexInfo.bytesPerBlock;
+        if (!indexElementSize || source.indexBufferStride < indexElementSize ||
+            !validCommandSlice(*impl_, source.indexBuffer, BufferUsageBits::AccelerationStructureBuildInput, requiredIndexBytes, indexElementSize) ||
+            !validCommandSlice(*impl_, source.vertexBuffer, BufferUsageBits::AccelerationStructureBuildInput, requiredVertexBytes) ||
+            !validCommandSlice(*impl_, source.destinationBuffer, BufferUsageBits::AccelerationStructureStorage, 1, limits.clusterByteAlignment)) {
             return makeError(Error::InvalidArgument);
-        }
-
-        const uint64_t indexAddress = indexBuffer->deviceAddress();
-        const uint64_t vertexAddress = vertexBuffer->deviceAddress();
-        const uint64_t destinationAddress = destinationBuffer->deviceAddress();
-        if (indexAddress == 0 || vertexAddress == 0 || destinationAddress == 0) {
-            return makeError(Error::Failure);
         }
 
         VkClusterAccelerationStructureBuildTriangleClusterInfoNV& buildInfo = buildInfos[index];
@@ -6082,9 +6047,9 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
             : 0;
         buildInfo.indexBufferStride = source.indexBufferStride;
         buildInfo.vertexBufferStride = source.vertexBufferStride;
-        buildInfo.indexBuffer = indexAddress + source.indexBufferOffset;
-        buildInfo.vertexBuffer = vertexAddress + source.vertexBufferOffset;
-        destinationAddresses[index] = destinationAddress + source.destinationBufferOffset;
+        buildInfo.indexBuffer = source.indexBuffer.deviceAddress();
+        buildInfo.vertexBuffer = source.vertexBuffer.deviceAddress();
+        destinationAddresses[index] = source.destinationBuffer.deviceAddress();
 
         totalTriangleCount += source.triangleCount;
         totalVertexCount += source.vertexCount;
@@ -6092,34 +6057,6 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
             totalVertexCount > std::numeric_limits<uint32_t>::max()) {
             return makeError(Error::InvalidArgument);
         }
-    }
-
-    void* mappedBuildInfos = buildInfoBuffer->map();
-    void* mappedDestinations = destinationAddressBuffer->map();
-    if (mappedBuildInfos == nullptr || mappedDestinations == nullptr) {
-        if (mappedBuildInfos != nullptr) {
-            buildInfoBuffer->unmap();
-        }
-        if (mappedDestinations != nullptr) {
-            destinationAddressBuffer->unmap();
-        }
-        return makeError(Error::Failure);
-    }
-    std::memcpy(mappedBuildInfos, buildInfos.data(), static_cast<size_t>(buildInfoBytes));
-    std::memcpy(
-        mappedDestinations,
-        destinationAddresses.data(),
-        static_cast<size_t>(destinationAddressBytes));
-    buildInfoBuffer->flush({0, buildInfoBytes});
-    destinationAddressBuffer->flush({0, destinationAddressBytes});
-    buildInfoBuffer->unmap();
-    destinationAddressBuffer->unmap();
-
-    const uint64_t buildInfoAddress = buildInfoBuffer->deviceAddress();
-    const uint64_t destinationAddress = destinationAddressBuffer->deviceAddress();
-    const uint64_t scratchAddress = scratchBuffer->deviceAddress();
-    if (buildInfoAddress == 0 || destinationAddress == 0 || scratchAddress == 0) {
-        return makeError(Error::Failure);
     }
 
     VkClusterAccelerationStructureTriangleClusterInputNV triangleInput{
@@ -6141,10 +6078,36 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         .opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
         .opInput = {.pTriangleClusters = &triangleInput},
     };
+    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    impl_->device->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &input, &sizes);
+    auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, limits.clusterScratchByteAlignment, sizes.buildScratchSize);
+    if (!scratch) { return makeError(scratch.error()); }
+    auto singleInput = input;
+    auto singleTriangleInput = triangleInput;
+    singleTriangleInput.maxTotalTriangleCount = desc.maxClusterTriangleCount;
+    singleTriangleInput.maxTotalVertexCount = desc.maxClusterVertexCount;
+    singleInput.maxAccelerationStructureCount = 1;
+    singleInput.opInput.pTriangleClusters = &singleTriangleInput;
+    impl_->device->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &singleInput, &sizes);
+    for (const auto& cluster : desc.clusters) {
+        if (cluster.destinationBuffer.size() < sizes.accelerationStructureSize) { return makeError(Error::InvalidArgument); }
+    }
+    auto result = uploadBufferSlice(desc.buildInfoBuffer, buildInfos.data(), buildInfoBytes);
+    if (!result) { return result; }
+    result = uploadBufferSlice(desc.destinationAddressBuffer, destinationAddresses.data(), destinationAddressBytes);
+    if (!result) { return result; }
+    result = retainBufferSlices(*this, {desc.scratchBuffer, desc.buildInfoBuffer, desc.destinationAddressBuffer, desc.destinationSizeBuffer});
+    if (!result) { return result; }
+    for (const auto& cluster : desc.clusters) {
+        result = retainBufferSlices(*this, {cluster.indexBuffer, cluster.vertexBuffer, cluster.destinationBuffer});
+        if (!result) { return result; }
+    }
+    const uint64_t buildInfoAddress = desc.buildInfoBuffer.deviceAddress();
+    const uint64_t destinationAddress = desc.destinationAddressBuffer.deviceAddress();
     VkClusterAccelerationStructureCommandsInfoNV commands{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
         .input = input,
-        .scratchData = scratchAddress + desc.scratchBufferOffset,
+        .scratchData = scratch->deviceAddress(),
         .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
             .deviceAddress = destinationAddress,
             .stride = sizeof(uint64_t),
@@ -6157,8 +6120,8 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         },
     };
 
-    if (sizeBuffer) {
-        commands.dstSizesArray = {sizeBuffer->deviceAddress(), sizeof(uint32_t), uint64_t(desc.clusters.size()) * sizeof(uint32_t)};
+    if (desc.destinationSizeBuffer.valid()) {
+        commands.dstSizesArray = {desc.destinationSizeBuffer.deviceAddress(), sizeof(uint32_t), uint64_t(desc.clusters.size()) * sizeof(uint32_t)};
     }
     if (std::getenv("METALLIC_TRACE_CLAS")) {
         spdlog::info("[CLAS Trace] build count={} infos={:x} destinations={:x} scratch={:x} sizes={:x} firstDst={:x}",
@@ -6236,16 +6199,12 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     if (!impl_ || !impl_->device || !impl_->device->capabilities.clusterAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
-    const auto validBuffer = [&](Buffer* buffer, BufferUsageBits usage, uint64_t bytes) {
-        return buffer && buffer->impl_ && buffer->impl_->device == impl_->device &&
-            hasFlag(buffer->desc().usage, usage) && hasFlag(buffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) &&
-            bytes <= buffer->desc().size && buffer->deviceAddress() != 0;
-    };
     const uint64_t arrayBytes = uint64_t(desc.objects.size()) * sizeof(uint64_t);
-    if (desc.objects.empty() || desc.objects.size() > UINT32_MAX || desc.sourceAddressBuffer == desc.destinationAddressBuffer ||
-        !validBuffer(desc.sourceAddressBuffer, BufferUsageBits::AccelerationStructureBuildInput, arrayBytes) ||
-        !validBuffer(desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage, arrayBytes) ||
-        !validBuffer(desc.scratchBuffer, BufferUsageBits::Storage, desc.scratchBufferOffset)) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
+        desc.objects.empty() || desc.objects.size() > UINT32_MAX ||
+        !validCommandSlice(*impl_, desc.sourceAddressBuffer, BufferUsageBits::AccelerationStructureBuildInput, arrayBytes, 8) ||
+        !validCommandSlice(*impl_, desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage, arrayBytes, 8) ||
+        detail::BufferAddressCommandAccess::overlap(desc.sourceAddressBuffer, desc.destinationAddressBuffer)) {
         return makeError(Error::InvalidArgument);
     }
     std::vector<uint64_t> sources(desc.objects.size()), destinations(desc.objects.size());
@@ -6253,27 +6212,21 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     const auto& limits = impl_->device->physicalProperties.cluster;
     for (uint32_t i = 0; i < desc.objects.size(); ++i) {
         const auto& item = desc.objects[i];
-        if (!item.size || item.sourceBuffer == item.destinationBuffer ||
-            !validBuffer(item.sourceBuffer, BufferUsageBits::AccelerationStructureStorage, item.sourceOffset) ||
-            !validBuffer(item.destinationBuffer, BufferUsageBits::AccelerationStructureStorage, item.destinationOffset) ||
-            item.size > item.sourceBuffer->desc().size - item.sourceOffset ||
-            item.size > item.destinationBuffer->desc().size - item.destinationOffset ||
-            totalBytes > UINT64_MAX - item.size) {
+        if (!validCommandSlice(*impl_, item.sourceBuffer, BufferUsageBits::AccelerationStructureStorage, 1, limits.clusterByteAlignment) ||
+            !validCommandSlice(*impl_, item.destinationBuffer, BufferUsageBits::AccelerationStructureStorage, item.sourceBuffer.size(), limits.clusterByteAlignment) ||
+            totalBytes > UINT64_MAX - item.sourceBuffer.size()) {
             return makeError(Error::InvalidArgument);
         }
-        sources[i] = item.sourceBuffer->deviceAddress() + item.sourceOffset;
-        destinations[i] = item.destinationBuffer->deviceAddress() + item.destinationOffset;
-        if (sources[i] % limits.clusterByteAlignment || destinations[i] % limits.clusterByteAlignment) {
-            return makeError(Error::InvalidArgument);
-        }
-        totalBytes += item.size;
+        sources[i] = item.sourceBuffer.deviceAddress();
+        destinations[i] = item.destinationBuffer.deviceAddress();
+        totalBytes += item.sourceBuffer.size();
     }
     struct MoveRange { uint64_t start, end; bool destination; };
     std::vector<MoveRange> ranges;
     ranges.reserve(size_t(desc.objects.size()) * 2);
     for (uint32_t i = 0; i < desc.objects.size(); ++i) {
-        ranges.push_back({sources[i], sources[i] + desc.objects[i].size, false});
-        ranges.push_back({destinations[i], destinations[i] + desc.objects[i].size, true});
+        ranges.push_back({sources[i], sources[i] + desc.objects[i].sourceBuffer.size(), false});
+        ranges.push_back({destinations[i], destinations[i] + desc.objects[i].sourceBuffer.size(), true});
     }
     std::sort(ranges.begin(), ranges.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
     uint64_t sourceEnd = 0, destinationEnd = 0;
@@ -6296,20 +6249,19 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
         .opInput = {.pMoveObjects = &move}};
     VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
     impl_->device->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &input, &sizes);
-    const uint64_t scratchAddress = desc.scratchBuffer->deviceAddress() + desc.scratchBufferOffset;
     // MOVE_OBJECTS reports its scratch requirement in updateScratchSize.
-    // Checking buildScratchSize here would allow undersized buffers on NVIDIA.
-    if (scratchAddress % limits.clusterScratchByteAlignment ||
-        sizes.updateScratchSize > desc.scratchBuffer->desc().size - desc.scratchBufferOffset) {
-        return makeError(Error::InvalidArgument);
-    }
+    auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, limits.clusterScratchByteAlignment, sizes.updateScratchSize);
+    if (!scratch) { return makeError(scratch.error()); }
     for (const auto& pair : {std::pair{desc.sourceAddressBuffer, sources.data()},
                              std::pair{desc.destinationAddressBuffer, destinations.data()}}) {
-        void* mapped = pair.first->map();
-        if (!mapped) { return makeError(Error::Failure); }
-        std::memcpy(mapped, pair.second, arrayBytes);
-        pair.first->flush({0, arrayBytes});
-        pair.first->unmap();
+        auto result = uploadBufferSlice(pair.first, pair.second, arrayBytes);
+        if (!result) { return result; }
+    }
+    auto retained = retainBufferSlices(*this, {desc.sourceAddressBuffer, desc.destinationAddressBuffer, desc.scratchBuffer});
+    if (!retained) { return retained; }
+    for (const auto& item : desc.objects) {
+        retained = retainBufferSlices(*this, {item.sourceBuffer, item.destinationBuffer});
+        if (!retained) { return retained; }
     }
     VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -6320,14 +6272,14 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     vulkan::recordBarrier(impl_->device->functions, impl_->device->device, impl_->commandBuffer, dependency);
     VkClusterAccelerationStructureCommandsInfoNV commands{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
-        .input = input, .scratchData = scratchAddress,
-        .dstAddressesArray = {desc.destinationAddressBuffer->deviceAddress(), sizeof(uint64_t), arrayBytes},
-        .srcInfosArray = {desc.sourceAddressBuffer->deviceAddress(), sizeof(uint64_t), arrayBytes}};
+        .input = input, .scratchData = scratch->deviceAddress(),
+        .dstAddressesArray = {desc.destinationAddressBuffer.deviceAddress(), sizeof(uint64_t), arrayBytes},
+        .srcInfosArray = {desc.sourceAddressBuffer.deviceAddress(), sizeof(uint64_t), arrayBytes}};
     if (std::getenv("METALLIC_TRACE_CLAS")) {
         spdlog::info("[CLAS Trace] move count={} sources={:x} destinations={:x} scratch={:x} firstSrc={:x} firstDst={:x} bytes={} scratchCapacity={} scratchRequired={}",
             desc.objects.size(), commands.srcInfosArray.deviceAddress, commands.dstAddressesArray.deviceAddress,
             commands.scratchData, sources.front(), destinations.front(), totalBytes,
-            desc.scratchBuffer->desc().size - desc.scratchBufferOffset, sizes.updateScratchSize);
+            scratch->size(), sizes.updateScratchSize);
     }
     impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
@@ -6351,117 +6303,23 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
-    if (desc.maxClusterCountPerAccelerationStructure == 0 ||
-        desc.maxTotalClusterCount == 0 ||
-        desc.maxAccelerationStructureCount == 0 ||
-        desc.buildInfoBuffer == nullptr ||
-        desc.destinationAddressBuffer == nullptr ||
-        desc.scratchBuffer == nullptr ||
-        desc.buildInfoStride < sizeof(ClusterAccelerationStructureBottomLevelBuildInfo) ||
-        desc.destinationAddressStride < sizeof(uint64_t)) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
+        !desc.maxClusterCountPerAccelerationStructure || !desc.maxTotalClusterCount || !desc.maxAccelerationStructureCount ||
+        desc.buildInfoStride > UINT64_MAX / desc.maxAccelerationStructureCount ||
+        desc.destinationAddressStride > UINT64_MAX / desc.maxAccelerationStructureCount ||
+        desc.destinationSizeStride > UINT64_MAX / desc.maxAccelerationStructureCount ||
+        desc.buildInfoStride < sizeof(ClusterAccelerationStructureBottomLevelBuildInfo) || desc.buildInfoStride % 8 ||
+        desc.destinationAddressStride < sizeof(uint64_t) || desc.destinationAddressStride % 8 ||
+        !validCommandSlice(*impl_, desc.buildInfoBuffer, BufferUsageBits::AccelerationStructureBuildInput,
+            uint64_t(desc.maxAccelerationStructureCount) * desc.buildInfoStride, 8) ||
+        !validCommandSlice(*impl_, desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage,
+            uint64_t(desc.maxAccelerationStructureCount) * desc.destinationAddressStride, 8) ||
+        (desc.buildInfoCountBuffer.valid() && !validCommandSlice(*impl_, desc.buildInfoCountBuffer, BufferUsageBits::Storage, sizeof(uint32_t), 4)) ||
+        (desc.destinationSizeBuffer.valid() && (desc.destinationSizeStride < sizeof(uint32_t) || desc.destinationSizeStride % 4 ||
+            !validCommandSlice(*impl_, desc.destinationSizeBuffer, BufferUsageBits::Storage,
+                uint64_t(desc.maxAccelerationStructureCount) * desc.destinationSizeStride, 4)))) {
         return makeError(Error::InvalidArgument);
     }
-
-    auto validateBuffer = [this](Buffer* buffer, BufferUsageBits usage) {
-        return buffer != nullptr && buffer->impl_ != nullptr &&
-            buffer->impl_->device == impl_->device &&
-            hasFlag(buffer->desc().usage, BufferUsageBits::ShaderDeviceAddress) &&
-            hasFlag(buffer->desc().usage, usage);
-    };
-    if (!validateBuffer(
-            desc.buildInfoBuffer,
-            BufferUsageBits::AccelerationStructureBuildInput) ||
-        !validateBuffer(
-            desc.destinationAddressBuffer,
-            BufferUsageBits::AccelerationStructureStorage) ||
-        !validateBuffer(desc.scratchBuffer, BufferUsageBits::Storage) ||
-        (desc.buildInfoCountBuffer != nullptr &&
-         !validateBuffer(desc.buildInfoCountBuffer, BufferUsageBits::Storage)) ||
-        (desc.destinationSizeBuffer != nullptr &&
-         !validateBuffer(desc.destinationSizeBuffer, BufferUsageBits::Storage))) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (desc.destinationMode == ClusterAccelerationStructureDestinationMode::Implicit) {
-        if (!validateBuffer(
-                desc.destinationStorageBuffer,
-                BufferUsageBits::AccelerationStructureStorage)) {
-            return makeError(Error::InvalidArgument);
-        }
-    } else if (!hasFlag(
-                   desc.destinationAddressBuffer->desc().usage,
-                   BufferUsageBits::AccelerationStructureStorage)) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    const uint64_t buildInfoSize = desc.buildInfoSize != 0
-        ? desc.buildInfoSize
-        : static_cast<uint64_t>(desc.maxAccelerationStructureCount) *
-            desc.buildInfoStride;
-    const uint64_t destinationAddressSize = desc.destinationAddressSize != 0
-        ? desc.destinationAddressSize
-        : static_cast<uint64_t>(desc.maxAccelerationStructureCount) *
-            desc.destinationAddressStride;
-    const uint64_t destinationSizeSize = desc.destinationSizeBuffer != nullptr
-        ? (desc.destinationSizeSize != 0
-            ? desc.destinationSizeSize
-            : static_cast<uint64_t>(desc.maxAccelerationStructureCount) *
-                desc.destinationSizeStride)
-        : 0;
-    auto rangeValid = [](const Buffer& buffer, uint64_t offset, uint64_t size) {
-        return offset <= buffer.desc().size && size <= buffer.desc().size - offset;
-    };
-    if (!rangeValid(*desc.buildInfoBuffer, desc.buildInfoBufferOffset, buildInfoSize) ||
-        !rangeValid(
-            *desc.destinationAddressBuffer,
-            desc.destinationAddressBufferOffset,
-            destinationAddressSize) ||
-        !rangeValid(*desc.scratchBuffer, desc.scratchBufferOffset, 1) ||
-        (desc.buildInfoCountBuffer != nullptr &&
-         !rangeValid(
-             *desc.buildInfoCountBuffer,
-             desc.buildInfoCountBufferOffset,
-             sizeof(uint32_t))) ||
-        (desc.destinationSizeBuffer != nullptr &&
-         !rangeValid(
-             *desc.destinationSizeBuffer,
-             desc.destinationSizeBufferOffset,
-             destinationSizeSize))) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    const uint64_t buildInfoAddress = desc.buildInfoBuffer->deviceAddress();
-    const uint64_t destinationAddress = desc.destinationAddressBuffer->deviceAddress();
-    const uint64_t scratchBase = desc.scratchBuffer->deviceAddress();
-    const uint64_t destinationStorageAddress =
-        desc.destinationStorageBuffer != nullptr
-        ? desc.destinationStorageBuffer->deviceAddress()
-        : 0;
-    const uint64_t countAddress = desc.buildInfoCountBuffer != nullptr
-        ? desc.buildInfoCountBuffer->deviceAddress()
-        : 0;
-    const uint64_t sizeAddress = desc.destinationSizeBuffer != nullptr
-        ? desc.destinationSizeBuffer->deviceAddress()
-        : 0;
-    if (buildInfoAddress == 0 || destinationAddress == 0 || scratchBase == 0 ||
-        (desc.destinationMode == ClusterAccelerationStructureDestinationMode::Implicit &&
-         destinationStorageAddress == 0) ||
-        (desc.buildInfoCountBuffer != nullptr && countAddress == 0) ||
-        (desc.destinationSizeBuffer != nullptr && sizeAddress == 0)) {
-        return makeError(Error::Failure);
-    }
-
-    const auto& properties = impl_->device->physicalProperties.cluster;
-    const uint64_t scratchAlignment = std::max<uint64_t>(
-        1,
-        properties.clusterScratchByteAlignment);
-    const uint64_t unalignedScratchAddress = scratchBase + desc.scratchBufferOffset;
-    const uint64_t scratchAddress =
-        (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
-    if (scratchAddress < scratchBase ||
-        scratchAddress >= scratchBase + desc.scratchBuffer->desc().size) {
-        return makeError(Error::InvalidArgument);
-    }
-
     VkClusterAccelerationStructureClustersBottomLevelInputNV bottomLevelInput{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV,
         .maxTotalClusterCount = desc.maxTotalClusterCount,
@@ -6479,34 +6337,29 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
             : VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV,
         .opInput = {.pClustersBottomLevel = &bottomLevelInput},
     };
+    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    impl_->device->functions.vkGetClusterAccelerationStructureBuildSizesNV(impl_->device->device, &input, &sizes);
+    const auto& limits = impl_->device->physicalProperties.cluster;
+    auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, limits.clusterScratchByteAlignment, sizes.buildScratchSize);
+    if (!scratch) { return makeError(scratch.error()); }
+    if (desc.destinationMode == ClusterAccelerationStructureDestinationMode::Implicit &&
+        !validCommandSlice(*impl_, desc.destinationStorageBuffer, BufferUsageBits::AccelerationStructureStorage,
+            sizes.accelerationStructureSize, limits.clusterBottomLevelByteAlignment)) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto retained = retainBufferSlices(*this, {desc.buildInfoBuffer, desc.buildInfoCountBuffer, desc.destinationStorageBuffer,
+        desc.destinationAddressBuffer, desc.destinationSizeBuffer, desc.scratchBuffer});
+    if (!retained) { return retained; }
     VkClusterAccelerationStructureCommandsInfoNV commands{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
         .input = input,
-        .dstImplicitData = desc.destinationMode ==
-                ClusterAccelerationStructureDestinationMode::Implicit
-            ? destinationStorageAddress + desc.destinationStorageBufferOffset
-            : 0,
-        .scratchData = scratchAddress,
-        .dstAddressesArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = destinationAddress + desc.destinationAddressBufferOffset,
-            .stride = desc.destinationAddressStride,
-            .size = destinationAddressSize,
-        },
-        .dstSizesArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = sizeAddress == 0
-                ? 0
-                : sizeAddress + desc.destinationSizeBufferOffset,
-            .stride = desc.destinationSizeStride,
-            .size = destinationSizeSize,
-        },
-        .srcInfosArray = VkStridedDeviceAddressRegionKHR{
-            .deviceAddress = buildInfoAddress + desc.buildInfoBufferOffset,
-            .stride = desc.buildInfoStride,
-            .size = buildInfoSize,
-        },
-        .srcInfosCount = countAddress == 0
-            ? 0
-            : countAddress + desc.buildInfoCountBufferOffset,
+        .dstImplicitData = desc.destinationMode == ClusterAccelerationStructureDestinationMode::Implicit
+            ? desc.destinationStorageBuffer.deviceAddress() : 0,
+        .scratchData = scratch->deviceAddress(),
+        .dstAddressesArray = {desc.destinationAddressBuffer.deviceAddress(), desc.destinationAddressStride, desc.destinationAddressBuffer.size()},
+        .dstSizesArray = {desc.destinationSizeBuffer.deviceAddress(), desc.destinationSizeStride, desc.destinationSizeBuffer.size()},
+        .srcInfosArray = {desc.buildInfoBuffer.deviceAddress(), desc.buildInfoStride, desc.buildInfoBuffer.size()},
+        .srcInfosCount = desc.buildInfoCountBuffer.deviceAddress(),
     };
 
     const VkMemoryBarrier2 inputBarrier{
@@ -6566,47 +6419,23 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         desc.destination->desc().topLevelBackend != RayTracingTopLevelBackend::Partitioned ||
         !desc.destination->impl_->partitioned ||
         desc.destination->impl_->device != impl_->device ||
-        desc.instanceBuffer == nullptr || desc.instanceBuffer->impl_ == nullptr ||
-        desc.instanceBuffer->impl_->device != impl_->device ||
-        desc.scratchBuffer == nullptr || desc.scratchBuffer->impl_ == nullptr ||
-        desc.scratchBuffer->impl_->device != impl_->device ||
         desc.instanceCount == 0 ||
         desc.instanceCount != desc.destination->impl_->partitioned->desc.inputs.instanceCount ||
-        !hasFlag(
-            desc.instanceBuffer->desc().usage,
-            BufferUsageBits::AccelerationStructureBuildInput) ||
-        !hasFlag(desc.scratchBuffer->desc().usage, BufferUsageBits::Storage)) {
+        !validCommandSlice(*impl_, desc.instanceBuffer, BufferUsageBits::AccelerationStructureBuildInput,
+            uint64_t(desc.instanceCount) * sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV), 16) ||
+        !validCommandSlice(*impl_, desc.scratchBuffer, BufferUsageBits::Storage)) {
         return makeError(Error::InvalidArgument);
     }
     const auto queueCanAccess = [&](const Buffer& buffer) {
         const auto families = detail::queueFamiliesForAccess(*impl_->device, buffer.desc().queueAccess);
         return std::find(families.begin(), families.end(), impl_->queueFamilyIndex) != families.end();
     };
-    if (!queueCanAccess(*desc.destination->impl_->storage) || !queueCanAccess(*desc.instanceBuffer) ||
-        !queueCanAccess(*desc.scratchBuffer)) {
-        return makeError(Error::InvalidArgument);
-    }
-
-    const uint64_t instanceAddress = desc.instanceBuffer->deviceAddress();
-    const uint64_t scratchBase = desc.scratchBuffer->deviceAddress();
-    if (instanceAddress == 0 || scratchBase == 0) {
-        return makeError(Error::Failure);
-    }
-
-    constexpr uint64_t scratchAlignment = 256;
-    if (desc.scratchBufferOffset >= desc.scratchBuffer->desc().size ||
-        scratchBase > UINT64_MAX - desc.scratchBufferOffset - (scratchAlignment - 1)) {
-        return makeError(Error::InvalidArgument);
-    }
-    const uint64_t unalignedScratchAddress = scratchBase + desc.scratchBufferOffset;
-    const uint64_t scratchAddress =
-        (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
-    const uint64_t alignedScratchOffset = scratchAddress - scratchBase;
-    if (alignedScratchOffset >= desc.scratchBuffer->desc().size ||
-        desc.destination->impl_->partitioned->desc.sizes.buildScratchSize >
-            desc.scratchBuffer->desc().size - alignedScratchOffset) {
-        return makeError(Error::InvalidArgument);
-    }
+    if (!queueCanAccess(*desc.destination->impl_->storage)) { return makeError(Error::InvalidArgument); }
+    const uint64_t instanceAddress = desc.instanceBuffer.deviceAddress();
+    auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, 256,
+        desc.destination->impl_->partitioned->desc.sizes.buildScratchSize);
+    if (!scratch) { return makeError(scratch.error()); }
+    const uint64_t scratchAddress = scratch->deviceAddress();
 
     VkBuildPartitionedAccelerationStructureIndirectCommandNV operation{
         .opType = VK_PARTITIONED_ACCELERATION_STRUCTURE_OP_TYPE_WRITE_INSTANCE_NV,
@@ -6663,8 +6492,8 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .srcInfosCount = operationCountAddress,
     };
     auto retained = retainResource(desc.destination->retainAllocation());
-    if (retained) { retained = retainResource(desc.instanceBuffer->retainAllocation()); }
-    if (retained) { retained = retainResource(desc.scratchBuffer->retainAllocation()); }
+    if (retained) { retained = retainResource(desc.instanceBuffer.retainAllocation()); }
+    if (retained) { retained = retainResource(desc.scratchBuffer.retainAllocation()); }
     if (retained) { retained = retainResource(operationUpload->retainAllocation()); }
     if (!retained) { return retained; }
     const VkMemoryBarrier2 inputBarrier{
@@ -7002,37 +6831,10 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
         primitiveCounts.reserve(inputs.geometries.size());
         for (uint32_t index = 0; index < inputs.geometries.size(); ++index) {
             const RayTracingTriangleGeometryDesc& source = inputs.geometries[index];
-            if (source.vertexBuffer == nullptr || source.vertexBuffer->impl_ == nullptr ||
-                source.vertexBuffer->impl_->device != impl_.get() ||
-                source.vertexCount == 0 || source.vertexStride == 0 ||
-                source.primitiveCount == 0 || source.vertexFormat == Format::Unknown ||
-                source.vertexOffset >= source.vertexBuffer->desc().size ||
-                !hasFlag(
-                    source.vertexBuffer->desc().usage,
-                    BufferUsageBits::AccelerationStructureBuildInput)) {
-                return makeError(Error::InvalidArgument);
-            }
-            const VkDeviceAddress vertexAddress = source.vertexBuffer->deviceAddress();
+            if (!validTriangleGeometry(impl_.get(), source)) { return makeError(Error::InvalidArgument); }
+            const VkDeviceAddress vertexAddress = source.vertexBuffer.deviceAddress();
             const VkFormat vertexFormat = toVkFormat(source.vertexFormat);
-            if (vertexAddress == 0 || vertexFormat == VK_FORMAT_UNDEFINED) {
-                return makeError(Error::InvalidArgument);
-            }
-
-            VkDeviceAddress indexAddress = 0;
-            if (source.indexType != RayTracingIndexType::None) {
-                if (source.indexBuffer == nullptr || source.indexBuffer->impl_ == nullptr ||
-                    source.indexBuffer->impl_->device != impl_.get() ||
-                    source.indexOffset >= source.indexBuffer->desc().size ||
-                    !hasFlag(
-                        source.indexBuffer->desc().usage,
-                        BufferUsageBits::AccelerationStructureBuildInput)) {
-                    return makeError(Error::InvalidArgument);
-                }
-                indexAddress = source.indexBuffer->deviceAddress();
-                if (indexAddress == 0) {
-                    return makeError(Error::Failure);
-                }
-            }
+            const VkDeviceAddress indexAddress = source.indexType == RayTracingIndexType::None ? 0 : source.indexBuffer.deviceAddress();
 
             const void* opacityAttachment = nullptr;
             if (source.opacityMicromap != nullptr) {
@@ -7063,11 +6865,11 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
                 .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
                 .pNext = opacityAttachment,
                 .vertexFormat = vertexFormat,
-                .vertexData = {.deviceAddress = vertexAddress + source.vertexOffset},
+                .vertexData = {.deviceAddress = vertexAddress},
                 .vertexStride = source.vertexStride,
                 .maxVertex = source.vertexCount - 1,
                 .indexType = toVkRayTracingIndexType(source.indexType),
-                .indexData = {.deviceAddress = indexAddress == 0 ? 0 : indexAddress + source.indexOffset},
+                .indexData = {.deviceAddress = indexAddress},
             };
             VkAccelerationStructureGeometryKHR geometry{
                 .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
