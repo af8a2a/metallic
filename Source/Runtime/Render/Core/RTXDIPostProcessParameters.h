@@ -14,9 +14,9 @@ import ShaderCore;
 using Metallic;
 namespace Metallic {
 typealias RTXDIUInt = uint;
-typealias RTXDIStorage4 = DescriptorHandle<RWTexture2D<float4>>;
-typealias RTXDIStorage2 = DescriptorHandle<RWTexture2D<float2>>;
-typealias RTXDIStorage1 = DescriptorHandle<RWTexture2D<float>>;
+typealias RTXDIStorage4 = ResourceHandle<RWTexture2D<float4>>;
+typealias RTXDIStorage2 = ResourceHandle<RWTexture2D<float2>>;
+typealias RTXDIStorage1 = ResourceHandle<RWTexture2D<float>>;
 #endif
 
 struct RTXDIConfidencePush
@@ -71,11 +71,11 @@ struct RTXDICompositeParams {
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kRTXDIConfidenceABI = 0x5254434f4e460001ull;
-inline constexpr uint64_t kRTXDICompositeABI = 0x5254434f4d500001ull;
+inline constexpr uint64_t kRTXDIConfidenceABI = 0x5254434f4e460002ull;
+inline constexpr uint64_t kRTXDICompositeABI = 0x5254434f4d500002ull;
 static_assert(sizeof(RTXDIConfidencePush) == 48);
 static_assert(sizeof(RTXDICompositePush) == 16);
-static_assert(sizeof(RTXDIConfidenceParams) == 160 && offsetof(RTXDIConfidenceParams, settings) == 112);
-static_assert(sizeof(RTXDICompositeParams) == 56 && offsetof(RTXDICompositeParams, settings) == 40);
+static_assert(sizeof(RTXDIConfidenceParams) == 104 && offsetof(RTXDIConfidenceParams, settings) == 56);
+static_assert(sizeof(RTXDICompositeParams) == 36 && offsetof(RTXDICompositeParams, settings) == 20);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

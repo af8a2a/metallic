@@ -353,7 +353,7 @@ Result<> ImportancePdfCompute::buildLocalLights(
         if (reduction) {
             params.sourceMip = writer.storageImage(localLightPdf.mipView(push.sourceMipLevel));
         } else {
-            params.lights = writer.dataBuffer(&punctualLights, 64, 16);
+            params.lights = writer.bufferSpan(&punctualLights, 64, 16);
         }
         params.destinationMip = writer.storageImage(
             localLightPdf.mipView(reduction ? push.sourceMipLevel + 1u : 0u));

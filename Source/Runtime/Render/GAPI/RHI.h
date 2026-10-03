@@ -1658,6 +1658,7 @@ private:
     uint64_t offset_ = 0;
     uint64_t size_ = 0;
     friend class Buffer;
+    friend class BindlessHeap;
     friend struct detail::BufferAddressCommandAccess;
 };
 
@@ -2048,6 +2049,8 @@ public:
     Result<> writeBufferView(BindlessHandle handle, BufferView& view);
     Result<> writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
     Result<> writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
+    // Writes the complete backing allocation, even when only a slice owner remains.
+    Result<> writeStorageBuffer(BindlessHandle handle, const BufferSlice& buffer);
     Result<> writeAccelerationStructure(
         BindlessHandle handle,
         RayTracingAccelerationStructure& accelerationStructure);

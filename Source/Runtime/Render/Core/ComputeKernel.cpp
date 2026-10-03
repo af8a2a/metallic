@@ -19,8 +19,8 @@ Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc
     log.clear();
     if (desc.spirv.size() < 5 || desc.spirv[0] != 0x07230203u || !desc.parameters.id || !desc.parameters.size || !std::has_single_bit(desc.parameters.alignment) ||
         desc.parameters.alignment > 4096 ||
-        (desc.parameters.transport != ParameterTransport::DeviceAddress && desc.parameters.transport != ParameterTransport::InlinePush) ||
-        (desc.parameters.transport == ParameterTransport::InlinePush && (desc.parameters.size & 3u))) {
+        (desc.parameters.transport != ParameterTransport::DescriptorBuffer && desc.parameters.transport != ParameterTransport::InlinePush) ||
+        (desc.parameters.size & 3u)) {
         return makeError(Error::InvalidArgument);
     }
     for (size_t word = 5; word < desc.spirv.size();) {
@@ -38,7 +38,7 @@ Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc
             .computeShader = {impl->shader.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = desc.parameters.transport == ParameterTransport::InlinePush
-                ? desc.parameters.size : uint32_t(sizeof(uint64_t)),
+                ? desc.parameters.size : uint32_t(sizeof(GPUBufferSpan)),
             .pipelineCache = desc.pipelineCache,
         }).transform([&](auto rhiValue) { impl->pipeline = std::move(rhiValue); });
     }
@@ -116,7 +116,7 @@ Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierD
         const auto& item = impl_->items[i];
         result = item.parameters.bindResources(commands);
         if (!result) { return result; }
-        const uint64_t root = item.parameters.address();
+        const auto root = item.parameters.root();
         const auto bytes = item.parameters.inlineData();
         result = bytes.empty() ? commands.bindExecution(item.execution, &root, sizeof(root))
             : commands.bindExecution(item.execution, bytes.data(), uint32_t(bytes.size()));

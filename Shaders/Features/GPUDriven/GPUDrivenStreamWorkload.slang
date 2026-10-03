@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 // Diagnostic replay only. No visibility/depth writes and no changes to production
 // raster kernels. Counts coverage and attempted pixel atomics, not winning writes.
 #include "GPUDrivenStreamAsset.slang"
@@ -8,8 +11,8 @@
 [numthreads(16, 1, 1)]
 void streamWorkloadResetMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> counters =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.hybridQueueBuffer, 0));
+    RWStructuredBuffer<uint64_t> counters =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint64_t>>(push.hybridQueueBuffer));
     counters[lane] = 0;
 }
 
@@ -17,10 +20,10 @@ void streamWorkloadResetMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamA
 [numthreads(128, 1, 1)]
 void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.hybridQueueBuffer, 0));
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
+    RWStructuredBuffer<uint64_t> handle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint64_t>>(push.hybridQueueBuffer));
     RWStructuredBuffer<uint64_t> counters = handle;
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }

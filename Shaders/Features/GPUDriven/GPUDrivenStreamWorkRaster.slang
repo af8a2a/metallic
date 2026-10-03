@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 // Separate module keeps the histogram/remap shared allocation out of the
 // measured cooperative reference and other stream raster entrypoints.
 #include "GPUDrivenStreamAsset.slang"
@@ -31,8 +34,8 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
 #endif
 )
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane < WaveGetLaneCount()) {

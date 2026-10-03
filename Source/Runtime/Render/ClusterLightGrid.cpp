@@ -331,11 +331,11 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     if (!registry) { return makeError(registry.error()); }
     ParameterWriter writer(device, **registry, frame);
     const ClusterLightGridBuildParams arguments{
-        .grid = writer.dataBuffer(next->buffers[0].get(), sizeof(ClusterLightGridParams), alignof(ClusterLightGridParams)),
-        .lights = writer.dataBuffer(next->buffers[1].get(), sizeof(GPUPunctualLight), 16),
-        .candidates = writer.dataBuffer(next->buffers[2].get(), sizeof(uint32_t), alignof(uint32_t)),
-        .cells = writer.dataBuffer(next->buffers[3].get(), sizeof(ClusterLightGridCell), alignof(ClusterLightGridCell)),
-        .indices = writer.dataBuffer(next->buffers[4].get(), sizeof(uint32_t), alignof(uint32_t)),
+        .grid = writer.bufferSpan(next->buffers[0].get(), sizeof(ClusterLightGridParams), alignof(ClusterLightGridParams)),
+        .lights = writer.bufferSpan(next->buffers[1].get(), sizeof(GPUPunctualLight), 16),
+        .candidates = writer.bufferSpan(next->buffers[2].get(), sizeof(uint32_t), alignof(uint32_t)),
+        .cells = writer.bufferSpan(next->buffers[3].get(), sizeof(ClusterLightGridCell), alignof(ClusterLightGridCell)),
+        .indices = writer.bufferSpan(next->buffers[4].get(), sizeof(uint32_t), alignof(uint32_t)),
     };
     auto encoded = writer.encode(arguments, kClusterLightGridBuildABI, ParameterTransport::InlinePush);
     if (!encoded) { return makeError(encoded.error()); }

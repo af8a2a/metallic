@@ -44,6 +44,10 @@ public struct BufferSpan<T>
     public uint byteOffset;
     public uint count;
 
+    public __subscript(uint index) -> T
+    {
+        get { return load(index); }
+    }
     public uint length() { return count; }
     public bool contains(uint index) { return index < count; }
     public T load(uint index)
@@ -64,6 +68,10 @@ public struct RWBufferSpan<T>
     public uint byteOffset;
     public uint count;
 
+    public __subscript(uint index) -> T
+    {
+        get { return load(index); }
+    }
     public uint length() { return count; }
     public bool contains(uint index) { return index < count; }
     public T load(uint index)

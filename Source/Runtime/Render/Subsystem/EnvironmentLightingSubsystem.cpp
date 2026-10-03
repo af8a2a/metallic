@@ -164,9 +164,9 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
         ParameterWriter writer(*device, **registry, commandBuffer.frameContext());
         EnvironmentLightingPrecomputeParams params{
             .radiance = writer.sampledImage(&radianceView),
-            .partials = writer.dataBuffer(&partials, 16, 16),
-            .coefficients = writer.dataBuffer(&coefficients, 16, 16),
-            .specular = writer.dataBuffer(&specular, 16, 16),
+            .partials = writer.bufferSpan(&partials, 16, 16),
+            .coefficients = writer.bufferSpan(&coefficients, 16, 16),
+            .specular = writer.bufferSpan(&specular, 16, 16),
         };
         EnvironmentLightingPrecomputePush push{
             .width = width,

@@ -14,12 +14,12 @@ static const uint kThreadCount = 128u;
 static const uint kCoefficientCount = SH::L2RGB::kCoefficientCount;
 static const float kPi = 3.14159265358979323846;
 
-#define gEnvironmentMap resolveDescriptor(gParams.radiance)
+#define gEnvironmentMap resolveUniform(gParams.radiance)
 
-#define gPartials gParams.partials.data
+#define gPartials gParams.partials
 
-#define gCoefficients gParams.coefficients.data
-#define gSpecular gParams.specular.data
+#define gCoefficients gParams.coefficients
+#define gSpecular gParams.specular
 
 groupshared float4 gShared[kCoefficientCount * kThreadCount];
 
@@ -62,7 +62,7 @@ void integratePartials(
         for (uint threadIndex = 0u; threadIndex < kThreadCount; ++threadIndex) {
             sum += gShared[baseIndex + threadIndex];
         }
-        gPartials[partialIndex * kCoefficientCount + groupThreadIndex] = sum;
+        gPartials.store(partialIndex * kCoefficientCount + groupThreadIndex, sum);
     }
 }
 
@@ -92,7 +92,7 @@ void finalizeCoefficient(
     if (groupThreadIndex == 0u && coefficientIndex < kCoefficientCount) {
         // Each workgroup owns one coefficient; retain the parallel reduction
         // and pack the same cosine-convolved irradiance ABI consumed by SH.
-        gCoefficients[coefficientIndex] = gShared[0] * SH::cosineConvolutionWeight(coefficientIndex);
+        gCoefficients.store(coefficientIndex, gShared[0] * SH::cosineConvolutionWeight(coefficientIndex));
     }
 }
 
@@ -134,7 +134,7 @@ void prefilterSpecular(uint index, EnvironmentLightingPrecomputePush push)
             weight += nl;
         }
     }
-    gSpecular[index] = float4(radiance / max(weight, 1e-6), 1.0);
+    gSpecular.store(index, float4(radiance / max(weight, 1e-6), 1.0));
 }
 
 [shader("compute")]

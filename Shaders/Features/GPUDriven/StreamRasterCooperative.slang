@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 // SW-only descriptor. No traversal/culling params, bounds, material or request state.
 struct StreamSoftwareRasterDesc
 {
@@ -15,12 +18,12 @@ groupshared float4 g_StreamSoftwareClip[128];
 bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
 {
     uint lane = WaveGetLaneIndex();
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> params =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> header =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> params =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> header =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     uint field = 0u;
     switch (lane) {
     case 0: field = params[0].drawTaskCount; break;
@@ -47,8 +50,8 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
     uint pageCount = WaveReadLaneAt(field, 2u);
     uint instanceBuffer = WaveReadLaneAt(field, 8u);
     bool renderCamera = WaveReadLaneAt(field, 9u) != 0u;
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> groups =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
     field = 0u;
     switch (lane) {
     case 0: field = groups[groupIndex].pageIndex; break;
@@ -65,24 +68,24 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
         ((WaveReadLaneAt(field, 2u) >> clusterIndex) & 1u) == 0u) { return false; }
     uint instanceFlags = 0u;
     if (instanceBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances =
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(instanceBuffer, 0));
+        StructuredBuffer<GPUDrivenPreviewInstance> instances =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(instanceBuffer));
         uint count = 0u, stride;
         if (lane == 0u) { StructuredBuffer<GPUDrivenPreviewInstance> buffer = instances; buffer.GetDimensions(count, stride); }
         if (instanceIndex >= WaveReadLaneFirst(count)) { return false; }
         if (lane == 0u) { instanceFlags = instances[instanceIndex].identity.w; }
         instanceFlags = WaveReadLaneFirst(instanceFlags);
     }
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> table =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetPageTableEntry> table =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
     field = lane == 0u ? table[pageIndex].deviceOffsetAndState : 0u;
     field = WaveReadLaneFirst(field);
     uint state = field & kStreamPageStateMask;
     uint pageOffset = field & kStreamPageDeviceOffsetMask;
     if ((state != kStreamStateResident && state != kStreamStateLockedFallback) ||
         pageBufferBytes < kPayloadHeaderBytes || pageOffset > pageBufferBytes - kPayloadHeaderBytes) { return false; }
-    DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint pageWord = pageOffset / 4u;
     // One word per lane, coalesced header fetch. Only consume validated ranges.
     field = lane < kPayloadHeaderBytes / 4u ? pages[pageWord + lane] : 0u;
@@ -134,8 +137,8 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
 
 float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint word = g_StreamSoftware.positionWord + vertex * g_StreamSoftware.positionStride;
     float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
     float3 worldPosition = g_StreamSoftware.world0.xyz * local.x + g_StreamSoftware.world1.xyz * local.y +
@@ -168,8 +171,8 @@ float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
 
 uint3 streamSoftwareTriangle(uint triangle, GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint address = g_StreamSoftware.triangleByte + triangle * 3u;
     uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     indices = uint3(indices.x < g_StreamSoftware.vertexCount ? indices.x : 0u,
@@ -180,8 +183,8 @@ uint3 streamSoftwareTriangle(uint triangle, GPUDrivenStreamAssetPush push)
 
 void rasterStreamClusterCooperative(uint3 group, uint lane, GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane < WaveGetLaneCount()) {

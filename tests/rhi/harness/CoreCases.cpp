@@ -348,8 +348,8 @@ public:
     }
     RHITestResult run(RHITestContext& context) override
     {
-        struct Params { uint64_t images; ShaderSampler samplers[2]; ShaderBuffer output; };
-        static_assert(sizeof(Params) == 32);
+        struct Params { GPUBufferSpan images; ShaderSampler samplers[2]; ShaderBuffer output; };
+        static_assert(sizeof(Params) == 24);
         constexpr uint64_t abi = 0x544253414d504c45ull;
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "TestbenchBindings", .entryPointName = "main",

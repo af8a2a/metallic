@@ -28,8 +28,8 @@ public bool hybridEnqueueTriangle(float4 a, float4 b, float4 c, uint visibilityI
     bool doubleSided, uint queueIndex)
 {
     if (queueIndex == 0xffffffffu) { return false; }
-    DescriptorHandle<RWStructuredBuffer<uint4>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(queueIndex, 0));
+    RWStructuredBuffer<uint4> handle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(queueIndex));
     RWStructuredBuffer<uint4> queue = handle;
     uint4 config = queue[1];
     if (!hybridTriangleFits(a, b, c, float2(config.xy), asfloat(config.z))) { return false; }

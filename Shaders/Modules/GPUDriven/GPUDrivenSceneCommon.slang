@@ -192,8 +192,8 @@ public struct GPUDrivenPreviewParams
 public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
 {
     if (params.lodSelectionEnabled == 0u) { return params.meshletOffset + candidate; }
-    DescriptorHandle<StructuredBuffer<uint4>> selections =
-        DescriptorHandle<StructuredBuffer<uint4>>(uint2(params.lodSelectionBuffer, 0));
+    StructuredBuffer<uint4> selections =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(params.lodSelectionBuffer));
     uint count = min(selections[0].x, selections[0].y);
     return candidate < count ? selections[candidate + 1u].z : 0xffffffffu;
 }

@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 struct BindlessHeapPush
 {
     uint paramsBuffer;
@@ -89,12 +92,12 @@ float lineCoverage(float3 barycentric, float thickness, float smoothing)
 [shader("vertex")]
 BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_VertexID, uniform BindlessHeapPush bindless)
 {
-    DescriptorHandle<StructuredBuffer<BunnyWireframeParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.paramsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<float4>> positionsHandle =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(bindless.positionBuffer, 0));
-    DescriptorHandle<StructuredBuffer<SceneTransform>> transformsHandle =
-        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(bindless.transformBuffer, 0));
+    StructuredBuffer<BunnyWireframeParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<BunnyWireframeParams>>(bindless.paramsBuffer));
+    StructuredBuffer<float4> positionsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<float4>>(bindless.positionBuffer));
+    StructuredBuffer<SceneTransform> transformsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<SceneTransform>>(bindless.transformBuffer));
 
     StructuredBuffer<BunnyWireframeParams> paramsBuffer = paramsHandle;
     StructuredBuffer<float4> positions = positionsHandle;
@@ -120,8 +123,8 @@ BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_Vertex
 [shader("fragment")]
 float4 bunnyWireframeFragmentMain(BunnyWireframeVertexOutput input, uniform BindlessHeapPush bindless) : SV_Target0
 {
-    DescriptorHandle<StructuredBuffer<BunnyWireframeParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.paramsBuffer, 0));
+    StructuredBuffer<BunnyWireframeParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<BunnyWireframeParams>>(bindless.paramsBuffer));
     StructuredBuffer<BunnyWireframeParams> paramsBuffer = paramsHandle;
     BunnyWireframeParams params = paramsBuffer[0];
 

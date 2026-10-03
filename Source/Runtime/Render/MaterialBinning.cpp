@@ -120,12 +120,12 @@ Result<MaterialBinningResult> MaterialBinning::record(
     ParameterWriter writer(device, *frame, *registry);
     const MaterialBinningParams params{
         .visibility = writer.sampledImage(desc.visibility),
-        .records = writer.dataBuffer(desc.records, 16, 16), .instances = writer.dataBuffer(desc.instances, 160, 16),
-        .materials = writer.dataBuffer(desc.materials, 560, 16), .shadingMaterials = writer.dataBuffer(desc.shadingMaterials, 720, 16),
-        .bins = writer.dataBuffer(buffers[0].get(), 8, 8), .tiles = writer.dataBuffer(buffers[1].get(), 8, 8),
-        .arguments = writer.dataBuffer(buffers[2].get(), 4, 4),
-        .streamRecords = desc.streamRecords ? writer.dataBuffer(desc.streamRecords, 4, 4) : ShaderDataSpan{},
-        .streamGroups = desc.streamGroups ? writer.dataBuffer(desc.streamGroups, 112, 16) : ShaderDataSpan{},
+        .records = writer.bufferSpan(desc.records, 16, 16), .instances = writer.bufferSpan(desc.instances, 160, 16),
+        .materials = writer.bufferSpan(desc.materials, 560, 16), .shadingMaterials = writer.bufferSpan(desc.shadingMaterials, 720, 16),
+        .bins = writer.bufferSpan(buffers[0].get(), 8, 8), .tiles = writer.bufferSpan(buffers[1].get(), 8, 8),
+        .arguments = writer.bufferSpan(buffers[2].get(), 4, 4),
+        .streamRecords = desc.streamRecords ? writer.bufferSpan(desc.streamRecords, 4, 4) : GPUBufferSpan{},
+        .streamGroups = desc.streamGroups ? writer.bufferSpan(desc.streamGroups, 112, 16) : GPUBufferSpan{},
         .width = desc.width, .height = desc.height, .tileCount = static_cast<uint32_t>(tileCount),
         .residentRecordCount = desc.residentRecordCount,
     };

@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
@@ -20,22 +23,22 @@ groupshared uint g_LodPrefix[128];
 [numthreads(1, 1, 1)]
 void residentLodResetMain(uniform LODPush push)
 {
-    DescriptorHandle<RWStructuredBuffer<uint4>> output =
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.output, 0));
+    RWStructuredBuffer<uint4> output =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.output));
     output[0] = uint4(0, push.capacity, push.count, 0);
 }
 
 bool residentLodSelected(uint index, LODPush push)
 {
     if (index >= push.count) { return false; }
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records =
-        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.records, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> clusters =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.clusters, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.instances, 0));
-    DescriptorHandle<StructuredBuffer<MeshletLODGroupRecord>> groups =
-        DescriptorHandle<StructuredBuffer<MeshletLODGroupRecord>>(uint2(push.groups, 0));
+    StructuredBuffer<VisibleClusterRecord> records =
+        resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.records));
+    StructuredBuffer<GPUDrivenPreviewMeshlet> clusters =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(push.clusters));
+    StructuredBuffer<GPUDrivenPreviewInstance> instances =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(push.instances));
+    StructuredBuffer<MeshletLODGroupRecord> groups =
+        resolveUniform(ResourceHandle<StructuredBuffer<MeshletLODGroupRecord>>(push.groups));
     VisibleClusterRecord record = records[push.offset + index];
     if (record.instanceIndex >= push.instanceCount) { return false; }
     GPUDrivenPreviewInstance instance = instances[record.instanceIndex];
@@ -67,8 +70,8 @@ void residentLodSelectMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex
         g_LodPrefix[lane] += previous;
         GroupMemoryBarrierWithGroupSync();
     }
-    DescriptorHandle<RWStructuredBuffer<uint>> scratch =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.scratch, 0));
+    RWStructuredBuffer<uint> scratch =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.scratch));
     if (index < push.count) { scratch[index] = selected ? g_LodPrefix[lane] - 1u : 0xffffffffu; }
     if (lane == 63u) { scratch[push.capacity + block] = g_LodPrefix[lane]; }
 }
@@ -77,8 +80,8 @@ void residentLodSelectMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex
 [numthreads(128, 1, 1)]
 void residentLodArgumentsMain(uint lane : SV_GroupIndex, uniform LODPush push)
 {
-    DescriptorHandle<RWStructuredBuffer<uint>> scratch =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.scratch, 0));
+    RWStructuredBuffer<uint> scratch =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.scratch));
     uint blocks = (push.count + 63u) / 64u;
     uint blocksPerLane = (blocks + 127u) / 128u;
     uint first = min(lane * blocksPerLane, blocks);
@@ -100,10 +103,10 @@ void residentLodArgumentsMain(uint lane : SV_GroupIndex, uniform LODPush push)
         offset += count;
     }
     if (lane != 127u) { return; }
-    DescriptorHandle<RWStructuredBuffer<uint4>> output =
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.output, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> arguments =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.arguments, 0));
+    RWStructuredBuffer<uint4> output =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.output));
+    RWStructuredBuffer<uint> arguments =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.arguments));
     uint count = g_LodPrefix[127];
     output[0] = uint4(count, push.capacity, push.count, 0);
     for (uint i = 0u; i < 3u; ++i) {
@@ -121,15 +124,15 @@ void residentLodScatterMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupInde
     uint block = groupID.x + groupID.y * 65535u;
     uint index = block * 64u + lane;
     if (index >= push.count) { return; }
-    DescriptorHandle<StructuredBuffer<uint>> scratch =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.scratch, 0));
+    StructuredBuffer<uint> scratch =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.scratch));
     uint rank = scratch[index];
     if (rank == 0xffffffffu) { return; }
     uint destination = scratch[push.capacity + block] + rank;
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records =
-        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.records, 0));
-    DescriptorHandle<RWStructuredBuffer<uint4>> output =
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.output, 0));
+    StructuredBuffer<VisibleClusterRecord> records =
+        resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.records));
+    RWStructuredBuffer<uint4> output =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.output));
     VisibleClusterRecord record = records[push.offset + index];
     output[destination + 1u] = uint4(record.instanceIndex, record.clusterIndex, push.offset + index, record.dataIndex);
 }

@@ -5,15 +5,15 @@
 import ShaderCore;
 using Metallic;
 
-#define gDenoisedDiffuse resolveDescriptor(gParams.denoisedDiffuse)
+#define gDenoisedDiffuse resolveUniform(gParams.denoisedDiffuse)
 
-#define gDenoisedSpecular resolveDescriptor(gParams.denoisedSpecular)
+#define gDenoisedSpecular resolveUniform(gParams.denoisedSpecular)
 
-#define gBaseColorMetalness resolveDescriptor(gParams.baseColorMetalness)
+#define gBaseColorMetalness resolveUniform(gParams.baseColorMetalness)
 
-#define gEmissive resolveDescriptor(gParams.emissive)
+#define gEmissive resolveUniform(gParams.emissive)
 
-#define gOutput resolveDescriptor(gParams.output)
+#define gOutput resolveUniform(gParams.output)
 
 float3 toneMap(float3 color, float exposure)
 {

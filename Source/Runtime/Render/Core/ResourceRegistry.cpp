@@ -59,7 +59,7 @@ struct ParameterPacket {
     std::vector<std::shared_ptr<void>> arrays;
     GPUCompletionPoint completion;
     ParameterABI abi;
-    uint64_t address = 0;
+    GPUBufferSpan root;
     std::vector<uint8_t> inlineData;
 };
 
@@ -124,9 +124,9 @@ ParameterABI EncodedParameters::abi() const
     return packet_ ? packet_->abi : ParameterABI{};
 }
 
-uint64_t EncodedParameters::address() const
+GPUBufferSpan EncodedParameters::root() const
 {
-    return packet_ ? packet_->address : 0;
+    return packet_ ? packet_->root : GPUBufferSpan{};
 }
 
 std::span<const uint8_t> EncodedParameters::inlineData() const
@@ -170,8 +170,14 @@ Result<> ResourceRegistry::initialize(Device& device, const BindlessHeapDesc& ca
 
 Result<ResourceLease> ResourceRegistry::storageBuffer(Buffer& buffer)
 {
-    if (!state_ || buffer.deviceIdentity() != state_->device ||
-        (uint32_t(buffer.desc().usage) & uint32_t(BufferUsageBits::Storage)) == 0) {
+    auto slice = buffer.slice();
+    return slice ? storageBuffer(*slice) : makeError(slice.error());
+}
+
+Result<ResourceLease> ResourceRegistry::storageBuffer(const BufferSlice& buffer)
+{
+    if (!state_ || !buffer.valid() || buffer.deviceIdentity() != state_->device ||
+        (uint32_t(buffer.allocationDesc().usage) & uint32_t(BufferUsageBits::Storage)) == 0) {
         return makeError(Error::InvalidArgument);
     }
     auto allocation = buffer.retainAllocation();
@@ -337,83 +343,75 @@ ShaderBuffer ParameterWriter::buffer(Buffer* buffer)
 {
     ResourceRegistry registry; registry.state_ = registry_;
     auto result = result_ && buffer ? registry.storageBuffer(*buffer) : makeError(Error::InvalidArgument);
-    return {append(std::move(result))};
+    return {static_cast<uint32_t>(append(std::move(result)))};
 }
 
 GPUResourceHandle<ResourceViewKind::SampledImage> ParameterWriter::sampledImageHandle(
     TextureView* view, ResourceState layout)
 {
-    return {static_cast<uint32_t>(sampledImage(view, layout).value)};
+    return {static_cast<uint32_t>(sampledImage(view, layout).index)};
 }
 
 GPUResourceHandle<ResourceViewKind::StorageImage> ParameterWriter::storageImageHandle(TextureView* view)
 {
-    return {static_cast<uint32_t>(storageImage(view).value)};
+    return {static_cast<uint32_t>(storageImage(view).index)};
 }
 
 GPUSamplerHandle ParameterWriter::samplerHandle(const SamplerDesc& sampler)
 {
-    return {static_cast<uint32_t>(this->sampler(sampler).value)};
+    return {static_cast<uint32_t>(this->sampler(sampler).index)};
 }
 
 GPUBufferSpan ParameterWriter::bufferSpan(Buffer* buffer, BufferRange range, uint32_t stride, uint32_t alignment)
 {
     if (!result_) { return {}; }
-    auto resolved = buffer ? range.resolve(buffer->desc().size) : makeError(Error::InvalidArgument);
-    // Raw buffer byte addressing is 32-bit. Validate the exclusive end without
-    // overflow, including the element size, before narrowing any value.
-    if (!resolved || !resolved->size || !stride || !std::has_single_bit(alignment) ||
-        stride % alignment || stride % 4 || resolved->offset % std::max(4u, alignment) ||
-        resolved->size % stride || resolved->offset > UINT32_MAX ||
-        resolved->size > uint64_t(UINT32_MAX) + 1 - resolved->offset) {
+    auto slice = buffer ? buffer->slice(range) : makeError(Error::InvalidArgument);
+    if (!slice) { result_ = makeError(slice.error()); return {}; }
+    return bufferSpan(*slice, stride, alignment);
+}
+
+GPUBufferSpan ParameterWriter::bufferSpan(const BufferSlice& slice, uint32_t stride, uint32_t alignment)
+{
+    if (!result_) { return {}; }
+    // Raw descriptor addressing is 32-bit. Check the exclusive end before narrowing.
+    if (!slice.valid() || slice.deviceIdentity() != device_.identity() || !slice.size() ||
+        !stride || !std::has_single_bit(alignment) || stride % alignment || stride % 4 ||
+        slice.offset() % std::max(4u, alignment) || slice.size() % stride ||
+        slice.offset() > UINT32_MAX || slice.size() > uint64_t(UINT32_MAX) + 1 - slice.offset()) {
         result_ = makeError(Error::InvalidArgument);
         return {};
     }
-    auto handle = this->buffer(buffer);
+    ResourceRegistry registry; registry.state_ = registry_;
+    const auto index = append(registry.storageBuffer(slice));
     if (!result_) { return {}; }
-    return {{static_cast<uint32_t>(handle.value)}, static_cast<uint32_t>(resolved->offset),
-        static_cast<uint32_t>(resolved->size / stride)};
+    return {{static_cast<uint32_t>(index)}, static_cast<uint32_t>(slice.offset()),
+        static_cast<uint32_t>(slice.size() / stride)};
 }
 
-ShaderDataSpan ParameterWriter::dataBuffer(const BufferSlice& slice, uint32_t stride, uint32_t alignment)
+GPUBufferSpan ParameterWriter::bufferSpan(Buffer* buffer, uint32_t stride, uint32_t alignment)
 {
-    if (!result_) { return {}; }
-    result_ = slice.validateData(device_.identity(), stride, alignment);
-    if (!result_) { return {}; }
-    arrays_.push_back(slice.retainAllocation());
-    return {slice.deviceAddress(), static_cast<uint32_t>(slice.size() / stride), stride};
-}
-
-ShaderDataSpan ParameterWriter::dataBuffer(Buffer* buffer, uint32_t stride, uint32_t alignment)
-{
-    if (!result_) { return {}; }
-    auto slice = buffer ? buffer->slice() : makeError(Error::InvalidArgument);
-    if (!slice) {
-        result_ = makeError(slice.error());
-        return {};
-    }
-    return dataBuffer(*slice, stride, alignment);
+    return bufferSpan(buffer, {}, stride, alignment);
 }
 
 ShaderSampledImage ParameterWriter::sampledImage(TextureView* view, ResourceState layout)
 {
     ResourceRegistry registry; registry.state_ = registry_;
     auto result = result_ && view ? registry.sampledImage(*view, layout) : makeError(Error::InvalidArgument);
-    return {append(std::move(result))};
+    return {static_cast<uint32_t>(append(std::move(result)))};
 }
 
 ShaderStorageImage ParameterWriter::storageImage(TextureView* view)
 {
     ResourceRegistry registry; registry.state_ = registry_;
     auto result = result_ && view ? registry.storageImage(*view) : makeError(Error::InvalidArgument);
-    return {append(std::move(result))};
+    return {static_cast<uint32_t>(append(std::move(result)))};
 }
 
 ShaderSampler ParameterWriter::sampler(const SamplerDesc& sampler)
 {
     ResourceRegistry registry; registry.state_ = registry_;
     auto result = result_ ? registry.sampler(sampler) : makeError(result_.error());
-    return {append(std::move(result))};
+    return {static_cast<uint32_t>(append(std::move(result)))};
 }
 
 ShaderAccelerationStructure ParameterWriter::accelerationStructure(RayTracingAccelerationStructure* structure)
@@ -424,7 +422,7 @@ ShaderAccelerationStructure ParameterWriter::accelerationStructure(RayTracingAcc
 }
 
 Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t alignment,
-    uint64_t& address, std::shared_ptr<void>& allocation)
+    std::shared_ptr<void>& allocation, BufferSlice& slice)
 {
     if (!result_) { return result_; }
     if ((frame_ && (!frame_->recording() || !completion_.sameSubmission(frame_->completion()))) ||
@@ -450,7 +448,7 @@ Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t align
     if (!chunk) {
         chunk = std::make_shared<detail::ParameterChunk>();
         auto result = device_.createBuffer({.size = std::max<uint64_t>(64 * 1024, size),
-            .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
+            .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { chunk->buffer = std::move(rhiValue); });
         if (!result) { return result; }
@@ -459,8 +457,7 @@ Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t align
         chunks.push_back(chunk);
     }
     auto* mapped = static_cast<uint8_t*>(chunk->buffer->map());
-    const auto base = chunk->buffer->deviceAddress();
-    if (!mapped || !base || ((base + offset) & (alignment - 1)) != 0) {
+    if (!mapped || (offset & (alignment - 1)) != 0) {
         if (mapped) { chunk->buffer->unmap(); }
         return makeError(Error::Failure);
     }
@@ -469,32 +466,30 @@ Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t align
     chunk->buffer->unmap();
     chunk->used = offset + size;
     registry_->stats.parameterBytes += size;
-    address = base + offset;
     allocation = chunk;
+    slice = *chunk->buffer->slice({offset, size});
     return {};
 }
 
-uint64_t ParameterWriter::sampledImages(std::span<TextureView* const> views)
+GPUBufferSpan ParameterWriter::sampledImages(std::span<TextureView* const> views)
 {
-    if (!result_) { return 0; }
-    if (views.empty()) { result_ = makeError(Error::InvalidArgument); return 0; }
+    if (!result_) { return {}; }
+    if (views.empty()) { result_ = makeError(Error::InvalidArgument); return {}; }
     std::vector<ShaderSampledImage> handles;
     handles.reserve(views.size());
     for (auto* view : views) { handles.push_back(sampledImage(view)); }
-    uint64_t address = 0;
-    std::shared_ptr<void> allocation;
-    result_ = upload(handles.data(), handles.size() * sizeof(ShaderSampledImage), alignof(ShaderSampledImage), address, allocation);
-    if (result_) { arrays_.push_back(std::move(allocation)); }
-    return address;
+    return dataSpan(handles.data(), handles.size() * sizeof(ShaderSampledImage), sizeof(ShaderSampledImage), alignof(ShaderSampledImage));
 }
 
-uint64_t ParameterWriter::data(const void* bytes, uint64_t size, uint64_t alignment)
+GPUBufferSpan ParameterWriter::dataSpan(const void* bytes, uint64_t size, uint32_t stride, uint32_t alignment)
 {
-    uint64_t address = 0;
+    if (!result_) { return {}; }
     std::shared_ptr<void> allocation;
-    result_ = upload(bytes, size, alignment, address, allocation);
-    if (result_) { arrays_.push_back(std::move(allocation)); }
-    return address;
+    BufferSlice slice;
+    result_ = upload(bytes, size, alignment, allocation, slice);
+    if (!result_) { return {}; }
+    arrays_.push_back(std::move(allocation));
+    return bufferSpan(slice, stride, alignment);
 }
 
 Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, ParameterABI abi)
@@ -502,8 +497,8 @@ Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, Param
     EncodedParameters out;
     if (!result_) { return makeError(result_.error()); }
     if (!abi.id || !params || !abi.size || !std::has_single_bit(abi.alignment) || abi.alignment > 4096 ||
-        (abi.transport != ParameterTransport::DeviceAddress && abi.transport != ParameterTransport::InlinePush) ||
-        (abi.transport == ParameterTransport::InlinePush && (abi.size & 3u)) ||
+        (abi.transport != ParameterTransport::DescriptorBuffer && abi.transport != ParameterTransport::InlinePush) ||
+        (abi.size & 3u) ||
         (frame_ && (!frame_->recording() || !completion_.sameSubmission(frame_->completion())))) {
         result_ = makeError(Error::InvalidArgument); return makeError(result_.error());
     }
@@ -512,7 +507,9 @@ Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, Param
         const auto* bytes = static_cast<const uint8_t*>(params);
         packet->inlineData.assign(bytes, bytes + abi.size);
     } else {
-        result_ = upload(params, abi.size, abi.alignment, packet->address, packet->allocation);
+        BufferSlice slice;
+        result_ = upload(params, abi.size, abi.alignment, packet->allocation, slice);
+        if (result_) { packet->root = bufferSpan(slice, 4, 4); }
     }
     if (!result_) { return makeError(result_.error()); }
     packet->registry = registry_; packet->completion = completion_; packet->abi = abi;

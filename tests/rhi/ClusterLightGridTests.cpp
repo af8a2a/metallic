@@ -113,8 +113,9 @@ public:
         const auto before = (*registry)->stats();
         const auto result = grid.record(*device_, *commands_, host_, scene, view, slot, desc, log_);
         const auto after = (*registry)->stats();
-        // Grid construction uses ordinary BDA data and inline values only.
-        GRID_CHECK(after.descriptorWrites == before.descriptorWrites);
+        // Five full-allocation DR views are registered or reused; values stay inline.
+        GRID_CHECK((after.descriptorWrites - before.descriptorWrites) +
+            (after.cacheHits - before.cacheHits) == 5);
         GRID_CHECK(after.parameterBytes == before.parameterBytes);
         if (!result) {
             return RHITestResult::fail("ClusterLightGrid record failed: " + log_ + " (" + toString(result) + ")");

@@ -10,14 +10,14 @@ namespace metallic::render {
 namespace {
 
 constexpr uint32_t kMaxComputeResourceSlots = 256;
-constexpr uint64_t kComputeResourceABI = 0x434f4d5055544503ull;
+constexpr uint64_t kComputeResourceABI = 0x434f4d5055544504ull;
 
 // ParameterRoot payload; matches Core.ComputeResourceParameters in Slang.
 struct ComputeResourceParameters {
-    uint64_t resources = 0;
-    uint64_t constants = 0;
+    GPUBufferSpan resources;
+    GPUBufferSpan constants;
 };
-static_assert(sizeof(ComputeResourceParameters) == 16);
+static_assert(sizeof(ComputeResourceParameters) == 24);
 
 const ComputeDispatchBinding* findDispatchBinding(
     const ComputeDispatchDesc& desc,
@@ -228,17 +228,16 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
     if (!result) { return makeError(result.error()); }
     auto& registry = *impl_->registry;
     ParameterWriter writer(*impl_->device, registry, frame);
-    auto upload = [&](const void* bytes, uint64_t size) -> uint64_t {
-        if (!result || size == 0) { return 0; }
-        const auto address = writer.data(bytes, size);
+    auto upload = [&](const void* bytes, uint64_t size, uint32_t stride = 4, uint32_t alignment = 4) -> GPUBufferSpan {
+        if (!result || size == 0) { return {}; }
+        const auto span = writer.dataSpan(bytes, size, stride, alignment);
         result = writer.status();
-        return address;
+        return span;
     };
-    // Matches Core.ComputeResourceSlot: direct access stays scalar, arrays carry
-    // explicit handles so unrelated consumers never need contiguous descriptors.
-    // Ordinary data uses the same payload words for element count and stride.
-    struct ResourceSlot { uint64_t handle = UINT64_MAX; uint64_t payload = 0; };
-    static_assert(sizeof(ResourceSlot) == 16);
+    // Only AS uses both handle words. Image/buffer indices are always 32-bit;
+    // arrays and ordinary data carry descriptor-backed bounded spans.
+    struct ResourceSlot { uint64_t handle = UINT64_MAX; GPUBufferSpan payload; uint32_t dataStride = 0; };
+    static_assert(sizeof(ResourceSlot) == 24);
     std::vector<ResourceSlot> slots(impl_->resourceSlotCount);
     for (const auto& expected : impl_->bindings) {
         const auto* binding = findDispatchBinding(desc, expected.binding);
@@ -254,12 +253,10 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
                 result = binding->buffer->slice({binding->range.offset, binding->range.size}).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
                 if (!result) { return makeError(result.error()); }
             }
-            result = slice.validateData(impl_->device->identity(), expected.dataStride, expected.dataAlignment);
+            slots[expected.binding].payload = writer.bufferSpan(slice, expected.dataStride, expected.dataAlignment);
+            slots[expected.binding].dataStride = expected.dataStride;
+            result = writer.status();
             if (!result) { return makeError(result.error()); }
-            writer.retain(slice.retainAllocation());
-            auto& slot = slots[expected.binding];
-            slot.handle = slice.deviceAddress();
-            slot.payload = (uint64_t(expected.dataStride) << 32) | uint32_t(slice.size() / expected.dataStride);
             continue;
         }
         if (binding->data.valid()) { return makeError(Error::InvalidArgument); }
@@ -316,14 +313,19 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
         }
         auto& slot = slots[expected.binding];
         slot.handle = handles.front();
-        if (usesImageHeap(expected.kind)) { slot.payload = upload(handles.data(), handles.size() * sizeof(uint64_t)); }
+        if (usesImageHeap(expected.kind)) {
+            std::vector<uint32_t> indices;
+            indices.reserve(handles.size());
+            for (auto handle : handles) { indices.push_back(static_cast<uint32_t>(handle)); }
+            slot.payload = upload(indices.data(), indices.size() * sizeof(uint32_t));
+        }
         if (!result) { return makeError(result.error()); }
     }
     ComputeResourceParameters push;
-    push.resources = upload(slots.data(), slots.size() * sizeof(ResourceSlot));
+    push.resources = upload(slots.data(), slots.size() * sizeof(ResourceSlot), sizeof(ResourceSlot), alignof(ResourceSlot));
     const uint64_t stride = (uint64_t(impl_->pushConstantSize) + 15) & ~uint64_t(15);
     const size_t count = std::max<size_t>(1, dispatches.size());
-    if (stride && count > SIZE_MAX / stride) { return makeError(Error::InvalidArgument); }
+    if (stride && (count > SIZE_MAX / stride || count > UINT32_MAX / stride)) { return makeError(Error::InvalidArgument); }
     std::vector<uint8_t> constants(stride * count);
     if (impl_->pushConstantSize) {
         for (size_t i = 0; i < count; ++i) {
@@ -336,7 +338,11 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
     std::vector<ComputeIndirectParameters> items;
     items.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        const ComputeResourceParameters parameters{push.resources, push.constants ? push.constants + stride * i : 0};
+        auto parameters = push;
+        if (parameters.constants.count) {
+            parameters.constants.byteOffset += static_cast<uint32_t>(stride * i);
+            parameters.constants.count = impl_->pushConstantSize / 4;
+        }
         auto encoded = writer.encode(parameters, kComputeResourceABI);
         if (!encoded) { return makeError(encoded.error()); }
         if (!desc.indirectArguments) {

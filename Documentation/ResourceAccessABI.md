@@ -3,9 +3,9 @@
 The current migration follows the DR-first design: shader resource references
 are 32-bit indices, ordinary buffer positions are descriptor-relative spans,
 and physical pointers remain an explicit capability. This document supersedes
-the ordinary-data BDA direction in `SharedResourceRegistry.md` for migrated paths.
+the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
 
-## Implemented first slice
+## Image/buffer migration
 
 - `ShaderResourceABI.h` defines 4-byte `GPUResourceHandle` and `GPUSamplerHandle`,
   12-byte `GPUBufferSpan`, and an explicitly separate `PhysicalPtr<T>`.
@@ -25,10 +25,26 @@ the ordinary-data BDA direction in `SharedResourceRegistry.md` for migrated path
   existing pipeline content hash and shader-object code use the specialized
   device binary. This avoids the observed native task/mesh payload validation
   failure caused by specialization expressions referencing opaque sizes.
-- FinalBlit, SliderDebug (including the DLSS overlay), ColorGradingLUT and
-  AutoExposure use the new handles. AutoExposure's histogram, history and
-  exposure records use raw descriptor buffer loads/stores, with no ordinary-data
-  physical pointer. Their parameter ABI IDs are version 2.
+- All renderer image/buffer accesses use DR: postprocessing, lighting, scene and
+  material data, GPU-driven culling/raster/streaming, path tracing, RTXDI, SHaRC,
+  and the maintained NRD adapter. Production shaders construct engine handles
+  and explicitly resolve resources; Slang descriptor representation stays in Core.
+- Lighting and material binning use raw bounded spans, including atomic updates
+  to bin counts. Typed StructuredBuffer DR objects remain where appropriate,
+  including SDK interfaces; DR does not require changing their data layout.
+- `ParameterTransport::DescriptorBuffer` replaces `DeviceAddress`. The root push
+  payload is a 12-byte `GPUBufferSpan` (index, byte offset, word count).
+  `ParameterRoot.getParameters<T>()` performs a raw descriptor load; neither large
+  parameter blocks nor resource/constant/texture-index tables use BDA.
+- `ComputeProgram` remains a compatibility adapter for numeric logical slots.
+  Its 24-byte root contains two DR spans; each 24-byte slot carries a resource
+  value (only AS needs both words), a DR payload span and a checked data stride.
+  Image arrays contain 32-bit indices, and indirect-batch constants use bounded
+  offsets within one immutable upload. `getData<T>` rejects stride mismatches.
+- `ShaderDataSpan`, `DataSpan`, `dataBuffer`, and address-returning `data` /
+  `EncodedParameters::address` APIs are removed. `dataSpan` and `sampledImages`
+  return descriptor spans. BufferSlice registration retains the allocation after
+  its movable Buffer wrapper disappears and shares identity with Buffer registration.
 - Mapped device selection and creation now require and enable storage-buffer
   nonuniform indexing, alongside the existing image indexing features.
 
@@ -48,7 +64,7 @@ params.histogram.store(index, value + 1);
 // loadNonUniform or storeNonUniform explicitly.
 ```
 
-`bufferSpan` accepts an optional `BufferRange`. All spans of one allocation
+`bufferSpan` accepts a `BufferSlice` or a Buffer with an optional `BufferRange`. All spans of one allocation
 share its full raw buffer descriptor; the byte offset and element count stay in
 the packet. Validation rejects empty, misaligned, nonintegral or out-of-allocation
 ranges and ranges exceeding the 32-bit byte-addressing domain. It requires Storage
@@ -62,52 +78,80 @@ leases: destroying the CPU wrapper after recording does not release the GPU
 allocation early. RenderGraph dependencies, access scopes and queue ownership
 remain explicit and independent of descriptor resolution.
 
-## Remaining migration
+## Boundaries and remaining architecture work
 
-This is a working vertical slice, not completion of the repository-wide design.
-
-1. Migrate lighting, scene/material data, GPU-driven/streaming and SDK adapters
-   from the legacy `ShaderResourceHandle`/`DataSpan`/slot APIs. Remove the legacy
-   representations only after all callers and GPU regressions are converted.
-2. Integrate and validate indexed AS resolution, including partitioned AS. The
-   legacy AS resolver still carries a full device address because of the native
-   heap load issue documented in `AsHandleInvestigation.md`. Do not pass an AS
-   address as a `ResourceHandle` or use the new generic resolver for AS yet.
-3. Add explicit SRV/UAV/CBV view registration and descriptor range identity where
-   needed. The first span implementation shares a full raw storage-buffer view.
-4. Reserve and initialize a universally valid null slot, then change defaults.
-   For now `UINT32_MAX` means invalid; slot zero remains allocatable. An invalid
-   handle must never be resolved. Default-constructed spans have count zero.
-5. Add transient descriptor arenas retired by actual submission completion, while
-   preserving persistent stable indices. Current descriptors use registry leases
-   and deferred collection; frame parameter arenas already follow completion.
-6. Complete named pass parameters and remove legacy slots. ParameterRoot and
-   true GPU-VA/indirect API operations remain explicit physical-address boundaries.
-   ColorGradingLUT currently retains the existing immutable parameter-root transport.
-
-Attachment views remain separate from shader views. No D3D12 backend or physical
-pointer emulation is introduced by this slice. The default mapped compiler mode
-is unchanged; it implements the same DR-facing ABI through Vulkan heap mappings.
+- ImGui's public Vulkan texture/descriptor-set ABI remains an external boundary
+  in `EditorDisplayRenderer` / `EditorDisplay.slang`, including detached windows
+  and HDR UI composition. This renderer migration does not replace ImGui's
+  Vulkan backend. Attachments, transfers, vertex/index and indirect API bindings
+  are not shader resource descriptors.
+- AS retains its full device-address resolver because of the native heap load
+  issue documented in `AsHandleInvestigation.md`. Do not truncate an AS address
+  to `ResourceHandle`. Genuine GPU-VA API operations remain physical-address
+  capabilities; ordinary shader data and parameter roots no longer use them.
+- Range-specific SRV/UAV/CBV views, universal null slot, separate transient
+  descriptor arenas, and removal of logical ComputeProgram slots remain future
+  architecture work. They are not required to make existing image/buffer accesses
+  use DR. Invalid indices remain `UINT32_MAX`; zero is still allocatable.
+- Descriptors retain stable registry identity and submission leases. Parameter
+  arena backing buffers now each retain one descriptor; growing an arena never
+  relocates live indices. Completed arenas keep that descriptor for reuse.
+- No D3D12 backend or physical-pointer emulation is introduced. Both mapped and
+  native Vulkan modes implement this same shader-facing ABI.
 
 ## Validation entry points
 
 Build `MetallicRHITests` and `Metallic` in a compatible configured MSVC tree.
-Run the following filter with `--rhi-validation` in both `mapped` and `native`
+Run the following filter with `--rhi-validation --rhi-bindless` in both `mapped` and `native`
 `METALLIC_SLANG_DESCRIPTOR_MODE` environments:
 
 ```text
-*resource_abi_spans*:*post_process_parameter_spirv_layout*:*final_descriptor_indices_heap_switch*:*native_descriptor_heap*:*auto_exposure*:*render_graph_final_blit*:*slider_debug_hdr_pixels*:*color_grading_unreal_lut_aces2*:*registry_*
+*parameter_spirv_layout*:*resource_abi_spans*:*registry_*:*buffer_slice*:*material_binning*:*cluster_light_grid*:*environment*:*regir*:*binding_nonuniform_images*:*scene_ray_tracing_position_fetch*:*render_graph_gpu_driven_mixed_producer_render:*prepared*:*bindless*:*image_sample*:*material_shader_object*:*bunny_wireframe*:*hzb*:*color_grading*:*auto_exposure*:*slider_debug*:*final_descriptor_indices_heap_switch*:*native_descriptor_heap*
 ```
 
 The new probe checks distinct descriptors within a wave, nonzero subrange offsets,
 nested typed raw loads, bounds/guard values, shared descriptor identity and GPU
-allocation lifetime after CPU wrapper destruction. The existing parameter layout
-test compares actual emitted SPIR-V member offsets to C++ offsets in both modes.
+allocation lifetime after CPU wrapper destruction. The parameter layout test compares storage SPIR-V member offsets to C++ in both
+modes. The raw-loaded LUT type uses an explicit shared-type layout probe plus
+the existing LUT pixel test, because value types need no SPIR-V Offset decoration.
+Registry root probes also reject PhysicalStorageBufferAddresses capability.
 
 Compiler option reference: [Slang compilation options](https://docs.shader-slang.org/en/stable/external/slang/docs/user-guide/08-compiling.html).
 Descriptor size semantics: [Vulkan shader descriptor sizes](https://docs.vulkan.org/spec/latest/chapters/interfaces.html).
 
-## Verified on 2026-10-03
+## Full image/buffer and parameter-root verification on 2026-10-03
+
+- Reused `build-pass-stages-nrd` (MSVC Release, NRD/tests enabled); built
+  `Metallic`, `MetallicRHITests`, `MetallicNRDTests` and `MetallicShaderCompiler`.
+- The filter above passed 65/65 in each of mapped and native modes, with no
+  skips or VUIDs. This includes GPU readback/rendering and static layout checks;
+  the two runs cover the same 65 tests, not 130 distinct cases.
+- `MetallicNRDTests` passed 11/11 in each mode, including supported shader
+  permutations, Reference accumulation/reset, REBLUR/RELAX radiance, SIGMA
+  shadow and ray-traced occlusion/history readback.
+- Manual shader warmup completed 210 requests with zero failures in each mode
+  (42 existing cache hits mapped, 3 native). Both subsequent editor smoke runs
+  reported 210/210 cache hits, submitted and presented a frame, and exited 0.
+- Coverage also includes bounded/nonuniform spans, retained BufferSlice copies,
+  indirect consumption, parameter arena reuse and parallel submission, material
+  binning, HZB, GPU-driven mixed producers, ReGIR with Standard/OpenPBR/RTXDI,
+  exposure history, LUT/slider pixels, environment prefiltering and scene ray
+  queries. The exported environment capture and material preview were inspected.
+- Evidence is under `.cache/dr-resource-abi/`: `migration-build.log`,
+  `migration-final-{mapped,native}.{xml,log}`,
+  `migration-nrd-final-{mapped,native}.{xml,log}`,
+  `migration-warmup-{mapped,native}.log` and `migration-smoke-{mapped,native}.log`.
+  RHI image reports are under `rhi-test-output/reports/17909944514177921`
+  (mapped) and `17909947225450556` (native).
+- Existing broken Vulkan loader registrations emit GENERAL messages. These stay
+  in logs; the NRD and prepared-view test sinks count API VALIDATION messages
+  separately. No machine-wide loader configuration was changed.
+
+These checks do not establish extended editor interaction, full-scene memory
+stability or optional Streamline/DLSS/NRC runtime correctness. The external ImGui
+descriptor-set ABI and AS address boundary described above remain explicit.
+
+## Earlier first-slice verification on 2026-10-03
 
 - Reused `build-pass-stages-nrd` (MSVC Release, tests/NRD enabled,
   Streamline disabled). `MetallicRHITests` and `Metallic` build successfully.

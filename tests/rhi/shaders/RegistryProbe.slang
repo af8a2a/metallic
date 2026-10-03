@@ -8,8 +8,8 @@ import ParameterRoot;
 using Metallic;
 
 struct RegistryProbeParams {
-    DescriptorHandle<StructuredBuffer<uint>> source;
-    DescriptorHandle<RWStructuredBuffer<uint>> output;
+    ResourceHandle<StructuredBuffer<uint>> source;
+    ResourceHandle<RWStructuredBuffer<uint>> output;
     uint add;
     uint index;
 };
@@ -27,5 +27,5 @@ void registryProbeMain()
 #else
     RegistryProbeParams params = getParameters<RegistryProbeParams>();
 #endif
-    resolveDescriptor(params.output)[params.index] = resolveDescriptor(params.source)[0] + params.add;
+    resolveUniform(params.output)[params.index] = resolveUniform(params.source)[0] + params.add;
 }

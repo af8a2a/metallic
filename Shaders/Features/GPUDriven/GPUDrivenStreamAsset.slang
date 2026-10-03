@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 #include "../VisibilityBuffer/StreamAttributeDecode.slang"
 import GPUDriven;
 using Metallic.GPUDriven;
@@ -802,10 +805,8 @@ float loadStreamHzb(
     uint elementIndex)
 {
     uint handleIndex = hzbIndex == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
-    DescriptorHandle<StructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<StructuredBuffer<float>>(uint2(
-            handleIndex,
-            0));
+    StructuredBuffer<float> hzbHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<float>>(handleIndex));
     StructuredBuffer<float> hzb = hzbHandle;
     return hzb[elementIndex];
 }
@@ -879,16 +880,12 @@ void gpuDrivenStreamAssetCullResetMain(
     if (min(push.traversalPhase, 1u) != 0u) {
         return;
     }
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
     GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
-    DescriptorHandle<RWStructuredBuffer<uint>> counterHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            bindings.visibleInstanceCounterBuffer,
-            0));
+    RWStructuredBuffer<uint> counterHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(bindings.visibleInstanceCounterBuffer));
     RWStructuredBuffer<uint> counter = counterHandle;
     counter[0] = 0u;
 }
@@ -899,18 +896,12 @@ void gpuDrivenStreamAssetInstanceCullMain(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
-            push.paramsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(
-            push.instanceBuffer,
-            0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
     StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
@@ -922,10 +913,8 @@ void gpuDrivenStreamAssetInstanceCullMain(
         return;
     }
 
-    DescriptorHandle<RWStructuredBuffer<uint>> visibilityHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            bindings.instanceVisibilityBuffer,
-            0));
+    RWStructuredBuffer<uint> visibilityHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(bindings.instanceVisibilityBuffer));
     RWStructuredBuffer<uint> visibility = visibilityHandle;
     GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
     uint gpuSceneInstanceIndex = instance.gpuSceneInstanceIndex;
@@ -970,14 +959,10 @@ void gpuDrivenStreamAssetInstanceCullMain(
         ? (rasterPhase == 0u ? 2u : 0u)
         : visibleState;
     if (!occluded) {
-        DescriptorHandle<RWStructuredBuffer<uint>> visibleIdsHandle =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-                bindings.visibleInstanceIdsBuffer,
-                0));
-        DescriptorHandle<RWStructuredBuffer<uint>> counterHandle =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-                bindings.visibleInstanceCounterBuffer,
-                0));
+        RWStructuredBuffer<uint> visibleIdsHandle =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(bindings.visibleInstanceIdsBuffer));
+        RWStructuredBuffer<uint> counterHandle =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(bindings.visibleInstanceCounterBuffer));
         RWStructuredBuffer<uint> visibleIds = visibleIdsHandle;
         RWStructuredBuffer<uint> counter = counterHandle;
         uint outputIndex = 0u;
@@ -994,14 +979,10 @@ void gpuDrivenStreamAssetHzbMain(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
-            push.paramsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
     StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
@@ -1017,18 +998,14 @@ void gpuDrivenStreamAssetHzbMain(
     }
     uint currentHzb = params.frameIndex & 1u;
     uint hzbHandleIndex = currentHzb == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
-    DescriptorHandle<RWStructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<RWStructuredBuffer<float>>(uint2(
-            hzbHandleIndex,
-            0));
+    RWStructuredBuffer<float> hzbHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<float>>(hzbHandleIndex));
     RWStructuredBuffer<float> hzb = hzbHandle;
     uint destinationIndex = streamHzbMipOffset(bindings, mipLevel) +
         dispatchThreadID.y * mipWidth + dispatchThreadID.x;
     if (mipLevel == 0u) {
-        DescriptorHandle<Texture2D<float>> depthHandle =
-            DescriptorHandle<Texture2D<float>>(uint2(
-                bindings.depthImage,
-                0));
+        Texture2D<float> depthHandle =
+            resolveUniform(ResourceHandle<Texture2D<float>>(bindings.depthImage));
         Texture2D<float> depth = depthHandle;
         hzb[destinationIndex] = depth.Load(int3(dispatchThreadID.xy, 0));
         return;
@@ -1834,22 +1811,22 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
     uint rowBase = dispatchThreadID.y * (65535u * 64u);
     if (dispatchThreadID.x > 0xffffffffu - rowBase) { return; }
     uint threadIndex = dispatchThreadID.x + rowBase;
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.instanceBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitiveHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.primitiveBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>> lodLevelHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>>(uint2(push.lodLevelBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groupHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.groupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>> nodeHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>>(uint2(push.nodeBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitiveHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(push.primitiveBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetLODLevel> lodLevelHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>>(push.lodLevelBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groupHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(push.groupBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetNode> nodeHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetNode>>(push.nodeBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTableHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
+    RWStructuredBuffer<uint> requestHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.requestBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
 
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives = primitiveHandle;
@@ -1882,8 +1859,8 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
         if (residentPageIndex >= push.activeBuildPhase || params.enableGpuUnloadRequests == 0u) {
             return;
         }
-        DescriptorHandle<StructuredBuffer<uint>> residentPageHandle =
-            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.residentPageBuffer, 0));
+        StructuredBuffer<uint> residentPageHandle =
+            resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.residentPageBuffer));
         StructuredBuffer<uint> residentPages = residentPageHandle;
         uint pageIndex = residentPages[residentPageIndex];
         if (pageIndex >= params.scenePageCount) {
@@ -2080,8 +2057,7 @@ void observeStreamLodGroup(RWStructuredBuffer<uint> state, StructuredBuffer<uint
         (threshold ? kLODThresholdCandidate : 0u) | (catchup ? kLODCatchupCandidate : 0u);
     if (ownBlocked || dependencyBlocked) { state[address + 1u] = params.frameIndex + 1u; }
     if ((group.flags & 1u) == 0u && params.demandStatsBuffer != 0xffffffffu && eligible) {
-        DescriptorHandle<RWStructuredBuffer<uint>> stats = DescriptorHandle<RWStructuredBuffer<uint>>(
-            uint2(params.demandStatsBuffer, 0));
+        RWStructuredBuffer<uint> stats = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandStatsBuffer));
         if (demanded) { InterlockedAdd(stats[19], 1u); }
         if (ownBlocked) { InterlockedAdd(stats[20], 1u); }
         if (dependencyBlocked) { InterlockedAdd(stats[21], 1u); }
@@ -2101,8 +2077,7 @@ void selectStreamLodTelemetry(RWStructuredBuffer<uint> state, uint base, uint gr
         (observation & kLODThresholdCandidate) != 0u ? 25u :
         (observation & kLODPreviouslySelected) == 0u ? 27u : 0u;
     if (counter != 0u) {
-        DescriptorHandle<RWStructuredBuffer<uint>> stats = DescriptorHandle<RWStructuredBuffer<uint>>(
-            uint2(params.demandStatsBuffer, 0));
+        RWStructuredBuffer<uint> stats = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandStatsBuffer));
         InterlockedAdd(stats[counter], 1u);
         InterlockedAdd(stats[counter + 1u], countbits(mask));
     }
@@ -2245,8 +2220,8 @@ void buildStreamLodFrontier(
     // the ordinary state clearing below, so a returning instance cannot reuse
     // stale parent reachability. Manual cut/debug and RT traversal stay intact.
     if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
-            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+        StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
         if ((bindings[0].cullingFlags & 1u) != 0u &&
             !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
                 max(instance.boundsCenterRadius.w, 0.000001) + bindings[0].displacementBound, currentStreamCamera(params))) {
@@ -2480,12 +2455,12 @@ void emitStreamLodFrontier(
 void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_GroupIndex,
     uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
     GPUDrivenStreamAssetParams params = paramsHandle[0];
     if (params.demandBuffer == 0xffffffffu) { return; }
-    DescriptorHandle<RWStructuredBuffer<uint>> demand =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(params.demandBuffer, 0));
+    RWStructuredBuffer<uint> demand =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandBuffer));
     if (push.activeBuildPhase == kActiveBuildPhaseDemandReset) {
         RWStructuredBuffer<uint> words = demand;
         uint size, stride;
@@ -2494,20 +2469,20 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
         if (index < size) { demand[index] = 0u; }
         return;
     }
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instances =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.instanceBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitives =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.primitiveBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groups =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.groupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> topology =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(params.lodTopologyBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTable =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> requests =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>> tasks =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(uint2(push.traversalWorkBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(push.primitiveBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groups =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(push.groupBuffer));
+    StructuredBuffer<uint> topology =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.lodTopologyBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
+    RWStructuredBuffer<uint> requests =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.requestBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> tasks =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(push.traversalWorkBuffer));
     uint taskCount = demand[16];
     float3 delta = params.center.xyz - params.eye.xyz;
     float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
@@ -2693,29 +2668,29 @@ void streamCooperativeMasks(StructuredBuffer<GPUDrivenStreamAssetGroup> groups,
 void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_GroupIndex,
     uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
     GPUDrivenStreamAssetParams params = paramsHandle[0];
     uint instanceIndex = workgroup.x + workgroup.y * 65535u;
     if (instanceIndex >= params.sceneInstanceCount) { return; }
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instances =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.instanceBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitives =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.primitiveBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groups =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.groupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> topology =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(params.lodTopologyBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> state =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(params.lodStateBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTable =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> requests =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroups =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeader =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instances =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(push.primitiveBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groups =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(push.groupBuffer));
+    StructuredBuffer<uint> topology =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.lodTopologyBuffer));
+    RWStructuredBuffer<uint> state =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.lodStateBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
+    RWStructuredBuffer<uint> requests =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.requestBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
     GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
     uint header = instanceIndex * 4u;
     if (instance.primitiveIndex >= params.scenePrimitiveCount) {
@@ -2872,8 +2847,8 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         AllMemoryBarrierWithGroupSync();
     }
     if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
-            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+        StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
         if ((bindings[0].cullingFlags & 1u) != 0u && !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
                 max(instance.boundsCenterRadius.w, 0.000001) + bindings[0].displacementBound, currentStreamCamera(params))) { instance.visible = 0u; }
     }
@@ -2887,10 +2862,9 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
     if (instance.visible == 0u) { return; }
     if (push.activeBuildPhase == kActiveBuildPhaseClear) {
         if (params.demandBuffer != 0xffffffffu) {
-            DescriptorHandle<RWStructuredBuffer<uint>> demand = DescriptorHandle<RWStructuredBuffer<uint>>(
-                uint2(params.demandBuffer, 0));
-            DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>> tasks =
-                DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(uint2(push.traversalWorkBuffer, 0));
+            RWStructuredBuffer<uint> demand = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandBuffer));
+            RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> tasks =
+                resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(push.traversalWorkBuffer));
             uint meta = params.demandInstanceOffsetsOffset + instanceIndex * 4u;
             uint first = topology[meta + 2u], count = topology[meta + 3u];
             float3 delta = params.center.xyz - params.eye.xyz;
@@ -2941,8 +2915,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         ++visited;
         bool visit;
         if (params.demandBuffer != 0xffffffffu) {
-            DescriptorHandle<StructuredBuffer<uint>> demand = DescriptorHandle<StructuredBuffer<uint>>(
-                uint2(params.demandBuffer, 0));
+            StructuredBuffer<uint> demand = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.demandBuffer));
             uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u + 1u] + tile;
             visit = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
         } else {
@@ -2973,8 +2946,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             }
             bool demanded;
             if (params.demandBuffer != 0xffffffffu) {
-                DescriptorHandle<StructuredBuffer<uint>> demand = DescriptorHandle<StructuredBuffer<uint>>(
-                    uint2(params.demandBuffer, 0));
+                StructuredBuffer<uint> demand = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.demandBuffer));
                 uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u] + localGroup;
                 demanded = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
             } else {
@@ -3021,8 +2993,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         state[header + 2u] = g_CooperativeMissingRoots == 0u ? g_CooperativeRoots : 0u;
         state[header + 3u] = g_CooperativeMissingRoots == 0u ? 1u : 0u;
         if (params.demandBuffer == 0xffffffffu && params.demandStatsBuffer != 0xffffffffu) {
-            DescriptorHandle<RWStructuredBuffer<uint>> stats = DescriptorHandle<RWStructuredBuffer<uint>>(
-                uint2(params.demandStatsBuffer, 0));
+            RWStructuredBuffer<uint> stats = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandStatsBuffer));
             InterlockedAdd(stats[18], tested);
         }
     }
@@ -3037,34 +3008,34 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     // flattened index. Those lanes must not clear or build the first entries.
     if (dispatchThreadID.x > 0xffffffffu - rowBase) { return; }
     uint threadIndex = dispatchThreadID.x + rowBase;
-    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.instanceBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>> primitiveHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(uint2(push.primitiveBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>> lodLevelHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>>(uint2(push.lodLevelBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>> groupHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(uint2(push.groupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>> nodeHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetNode>>(uint2(push.nodeBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect>> drawIndirectHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect>>(uint2(push.drawIndirectBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader>> traversalHeaderHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader>>(uint2(push.traversalHeaderBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>> traversalWorkHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(uint2(push.traversalWorkBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
+    StructuredBuffer<uint> pageHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroupHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaderHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitiveHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetPrimitive>>(push.primitiveBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetLODLevel> lodLevelHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetLODLevel>>(push.lodLevelBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetGroup> groupHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetGroup>>(push.groupBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetNode> nodeHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetNode>>(push.nodeBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect> drawIndirectHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetDrawIndirect>>(push.drawIndirectBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader> traversalHeaderHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalHeader>>(push.traversalHeaderBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem> traversalWorkHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetTraversalWorkItem>>(push.traversalWorkBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTableHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
+    RWStructuredBuffer<uint> requestHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.requestBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
 
     StructuredBuffer<uint> pageWords = pageHandle;
     RWStructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
@@ -3083,10 +3054,10 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
 
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
     if (push.activeBuildPhase >= kActiveBuildPhaseFrontier && push.activeBuildPhase <= kActiveBuildPhaseInitializeLODState) {
-        DescriptorHandle<StructuredBuffer<uint>> topologyHandle =
-            DescriptorHandle<StructuredBuffer<uint>>(uint2(params.lodTopologyBuffer, 0));
-        DescriptorHandle<RWStructuredBuffer<uint>> stateHandle =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(params.lodStateBuffer, 0));
+        StructuredBuffer<uint> topologyHandle =
+            resolveUniform(ResourceHandle<StructuredBuffer<uint>>(params.lodTopologyBuffer));
+        RWStructuredBuffer<uint> stateHandle =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.lodStateBuffer));
         StructuredBuffer<uint> topology = topologyHandle;
         RWStructuredBuffer<uint> state = stateHandle;
         if (push.activeBuildPhase == kActiveBuildPhaseInitializeLODState) {
@@ -3108,8 +3079,7 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     }
     if (push.activeBuildPhase == kActiveBuildPhaseReset) {
         if (params.demandStatsBuffer != 0xffffffffu && threadIndex < kStreamDemandStatsWords) {
-            DescriptorHandle<RWStructuredBuffer<uint>> stats = DescriptorHandle<RWStructuredBuffer<uint>>(
-                uint2(params.demandStatsBuffer, 0));
+            RWStructuredBuffer<uint> stats = resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.demandStatsBuffer));
             stats[threadIndex] = 0u;
         }
         if (threadIndex == 0u) {
@@ -3333,24 +3303,24 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry>> clasPageTableHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry>>(uint2(push.clasPageTableBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint2>> clasAddressHandle =
-        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.clasAddressBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASHeader>> blasHeaderHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASHeader>>(uint2(push.blasHeaderBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>> instanceBlasHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(uint2(push.instanceBlasBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASBuildInfo>> blasBuildInfoHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASBuildInfo>>(uint2(push.blasBuildInfoBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint2>> blasClusterReferenceHandle =
-        DescriptorHandle<RWStructuredBuffer<uint2>>(uint2(push.blasClusterReferenceBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroupHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaderHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry> clasPageTableHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry>>(push.clasPageTableBuffer));
+    StructuredBuffer<uint2> clasAddressHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.clasAddressBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetBLASHeader> blasHeaderHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASHeader>>(push.blasHeaderBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> instanceBlasHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(push.instanceBlasBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetBLASBuildInfo> blasBuildInfoHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetBLASBuildInfo>>(push.blasBuildInfoBuffer));
+    RWStructuredBuffer<uint2> blasClusterReferenceHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.blasClusterReferenceBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
 
     StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
     StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader = activeHeaderHandle;
@@ -3387,8 +3357,8 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         return;
     }
 
-    DescriptorHandle<RWStructuredBuffer<uint4>> cacheHandle =
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.blasHeaderBuffer, 0));
+    RWStructuredBuffer<uint4> cacheHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
     RWStructuredBuffer<uint4> cache = cacheHandle;
     if (push.activeBuildPhase == 4u || push.activeBuildPhase == 11u) {
         if (itemIndex < activeCount) {
@@ -3468,8 +3438,8 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
 
     // Two-level deterministic exclusive scan. Scratch uint4s follow the cut
     // cache in the header buffer; no physical ranges survive a changed cut.
-    DescriptorHandle<RWStructuredBuffer<uint4>> scanHandle =
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.blasHeaderBuffer, 0));
+    RWStructuredBuffer<uint4> scanHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
     RWStructuredBuffer<uint4> scan = scanHandle;
     uint scratchBase = 6u + params.activeGroupCount;
     if (push.activeBuildPhase == 6u) {
@@ -3647,8 +3617,8 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         buildInfo.clusterReferencesAddressHigh = params.blasClusterReferenceAddressHigh +
             (info.clusterReferenceOffset >> 29u) + (addressLow < params.blasClusterReferenceAddressLow ? 1u : 0u);
         blasBuildInfos[buildIndex] = buildInfo;
-        DescriptorHandle<RWStructuredBuffer<uint2>> destinationHandle =
-            DescriptorHandle<RWStructuredBuffer<uint2>>(uint2(push.dynamicBlasAddressBuffer, 0));
+        RWStructuredBuffer<uint2> destinationHandle =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint2>>(push.dynamicBlasAddressBuffer));
         RWStructuredBuffer<uint2> destinations = destinationHandle;
         uint destinationLow = params.blasStorageAddressLow + offset;
         destinations[buildIndex] = uint2(destinationLow, params.blasStorageAddressHigh +
@@ -3705,18 +3675,18 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(push.instanceBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>> instanceBlasHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(uint2(push.instanceBlasBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint2>> fallbackBlasAddressHandle =
-        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.fallbackBlasAddressBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint2>> dynamicBlasAddressHandle =
-        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.dynamicBlasAddressBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTLASInstance>> tlasInstanceHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetTLASInstance>>(uint2(push.tlasInstanceBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> instanceBlasHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS>>(push.instanceBlasBuffer));
+    StructuredBuffer<uint2> fallbackBlasAddressHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.fallbackBlasAddressBuffer));
+    StructuredBuffer<uint2> dynamicBlasAddressHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.dynamicBlasAddressBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetTLASInstance> tlasInstanceHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetTLASInstance>>(push.tlasInstanceBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
 
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
     StructuredBuffer<GPUDrivenStreamAssetInstanceBLAS> instanceBlas = instanceBlasHandle;
@@ -3831,22 +3801,20 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
 {
     retryLate = false;
     output = (StreamRasterCluster)0;
-    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
+    StructuredBuffer<uint> pageHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroupHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaderHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTableHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
+    RWStructuredBuffer<uint> requestHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.requestBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
 
     StructuredBuffer<uint> pageWords = pageHandle;
     StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
@@ -3883,9 +3851,8 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     GPUDrivenStreamAssetActiveGroup group = activeGroups[activeGroupIndex];
     uint instanceFlags = 0u;
     if (rasterBindings.gpuSceneInstanceBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances =
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
-                rasterBindings.gpuSceneInstanceBuffer, 0));
+        StructuredBuffer<GPUDrivenPreviewInstance> instances =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(rasterBindings.gpuSceneInstanceBuffer));
         StructuredBuffer<GPUDrivenPreviewInstance> instanceBuffer = instances;
         uint count, stride;
         instanceBuffer.GetDimensions(count, stride);
@@ -4036,20 +4003,16 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         }
     }
 
-    DescriptorHandle<StructuredBuffer<uint>> visibilityStateHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            rasterBindings.instanceVisibilityBuffer,
-            0));
+    StructuredBuffer<uint> visibilityStateHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(rasterBindings.instanceVisibilityBuffer));
     StructuredBuffer<uint> visibilityStates = visibilityStateHandle;
     if (testVisibility && !streamClusterVisibleInOcclusionPhase(worldSphereCenter, worldSphereRadius,
         visibilityStates[group.gpuSceneInstanceIndex], params, rasterBindings, push, retryLate)) {
         return false;
     }
 
-    DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>> visibleClusterHandle =
-        DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>>(uint2(
-            rasterBindings.visibleClusterBuffer,
-            0));
+    RWStructuredBuffer<CompactStreamVisibleRecord> visibleClusterHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<CompactStreamVisibleRecord>>(rasterBindings.visibleClusterBuffer));
     RWStructuredBuffer<CompactStreamVisibleRecord> visibleClusters = visibleClusterHandle;
     if (publishRecord) {
         uint flags = ((instanceFlags & 2u) != 0u ? 1u : 0u) | ((instanceFlags & 4u) != 0u ? 2u : 0u);
@@ -4082,8 +4045,8 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
 
 float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint word = c.pageWord + c.positionOffsetBytes / 4u + (c.vertexOffset + vertex) * c.positionStrideWords;
     float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
     float3 world = c.group.world0.xyz * local.x + c.group.world1.xyz * local.y +
@@ -4123,7 +4086,7 @@ StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams 
 }
 float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer,0));
+    StructuredBuffer<uint> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint word=c.pageWord+c.positionOffsetBytes/4u+(c.vertexOffset+vertex)*c.positionStrideWords;
     float3 local=asfloat(uint3(pages[word],pages[word+1u],pages[word+2u]));
     float3 world=c.group.world0.xyz*local.x+c.group.world1.xyz*local.y+c.group.world2.xyz*local.z+c.group.world3.xyz;
@@ -4140,8 +4103,8 @@ groupshared StreamRasterProjection g_StreamRasterProjection;
 
 uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    StructuredBuffer<uint> pages =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint address = c.triangleBaseByte + triangle * 3u;
     uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     // Retain the existing malformed-index fallback in the stream HW decoder.
@@ -4156,7 +4119,7 @@ uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStrea
 
 float2 streamClusterUv(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    StructuredBuffer<uint> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint bytes = pages[c.pageWord + 12u], offset = pages[c.pageWord + 17u];
     if ((pages[c.pageWord + 14u] & 4u) == 0u || pages[c.pageWord + 22u] != 1u ||
         (offset & 3u) != 0u || offset > bytes || c.vertexOffset + vertex >= (bytes - offset) / 8u) { return float2(0); }
@@ -4168,19 +4131,19 @@ float2 streamClusterUv(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetP
 // clusters bypass the software queue, which has no material coverage stage.
 bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rh = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     GPUDrivenStreamAssetRasterBindings bindings = rh[0];
     if (bindings.gpuSceneInstanceBuffer == 0xffffffffu || bindings.materialBuffer == 0xffffffffu) { return true; }
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(bindings.gpuSceneInstanceBuffer, 0));
+    StructuredBuffer<GPUDrivenPreviewInstance> instances = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(bindings.gpuSceneInstanceBuffer));
     GPUDrivenPreviewInstance instance = instances[instanceIndex];
     if ((instance.identity.w & 12u) == 0u) { return true; }
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materials = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(bindings.materialBuffer, 0));
+    StructuredBuffer<GPUDrivenPreviewMaterial> materials = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(bindings.materialBuffer));
     GPUDrivenPreviewMaterial material = materials[instance.identity.y];
     float alpha = material.baseColor.a;
     GPUDrivenPreviewTextureInfo info = material.baseColorTexture;
     if (info.textureIndex < bindings.materialTextureCount && bindings.materialTextureRemapBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<uint>> remap = DescriptorHandle<StructuredBuffer<uint>>(uint2(bindings.materialTextureRemapBuffer, 0));
-        DescriptorHandle<Texture2D<float4>> texture = DescriptorHandle<Texture2D<float4>>(uint2(remap[info.textureIndex], 0));
+        StructuredBuffer<uint> remap = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(bindings.materialTextureRemapBuffer));
+        Texture2D<float4> texture = resolveNonUniform(ResourceHandle<Texture2D<float4>>(remap[info.textureIndex]));
         float2 transformed = float2(dot(info.transform0.xy, uv) + info.transform0.z, dot(info.transform1.xy, uv) + info.transform1.z);
         alpha *= sampleAlphaCoverage(texture, transformed);
     }
@@ -4191,8 +4154,8 @@ bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush 
 void publishStreamHardwareRetry(uint record, bool retryLate, GPUDrivenStreamAssetPush push)
 {
     if (push.traversalPhase == 0u && retryLate) {
-        DescriptorHandle<RWStructuredBuffer<uint>> bins =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+        RWStructuredBuffer<uint> bins =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.hybridClusterBuffer));
         InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
     }
 }
@@ -4219,8 +4182,8 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
     uint chunk = prebinned ? 0u : draw % kMeshletTriangleChunkCount;
     bool overflowHardware = false;
     if (prebinned) {
-        DescriptorHandle<StructuredBuffer<uint>> bins =
-            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+        StructuredBuffer<uint> bins =
+            resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
         uint item = record;
         overflowHardware = bins[14] != 0u;
         if (!hybridStreamHardwareRecord(bins, item, record)) { SetMeshOutputCounts(0, 0); return; }
@@ -4306,18 +4269,18 @@ uint streamCandidateInclusiveScan(uint value, uint lane)
 [numthreads(128, 1, 1)]
 void streamClusterPrepareMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> headers =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> args =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridQueueBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> visibility =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(bindingHandle[0].instanceVisibilityBuffer, 0));
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> headers =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> groups =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+    RWStructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.hybridClusterBuffer));
+    RWStructuredBuffer<uint> args =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.hybridQueueBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
+    StructuredBuffer<uint> visibility =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(bindingHandle[0].instanceVisibilityBuffer));
     uint capacity = bins[5];
     if (push.activeBuildPhase == 0u) {
         if (lane == 0u) {
@@ -4403,13 +4366,13 @@ void streamClusterPrepareMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIn
 // classifiers write back to original candidate slots before stable binning.
 void cullStreamClusterCandidates(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool divertHardware)
 {
-    DescriptorHandle<RWStructuredBuffer<uint>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    RWStructuredBuffer<uint> handle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.hybridClusterBuffer));
     RWStructuredBuffer<uint> bins = handle;
     if (push.activeBuildPhase == 1u) {
         if (lane == 0u) {
-            DescriptorHandle<RWStructuredBuffer<uint>> args =
-                DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridQueueBuffer, 0));
+            RWStructuredBuffer<uint> args =
+                resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.hybridQueueBuffer));
             uint count = bins[0];
             args[0] = min(count, kHybridDispatchWidth);
             args[1] = max(1u, (count + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
@@ -4484,8 +4447,8 @@ void streamClusterCullP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
 
 void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool prepared, bool incrementalDepth)
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane == 0u) {
@@ -4614,14 +4577,10 @@ void gpuDrivenStreamAssetDeferredMain(
     uint3 dispatchThreadID : SV_DispatchThreadID,
     uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
-            push.paramsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
+    StructuredBuffer<GPUDrivenStreamAssetParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
     StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
     GPUDrivenStreamAssetParams params = paramsBuffer[0];
@@ -4632,14 +4591,10 @@ void gpuDrivenStreamAssetDeferredMain(
         return;
     }
 
-    DescriptorHandle<Texture2D<uint>> visibilityHandle =
-        DescriptorHandle<Texture2D<uint>>(uint2(
-            rasterBindings.visibilityImage,
-            0));
-    DescriptorHandle<RWStructuredBuffer<uint>> outputHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            rasterBindings.deferredColorBuffer,
-            0));
+    Texture2D<uint> visibilityHandle =
+        resolveUniform(ResourceHandle<Texture2D<uint>>(rasterBindings.visibilityImage));
+    RWStructuredBuffer<uint> outputHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(rasterBindings.deferredColorBuffer));
     Texture2D<uint> visibility = visibilityHandle;
     RWStructuredBuffer<uint> output = outputHandle;
     uint outputIndex = dispatchThreadID.y * width + dispatchThreadID.x;
@@ -4662,22 +4617,14 @@ void gpuDrivenStreamAssetDeferredMain(
         return;
     }
 
-    DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>> visibleClusterHandle =
-        DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>>(uint2(
-            rasterBindings.visibleClusterBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(
-            push.activeGroupBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            push.pageBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(
-            push.pageTableBuffer,
-            0));
+    StructuredBuffer<CompactStreamVisibleRecord> visibleClusterHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<CompactStreamVisibleRecord>>(rasterBindings.visibleClusterBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroupHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(push.activeGroupBuffer));
+    StructuredBuffer<uint> pageHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
+    StructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTableHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
     StructuredBuffer<CompactStreamVisibleRecord> visibleClusters = visibleClusterHandle;
     StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
     StructuredBuffer<uint> pageWords = pageHandle;
@@ -4690,10 +4637,8 @@ void gpuDrivenStreamAssetDeferredMain(
         return;
     }
     GPUDrivenStreamAssetActiveHeader activeHeader;
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(
-            push.activeHeaderBuffer,
-            0));
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaderHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(push.activeHeaderBuffer));
     StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaders = activeHeaderHandle;
     activeHeader = activeHeaders[0];
     uint activeGroupCount = min(activeHeader.activeGroupCount, activeHeader.activeGroupCapacity);
@@ -4927,19 +4872,15 @@ float4 gpuDrivenStreamAssetCompositeFragmentMain(
     GPUDrivenStreamAssetFullscreenOutput input,
     uniform GPUDrivenStreamAssetPush push) : SV_Target0
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
+    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
     StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
     GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
     uint width = max(rasterBindings.width, 1u);
     uint height = max(rasterBindings.height, 1u);
     uint2 pixel = min(uint2(input.position.xy), uint2(width - 1u, height - 1u));
-    DescriptorHandle<StructuredBuffer<uint>> colorHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            rasterBindings.deferredColorBuffer,
-            0));
+    StructuredBuffer<uint> colorHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(rasterBindings.deferredColorBuffer));
     StructuredBuffer<uint> colors = colorHandle;
     return unpackStreamColor(colors[pixel.y * width + pixel.x]);
 }
@@ -4957,8 +4898,8 @@ void gpuDrivenStreamAssetInitializePageTableMain(
         return;
     }
 
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTableHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
 
     GPUDrivenStreamAssetPageTableEntry entry;
@@ -4971,10 +4912,10 @@ void gpuDrivenStreamAssetInitializePageTableMain(
 [numthreads(64, 1, 1)]
 void gpuDrivenStreamAssetApplyUpdatesMain(uint3 dispatchThreadID : SV_DispatchThreadID, uniform GPUDrivenStreamAssetPush push)
 {
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> updateHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.updateBuffer, 0));
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTableHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(push.pageTableBuffer));
+    StructuredBuffer<uint> updateHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.updateBuffer));
 
     RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
     StructuredBuffer<uint> updates = updateHandle;

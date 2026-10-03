@@ -6,5 +6,4 @@ __include "Core/DisplayOutput.slang";
 __include "Core/SphericalHarmonics.slang";
 __include "Core/DescriptorHandles.slang";
 __include "Core/Resources.slang";
-__include "Core/DataSpan.slang";
 __include "Core/SceneShadingVertex.slang";

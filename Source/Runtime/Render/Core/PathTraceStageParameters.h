@@ -17,11 +17,11 @@ using Metallic;
 namespace Metallic {
 typealias PathTraceUInt = uint;
 typealias PathTraceFloat4 = float4;
-typealias PathTraceStorageImage = DescriptorHandle<RWTexture2D<float4>>;
+typealias PathTraceStorageImage = ResourceHandle<RWTexture2D<float4>>;
 // The SHaRC SDK requires structured-buffer objects for its atomics and resolve.
-typealias SharcHashHandle = DescriptorHandle<RWStructuredBuffer<uint64_t>>;
-typealias SharcAccumulationHandle = DescriptorHandle<RWStructuredBuffer<SharcAccumulationData>>;
-typealias SharcResolvedHandle = DescriptorHandle<RWStructuredBuffer<SharcPackedData>>;
+typealias SharcHashHandle = ResourceHandle<RWStructuredBuffer<uint64_t>>;
+typealias SharcAccumulationHandle = ResourceHandle<RWStructuredBuffer<SharcAccumulationData>>;
+typealias SharcResolvedHandle = ResourceHandle<RWStructuredBuffer<SharcPackedData>>;
 #endif
 
 #ifdef __cplusplus
@@ -43,7 +43,7 @@ struct SharcMaintenanceParams {
     SharcHashHandle hashEntries;
     SharcAccumulationHandle accumulation;
     SharcResolvedHandle resolved;
-    PathTraceUInt padding0, padding1;
+    PathTraceUInt padding0;
     SceneSharcMaintenancePush settings;
 };
 
@@ -61,10 +61,10 @@ struct PathTraceTonemapParams {
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kSharcMaintenanceABI = 0x5054534841520001ull;
-inline constexpr uint64_t kPathTraceTonemapABI = 0x5054544f4e450001ull;
+inline constexpr uint64_t kSharcMaintenanceABI = 0x5054534841520002ull;
+inline constexpr uint64_t kPathTraceTonemapABI = 0x5054544f4e450002ull;
 static_assert(sizeof(SceneSharcMaintenancePush) == 64);
-static_assert(sizeof(SharcMaintenanceParams) == 96 && offsetof(SharcMaintenanceParams, settings) == 32);
-static_assert(sizeof(PathTraceTonemapParams) == 48 && offsetof(PathTraceTonemapParams, settings) == 24);
+static_assert(sizeof(SharcMaintenanceParams) == 80 && offsetof(SharcMaintenanceParams, settings) == 16);
+static_assert(sizeof(PathTraceTonemapParams) == 36 && offsetof(PathTraceTonemapParams, settings) == 12);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

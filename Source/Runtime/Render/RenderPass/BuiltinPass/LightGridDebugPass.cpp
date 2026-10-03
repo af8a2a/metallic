@@ -216,8 +216,8 @@ public:
         if (!registry) { return makeError(registry.error()); }
         ParameterWriter writer(*device_, **registry, frame);
         const LightGridDebugParams params{
-            .grid = writer.dataBuffer(grid->parameters, sizeof(ClusterLightGridParams), alignof(ClusterLightGridParams)),
-            .cells = writer.dataBuffer(grid->cells, sizeof(ClusterLightGridCell), alignof(ClusterLightGridCell)),
+            .grid = writer.bufferSpan(grid->parameters, sizeof(ClusterLightGridParams), alignof(ClusterLightGridParams)),
+            .cells = writer.bufferSpan(grid->cells, sizeof(ClusterLightGridCell), alignof(ClusterLightGridCell)),
             .output = writer.storageImage(color.view()),
             .settings = push,
         };

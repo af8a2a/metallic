@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 struct StreamlineDLSSVertexOutput
 {
     float4 position : SV_Position;
@@ -42,8 +45,8 @@ float streamlineDlssDepthFragmentMain(
     StreamlineDLSSVertexOutput input,
     uniform SampledImagePush bindless) : SV_Depth
 {
-    DescriptorHandle<Texture2D<float>> depthHandle =
-        DescriptorHandle<Texture2D<float>>(uint2(bindless.sourceImage, 0));
+    Texture2D<float> depthHandle =
+        resolveUniform(ResourceHandle<Texture2D<float>>(bindless.sourceImage));
     Texture2D<float> depthGuide = depthHandle;
 
     uint width = 1;
@@ -60,9 +63,8 @@ void streamlineDlssAlphaMain(
     uint3 dispatchThreadId : SV_DispatchThreadID,
     uniform StreamlineDLSSAlphaPush push)
 {
-    DescriptorHandle<RWTexture2D<float4>> outputHandle =
-        DescriptorHandle<RWTexture2D<float4>>(
-            uint2(push.outputImage, 0));
+    RWTexture2D<float4> outputHandle =
+        resolveUniform(ResourceHandle<RWTexture2D<float4>>(push.outputImage));
     RWTexture2D<float4> outputImage = outputHandle;
 
     uint width = 1;

@@ -51,8 +51,8 @@ public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilit
     float2 e2 = s2 - s0;
     float determinant = e1.x * e2.y - e1.y * e2.x;
     if (abs(determinant) < 1e-12) { return; }
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixelHandle =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0));
+    RWStructuredBuffer<uint64_t> pixelHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint64_t>>(pixelBuffer));
     RWStructuredBuffer<uint64_t> pixels = pixelHandle;
     for (int y = lower.y; y <= upper.y; ++y) {
         for (int x = lower.x; x <= upper.x; ++x) {
@@ -139,7 +139,7 @@ public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScr
     if (abs(determinant) < 1e-12) { decision.reason = 4; return; }
     float3 z = float3(a.depth,b.depth,c.depth);
     float2 gradient = float2(e2.y*(z.y-z.x)-e1.y*(z.z-z.x), e1.x*(z.z-z.x)-e2.x*(z.y-z.x)) / determinant;
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> handle = DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0));
+    RWStructuredBuffer<uint64_t> handle = resolveUniform(ResourceHandle<RWStructuredBuffer<uint64_t>>(pixelBuffer));
     RWStructuredBuffer<uint64_t> pixels = handle;
     for (int y = lower.y; y <= upper.y; ++y) {
         int3 edges = rowEdges;

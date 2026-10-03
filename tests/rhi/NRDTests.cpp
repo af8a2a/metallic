@@ -202,7 +202,8 @@ protected:
              .enableRayQuery = requiresRayQueries(),
              .validationSink = {.callback =
                                     [](void* context, const render::ValidationMessage& message) noexcept {
-                                        if ((message.severity & 0x1100u) != 0)
+                                        // GENERAL loader registration errors are logged separately from API validation.
+                                        if ((message.severity & 0x1100u) != 0 && (message.type & 0x2u) != 0)
                                             static_cast<std::atomic<uint32_t>*>(context)->fetch_add(1);
                                     },
                                 .context = &validationErrors}}).transform([&](auto rhiValue) { device = std::move(rhiValue); });

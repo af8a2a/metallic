@@ -6,11 +6,11 @@ using Metallic;
 import Lighting;
 using Metallic.Lighting;
 
-#define gLightGridDebugParams gParams.grid.data
+#define gLightGridDebugParams gParams.grid
 
-#define gLightGridDebugCells gParams.cells.data
+#define gLightGridDebugCells gParams.cells
 
-#define gLightGridDebugOutput resolveDescriptor(gParams.output)
+#define gLightGridDebugOutput resolveUniform(gParams.output)
 
 static const uint kLightGridDebugShowGrid = 1u;
 static const uint kLightGridDebugShowLegend = 2u;

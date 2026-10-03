@@ -63,42 +63,43 @@ DR-first 的新接口使用 `ResourceHandle<T>` / `SamplerHandle`（32 位）和
 `resolveUniform` / `resolveNonUniform` 解析资源，通过 span 的 `load` / `store` 或
 `loadNonUniform` / `storeNonUniform` 访问普通 buffer；真正物理地址用 `PhysicalPtr<T>` 明确表达。
 CPU 使用 `sampledImageHandle`、`storageImageHandle`、`samplerHandle` 和 `bufferSpan<T>`。
-已迁移的后处理入口与剩余工作见 [ResourceAccessABI](../Documentation/ResourceAccessABI.md)。
+全部 renderer image/buffer 入口与外部适配边界见 [ResourceAccessABI](../Documentation/ResourceAccessABI.md)。
 
 `ParameterTransport::InlinePush` 将参数块直接推送到 byte 0，不上传 root、slot table 或标量图像句柄数组；
 shader 导入 `ShaderCore` 并声明 `[[vk::push_constant]] ConstantBuffer<Params>`。
-`ParameterTransport::DeviceAddress` 用于较大的参数块；shader 额外导入 `ParameterRoot`，
-通过 `getParameters<Params>()` 读取一个 64 位根地址。后端检查实际 push 数据容量，不会静默截断。
+`ParameterTransport::DescriptorBuffer` 用于较大的参数块；shader 额外导入 `ParameterRoot`，
+通过 `getParameters<Params>()` 读取 DR buffer；push 根是 12 字节的 index / byteOffset / wordCount。后端检查实际 push 数据容量，不会静默截断。
 两种传输共用 registry、资源保留、帧代次检查和 prepared dispatch；ABI 包含传输方式，不能混用。
-尚未迁移的路径继续通过 writer 获取 `ShaderSampledImage` / `ShaderStorageImage` / `ShaderSampler`，
-shader 使用对应 `DescriptorHandle<T>` 和 `resolveDescriptor()`；旧普通数据仍为 `ShaderDataSpan` / `DataSpan<T>`。
-不要直接截断旧 64 位 handle，尤其 AS 仍保留完整地址语义。
+`ShaderSampledImage` / `ShaderStorageImage` / `ShaderBuffer` / `ShaderSampler` 同样是 32 位 engine handle 别名。
+Slang 的 `DescriptorHandle` 仅保留在底层 resolver；AS 仍保留独立的完整地址语义。
+旧 `DataSpan` / `ShaderDataSpan` 与 `writer.dataBuffer()` 已移除，使用 `bufferSpan()` / `dataSpan()`。
 
 [PostProcessParameters.h](../Source/Runtime/Render/Core/PostProcessParameters.h) 共用 C++/Slang 字段声明与显式 padding：
-FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inline push，ColorGradingLUT 使用 BDA 参数块。
+FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inline push，ColorGradingLUT 使用 DR 参数块。
 AutoExposure 的 Histogram、Reduce、Apply 复用同一份不可变参数；barrier 来自阶段读写声明，不能从 handle 推测访问。
 新增参数 ABI 时应验证字段偏移、GPU 读回、mapped/native 路径和生命周期；共享声明不等于自动完成布局验证。
 
 [LightingKernelParameters.h](../Source/Runtime/Render/Core/LightingKernelParameters.h) 提供 ClusterLightGrid、
 LightGridDebug、PrepareLightsPdf、BuildReGIR 和 EnvironmentLightingPrecompute 的共享 inline 参数。
-普通光照数据通过带范围的 `DataSpan<T>` 访问；PDF 每次归约直接传入源、目标 mip 的 storage handle，
+普通光照数据通过带范围的 `RWBufferSpan<T>` 访问；PDF 每次归约直接传入源、目标 mip 的 storage handle，
 不再上传完整 mip 句柄数组或创建环境 PDF 的占位光源 buffer。无 frame 的录制同样通过参数包保留资源与 kernel。
 Lighting 库只导入 `ShaderCore`，不隐式引入任何参数根布局。
 
 [RTXDIPostProcessParameters.h](../Source/Runtime/Render/Core/RTXDIPostProcessParameters.h) 共用
-RTXDI Confidence（160 字节）和 Composite（56 字节）的 inline 参数声明。
+RTXDI Confidence（104 字节）和 Composite（36 字节）的 inline 参数声明。
 Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册的具名图像句柄；
 历史纹理和 ping-pong 梯度的访问与同步仍由 RenderGraph 阶段声明负责。
 
-[PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（96 字节）
-和 NRC 输出累积/tonemap（48 字节）的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
+[PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（80 字节）
+和 NRC 输出累积/tonemap（36 字节）的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
 主追踪及其 OpenPBR、NTC、VisibilityBuffer 共享资源表仍使用下述兼容入口。
 
 `Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
-作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
-因此不能和另一份 inline push 声明混用。数组通过 slot 的 `payload` 地址读取 registry 的句柄，
-再用 `nonuniform` 选择 descriptor，不要求连续分配。RHI 不在用户 push 数据前插入 heap header。
+作为 ComputeProgram / SDK 的逻辑 slot 适配入口，内部同样全部使用 DR。
+它导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。
+资源表、常量和纹理数组使用 descriptor span；数组内存放 32 位 index，
+再由 `resolveNonUniform` 选择 descriptor，不要求连续分配。RHI 不在用户 push 数据前插入 heap header。
 
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；

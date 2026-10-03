@@ -30,7 +30,7 @@ struct ProbeParams {
     render::ShaderBuffer source, output;
     uint32_t add, index;
 };
-static_assert(sizeof(ProbeParams) == 24 && offsetof(ProbeParams, add) == 16);
+static_assert(sizeof(ProbeParams) == 16 && offsetof(ProbeParams, add) == 8);
 
 render::Result<> makeBuffer(render::Device& device, std::unique_ptr<render::Buffer>& buffer, uint32_t value = 0)
 {
@@ -94,7 +94,7 @@ struct Drain {
 
 render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kernel, std::string& log,
     render::SlangDescriptorHeapMode mode = render::SlangDescriptorHeapMode::Default,
-    render::ParameterTransport transport = render::ParameterTransport::DeviceAddress)
+    render::ParameterTransport transport = render::ParameterTransport::DescriptorBuffer)
 {
     const render::SlangMacroDefine defines[] = {{"INLINE_PARAMETERS", transport == render::ParameterTransport::InlinePush ? "1" : "0"}};
     render::ShaderCompileResult shader;
@@ -102,6 +102,15 @@ render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kerne
         .entryPointName = "registryProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
         .macroDefines = defines, .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
+    for (size_t word = 5; word < shader.spirv.size();) {
+        const uint32_t count = shader.spirv[word] >> 16, opcode = shader.spirv[word] & 0xffff;
+        if (!count || count > shader.spirv.size() - word ||
+            (opcode == 17 && count == 2 && shader.spirv[word + 1] == 5347)) {
+            log = "Ordinary resource/parameter access must not require PhysicalStorageBufferAddresses";
+            return render::makeError(render::Error::Failure);
+        }
+        word += count;
+    }
     return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kABI, transport)}, log);
 }
 
@@ -140,7 +149,7 @@ public:
             {"Metallic.PrepareLightsPdfParams", {FIELD(PrepareLightsPdfParams, environment), FIELD(PrepareLightsPdfParams, sourceMip),
                 FIELD(PrepareLightsPdfParams, destinationMip), FIELD(PrepareLightsPdfParams, lights), FIELD(PrepareLightsPdfParams, settings)}},
             {"Metallic.BuildReGIRParams", {FIELD(BuildReGIRParams, localLightPdf), FIELD(BuildReGIRParams, output),
-                FIELD(BuildReGIRParams, lights), FIELD(BuildReGIRParams, padding0), FIELD(BuildReGIRParams, padding1), FIELD(BuildReGIRParams, settings)}},
+                FIELD(BuildReGIRParams, lights), FIELD(BuildReGIRParams, padding0), FIELD(BuildReGIRParams, settings)}},
             {"Metallic.EnvironmentLightingPrecomputeParams", {FIELD(EnvironmentLightingPrecomputeParams, radiance),
                 FIELD(EnvironmentLightingPrecomputeParams, partials), FIELD(EnvironmentLightingPrecomputeParams, coefficients),
                 FIELD(EnvironmentLightingPrecomputeParams, specular), FIELD(EnvironmentLightingPrecomputeParams, settings)}},
@@ -156,7 +165,7 @@ public:
                 FIELD(RTXDICompositeParams, baseColorMetalness), FIELD(RTXDICompositeParams, emissive),
                 FIELD(RTXDICompositeParams, output), FIELD(RTXDICompositeParams, settings)}},
             {"Metallic.SharcMaintenanceParams", {FIELD(SharcMaintenanceParams, hashEntries), FIELD(SharcMaintenanceParams, accumulation),
-                FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0), FIELD(SharcMaintenanceParams, padding1),
+                FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0),
                 FIELD(SharcMaintenanceParams, settings)}},
             {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
                 FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, settings)}},
@@ -191,6 +200,15 @@ public:
                 auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
                     .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = defines, .descriptorHeapMode = mode}, log);
                 if (!shader) { return RHITestResult::fail(log); }
+                // Raw Load<T> removes storage decorations from the value type.
+                // Keep compiling the real LUT entry above; use the exact shared
+                // type in a storage-layout probe, plus the LUT pixel GPU test.
+                if (program.layout == 3) {
+                    shader = compileSlangShaderToSpirv({.moduleName = "ColorGradingParameterLayout",
+                        .entryPointName = "main", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                        .descriptorHeapMode = mode}, log);
+                    if (!shader) { return RHITestResult::fail(log); }
+                }
                 const auto& layout = layouts[program.layout];
                 std::vector<uint32_t> ids;
                 std::map<uint32_t, std::map<uint32_t, uint32_t>> offsets;
@@ -431,12 +449,14 @@ public:
         REG_CHECK(render::hasError(writer.use(bLease), render::Error::InvalidArgument));
         const auto invalid = writer.encode(ProbeParams{}, kABI);
         REG_CHECK(render::hasError(invalid, render::Error::InvalidArgument));
+        render::ParameterWriter exhaustedRoot(*device, frame, registry);
+        REG_CHECK(render::hasError(exhaustedRoot.encode(ProbeParams{}, kABI), render::Error::OutOfMemory));
         render::ParameterWriter staleWriter(*device, frame, registry);
-        const auto encoded = staleWriter.encode(ProbeParams{}, kABI);
+        const auto encoded = staleWriter.encode(ProbeParams{}, kABI, render::ParameterTransport::InlinePush);
         REG_CHECK(encoded && encoded->valid());
         frame.cancel();
         REG_REQUIRE(frame.begin(1));
-        const auto stale = staleWriter.encode(ProbeParams{}, kABI);
+        const auto stale = staleWriter.encode(ProbeParams{}, kABI, render::ParameterTransport::InlinePush);
         REG_CHECK(render::hasError(stale, render::Error::InvalidArgument));
         REG_CHECK(encoded->valid()); // A failed encode cannot overwrite an earlier packet.
         frame.cancel();
@@ -451,7 +471,7 @@ public:
         return bench::gpuMetadata({"parameters.submission.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    explicit RegistrySubmissionTest(render::ParameterTransport transport = render::ParameterTransport::DeviceAddress)
+    explicit RegistrySubmissionTest(render::ParameterTransport transport = render::ParameterTransport::DescriptorBuffer)
         : transport_(transport)
     {
         type = RHITestType::Command;
@@ -492,7 +512,7 @@ public:
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
             if (transport_ == render::ParameterTransport::InlinePush) {
-                REG_CHECK(encoded.address() == 0 && encoded.inlineData().size() == sizeof(params));
+                REG_CHECK(encoded.root().count == 0 && encoded.inlineData().size() == sizeof(params));
                 REG_CHECK(registry->stats().parameterBytes == 0 && registry->stats().parameterCapacity == 0);
             }
             stale = encoded;
@@ -510,7 +530,7 @@ public:
             std::array<uint32_t, 17000> burst{};
             render::EncodedParameters oversized;
             REG_REQUIRE(writer.encode(burst, kABI + 2).transform([&](auto value) { oversized = std::move(value); }));
-            REG_CHECK(oversized.address() != stale.address());
+            REG_CHECK(oversized.root() != stale.root());
             params.add = 999; // Encoded packets must not reference this mutable CPU struct.
             render::EncodedParameters wrong;
             REG_REQUIRE(writer.encode(params, kABI + 1, transport_).transform([&](auto value) { wrong = std::move(value); }));
@@ -529,7 +549,7 @@ public:
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 300, 2};
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
-            REG_CHECK(transport_ == render::ParameterTransport::InlinePush || encoded.address() != stale.address());
+            REG_CHECK(transport_ == render::ParameterTransport::InlinePush || encoded.root() != stale.root());
             REG_REQUIRE(secondKernel.dispatch(*second.commands, encoded, 1));
         }
         REG_REQUIRE(second.submit(tracker, *gate));
@@ -551,7 +571,9 @@ public:
         REG_REQUIRE(second.pool->reset());
         REG_REQUIRE(second.frame.reset());
         registry->collect();
-        REG_CHECK(registry->stats().liveDescriptors == 2);
+        // Completed frame arenas retain one descriptor per backing chunk.
+        const uint64_t arenaDescriptors = transport_ == render::ParameterTransport::InlinePush ? 1 : 3;
+        REG_CHECK(registry->stats().liveDescriptors == 2 + arenaDescriptors);
         const uint64_t capacity = registry->stats().parameterCapacity;
 
         REG_REQUIRE(makeKernel(*device, firstKernel, log, render::SlangDescriptorHeapMode::Default, transport_));
@@ -577,7 +599,7 @@ public:
         REG_CHECK(cancelledAllocation.expired());
         REG_CHECK(registry->stats().parameterCapacity == capacity);
         registry->collect();
-        REG_CHECK(registry->stats().liveDescriptors == 1);
+        REG_CHECK(registry->stats().liveDescriptors == 1 + arenaDescriptors);
         return RHITestResult::pass();
     }
 private:
@@ -732,7 +754,8 @@ public:
                 params.add = (i + 1) * 100;
                 params.index = i;
                 REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { packets[i] = std::move(value); }));
-                if (i) { REG_CHECK(packets[i].address() > packets[i - 1].address()); }
+                if (i) { REG_CHECK(packets[i].root().resource == packets[i - 1].root().resource &&
+                    packets[i].root().byteOffset > packets[i - 1].root().byteOffset); }
                 REG_REQUIRE(recordings[i].initialize(*device, queue));
                 render::CommandBuffer* commands = nullptr;
                 REG_REQUIRE(recordings[i].prepare(frame).transform([&](auto value) { commands = value; }));
@@ -870,8 +893,8 @@ public:
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
         REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        struct Params { render::ShaderStorageImage image; uint64_t samples; render::ShaderBuffer output; };
-        static_assert(sizeof(Params) == 24);
+        struct Params { render::ShaderStorageImage image; render::GPUBufferSpan samples; render::ShaderBuffer output; };
+        static_assert(sizeof(Params) == 20);
         const char* entries[] = {"registryTextureWriteMain", "registryTextureReadMain"};
         std::array<render::ComputeKernel, 2> kernels;
         std::string log;
@@ -904,7 +927,7 @@ public:
             Params params{writer.storageImage(view.get()), writer.sampledImages(views), writer.buffer(output.get())};
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kABI + 3).transform([&](auto value) { encoded = std::move(value); }));
-            REG_CHECK(registry->stats().descriptorWrites == 3); // storage image, sampled image, output
+            REG_CHECK(registry->stats().descriptorWrites == 4); // storage image, sampled image, output, array upload
             render::TextureBarrierDesc barrier{
                 .texture = image.get(),
                 .oldLayout = render::TextureLayout::Undefined,
@@ -1003,12 +1026,12 @@ public:
         render::EncodedParameters packet;
         {
             render::ParameterWriter invalidWriter(*other, frame, *registry);
-            invalidWriter.dataBuffer<uint32_t>(child);
+            invalidWriter.bufferSpan<uint32_t>(child);
             REG_CHECK(!invalidWriter.status());
-            REG_CHECK(!invalidWriter.encode(render::ShaderDataSpan{}, kABI + 4).transform([&](auto value) { packet = std::move(value); }) && !packet.valid());
+            REG_CHECK(!invalidWriter.encode(render::GPUBufferSpan{}, kABI + 4).transform([&](auto value) { packet = std::move(value); }) && !packet.valid());
             render::ParameterWriter writer(*device, frame, *registry);
-            const auto data = writer.dataBuffer<uint32_t>(child);
-            REG_CHECK(data.address == address && data.count == 2 && data.stride == 4);
+            const auto data = writer.bufferSpan<uint32_t>(child);
+            REG_CHECK(data.resource.index != UINT32_MAX && data.count == 2 && data.byteOffset == 24);
             REG_REQUIRE(writer.encode(data, kABI + 4).transform([&](auto value) { packet = std::move(value); }));
         }
         child = {};
@@ -1017,7 +1040,7 @@ public:
         frame.cancel();
         REG_REQUIRE(frame.reset());
         REG_CHECK(allocation.expired());
-        REG_CHECK(registry->stats().descriptorWrites == 0);
+        REG_CHECK(registry->stats().descriptorWrites == 2);
         return RHITestResult::pass();
     }
 };
@@ -1027,10 +1050,10 @@ class BufferSliceSubmissionTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"bufferSlice.bda.copy.indirect.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
+        return bench::gpuMetadata({"bufferSlice.dr.copy.indirect.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    BufferSliceSubmissionTest() { type = RHITestType::Rendering; name = "buffer_slice_bda_copy_compute_indirect_lifetime"; }
+    BufferSliceSubmissionTest() { type = RHITestType::Rendering; name = "buffer_slice_dr_copy_compute_indirect_lifetime"; }
     RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
@@ -1039,8 +1062,8 @@ public:
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
         REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        struct Params { render::ShaderDataSpan source, output, arguments; uint32_t add; };
-        static_assert(sizeof(Params) == 56 && offsetof(Params, add) == 48);
+        struct Params { render::GPUBufferSpan source, output, arguments; uint32_t add; };
+        static_assert(sizeof(Params) == 40 && offsetof(Params, add) == 36);
         std::array<render::ComputeKernel, 2> kernels;
         const char* entries[] = {"dataProduceMain", "dataIndirectMain"};
         std::string log;
@@ -1066,9 +1089,9 @@ public:
         std::unique_ptr<render::Buffer> source, work, output;
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::TransferSource,
             .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { source = std::move(rhiValue); }));
-        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
+        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::Storage |
             render::BufferUsageBits::TransferDestination | render::BufferUsageBits::Indirect}).transform([&](auto rhiValue) { work = std::move(rhiValue); }));
-        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
+        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::Storage |
             render::BufferUsageBits::TransferSource | render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         auto* sourceWords = static_cast<uint32_t*>(source->map());
@@ -1118,8 +1141,8 @@ public:
             };
             if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ParameterWriter writer(*device, recording.frame, *registry);
-            const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
-                writer.dataBuffer<uint32_t>(arguments), 7};
+            const Params params{writer.bufferSpan<uint32_t>(data), writer.bufferSpan<uint32_t>(to),
+                writer.bufferSpan<uint32_t>(arguments), 7};
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kABI + 5).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
@@ -1138,7 +1161,7 @@ public:
         }
         source.reset(); work.reset();
         REG_CHECK(!sourceAllocation.expired() && !workAllocation.expired());
-        REG_CHECK(registry->stats().descriptorWrites == 0 && registry->stats().liveDescriptors == 0);
+        REG_CHECK(registry->stats().descriptorWrites == 3 && registry->stats().liveDescriptors == 3);
         REG_REQUIRE(recording.submit(tracker, *gate));
         kernels = {}; adapter.clear();
         REG_CHECK(!recording.frame.completion().isComplete());
@@ -1421,7 +1444,8 @@ public:
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Prepared execution lifetime", .enableValidation = context.enableValidation,
                 .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
-                    if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                    if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
+                        (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
                         ++*static_cast<std::atomic_uint*>(target);
                     }
                 }, &errors}, .preferUnifiedImageLayouts = preferUnified}).transform([&](auto value) { device = std::move(value); }));
@@ -1793,7 +1817,7 @@ public:
     KernelPreparedDispatchTest() { type = RHITestType::Rendering; name = "compute_kernel_prepared_standalone_batch"; }
     RHITestResult run(RHITestContext& context) override
     {
-        for (const auto transport : {render::ParameterTransport::DeviceAddress, render::ParameterTransport::InlinePush}) {
+        for (const auto transport : {render::ParameterTransport::DescriptorBuffer, render::ParameterTransport::InlinePush}) {
             for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
                 bench::TestDevice device;
                 REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Kernel prepared dispatch",
@@ -1826,13 +1850,13 @@ public:
                     ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 1, 0};
                     auto first = writer.encode(params, kABI, transport);
                     REG_CHECK(first);
-                    REG_CHECK(first->inlineData().empty() == (transport == render::ParameterTransport::DeviceAddress));
+                    REG_CHECK(first->inlineData().empty() == (transport == render::ParameterTransport::DescriptorBuffer));
                     const auto before = (*registry)->stats().parameterBytes;
                     const auto wrongTransport = transport == render::ParameterTransport::InlinePush
-                        ? render::ParameterTransport::DeviceAddress : render::ParameterTransport::InlinePush;
+                        ? render::ParameterTransport::DescriptorBuffer : render::ParameterTransport::InlinePush;
                     auto mismatch = writer.encode(params, kABI, wrongTransport);
                     REG_CHECK(mismatch && !kernels[0].prepareDispatch(*mismatch, 1));
-                    if (transport == render::ParameterTransport::DeviceAddress) {
+                    if (transport == render::ParameterTransport::DescriptorBuffer) {
                         REG_CHECK((*registry)->stats().parameterBytes == before);
                     }
                     REG_REQUIRE(kernels[0].prepareDispatch(*first, 1).transform([&](auto value) { direct = std::move(value); }));

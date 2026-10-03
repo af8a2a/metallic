@@ -77,8 +77,8 @@ float rasterRayDistance(uint2 pixel, Ray ray, ScenePathTracePush push)
     float3 forward = cameraForwardFrom(push.eye, push.center);
     return (viewDepth - dot(ray.origin - push.eye.xyz, forward)) / max(dot(ray.direction, forward), 1e-6);
 }
-#define gMaterialBins getData<MaterialBin>(70).data
-#define gMaterialTiles getData<MaterialTile>(71).data
+#define gMaterialBins getData<MaterialBin>(70)
+#define gMaterialTiles getData<MaterialTile>(71)
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
 #define gUpscalerMotion getResource<RWTexture2D<float2>>(72)
 #define gUpscalerDepth getResource<RWTexture2D<float>>(73)

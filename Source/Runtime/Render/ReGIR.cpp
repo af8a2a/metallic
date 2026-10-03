@@ -215,8 +215,8 @@ Result<> ReGIRLightSelector::build(
     ParameterWriter writer(*impl_->device, **registry, commandBuffer.frameContext());
     const BuildReGIRParams params{
         .localLightPdf = writer.sampledImage(&localLightPdf),
-        .output = writer.dataBuffer(impl_->buffer.get(), 16, 16),
-        .lights = writer.dataBuffer(&punctualLights, 64, 16),
+        .output = writer.bufferSpan(impl_->buffer.get(), 16, 16),
+        .lights = writer.bufferSpan(&punctualLights, 64, 16),
         .settings = push,
     };
     auto encoded = writer.encode(params, kBuildReGIRABI, ParameterTransport::InlinePush);

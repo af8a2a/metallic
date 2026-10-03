@@ -14,12 +14,12 @@ namespace {
 
 constexpr uint32_t kBinCount = render::kMaterialClassCount;
 constexpr uint32_t kProbeHeader = kBinCount * 5 + 2;
-constexpr uint64_t kProbeABI = 0x4d42505200000002ull;
+constexpr uint64_t kProbeABI = 0x4d42505200000003ull;
 struct MaterialProbeParams {
-    render::ShaderDataSpan bins, tiles, arguments, output;
+    render::GPUBufferSpan bins, tiles, arguments, output;
     uint32_t width, height, binCount, bin;
 };
-static_assert(sizeof(MaterialProbeParams) == 80);
+static_assert(sizeof(MaterialProbeParams) == 64);
 
 class MaterialBinningProbePass final : public render::UnsafePass {
 public:
@@ -206,13 +206,15 @@ private:
         std::shared_ptr<render::ResourceRegistry> registry;
         auto result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (!result) { return result; }
-        const auto writes = registry->stats().descriptorWrites;
+        const auto before = registry->stats();
         render::ParameterWriter writer(*device_, *commands.frameContext(), *registry);
-        MaterialProbeParams params{writer.dataBuffer(bins.bins, 8, 8), writer.dataBuffer(bins.tiles, 8, 8),
-            writer.dataBuffer(bins.arguments, 4, 4), writer.dataBuffer(context.outputBuffer("data").buffer(), 4, 4),
+        MaterialProbeParams params{writer.bufferSpan(bins.bins, 8, 8), writer.bufferSpan(bins.tiles, 8, 8),
+            writer.bufferSpan(bins.arguments, 4, 4), writer.bufferSpan(context.outputBuffer("data").buffer(), 4, 4),
             push[0], push[1], push[2], push[3]};
-        // Ordinary data, including the output, never allocates descriptors.
-        if (registry->stats().descriptorWrites != writes) { return render::makeError(render::Error::Failure); }
+        // Producer buffers reuse their descriptors; the output may register once.
+        const auto after = registry->stats();
+        if (after.descriptorWrites - before.descriptorWrites > 1 ||
+            after.cacheHits - before.cacheHits < 3) { return render::makeError(render::Error::Failure); }
         render::EncodedParameters encoded;
         result = writer.encode(params, kProbeABI).transform([&](auto value) { encoded = std::move(value); });
         if (!result) { return result; }

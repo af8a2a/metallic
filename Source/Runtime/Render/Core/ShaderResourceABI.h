@@ -12,6 +12,7 @@ enum class ResourceViewKind : uint8_t { RawBuffer, SampledImage, StorageImage };
 template<ResourceViewKind Kind>
 struct GPUResourceHandle {
     uint32_t index = UINT32_MAX;
+    bool operator==(const GPUResourceHandle&) const = default;
 };
 
 struct GPUSamplerHandle {
@@ -22,6 +23,7 @@ struct GPUBufferSpan {
     GPUResourceHandle<ResourceViewKind::RawBuffer> resource;
     uint32_t byteOffset = 0;
     uint32_t count = 0;
+    bool operator==(const GPUBufferSpan&) const = default;
 };
 
 // An explicit physical address capability; never converted to descriptor + offset.

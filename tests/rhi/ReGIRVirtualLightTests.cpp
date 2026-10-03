@@ -201,7 +201,7 @@ public:
             // Neither PDF mip reduction nor ReGIR uploads a parameter/handle table.
             const auto after = (*registry)->stats();
             REGIR_CHECK(after.parameterBytes == before.parameterBytes);
-            REGIR_CHECK(after.descriptorWrites - before.descriptorWrites <= pdf_.mipCount() + 1u);
+            REGIR_CHECK(after.descriptorWrites - before.descriptorWrites <= pdf_.mipCount() + 3u);
         }
 
         std::unique_ptr<render::Buffer> syntheticGrid;

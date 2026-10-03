@@ -13,22 +13,39 @@ using Metallic.Material;
 #if defined(PROBE_TYPED)
 import ParameterRoot;
 struct MaterialProbeParams {
-    DataSpan<MaterialBin> bins;
-    DataSpan<MaterialTile> tiles;
-    DataSpan<uint> arguments;
-    DataSpan<uint> output;
+    RWBufferSpan<MaterialBin> bins;
+    RWBufferSpan<MaterialTile> tiles;
+    RWBufferSpan<uint> arguments;
+    RWBufferSpan<uint> output;
     uint width; uint height; uint binCount; uint bin;
 };
-#define gBins getParameters<MaterialProbeParams>().bins.data
-#define gTiles getParameters<MaterialProbeParams>().tiles.data
-#define gArguments getParameters<MaterialProbeParams>().arguments.data
-#define gResult getParameters<MaterialProbeParams>().output.data
+#define gBins getParameters<MaterialProbeParams>().bins
+#define gTiles getParameters<MaterialProbeParams>().tiles
+#define gArguments getParameters<MaterialProbeParams>().arguments
+#define gResult getParameters<MaterialProbeParams>().output
 #else
 #define gBins getResource<StructuredBuffer<MaterialBin>>(5)
 #define gTiles getResource<StructuredBuffer<MaterialTile>>(6)
 #define gArguments getResource<StructuredBuffer<uint>>(7)
 #define gResult getResource<RWStructuredBuffer<uint>>(8)
 #endif
+
+void storeResult(uint index, uint value)
+{
+#if defined(PROBE_TYPED)
+    gResult.store(index, value);
+#else
+    gResult[index] = value;
+#endif
+}
+void addResult(uint index, uint value)
+{
+#if defined(PROBE_TYPED)
+    resolveUniform(gResult.resource).InterlockedAdd(gResult.byteOffset + index * 4u, value);
+#else
+    InterlockedAdd(gResult[index], value);
+#endif
+}
 
 struct ProbePush { uint width; uint height; uint binCount; uint bin; };
 ProbePush probePush()
@@ -94,16 +111,16 @@ void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
 {
     ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
-    if (i == 0u) { gResult[kProbeHeader - 2u] = push.bin; gResult[kProbeHeader - 1u] = 0u; }
+    if (i == 0u) { storeResult(kProbeHeader - 2u, push.bin); storeResult(kProbeHeader - 1u, 0u); }
     if (i < push.binCount) {
-        gResult[i * 5u] = gBins[i].offset;
-        gResult[i * 5u + 1u] = gBins[i].count;
-        for (uint c = 0u; c < 3u; ++c) { gResult[i * 5u + 2u + c] = gArguments[i * 3u + c]; }
+        storeResult(i * 5u, gBins[i].offset);
+        storeResult(i * 5u + 1u, gBins[i].count);
+        for (uint c = 0u; c < 3u; ++c) { storeResult(i * 5u + 2u + c, gArguments[i * 3u + c]); }
     }
     if (i < push.width * push.height) {
-        gResult[kProbeHeader + i * 3u] = 0xffffffffu;
-        gResult[kProbeHeader + i * 3u + 1u] = 0u;
-        gResult[kProbeHeader + i * 3u + 2u] = 0u;
+        storeResult(kProbeHeader + i * 3u, 0xffffffffu);
+        storeResult(kProbeHeader + i * 3u + 1u, 0u);
+        storeResult(kProbeHeader + i * 3u + 2u, 0u);
     }
 }
 
@@ -119,18 +136,18 @@ void materialIndirectProbeMain(uint3 group : SV_GroupID)
     uint lane = WaveGetLaneIndex();
     uint columns = (push.width + 7u) / 8u, rows = (push.height + 3u) / 4u;
     if (tile.tileIndex >= columns * rows || tile.laneMask == 0u) {
-        if (WaveIsFirstLane()) { InterlockedAdd(gResult[kProbeHeader - 1u], 1u); }
+        if (WaveIsFirstLane()) { addResult(kProbeHeader - 1u, 1u); }
         return;
     }
     if ((tile.laneMask & (1u << lane)) == 0u) { return; }
     uint2 pixel = materialTilePixel(tile, lane, push.width);
-    if (any(pixel >= uint2(push.width, push.height))) { InterlockedAdd(gResult[kProbeHeader - 1u], 1u); return; }
+    if (any(pixel >= uint2(push.width, push.height))) { addResult(kProbeHeader - 1u, 1u); return; }
     uint result = kProbeHeader + (pixel.y * push.width + pixel.x) * 3u;
-    gResult[result] = push.bin;
-    InterlockedAdd(gResult[result + 1u], 1u);
-    gResult[result + 2u] = WaveGetLaneCount();
+    storeResult(result, push.bin);
+    addResult(result + 1u, 1u);
+    storeResult(result + 2u, WaveGetLaneCount());
 #if PROBE_ALTERNATE
     // Detect ignored permutation switches as well as the actual subgroup width.
-    gResult[result + 2u] += 100u;
+    addResult(result + 2u, 100u);
 #endif
 }

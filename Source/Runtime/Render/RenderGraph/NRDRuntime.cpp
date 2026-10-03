@@ -117,17 +117,17 @@ Format formatFromNrd(denoising::Format format)
     return Format::Unknown;
 }
 
-constexpr uint64_t kNRDABI = 0x4e52445000000001ull;
+constexpr uint64_t kNRDABI = 0x4e52445000000002ull;
 struct NRDPushData {
-    uint64_t constants;
-    uint64_t resources;
+    GPUBufferSpan constants;
+    GPUBufferSpan resources;
 };
 struct NRDResourceIndices {
     uint32_t sampled[32]{};
     uint32_t storage[16]{};
     uint32_t samplers[2]{};
 };
-static_assert(sizeof(NRDPushData) == 16);
+static_assert(sizeof(NRDPushData) == 24);
 static_assert(sizeof(NRDResourceIndices) == 200);
 static_assert(offsetof(NRDResourceIndices, storage) == 128);
 static_assert(offsetof(NRDResourceIndices, samplers) == 192);
@@ -544,7 +544,7 @@ Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
         const auto filter = i == 0 ? SamplerFilter::Nearest : SamplerFilter::Linear;
         indices.samplers[i] = static_cast<uint32_t>(writer.sampler({.minFilter = filter, .magFilter = filter,
             .mipFilter = SamplerFilter::Nearest, .addressU = SamplerAddressMode::ClampToEdge,
-            .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge}).value);
+            .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge}).index);
     }
     uint32_t sampled = 0, storage = 0;
     for (uint32_t i = 0; i < stage.resourcesNum; ++i) {
@@ -552,13 +552,13 @@ Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
         const auto& texture = textures[i];
         const bool output = resource.descriptorType == denoising::DescriptorType::STORAGE_TEXTURE;
         if (output)
-            indices.storage[storage++] = static_cast<uint32_t>(writer.storageImage(texture.view).value);
+            indices.storage[storage++] = static_cast<uint32_t>(writer.storageImage(texture.view).index);
         else
-            indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, ResourceState::General).value);
+            indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, ResourceState::General).index);
     }
     if (!writer.status()) { return writer.status(); }
-    const NRDPushData params{stage.constantBufferDataSize ? writer.data(stage.constantBufferData, stage.constantBufferDataSize) : 0,
-        writer.data(&indices, sizeof(indices))};
+    const NRDPushData params{stage.constantBufferDataSize ? writer.dataSpan(stage.constantBufferData, stage.constantBufferDataSize) : GPUBufferSpan{},
+        writer.dataSpan(&indices, sizeof(indices), sizeof(indices), alignof(NRDResourceIndices))};
     EncodedParameters encoded;
     auto result = writer.encode(params, kNRDABI).transform([&](auto value) { encoded = std::move(value); });
     if (!result) { return result; }

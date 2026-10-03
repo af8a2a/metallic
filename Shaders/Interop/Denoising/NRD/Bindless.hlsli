@@ -10,10 +10,12 @@ struct NRDResourceIndices
     uint samplers[2];
 };
 
+import ShaderCore;
+
 struct NRDPushData
 {
-    uint* constants;
-    NRDResourceIndices* resources;
+    Metallic::BufferSpan<uint> constants;
+    Metallic::BufferSpan<NRDResourceIndices> resources;
 };
 
 import ParameterRoot;
@@ -40,3 +42,8 @@ import ParameterRoot;
 #define NRD_SAMPLERS_START
 #define NRD_SAMPLER(...)
 #define NRD_SAMPLERS_END
+
+T nrdConstants<T>()
+{
+    return Metallic::resolveUniform(gNrdPush.constants.resource).Load<T>(gNrdPush.constants.byteOffset);
+}

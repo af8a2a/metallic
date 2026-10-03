@@ -1,8 +1,11 @@
 # Shared registry、typed 参数与子系统资源身份
 
-后续 DR-first 迁移见 [ResourceAccessABI.md](ResourceAccessABI.md)：已迁移的后处理路径使用
-32 位 Metallic handle 和 descriptor-relative BufferSpan。下文 64 位 handle / 普通数据 BDA
-描述保留为旧路径的历史与兼容契约，不再作为新 shader 接口的目标。
+当前契约见 [ResourceAccessABI.md](ResourceAccessABI.md)：renderer image/buffer 句柄统一为 32 位，
+普通数据、资源表、常量表和 ParameterRoot 均通过 DR buffer 读取。
+
+**以下章节是迁移历史记录，不是当前 API 指南。** 其中的 64 位 image/buffer handle、
+`DataSpan`、`writer.dataBuffer()`、BDA 参数根和旧布局已被移除；历史测试数字只适用于当时版本。
+当前仍适用的资源保留、设备 provenance、同步和提交期所有权原则没有改变。
 
 ## 已接入的路径
 

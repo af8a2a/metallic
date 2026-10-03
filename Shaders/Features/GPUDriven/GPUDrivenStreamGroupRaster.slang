@@ -1,10 +1,13 @@
+import ShaderCore;
+using Metallic;
+
 // Production stream raster for fixed wave32 devices; 64/128 are A/B references.
 #include "GPUDrivenStreamWorkRaster.slang"
 
 void rasterStreamClusterGroup(uint3 group, uint lane, GPUDrivenStreamAssetPush push, uint groupSize)
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    StructuredBuffer<uint> bins =
+        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane < WaveGetLaneCount()) {

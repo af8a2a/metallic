@@ -24,7 +24,7 @@ struct ComputeProgramBindingDesc {
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
-    // DataBuffer only: explicit GPU element ABI; no descriptor is allocated.
+    // DataBuffer only: explicit element ABI for a descriptor-backed buffer span.
     uint32_t dataStride = 0;
     uint32_t dataAlignment = 0;
     bool operator==(const ComputeProgramBindingDesc&) const = default;

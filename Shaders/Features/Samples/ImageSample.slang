@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 struct ImageSampleVertexOutput
 {
     float4 position : SV_Position;
@@ -35,8 +38,8 @@ ImageSampleVertexOutput imageSampleVertexMain(uint vertexIndex : SV_VertexID)
 [shader("fragment")]
 float4 imageSampleFragmentMain(ImageSampleVertexOutput input, uniform SampledImagePush bindless) : SV_Target0
 {
-    DescriptorHandle<Texture2D<float4>> imageHandle =
-        DescriptorHandle<Texture2D<float4>>(uint2(bindless.sourceImage, 0));
+    Texture2D<float4> imageHandle =
+        resolveUniform(ResourceHandle<Texture2D<float4>>(bindless.sourceImage));
     Texture2D<float4> image = imageHandle;
 
     uint width = 1;

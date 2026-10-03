@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 // Shared domain evaluation for resident and streamed patches. The table and
 // material descriptors are immutable for the lifetime of the graph bindings.
 struct TessMaterial
@@ -30,7 +33,7 @@ float tessHeight(TessMaterial material, float2 uv)
 {
     if (material.enabled == 0u || material.texture == 0xffffffffu) { return 0.0; }
     uv = float2(dot(material.uv0.xy, uv) + material.uv0.z, dot(material.uv1.xy, uv) + material.uv1.z);
-    DescriptorHandle<Texture2D<float4>> handle = DescriptorHandle<Texture2D<float4>>(uint2(material.texture, 0));
+    Texture2D<float4> handle = resolveNonUniform(ResourceHandle<Texture2D<float4>>(material.texture));
     Texture2D<float4> image = handle;
     uint width, height;
     image.GetDimensions(width, height);

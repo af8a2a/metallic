@@ -5665,19 +5665,27 @@ Result<> BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer
 
 Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, Buffer& buffer)
 {
-    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || buffer.impl_ == nullptr) {
+    auto slice = buffer.slice();
+    return slice ? writeStorageBuffer(handle, *slice) : makeError(slice.error());
+}
+
+Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, const BufferSlice& buffer)
+{
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || !buffer.allocation_ ||
+        buffer.allocation_->device != impl_->device ||
+        (uint32_t(buffer.allocationDesc().usage) & uint32_t(BufferUsageBits::Storage)) == 0) {
         return makeError(Error::InvalidArgument);
     }
 
     VkBufferDeviceAddressInfo addressInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = buffer.impl_->buffer,
+        .buffer = buffer.allocation_->buffer,
     };
     const VkDeviceAddress address = vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
         address,
-        buffer.impl_->desc.size,
+        buffer.allocationDesc().size,
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
         impl_->resourceHeap.mapped);
     if (result != VK_SUCCESS) {

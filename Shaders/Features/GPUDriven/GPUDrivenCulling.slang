@@ -1,3 +1,6 @@
+import ShaderCore;
+using Metallic;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
@@ -10,10 +13,8 @@ void gpuDrivenPreviewResetMain(
     uniform GPUDrivenPreviewPush push)
 {
     if (push.passIndex == 0u) {
-        DescriptorHandle<RWStructuredBuffer<uint>> visibleInstanceCounterHandle =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-                push.visibleInstanceCounterBuffer,
-                0));
+        RWStructuredBuffer<uint> visibleInstanceCounterHandle =
+            resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceCounterBuffer));
         visibleInstanceCounterHandle[0] = 0u;
     }
 }
@@ -24,20 +25,16 @@ void gpuDrivenPreviewInstanceCullMain(
     uint3 dispatchThreadId : SV_DispatchThreadID,
     uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.paramsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.instanceBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> visibilityHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.instanceVisibilityBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> visibleInstanceIdsHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            push.visibleInstanceIdsBuffer,
-            0));
-    DescriptorHandle<RWStructuredBuffer<uint>> visibleInstanceCounterHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            push.visibleInstanceCounterBuffer,
-            0));
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
+    StructuredBuffer<GPUDrivenPreviewInstance> instanceHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(push.instanceBuffer));
+    RWStructuredBuffer<uint> visibilityHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.instanceVisibilityBuffer));
+    RWStructuredBuffer<uint> visibleInstanceIdsHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceIdsBuffer));
+    RWStructuredBuffer<uint> visibleInstanceCounterHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(push.visibleInstanceCounterBuffer));
 
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint instanceIndex = dispatchThreadId.x;
@@ -47,10 +44,8 @@ void gpuDrivenPreviewInstanceCullMain(
 
     RWStructuredBuffer<uint> visibility = visibilityHandle;
     if (push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
-        DescriptorHandle<StructuredBuffer<uint>> streamOwnerMaskHandle =
-            DescriptorHandle<StructuredBuffer<uint>>(uint2(
-                push.streamOwnerMaskBuffer,
-                0));
+        StructuredBuffer<uint> streamOwnerMaskHandle =
+            resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.streamOwnerMaskBuffer));
         StructuredBuffer<uint> streamOwnerMask = streamOwnerMaskHandle;
         if (streamOwnerMask[instanceIndex] != 0u) {
             // Early culling clears stale shared state before the Stream
@@ -116,8 +111,8 @@ void gpuDrivenPreviewHzbMain(
     uint3 dispatchThreadId : SV_DispatchThreadID,
     uniform GPUDrivenPreviewPush push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.paramsBuffer, 0));
+    StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
+        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint mipWidth = mipDimension(params.width, push.mipLevel);
     uint mipHeight = mipDimension(params.height, push.mipLevel);
@@ -127,15 +122,15 @@ void gpuDrivenPreviewHzbMain(
 
     uint currentHzb = params.frameIndex & 1u;
     uint hzbHandleIndex = currentHzb == 0 ? push.hzbBuffer0 : push.hzbBuffer1;
-    DescriptorHandle<RWStructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<RWStructuredBuffer<float>>(uint2(hzbHandleIndex, 0));
+    RWStructuredBuffer<float> hzbHandle =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<float>>(hzbHandleIndex));
     RWStructuredBuffer<float> hzb = hzbHandle;
     uint destinationIndex = hzbMipOffset(params, push.mipLevel) +
         dispatchThreadId.y * mipWidth + dispatchThreadId.x;
 
     if (push.mipLevel == 0) {
-        DescriptorHandle<Texture2D<float>> depthHandle =
-            DescriptorHandle<Texture2D<float>>(uint2(push.depthImage, 0));
+        Texture2D<float> depthHandle =
+            resolveUniform(ResourceHandle<Texture2D<float>>(push.depthImage));
         Texture2D<float> depth = depthHandle;
         hzb[destinationIndex] = depth.Load(int3(dispatchThreadId.xy, 0));
         return;
