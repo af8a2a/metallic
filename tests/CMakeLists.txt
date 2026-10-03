@@ -18,6 +18,32 @@ add_test(NAME MetallicShaderWarmupStartupTests COMMAND MetallicShaderWarmupStart
 set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;shader" TIMEOUT 30)
 
 
+add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp)
+target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_compile_definitions(MetallicShaderRequestsTests PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+    METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
+target_link_libraries(MetallicShaderRequestsTests PRIVATE MetallicShaderWarmupCore GTest::gtest_main)
+if(MSVC)
+    target_compile_options(MetallicShaderRequestsTests PRIVATE /EHsc /utf-8)
+endif()
+if(WIN32)
+    set(_shader_request_test_slang_root "${CMAKE_SOURCE_DIR}/External/slang")
+    if(DEFINED SLANG_ROOT)
+        set(_shader_request_test_slang_root "${SLANG_ROOT}")
+    endif()
+    file(GLOB _shader_request_test_slang_dlls "${_shader_request_test_slang_root}/bin/*.dll")
+    foreach(_dll IN LISTS _shader_request_test_slang_dlls)
+        add_custom_command(TARGET MetallicShaderRequestsTests POST_BUILD COMMAND ${CMAKE_COMMAND} -E
+            copy_if_different "${_dll}" "$<TARGET_FILE_DIR:MetallicShaderRequestsTests>")
+    endforeach()
+endif()
+metallic_copy_spdlog_runtime(MetallicShaderRequestsTests)
+add_test(NAME MetallicShaderRequestsTests COMMAND MetallicShaderRequestsTests)
+set_tests_properties(MetallicShaderRequestsTests PROPERTIES LABELS "editor;shader" TIMEOUT 300)
+
+
 add_subdirectory(perf)
 
 if(METALLIC_ENABLE_NRD)

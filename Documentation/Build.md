@@ -39,6 +39,38 @@ USD tests skip when USD is disabled; a separate test checks the disabled importe
 Closing optional integrations changes which render passes can run. Use the full
 profile when working on those integrations.
 
+## Runtime shader cache and warmup
+
+Applications warm the shared `.cache/shaders/spirv` cache before initialization.
+Use `--skip-shader-warmup` to compile requests on demand. The manual
+`MetallicShaderWarmup` target stays outside default builds and application dependencies:
+
+```powershell
+cmake --build build-release --target MetallicShaderCompiler
+.\build-release\Source\MetallicShaderCompiler.exe --list
+.\build-release\Source\MetallicShaderCompiler.exe --debug-mode disabled --jobs 4
+```
+
+[ShaderRequests.h](../Source/Runtime/Render/Core/ShaderRequests.h) defines owning
+requests and the factories used by runtime scene, ray-query and shadow passes.
+[BuiltinShaderRequests.h](../Source/Runtime/Render/Core/BuiltinShaderRequests.h)
+selects the production warmup variants; `Tools/ShaderWarmupRequests.h` only adapts
+that catalog to the tool. Macro, capability and search-path order remain part of
+cache identity. Scene requests include the runtime `METALLIC_CUSTOM_MATERIALS=0`
+default so prewarmed OpenPBR and path-tracing binaries are reused.
+
+The catalog deduplicates complete requests after generation. Deferred continuation
+is omitted from classes 0-3 and streamed configurations without ray queries, where
+the shader's continuation branch is unreachable. This reduces the current
+conventional-texture Deferred catalog from 66 to 44 requests, and the RTXCR-enabled
+catalog from 210 to 188. SDK-specific NTC/NRD permutations, generated custom material
+programs and non-default pass settings still compile on demand. Debug mode and
+mapped/native descriptor mode remain separate cache identities.
+
+Build and run `MetallicShaderRequestsTests` in an existing tests-enabled tree to
+verify catalog coverage, warmup-to-runtime cache reuse, and compiled SPIR-V
+equivalence for folded material classes. These checks do not require a GPU.
+
 ## NVIDIA Neural Radiance Cache
 
 `External/NRC` is a Git submodule of the official

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
@@ -864,30 +865,21 @@ public:
         const bool positionFetch = !streamMaterials_ && context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
-        const char* moduleName = nullptr;
-        const char* entryPointName = nullptr;
+        SceneShaderProgram shaderProgram;
         if (visibilityDeferred_) {
-            moduleName = "Features/VisibilityBuffer/VisibilityBufferDeferred";
-            entryPointName = materialBinningEnabled(properties())
-                ? "visibilityBufferDeferredBinnedMain" : "visibilityBufferDeferredMain";
+            shaderProgram = materialBinningEnabled(properties())
+                ? SceneShaderProgram::DeferredBinned : SceneShaderProgram::Deferred;
         } else if (realtime_) {
-            moduleName = "Features/Lighting/SceneRealtimeLighting";
-            entryPointName = "sceneRealtimeLightingMain";
+            shaderProgram = SceneShaderProgram::RealtimeLighting;
         } else if (useOpenPBR) {
-            moduleName = exportGuides
-                ? kOpenPBRRayQueryPathTraceGuidesShaderModuleName
-                : kOpenPBRRayQueryPathTraceShaderModuleName;
-            entryPointName = exportGuides
-                ? kOpenPBRRayQueryPathTraceGuidesEntryPoint
-                : kOpenPBRRayQueryPathTraceEntryPoint;
+            shaderProgram = exportGuides
+                ? SceneShaderProgram::OpenPBRPathTraceGuides : SceneShaderProgram::OpenPBRPathTrace;
         } else {
-            moduleName = exportGuides
-                ? kScenePathTraceGuidesShaderModuleName
-                : kScenePathTraceShaderModuleName;
-            entryPointName = exportGuides
-                ? kScenePathTraceGuidesEntryPoint
-                : kScenePathTraceEntryPoint;
+            shaderProgram = exportGuides ? SceneShaderProgram::PathTraceGuides : SceneShaderProgram::PathTrace;
         }
+        const auto shaderIdentity = sceneShaderIdentity(shaderProgram);
+        const char* moduleName = shaderIdentity.module;
+        const char* entryPointName = shaderIdentity.entry;
         const uint32_t requestedCacheMode = realtime_ ? kScenePathTraceCacheModeOff : cacheModeFromProperties(properties());
         uint32_t cacheMode = requestedCacheMode;
         std::string cacheWarning;
@@ -974,16 +966,22 @@ public:
             }
         }
 
-        std::vector<const char*> capabilities{
-            "spvRayQueryKHR",
-            "spvGroupNonUniformBallot",
+        SceneShaderOptions shaderOptions{
+            .customMaterials = hasValuePrograms(),
+            .streamMaterials = streamMaterials_,
+            .streamRayQueries = streamRayQueries_,
+            .globalView = globalView,
+            .hasRTXCR = METALLIC_HAS_RTXCR != 0,
+            .hasNTC = ntcActive,
+            .cooperativeVector = ntcCooperativeVector,
+            .positionFetch = positionFetch,
+            .realtimeDeferred = visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime",
+            .supplementaryPathTracing = supplementaryPathTracing,
+            .upscalerGuides = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false),
+            .materialInclude = valueSearchPath,
+            .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR,
+            .ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR,
         };
-        if (positionFetch) {
-            capabilities.push_back("spvRayQueryPositionFetchKHR");
-        }
-        if (ntcCooperativeVector) {
-            capabilities.push_back("spvCooperativeVectorNV");
-        }
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeProgramBindingDesc> baseBindings{
@@ -1163,54 +1161,13 @@ public:
                 std::span<const SlangMacroDefine> extraDefines,
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
                 ComputeProgram& outProgram) -> Result<> {
-            std::vector<SlangMacroDefine> defines{
-                {.name = "METALLIC_CUSTOM_MATERIALS", .value = hasValuePrograms() ? "1" : "0"},
-                {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
-                {.name = "METALLIC_STREAM_RAY_QUERIES", .value = streamRayQueries_ ? "1" : "0"},
-                {.name = "METALLIC_GLOBAL_VIEW", .value = globalView ? "1" : "0"},
-                SlangMacroDefine{
-                    .name = "METALLIC_HAS_RTXCR",
-                    .value = METALLIC_HAS_RTXCR ? "1" : "0",
-                },
-                SlangMacroDefine{
-                    .name = "METALLIC_HAS_NTC",
-                    .value = ntcActive ? "1" : "0",
-                },
-                SlangMacroDefine{
-                    .name = "METALLIC_NTC_COOPERATIVE_VECTOR",
-                    .value = ntcCooperativeVector ? "1" : "0",
-                },
-                SlangMacroDefine{
-                    .name = "SCENE_RAYQUERY_ENABLE_POSITION_FETCH",
-                    .value = positionFetch ? "1" : "0",
-                },
-            };
-            defines.push_back({.name = "METALLIC_DEFERRED_LIGHT_GRID", .value = visibilityDeferred_ ? "1" : "0"});
-            defines.push_back({.name = "METALLIC_REALTIME_DEFERRED", .value = visibilityDeferred_ &&
-                properties().value("lightingMode", "reference") == "realtime" ? "1" : "0"});
-            if (visibilityDeferred_) {
-                defines.push_back({.name = "METALLIC_DEFERRED_PATH_TRACING", .value = supplementaryPathTracing ? "1" : "0"});
-            }
-            defines.push_back({.name = "METALLIC_DEFERRED_UPSCALER_GUIDES", .value = visibilityDeferred_ &&
-                boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0"});
-            defines.insert(defines.end(), extraDefines.begin(), extraDefines.end());
-            std::vector<const char*> additionalSearchPaths;
-            if (hasValuePrograms()) { additionalSearchPaths.push_back(valueSearchPath.c_str()); }
-#if METALLIC_HAS_RTXCR
-            additionalSearchPaths.push_back(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
-#endif
-#if METALLIC_HAS_NTC
-            if (ntcActive) {
-                additionalSearchPaths.push_back(METALLIC_NTC_SHADER_INCLUDE_DIR);
-            }
-#endif
+            const auto request = makeSceneShaderRequest(shaderProgram, shaderOptions, extraDefines);
+            const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
             std::string diagnostics;
             auto compiled = compileMaterialExecutable(*context.device,
-                {.moduleName = moduleName, .entryPointName = entryPointName,
-                    .searchPath = kTriangleShaderSearchPath, .additionalSearchPaths = additionalSearchPaths,
-                    .capabilities = capabilities, .macroDefines = defines},
+                source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get(),
                     .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
@@ -1311,14 +1268,12 @@ public:
 
             // SHaRC maintenance programs (clear + resolve).
             auto compileMaintenance =
-                [&](const char* entryPointName, ComputeKernel& outProgram) -> Result<> {
+                [&](SceneShaderProgram program, ComputeKernel& outProgram) -> Result<> {
+                const auto request = makeSceneShaderRequest(program, shaderOptions);
+                const ShaderRequestView source(request);
+                const char* entryPointName = request.entry.c_str();
                 ShaderCompileResult maintenanceCompile;
-                Result<> maintenanceResult = compileSlangShaderToSpirv(SlangShaderDesc{
-                    .moduleName = kSceneSharcMaintenanceShaderModuleName,
-                    .entryPointName = entryPointName,
-                    .searchPath = kTriangleShaderSearchPath,
-                    .capabilities = capabilities,
-                }, maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
+                Result<> maintenanceResult = compileSlangShaderToSpirv(source.desc(), maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
                 if (!maintenanceResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kSceneSharcMaintenanceShaderModuleName;
@@ -1357,13 +1312,13 @@ public:
                 return maintenanceResult;
             };
             if (!sharcClearProgram_.valid()) {
-                result = compileMaintenance("sharcClearMain", sharcClearProgram_);
+                result = compileMaintenance(SceneShaderProgram::SharcClear, sharcClearProgram_);
                 if (!result) {
                     return result;
                 }
             }
             if (!sharcResolveProgram_.valid()) {
-                result = compileMaintenance("sharcResolveMain", sharcResolveProgram_);
+                result = compileMaintenance(SceneShaderProgram::SharcResolve, sharcResolveProgram_);
                 if (!result) {
                     return result;
                 }
@@ -1428,13 +1383,10 @@ public:
             // Tonemap pass producing the final displayable color after the
             // NRC resolve has added the predicted radiance.
             if (!tonemapProgram_.valid()) {
+                const auto request = makeSceneShaderRequest(SceneShaderProgram::Tonemap, shaderOptions);
+                const ShaderRequestView source(request);
                 ShaderCompileResult tonemapCompile;
-                Result<> tonemapResult = compileSlangShaderToSpirv(SlangShaderDesc{
-                    .moduleName = kScenePathTraceTonemapShaderModuleName,
-                    .entryPointName = kScenePathTraceTonemapEntryPointName,
-                    .searchPath = kTriangleShaderSearchPath,
-                    .capabilities = capabilities,
-                }, tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
+                Result<> tonemapResult = compileSlangShaderToSpirv(source.desc(), tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
                 if (!tonemapResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kScenePathTraceTonemapShaderModuleName;

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
@@ -148,27 +149,17 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     }
     traceTextureCounts_[traceIndex] = textureCount;
     if (!trace.valid()) {
-        std::vector<const char*> capabilities{"spvRayQueryKHR"};
-        if (coop) { capabilities.push_back("spvCooperativeVectorNV"); }
-        std::vector<const char*> searchPaths;
-#if METALLIC_HAS_NTC
-        if (ntc) { searchPaths.push_back(METALLIC_NTC_SHADER_INCLUDE_DIR); }
-#endif
-        const SlangMacroDefine defines[] = {
-            {.name = "METALLIC_STREAM_SHADOWS", .value = streamed ? "1" : "0"},
-            {.name = "METALLIC_STREAM_TLAS", .value = streamTlas ? "1" : "0"},
-            {.name = "METALLIC_HAS_NTC", .value = ntc ? "1" : "0"},
-            {.name = "METALLIC_NTC_COOPERATIVE_VECTOR", .value = coop ? "1" : "0"},
+        ShadowShaderOptions shaderOptions{
+            .streamed = streamed, .streamTlas = streamTlas, .hasNTC = ntc, .cooperativeVector = coop,
         };
+#if METALLIC_HAS_NTC
+        shaderOptions.ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR;
+#endif
+        const auto request = makeShadowShaderRequest(shaderOptions);
+        const ShaderRequestView source(request);
         ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv({
-            .moduleName = "Features/Lighting/ScreenSpaceShadows",
-            .entryPointName = "rayTracedShadowsMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .additionalSearchPaths = searchPaths,
-            .capabilities = capabilities,
-            .macroDefines = {defines, 4},
-        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        auto result = compileSlangShaderToSpirv(source.desc(), shader.diagnostics)
+            .transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         std::vector<ComputeProgramBindingDesc> layout = {
             {.binding = kShadowBinding}, {.binding = kShadowBinding + 1, .kind = ComputeResourceBindingKind::SampledImage},

@@ -20,15 +20,6 @@ using namespace metallic::render;
 
 namespace {
 
-std::vector<const char*> stringPointers(const std::vector<std::string>& strings)
-{
-    std::vector<const char*> pointers;
-    for (const auto& string : strings) {
-        pointers.push_back(string.c_str());
-    }
-    return pointers;
-}
-
 struct CompileOutcome {
     bool cacheHit = false;
     std::string error;
@@ -36,20 +27,8 @@ struct CompileOutcome {
 
 CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& request, const std::string& cacheDirectory)
 {
-    const auto capabilities = stringPointers(request.capabilities);
-    const auto searchPaths = stringPointers(request.searchPaths);
-    std::vector<SlangMacroDefine> defines;
-    for (const auto& define : request.defines) {
-        defines.push_back({define.first.c_str(), define.second.c_str()});
-    }
-    const SlangShaderDesc desc{
-        .moduleName = request.module.c_str(),
-        .entryPointName = request.entry.c_str(),
-        .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-        .additionalSearchPaths = searchPaths,
-        .capabilities = capabilities,
-        .macroDefines = defines,
-    };
+    const ShaderRequestView source(request);
+    const SlangShaderDesc desc = source.desc();
     bool cacheHit = false;
     const SlangShaderCacheOptions options{
         .cacheDirectory = cacheDirectory.empty() ? nullptr : cacheDirectory.c_str(),

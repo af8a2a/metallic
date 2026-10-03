@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -106,36 +107,16 @@ public:
         rayQueryProgram_.clear();
 
         ShaderCompileResult computeCompile;
-        std::vector<const char*> capabilities{"spvRayQueryKHR"};
-        if (positionFetch) { capabilities.push_back("spvRayQueryPositionFetchKHR"); }
-        if (ntcCooperativeVector) {
-            capabilities.push_back("spvCooperativeVectorNV");
-        }
-        const SlangMacroDefine ntcDefines[] = {
-            {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", positionFetch ? "1" : "0"},
-            SlangMacroDefine{
-                .name = "METALLIC_HAS_NTC",
-                .value = ntcActive ? "1" : "0",
-            },
-            SlangMacroDefine{
-                .name = "METALLIC_NTC_COOPERATIVE_VECTOR",
-                .value = ntcCooperativeVector ? "1" : "0",
-            },
+        SceneRayQueryOptions shaderOptions{
+            .positionFetch = positionFetch, .hasNTC = ntcActive, .cooperativeVector = ntcCooperativeVector,
         };
-        std::vector<const char*> additionalSearchPaths;
 #if METALLIC_HAS_NTC
-        if (ntcActive) {
-            additionalSearchPaths.push_back(METALLIC_NTC_SHADER_INCLUDE_DIR);
-        }
+        shaderOptions.ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR;
 #endif
-        result = compileSlangShaderToSpirv(SlangShaderDesc{
-            .moduleName = kSceneMaterialVisualizationShaderModuleName,
-            .entryPointName = kSceneMaterialVisualizationEntryPoint,
-            .searchPath = kTriangleShaderSearchPath,
-            .additionalSearchPaths = additionalSearchPaths,
-            .capabilities = capabilities,
-            .macroDefines = {ntcDefines, static_cast<uint32_t>(std::size(ntcDefines))},
-        }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
+        const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization, shaderOptions);
+        const ShaderRequestView source(request);
+        result = compileSlangShaderToSpirv(source.desc(), computeCompile.diagnostics)
+            .transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
             log += kSceneMaterialVisualizationShaderModuleName;
