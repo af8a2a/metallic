@@ -13,6 +13,8 @@
 #include "Runtime/Scene/SceneGraph.h"
 #include "Runtime/Scene/SceneLighting.h"
 
+namespace metallic::material { struct ResolvedMaterialInstance; class MaterialAssetLibrary; }
+
 namespace metallic::scene {
 
 inline constexpr int32_t kInvalidSceneIndex = -1;
@@ -414,6 +416,10 @@ public:
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
+    // Resolve semantic resources transactionally. New texture bindings invalidate
+    // scene resource identity; factor-only changes retain the old upload fast path.
+    bool applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
+        const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error);
     // SceneDocument import transfers emission ownership while preserving source
     // nodes, transform inheritance and editable LightComponent metadata.
     bool virtualizeImportedLight(SceneEntity object);

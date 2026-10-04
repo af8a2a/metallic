@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <map>
 
 namespace metallic::scene {
 
@@ -29,6 +30,9 @@ public:
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
+    bool setMaterialAsset(int32_t materialIndex, std::string_view uri,
+        const std::filesystem::path& assetRoot, std::string& error);
+    bool reloadMaterialAsset(int32_t materialIndex, std::string& error);
     bool setSourceMountMatrix(std::string_view sourceId, const float4x4& mountMatrix);
     bool setSourceEnabled(std::string_view sourceId, bool enabled);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
@@ -67,6 +71,13 @@ private:
     // reload does not recreate it. New source nodes can still be imported.
     std::vector<ImportedLightBinding> importedLightSources_;
     std::vector<RenderMaterial> importedMaterials_;
+    struct MaterialAssetBinding
+    {
+        std::string uri;
+        std::filesystem::path root;
+        RenderMaterial resolved;
+    };
+    std::map<int32_t, MaterialAssetBinding> materialAssets_;
     bool sidecarLoaded_ = false;
     bool hasEnvironmentSettings_ = false;
     bool compositionDocument_ = false;

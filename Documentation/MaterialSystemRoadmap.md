@@ -6,6 +6,8 @@
 
 2026-10-04 基线进展：已将三个 LookDev 参考固定为独立图，完成三进程 HDR/GPU timestamp 采集、独立 validation 和管线寄存器诊断。实际结果、当前 ABI、A/B 命令及仍缺失的硬件/分箱指标见 [MaterialSystemPhase0](MaterialSystemPhase0.md)。这不将原始规划文字视为所有阶段的当前实现状态。
 
+2026-10-04 资产模型进展：已实现外部路线图的 **Phase 1 — Material Definition / Instance / Program**，包括 `.material` 稀疏继承、语义 schema、版本迁移入口和 SceneDocument 绑定；复用已有共享程序与 GPU 上传。接口、示例、验收证据和阶段边界见 [MaterialSystemPhase1](MaterialSystemPhase1.md)。外部 Phase 编号与本文原有 M 编号分别记录。
+
 ## 1 目标和首个架构验收点
 
 最终统一的是材质定义、编译、实例、资源生命周期和散射接口。Surface、Fiber 及特殊输运仍保留各自的交互数据、能力边界和执行策略。

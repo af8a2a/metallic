@@ -56,13 +56,15 @@ struct MaterialDefinition
     std::string_view approximations;
 };
 
+using MaterialProgramKey = uint64_t;
+
 struct MaterialProgram
 {
     const MaterialDefinition* definition;
     const MaterialSchema* schema;
     // Built-in semantic key, not the Slang kernel/cache key. Parameters and
     // texture handles never participate. Kernel keys remain in SlangCompiler.
-    uint64_t key;
+    MaterialProgramKey key;
 };
 
 struct MaterialInstance
@@ -75,6 +77,9 @@ inline constexpr uint64_t kLegacyMaterialABI = 0x4d41544c00000001ull;
 
 std::span<const MaterialProgram> builtinMaterialPrograms();
 const MaterialProgram* findMaterialProgram(MaterialProgramId id);
+// Authoring definition implementation -> shared existing program. Defaults,
+// resource URIs and instance overrides never add shader variants.
+const MaterialProgram* findMaterialProgram(std::string_view implementation);
 MaterialProgramId legacyMaterialProgramId(const LegacyMaterialPayload& parameters);
 
 // Strict layout validation precedes allocation/copy. Destination defaults are

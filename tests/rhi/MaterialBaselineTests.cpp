@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Material/MaterialAsset.h"
 
 #include <cmath>
 #include <cstring>
@@ -9,10 +10,14 @@
 namespace metallic::tests {
 namespace {
 
-class MaterialBaselineTest final : public RHITest
+class MaterialBaselineTest : public RHITest
 {
 public:
-    MaterialBaselineTest() { name = "material_phase0_baseline"; type = RHITestType::Rendering; }
+    explicit MaterialBaselineTest(bool assetRoundTrip = false) : assetRoundTrip_(assetRoundTrip)
+    {
+        name = assetRoundTrip ? "material_asset_phase0_equivalence" : "material_phase0_baseline";
+        type = RHITestType::Rendering;
+    }
 
     RHITestResult run(RHITestContext& context) override
     {
@@ -37,6 +42,22 @@ public:
                     !document.documentWarning().empty()) { return RHITestResult::fail("Baseline scene load failed"); }
                 if (document.cameras().empty() || document.cameras()[0].fallback || document.lighting().autoExposure.enabled) {
                     return RHITestResult::fail("Baseline requires an authored camera and manual exposure");
+                }
+                if (assetRoundTrip_) {
+                    const auto assetRoot = context.outputDirectory / "assets" / id;
+                    std::filesystem::create_directories(assetRoot);
+                    const auto definition = material::defaultOpenPBRDefinition();
+                    std::ofstream(assetRoot / "OpenPBR.materialdef") << material::serializeMaterialDefinition(definition);
+                    material::MaterialAssetLibrary library(assetRoot);
+                    for (size_t index = 0; index < document.materials().size(); ++index) {
+                        material::MaterialInstance instance;
+                        if (!material::createMaterialInstance(document.materials()[index], "asset://OpenPBR.materialdef", definition,
+                            [](auto slot, auto) { return "imported://" + std::string(slot); }, instance, log)) { return RHITestResult::fail(log); }
+                        const auto uri = "asset://Material" + std::to_string(index) + ".material";
+                        if (!library.save(uri, instance, log) || !document.setMaterialAsset(static_cast<int32_t>(index), uri, assetRoot, log)) {
+                            return RHITestResult::fail(log);
+                        }
+                    }
                 }
                 preview.bindRuntimeScene(&document);
                 preview.setEnvironment(document.environment());
@@ -112,8 +133,17 @@ public:
         if (!output) { return RHITestResult::fail("Baseline report write failed"); }
         return RHITestResult::pass("Three fixed linear HDR references and 64 warmed GPU timestamp frames per case");
     }
+private:
+    bool assetRoundTrip_ = false;
 };
 METALLIC_REGISTER_RHI_TEST(MaterialBaselineTest);
+
+class MaterialAssetBaselineTest final : public MaterialBaselineTest
+{
+public:
+    MaterialAssetBaselineTest() : MaterialBaselineTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(MaterialAssetBaselineTest);
 
 } // namespace
 } // namespace metallic::tests

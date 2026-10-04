@@ -81,6 +81,14 @@ MaterialProgramId legacyMaterialProgramId(const LegacyMaterialPayload& parameter
         ? MaterialProgramId::RTXCRChiang : MaterialProgramId::OpenPBRComposite;
 }
 
+const MaterialProgram* findMaterialProgram(std::string_view implementation)
+{
+    for (const auto& program : builtinMaterialPrograms()) {
+        if (program.definition->name == implementation) { return &program; }
+    }
+    return nullptr;
+}
+
 bool validateMaterialSchema(const MaterialSchema& schema, std::string& diagnostics)
 {
     diagnostics.clear();

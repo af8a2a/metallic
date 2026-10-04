@@ -242,6 +242,7 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 )
 
 add_executable(MetallicSceneTests
+    scene/MaterialAssetTests.cpp
     scene/glTFInstancingTests.cpp
     scene/GeometryAttributesTests.cpp
     scene/MeshletStreamReferenceCodecTests.cpp
@@ -336,6 +337,7 @@ add_executable(MetallicRHITests
     rhi/ZorahFullFirstFrameTests.cpp
     rhi/MaterialBinningTests.cpp
     rhi/MaterialRuntimeTests.cpp
+    rhi/MaterialAssetTests.cpp
     rhi/MaterialBaselineTests.cpp
     rhi/MaterialValueProgramTests.cpp
     rhi/ResourceRegistryTests.cpp
