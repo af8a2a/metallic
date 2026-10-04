@@ -4367,6 +4367,10 @@ bool Scene::loadInternal(
                 "diffuseReflectionTint",
                 material.rtxcrHairDiffuseReflectionTint);
         }
+        for (auto* colorTexture : {&material.baseColorTexture, &material.emissiveTexture,
+                &material.specularColorTexture, &material.diffuseTransmissionColorTexture}) {
+            colorTexture->colorMetadata = render::ksRGBColorTexture;
+        }
         materials_.push_back(material);
     }
     logSceneLoadStep("asset metadata, images, textures, and materials", metadataBegin);
@@ -5131,7 +5135,7 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
     for (const auto& [name, member] : material::detail::kTextures) {
         const auto& a = materials_[materialIndex].*member;
         const auto& b = candidate.*member;
-        changed |= a.textureIndex != b.textureIndex || a.texCoord != b.texCoord || a.uvTransform != b.uvTransform;
+        changed |= a.textureIndex != b.textureIndex || a.texCoord != b.texCoord || a.uvTransform != b.uvTransform || a.colorMetadata != b.colorMetadata;
     }
     if (changed) {
         materials_[materialIndex] = std::move(candidate);

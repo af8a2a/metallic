@@ -2,6 +2,7 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
@@ -211,6 +212,10 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
     require(mapped != nullptr, "sample map");
     std::memcpy(result.data(), mapped, 48);
     output->unmap();
+    if ((flags & 4u) == 0u) {
+        const auto source = color::toLinearRec709({result[8], result[9], result[10]});
+        std::copy(source.begin(), source.end(), result.begin() + 8);
+    }
     return result;
 }
 

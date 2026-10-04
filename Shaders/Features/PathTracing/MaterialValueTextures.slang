@@ -55,7 +55,13 @@ float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 
     lod = clamp(lod, 0.0, float(max(mipCount, 1u) - 1u));
     const uint lo = uint(floor(lod)), hi = min(lo + 1u, max(mipCount, 1u) - 1u);
     float2 transformed = transformMaterialUv(info, uv);
-    return lerp(materialValueBilinear(info, context.ntcCount, transformed, lo),
+    float4 sample = lerp(materialValueBilinear(info, context.ntcCount, transformed, lo),
         materialValueBilinear(info, context.ntcCount, transformed, hi), frac(lod));
+    // IR v1 arithmetic retains its original untyped Rec.709 sample semantics.
+    // Explicitly tagged wide-gamut linear colors enter that authoring basis.
+    if ((uint(info.transform0.w) & 4u) == 0u && ((uint(info.transform0.w) >> 3u) & 3u) != 0u) {
+        sample.rgb = Metallic.WorkingColor::toLinearRec709(materialTextureColor(sample.rgb, info.transform0.w));
+    }
+    return sample;
 }
 #endif

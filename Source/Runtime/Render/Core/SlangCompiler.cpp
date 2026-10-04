@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 
 #include <slang-com-ptr.h>
@@ -480,6 +481,7 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
 {
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kShaderCacheRequestVersion);
+    hash = hashValue(hash, static_cast<uint8_t>(sceneWorkingColorSpace()));
     hash = hashText(hash, SLANG_VERSION_NUMERIC);
     hash = hashValue(hash, static_cast<int32_t>(kSlangOptimizationLevel));
     hash = hashText(hash, "spirv-direct");
@@ -894,6 +896,12 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         }
     }
 
+    for (const auto& macro : desc.macroDefines) {
+        if (macro.name != nullptr && std::string_view(macro.name) == "METALLIC_WORKING_SPACE_ACESCG") {
+            log = "Working color space is process-wide; per-shader override is forbidden";
+            return makeError(Error::InvalidArgument);
+        }
+    }
     const SlangShaderDebugMode debugMode = slangShaderDebugMode();
     const uint64_t requestHash = shaderRequestHash(desc, debugMode);
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
@@ -1049,6 +1057,13 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
             },
         });
     }
+
+    compilerOptions.push_back(slang::CompilerOptionEntry{
+        .name = slang::CompilerOptionName::MacroDefine,
+        .value = {.kind = slang::CompilerOptionValueKind::String,
+            .stringValue0 = "METALLIC_WORKING_SPACE_ACESCG",
+            .stringValue1 = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg ? "1" : "0"},
+    });
 
     // Sessions cache imported modules. Keep a fresh session per request so a
     // source edit or SDK macro permutation cannot reuse stale module IR.

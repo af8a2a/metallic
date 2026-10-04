@@ -1,6 +1,8 @@
 # Shader 模块
 
-Renderer 固定使用 scene-linear Rec.709/D65 HDR；显示变换、SDR/scRGB/HDR10 输出与
+See [Color Pipeline](../Documentation/ColorPipeline.md) for ACEScg working-space and source/display contracts.
+
+Renderer 默认使用 scene-linear ACEScg/AP1/D60 HDR；Rec.709/D65 保留为兼容模式。显示变换、SDR/scRGB/HDR10 输出与
 LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 
 Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import`，同一模块的实现

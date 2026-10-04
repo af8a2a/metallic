@@ -47,7 +47,7 @@ static const float kFP16Maximum = 65504.0;
 
 float luminance(float3 color)
 {
-    return dot(max(color, 0.0), float3(0.2126, 0.7152, 0.0722));
+    return Metallic.WorkingColor::luminance(max(color, 0.0));
 }
 
 float2 currentLightingLuminance(uint2 pixel)
@@ -58,8 +58,8 @@ float2 currentLightingLuminance(uint2 pixel)
     float3 diffuseAlbedo = baseColor * (1.0 - metalness);
     float3 specularF0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metalness);
     float2 signal = float2(
-        luminance(gNoisyDiffuse[pixel].rgb * diffuseAlbedo),
-        luminance(gNoisySpecular[pixel].rgb * specularF0));
+        luminance(Metallic.WorkingColor::fromLinearRec709(gNoisyDiffuse[pixel].rgb) * diffuseAlbedo),
+        luminance(Metallic.WorkingColor::fromLinearRec709(gNoisySpecular[pixel].rgb) * specularF0));
     return all(isfinite(signal)) ? max(signal, 0.0) : float2(0.0, 0.0);
 }
 

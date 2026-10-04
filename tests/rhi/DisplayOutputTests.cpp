@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/Core/ColorGrading.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 
 #include <array>
 #include <atomic>
@@ -111,7 +112,7 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const float level = context.properties().value("level", 1.0f);
-        const auto rgb = context.properties().value("rgb", std::array<float, 3>{level, level, level});
+        const auto rgb = render::color::fromLinearRec709(context.properties().value("rgb", std::array<float, 3>{level, level, level}));
         const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
             .layout = render::TextureLayout::ColorAttachment, .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store, .clearColor = {rgb[0], rgb[1], rgb[2], 1.0f}};

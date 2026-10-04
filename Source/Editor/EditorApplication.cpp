@@ -3455,7 +3455,7 @@ void EditorApplication::drawDockspace()
                 }
             }
             ImGui::Text("Active: %s", render::displayOutputName(displayOutput_.mode));
-            ImGui::TextDisabled("Renderer: scene-linear Rec.709 / D65; Windows HDR default: scRGB");
+            ImGui::TextDisabled("Renderer: scene-linear working RGB (ACEScg default); Windows HDR default: scRGB");
             if (!displayHdrEnabled_) { ImGui::TextDisabled("Enable HDR in Windows display settings to use HDR output"); }
             else if (requestedOutput_ != displayOutput_.mode) {
                 ImGui::TextDisabled("Requested surface profile unavailable; using SDR fallback");
@@ -4823,7 +4823,7 @@ void EditorApplication::drawLightingControls()
             }
             changed |= ImGui::Checkbox("Enabled", &light.enabled);
             float color[] = {p.color.x, p.color.y, p.color.z};
-            if (ImGui::ColorEdit3("Linear color", color, ImGuiColorEditFlags_Float)) {
+            if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
                 p.color = float3(color[0], color[1], color[2]);
                 changed = true;
             }

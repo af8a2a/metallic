@@ -1,5 +1,6 @@
 #language slang 2026
 module Lighting;
+import WorkingColor;
 
 __include "Lighting/ClusterLightGridCommon.slang";
 __include "Lighting/EnvironmentPrefilter.slang";

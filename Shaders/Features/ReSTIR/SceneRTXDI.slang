@@ -278,7 +278,7 @@ float randomFloat(inout uint state)
 
 float luminance(float3 color)
 {
-    return dot(color, float3(0.2126, 0.7152, 0.0722));
+    return Metallic.WorkingColor::luminance(color);
 }
 
 float loadImportanceWeight(Texture2D<float> pdfTexture, uint2 position, uint mipLevel)
@@ -897,12 +897,12 @@ Surface makeSurface(HitInfo hit, Ray ray, SceneRTXDIPush push)
         material.textureParams.x);
     surface.normal = faceForwardShadingNormal(surface.normal, surface.geometryNormal, ray.direction);
     surface.viewDirection = -ray.direction;
-    surface.baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
+    surface.baseColor = saturate(materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w));
     surface.metalness = saturate(material.params.x * metallicRoughnessSample.b);
     surface.roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.03, 1.0);
     surface.diffuseAlbedo = surface.baseColor * (1.0 - surface.metalness);
     surface.specularF0 = lerp(float3(0.04, 0.04, 0.04), surface.baseColor, surface.metalness);
-    surface.emissive = max(material.emissive.rgb * materialTextureColor(emissiveSample.rgb, material.emissiveTexture.transform0.w), 0.0);
+    surface.emissive = max(materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w), 0.0);
     return surface;
 }
 
@@ -1179,14 +1179,14 @@ bool previousSurfaceMatches(
 
 float3 toneMap(float3 color, float exposure)
 {
-    color = 1.0 - exp(-max(color, 0.0) * exposure);
+    color = 1.0 - exp(-max(Metallic.WorkingColor::toLinearRec709(color), 0.0) * exposure);
     return pow(saturate(color), 1.0 / 2.2);
 }
 
 float3 skyColor(float3 direction)
 {
     float sky = saturate(direction.y * 0.5 + 0.5);
-    return lerp(float3(0.025, 0.03, 0.04), float3(0.12, 0.18, 0.28), sky);
+    return Metallic.WorkingColor::fromLinearRec709(lerp(float3(0.025, 0.03, 0.04), float3(0.12, 0.18, 0.28), sky));
 }
 
 [shader("compute")]

@@ -1,5 +1,7 @@
 #language slang 2026
 module ColorGrading;
+import WorkingColor;
+import ColorSpace;
 
 __include "ColorGrading/Parameters.slang";
 __include "ColorGrading/ColorMath.slang";

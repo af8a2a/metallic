@@ -45,10 +45,10 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
         case MaterialValueOp::Position: value = "float4(position,0.0)"; break;
         case MaterialValueOp::GeometryNormal: value = "float4(geometryNormal,0.0)"; break;
         case MaterialValueOp::UV: value = "float4(uv,0.0,0.0)"; break;
-        case MaterialValueOp::BaseColor: value = "material.baseColor"; break;
+        case MaterialValueOp::BaseColor: value = "float4(Metallic.WorkingColor::toLinearRec709(material.baseColor.rgb),material.baseColor.a)"; break;
         case MaterialValueOp::Metallic: value = "float4(material.params.x)"; break;
         case MaterialValueOp::Roughness: value = "float4(material.params.y)"; break;
-        case MaterialValueOp::Emissive: value = "material.emissive"; break;
+        case MaterialValueOp::Emissive: value = "float4(Metallic.WorkingColor::toLinearRec709(material.emissive.rgb),material.emissive.a)"; break;
         case MaterialValueOp::Add: value = a + "+" + b; break;
         case MaterialValueOp::Multiply: value = a + "*" + b; break;
         case MaterialValueOp::Dot: value = "float4(dot(" + a + "," + b + "))"; break;
@@ -78,10 +78,10 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
     }
     for (const auto& [key, root] : ir.outputs()) {
         const auto value = "v" + std::to_string(root);
-        if (key == "baseColor") { statements += "    result.baseColor.rgb = saturate(" + value + ".rgb);\n"; manifest.outputMask |= 1; }
+        if (key == "baseColor") { statements += "    result.baseColor.rgb = Metallic.WorkingColor::fromLinearRec709(saturate(" + value + ".rgb));\n"; manifest.outputMask |= 1; }
         if (key == "metallic") { statements += "    result.params.x = saturate(" + value + ".x);\n"; manifest.outputMask |= 2; }
         if (key == "roughness") { statements += "    result.params.y = saturate(" + value + ".x);\n"; manifest.outputMask |= 4; }
-        if (key == "emissive") { statements += "    result.emissive.rgb = clamp(" + value + ".rgb,0.0,1e6);\n"; manifest.outputMask |= 8; }
+        if (key == "emissive") { statements += "    result.emissive.rgb = Metallic.WorkingColor::fromLinearRec709(clamp(" + value + ".rgb,0.0,1e6));\n"; manifest.outputMask |= 8; }
     }
     return "PathTraceMaterial materialValue" + std::to_string(id) +
         "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext)\n{\n"

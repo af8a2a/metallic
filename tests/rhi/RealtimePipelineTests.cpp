@@ -4,6 +4,7 @@
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -218,7 +219,7 @@ public:
         const auto* values = static_cast<const std::array<float, 4>*>(buffer->map());
         if (values == nullptr) { return realtimeFailure("Prefilter readback failed"); }
         bool valid = true;
-        const std::array expected{2.0f, 1.0f, 0.5f};
+        const auto expected = render::color::fromLinearRec709({2.0f, 1.0f, 0.5f});
         for (size_t i = 0; i < 8; ++i) {
             for (size_t c = 0; c < 3; ++c) {
                 valid &= std::isfinite(values[i][c]) && std::abs(values[i][c] - expected[c]) < 0.002f;
@@ -426,6 +427,98 @@ public:
 private:
     bool sponza_ = false;
 };
+
+class WorkingColorDisplayReadbackPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
+        reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 4).transferWrite();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        return context.outputBuffer("pixels").buffer()->slice().and_then([&](const auto& slice) {
+            return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+                .buffer = slice, .bufferRowPitch = context.width() * 4,
+                .bufferSlicePitch = context.width() * context.height() * 4,
+                .width = context.width(), .height = context.height()});
+        });
+    }
+};
+
+class WorkingColorDLSSRRTest final : public RHITest {
+public:
+    WorkingColorDLSSRRTest() { type = RHITestType::Rendering; name = "working_color_dlss_rr_history"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        if (!render::vulkan::deviceCapabilities(context.device).streamlineDlssRr) {
+            return RHITestResult::skip("Requires --rhi-streamline and DLSS-RR support");
+        }
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-rr", sample, log)) { return realtimeFailure(log); }
+        scene::SceneDocument document;
+        if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
+            return realtimeFailure(document.lastLoadResult().error);
+        }
+        // Legacy RR assets use per-pass cameras. Bind one shared view for the
+        // camera-motion portion of this test, as the realtime sample already does.
+        sample.graph.setViewProperties({{"camera", sample.graph.findNode("PathTrace")->properties.at("camera")}});
+        sample.graph.findNode("PathTrace")->properties.erase("camera");
+        sample.graph.findNode("DLSSRR")->properties.erase("camera");
+        render::RenderWorld world;
+        world.setScene(&document);
+        if (sample.desc.environment) {
+            world.setEnvironment({.path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
+        }
+        render::registerRenderGraphPassType("WorkingColorDisplayReadbackPass", "SDK color regression readback",
+            [] { return std::make_unique<WorkingColorDisplayReadbackPass>(); });
+        sample.graph.addNode("WorkingColorDisplayReadbackPass", "Readback");
+        sample.graph.addEdge("FinalBlit.color", "Readback.color");
+
+        sample.graph.markOutput("Readback.pixels");
+
+        render::RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        const uint32_t initialValidationCount = context.validationMessageCount ? context.validationMessageCount->load() : 0;
+        for (uint32_t variant = 0; variant < 2; ++variant) {
+            const uint32_t width = variant == 0 ? 384 : 321, height = variant == 0 ? 256 : 217;
+            if (!executor.compile(context.device, sample.graph, width, height, log)) { return realtimeFailure(log); }
+            for (uint32_t frame = 0; frame < 12; ++frame) {
+                if (frame == 6) {
+                    auto camera = executor.renderView()->camera();
+                    camera.eye[0] += 0.05f;
+                    executor.renderView()->setCamera(camera);
+                }
+                if (!executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
+                    return realtimeFailure("ACEScg DLSS-RR frame/history execution failed");
+                }
+
+            }
+            auto* buffer = executor.outputResource("Readback.pixels")->buffer;
+            buffer->invalidate();
+            const auto* pixels = static_cast<const uint8_t*>(buffer->map());
+            if (!pixels) { return realtimeFailure("RR color readback failed"); }
+            uint64_t energy = 0;
+            for (size_t i = 0; i < size_t(width) * height; ++i) {
+                for (size_t c = 0; c < 3; ++c) { energy += pixels[i * 4 + c]; }
+            }
+            const bool saved = saveRgba8Png(context.outputDirectory / ("DLSSRRWorkingColor" + std::to_string(variant) + ".png"),
+                pixels, width, height, log);
+            buffer->unmap();
+            if (!saved) { return realtimeFailure(log); }
+            if (energy == 0 || energy == uint64_t(width) * height * 3 * 255) { return realtimeFailure("RR color is entirely black or white"); }
+        }
+        executor = render::RenderGraphExecutor{};
+        if (context.validationMessageCount && context.validationMessageCount->load() != initialValidationCount) {
+            return realtimeFailure("RR produced Vulkan validation messages");
+        }
+        return RHITestResult::pass("DLSS-RR working HDR/albedo, 24 frames, camera change and odd-size resize");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(WorkingColorDLSSRRTest);
 
 class GPUDrivenSponzaRealtimePipelineTest final : public RealtimePipelineTest {
 public:

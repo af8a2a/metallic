@@ -144,6 +144,10 @@ void hashTextureInfo(uint64_t& hash, const scene::RenderTextureInfo& texture)
     hashValue(hash, texture.textureIndex);
     hashValue(hash, texture.texCoord);
     hashValue(hash, texture.uvTransform);
+    hashValue(hash, texture.colorMetadata.semantic);
+    hashValue(hash, texture.colorMetadata.source.primaries);
+    hashValue(hash, texture.colorMetadata.source.whitePoint);
+    hashValue(hash, texture.colorMetadata.source.transfer);
 }
 
 uint64_t geometryFingerprint(const scene::RenderPrimitive& primitive)

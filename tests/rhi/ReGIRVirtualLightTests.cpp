@@ -1,6 +1,7 @@
 #include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/ImportanceSampling.h"
@@ -52,8 +53,8 @@ struct ReGIRProbeResult {
 
 float cpuLightPower(const render::GPUPunctualLight& light)
 {
-    const float luminance = light.colorIntensity[3] * (light.colorIntensity[0] * 0.2126f +
-        light.colorIntensity[1] * 0.7152f + light.colorIntensity[2] * 0.0722f);
+    const float luminance = light.colorIntensity[3] * render::color::luminance(
+        {light.colorIntensity[0], light.colorIntensity[1], light.colorIntensity[2]});
     if (light.directionType[3] < 0.5f) { return luminance; }
     const float solidAngle = light.directionType[3] < 1.5f ? 4.0f * std::numbers::pi_v<float>
         : 2.0f * std::numbers::pi_v<float> *
@@ -329,6 +330,11 @@ public:
             REGIR_CHECK(std::abs(output.power[i] - expected) <= tolerance);
             REGIR_CHECK(std::abs(output.pdfWeight[i] - expected) <= tolerance);
         }
+        // The estimator is validated in the fixture's authored Rec.709 basis.
+        // Power/PDF and per-sample finite checks above stay in the working basis.
+        const auto mean = render::color::toLinearRec709({float(output.mean[0]), float(output.mean[1]), float(output.mean[2])});
+        output.mean = {mean[0], mean[1], mean[2]};
+        output.exact = render::color::toLinearRec709(output.exact);
         return RHITestResult::pass();
     }
 
@@ -408,7 +414,7 @@ public:
         if (!status.passed) { return status; }
         if (inside.selected[0] != 0 || inside.selected[1] == 0 || inside.selected[2] == 0 ||
             inside.selected[3] == 0 || std::abs(inside.exact[0] - 1.0f / 3.0f) > 0.0001f ||
-            std::abs(inside.exact[1] - 1.0f / 3.0f) > 0.0001f || inside.exact[2] != 1.0f) {
+            std::abs(inside.exact[1] - 1.0f / 3.0f) > 0.0001f || std::abs(inside.exact[2] - 1.0f) > 0.0001f) {
             return RHITestResult::fail("ReGIR omitted a physical light type or sampled an inactive source slot");
         }
         ReGIRProbeResult outside;
@@ -423,7 +429,7 @@ public:
         if (!status.passed) { return status; }
         status = expectEstimator(edited, "light edit");
         if (!status.passed) { return status; }
-        if (std::abs(edited.exact[0] - 2.0f * inside.exact[0]) > 0.0001f || edited.exact[1] != 0.0f ||
+        if (std::abs(edited.exact[0] - 2.0f * inside.exact[0]) > 0.0001f || std::abs(edited.exact[1]) > 0.00001f ||
             std::abs(edited.power[1] - 2.0f * inside.power[1]) > 0.0001f) {
             return RHITestResult::fail("point intensity or spot orientation did not refresh GPU sampling");
         }
@@ -434,7 +440,7 @@ public:
         if (!status.passed) { return status; }
         status = expectEstimator(removed, "delete and disable");
         if (!status.passed) { return status; }
-        if (removed.exact[0] != 0.0f || removed.exact[1] != 0.0f || removed.exact[2] != 1.0f ||
+        if (std::abs(removed.exact[0]) > 0.00001f || std::abs(removed.exact[1]) > 0.00001f || std::abs(removed.exact[2] - 1.0f) > 0.0001f ||
             removed.selected[1] != kProbeSampleCount) {
             return RHITestResult::fail("removed light remained in a reused ReGIR/PDF resource");
         }
@@ -517,19 +523,24 @@ public:
         if (!status.passed) { return status; }
         if (probe.selected[0] == 0 || probe.selected[1] == 0 || probe.selected[2] == 0 ||
             std::abs(probe.exact[0] - 1.0f / 3.0f) > 0.0001f ||
-            std::abs(probe.exact[1] - 1.0f / 3.0f) > 0.0001f || probe.exact[2] != 1.0f) {
+            std::abs(probe.exact[1] - 1.0f / 3.0f) > 0.0001f || std::abs(probe.exact[2] - 1.0f) > 0.0001f) {
             return RHITestResult::fail("cancelled sampling retry lost live physical-light power");
         }
         return RHITestResult::pass("unsubmitted first build cancelled; replacement PDF/ReGIR retry read back correctly");
     }
 };
 
-std::array<uint64_t, 3> rgbEnergy(const std::vector<uint32_t>& pixels)
+std::array<uint64_t, 3> rgbEnergy(const render::RenderGraphPreviewRenderer& preview)
 {
     std::array<uint64_t, 3> energy{};
-    const auto* bytes = reinterpret_cast<const uint8_t*>(pixels.data());
-    for (size_t pixel = 0; pixel < pixels.size(); ++pixel) {
-        for (size_t channel = 0; channel < 3; ++channel) { energy[channel] += bytes[pixel * 4 + channel]; }
+    const auto& bytes = preview.readbackBytes();
+    for (size_t pixel = 0; pixel < preview.pixels().size(); ++pixel) {
+        std::array<float, 4> rgba{};
+        std::memcpy(rgba.data(), bytes.data() + pixel * sizeof(rgba), sizeof(rgba));
+        const auto rgb = render::color::toLinearRec709({rgba[0], rgba[1], rgba[2]});
+        for (size_t channel = 0; channel < 3; ++channel) {
+            energy[channel] += uint64_t(std::clamp(rgb[channel], 0.0f, 1.0f) * 255.0f + 0.5f);
+        }
     }
     return energy;
 }
@@ -542,6 +553,7 @@ RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* r
         return RHITestResult::skip("virtual-light transport tests require ray query");
     }
     if (!result) { return RHITestResult::fail("virtual-light preview initialization failed"); }
+    preview.setRawReadbackEnabled(true);
     preview.setEnvironment({.enabled = false, .visible = false});
     const bool rtxdi = std::string_view(renderer) == "rtxdi";
     render::RenderGraphProperties properties{
@@ -571,7 +583,7 @@ RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* r
     auto status = renderFrames();
     if (!status.passed) { return status; }
     const auto dark = preview.pixels();
-    const auto darkEnergy = rgbEnergy(dark);
+    const auto darkEnergy = rgbEnergy(preview);
     scene::LightingSettings settings;
     settings.exposureEV100 = 8;
     auto& light = settings.lights.emplace_back();
@@ -583,7 +595,7 @@ RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* r
     if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid directional fixture"); }
     status = renderFrames();
     if (!status.passed) { return status; }
-    auto litEnergy = rgbEnergy(preview.pixels());
+    auto litEnergy = rgbEnergy(preview);
     if (litEnergy[0] < darkEnergy[0] + 1024 || litEnergy[1] > darkEnergy[1] + 1024 ||
         litEnergy[2] > darkEnergy[2] + 1024) {
         return RHITestResult::fail(std::string(renderer) + " did not transport the red scene directional light");
@@ -592,7 +604,7 @@ RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* r
     if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid color edit fixture"); }
     status = renderFrames();
     if (!status.passed) { return status; }
-    litEnergy = rgbEnergy(preview.pixels());
+    litEnergy = rgbEnergy(preview);
     if (litEnergy[2] < darkEnergy[2] + 1024 || litEnergy[0] > darkEnergy[0] + 1024) {
         return RHITestResult::fail(std::string(renderer) + " retained stale red-light history after a blue edit");
     }
@@ -607,7 +619,7 @@ RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* r
         if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid local-light fixture"); }
         status = renderFrames();
         if (!status.passed) { return status; }
-        litEnergy = rgbEnergy(preview.pixels());
+        litEnergy = rgbEnergy(preview);
         if (litEnergy[1] < darkEnergy[1] + 1024 || litEnergy[0] > darkEnergy[0] + 1024 ||
             litEnergy[2] > darkEnergy[2] + 1024) {
             return RHITestResult::fail(std::string(renderer) + " did not transport the green scene " + localType);

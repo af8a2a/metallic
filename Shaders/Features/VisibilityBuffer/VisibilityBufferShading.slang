@@ -2,6 +2,7 @@
 import GPUDriven;
 using Metallic.GPUDriven;
 import Core;
+#include "../../Interop/MaterialTextureDecode.hlsli"
 using Metallic;
 import Material;
 using Metallic.Material;
@@ -844,7 +845,7 @@ float3 proceduralSky(float3 direction, float rotationRadians)
         float3(0.0, 1.0, 0.0));
     float t = saturate(direction.y * 0.5 + 0.5);
     float3 sky = lerp(float3(0.62, 0.70, 0.78), float3(0.12, 0.24, 0.48), t) * 0.45;
-    return sky + pow(saturate(dot(direction, sunDirection)), 256.0) * float3(7.0, 6.4, 5.3);
+    return Metallic.WorkingColor::fromLinearRec709(sky + pow(saturate(dot(direction, sunDirection)), 256.0) * float3(7.0, 6.4, 5.3));
 }
 
 float3 environmentRadiance(float3 direction, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
@@ -908,7 +909,7 @@ uint packColor(float3 color)
 
 uint packHdrColor(float3 color)
 {
-    return packColor(linearToSrgb(acesToneMap(max(color, float3(0.0)))));
+    return packColor(linearToSrgb(acesToneMap(max(Metallic.WorkingColor::toLinearRec709(color), float3(0.0)))));
 }
 
 uint shadeDeferredSurface(
@@ -995,9 +996,9 @@ uint shadeDeferredSurface(
         push);
 
     float3 baseColor = saturate(
-        material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+        materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w));
     if (params.mode == kModeBaseColor) {
-        return packColor(linearToSrgb(baseColor));
+        return packColor(linearToSrgb(Metallic.WorkingColor::toLinearRec709(baseColor)));
     }
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(
@@ -1007,7 +1008,7 @@ uint shadeDeferredSurface(
     float transmission = saturate(
         material.glassParams.x * transmissionSample.r) * (1.0 - metallic);
     float3 emissive = max(
-        material.emissive.rgb * srgbToLinear(emissiveSample.rgb),
+        materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w),
         float3(0.0));
     float occlusion = lerp(
         1.0,

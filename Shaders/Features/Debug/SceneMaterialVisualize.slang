@@ -530,7 +530,7 @@ float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
         push);
 
     if (push.mode == kModeBaseColor) {
-        return saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
+        return saturate(Metallic.WorkingColor::toLinearRec709(materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w)));
     }
     if (push.mode == kModeNormal) {
         float3 normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);

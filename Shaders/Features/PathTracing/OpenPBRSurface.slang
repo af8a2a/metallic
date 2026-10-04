@@ -243,7 +243,7 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
         transmissionSample = float4(1.0, 1.0, 1.0, 1.0);
         specularSample = specularColorSample = float4(1.0);
     }
-    float3 baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
+    float3 baseColor = saturate(materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
     float transmission = saturate(material.glassParams.x * transmissionSample.r);
@@ -251,7 +251,7 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
         transmission = 0.0;
     }
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
-    float3 emissive = max(material.emissive.rgb * materialTextureColor(emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
+    float3 emissive = max(materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
 
     OpenPBRClosure result;
     result.inputs = openpbr_make_default_resolved_inputs();
@@ -264,8 +264,7 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     result.inputs.base_metalness = metallic;
 
     result.inputs.specular_weight = lerp(saturate(material.specular.w * specularSample.a), 1.0, metallic);
-    result.inputs.specular_color = lerp(saturate(material.specular.rgb *
-        materialTextureColor(specularColorSample.rgb, material.specularColorTexture.transform0.w)), float3(1.0), metallic);
+    result.inputs.specular_color = lerp(saturate(materialTextureModulate(material.specular.rgb, specularColorSample.rgb, material.specularColorTexture.transform0.w)), float3(1.0), metallic);
     result.inputs.specular_roughness = roughness;
     result.inputs.specular_roughness_anisotropy = 0.0;
     result.inputs.specular_ior = ior;
@@ -429,7 +428,7 @@ float3 openPbrPrimaryDebugColor(
         return openPbrDebugIdColor(hit.triangleIndex);
     }
     if (push.debugView == kOpenPBRDebugViewBaseColor) {
-        return materialEval.inputs.base_color;
+        return Metallic.WorkingColor::toLinearRec709(materialEval.inputs.base_color);
     }
     if (push.debugView == kOpenPBRDebugViewNormalTexture) {
         return normalSample.rgb;

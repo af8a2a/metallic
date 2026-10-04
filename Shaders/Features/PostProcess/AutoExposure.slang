@@ -37,7 +37,7 @@ void autoExposureHistogramMain(uint3 pixel : SV_DispatchThreadID, uint index : S
     if (index < kHistogramBins) { sharedHistogram[index] = 0u; }
     GroupMemoryBarrierWithGroupSync();
     if (pixel.x < push.width && pixel.y < push.height) {
-        float luminance = dot(physicalColor(pixel.xy, push), float3(0.2126, 0.7152, 0.0722));
+        float luminance = Metallic.WorkingColor::luminance(physicalColor(pixel.xy, push));
         // Like UE's default black-bucket influence of zero: an unlit/hidden sky
         // must not dominate the meter and blow out the visible subject.
         if (luminance > exp2(push.histogramMin)) {

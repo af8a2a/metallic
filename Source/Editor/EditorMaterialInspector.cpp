@@ -117,6 +117,7 @@ void EditorApplication::drawMaterialInspector(int32_t materialIndex)
     // before focus leaves also preserves transaction order between materials.
     ImGui::PushItemFlag(ImGuiItemFlags_LiveEditOnInputScalar, true);
     ImGui::PushItemWidth(std::max(100.0f, ImGui::GetContentRegionAvail().x * 0.55f));
+    ImGui::TextDisabled("Authored colors: linear Rec.709 (converted on upload)");
     float base[4]{edited.baseColorFactor.x, edited.baseColorFactor.y, edited.baseColorFactor.z, edited.baseColorFactor.w};
     if (ImGui::ColorEdit4("Base color", base, ImGuiColorEditFlags_Float)) {
         edited.baseColorFactor = float4(base[0], base[1], base[2], base[3]);

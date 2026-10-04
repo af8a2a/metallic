@@ -17,7 +17,7 @@ using Metallic;
 
 float3 toneMap(float3 color, float exposure)
 {
-    color = 1.0 - exp(-max(color, 0.0) * exposure);
+    color = 1.0 - exp(-max(Metallic.WorkingColor::toLinearRec709(color), 0.0) * exposure);
     return pow(saturate(color), 1.0 / 2.2);
 }
 
@@ -37,8 +37,8 @@ void rtxdiCompositeMain(
     float metalness = saturate(baseColorMetalness.a);
     float3 diffuseAlbedo = baseColor * (1.0 - metalness);
     float3 specularF0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metalness);
-    float3 color = gDenoisedDiffuse[pixel].rgb * diffuseAlbedo;
-    color += gDenoisedSpecular[pixel].rgb * specularF0;
+    float3 color = Metallic.WorkingColor::fromLinearRec709(gDenoisedDiffuse[pixel].rgb) * diffuseAlbedo;
+    color += Metallic.WorkingColor::fromLinearRec709(gDenoisedSpecular[pixel].rgb) * specularF0;
     color += gEmissive[pixel].rgb;
     gOutput[pixel] = float4(push.outputLinear != 0u ? color : toneMap(color, push.exposure), 1.0);
 }

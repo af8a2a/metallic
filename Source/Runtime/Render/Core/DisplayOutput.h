@@ -11,7 +11,7 @@ enum class DisplayColorEncoding : uint8_t {
     sRGB,
     ExposedLinear,
     scRGB,
-    SceneLinear, // Rec.709 primaries, D65, unbounded scene-referred radiance.
+    SceneLinear, // Current scene working space; unbounded scene-referred radiance.
 };
 
 struct DisplayOutputParameters {

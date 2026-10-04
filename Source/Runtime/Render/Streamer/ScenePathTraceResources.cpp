@@ -1,4 +1,5 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/SceneColorConversion.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -811,7 +812,8 @@ void stampTextureFormats(std::vector<ScenePathTraceGPUMaterial>& materials,
             // KTX2 vkFormat declares the transfer function: sRGB views decode in
             // hardware, while UNORM KTX2 is already linear. Legacy PNG views
             // retain their existing shader-side sRGB conversion.
-            uint32_t flags = compressedBlockBytes(textures[index].format) != 0 ? 1u : 0u;
+            uint32_t flags = uint32_t(info->transform0[3]);
+            if (compressedBlockBytes(textures[index].format) != 0) { flags |= 1u; }
             if (info == &material.normalTexture && textures[index].format == Format::BC5Unorm) { flags |= 2u; }
             info->transform0[3] = float(flags);
         }
@@ -867,6 +869,7 @@ ScenePathTraceGPUMaterial::TextureInfo makeGpuTextureInfo(
         }
         gpuTextureInfo.texCoord = 0;
     }
+    gpuTextureInfo.transform0[3] = float(textureColorFlags(textureInfo.colorMetadata));
     gpuTextureInfo.transform0[0] = textureInfo.uvTransform[0];
     gpuTextureInfo.transform0[1] = textureInfo.uvTransform[1];
     gpuTextureInfo.transform0[2] = textureInfo.uvTransform[2];
@@ -888,12 +891,13 @@ float alphaModeCode(const std::string& alphaMode)
 }
 
 ScenePathTraceGPUMaterial makeMaterial(
-    const scene::RenderMaterial& material,
+    const scene::RenderMaterial& authoredMaterial,
     const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
     const std::vector<uint32_t>& neuralTextureSetIndexMap,
     std::string& log)
 {
+    const auto material = resolveWorkingMaterial(authoredMaterial);
     ScenePathTraceGPUMaterial gpuMaterial;
     gpuMaterial.baseColor[0] = material.baseColorFactor.x;
     gpuMaterial.baseColor[1] = material.baseColorFactor.y;

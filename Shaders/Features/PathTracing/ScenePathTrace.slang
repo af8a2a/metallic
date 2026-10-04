@@ -418,7 +418,7 @@ float3 pathTrace(
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
-        float3 baseColor = saturate(material.baseColor.rgb * materialTextureColor(baseColorSample.rgb, material.baseColorTexture.transform0.w));
+        float3 baseColor = saturate(materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w));
         float metallic = saturate(material.params.x * metallicRoughnessSample.b);
         float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.02, 1.0);
         float transmission = saturate(material.glassParams.x * transmissionSample.r);
@@ -428,13 +428,13 @@ float3 pathTrace(
         float3 attenuationColor = max(saturate(material.attenuationColor.rgb), float3(0.001, 0.001, 0.001));
         float diffuseTransmission = saturate(material.diffuseTransmission.a * diffuseTransmissionSample.a);
         float3 diffuseTransmissionColor = max(
-            saturate(material.diffuseTransmission.rgb * materialTextureColor(diffuseTransmissionColorSample.rgb, material.diffuseTransmissionColorTexture.transform0.w)),
+            saturate(materialTextureModulate(material.diffuseTransmission.rgb, diffuseTransmissionColorSample.rgb, material.diffuseTransmissionColorTexture.transform0.w)),
             float3(0.001, 0.001, 0.001));
         float dielectricF0 = (ior - 1.0) / (ior + 1.0);
         dielectricF0 *= dielectricF0;
         float3 f0 = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
 
-        float3 emissive = max(material.emissive.rgb * materialTextureColor(emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
+        float3 emissive = max(materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
         radiance += throughput * emissive;
 
 #if METALLIC_HAS_RTXCR
@@ -899,6 +899,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 #endif
 
     if (push.outputLinear == 0u) {
+        color = Metallic.WorkingColor::toLinearRec709(color);
         color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);

@@ -302,6 +302,31 @@ TEST_F(MaterialAssets, AllOpenPBRFieldsAndTextureTransformsRoundTrip)
     }
 }
 
+TEST_F(MaterialAssets, ColorTextureTagsSurviveExportAndRejectDataUsage)
+{
+    scene::RenderMaterial source;
+    source.baseColorTexture.textureIndex = 7;
+    source.baseColorTexture.colorMetadata.source = render::kACEScg;
+    source.normalTexture.textureIndex = 8;
+    MaterialInstance asset;
+    ASSERT_TRUE(createMaterialInstance(source, "asset://OpenPBR.materialdef", definition,
+        [](auto, auto) { return "asset://Textures/Tagged.hdr"; }, asset, error)) << error;
+    EXPECT_EQ(asset.resources["baseColorTexture"]["colorSpace"], "acescg");
+    EXPECT_FALSE(asset.resources["normalTexture"].contains("colorSpace"));
+    MaterialInstance parsed;
+    ASSERT_TRUE(deserializeMaterialInstance(serializeMaterialInstance(asset), parsed, error)) << error;
+    MaterialAssetLibrary library(root);
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(parsed, resolved, error)) << error;
+    scene::RenderMaterial output;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error)) << error;
+    EXPECT_EQ(output.baseColorTexture.colorMetadata.source, render::kACEScg);
+    EXPECT_EQ(output.normalTexture.colorMetadata.semantic, render::TextureSemantic::Data);
+    resolved.resources["normalTexture"]["colorSpace"] = "acescg";
+    EXPECT_FALSE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error));
+    EXPECT_NE(error.find("Data textures"), std::string::npos);
+}
+
 TEST_F(MaterialAssets, RejectsCyclesMissingParentsAndDefinitionMismatch)
 {
     MaterialAssetLibrary library(root);

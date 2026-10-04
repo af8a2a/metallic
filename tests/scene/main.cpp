@@ -3868,6 +3868,7 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
         .intensity = 2.5f,
         .rotationDegrees = 37.0f,
         .visible = false,
+        .sourceColorSpace = metallic::render::kACEScg,
     }));
     EXPECT_TRUE(document.dirty());
     std::string message;
@@ -3892,6 +3893,7 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
     EXPECT_FLOAT_EQ(savedEnvironment.value("intensity", 0.0f), 2.5f);
     EXPECT_FLOAT_EQ(savedEnvironment.value("rotationDegrees", 0.0f), 37.0f);
     EXPECT_FALSE(savedEnvironment.value("visible", true));
+    EXPECT_EQ(savedEnvironment.value("colorSpace", std::string{}), "acescg");
 
     metallic::scene::SceneDocument autoDiscovered;
     ASSERT_TRUE(autoDiscovered.load(gltfPath)) << autoDiscovered.lastLoadResult().error;
@@ -3904,6 +3906,7 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
     EXPECT_FLOAT_EQ(autoDiscovered.environment().intensity, 2.5f);
     EXPECT_FLOAT_EQ(autoDiscovered.environment().rotationDegrees, 37.0f);
     EXPECT_FALSE(autoDiscovered.environment().visible);
+    EXPECT_EQ(autoDiscovered.environment().sourceColorSpace, metallic::render::kACEScg);
 
     metallic::scene::SceneDocument directlyOpened;
     ASSERT_TRUE(directlyOpened.load(sidecarPath)) << directlyOpened.lastLoadResult().error;

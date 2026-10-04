@@ -1,6 +1,8 @@
 #language slang 2026
 module ShaderCore;
 
+__exported import WorkingColor;
+
 __include "Core/ViewConstants.slang";
 __include "Core/DisplayOutput.slang";
 __include "Core/SphericalHarmonics.slang";

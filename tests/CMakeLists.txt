@@ -1,5 +1,9 @@
 include(GoogleTest)
 
+add_test(NAME MetallicWorkingColorAudit COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckWorkingColor.cmake")
+set_tests_properties(MetallicWorkingColorAudit PROPERTIES LABELS "shader;color")
+
 find_package(Threads REQUIRED)
 add_executable(MetallicShaderWarmupStartupTests
     editor/ShaderWarmupStartupTests.cpp
@@ -364,6 +368,7 @@ add_executable(MetallicRHITests
     rhi/FinalBlitTests.cpp
     rhi/RTXDIPostProcessTests.cpp
     rhi/DisplayOutputTests.cpp
+    rhi/ColorSpaceTests.cpp
     rhi/EditorDisplayTests.cpp
     ../Source/Editor/EditorDisplayRenderer.cpp
     rhi/GPUSceneSubsystemTests.cpp

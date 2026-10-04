@@ -73,7 +73,12 @@ Json texture(Json value)
 {
     if (value.is_null()) { return value; }
     if (value.is_string()) { value = Json{{"uri", value}}; }
-    keys(value, {"uri", "texCoord", "transform"});
+    keys(value, {"uri", "texCoord", "transform", "colorSpace"});
+    if (value.contains("colorSpace")) {
+        render::ColorSpaceDesc source;
+        require(value["colorSpace"].is_string() && render::parseColorSpace(value["colorSpace"].get<std::string>(), source),
+            "Unsupported texture source colorSpace");
+    }
     require(value.contains("uri") && value["uri"].is_string() && resourceUri(value["uri"].get<std::string>()),
         "Texture requires asset:// or imported:// URI; runtime indices are not assets");
     if (!value.contains("texCoord")) { value["texCoord"] = 0; }
@@ -416,7 +421,10 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         candidate.unlit = instance.features.at("unlit").get<bool>();
         for (const auto& [name, member] : detail::kTextures) {
             auto& info = candidate.*member;
+            const auto semantic = info.colorMetadata.semantic;
             info = {};
+            info.colorMetadata = semantic == render::TextureSemantic::Color
+                ? render::ksRGBColorTexture : render::TextureColorMetadata{};
             const auto value = texture(instance.resources.at(name));
             if (value.is_null()) { continue; }
             require(bool(resolver), "Material texture resolver is missing");
@@ -424,6 +432,10 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
             require(info.textureIndex >= 0, "Unresolved texture: " + value.at("uri").get<std::string>());
             info.texCoord = value.at("texCoord").get<int32_t>();
             info.uvTransform = value.at("transform").get<std::array<float, 6>>();
+            if (value.contains("colorSpace")) {
+                require(info.colorMetadata.semantic == render::TextureSemantic::Color, "Data textures cannot declare colorSpace");
+                require(render::parseColorSpace(value["colorSpace"].get<std::string>(), info.colorMetadata.source), "Unsupported colorSpace");
+            }
         }
         require(scene::validMaterialProperties(candidate), "Resolved material is invalid");
         output = std::move(candidate);
@@ -455,6 +467,9 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
             require(bool(encoder), "Material resource encoder is missing");
             resources[name] = texture({{"uri", encoder(name, info.textureIndex)},
                 {"texCoord", info.texCoord}, {"transform", info.uvTransform}});
+            if (info.colorMetadata.semantic == render::TextureSemantic::Color) {
+                resources[name]["colorSpace"] = render::colorSpaceName(info.colorMetadata.source);
+            }
         }
         const Json features = {{"alphaMode", source.alphaMode == "OPAQUE" ? "opaque" : source.alphaMode == "MASK" ? "mask" : "blend"},
             {"doubleSided", source.doubleSided}, {"unlit", source.unlit}};

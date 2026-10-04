@@ -4,6 +4,8 @@
 #include "Runtime/Scene/SceneDocument.h"
 
 #include <cmath>
+#include <fstream>
+#include "Runtime/Render/Core/ColorSpace.h"
 
 namespace metallic::tests {
 namespace {
@@ -144,5 +146,56 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(ColorGradingLookDevTest);
+
+class WorkingColorLinearCaptureTest final : public RHITest {
+public:
+    WorkingColorLinearCaptureTest() { type = RHITestType::Rendering; name = "working_color_lookdev_linear_capture"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("openpbr-lookdev", sample, log)) { return RHITestResult::fail(log); }
+        scene::SceneDocument document;
+        if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) { return RHITestResult::fail(document.lastLoadResult().error); }
+        render::RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.setEnvironment(document.environment());
+        if (!preview.setLighting(document.lighting())) { return RHITestResult::fail("Invalid capture lighting"); }
+        if (!preview.initialize(context.enableValidation, true)) { return RHITestResult::fail("Initialize linear capture"); }
+        preview.setRawReadbackEnabled(true);
+        sample.graph.findNode("PathTrace")->properties["samples"] = 4;
+        sample.graph.findNode("PathTrace")->properties["accumulate"] = true;
+        constexpr uint32_t size = 384, frames = 64;
+        for (uint32_t frame = 0; frame < frames; ++frame) {
+            if (!preview.render(sample.graph, size, size, "PathTrace.color", frame + 1 == frames)) { return RHITestResult::fail(preview.lastLog()); }
+        }
+        const auto& bytes = preview.readbackBytes();
+        if (preview.readbackFormat() != render::Format::RGBA32Sfloat || bytes.size() != size*size*16) { return RHITestResult::fail("Linear capture must retain raw RGBA32F"); }
+        float maximum = 0;
+        const auto* values = reinterpret_cast<const float*>(bytes.data());
+        for (uint32_t pixel = 0; pixel < size*size; ++pixel) {
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                const float value = values[pixel*4 + channel];
+                if (!std::isfinite(value)) { return RHITestResult::fail("Non-finite scene radiance"); }
+                maximum = std::max(maximum, value);
+            }
+        }
+        if (maximum <= 1) { return RHITestResult::fail("Scene capture lost HDR values"); }
+        const char* mode = render::sceneWorkingColorSpace() == render::SceneWorkingColorSpace::ACEScg ? "acescg" : "lin_rec709";
+        const auto path = context.outputDirectory / (std::string("OpenPBRDefault-") + mode + ".rgba32f");
+        std::ofstream raw(path, std::ios::binary);
+        raw.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        if (!raw) { return RHITestResult::fail("Write raw scene reference"); }
+        nlohmann::json metadata{{"sourceColorSpace", "lin_rec709"}, {"sceneWorkingColorSpace", mode}, {"format", "RGBA32F little-endian"},
+            {"width", size}, {"height", size}, {"frames", frames}, {"samplesPerPixel", frames*4},
+            {"output", "PathTrace.color"}, {"exposureApplied", false}, {"displayTransformApplied", false},
+            {"maximum", maximum}, {"sourceReference", "Asset/LookDev/OpenPbrDefault/Reference.json"}};
+        std::ofstream manifest(path.string() + ".json");
+        manifest << metadata.dump(2) << '\n';
+        return manifest ? RHITestResult::pass(path.string()) : RHITestResult::fail("Write capture metadata");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(WorkingColorLinearCaptureTest);
+
 } // namespace
 } // namespace metallic::tests

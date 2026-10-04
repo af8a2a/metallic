@@ -1,5 +1,7 @@
 # LookDev 材质 Playground
 
+See [Color Pipeline](ColorPipeline.md) for ACEScg working-space and source/display contracts.
+
 独立 CMake 目标 **LookDev** 生成 `LookDev.exe`，无参数启动时默认加载
 **LookDev / OpenPBR Default** 的场景、相机和渲染图。程序复用编辑器外壳，
 可通过 RenderGraph 面板的 **Built-in Sample** 切换示例，或从命令行

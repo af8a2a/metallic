@@ -24,7 +24,7 @@ void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
         return;
     }
-    float3 exposed = max(radiance * lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights)), float3(0.0));
+    float3 exposed = max(Metallic.WorkingColor::toLinearRec709(radiance) * lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights)), float3(0.0));
     float3 color = pow(exposed / (exposed + 1.0), 1.0 / 2.2);
     gOutput[pixel] = float4(saturate(color), 1.0);
 }

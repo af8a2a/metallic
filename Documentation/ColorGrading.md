@@ -9,7 +9,7 @@ calibration graphs retain their direct display path.
     Lighting -> AutoExposure -> FinalBlit.source -> editor composition -> swapchain
     ColorGradingLUTPass.lut --> FinalBlit.lut
 
-The renderer stays scene-linear Rec.709/D65. Windows HDR still defaults to scRGB;
+The renderer stays scene-linear working RGB. Windows HDR still defaults to scRGB;
 HDR10 encodes BT.2020/PQ after FP16 UI composition. See [display profiles](DisplayOutput.md).
 
 ## RenderGraph contract

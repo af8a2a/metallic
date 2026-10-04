@@ -34,7 +34,7 @@ public float punctualSamplingRandom(inout uint state)
 
 internal float punctualIntensityLuminance(GPUPunctualLight light)
 {
-    float value = dot(max(light.colorIntensity.rgb, 0.0), float3(0.2126, 0.7152, 0.0722)) *
+    float value = Metallic.WorkingColor::luminance(max(light.colorIntensity.rgb, 0.0)) *
         max(light.colorIntensity.w, 0.0);
     return isfinite(value) ? max(value, 0.0) : 0.0;
 }

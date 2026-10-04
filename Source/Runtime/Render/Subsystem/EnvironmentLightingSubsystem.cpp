@@ -278,7 +278,8 @@ void EnvironmentLightingSubsystem::requestEnvironment(
         return;
     }
     if (requestInitialized_ &&
-        resolvedEnvironmentPath(requestedSettings_.path) == resolvedEnvironmentPath(settings.path)) {
+        resolvedEnvironmentPath(requestedSettings_.path) == resolvedEnvironmentPath(settings.path) &&
+        requestedSettings_.sourceColorSpace == settings.sourceColorSpace) {
         requestedSettings_ = settings;
         requestedSettingsRevision_ = settingsRevision;
         refreshSnapshot();
@@ -330,7 +331,8 @@ void EnvironmentLightingSubsystem::startDecodeJob(
     pendingDecodePath_.clear();
     pendingDecodeGeneration_ = 0;
     DecodeJob job;
-    job.future = std::async(std::launch::async, [pathToDecode, generation]() {
+    const auto sourceColorSpace = requestedSettings_.sourceColorSpace;
+    job.future = std::async(std::launch::async, [pathToDecode, generation, sourceColorSpace]() {
         DecodedEnvironment decoded;
         decoded.generation = generation;
         int width = 0;
@@ -358,6 +360,10 @@ void EnvironmentLightingSubsystem::startDecodeJob(
         decoded.height = static_cast<uint32_t>(height);
         decoded.pixels.assign(pixels, pixels + static_cast<size_t>(componentCount));
         stbi_image_free(pixels);
+        for (size_t index = 0; index < decoded.pixels.size(); index += 4) {
+            const auto rgb = color::fromSource({decoded.pixels[index], decoded.pixels[index + 1], decoded.pixels[index + 2]}, sourceColorSpace);
+            std::copy(rgb.begin(), rgb.end(), decoded.pixels.begin() + index);
+        }
         decoded.buildMipChain();
         decoded.mapAvailable = true;
         return decoded;

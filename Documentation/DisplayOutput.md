@@ -1,6 +1,7 @@
 # LookDev color and output profiles
 
-Metallic uses **scene-linear Rec.709/sRGB primaries, D65** inside the renderer.
+Metallic uses **scene-linear ACEScg/AP1/ACES white (D60)** inside the renderer.
+See [Color Pipeline](ColorPipeline.md) for input, compatibility and SDK contracts.
 Lighting, accumulation, denoising and upscaling keep floating-point HDR radiance.
 AutoExposure outputs exposed linear RGBA16F in every profile; it does not tone map
 or encode sRGB. Path tracing and RTXDI always output linear radiance. The old

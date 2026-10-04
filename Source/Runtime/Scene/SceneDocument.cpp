@@ -1299,6 +1299,11 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                             "Scene document world.environment fields have invalid types.";
                         return false;
                     }
+                    if (environment.contains("colorSpace") &&
+                        (!environment["colorSpace"].is_string() || !render::parseColorSpace(environment["colorSpace"].get<std::string>(), environment_.sourceColorSpace))) {
+                        documentWarning_ = "Unsupported world.environment.colorSpace";
+                        return false;
+                    }
                     hasEnvironmentSettings_ = true;
                     environment_.enabled = environment.value("enabled", true);
                     environment_.visible = environment.value("visible", true);
@@ -1751,6 +1756,7 @@ bool SceneDocument::save(std::string& message)
             {"intensity", environment_.intensity},
             {"rotationDegrees", environment_.rotationDegrees},
             {"visible", environment_.visible},
+            {"colorSpace", render::colorSpaceName(environment_.sourceColorSpace)},
         }},
     };
     if (!writeAtomically(documentPath_, document.dump(2) + '\n', message)) {
