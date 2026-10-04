@@ -12,11 +12,13 @@ namespace metallic {
 
 bool EditorDisplayRenderer::loadBackendFunctions(render::vulkan::NativeDevice device)
 {
-    // ImGui keeps its own loader table; never populate or switch volk globals.
+    // ImGui requests both instance and device commands. The instance loader
+    // supports both; querying instance commands through vkGetDeviceProcAddr
+    // first emits validation warnings even when the fallback succeeds.
+    // Keep ImGui's table independent of volk globals.
     return ImGui_ImplVulkan_LoadFunctions(device.apiVersion, [](const char* name, void* context) {
         const auto& native = *static_cast<render::vulkan::NativeDevice*>(context);
-        auto function = native.instanceFunctions->vkGetDeviceProcAddr(native.device, name);
-        return function ? function : native.getInstanceProcAddr(native.instance, name);
+        return native.getInstanceProcAddr(native.instance, name);
     }, &device);
 }
 

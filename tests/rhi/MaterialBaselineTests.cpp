@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #include <cmath>
 #include <cstring>
@@ -37,6 +38,8 @@ public:
             }
             scene::SceneDocument document;
             RenderGraphPreviewRenderer preview;
+            if (!preview.subsystemHost()->configure<EnvironmentLightingSubsystem>(
+                {.initialDecodeTimeoutMilliseconds = 10000}, log)) { return RHITestResult::fail(log); }
             if (!spec.at("scene").is_null()) {
                 if (!document.load(root / spec.at("scene").get<std::string>()) ||
                     !document.documentWarning().empty()) { return RHITestResult::fail("Baseline scene load failed"); }
@@ -77,12 +80,27 @@ public:
             const uint32_t frames = cases.at("frames"), warmup = cases.at("warmupFrames"), count = cases.at("timingFrames");
             Json result = spec;
             result["frames"] = Json::array();
+            result["environmentTransitions"] = Json::array();
+            Json previousEnvironment;
             result["resolvedGraph"] = Json::parse(serializeRenderGraphToString(graph));
             for (uint32_t frame = 0; frame < frames; ++frame) {
                 const bool capture = frame + 1 == frames;
                 preview.setRawReadbackEnabled(capture);
                 if (!preview.render(graph, width, height, spec.at("output").get<std::string>(), capture)) {
                     return RHITestResult::fail(id + ": " + preview.lastLog());
+                }
+                const auto* environment = preview.subsystemHost()->get<EnvironmentLightingSubsystem>();
+                if (!environment) { return RHITestResult::fail("Baseline environment subsystem missing"); }
+                const auto& snapshot = environment->snapshot();
+                Json environmentState = {{"status", static_cast<uint32_t>(snapshot.status)},
+                    {"resourceRevision", snapshot.resourceRevision}, {"mapAvailable", snapshot.mapAvailable}};
+                if (environmentState != previousEnvironment) {
+                    previousEnvironment = environmentState;
+                    environmentState["frame"] = frame;
+                    result["environmentTransitions"].push_back(std::move(environmentState));
+                }
+                if (snapshot.status != EnvironmentLightingStatus::Ready || !snapshot.mapAvailable) {
+                    return RHITestResult::fail(id + ": environment not ready for every baseline sample");
                 }
                 std::vector<RenderGraphExecutionStats> completed;
                 if (!preview.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })) {

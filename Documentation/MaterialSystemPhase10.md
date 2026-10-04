@@ -128,3 +128,5 @@ $env:METALLIC_SHADER_CAPTURE_SYMBOLS='0'
 系统 Vulkan loader 仍报告已有 EOSOverlay / `E:\Validation.json` 缺失警告。
 本次没有声称 Slab 的编辑器交互、时域稳定性、大场景内存或性能已验证；
 也没有运行完整 ShaderWarmup 或完整 RHI suite。
+
+2026-10-04 后续 [M1–M4 审查与重新验收](MaterialSystemM1M4Acceptance.md) 已关闭上述 native shader 测试失败：断言仍要求旧的 physical storage-buffer ABI，修正为当前 DR 参数根后，OpenPBR/RTXDI/Guides 全部通过。该审查同时确认本阶段仍是独立 Slab 原型，尚无 Value IR→Closure→生产场景闭环；M4 完整里程碑未通过。

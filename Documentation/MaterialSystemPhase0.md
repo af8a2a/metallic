@@ -93,4 +93,4 @@ Python runner 依赖 NumPy；绘图额外使用 Matplotlib/Pillow，不进入默
 - [x] 材质 ABI、资源生产者/消费者与 A/B 工具。
 - [ ] Occupancy、texture latency、instruction count 的硬件计数器。
 - [ ] Material bin occupancy、mixed-material tile 比例的生产 workload 读回。
-- [ ] PT A/A 非逐位一致的原因及经过验证的回归判据。
+- [x] PT A/A 非逐位一致的原因及经过验证的回归判据：2026-10-04 [M1–M4 重新验收](MaterialSystemM1M4Acceptance.md) 确认初始异步环境占位帧导致采样序列变化。基线显式等待首次解码且逐帧断言 Ready 后，三个独立进程 A/A 全部逐位一致；三进程加最终完整序列共 12 张 HDR 对原冻结 run-0 逐位一致。上文保留修复前历史测量，不作为新容差。
