@@ -11,7 +11,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/ShaderCore.slang`、`Modules/Core/` | ResourceHandle、BufferSpan、旧资源兼容接口、相机、顶点解码、SH、显示颜色；不声明 push constant |
 | `Modules/Core.slang` | ComputeProgram 具名资源参数、常量和底层测试兼容入口，重新导出 ShaderCore |
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
-| `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BsdfEval/BsdfSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
+| `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |

@@ -11,8 +11,8 @@
 | `SurfaceMaterialContext` | 世界位置、几何法线、插值着色法线、TBN、两套 UV、footprint、UV 有效位与正反面 |
 | `TextureFootprint` | UV0/UV1 的像素导数，或投影后的各向同性 normalized-UV LOD，以及明确的有效位 |
 | `MaterialInstanceRef` | 相对当前 Program 绑定的参数表/资源表的两个 **字节偏移**；不保存 descriptor、实例 ID 或 shader variant |
-| `BsdfEval` | `f`、`pdf`、事件 flags |
-| `BsdfSample` | 向外的世界空间 `wiWS`、`f`、`pdf`、`eta`、事件 flags |
+| `BSDFEval` | `f`、`pdf`、事件 flags |
+| `BSDFSample` | 向外的世界空间 `wiWS`、`f`、`pdf`、`eta`、事件 flags |
 
 入口：[MaterialProgram.slang](../Shaders/Modules/MaterialProgram.slang)。此模块没有任何 import，不依赖 OpenPBR、RTXCR、Lighting、Core、Scene 或 Vulkan 资源声明，也不声明 push constants。资源由实际 Program 和调用方显式绑定。
 
@@ -20,7 +20,7 @@ Context 的 normal/tangent/bitangent 保持 authored/world-space 方向，不根
 
 Footprint 的导数以一个内部渲染像素为单位，位于纹理 UV transform 之前。`isotropicLodN` 是 normalized-UV footprint 的 log2，可以为负；还没有加入纹理分辨率的 `0.5 * log2(width * height)` 或 UV transform LOD bias。ray producer 先把 cone 投影到表面，再写入这个标量，因此 Context 不携带灯光、观察方向或 BSDF 参数。valid flags 区分“有效的零”与“数据不可用”，并允许消费者按自身过滤算法选择有效的梯度或各向同性表示。
 
-散射数值约定：`f` 不乘 cosine，不除以 pdf；连续分布的 `pdf` 是包含 lobe 选择概率的完整方向采样密度。delta sample 设置 `kBsdfDelta`，pdf 使用离散概率，任意方向 eval 为零；消费者不能把离散与连续密度直接做 MIS。反射/透射、diffuse/glossy/delta 使用具名 bits。透射 `eta = eta_i / eta_t`，反射为 1。传输模式缩放由后续 prepared closure 负责。本阶段仅定义这些记录，没有改变既有 OpenPBR/RTXCR 的计算公式。
+散射数值约定：`f` 不乘 cosine，不除以 pdf；连续分布的 `pdf` 是包含 lobe 选择概率的完整方向采样密度。delta sample 设置 `kBSDFDelta`，pdf 使用离散概率，任意方向 eval 为零；消费者不能把离散与连续密度直接做 MIS。反射/透射、diffuse/glossy/delta 使用具名 bits。透射 `eta = eta_i / eta_t`，反射为 1。传输模式缩放由后续 prepared closure 负责。本阶段仅定义这些记录，没有改变既有 OpenPBR/RTXCR 的计算公式。
 
 ## 旧路径兼容接入
 
@@ -32,7 +32,7 @@ Footprint 的导数以一个内部渲染像素为单位，位于纹理 UV transf
 
 ## 验证入口
 
-- `material_program_shader_contract`：禁用磁盘缓存，独立编译新模块并检查完整依赖不含模型/场景/光照。单个静态泛型 concrete 测试程序，8 组重复/乱序实例、独立参数与资源偏移，两次 dispatch 只改变数据；GPU 逐位读回全部 Context、BsdfEval、BsdfSample 与实例引用。两种 footprint 和正反面均覆盖。
+- `material_program_shader_contract`：禁用磁盘缓存，独立编译新模块并检查完整依赖不含模型/场景/光照。单个静态泛型 concrete 测试程序，8 组重复/乱序实例、独立参数与资源偏移，两次 dispatch 只改变数据；GPU 逐位读回全部 Context、BSDFEval、BSDFSample 与实例引用。两种 footprint 和正反面均覆盖。
 - `material_runtime_gpu_abi`：旧 probe 通过 LegacyMaterialProgram 读取三个不同实例，逐 word 验证原 720 字节 payload，避免只验证 CPU 名称或结构大小。
 - `material_program_guide_compile`：复用生产 `makeSceneShaderRequest()`，编译 standard/OpenPBR guides 的 hardware/fallback position-fetch 四个请求；此项只验证编译，不验证 denoiser 输出。
 - Phase 0 三条 HDR、材质资产往返、streamed textured/masked/transmission/shadow 及原 footprint 测试验证生产兼容路径。
