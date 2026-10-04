@@ -86,7 +86,7 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
     uint materialIndex = gRayStreamInstances[instanceIndex].materialIndex;
     gMaterials.GetDimensions(count, stride);
     if (materialIndex >= count) { return false; }
-    PathTraceMaterial material = gMaterials[materialIndex];
+    PathTraceMaterial material = loadSceneMaterial(materialIndex);
     if (material.textureParams.w < 0.5) { return true; }
     HitInfo hit;
     if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push, hit)) { return false; }

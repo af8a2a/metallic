@@ -8,6 +8,8 @@
 
 2026-10-04 资产模型进展：已实现外部路线图的 **Phase 1 — Material Definition / Instance / Program**，包括 `.material` 稀疏继承、语义 schema、版本迁移入口和 SceneDocument 绑定；复用已有共享程序与 GPU 上传。接口、示例、验收证据和阶段边界见 [MaterialSystemPhase1](MaterialSystemPhase1.md)。外部 Phase 编号与本文原有 M 编号分别记录。
 
+2026-10-04 shader 接口进展：外部 **Phase 2** 的独立 `MaterialProgram` 模块已建立 Context / InstanceRef / BSDF 数据契约，并通过共享 legacy storage program 接入现有 ray、VBuffer 和 stream 材质读取。具体约定、GPU 验证及 Phase 3 的职责边界见 [MaterialSystemPhase2](MaterialSystemPhase2.md)。
+
 ## 1 目标和首个架构验收点
 
 最终统一的是材质定义、编译、实例、资源生命周期和散射接口。Surface、Fiber 及特殊输运仍保留各自的交互数据、能力边界和执行策略。

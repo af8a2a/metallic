@@ -71,7 +71,7 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
     }
 
     rayCone = propagateRayCone(rayCone, hit.t);
-    PathTraceMaterial material = gMaterials[hit.materialIndex];
+    PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
     float4 normalSample = loadMaterialTextureForMaterial(
         material.normalTexture,
         hit.texcoord,

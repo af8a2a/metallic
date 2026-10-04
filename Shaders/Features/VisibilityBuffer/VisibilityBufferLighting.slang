@@ -56,7 +56,7 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
 {
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
-    PathTraceMaterial material = gMaterials[hit.materialIndex];
+    PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
     float3 authoredNormal = hit.normal;
     float4 normalSample = loadMaterialTextureForMaterial(material.normalTexture, hit.texcoord,
         float4(0.5, 0.5, 1.0, 1.0), push, cone, hit, ray.direction, materialNeedsDeterministicTextureMip0(material), seed);

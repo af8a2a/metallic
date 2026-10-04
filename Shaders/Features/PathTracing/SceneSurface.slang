@@ -7,6 +7,7 @@ import Core;
 using Metallic;
 import Material;
 using Metallic.Material;
+import MaterialProgram;
 #if METALLIC_CUSTOM_MATERIALS
 #include "MaterialValueDispatch.hlsli"
 #endif
@@ -155,6 +156,29 @@ struct HitInfo
     float rayConeLodConstant;
     bool frontFace;
 };
+
+// Both ray hits and VBuffer reconstruction already produce HitInfo. Preserve
+// the authored TBN; UV1 is not present in this legacy vertex/hit representation.
+SurfaceMaterialContext sceneSurfaceMaterialContext(HitInfo hit, TextureFootprint footprint)
+{
+    SurfaceMaterialContext context = (SurfaceMaterialContext)0;
+    context.positionWS = hit.position;
+    context.geometryNormalWS = hit.geometryNormal;
+    context.shadingNormalWS = hit.normal;
+    context.tangentWS = hit.tangent.xyz;
+    context.bitangentWS = hit.bitangent;
+    context.texCoord0 = hit.texcoord;
+    context.texCoordMask = 1u;
+    context.frontFace = hit.frontFace ? 1u : 0u;
+    context.footprint = footprint;
+    return context;
+}
+
+PathTraceMaterial loadSceneMaterial(uint materialIndex)
+{
+    LegacyMaterialProgram program;
+    return program.loadParameters(gMaterials, legacyMaterialInstanceRef(materialIndex));
+}
 
 static const float kPi = 3.14159265358979323846;
 static const float3 kEnvironmentKeyLightDirection = float3(0.35, 0.88, 0.22);
@@ -737,9 +761,11 @@ float rayConeTextureLod(
     uint mipCount)
 {
     float textureDimensionLod = 0.5 * safeLog2(float(max(width, 1u)) * float(max(height, 1u)));
-    float normalTerm = sqrt(max(abs(dot(rayDirection, hit.geometryNormal)), 0.000001));
-    float footprintLod = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
-    float mipLevel = footprintLod + textureDimensionLod + textureTransformLodBias(textureInfo);
+    SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
+    float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
+    context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
+    context.footprint.flags = kTextureFootprintIsotropic0;
+    float mipLevel = context.footprint.isotropicLod0 + textureDimensionLod + textureTransformLodBias(textureInfo);
     return clamp(mipLevel, 0.0, float(max(mipCount, 1u) - 1u));
 }
 
@@ -982,7 +1008,7 @@ float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, ScenePathTracePush push)
 {
     PathTraceInstance instance = gInstances[instanceIndex];
-    PathTraceMaterial material = gMaterials[instance.materialIndex];
+    PathTraceMaterial material = loadSceneMaterial(instance.materialIndex);
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;

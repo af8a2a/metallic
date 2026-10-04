@@ -1,11 +1,33 @@
 #language slang 2026
 implementing Material;
 
+import MaterialProgram;
+
 namespace Metallic.Material
 {
 // Stable built-in IDs shared with MaterialRuntime.h. Zero denotes a legacy upload.
 public static const uint kMaterialProgramOpenPBRComposite = 1u;
 public static const uint kMaterialProgramRTXCRChiang = 2u;
+
+// Compatibility storage program. The existing upload embeds resources in the
+// same 720-byte record, so both offsets must reference that same record. This
+// adapter is not a new scattering model or a per-instance shader specialization.
+public static const uint kLegacyMaterialRecordBytes = 720u;
+public MaterialInstanceRef legacyMaterialInstanceRef(uint materialIndex)
+{
+    MaterialInstanceRef instance;
+    instance.parameterOffset = materialIndex * kLegacyMaterialRecordBytes;
+    instance.resourceOffset = instance.parameterOffset;
+    return instance;
+}
+
+public struct LegacyMaterialProgram
+{
+    public PathTraceMaterial loadParameters(StructuredBuffer<PathTraceMaterial> parameters, MaterialInstanceRef instance)
+    {
+        return parameters[instance.parameterOffset / kLegacyMaterialRecordBytes];
+    }
+};
 
 public uint materialProgramId(PathTraceMaterial parameters)
 {

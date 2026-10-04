@@ -54,7 +54,7 @@ float3 openPbrVolumeTransmittance(OpenPBRInteriorStack stack, float distance)
         return float3(1.0, 1.0, 1.0);
     }
 
-    PathTraceMaterial mediumMaterial = gMaterials[stack.entries[stack.count - 1u].materialIndex];
+    PathTraceMaterial mediumMaterial = loadSceneMaterial(stack.entries[stack.count - 1u].materialIndex);
     float attenuationDistance = max(mediumMaterial.glassParams.w, 0.0);
     if (attenuationDistance <= 0.0001) {
         return float3(1.0, 1.0, 1.0);
@@ -154,7 +154,7 @@ float3 openPbrShadowTransmittance(
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
             transmittance *= openPbrVolumeTransmittance(interiorStack, shadowHit.t);
         }
-        PathTraceMaterial shadowMaterial = gMaterials[shadowHit.materialIndex];
+        PathTraceMaterial shadowMaterial = loadSceneMaterial(shadowHit.materialIndex);
         if (shadowMaterial.textureParams.w > 1.5) {
             float alpha = saturate(shadowMaterial.baseColor.a * loadMaterialAlphaCoverage(
                 shadowMaterial.baseColorTexture, shadowHit.texcoord, push));
@@ -272,7 +272,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             break;
         }
 
-        PathTraceMaterial material = gMaterials[hit.materialIndex];
+        PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
         if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
             float alpha = saturate(material.baseColor.a * loadMaterialAlphaCoverage(
                 material.baseColorTexture, hit.texcoord, push));
