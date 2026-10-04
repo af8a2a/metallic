@@ -34,12 +34,14 @@ struct MaterialSchema
 };
 
 // Authoring definition. Its schema describes semantic values, never GPU offsets.
-// The implementation name selects an existing render::MaterialProgram.
+// The implementation selects built-in OpenPBR or the validated Slab lowering backend.
 struct MaterialDefinition
 {
     uint32_t version = 1;
     uint32_t definitionVersion = 1;
     std::string implementation = "OpenPBRComposite.Legacy";
+    std::string surfaceProgram; // Validated v3 Value/Closure authoring source, never generated Slang.
+    nlohmann::json valueParameters = nlohmann::json::object(); // Sparse float4 slots 0..3.
     MaterialSchema schema;
     MaterialFeaturePolicies featurePolicies;
 };
@@ -54,6 +56,7 @@ struct MaterialInstance
     nlohmann::json resources = nlohmann::json::object();
     nlohmann::json features = nlohmann::json::object();
     nlohmann::json featurePolicies = nlohmann::json::object();
+    nlohmann::json valueParameters = nlohmann::json::object();
 };
 
 struct ResolvedMaterialInstance
@@ -63,6 +66,7 @@ struct ResolvedMaterialInstance
     nlohmann::json parameters;
     nlohmann::json resources;
     nlohmann::json features;
+    nlohmann::json valueParameters;
     MaterialFeaturePolicies featurePolicies;
     MaterialFeatureResolution featureResolution;
     std::vector<std::string> dependencies;

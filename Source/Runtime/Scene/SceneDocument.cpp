@@ -864,9 +864,11 @@ bool SceneDocument::setMaterialAsset(int32_t materialIndex, std::string_view uri
     }
     material::MaterialAssetLibrary library(assetRoot);
     material::ResolvedMaterialInstance instance;
+    const auto previous = materialAssets_.find(materialIndex);
+    const bool replaceOwned = previous != materialAssets_.end() && previous->second.ownsValueProgram;
     if (!library.resolve(uri, instance, error) ||
-        !applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error)) { return false; }
-    materialAssets_[materialIndex] = {std::string(uri), library.root(), materials()[materialIndex]};
+        !applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error, replaceOwned)) { return false; }
+    materialAssets_[materialIndex] = {std::string(uri), library.root(), materials()[materialIndex], !instance.definition.surfaceProgram.empty()};
     dirty_ = true;
     return true;
 }
@@ -879,8 +881,8 @@ bool SceneDocument::reloadMaterialAsset(int32_t materialIndex, std::string& erro
     auto overrides = serializeMaterialProperties(materials()[materialIndex]);
     const auto previous = serializeMaterialProperties(old.resolved);
     for (const auto& [name, value] : previous.items()) {
-        // M2 code is scene-owned, never inherited from a .material asset.
-        if (name == "valueProgram" || name == "valueParameters") { continue; }
+        // Legacy Value programs remain scene-owned; Slab definitions own their code/default inputs.
+        if (!old.ownsValueProgram && (name == "valueProgram" || name == "valueParameters")) { continue; }
         if (name == "featurePolicies" && overrides.contains(name)) {
             for (const auto& [feature, policy] : value.items()) {
                 if (overrides[name].contains(feature) && overrides[name][feature] == policy) { overrides[name].erase(feature); }
@@ -895,8 +897,8 @@ bool SceneDocument::reloadMaterialAsset(int32_t materialIndex, std::string& erro
     if (!library.resolve(old.uri, instance, error)) { return false; }
     RenderMaterial check = materials()[materialIndex];
     if (!parseMaterialProperties(overrides, check, error)) { return false; }
-    if (!applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error)) { return false; }
-    materialAssets_[materialIndex] = {old.uri, old.root, materials()[materialIndex]};
+    if (!applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error, old.ownsValueProgram)) { return false; }
+    materialAssets_[materialIndex] = {old.uri, old.root, materials()[materialIndex], !instance.definition.surfaceProgram.empty()};
     auto edited = materials()[materialIndex];
     if (!parseMaterialProperties(overrides, edited, error)) { return false; }
     (void)Scene::setMaterialProperties(materialIndex, edited);
@@ -1704,7 +1706,7 @@ bool SceneDocument::save(std::string& message)
             auto& saved = materialOverrides.back();
             const auto baseline = serializeMaterialProperties(binding->second.resolved);
             for (const auto& [name, value] : baseline.items()) {
-                if (name == "valueProgram" || name == "valueParameters") { continue; }
+                if (!binding->second.ownsValueProgram && (name == "valueProgram" || name == "valueParameters")) { continue; }
                 if (name == "featurePolicies" && saved["properties"].contains(name)) {
                     auto& policies = saved["properties"][name];
                     for (const auto& [feature, policy] : value.items()) {

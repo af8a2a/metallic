@@ -807,6 +807,7 @@ public:
         // settings must rebuild their matching shader and descriptor variants.
         if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
             (compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true) ||
+                compiledProgramBinning_ != boolProperty(properties(), "programBinning", true) ||
                 compiledHalfPrecision_ != boolProperty(properties(), "halfPrecision", true) ||
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false))) {
             return compile(context, log);
@@ -935,7 +936,12 @@ public:
             log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
             return makeError(Error::Unsupported);
         }
-        const bool baseReady = programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+        const bool closureProgramsReady = !classified || std::all_of(valuePrograms->manifests().begin(), valuePrograms->manifests().end(),
+            [&](const MaterialValueManifest& manifest) {
+                return manifest.closureFamily == MaterialClosureFamily::OpenPBRCompositeClosure ||
+                    (manifest.programId < closurePrograms_.size() && closurePrograms_[manifest.programId].valid());
+            });
+        const bool baseReady = closureProgramsReady && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
                 [](const ComputeProgram& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
@@ -947,6 +953,8 @@ public:
                 programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() &&
                 tonemapProgram_.valid());
         if (baseReady && sharcReady && nrcReady) {
+            // Legacy fixed/sparse schedules can reuse identical shaders.
+            compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
             return {};
         }
 
@@ -1143,7 +1151,7 @@ public:
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
-                ComputeProgram& outProgram) -> Result<> {
+                ComputeProgram& outProgram, MaterialProgramId definition = MaterialProgramId::OpenPBRComposite) -> Result<> {
             const auto request = makeSceneShaderRequest(shaderProgram, shaderOptions, extraDefines);
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
@@ -1155,7 +1163,7 @@ public:
                     .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get(),
                     .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
                 outProgram, artifact, diagnostics,
-                {.definitionHash = useOpenPBR ? findMaterialProgram(MaterialProgramId::OpenPBRComposite)->key.definitionHash : 0,
+                {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
@@ -1206,6 +1214,22 @@ public:
         }
 
         if (errorProgram_.valid()) { return {}; }
+        if (classified && closurePrograms_.empty()) {
+            // Resize once before retaining element addresses in executable keys.
+            closurePrograms_.resize(valuePrograms->programCount() + 1);
+        }
+        if (classified) {
+            for (const auto& manifest : valuePrograms->manifests()) {
+                if (manifest.closureFamily == MaterialClosureFamily::OpenPBRCompositeClosure) { continue; }
+                auto& program = closurePrograms_[manifest.programId];
+                if (program.valid()) { continue; }
+                const auto id = std::to_string(manifest.programId);
+                const SlangMacroDefine defines[] = {{"MATERIAL_CLASS", "4"}, {"MATERIAL_PROGRAM_ID", id.c_str()}};
+                result = compilePermutation(PathTracePermutation::Base, defines, baseBindings, program,
+                    manifest.closureFamily == MaterialClosureFamily::SingleSlabClosure ? MaterialProgramId::SingleSlab : MaterialProgramId::DualSlab);
+                if (!result || errorProgram_.valid()) { return result; }
+            }
+        }
         if (cacheMode_ == kScenePathTraceCacheModeSharc) {
             const std::vector<ComputeProgramBindingDesc> sharcBindings = [cacheBindings]() {
                 std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
@@ -1426,6 +1450,7 @@ public:
         compiledShaderKey_ = shaderKey;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
+        compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
         return {};
     }
@@ -2249,6 +2274,7 @@ private:
         errorProgram_.clear();
         materialArtifacts_.clear();
         for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
+        closurePrograms_.clear();
         for (ComputeProgram& program : programs_) {
             program.clear();
         }
@@ -2868,9 +2894,10 @@ private:
 
     bool materialBinningEnabled(const RenderGraphProperties& settings) const
     {
-        // The existing five bins classify legacy factors. A Value program can
-        // change them per hit, so use the general kernel until sparse M2 bins land.
-        return !hasValuePrograms() && boolProperty(settings, "materialBinning", true);
+        // Custom per-hit values cannot use legacy factor-only bins. Sparse bins
+        // dispatch the actual compiled program (including Slab specialization).
+        return boolProperty(settings, "materialBinning", true) &&
+            (!hasValuePrograms() || boolProperty(settings, "programBinning", true));
     }
 
     void updateMaterialProgramBins()
@@ -2893,12 +2920,19 @@ private:
             const auto permutation = static_cast<uint32_t>(features.surfaceProgram);
             auto* program = permutation < classifiedPrograms_.size() ? &classifiedPrograms_[permutation]
                 : &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+            auto family = MaterialClosureFamily::OpenPBRCompositeClosure;
+            const auto& values = sceneResources_.materialBinding()->values();
+            const auto valueId = values->instances()[index].programId;
+            if (valueId != 0) {
+                family = values->manifests()[valueId - 1].closureFamily;
+                if (family != MaterialClosureFamily::OpenPBRCompositeClosure) { program = &closurePrograms_[valueId]; }
+            }
             const auto key = executableKey(program);
             auto found = std::find_if(materialProgramBins_.begin() + 1, materialProgramBins_.end(),
                 [&](const auto& bin) { return bin.key == key; });
             if (found == materialProgramBins_.end()) {
                 materialInstanceProgramBins_[index] = uint32_t(materialProgramBins_.size());
-                materialProgramBins_.push_back({key, program, MaterialClosureFamily::OpenPBRCompositeClosure});
+                materialProgramBins_.push_back({key, program, family});
             } else { materialInstanceProgramBins_[index] = uint32_t(found - materialProgramBins_.begin()); }
         }
         std::vector<std::optional<MaterialClosureFamily>> families;
@@ -3203,7 +3237,9 @@ private:
     uint64_t materialProgramBinGeneration_ = 0;
     std::unique_ptr<Buffer> unshadowedParameters_;
     std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
+    std::vector<ComputeProgram> closurePrograms_;
     bool compiledMaterialBinning_ = true;
+    bool compiledProgramBinning_ = true;
     bool compiledHalfPrecision_ = true;
     bool compiledExportUpscalerGuides_ = false;
     SceneLightResources lights_;

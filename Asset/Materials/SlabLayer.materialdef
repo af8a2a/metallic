@@ -1,0 +1,27 @@
+{
+    "type": "Metallic.MaterialDefinition",
+    "version": 1,
+    "definitionVersion": 1,
+    "implementation": "Slab.Surface",
+    "defaults": {
+        "valueParameters": {
+            "0": [0.12, 0.06, 0.025, 0],
+            "1": [0.65, 0.4, 0.15, 0],
+            "2": [0.15, 0.3, 0.6, 0]
+        }
+    },
+    "surfaceProgram": {
+        "version": 3,
+        "nodes": {},
+        "outputs": {},
+        "closure": {
+            "op": "layer",
+            "a": {
+                "op": "slab",
+                "reflectance": {"op": "parameter", "index": 0},
+                "opticalDepth": {"op": "parameter", "index": 2}
+            },
+            "b": {"op": "slab", "reflectance": {"op": "parameter", "index": 1}}
+        }
+    }
+}

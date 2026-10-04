@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <vector>
+#include "Runtime/Material/MaterialClosureIR.h"
 
 namespace metallic::scene { struct RenderMaterial; }
 
@@ -40,6 +41,8 @@ struct MaterialValueManifest
     uint32_t expressionNodes = 0;
     uint32_t textureMask = 0, footprintMask = 0, featureMask = 0;
     uint64_t irHash = 0;
+    MaterialClosureFamily closureFamily = MaterialClosureFamily::OpenPBRCompositeClosure;
+    MaterialClosureComplexity closureComplexity;
     // Surface slice only; Coverage has independent resource requirements/code.
 };
 

@@ -5072,7 +5072,8 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
 }
 
 bool Scene::applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
-    const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error)
+    const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error,
+    bool replaceOwnedValueProgram)
 {
     error.clear();
     if (!valid() || materialIndex < 0 || size_t(materialIndex) >= materials_.size()) {
@@ -5080,6 +5081,7 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
         return false;
     }
     auto candidate = materials_[materialIndex];
+    if (replaceOwnedValueProgram) { candidate.valueProgram.clear(); candidate.valueParameters = {}; }
     std::vector<RenderImage> newImages;
     std::vector<RenderTexture> newTextures;
     const auto resolver = [&](std::string_view uri) -> int32_t {

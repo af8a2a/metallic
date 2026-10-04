@@ -84,10 +84,9 @@ Radiance / Importance 对当前 eta=1 的互易反射模型相同；背面或下
 [MaterialSlabProbe.slang](../tests/rhi/shaders/MaterialSlabProbe.slang) 提供读取 packet 的具体 source。
 测试用同一 `SurfaceLighting` eval/sample 路径渲染球体与地面，64 samples/pixel、最多 3 次命中。
 
-本阶段是可执行的独立原型。Slab 尚未成为编辑器可选的 scene material implementation，
-也没有新增 Closure 图 JSON/编辑器或从 Value IR 自动生成 Slab inputs；provider 是两者的接入点。
-Phase 9 的 Value IR 与现有 OpenPBR 作者路径保持原样。Program→Closure Family 两级 GPU 分箱
-属于后续 Phase 11，本阶段不修改 Visibility / Material bin 的 ABI。
+本阶段最初交付独立原型。后续 [M4 场景 Closure 补充](MaterialSystemM4SceneClosure.md)
+增加了 Slab.Surface 作者资产、Value IR v3 的动态 Slab 输入、生产 PT/VBuffer 和
+实际 Program→Family 分类。本文的散射模型与预算仍适用；没有新增 MaterialGraph UI。
 
 ## 验证
 

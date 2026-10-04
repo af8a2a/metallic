@@ -1,5 +1,6 @@
 #include "Runtime/Material/MaterialAsset.h"
 #include "Runtime/Material/MaterialAssetFields.h"
+#include "Runtime/Material/MaterialValueIR.h"
 
 #include <algorithm>
 #include <cmath>
@@ -137,8 +138,19 @@ void apply(const MaterialInstance& instance, ResolvedMaterialInstance& result)
     overlay(result.definition.schema.parameters, instance.parameters, result.parameters);
     overlay(result.definition.schema.resources, instance.resources, result.resources);
     overlay(result.definition.schema.features, instance.features, result.features);
+    for (const auto& [slot, value] : instance.valueParameters.items()) { result.valueParameters[slot] = value; }
     std::string error;
     if (!overlayFeaturePolicies(instance.featurePolicies, result.featurePolicies, error)) { throw std::runtime_error(error); }
+}
+
+void validateValueParameters(const Json& parameters)
+{
+    require(parameters.is_object(), "valueParameters must be a sparse object of float4 slots");
+    for (const auto& [slot, value] : parameters.items()) {
+        require(slot.size() == 1 && slot[0] >= '0' && slot[0] <= '3' && value.is_array() && value.size() == 4,
+            "Value parameter requires slot 0..3 and four components");
+        for (const auto& component : value) { number(component, -1e6, 1e6); }
+    }
 }
 
 void validateStructure(const MaterialInstance& instance)
@@ -147,6 +159,7 @@ void validateStructure(const MaterialInstance& instance)
     require(instance.definition.starts_with("asset://") && instance.definition.ends_with(".materialdef"), "Invalid material definition URI");
     require(!instance.parent || (instance.parent->starts_with("asset://") && instance.parent->ends_with(".material")), "Invalid material parent URI");
     require(instance.parameters.is_object() && instance.resources.is_object() && instance.features.is_object(), "Material overrides must be objects");
+    validateValueParameters(instance.valueParameters);
     const auto schema = defaultOpenPBRDefinition().schema;
     Json scratch = Json::object();
     overlay(schema.parameters, instance.parameters, scratch);
@@ -159,7 +172,7 @@ void validateStructure(const MaterialInstance& instance)
 
 MaterialInstance instanceFromJson(Json document)
 {
-    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources", "features", "featurePolicies"});
+    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources", "features", "featurePolicies", "valueParameters"});
     require(document.at("type") == "Metallic.MaterialInstance", "Wrong material asset type");
     require(document.at("version").is_number_unsigned() || document.at("version").is_number_integer(), "Invalid instance version");
     const auto version = document.at("version").get<int64_t>();
@@ -181,6 +194,7 @@ MaterialInstance instanceFromJson(Json document)
     result.resources = document.value("resources", Json::object());
     result.features = document.value("features", Json::object());
     result.featurePolicies = document.value("featurePolicies", Json::object());
+    result.valueParameters = document.value("valueParameters", Json::object());
     validateStructure(result);
     return result;
 }
@@ -215,18 +229,25 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
 {
     return attempt(error, [&] {
         const auto document = parse(text);
-        keys(document, {"type", "version", "definitionVersion", "implementation", "defaults"});
+        keys(document, {"type", "version", "definitionVersion", "implementation", "defaults", "surfaceProgram"});
         require(document.at("type") == "Metallic.MaterialDefinition" && document.at("version").is_number_integer() && document.at("version") == 1,
             "Unsupported material definition format");
         MaterialDefinition candidate = defaultOpenPBRDefinition();
         candidate.implementation = document.at("implementation").get<std::string>();
-        require(candidate.implementation == "OpenPBRComposite.Legacy", "Phase 1 only registers the existing OpenPBR implementation");
+        require(candidate.implementation == "OpenPBRComposite.Legacy" || candidate.implementation == "Slab.Surface", "Unsupported material implementation");
+        if (candidate.implementation == "Slab.Surface") {
+            require(document.contains("surfaceProgram") && document["surfaceProgram"].is_object(), "Slab definition requires surfaceProgram");
+            candidate.surfaceProgram = document["surfaceProgram"].dump();
+            require(render::MaterialValueIR::parse(candidate.surfaceProgram).closure().has_value(), "Slab definition requires Closure IR");
+        } else { require(!document.contains("surfaceProgram"), "OpenPBR definition does not own a Slab program"); }
         require(document.at("definitionVersion").is_number_integer(), "Invalid definition version");
         const auto version = document.at("definitionVersion").get<int64_t>();
         require(version > 0 && version <= UINT32_MAX, "Invalid definition version");
         candidate.definitionVersion = static_cast<uint32_t>(version);
         const auto values = document.value("defaults", Json::object());
-        keys(values, {"parameters", "resources", "features", "featurePolicies"});
+        keys(values, {"parameters", "resources", "features", "featurePolicies", "valueParameters"});
+        candidate.valueParameters = values.value("valueParameters", Json::object());
+        validateValueParameters(candidate.valueParameters);
         std::string policyError;
         if (!overlayFeaturePolicies(values.value("featurePolicies", Json::object()), candidate.featurePolicies, policyError)) {
             throw std::runtime_error(policyError);
@@ -246,10 +267,16 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
 std::string serializeMaterialDefinition(const MaterialDefinition& definition)
 {
     require(validFeaturePolicies(definition.featurePolicies), "Invalid definition feature policies");
-    return Json{{"type", "Metallic.MaterialDefinition"}, {"version", definition.version},
+    Json document{{"type", "Metallic.MaterialDefinition"}, {"version", definition.version},
         {"definitionVersion", definition.definitionVersion}, {"implementation", definition.implementation},
         {"defaults", {{"parameters", defaults(definition.schema.parameters)}, {"resources", defaults(definition.schema.resources)},
-            {"features", defaults(definition.schema.features)}, {"featurePolicies", serializeFeaturePolicies(definition.featurePolicies)}}}}.dump(4) + '\n';
+            {"features", defaults(definition.schema.features)}, {"featurePolicies", serializeFeaturePolicies(definition.featurePolicies)},
+            {"valueParameters", definition.valueParameters}}}};
+    if (!definition.surfaceProgram.empty()) { document["surfaceProgram"] = Json::parse(definition.surfaceProgram); }
+    MaterialDefinition checked;
+    std::string error;
+    if (!deserializeMaterialDefinition(document.dump(), checked, error)) { throw std::runtime_error(error); }
+    return document.dump(4) + '\n';
 }
 
 bool deserializeMaterialInstance(std::string_view text, MaterialInstance& output, std::string& error)
@@ -263,7 +290,8 @@ std::string serializeMaterialInstance(const MaterialInstance& instance)
     return Json{{"type", "Metallic.MaterialInstance"}, {"version", instance.version},
         {"definitionVersion", instance.definitionVersion}, {"definition", instance.definition},
         {"parent", instance.parent ? Json(*instance.parent) : Json(nullptr)}, {"parameters", instance.parameters},
-        {"resources", instance.resources}, {"features", instance.features}, {"featurePolicies", instance.featurePolicies}}.dump(4) + '\n';
+        {"resources", instance.resources}, {"features", instance.features}, {"featurePolicies", instance.featurePolicies},
+        {"valueParameters", instance.valueParameters}}.dump(4) + '\n';
 }
 
 bool upgradeMaterial(Json& document, uint32_t versionFrom, uint32_t versionTo, std::string& error)
@@ -349,6 +377,7 @@ bool MaterialAssetLibrary::resolve(const MaterialInstance& instance, ResolvedMat
         candidate.parameters = defaults(candidate.definition.schema.parameters);
         candidate.resources = defaults(candidate.definition.schema.resources);
         candidate.features = defaults(candidate.definition.schema.features);
+        candidate.valueParameters = candidate.definition.valueParameters;
         candidate.featurePolicies = candidate.definition.featurePolicies;
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) { apply(*it, candidate); }
         // Analyze resource presence without loading textures or assigning GPU handles.
@@ -402,9 +431,19 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
     scene::RenderMaterial& output, std::string& error)
 {
     return attempt(error, [&] {
-        require(instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
+        const bool slab = instance.definition.implementation == "Slab.Surface";
+        require(slab || instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
         require(!output.rtxcrHair, "OpenPBR asset cannot replace a Fiber material");
         auto candidate = output;
+        if (slab) {
+            require(render::MaterialValueIR::parse(instance.definition.surfaceProgram).closure().has_value(), "Slab definition requires Closure IR");
+            candidate.valueProgram = instance.definition.surfaceProgram;
+            candidate.valueParameters = {};
+            validateValueParameters(instance.valueParameters);
+            for (const auto& [slot, values] : instance.valueParameters.items()) {
+                for (uint32_t c = 0; c < 4; ++c) { candidate.valueParameters[(slot[0] - '0') * 4 + c] = values[c].get<float>(); }
+            }
+        }
         candidate.featurePolicies = instance.featurePolicies;
         const auto& p = instance.parameters;
         candidate.baseColorFactor = float4(p.at("baseColor")[0].get<float>(), p.at("baseColor")[1].get<float>(),
@@ -419,6 +458,10 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         candidate.alphaMode = mode == "opaque" ? "OPAQUE" : mode == "mask" ? "MASK" : "BLEND";
         candidate.doubleSided = instance.features.at("doubleSided").get<bool>();
         candidate.unlit = instance.features.at("unlit").get<bool>();
+        if (slab) {
+            require(!candidate.unlit && candidate.alphaMode != "BLEND" && candidate.transmissionFactor == 0 &&
+                candidate.diffuseTransmissionFactor == 0, "Slab assets require a lit opaque or masked non-transmissive Surface");
+        }
         const scene::RenderMaterial textureDefaults;
         for (const auto& [name, member] : detail::kTextures) {
             auto& info = candidate.*member;
@@ -447,10 +490,20 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
 {
     return attempt(error, [&] {
         require(!source.rtxcrHair && scene::validMaterialProperties(source), "Invalid OpenPBR source material");
-        require(source.valueProgram.empty(), "Custom Value Program code belongs to its definition; Phase 1 export does not serialize shader code in an instance");
+        require(definition.surfaceProgram.empty() ? source.valueProgram.empty() : (!source.valueProgram.empty() &&
+            render::MaterialValueIR::parse(source.valueProgram).canonical() == render::MaterialValueIR::parse(definition.surfaceProgram).canonical()),
+            "Custom Value Program code must belong to the material definition");
         MaterialInstance candidate;
         candidate.definition = std::move(definitionUri);
         candidate.definitionVersion = definition.definitionVersion;
+        if (!definition.surfaceProgram.empty()) {
+            for (uint32_t slot = 0; slot < 4; ++slot) {
+                const auto key = std::to_string(slot);
+                Json values = Json::array();
+                for (uint32_t c = 0; c < 4; ++c) { values.push_back(source.valueParameters[slot * 4 + c]); }
+                if (values != definition.valueParameters.value(key, Json::array({0, 0, 0, 0}))) { candidate.valueParameters[key] = values; }
+            }
+        }
         Json parameters = {{"baseColor", {source.baseColorFactor.x, source.baseColorFactor.y, source.baseColorFactor.z}},
             {"opacity", source.baseColorFactor.w}};
         for (const auto& field : detail::kScalars) { parameters[field.name] = source.*field.member; }

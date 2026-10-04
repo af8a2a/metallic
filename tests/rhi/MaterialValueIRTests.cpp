@@ -76,6 +76,39 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MaterialValueIRTest);
 
+class MaterialValueClosureIRTest final : public RHITest
+{
+public:
+    MaterialValueClosureIRTest() { name = "material_value_closure_ir"; type = RHITestType::Resource; }
+    RHITestResult run(RHITestContext&) override
+    {
+        try {
+            const Json slab{{"op", "slab"}, {"reflectance", {{"op", "parameter"}, {"index", 0}}}};
+            Json graph{{"version", 3}, {"nodes", Json::object()}, {"outputs", {{"coverage", 1}}}, {"closure", slab}};
+            auto single = MaterialValueIR::lower(graph);
+            check(single.closure().has_value() && single.slice(false).closure().has_value(), "Surface lost Closure topology");
+            check(!single.slice(true).closure() && single.slice(true).outputs().size() == 1, "Coverage retained Closure topology");
+            graph["closure"] = {{"op", "mix"}, {"a", slab}, {"b", slab}, {"weight", {{"op", "parameter"}, {"index", 1}}}};
+            const auto dual = MaterialValueIR::lower(graph);
+            check(dual.hash() != single.hash() && dual.usage().parameterMask == 3, "Closure topology or dynamic inputs lost in identity");
+            scene::RenderMaterial material; material.alphaMode = "MASK"; material.valueProgram = graph.dump();
+            std::string log;
+            auto set = MaterialValueProgramSet::create({&material, 1}, log);
+            check(set && set->manifests()[0].closureFamily == MaterialClosureFamily::DualSlabClosure &&
+                set->manifests()[0].closureComplexity.payloadBytes == 96, "Production manifest lost family/budget");
+            material.valueParameters[4] = 0.8f;
+            auto updated = MaterialValueProgramSet::create({&material, 1}, log);
+            check(updated && updated->key() == set->key(), "Dynamic Slab input changed program identity");
+            graph["closure"]["a"] = graph["closure"];
+            bool rejected = false;
+            try { MaterialValueIR::lower(graph); } catch (const std::exception&) { rejected = true; }
+            check(rejected, "Nested Closure exceeded realtime budget silently");
+            return RHITestResult::pass("Value to Closure topology, dynamic inputs, coverage slicing, family manifest and budget rejection");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialValueClosureIRTest);
+
 class MaterialValueIRTextureTest final : public RHITest
 {
 public:

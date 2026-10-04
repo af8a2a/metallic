@@ -117,10 +117,11 @@ private:
     std::shared_ptr<uint32_t> micromapCount_;
 };
 
-class MaterialCoverageRenderingTest final : public RHITest
+class MaterialCoverageRenderingTest : public RHITest
 {
 public:
-    MaterialCoverageRenderingTest() { name = "material_coverage_winner_shadow_ray"; type = RHITestType::Rendering; }
+    explicit MaterialCoverageRenderingTest(bool slab = false) : slab_(slab)
+    { name = slab ? "material_coverage_slab_winner_shadow_ray" : "material_coverage_winner_shadow_ray"; type = RHITestType::Rendering; }
     RHITestResult run(RHITestContext& context) override
     {
         const auto root = std::filesystem::absolute(context.outputDirectory / "coverage-scene");
@@ -164,6 +165,9 @@ public:
         sample.graph.setNodeRuntimeProperty(raster, "meshletNormalConeCull", false);
         const auto deferred = sample.graph.findNode("Deferred")->id;
         sample.graph.setNodeRuntimeProperty(deferred, "debugView", "baseColor");
+        // The comparison pass requires equal encodings after the color-system
+        // migration: both inputs must be display-linear diagnostics.
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("Reference")->id, "debugView", "baseColor");
         sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);
         const auto micromapCount = std::make_shared<uint32_t>(0);
         registerRenderGraphPassType("CoverageRayProbe", "Coverage ray/shadow test", [micromapCount] { return std::make_unique<CoverageRayProbePass>(micromapCount); });
@@ -186,6 +190,13 @@ public:
                     edited.valueProgram = R"({"version":2,"nodes":{"shift":{"op":"add","args":[{"op":"swizzle","components":"xxxx","args":[{"op":"uv"}]},{"op":"parameter","index":0}]},"mask":{"op":"clamp","args":[{"ref":"shift"},-1000000,1000000]}},"outputs":{"baseColor":{"op":"parameter","index":1},"coverage":{"op":"mul","args":[{"op":"alpha"},{"ref":"mask"}]}}})";
                     edited.valueParameters[4] = step == 5 ? 1.0f : 0.0f;
                     edited.valueParameters[6] = step == 6 ? 1.0f : 0.0f;
+                    if (slab_) {
+                        auto graph = nlohmann::json::parse(edited.valueProgram);
+                        graph["version"] = 3;
+                        graph["closure"] = {{"op", "slab"}, {"reflectance", graph["outputs"]["baseColor"]}};
+                        graph["outputs"].erase("baseColor");
+                        edited.valueProgram = graph.dump();
+                    }
                 }
                 if (step == 7) { edited.valueProgram.clear(); }
                 if (!scene.setMaterialProperties(0, edited)) { return RHITestResult::fail("Coverage edit failed"); }
@@ -223,7 +234,15 @@ public:
         }
         return RHITestResult::pass("Layered VBuffer winner, production RT/shadow Coverage, texture alpha, shared parameters and legacy restoration agree for 30752 pixels");
     }
+private:
+    bool slab_;
 };
 METALLIC_REGISTER_RHI_TEST(MaterialCoverageRenderingTest);
+class MaterialCoverageSlabRenderingTest final : public MaterialCoverageRenderingTest
+{
+public:
+    MaterialCoverageSlabRenderingTest() : MaterialCoverageRenderingTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(MaterialCoverageSlabRenderingTest);
 } // namespace
 } // namespace metallic::tests

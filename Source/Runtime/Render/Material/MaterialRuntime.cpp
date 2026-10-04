@@ -1,5 +1,6 @@
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Material/MaterialValueIR.h"
 
 #include <array>
 #include <atomic>
@@ -40,6 +41,10 @@ constexpr std::array kDefinitions{
     MaterialDefinition{MaterialProgramId::RTXCRChiang, "RTXCRChiang.DOTS", MaterialDomain::Fiber,
         1, {true, false, false, false},
         "DOTS triangle interaction; existing approximate environment-light MIS PDF"},
+    MaterialDefinition{MaterialProgramId::SingleSlab, "Slab.Single", MaterialDomain::Surface,
+        1, {true, true, true, true}, "One-sided diffuse Slab; shared context normal; no transmission"},
+    MaterialDefinition{MaterialProgramId::DualSlab, "Slab.Dual", MaterialDomain::Surface,
+        1, {true, true, true, true}, "Two diffuse Slabs with one Mix/Layer; shared normal; no multiple inter-layer scattering"},
 };
 
 constexpr MaterialProgram makeProgram(const MaterialDefinition& definition)
@@ -58,6 +63,8 @@ constexpr MaterialProgram makeProgram(const MaterialDefinition& definition)
 constexpr std::array kPrograms{
     makeProgram(kDefinitions[0]),
     makeProgram(kDefinitions[1]),
+    makeProgram(kDefinitions[2]),
+    makeProgram(kDefinitions[3]),
 };
 std::atomic<uint64_t> nextGeneration{1};
 
@@ -213,10 +220,21 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
     std::array<bool, kPrograms.size()> used{};
     for (uint32_t index = 0; index < parameters.size(); ++index) {
         auto& payload = candidate->parameters_[index];
-        const auto id = legacyMaterialProgramId(payload);
+        auto id = legacyMaterialProgramId(payload);
         const float encoded = payload.textureParams[2];
+        const auto legacyId = id;
+        if (!authored.empty() && !authored[index].valueProgram.empty()) {
+            try {
+                const auto ir = MaterialValueIR::parse(authored[index].valueProgram);
+                if (ir.closure()) {
+                    if (id == MaterialProgramId::RTXCRChiang) { diagnostics = "Fiber cannot contain Surface Closure IR"; return {}; }
+                    id = lowerMaterialClosure(*ir.closure()).family == MaterialClosureFamily::SingleSlabClosure
+                        ? MaterialProgramId::SingleSlab : MaterialProgramId::DualSlab;
+                }
+            } catch (const std::exception& error) { diagnostics = error.what(); return {}; }
+        }
         if (!std::isfinite(payload.rtxcrHairBaseColor[3]) ||
-            (encoded != 0.0f && encoded != static_cast<float>(id))) {
+            (encoded != 0.0f && encoded != static_cast<float>(legacyId) && encoded != static_cast<float>(id))) {
             diagnostics = "Material " + std::to_string(index) + " has an incompatible program identity.";
             return {};
         }

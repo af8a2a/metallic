@@ -83,7 +83,29 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
         if (key == "baseColor") { statements += "    result.baseColor.rgb = saturate(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb));\n"; manifest.outputMask |= 1; }
         if (key == "metallic") { statements += "    result.params.x = saturate(" + value + ".x);\n"; manifest.outputMask |= 2; }
         if (key == "roughness") { statements += "    result.params.y = saturate(" + value + ".x);\n"; manifest.outputMask |= 4; }
-        if (key == "emissive") { statements += "    result.emissive.rgb = clamp(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb),0.0,1e6);\n"; manifest.outputMask |= 8; }
+        if (key == "emissive") { statements += std::string("    result.") + (ir.closure() ? "emission" : "emissive.rgb") + " = clamp(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb),0.0,1e6);\n"; manifest.outputMask |= 8; }
+    }
+    if (ir.closure()) {
+        const auto lowered = lowerMaterialClosure(*ir.closure());
+        manifest.closureFamily = lowered.family;
+        manifest.closureComplexity = lowered.complexity;
+        const auto nodes = ir.closure()->nodes();
+        const auto root = ir.closure()->root();
+        const auto& closure = nodes[root];
+        const auto value = [&](uint32_t nodeId, const char* field) {
+            return "v" + std::to_string(ir.outputs().at("closure" + std::to_string(nodeId) + field));
+        };
+        const auto slab = [&](uint32_t nodeId, const char* field) {
+            return std::string("    result.inputs.") + field + ".reflectance = float4(saturate(Metallic.WorkingColor::fromLinearRec709(" + value(nodeId, "Reflectance") + ".rgb)),0);\n" +
+                "    result.inputs." + field + ".opticalDepth = float4(clamp(" + value(nodeId, "OpticalDepth") + ".rgb,0,1e6),0);\n";
+        };
+        statements += slab(closure.op == MaterialClosureOp::Slab ? root : closure.operands[0], "first");
+        if (closure.op != MaterialClosureOp::Slab) { statements += slab(closure.operands[1], "second"); }
+        statements += "    result.inputs.control = float4(" + std::to_string(static_cast<uint32_t>(closure.op)) + "," +
+            (closure.op == MaterialClosureOp::Mix ? "saturate(" + value(root, "Weight") + ".x)" : "0") + ",0,0);\n";
+        return "SlabMaterialEvaluation materialSlab" + std::to_string(id) +
+            "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext)\n{\n"
+            "    SlabMaterialEvaluation result = (SlabMaterialEvaluation)0;\n" + statements + "    return result;\n}\n";
     }
     return "PathTraceMaterial materialValue" + std::to_string(id) +
         "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext)\n{\n"
@@ -133,7 +155,9 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             require(coveragePrograms.size() <= kMaxMaterialValuePrograms, "Scene exceeds 64 Coverage programs");
             sources.push_back(source);
         }
-        result->source_ = "// Material Value IR v1; generated Surface slice, shared 80-byte instance ABI.\n"
+        result->source_ = "// Material Value IR; generated Surface slice, shared 80-byte instance ABI.\n"
+            "import SlabClosure;\n"
+            "struct SlabMaterialEvaluation { Metallic.Material.SlabMaterialInputs inputs; float3 emission; };\n"
             "struct MaterialValueTextureContext { float normalizedRayLod; uint textureCount; uint ntcCount; };\n"
             "struct MaterialValueInstance { uint programId; uint coverageOffset; uint coverageCount; uint coverageFlags; float4 parameters[4]; };\n"
             "float4 materialValueNormalize(float4 v) { return float4(dot(v.xyz,v.xyz)>1e-20?normalize(v.xyz):float3(0,0,1),0); }\n";
@@ -148,10 +172,29 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             "    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex];\n"
             "    switch (instance.programId) {\n";
         for (const auto& [source, id] : programs) {
+            if (surfaceIR.at(source).closure()) { continue; }
             const auto name = std::to_string(id);
             result->source_ += "    case " + name + ": return materialValue" + name + "(instance, position, geometryNormal, uv, material, textureContext);\n";
         }
         result->source_ += "    default: return material;\n    }\n}\n";
+        result->source_ += "uint materialClosureFamily(uint materialIndex, uint specializedProgram = 0u)\n{\n"
+            "    uint id = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex].programId;\n"
+            "    switch(specializedProgram != 0u ? specializedProgram : id) {\n";
+        for (const auto& manifest : result->manifests_) {
+            if (manifest.closureFamily == MaterialClosureFamily::OpenPBRCompositeClosure) { continue; }
+            result->source_ += "    case " + std::to_string(manifest.programId) + ": return " +
+                (manifest.closureFamily == MaterialClosureFamily::SingleSlabClosure ? "1u" : "2u") + ";\n";
+        }
+        result->source_ += "    default: return 0u; }\n}\n"
+            "SlabMaterialEvaluation evaluateMaterialSlab(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext, uint specializedProgram = 0u)\n{\n"
+            "    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex];\n"
+            "    switch (specializedProgram != 0u ? specializedProgram : instance.programId) {\n";
+        for (const auto& [source, id] : programs) {
+            if (!surfaceIR.at(source).closure()) { continue; }
+            result->source_ += "    case " + std::to_string(id) + ": return materialSlab" + std::to_string(id) +
+                "(instance,position,geometryNormal,uv,material,textureContext);\n";
+        }
+        result->source_ += "    default: return (SlabMaterialEvaluation)0; }\n}\n";
         result->key_ = 14695981039346656037ull;
         for (unsigned char c : result->source_) { result->key_ = (result->key_ ^ c) * 1099511628211ull; }
         for (size_t i = 0; i < materials.size(); ++i) {

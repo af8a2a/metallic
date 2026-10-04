@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -320,8 +321,13 @@ public:
                         require(std::abs(eta - expectedEta) < 1e-5f, "Transmission eta is not eta_i / eta_t");
                         entering += variant != 6; exiting += variant == 6;
                     } else { require(eta == 1, "Reflection or failed sample eta differs from one"); }
+                    // Probe parameters are already working RGB; texture flags
+                    // declare linear Rec.709. Modulation occurs in that source basis.
+                    auto sourceFactor = color::toLinearRec709({factors[lane & 1][0], factors[lane & 1][1], factors[lane & 1][2]});
+                    for (uint32_t c = 0; c < 3; ++c) { sourceFactor[c] *= texels[lane & 3][c]; }
+                    const auto workingBase = color::fromLinearRec709(sourceFactor);
                     for (uint32_t c = 0; c < 3; ++c) {
-                        const float expectedBase = variant == 7 ? 0 : factors[lane & 1][c] * texels[lane & 3][c];
+                        const float expectedBase = variant == 7 ? 0 : std::clamp(workingBase[c], 0.f, 1.f);
                         require(std::abs(data[base + 2][c] - expectedBase) < 1e-6f, "Program parameter/texture mapping differs");
                     }
                     require(std::abs(data[base + 3][0]) < 1e-6f &&

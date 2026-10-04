@@ -3,11 +3,14 @@
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Material/MaterialAsset.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -94,10 +97,11 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MaterialValueCompilerTest);
 
-class MaterialValuePublicationTest final : public RHITest
+class MaterialValuePublicationTest : public RHITest
 {
 public:
-    MaterialValuePublicationTest() { name = "material_value_publication"; type = RHITestType::Resource; }
+    explicit MaterialValuePublicationTest(bool closure = false) : closure_(closure)
+    { name = closure ? "material_value_closure_publication" : "material_value_publication"; type = RHITestType::Resource; }
     RHITestResult run(RHITestContext& context) override
     {
         // Write a composition in the test output directory, preserving the M0 asset.
@@ -110,6 +114,7 @@ public:
         const auto original = document.materials()[0];
         auto material = original;
         material.valueProgram = R"({"version":1,"baseColor":{"op":"parameter","index":0}})";
+        if (closure_) { material.valueProgram = R"({"version":3,"nodes":{},"outputs":{},"closure":{"op":"slab","reflectance":{"op":"parameter","index":0}}})"; }
         material.valueParameters[0] = 0.42f;
         material.alphaMode = "OPAQUE";
         material.unlit = false;
@@ -141,6 +146,10 @@ public:
         if (!complete || !initial || !initial->valueBuffer() || initial->values()->instances()[0].parameters[0] != 0.42f) {
             return RHITestResult::fail("Async Value generation was not published");
         }
+        if (closure_ && (initial->generation()->instances()[0].program->definition->id != MaterialProgramId::SingleSlab ||
+            !MaterialGeneration::create(initial->generation()->parameters(), 123, log, document.materials()))) {
+            return RHITestResult::fail("Slab family identity lost in published/reused CPU generation: " + log);
+        }
         auto invalid = material;
         invalid.valueProgram = R"({"version":1,"coverage":0})";
         document.setMaterialProperties(0, invalid);
@@ -163,8 +172,16 @@ public:
         if (!initial->valueBuffer() || !updated->valueBuffer()) { return RHITestResult::fail("Held Value generation was destroyed"); }
         return RHITestResult::pass("Source/parameter persistence, async upload, rejection rollback, parameter recovery and held buffers");
     }
+private:
+    bool closure_;
 };
 METALLIC_REGISTER_RHI_TEST(MaterialValuePublicationTest);
+class MaterialValueClosurePublicationTest final : public MaterialValuePublicationTest
+{
+public:
+    MaterialValueClosurePublicationTest() : MaterialValuePublicationTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(MaterialValueClosurePublicationTest);
 
 std::array<scene::RenderMaterial, 4> probeMaterials()
 {
@@ -266,6 +283,10 @@ public:
                 std::copy_n(materials[i].valueParameters.begin(), 3, expected.begin() + 17);
                 expected[22] = materials[i].valueParameters[12];
             } else if (i == 3) { expected[17] = 0.25f; expected[18] = 0.5f; expected[19] = 0.75f; expected[21] = 0.8f; }
+            if (i != 0) {
+                const auto working = color::fromLinearRec709({expected[17], expected[18], expected[19]});
+                std::copy(working.begin(), working.end(), expected.begin() + 17);
+            }
             for (size_t p = 0; p < 25; ++p) {
                 if (std::abs(actual[i * 25 + p] - expected[p]) > 1e-6f || !std::isfinite(actual[i * 25 + p])) {
                     return RHITestResult::fail("Value ABI/evaluation mismatch instance=" + std::to_string(i) + " field=" + std::to_string(p));
@@ -374,5 +395,200 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialValueLookDevTest);
+
+class MaterialValueClosureSceneTest final : public RHITest
+{
+public:
+    MaterialValueClosureSceneTest() { name = "material_value_closure_scene"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using Json = nlohmann::json;
+        try {
+            std::string log;
+            const auto check = [&](const auto& condition, const std::string& message) {
+                if (!condition) { throw std::runtime_error(message + ": " + log); }
+            };
+            const auto root = std::filesystem::absolute(context.outputDirectory);
+            const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/LookDev/OpenPBRDefault";
+            std::ifstream file(source / "OpenPbrDefault.gltf");
+            auto gltf = Json::parse(file);
+            for (auto& buffer : gltf["buffers"]) {
+                const auto name = buffer["uri"].get<std::string>();
+                std::filesystem::copy_file(source / name, root / name, std::filesystem::copy_options::overwrite_existing);
+            }
+            gltf["materials"].push_back(gltf["materials"][0]);
+            gltf["materials"].push_back(gltf["materials"][0]);
+            gltf["meshes"][1]["primitives"][0]["material"] = 1;
+            // Emissive Slab behind the camera: no primary ray can see it. With
+            // no environment/lights, nonzero receiver radiance proves secondary
+            // hits execute the scene's dynamic Slab program and emission.
+            const std::array<float, 18> vertices{-20,-20,5, -20,20,5, 20,20,5, -20,-20,5, 20,20,5, 20,-20,5};
+            { std::ofstream binary(root / "emitter.bin", std::ios::binary); binary.write(reinterpret_cast<const char*>(vertices.data()), sizeof(vertices)); }
+            const auto buffer = gltf["buffers"].size(), view = gltf["bufferViews"].size(), accessor = gltf["accessors"].size();
+            gltf["buffers"].push_back({{"uri", "emitter.bin"}, {"byteLength", sizeof(vertices)}});
+            gltf["bufferViews"].push_back({{"buffer", buffer}, {"byteLength", sizeof(vertices)}});
+            gltf["accessors"].push_back({{"bufferView", view}, {"componentType", 5126}, {"count", 6}, {"type", "VEC3"},
+                {"min", {-20,-20,5}}, {"max", {20,20,5}}});
+            gltf["meshes"].push_back({{"primitives", {{{"attributes", {{"POSITION", accessor}}}, {"material", 2}}}}});
+            gltf["nodes"].push_back({{"mesh", 2}, {"name", "Secondary-only Slab emitter"}});
+            gltf["scenes"][0]["nodes"].push_back(gltf["nodes"].size() - 1);
+            const auto scenePath = root / "ClosureScene.gltf";
+            { std::ofstream sceneFile(scenePath); sceneFile << gltf.dump(2); }
+            // Avoid inheriting overrides from a previous run in this fixture directory.
+            std::filesystem::remove(root / "ClosureScene.metallic_scene.json");
+            const Json parameter{{"op", "parameter"}, {"index", 0}};
+            const Json slab{{"op", "slab"}, {"reflectance", parameter}};
+            const Json texturedSlab{{"op", "slab"}, {"reflectance", {{"op", "mul"}, {"args", {parameter,
+                {{"op", "textureSample"}, {"texture", "baseColor"}, {"footprint", "RayCone"}, {"args", {{{"op", "uv"}}, 0}}}}}}}};
+            const Json black{{"op", "slab"}, {"reflectance", 0}, {"opticalDepth", {{"op", "parameter"}, {"index", 1}}}};
+            const Json mix{{"op", "mix"}, {"a", slab}, {"b", {{"op", "slab"}, {"reflectance", {0.8,0.1,0.05,0}}}},
+                {"weight", {{"op", "parameter"}, {"index", 1}}}};
+            const Json layer{{"op", "layer"}, {"a", black}, {"b", slab}};
+            material::MaterialAssetLibrary library(root);
+            const std::array<uint8_t, 16> white{255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255};
+            const std::array<uint8_t, 16> pattern{255,40,10,255, 10,255,40,255, 10,40,255,255, 255,255,255,255};
+            check(saveRgba8Png(root / "White.png", white.data(), 2, 2, log), "Write white texture");
+            check(saveRgba8Png(root / "Pattern.png", pattern.data(), 2, 2, log), "Write pattern texture");
+            for (const auto& [name, closure] : std::array<std::pair<std::string, Json>, 3>{{{"Single", texturedSlab}, {"Mix", mix}, {"Layer", layer}}}) {
+                auto definition = material::defaultOpenPBRDefinition();
+                definition.implementation = "Slab.Surface";
+                definition.surfaceProgram = Json{{"version", 3}, {"nodes", Json::object()},
+                    {"outputs", {{"emissive", {{"op", "parameter"}, {"index", 2}}}}}, {"closure", closure}}.dump();
+                definition.valueParameters = {{"0", {0.35,0.45,0.55,0}}};
+                { std::ofstream definitionFile(root / (name + ".materialdef")); definitionFile << material::serializeMaterialDefinition(definition); }
+                material::MaterialInstance instance; instance.definition = "asset://" + name + ".materialdef";
+                if (name == "Single") { instance.resources["baseColorTexture"] = "asset://White.png"; }
+                check(library.save("asset://" + name + ".material", instance, log), "Save Slab asset");
+                if (name == "Single") {
+                    instance.resources["baseColorTexture"] = "asset://Pattern.png";
+                    check(library.save("asset://Textured.material", instance, log), "Save texture variant");
+                }
+            }
+            scene::SceneDocument document;
+            const bool loaded = document.load(scenePath);
+            check(loaded, "Load scene " + document.lastLoadResult().error);
+            for (int32_t i = 0; i < 3; ++i) {
+                check(document.setMaterialAsset(i, std::array{"asset://Single.material", "asset://Mix.material", "asset://Layer.material"}[i], root, log), "Bind asset");
+            }
+            check(document.save(log), "Save asset scene");
+            scene::SceneDocument reloaded;
+            check(reloaded.load(document.documentPath()) && reloaded.documentWarning().empty(), "Reload asset scene");
+            check(reloaded.materials()[0].valueProgram == document.materials()[0].valueProgram, "Lost persistent Closure program");
+            RenderSampleLoadResult sample;
+            check(loadBuiltInRenderSample("lookdev-vbuffer", sample, log), "Load graph");
+            for (const char* pass : {"Reference", "Deferred", "VBuffer"}) { sample.graph.findNode(pass)->properties["path"] = scenePath.string(); }
+            for (const char* pass : {"Reference", "Deferred"}) {
+                auto& p = sample.graph.findNode(pass)->properties;
+                p["accumulate"] = false; p["samples"] = 1; p["maxDepth"] = 1; p["outputLinear"] = true;
+                // The secondary-only emitter is an opaque wall behind the
+                // camera; exclude its sun shadow from direct BSDF comparisons.
+                p["debugDisableShadows"] = true;
+            }
+            RenderGraphPreviewRenderer preview;
+            preview.bindRuntimeScene(&reloaded);
+            scene::EnvironmentSettings environment; environment.enabled = false;
+            scene::LightingSettings lighting; lighting.autoExposure.enabled = false;
+            scene::PunctualLight sun; sun.properties.type = "directional"; sun.properties.intensity = 2;
+            sun.direction = float3(-0.4f, -0.6f, -1); lighting.lights.push_back(sun);
+            preview.setEnvironment(environment); preview.setLighting(lighting); preview.setRawReadbackEnabled(true);
+            check(preview.initialize(context.enableValidation, true, false), "Initialize device");
+            const auto capture = [&](const char* output, const std::string& label) {
+                const auto rendered = preview.render(sample.graph, 128, 128, output);
+                check(rendered, "Render " + label + " " + preview.lastLog());
+                const auto& bytes = preview.readbackBytes();
+                check(preview.readbackFormat() == Format::RGBA32Sfloat && bytes.size() == 128*128*16, "HDR readback");
+                std::vector<float> pixels(bytes.size()/4); std::memcpy(pixels.data(), bytes.data(), bytes.size());
+                for (float value : pixels) { check(std::isfinite(value), "Nonfinite Slab image"); }
+                std::ofstream hdr(root / (label + ".rgba32f"), std::ios::binary); hdr.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                check(saveRgba8Png(root / (label + ".png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()), 128, 128, log), "Save evidence");
+                return pixels;
+            };
+            const auto energy = [](const auto& pixels) { double sum = 0; for (size_t i = 0; i < pixels.size(); ++i) { if (i % 4 != 3) { sum += std::abs(pixels[i]); } } return sum; };
+            const auto error = [](const auto& a, const auto& b, double scale = 1.0) {
+                double e = 0, v = 0; for (size_t i = 0; i < a.size(); ++i) { if (i % 4 != 3) { e += std::abs(a[i] - scale*b[i]); v += std::abs(a[i]); } }
+                return e / std::max(v, 1e-20);
+            };
+            const auto initial = MaterialValueProgramSet::create(reloaded.materials(), log);
+            check(initial && initial->programCount() == 3, "Expected three actual Closure programs");
+            const auto directPT = capture("Reference.color", "direct-pt");
+            const auto direct = capture("Deferred.color", "direct-binned");
+            check(energy(directPT) > 1 && energy(direct) > 1, "Slab direct lighting is empty");
+            sample.graph.findNode("Deferred")->properties["materialBinning"] = false; sample.graph.markDirty();
+            const auto unbinned = capture("Deferred.color", "direct-unbinned");
+            check(error(direct, unbinned) < 1e-5, "Actual Program/Family bins changed lighting");
+            sample.graph.findNode("Deferred")->properties["materialBinning"] = true; sample.graph.markDirty();
+            sample.graph.findNode("Deferred")->properties["programBinning"] = false;
+            const auto legacyFallback = capture("Deferred.color", "legacy-bin-fallback");
+            check(error(direct, legacyFallback) < 1e-5, "Legacy class schedule failed to fall back for custom programs");
+            sample.graph.findNode("Deferred")->properties["programBinning"] = true; sample.graph.markDirty();
+            // Mix at weight zero and transparent black top Layer at tau zero
+            // must both equal the same single diffuse receiver, in scene lighting.
+            check(reloaded.setMaterialAsset(1, "asset://Layer.material", root, log), "Switch Mix to Layer");
+            const auto transparent = capture("Deferred.color", "transparent-layer");
+            check(error(direct, transparent) < 1e-5, "Layer zero-depth boundary differs from Mix endpoint");
+            const auto transparentPT = capture("Reference.color", "transparent-layer-pt");
+            check(error(directPT, transparentPT) < 1e-5, "PT Layer boundary differs from Mix endpoint");
+            auto edited = reloaded.materials()[1]; edited.valueParameters[4] = edited.valueParameters[5] = edited.valueParameters[6] = 2;
+            check(reloaded.setMaterialProperties(1, edited), "Edit optical depth");
+            const auto absorbed = capture("Deferred.color", "absorbing-layer");
+            check(energy(absorbed) < energy(transparent) * 0.995, "Dynamic optical depth did not attenuate actual Layer lighting");
+            const auto absorbedPT = capture("Reference.color", "absorbing-layer-pt");
+            check(energy(absorbedPT) < energy(transparentPT) * 0.995, "PT ignored dynamic Layer absorption");
+            check(reloaded.setMaterialAsset(1, "asset://Mix.material", root, log), "Restore Mix");
+            edited = reloaded.materials()[1]; edited.valueParameters[4] = 1;
+            check(reloaded.setMaterialProperties(1, edited), "Edit Mix weight");
+            const auto mixed = capture("Deferred.color", "mix-endpoint");
+            check(error(direct, mixed) > 0.001, "Dynamic Mix weight did not affect scattering");
+            const auto updated = MaterialValueProgramSet::create(reloaded.materials(), log);
+            check(updated && updated->key() == initial->key(), "Dynamic values changed code identity");
+            check(reloaded.setMaterialAsset(0, "asset://Textured.material", root, log), "Bind texture variant");
+            const auto textured = capture("Deferred.color", "textured-slab");
+            check(error(mixed, textured) > 0.01, "Value texture did not reach Slab scattering");
+            check(MaterialValueProgramSet::create(reloaded.materials(), log)->key() == initial->key(), "Texture resource changed program identity");
+            // Only secondary Slab emission now illuminates the receivers.
+            lighting.lights.clear(); preview.setLighting(lighting);
+            edited = reloaded.materials()[2]; edited.valueParameters[8] = edited.valueParameters[9] = edited.valueParameters[10] = 1;
+            check(reloaded.setMaterialProperties(2, edited), "Edit hidden emitter");
+            const auto primaryOnly = capture("Reference.color", "primary-only");
+            check(energy(primaryOnly) < 1e-5, "Emitter leaked into primary visibility");
+            sample.graph.findNode("Reference")->properties["maxDepth"] = 3; sample.graph.markDirty();
+            sample.graph.findNode("Reference")->properties["samples"] = 8;
+            // PT seeds use global frameIndex even with accumulation disabled.
+            // Recreate the renderer for each oracle image to replay frame zero.
+            const auto restart = [&] {
+                preview = RenderGraphPreviewRenderer{};
+                preview.bindRuntimeScene(&reloaded); preview.setEnvironment(environment); preview.setLighting(lighting);
+                check(preview.subsystemHost()->configure<EnvironmentLightingSubsystem>({.initialDecodeTimeoutMilliseconds = 10000}, log), "Configure environment");
+                preview.setRawReadbackEnabled(true);
+                check(preview.initialize(context.enableValidation, true, false), "Restart deterministic renderer");
+            };
+            restart();
+            const auto secondary = capture("Reference.color", "secondary-emission");
+            check(energy(secondary) > 1, "Secondary hit did not execute Slab program");
+            edited.valueParameters[8] = edited.valueParameters[9] = edited.valueParameters[10] = 2;
+            check(reloaded.setMaterialProperties(2, edited), "Edit secondary emission");
+            restart();
+            const auto doubled = capture("Reference.color", "secondary-emission-double");
+            check(error(doubled, secondary, 2) < 1e-5, "Secondary dynamic inputs violate linear emission oracle");
+            // Actual realtime Slab IBL uses its BSDF, including Layer absorption.
+            environment.enabled = true; environment.path = root / "White.png";
+            check(reloaded.setMaterialAsset(1, "asset://Layer.material", root, log), "Bind IBL Layer");
+            restart();
+            const auto ibl = capture("Deferred.color", "environment-layer");
+            const auto& environmentSnapshot = preview.subsystemHost()->get<EnvironmentLightingSubsystem>()->snapshot();
+            check(environmentSnapshot.status == EnvironmentLightingStatus::Ready && environmentSnapshot.mapAvailable, "IBL source not ready");
+            edited = reloaded.materials()[1]; edited.valueParameters[4] = edited.valueParameters[5] = edited.valueParameters[6] = 2;
+            check(reloaded.setMaterialProperties(1, edited), "Edit IBL optical depth");
+            const auto iblAbsorbed = capture("Deferred.color", "environment-layer-absorbed");
+            check(energy(iblAbsorbed) < energy(ibl) * 0.999, "IBL ignored actual Layer closure");
+            std::ofstream(root / "ClosureSceneAcceptance.json") << Json{{"programs", 3}, {"binRelativeError", error(direct, unbinned)},
+                {"ptLayerBoundaryError", error(directPT, transparentPT)},
+                {"layerBoundaryError", error(direct, transparent)}, {"secondaryEnergy", energy(secondary)},
+                {"secondaryLinearityError", error(doubled, secondary, 2)}}.dump(2);
+            return RHITestResult::pass("Persistent Single/Mix/Layer assets; actual sparse/fallback VBuffer equivalence; dynamic scattering; PT secondary-only emission and linearity oracle");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialValueClosureSceneTest);
 } // namespace
 } // namespace metallic::tests

@@ -5,6 +5,7 @@
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/SceneColorConversion.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -297,9 +298,11 @@ public:
             }
             const auto* program = first->instances()[0].program;
             const auto original = document.materials()[0];
+            const auto originalWorking = resolveWorkingMaterial(original);
             auto edited = original;
             edited.featurePolicies.transmission = material::FeaturePolicy::Dynamic;
             edited.baseColorFactor.x = original.baseColorFactor.x == 0.25f ? 0.75f : 0.25f;
+            const auto editedWorking = resolveWorkingMaterial(edited);
             if (!document.setMaterialProperties(0, edited)) { return RHITestResult::fail("Edit rejected"); }
             const auto oldBinding = resources.materialBinding();
             auto refuseAllocation = +[](Device&, const BufferDesc&) -> Result<std::unique_ptr<Buffer>> {
@@ -327,8 +330,8 @@ public:
             }
             if (!second || first == second || second->instances()[0].program != program ||
                 second->sourceRevision() != document.materialRevision() ||
-                second->parameters()[0].baseColor[0] != edited.baseColorFactor.x ||
-                first->parameters()[0].baseColor[0] != original.baseColorFactor.x) {
+                second->parameters()[0].baseColor[0] != editedWorking.baseColorFactor.x ||
+                first->parameters()[0].baseColor[0] != originalWorking.baseColorFactor.x) {
                 return RHITestResult::fail("Material edit changed program identity or mutated a prior snapshot");
             }
             const void* mapped = resources.materialBuffer()->map();
@@ -341,12 +344,12 @@ public:
             }
             if (!document.setMaterialProperties(0, original) ||
                 !resources.syncRuntimeScene(&document, log)) { return RHITestResult::fail(log); }
-            if (resources.materialGeneration()->parameters()[0].baseColor[0] != original.baseColorFactor.x) {
+            if (resources.materialGeneration()->parameters()[0].baseColor[0] != originalWorking.baseColorFactor.x) {
                 return RHITestResult::fail("Undo did not restore material parameters");
             }
             resources.clear();
             if (resources.materialGeneration() || resources.materialBuffer() ||
-                first->parameters()[0].baseColor[0] != original.baseColorFactor.x) {
+                first->parameters()[0].baseColor[0] != originalWorking.baseColorFactor.x) {
                 return RHITestResult::fail("Clear retained publication or destroyed a held CPU generation");
             }
         }

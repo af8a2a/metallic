@@ -423,7 +423,8 @@ public:
     // Resolve semantic resources transactionally. New texture bindings invalidate
     // scene resource identity; factor-only changes retain the old upload fast path.
     bool applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
-        const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error);
+        const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error,
+        bool replaceOwnedValueProgram = false);
     // SceneDocument import transfers emission ownership while preserving source
     // nodes, transform inheritance and editable LightComponent metadata.
     bool virtualizeImportedLight(SceneEntity object);

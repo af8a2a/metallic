@@ -76,6 +76,7 @@ private:
         std::string uri;
         std::filesystem::path root;
         RenderMaterial resolved;
+        bool ownsValueProgram = false;
     };
     std::map<int32_t, MaterialAssetBinding> materialAssets_;
     bool sidecarLoaded_ = false;

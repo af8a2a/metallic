@@ -97,6 +97,9 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
     float3 authoredNormal = hit.normal;
     SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+#if defined(MATERIAL_PROGRAM_ID)
+    program.specializedProgramId = MATERIAL_PROGRAM_ID;
+#endif
     program.fixedMetalness = fixedMetalness;
     program.opaquePrimary = opaquePrimary;
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, ray.direction),
@@ -124,6 +127,9 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     sampling.exteriorIor = OpenPBR_VacuumIor;
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     float3 radiance = shaded.radiance;
+#if METALLIC_CUSTOM_MATERIALS
+    if (surface.family != 0u) { return radiance + sceneSlabEnvironment(shaded.prepared, push, seed); }
+#endif
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 normal = hit.normal;
         float roughness = saturate(surface.inputs.specular_roughness);

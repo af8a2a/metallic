@@ -8,6 +8,8 @@ namespace Metallic.Material
 // Stable built-in IDs shared with MaterialRuntime.h. Zero denotes a legacy upload.
 public static const uint kMaterialProgramOpenPBRComposite = 1u;
 public static const uint kMaterialProgramRTXCRChiang = 2u;
+public static const uint kMaterialProgramSingleSlab = 3u;
+public static const uint kMaterialProgramDualSlab = 4u;
 
 // Compatibility storage program. The existing upload embeds resources in the
 // same 720-byte record, so both offsets must reference that same record. This
@@ -31,6 +33,8 @@ public struct LegacyMaterialProgram
 
 public uint materialProgramId(PathTraceMaterial parameters)
 {
+    if (parameters.textureParams.z == float(kMaterialProgramSingleSlab)) { return kMaterialProgramSingleSlab; }
+    if (parameters.textureParams.z == float(kMaterialProgramDualSlab)) { return kMaterialProgramDualSlab; }
     if (parameters.textureParams.z == float(kMaterialProgramOpenPBRComposite)) {
         return kMaterialProgramOpenPBRComposite;
     }

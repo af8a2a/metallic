@@ -216,6 +216,10 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
+        if (hasSlabMaterials()) {
+            log = "Slab Closure programs require ScenePathTracePass or resident VBuffer lighting; RTXDI is not supported";
+            return makeError(Error::Unsupported);
+        }
         Result<> result;
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
@@ -349,6 +353,7 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        if (hasSlabMaterials()) { return makeError(Error::Unsupported); }
         std::string syncLog;
         if (sceneResources_.revision() != sceneResourceRevision_) {
             sceneResourceRevision_ = sceneResources_.revision();
@@ -655,6 +660,17 @@ public:
     }
 
 private:
+    bool hasSlabMaterials() const
+    {
+        const auto generation = sceneResources_.materialGeneration();
+        if (!generation) { return false; }
+        for (const auto& instance : generation->instances()) {
+            const auto id = instance.program->definition->id;
+            if (id == MaterialProgramId::SingleSlab || id == MaterialProgramId::DualSlab) { return true; }
+        }
+        return false;
+    }
+
     static std::vector<scene::PunctualLight> benchmarkLights(
         const RenderGraphProperties& properties, const scene::Bounds& bounds, uint32_t frameIndex)
     {
