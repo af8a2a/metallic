@@ -11,6 +11,7 @@
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
+#include "Runtime/Material/MaterialClosureClassification.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
@@ -2024,13 +2025,15 @@ public:
                         // descriptor table, avoiding repeated scene texture writes per class.
                         std::vector<ScenePathTracePush> binPushes(materialBins.binCount);
                         std::vector<ComputeIndirectDispatch> dispatches(materialBins.binCount);
-                        for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
+                        const bool sparsePrograms = boolProperty(context.properties(), "programBinning", true);
+                        for (uint32_t slot = 0; slot < materialBins.binCount; ++slot) {
+                            const uint32_t bin = sparsePrograms ? materialClosureClassification_.programOrder[slot] : slot;
                             binPushes[bin] = push;
                             binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
-                            ComputeProgram* executable = boolProperty(context.properties(), "programBinning", true)
+                            ComputeProgram* executable = sparsePrograms
                                 ? materialProgramBins_[bin].program
                                 : bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram;
-                            dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
+                            dispatches[slot] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
                                 .program = executable};
                         }
                         return renderProgram->dispatchIndirectBatch({
@@ -2229,6 +2232,7 @@ private:
         materialExecutableKeys_.clear();
         materialProgramBins_.clear();
         materialInstanceProgramBins_.clear();
+        materialClosureClassification_ = {};
         materialProgramBinGeneration_ = 0;
         errorProgram_.clear();
         materialArtifacts_.clear();
@@ -2869,7 +2873,7 @@ private:
                 [program](const auto& entry) { return entry.first == program; })->second;
         };
         materialProgramBins_.clear();
-        materialProgramBins_.push_back({executableKey(&classifiedPrograms_[0]), &classifiedPrograms_[0]});
+        materialProgramBins_.push_back({executableKey(&classifiedPrograms_[0]), &classifiedPrograms_[0], std::nullopt});
         materialInstanceProgramBins_.resize(generation->instances().size());
         for (size_t index = 0; index < generation->instances().size(); ++index) {
             const auto& instance = generation->instances()[index];
@@ -2882,9 +2886,14 @@ private:
                 [&](const auto& bin) { return bin.key == key; });
             if (found == materialProgramBins_.end()) {
                 materialInstanceProgramBins_[index] = uint32_t(materialProgramBins_.size());
-                materialProgramBins_.push_back({key, program});
+                materialProgramBins_.push_back({key, program, MaterialClosureFamily::OpenPBRCompositeClosure});
             } else { materialInstanceProgramBins_[index] = uint32_t(found - materialProgramBins_.begin()); }
         }
+        std::vector<std::optional<MaterialClosureFamily>> families;
+        for (const auto& bin : materialProgramBins_) { families.push_back(bin.family); }
+        materialClosureClassification_ = MaterialClosureClassification::create(families);
+        spdlog::info("[MaterialClosureClassification] generation={} programs={} families={} backgroundPrograms=1 mode=fused",
+            generation->serial(), materialClosureClassification_.programCount, materialClosureClassification_.closureFamilyCount);
         materialProgramBinGeneration_ = generation->serial();
     }
 
@@ -3169,7 +3178,13 @@ private:
     bool visibilityDeferred_ = false;
     std::unique_ptr<PipelineCache> deferredPipelineCache_;
     MaterialBinning materialBinning_;
-    struct ActiveMaterialProgramBin { MaterialProgramKey key; ComputeProgram* program; };
+    struct ActiveMaterialProgramBin
+    {
+        MaterialProgramKey key;
+        ComputeProgram* program;
+        std::optional<MaterialClosureFamily> family;
+    };
+    MaterialClosureClassification materialClosureClassification_;
     std::vector<std::pair<ComputeProgram*, MaterialProgramKey>> materialExecutableKeys_;
     std::vector<ActiveMaterialProgramBin> materialProgramBins_;
     std::vector<uint32_t> materialInstanceProgramBins_;

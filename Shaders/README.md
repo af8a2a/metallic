@@ -14,6 +14,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
 | `Modules/DebugLambert.slang`、`Modules/DebugMirror.slang`、`Modules/SurfaceLighting.slang` | 三阶段 Surface Programs、泛型 `shadeSurface` 与生产共用的直接光循环；见 [Phase 3](../Documentation/MaterialSystemPhase3.md)、[Phase 5](../Documentation/MaterialSystemPhase5.md) |
 | `Modules/SlabClosure.slang` | Single / Dual Slab canonical families、Mix / Layer 原型；见 [Phase 10](../Documentation/MaterialSystemPhase10.md) |
+| `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
 | `Features/PathTracing/OpenPBRSurface.slang`、`Interop/OpenPBRClosure.hlsli` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Features/VisibilityBuffer/VisibilityMaterialBinning.slang` | 8×4 Wave32 稀疏 Program 分箱、prefix allocation 和 indirect dispatch；见 [Phase 6](../Documentation/MaterialSystemPhase6.md) |

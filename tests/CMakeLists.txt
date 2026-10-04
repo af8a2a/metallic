@@ -340,6 +340,7 @@ add_executable(MetallicRHITests
     rhi/MaterialProgramTests.cpp
     rhi/MaterialClosureTests.cpp
     rhi/MaterialSlabTests.cpp
+    rhi/MaterialClosureSchedulingTests.cpp
     rhi/OpenPBRClosureTests.cpp
     rhi/MaterialAssetTests.cpp
     rhi/MaterialBaselineTests.cpp
