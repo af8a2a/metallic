@@ -663,6 +663,7 @@ public:
                 auto binning = runtimeBoolSetting("materialBinning", "Wave32 Material Tile Classification", true, true);
                 binning.rebuildGraph = true;
                 settings.push_back(binning);
+                settings.push_back(runtimeBoolSetting("programBinning", "Sparse Material Program Bins", true, true));
                 auto halfPrecision = runtimeBoolSetting("halfPrecision", "FP16 Material Weights", true, true);
                 halfPrecision.rebuildGraph = true;
                 settings.push_back(halfPrecision);
@@ -1156,6 +1157,7 @@ public:
                 if (!fallback) { log += errorLog; return fallback; }
                 return {};
             }
+            materialExecutableKeys_.push_back({&outProgram, artifact->programKey});
             materialArtifacts_.push_back(std::move(artifact));
             return {};
         };
@@ -1887,6 +1889,8 @@ public:
                 CPUProfileScope binningProfile(profiler, "Record material binning");
                 auto classificationProfile = context.profileScope("Material classification");
                 std::string binningLog;
+                const bool sparsePrograms = boolProperty(context.properties(), "programBinning", true);
+                if (sparsePrograms) { updateMaterialProgramBins(); }
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
                     .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
                         ? deferredViews->meshletDraws.buffer : fallback,
@@ -1895,7 +1899,10 @@ public:
                     .width = push.width, .height = push.height,
                     .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
                     .streamGroups = deferredStream ? deferredStream->activeGroupBuffer : nullptr,
-                    .residentRecordCount = info.residentRecordCount}, binningLog).transform([&](auto value) { materialBins = std::move(value); });
+                    .residentRecordCount = info.residentRecordCount,
+                    .materialProgramBins = sparsePrograms ? std::span<const uint32_t>(materialInstanceProgramBins_) : std::span<const uint32_t>{},
+                    .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u},
+                    binningLog).transform([&](auto value) { materialBins = std::move(value); });
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
                 bindings.push_back({.binding = 70, .buffer = materialBins.bins});
                 bindings.push_back({.binding = 71, .buffer = materialBins.tiles});
@@ -2018,13 +2025,16 @@ public:
                     if (materialBins.arguments != nullptr) {
                         // Mixed tiles carry disjoint masks. Permutations share one immutable
                         // descriptor table, avoiding repeated scene texture writes per class.
-                        std::array<ScenePathTracePush, kMaterialClassCount> binPushes;
-                        std::array<ComputeIndirectDispatch, kMaterialClassCount> dispatches;
+                        std::vector<ScenePathTracePush> binPushes(materialBins.binCount);
+                        std::vector<ComputeIndirectDispatch> dispatches(materialBins.binCount);
                         for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
                             binPushes[bin] = push;
                             binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
+                            ComputeProgram* executable = boolProperty(context.properties(), "programBinning", true)
+                                ? materialProgramBins_[bin].program
+                                : bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram;
                             dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
-                                .program = bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram};
+                                .program = executable};
                         }
                         return renderProgram->dispatchIndirectBatch({
                             .commandBuffer = &commands,
@@ -2219,6 +2229,10 @@ private:
 
     void clearPrograms()
     {
+        materialExecutableKeys_.clear();
+        materialProgramBins_.clear();
+        materialInstanceProgramBins_.clear();
+        materialProgramBinGeneration_ = 0;
         errorProgram_.clear();
         materialArtifacts_.clear();
         for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
@@ -2846,6 +2860,41 @@ private:
         return !hasValuePrograms() && boolProperty(settings, "materialBinning", true);
     }
 
+    void updateMaterialProgramBins()
+    {
+        const auto generation = sceneResources_.materialGeneration();
+        if (materialProgramBinGeneration_ == generation->serial()) { return; }
+        // The current built-in compiler selects conservative OpenPBR variants.
+        // Binning/dispatch use their complete compiled ProgramKey and handle,
+        // not a BSDF class or a source instance number.
+        const auto executableKey = [&](ComputeProgram* program) {
+            return std::find_if(materialExecutableKeys_.begin(), materialExecutableKeys_.end(),
+                [program](const auto& entry) { return entry.first == program; })->second;
+        };
+        materialProgramBins_.clear();
+        materialProgramBins_.push_back({executableKey(&classifiedPrograms_[0]), &classifiedPrograms_[0]});
+        materialInstanceProgramBins_.resize(generation->instances().size());
+        for (size_t index = 0; index < generation->instances().size(); ++index) {
+            const auto& instance = generation->instances()[index];
+            const auto& material = generation->parameters()[instance.parameterIndex];
+            uint32_t permutation = 3;
+            if (material.glassParams[0] > 0 || material.textureParams[3] > 1.5f) { permutation = 4; }
+            else if (material.params[0] <= 0) { permutation = 1; }
+            else if (material.params[0] >= 1 && material.metallicRoughnessTexture.textureIndex == UINT32_MAX &&
+                material.metallicRoughnessTexture.ntcTextureSetIndex == UINT32_MAX) { permutation = 2; }
+            auto* program = permutation < classifiedPrograms_.size() ? &classifiedPrograms_[permutation]
+                : &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+            const auto key = executableKey(program);
+            auto found = std::find_if(materialProgramBins_.begin() + 1, materialProgramBins_.end(),
+                [&](const auto& bin) { return bin.key == key; });
+            if (found == materialProgramBins_.end()) {
+                materialInstanceProgramBins_[index] = uint32_t(materialProgramBins_.size());
+                materialProgramBins_.push_back({key, program});
+            } else { materialInstanceProgramBins_[index] = uint32_t(found - materialProgramBins_.begin()); }
+        }
+        materialProgramBinGeneration_ = generation->serial();
+    }
+
     bool validateMaterialTarget(std::string& log) const
     {
         if (hasValuePrograms() && (!useOpenPBRBsdf(properties()) || streamMaterials_)) {
@@ -3127,6 +3176,11 @@ private:
     bool visibilityDeferred_ = false;
     std::unique_ptr<PipelineCache> deferredPipelineCache_;
     MaterialBinning materialBinning_;
+    struct ActiveMaterialProgramBin { MaterialProgramKey key; ComputeProgram* program; };
+    std::vector<std::pair<ComputeProgram*, MaterialProgramKey>> materialExecutableKeys_;
+    std::vector<ActiveMaterialProgramBin> materialProgramBins_;
+    std::vector<uint32_t> materialInstanceProgramBins_;
+    uint64_t materialProgramBinGeneration_ = 0;
     std::unique_ptr<Buffer> unshadowedParameters_;
     std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
     bool compiledMaterialBinning_ = true;

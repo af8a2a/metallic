@@ -15,6 +15,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/DebugLambert.slang`、`Modules/DebugMirror.slang`、`Modules/SurfaceLighting.slang` | 三阶段 Surface Programs、泛型 `shadeSurface` 与生产共用的直接光循环；见 [Phase 3](../Documentation/MaterialSystemPhase3.md)、[Phase 5](../Documentation/MaterialSystemPhase5.md) |
 | `Features/PathTracing/OpenPBRSurface.slang`、`Interop/OpenPBRClosure.hlsli` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
+| `Features/VisibilityBuffer/VisibilityMaterialBinning.slang` | 8×4 Wave32 稀疏 Program 分箱、prefix allocation 和 indirect dispatch；见 [Phase 6](../Documentation/MaterialSystemPhase6.md) |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |
 | `Modules/ColorGrading.slang`、`Modules/ColorGrading/` | ACES 2.0 / UE Film、全局调色、custom LUT 与三维 LUT 编解码 |

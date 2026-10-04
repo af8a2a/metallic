@@ -58,7 +58,13 @@ ProbePush probePush()
     return getConstants<ProbePush>();
 #endif
 }
-static const uint kProbeHeader = 27u;
+#ifndef PROBE_MATERIAL_COUNT
+#define PROBE_MATERIAL_COUNT 257
+#endif
+#ifndef PROBE_BIN_COUNT
+#define PROBE_BIN_COUNT 5
+#endif
+static const uint kProbeHeader = PROBE_BIN_COUNT * 5u + 2u;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -66,18 +72,18 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
 {
     ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
-    if (i < 260u) {
+    if (i < (PROBE_MATERIAL_COUNT + 3u)) {
         VisibleClusterRecord record = {0u, i, 0u, 0u};
-        if (i == 257u) { record.flags = 1u << 28u; }
-        if (i == 258u) { record.instanceIndex = 10000u; }
+        if (i == PROBE_MATERIAL_COUNT) { record.flags = 1u << 28u; }
+        if (i == (PROBE_MATERIAL_COUNT + 1u)) { record.instanceIndex = 10000u; }
         gRecords[i] = record;
         GPUDrivenPreviewInstance instance = {};
-        instance.identity.y = i == 259u ? 10000u : (i * 17u) % 257u;
+        instance.identity.y = i == (PROBE_MATERIAL_COUNT + 2u) ? 10000u : (i * 17u) % PROBE_MATERIAL_COUNT;
         gInstances[i] = instance;
     }
-    if (i < 257u) {
+    if (i < PROBE_MATERIAL_COUNT) {
         GPUDrivenPreviewMaterial material = {};
-        material.identity.z = i == 0u ? 10000u : (i * 73u) % 257u;
+        material.identity.z = i == 0u ? 10000u : (i * 73u) % PROBE_MATERIAL_COUNT;
         gMaterials[i] = material;
         // Change executable features while keeping source material IDs stable.
         uint type = 1u + (i + push.bin) % 4u;
@@ -95,13 +101,13 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
         gShadingMaterials[i] = shading;
     }
     if (i < push.width * push.height) {
-        uint kind = i % 262u;
+        uint kind = i % (PROBE_MATERIAL_COUNT + 5u);
         // A dense tile list crosses Vulkan's guaranteed 65535-group X limit.
         if (push.width > 4096u) { kind = 0u; }
-        uint record = kind < 257u ? kind : kind - 2u;
+        uint record = kind < PROBE_MATERIAL_COUNT ? kind : kind - 2u;
         uint visibility = ((record + 1u) << 7u) | (i % 127u);
-        if (kind == 257u || push.width == 8u) { visibility = 0u; }
-        if (kind == 258u) { visibility = 10001u << 7u; }
+        if (kind == PROBE_MATERIAL_COUNT || push.width == 8u) { visibility = 0u; }
+        if (kind == (PROBE_MATERIAL_COUNT + 1u)) { visibility = 10001u << 7u; }
         gVisibility[uint2(i % push.width, i / push.width)] = visibility;
     }
 }
@@ -144,9 +150,17 @@ void materialIndirectProbeMain(uint3 group : SV_GroupID)
     uint2 pixel = materialTilePixel(tile, lane, push.width);
     if (any(pixel >= uint2(push.width, push.height))) { addResult(kProbeHeader - 1u, 1u); return; }
     uint result = kProbeHeader + (pixel.y * push.width + pixel.x) * 3u;
+#ifdef PROBE_STATIC_PROGRAM
+    storeResult(result, PROBE_STATIC_PROGRAM);
+#else
     storeResult(result, push.bin);
+#endif
     addResult(result + 1u, 1u);
+#ifdef PROBE_STATIC_PROGRAM
+    storeResult(result + 2u, asuint(shadeProgramProbe(pixel.y * push.width + pixel.x)));
+#else
     storeResult(result + 2u, WaveGetLaneCount());
+#endif
 #if PROBE_ALTERNATE
     // Detect ignored permutation switches as well as the actual subgroup width.
     addResult(result + 2u, 100u);

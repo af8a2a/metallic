@@ -9,6 +9,7 @@
 namespace metallic::render {
 
 inline constexpr uint32_t kMaterialClassCount = 5;
+inline constexpr uint32_t kMaxMaterialProgramBins = 4096;
 inline constexpr uint32_t kMaterialTileWidth = 8;
 inline constexpr uint32_t kMaterialTileHeight = 4;
 
@@ -23,16 +24,21 @@ struct MaterialBinningDesc {
     Buffer* streamRecords = nullptr;
     Buffer* streamGroups = nullptr;
     uint32_t residentRecordCount = UINT32_MAX;
+    // Dense active executable slots; slot zero is the background program.
+    // Indexed by source MaterialInstance, never by visibility/mesh instance.
+    // Empty selects the retained fixed-five-class baseline.
+    std::span<const uint32_t> materialProgramBins;
+    uint32_t programBinCount = 0;
 };
 
 struct MaterialBinningResult {
-    Buffer* bins = nullptr; // uint2 {task offset, task count}, indexed by shading class
+    Buffer* bins = nullptr; // uint2 {task offset, task count}, indexed by active executable slot
     Buffer* tiles = nullptr; // uint2 {linear 8x4 tile index, wave32 lane mask}
     Buffer* arguments = nullptr; // three uint32 dispatch counts per bin
     uint32_t binCount = 0;
 };
 
-// Substrate-style feature classification with separate masks for mixed tiles.
+// Sparse Program classification with separate masks for mixed tiles.
 // Native wave32 is required; scratch storage is retained until frame completion.
 class MaterialBinning {
 public:
@@ -45,7 +51,7 @@ public:
 
 private:
     struct Allocation;
-    std::array<ComputeKernel, 3> programs_;
+    std::array<ComputeKernel, 5> programs_;
     std::vector<std::shared_ptr<Allocation>> allocations_;
 };
 
