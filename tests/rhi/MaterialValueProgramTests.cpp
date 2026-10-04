@@ -82,7 +82,7 @@ public:
         std::filesystem::path includeDirectory;
         if (!rust->writeInclude(context.outputDirectory / "programs", includeDirectory, log)) { return RHITestResult::fail(log); }
         materials[0].alphaMode = "MASK";
-        if (MaterialValueProgramSet::create(materials, log)) { return RHITestResult::fail("Custom mask accepted"); }
+        if (!MaterialValueProgramSet::create(materials, log)) { return RHITestResult::fail("MASK Surface values rejected: " + log); }
         materials[0].alphaMode = "OPAQUE";
         materials[0].transmissionFactor = 0.5f;
         if (MaterialValueProgramSet::create(materials, log)) { return RHITestResult::fail("Custom transmission accepted"); }

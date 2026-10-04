@@ -169,6 +169,7 @@ public:
                 .descriptorCount = sceneResources_.materialTextureCount(),
             },
         };
+        bindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
         if (!positionFetch) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
         }
@@ -281,6 +282,8 @@ public:
             },
         };
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
+        bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()
+            ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()});
         if (sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
         }

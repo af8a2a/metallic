@@ -1,5 +1,8 @@
 # M2 自定义 Value Program：首批实现
 
+后续更新：[Phase 8 Coverage Program](MaterialSystemPhase8.md) 新增独立 coverage 根，并允许 MASK 上的 Surface 输出。
+下文记录 M2 首批实现时的支持范围；当前 Coverage 约束和验证以 Phase 8 文档为准。
+
 状态：**M2 进行中**。本批实现受控前端、静态场景程序集、独立实例参数，以及现有 LookDev 的 OpenPBR PT / reference VBuffer 接入。M0 场景及默认材质不变。完整 M2 的 coverage、TextureFootprint、稀疏 Program tile 和压力性能门槛仍按 [路线图](MaterialSystemRoadmap.md) 执行。
 
 ## 支持范围

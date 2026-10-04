@@ -1,5 +1,8 @@
 # Material System Phase 7 — Feature System
 
+后续更新：[Phase 8](MaterialSystemPhase8.md) 将 Coverage 从 Surface signature 中分离，
+VisibilitySignature 升为 v2，transmission 仅属于 Closure。下文的 v1 描述保留为本阶段记录。
+
 Phase 7 将材质语义、编译策略和最终 shader 选择分开。入口是
 [MaterialFeatures](../Source/Runtime/Material/MaterialFeatures.h)，资产、场景、生产 Program 分箱和编辑器共享同一个分析器。
 GPU 材质 payload 仍为 720 字节；Feature 元数据属于不可变 CPU material generation。

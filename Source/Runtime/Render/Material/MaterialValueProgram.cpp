@@ -1,4 +1,5 @@
 #include "Runtime/Render/Material/MaterialValueProgram.h"
+#include "Runtime/Render/Material/MaterialCoverageProgram.h"
 #include "Runtime/Scene/scene.h"
 
 #include <json.hpp>
@@ -8,6 +9,7 @@
 #include <map>
 #include <mutex>
 #include <stdexcept>
+#include <cstring>
 
 namespace metallic::render {
 namespace {
@@ -65,7 +67,7 @@ struct Emitter
         const uint32_t arity = op == "mix" ? 3 :
             (op == "add" || op == "mul" || op == "dot" ? 2 :
             (op == "sin" || op == "fract" || op == "abs" || op == "saturate" ? 1 : 0));
-        require(arity != 0, "Unsupported op: only read-only arithmetic is supported; textures and coverage are unavailable");
+        require(arity != 0, "Unsupported Surface op: only read-only arithmetic is supported; texture sampling belongs to the material adapter");
         require(node.size() == 2 && node.contains("args") && node["args"].is_array() &&
             node["args"].size() == arity, "Wrong expression arguments");
         std::vector<std::string> args;
@@ -114,16 +116,16 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
 {
     diagnostics.clear();
     try {
+        require(materials.size() <= UINT32_MAX / sizeof(MaterialValueInstance), "Material input offsets exceed uint32");
         auto result = std::make_shared<MaterialValueProgramSet>();
         std::map<std::string, uint32_t> programs;
         std::vector<std::string> sources;
+        std::vector<std::string> coverageSources;
+        std::map<std::string, MaterialCoverageSlice> coveragePrograms;
         for (const auto& material : materials) {
             require(std::all_of(material.valueParameters.begin(), material.valueParameters.end(),
                 [](float v) { return std::isfinite(v) && std::abs(v) <= 1e6f; }), "Value parameters must be finite and within +/-1e6");
-            if (material.valueProgram.empty()) { sources.emplace_back(); continue; }
-            require(material.alphaMode == "OPAQUE" && !material.rtxcrHair && !material.unlit &&
-                material.transmissionFactor == 0.0f && material.diffuseTransmissionFactor == 0.0f,
-                "Value programs currently require opaque, lit, non-transmissive Surface materials");
+            if (material.valueProgram.empty()) { sources.emplace_back(); coverageSources.emplace_back(); continue; }
             require(material.valueProgram.size() <= kMaxMaterialValueSourceBytes, "Value program source exceeds 16 KiB");
             // Reject excessive JSON nesting before recursive JSON parsing.
             uint32_t nesting = 0;
@@ -137,11 +139,33 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
                 else if (c == '{' || c == '[') { require(++nesting <= 64, "Value JSON nesting exceeds 64"); }
                 else if (c == '}' || c == ']') { require(nesting != 0, "Unbalanced Value JSON"); --nesting; }
             }
-            const std::string source = Json::parse(material.valueProgram).dump();
-            programs.emplace(source, 0);
+            auto root = Json::parse(material.valueProgram);
+            require(root.is_object() && root.contains("version") && root["version"] == 1, "Value program version must be 1");
+            std::string coverageSource;
+            if (root.contains("coverage")) {
+                require(material.alphaMode == "MASK" && !material.rtxcrHair,
+                    "Coverage programs require alphaMode MASK on a Surface material");
+                coverageSource = root["coverage"].dump();
+                if (!coveragePrograms.contains(coverageSource)) {
+                    coveragePrograms.emplace(coverageSource, compileMaterialCoverageSlice(root["coverage"]));
+                }
+                root.erase("coverage");
+            }
+            coverageSources.push_back(coverageSource);
+            std::string source;
+            if (root.size() > 1) {
+                require((material.alphaMode == "OPAQUE" || material.alphaMode == "MASK") && !material.rtxcrHair && !material.unlit &&
+                    material.transmissionFactor == 0.0f && material.diffuseTransmissionFactor == 0.0f,
+                    "Surface Value programs require lit, non-transmissive Surface materials");
+                source = root.dump();
+                programs.emplace(source, 0);
+            } else { require(!coverageSource.empty(), "Value program has no outputs"); }
             require(programs.size() <= kMaxMaterialValuePrograms, "Scene exceeds 64 custom Value programs");
+            require(coveragePrograms.size() <= kMaxMaterialValuePrograms, "Scene exceeds 64 Coverage programs");
             sources.push_back(source);
         }
+        // Preserve the generated Surface ABI/cache identity. Its reserved header
+        // words now carry Coverage metadata, consumed separately as raw bytes.
         result->source_ = "// Material Value ABI v1: generated, read-only, no coverage or texture sampling.\n"
             "struct MaterialValueInstance { uint programId; uint reserved0; uint reserved1; uint reserved2; float4 parameters[4]; };\n";
         for (auto& [source, id] : programs) {
@@ -166,6 +190,24 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             result->instances_.push_back(instance);
         }
         if (materials.empty()) { result->instances_.emplace_back(); }
+        result->inputBytes_.resize(result->instances_.size() * sizeof(MaterialValueInstance));
+        std::map<std::string, uint32_t> coverageOffsets;
+        for (const auto& [source, slice] : coveragePrograms) {
+            require(result->inputBytes_.size() <= UINT32_MAX - slice.instructions.size() * sizeof(MaterialCoverageInstruction),
+                "Coverage byte offsets exceed uint32");
+            coverageOffsets[source] = static_cast<uint32_t>(result->inputBytes_.size());
+            const auto* first = reinterpret_cast<const std::byte*>(slice.instructions.data());
+            result->inputBytes_.insert(result->inputBytes_.end(), first, first + slice.instructions.size() * sizeof(MaterialCoverageInstruction));
+        }
+        for (size_t i = 0; i < coverageSources.size(); ++i) {
+            if (coverageSources[i].empty()) { continue; }
+            const auto& slice = coveragePrograms.at(coverageSources[i]);
+            result->instances_[i].coverageOffset = coverageOffsets.at(coverageSources[i]);
+            result->instances_[i].coverageCount = static_cast<uint32_t>(slice.instructions.size());
+            result->instances_[i].coverageFlags = slice.usesBaseAlpha ? 1u : 0u;
+        }
+        result->coverageProgramCount_ = static_cast<uint32_t>(coveragePrograms.size());
+        std::memcpy(result->inputBytes_.data(), result->instances_.data(), result->instances_.size() * sizeof(MaterialValueInstance));
         return result;
     } catch (const std::exception& error) {
         diagnostics = std::string("Material Value program: ") + error.what();

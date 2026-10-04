@@ -295,6 +295,9 @@ std::vector<BakedOpacityMicromap> bakeSceneOpacityMicromaps(
     size_t totalBytes = 0;
     for (const auto& [materialIndex, primitives] : groups) {
         const auto& material = scene.materials()[materialIndex];
+        // Dynamic Coverage cannot be baked into static opaque/transparent OMM
+        // states. Keep triangle candidates so every ray uses the live slice.
+        if (!material.valueProgram.empty()) { continue; }
         scene::RenderImage::Mip decoded;
         const scene::RenderImage::Mip* image = nullptr;
         if (!loadAlphaImage(scene, material.baseColorTexture.textureIndex, decoded, image)) {

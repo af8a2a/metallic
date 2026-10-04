@@ -450,9 +450,9 @@ Result<> buildMaterialValues(Device& device, const scene::Scene& scene,
 {
     values = MaterialValueProgramSet::create(scene.materials(), log);
     if (!values) { return makeError(Error::InvalidArgument); }
-    if (values->programCount() == 0) { return {}; }
-    return uploadStorageBuffer(device, values->instances().data(), values->instances().size_bytes(),
-        sizeof(MaterialValueInstance), buffer, log, "Material Value instances", nullptr, nullptr, allocator);
+    if (values->programCount() == 0 && values->coverageProgramCount() == 0) { return {}; }
+    return uploadStorageBuffer(device, values->inputBytes().data(), values->inputBytes().size_bytes(),
+        4, buffer, log, "Material Surface/Coverage inputs", nullptr, nullptr, allocator);
 }
 
 uint32_t mipCountForDimensions(uint32_t width, uint32_t height)
@@ -932,7 +932,8 @@ ScenePathTraceGPUMaterial makeMaterial(
     gpuMaterial.attenuationColor[0] = material.attenuationColor.x;
     gpuMaterial.attenuationColor[1] = material.attenuationColor.y;
     gpuMaterial.attenuationColor[2] = material.attenuationColor.z;
-    gpuMaterial.attenuationColor[3] = 0.0f;
+    // Custom MASK values share one immutable Surface/Coverage input generation.
+    gpuMaterial.attenuationColor[3] = material.alphaMode == "MASK" && !material.valueProgram.empty() ? 1.0f : 0.0f;
     gpuMaterial.diffuseTransmission[0] = material.diffuseTransmissionColor.x;
     gpuMaterial.diffuseTransmission[1] = material.diffuseTransmissionColor.y;
     gpuMaterial.diffuseTransmission[2] = material.diffuseTransmissionColor.z;
@@ -1289,9 +1290,9 @@ std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
     return referenced;
 }
 
-std::vector<std::array<int32_t, 21>> materialResourceLayout(const scene::Scene& loadedScene)
+std::vector<std::array<int32_t, 22>> materialResourceLayout(const scene::Scene& loadedScene)
 {
-    std::vector<std::array<int32_t, 21>> layout;
+    std::vector<std::array<int32_t, 22>> layout;
     layout.reserve(loadedScene.materials().size());
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
         // Opacity is baked into OMM. Changes to alpha, cutoff, and UV sampling
@@ -1318,6 +1319,7 @@ std::vector<std::array<int32_t, 21>> materialResourceLayout(const scene::Scene& 
             std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[3]),
             std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[4]),
             std::bit_cast<int32_t>(material.baseColorTexture.uvTransform[5]),
+            material.alphaMode == "MASK" && !material.valueProgram.empty() ? 1 : 0,
         });
     }
     return layout;
@@ -2822,7 +2824,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceGeometryTransformRevision = 0;
     uint64_t sourceVisibilityRevision = 0;
     uint64_t sourceMaterialRevision = 0;
-    std::vector<std::array<int32_t, 21>> sourceMaterialResourceLayout;
+    std::vector<std::array<int32_t, 22>> sourceMaterialResourceLayout;
     std::unique_ptr<Buffer> shadingVertexBuffer;
     std::unique_ptr<Buffer> fallbackPositionBuffer;
     std::unique_ptr<Buffer> indexBuffer;

@@ -164,7 +164,7 @@ uint tessResidentVisibility(TessVertex input, uint visibilityId, GPUDrivenPrevie
     StructuredBuffer<GPUDrivenPreviewParams> parameters = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewParams>>(push.paramsBuffer));
     StructuredBuffer<GPUDrivenPreviewMaterial> materials = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(push.materialBuffer));
     GPUDrivenPreviewMaterial material = materials[input.material];
-    if (materialBaseColorAlpha(material, input.uv, parameters[0], push) < material.params.z) { discard; }
+    if (!materialCoverageAccepts(material, input.uv, parameters[0], push)) { discard; }
 #endif
     return input.originalVisibilityId != 0u ? input.originalVisibilityId : visibilityId;
 }

@@ -195,6 +195,41 @@ public:
                     require(coverageMismatch<12, "HW/hybrid alpha coverage mismatch");
                     graph.setNodeRuntimeProperty(graph.findNode("Raster")->id,"hybridRaster",false);
                 }
+                // Exercise dynamic Coverage with a source material ID above 255,
+                // after the stream's geometry and material snapshot are resident.
+                graph.setNodeRuntimeProperty(graph.findNode("Deferred")->id, "debugView", "mappedNormal");
+                for (uint32_t step = 0; step < 3; ++step) {
+                    auto material = scene.materials()[258];
+                    material.valueProgram = R"({"version":1,"coverage":{"op":"parameter","index":0}})";
+                    material.valueParameters[0] = step == 1 ? 0.0f : 1.0f;
+                    require(scene.setMaterialProperties(258, material), "Stream Coverage parameter edit failed");
+                    for (uint32_t frame = 0; frame < 8; ++frame) { render(); }
+                    uint32_t surfaces = 0;
+                    for (uint32_t y = 43; y < 85; ++y) { for (uint32_t x = 114; x < 142; ++x) {
+                        surfaces += (preview.pixels()[y * 256 + x] & 0xffffffu) != 0;
+                    }}
+                    require(step == 1 ? surfaces < 12 : surfaces > 1000,
+                        "Coverage did not update stream/resident visibility: " + std::to_string(surfaces));
+                    const std::string label = "coverage-" + std::to_string(step);
+                    if (!streamed) { reference[label] = preview.pixels(); }
+                    else {
+                        uint32_t mismatch = 0;
+                        const auto& expected = reference.at(label);
+                        for (size_t i = 0; i < expected.size(); ++i) {
+                            mismatch += ((expected[i] & 0xffffffu) == 0) != ((preview.pixels()[i] & 0xffffffu) == 0);
+                        }
+                        require(mismatch < 12, "Dynamic Coverage differs between stream and resident");
+                        graph.setNodeRuntimeProperty(graph.findNode("Raster")->id, "hybridRaster", true);
+                        graph.setNodeRuntimeProperty(graph.findNode("Raster")->id, "softwareRasterMaxPixels", 1024.f);
+                        render();
+                        mismatch = 0;
+                        for (size_t i = 0; i < expected.size(); ++i) {
+                            mismatch += ((expected[i] & 0xffffffu) == 0) != ((preview.pixels()[i] & 0xffffffu) == 0);
+                        }
+                        require(mismatch < 12, "Dynamic Coverage differs in hybrid raster");
+                        graph.setNodeRuntimeProperty(graph.findNode("Raster")->id, "hybridRaster", false);
+                    }
+                }
             }
             return RHITestResult::pass("Shared geometry preserves instance PBR, unlit, MASK, sidedness, mirrored TBN and material ID 257");
         } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }

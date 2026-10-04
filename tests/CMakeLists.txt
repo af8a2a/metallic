@@ -343,6 +343,7 @@ add_executable(MetallicRHITests
     rhi/MaterialAssetTests.cpp
     rhi/MaterialBaselineTests.cpp
     rhi/MaterialValueProgramTests.cpp
+    rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp

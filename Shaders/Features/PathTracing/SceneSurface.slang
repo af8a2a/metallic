@@ -1019,6 +1019,26 @@ float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
         resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2].texcoord.xy * weights.z;
 }
 
+CoverageResult evaluateSceneCoverage(uint materialIndex, PathTraceMaterial material, float2 uv, ScenePathTracePush push)
+{
+    CoverageContext context;
+    context.uv = uv; context.baseAlpha = 1.0;
+    context.cutoff = material.params.z; context.alphaMode = material.textureParams.w;
+    if (context.alphaMode < 0.5) { return coverageFromOpacity(context, 1.0); }
+    if (material.attenuationColor.w > 0.5) {
+        CoverageProgram program;
+        program.inputs = resolveUniform(getResourceParameters<SceneResourceParameters>().materialValues);
+        MaterialInstanceRef instance = coverageInstanceRef(materialIndex);
+        if (program.usesBaseAlpha(instance)) {
+            context.baseAlpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
+        }
+        return program.evaluateCoverage(context, instance);
+    }
+    context.baseAlpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
+    LegacyCoverageEvaluator legacy;
+    return legacy.evaluateCoverage(context, coverageInstanceRef(materialIndex));
+}
+
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, ScenePathTracePush push)
 {
     PathTraceInstance instance = gInstances[instanceIndex];
@@ -1029,10 +1049,7 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
     }
 
     float2 uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
-    float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
-    // OMM leaves partial BLEND coverage unknown. Preserve the current opaque
-    // transport for those hits, while zero-alpha holes remain transparent.
-    return blend ? saturate(alpha) > 0.0 : saturate(alpha) >= saturate(material.params.z);
+    return evaluateSceneCoverage(instance.materialIndex, material, uv, push).accepted;
 }
 
 void computeTriangleTangentSpace(

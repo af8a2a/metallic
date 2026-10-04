@@ -1125,9 +1125,7 @@ public:
                 return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
             });
         }
-        if (hasValuePrograms()) {
-            baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
-        }
+        baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
@@ -1791,9 +1789,8 @@ public:
         if (!visibilityDeferred_ && sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
         }
-        if (hasValuePrograms()) {
-            bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()});
-        }
+        bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()
+            ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()});
         if (visibilityDeferred_) {
             std::erase_if(bindings, [](const auto& binding) {
                 return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);

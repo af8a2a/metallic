@@ -11,7 +11,7 @@ constexpr std::array kFeatures{
     MaterialFeatureDesc{"baseColor", category(FeatureCategory::Dynamic), FeaturePolicy::Dynamic, false},
     MaterialFeatureDesc{"roughness", category(FeatureCategory::Dynamic), FeaturePolicy::Dynamic, false},
     MaterialFeatureDesc{"metalness", category(FeatureCategory::Closure), FeaturePolicy::Auto, true},
-    MaterialFeatureDesc{"transmission", category(FeatureCategory::Closure) | category(FeatureCategory::Visibility), FeaturePolicy::Auto, true},
+    MaterialFeatureDesc{"transmission", category(FeatureCategory::Closure), FeaturePolicy::Auto, true},
     MaterialFeatureDesc{"alphaMode", category(FeatureCategory::Visibility), FeaturePolicy::Auto, false},
     MaterialFeatureDesc{"doubleSided", category(FeatureCategory::PipelineState), FeaturePolicy::Auto, false},
     MaterialFeatureDesc{"unlit", category(FeatureCategory::Dynamic), FeaturePolicy::Dynamic, false},
@@ -77,10 +77,17 @@ MaterialFeatureResolution resolveMaterialFeatures(const scene::RenderMaterial& m
 {
     MaterialFeatureResolution result;
     const bool transmitting = material.transmissionFactor > 0.0f;
+    auto graph = nlohmann::json::parse(material.valueProgram, nullptr, false);
+    std::string coverageCode;
+    if (graph.is_object() && graph.contains("coverage")) {
+        coverageCode = graph["coverage"].dump();
+        graph.erase("coverage");
+    }
+    const bool surfaceValues = !material.valueProgram.empty() && (!graph.is_object() || graph.size() > 1);
     // Value programs may change metalness per hit. Ray-hit programs already use
     // the general closure. Policy hints must never remove a reachable lobe.
     const bool general = target == FeatureCompileTarget::RayHit || material.rtxcrHair ||
-        !material.valueProgram.empty() || material.featurePolicies.transmission == FeaturePolicy::Dynamic || transmitting;
+        surfaceValues || material.featurePolicies.transmission == FeaturePolicy::Dynamic || transmitting;
     if (!general) {
         result.surfaceProgram = SurfaceProgramClass::Opaque;
         result.transmissionDecision = FeaturePolicy::Closure;
@@ -100,13 +107,14 @@ MaterialFeatureResolution resolveMaterialFeatures(const scene::RenderMaterial& m
     auto signature = hash(material.rtxcrHair ? "Features/v1/RTXCRChiang" : "Features/v1/OpenPBRComposite");
     signature = hash(std::to_string(static_cast<uint32_t>(target)), signature);
     signature = hash(std::to_string(static_cast<uint32_t>(result.surfaceProgram)), signature);
-    if (!material.valueProgram.empty()) {
-        const auto graph = nlohmann::json::parse(material.valueProgram, nullptr, false);
+    if (surfaceValues) {
         signature = hash(graph.is_discarded() ? material.valueProgram : graph.dump(), signature);
     }
     result.programSignature = signature;
-    result.visibilitySignature = hash(transmitting ? "Visibility/v1/transmission/" : "Visibility/v1/solid/");
+    // Coverage affects hit existence; transmission affects transport at a hit.
+    result.visibilitySignature = hash("Visibility/v2/coverage/");
     result.visibilitySignature = hash(material.alphaMode, result.visibilitySignature);
+    result.visibilitySignature = hash(coverageCode, result.visibilitySignature);
     result.pipelineSignature = hash(material.doubleSided ? "Pipeline/v1/two-sided" : "Pipeline/v1/back-cull");
     return result;
 }

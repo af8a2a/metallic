@@ -109,6 +109,22 @@ TEST_F(MaterialAssets, FeatureAutoConservativelyClassifiesClosures)
     EXPECT_EQ(resolveMaterialFeatures(value, FeatureCompileTarget::RayHit).surfaceProgram, SurfaceProgramClass::General);
 }
 
+TEST_F(MaterialAssets, CoverageAndTransmissionHaveSeparateSignatures)
+{
+    scene::RenderMaterial value;
+    value.alphaMode = "MASK";
+    const auto baseline = resolveMaterialFeatures(value);
+    value.valueProgram = R"({"version":1,"coverage":{"op":"parameter","index":0}})";
+    const auto coverage = resolveMaterialFeatures(value);
+    EXPECT_EQ(coverage.programSignature, baseline.programSignature);
+    EXPECT_NE(coverage.visibilitySignature, baseline.visibilitySignature);
+    value.valueParameters[0] = 0.4f;
+    EXPECT_EQ(resolveMaterialFeatures(value).visibilitySignature, coverage.visibilitySignature);
+    value.transmissionFactor = 0.9f;
+    EXPECT_EQ(resolveMaterialFeatures(value).visibilitySignature, coverage.visibilitySignature);
+    EXPECT_NE(resolveMaterialFeatures(value).programSignature, coverage.programSignature);
+}
+
 TEST_F(MaterialAssets, FeaturePoliciesInheritWithoutPersistingCompilerDecisions)
 {
     definition.featurePolicies.metalness = FeaturePolicy::Dynamic;

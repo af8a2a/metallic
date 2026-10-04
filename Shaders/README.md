@@ -105,6 +105,8 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 VisibilityBuffer Deferred 是纯光栅表面的实时 resolve，不包含 ray-query 积分器。
 材质的语义 Feature、作者策略和编译选择由 CPU [Feature System](../Documentation/MaterialSystemPhase7.md)
 统一分析；AlphaMode / doubleSided 使用独立签名，不能直接当作 lighting shader keyword。
+[Coverage Program](../Documentation/MaterialSystemPhase8.md) 从 Value 源码提取独立的覆盖表达式，
+在 VBuffer 写入深度/可见性之前及 RT/shadow 候选命中处求值，和 Surface 共用不可变材质参数快照。
 `Features/PathTracing/SceneSurface.slang` 和 `OpenPBRSurface.slang` 提供共享表面求值，
 `Features/VisibilityBuffer/VisibilityBufferLighting.slang` 负责 ClusterLightGrid、显式阴影输入和 IBL。
 有界 IBL 权重默认使用 native FP16，几何与 HDR 累加保持 FP32；`halfPrecision: false`
