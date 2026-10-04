@@ -37,6 +37,27 @@ public struct SurfaceMaterialResult<TClosure : ISurfaceClosure>
 public interface ISurfaceMaterialProgram
 {
     public associatedtype Closure : ISurfaceClosure;
+    // Stochastic texture filtering may advance provider-local RNG state.
+    // Resolved closures must not retain that provider or its resources.
+    [mutating]
     public SurfaceMaterialResult<Closure> evaluate(SurfaceMaterialContext context, MaterialInstanceRef instance);
+};
+
+// Optional lossless integration path for BSDF libraries whose native API
+// returns projected values and importance weights. Avoid f/cos/pdf round trips.
+public struct BSDFWeightSample
+{
+    public float3 wiWS;
+    public float3 weight; // f * abs(cos(theta)) / pdf, including delta events
+    public float pdf;
+    public float eta;
+    public uint flags;
+};
+
+public interface IWeightedPreparedSurfaceClosure : IPreparedSurfaceClosure
+{
+    public float3 evalProjected(float3 wiWS);
+    public float pdf(float3 wiWS);
+    public BSDFWeightSample sampleWeighted(float3 random);
 };
 } // namespace Metallic.Material

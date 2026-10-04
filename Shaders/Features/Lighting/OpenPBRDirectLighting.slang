@@ -70,28 +70,24 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     int fixedMetalness = -1, bool opaquePrimary = false)
 {
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
-    PathTraceMaterial material = gMaterials[hit.materialIndex];
     float3 authoredNormal = hit.normal;
-    float4 normalSample = loadMaterialTextureForMaterial(material.normalTexture, hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0), push, cone, hit, ray.direction, materialNeedsDeterministicTextureMip0(material), seed);
-    hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent,
-        hit.bitangent, normalSample, material.textureParams.x);
-    // TBN and geometric normal remain authored; face-forward only the evaluated normal.
-    hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
-    OpenPBRMaterialEval surface = evaluateOpenPBRMaterial(hit, material, push, cone, ray.direction, seed);
-    // Conservative tile classification supplies compile-time constants only
-    // when the source factors/textures guarantee these exact values. Secondary
-    // hits and shadow transmittance retain the unrestricted OpenPBR evaluator.
-    if (fixedMetalness >= 0) { surface.inputs.base_metalness = float(fixedMetalness); }
-    if (opaquePrimary) { surface.inputs.transmission_weight = 0.0; }
+    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+    program.fixedMetalness = fixedMetalness;
+    program.opaquePrimary = opaquePrimary;
+    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, ray.direction),
+        legacyMaterialInstanceRef(hit.materialIndex));
+    let surface = evaluated.closure;
+    hit = program.hit;
+    seed = program.seed;
+    float4 normalSample = program.normalSample;
+    PathTraceMaterial material = program.material;
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }
     if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
     float3 viewDirection = -ray.direction;
-    OpenPBR_PreparedBsdf prepared = prepareOpenPBRMaterial(surface.inputs, float3(1.0),
-        OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, viewDirection);
-    float3 radiance = max(prepared.emission, float3(0.0));
+    let prepared = surface.prepare(viewDirection, TransportMode.Radiance);
+    float3 radiance = max(prepared.emission(), float3(0.0));
     if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
 #if METALLIC_DEFERRED_LIGHT_GRID
         ClusterLightGridParams grid = gDeferredGridParams[0];
@@ -110,8 +106,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
 #else
             PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), i, hit.position);
 #endif
-            float3 bsdf = max(openpbr_get_sum_of_diffuse_specular(
-                evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
+            float3 bsdf = max(evaluateSurfaceProjected(prepared, light.direction), float3(0.0));
             if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
             float distance = max(light.distance - length(origin - hit.position), 0.0);
@@ -167,15 +162,12 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
         for (uint i = 0u; i < count; ++i) {
             float3 random = frac(float3((float(i) + 0.5) / float(count),
                 deferredRadicalInverse(i, 2u), deferredRadicalInverse(i, 3u)) + rotation);
-            float3 direction;
-            OpenPBR_DiffuseSpecular weight;
-            float pdf;
-            OpenPBR_BsdfLobeType type;
-            sampleOpenPBRMaterial(prepared, random, direction, weight, pdf, type);
-            if (pdf <= 0.0 || type == OpenPBR_BsdfLobeTypeNone) { continue; }
+            BSDFWeightSample scatter = sampleSurfaceWeight(prepared, random);
+            if (scatter.pdf <= 0.0 || scatter.flags == 0u) { continue; }
+            float3 direction = scatter.wiWS;
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(direction, hit.geometryNormal));
             float3 visibility = openPbrDirectVisibility(origin, direction, max(push.clipOrtho.y, 1.0), push);
-            environment += max(openpbr_get_sum_of_diffuse_specular(weight), float3(0.0)) *
+            environment += max(scatter.weight, float3(0.0)) *
                 environmentRadiance(direction, push, false) * visibility;
         }
         radiance += environment * surface.occlusion / float(count);

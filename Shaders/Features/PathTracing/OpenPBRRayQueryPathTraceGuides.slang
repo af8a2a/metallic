@@ -71,27 +71,12 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
     }
 
     rayCone = propagateRayCone(rayCone, hit.t);
-    PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
-    float4 normalSample = loadMaterialTextureForMaterial(
-        material.normalTexture,
-        hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        ray.direction,
-        materialNeedsDeterministicTextureMip0(material),
-        seed);
-    hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
-    hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
-
-    OpenPBRMaterialEval materialEval = evaluateOpenPBRMaterial(
-        hit,
-        material,
-        push,
-        rayCone,
-        ray.direction,
-        seed);
+    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, true, false);
+    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, rayCone, ray.direction),
+        legacyMaterialInstanceRef(hit.materialIndex));
+    let materialEval = evaluated.closure;
+    hit = program.hit;
+    seed = program.seed;
     float metallic = saturate(materialEval.inputs.base_metalness);
     float roughness = clamp(materialEval.inputs.specular_roughness, 0.001, 1.0);
     float ior = clamp(materialEval.inputs.specular_ior, 1.0, 3.0);

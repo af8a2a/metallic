@@ -758,15 +758,27 @@ float rayConeTextureLod(
     float3 rayDirection,
     uint width,
     uint height,
-    uint mipCount)
+    uint mipCount,
+    TextureFootprint footprint = (TextureFootprint)0)
 {
     float textureDimensionLod = 0.5 * safeLog2(float(max(width, 1u)) * float(max(height, 1u)));
     SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
     float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
     context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
     context.footprint.flags = kTextureFootprintIsotropic0;
-    float mipLevel = context.footprint.isotropicLod0 + textureDimensionLod + textureTransformLodBias(textureInfo);
+    float normalizedLod = (footprint.flags & kTextureFootprintIsotropic0) != 0u
+        ? footprint.isotropicLod0 : context.footprint.isotropicLod0;
+    float mipLevel = normalizedLod + textureDimensionLod + textureTransformLodBias(textureInfo);
     return clamp(mipLevel, 0.0, float(max(mipCount, 1u) - 1u));
+}
+
+SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone rayCone, float3 rayDirection)
+{
+    SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
+    float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
+    context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
+    context.footprint.flags = kTextureFootprintIsotropic0;
+    return context;
 }
 
 STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed)
@@ -866,7 +878,8 @@ float4 loadMaterialTexture(
     RayCone rayCone,
     HitInfo hit,
     float3 rayDirection,
-    inout uint seed)
+    inout uint seed,
+    TextureFootprint footprint = (TextureFootprint)0)
 {
     if (hasNeuralMaterialTexture(textureInfo, push)) {
         uint2 baseDimensions;
@@ -887,7 +900,7 @@ float4 loadMaterialTexture(
             rayDirection,
             baseDimensions.x,
             baseDimensions.y,
-            mipCount);
+            mipCount, footprint);
         STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
         float3 samplePosition = samplerState.Texture2DGetSamplePosLevel(
             baseDimensions.x,
@@ -932,7 +945,7 @@ float4 loadMaterialTexture(
         return fallback;
     }
 
-    float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount);
+    float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount, footprint);
     float mipFloor = materialTextureSamplingFloor(textureIndex);
 #if METALLIC_REALTIME_DEFERRED
     if ((push.debugFlags & 256u) == 0u) {
@@ -960,7 +973,8 @@ float4 loadMaterialTextureForMaterial(
     HitInfo hit,
     float3 rayDirection,
     bool deterministicMip0,
-    inout uint seed)
+    inout uint seed,
+    TextureFootprint footprint = (TextureFootprint)0)
 {
 #if METALLIC_DEFERRED_LIGHT_GRID
     // Demand uses the source dimensions, never the currently coarse resident tail.
@@ -972,7 +986,7 @@ float4 loadMaterialTextureForMaterial(
         uint offset = textureInfo.textureIndex * 8u;
         if (offset + 7u < count && feedback[offset] != 0u) {
             float wanted = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection,
-                feedback[offset], feedback[offset + 1u], feedback[offset + 2u]);
+                feedback[offset], feedback[offset + 1u], feedback[offset + 2u], footprint);
             uint ignored;
             InterlockedMin(feedback[offset + 4u], uint(max(floor(wanted), 0.0)), ignored);
             InterlockedAdd(feedback[offset + 5u], 1u, ignored);
@@ -982,7 +996,7 @@ float4 loadMaterialTextureForMaterial(
     if (deterministicMip0) {
         return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
     }
-    return loadMaterialTexture(textureInfo, uv, fallback, push, rayCone, hit, rayDirection, seed);
+    return loadMaterialTexture(textureInfo, uv, fallback, push, rayCone, hit, rayDirection, seed, footprint);
 }
 
 bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)

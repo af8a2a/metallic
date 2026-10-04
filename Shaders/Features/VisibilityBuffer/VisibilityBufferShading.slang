@@ -98,6 +98,7 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 #define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
 
 #include "../../../External/openpbr-bsdf/openpbr.h"
+#include "../../Interop/OpenPBRClosure.hlsli"
 
 static const uint kModeMeshlet = 0u;
 static const uint kModePrimitive = 1u;
@@ -1039,16 +1040,14 @@ uint shadeDeferredSurface(
     inputs.geometry_basis = openpbr_make_basis(normal, tangent, bitangent);
     inputs.geometry_coat_basis = inputs.geometry_basis;
 
-    OpenPBR_PreparedBsdf prepared = openpbr_prepare(
-        inputs,
-        float3(1.0),
-        OpenPBR_BaseRgbWavelengths_nm,
-        OpenPBR_VacuumIor,
-        viewDirection);
+    OpenPBRClosure closure;
+    closure.inputs = inputs;
+    closure.occlusion = occlusion;
+    let prepared = closure.prepare(viewDirection, TransportMode.Radiance);
     float3 reflectedEnvironment = params.environmentMode == kEnvironmentModeDisabled ? float3(0.0)
         : environmentSHIrradiance(normal, params, push) * baseColor *
             (1.0 - metallic) * (1.0 - transmission) / kPi;
-    float3 radiance = max(prepared.emission, float3(0.0)) +
+    float3 radiance = max(prepared.emission(), float3(0.0)) +
         reflectedEnvironment * occlusion;
     return packHdrColor(radiance);
 }

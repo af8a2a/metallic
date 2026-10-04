@@ -22,4 +22,14 @@ public BSDFSample sampleSurfaceContinuation<TPrepared : IPreparedSurfaceClosure>
 {
     return prepared.sample(random);
 }
+
+public float3 evaluateSurfaceProjected<TPrepared : IWeightedPreparedSurfaceClosure>(TPrepared prepared, float3 wiWS)
+{
+    return prepared.evalProjected(wiWS);
+}
+
+public BSDFWeightSample sampleSurfaceWeight<TPrepared : IWeightedPreparedSurfaceClosure>(TPrepared prepared, float3 random)
+{
+    return prepared.sampleWeighted(random);
+}
 } // namespace Metallic.Lighting

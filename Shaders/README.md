@@ -13,6 +13,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
 | `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
 | `Modules/DebugLambert.slang`、`Modules/SurfaceLighting.slang` | 三阶段 Debug Lambert 与只接收 PreparedClosure 的泛型消费者；见 [Phase 3](../Documentation/MaterialSystemPhase3.md) |
+| `Features/PathTracing/OpenPBRSurface.slang`、`Interop/OpenPBRClosure.hlsli` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |

@@ -85,18 +85,18 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
     return lerp(z0, z1, frac.z);
 }
 
+#ifndef OPENPBR_SAMPLE_2D_TEXTURE
 #define OPENPBR_SAMPLE_2D_TEXTURE(lut_id, uv) sampleOpenPBRLut2D(lut_id, uv)
+#endif
+#ifndef OPENPBR_SAMPLE_3D_TEXTURE
 #define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
+#endif
 
 #include "../../../External/openpbr-bsdf/openpbr.h"
-#include "../../Interop/OpenPBRMaterialAdapter.hlsli"
+#include "../../Interop/OpenPBRClosure.hlsli"
+import SurfaceLighting;
+using Metallic.Lighting;
 #include "SceneSurface.slang"
-
-struct OpenPBRMaterialEval
-{
-    OpenPBR_ResolvedInputs inputs;
-    float occlusion;
-};
 
 static const uint kOpenPBRDebugViewFinal = 0u;
 static const uint kOpenPBRDebugViewGeometryNormal = 1u;
@@ -137,19 +137,46 @@ float3 openPbrDebugIdColor(uint id)
         float((value >> 16u) & 0xffu)) / 255.0;
 }
 
-OpenPBRMaterialEval evaluateOpenPBRMaterial(
+
+// Statically supplied resource access. The test provider uses actual GPU data
+// and counts logical texture reads without adding counters to production.
+interface IOpenPBRMaterialSource
+{
+    PathTraceMaterial loadParameters(MaterialInstanceRef instance);
+    float4 loadTexture(PathTraceTextureInfo textureInfo, float2 uv, float4 fallback,
+        ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint);
+};
+
+struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
+{
+    PathTraceMaterial loadParameters(MaterialInstanceRef instance)
+    {
+        LegacyMaterialProgram loader;
+        return loader.loadParameters(gMaterials, instance);
+    }
+    float4 loadTexture(PathTraceTextureInfo textureInfo, float2 uv, float4 fallback,
+        ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint)
+    {
+        return loadMaterialTextureForMaterial(textureInfo, uv, fallback, push, cone,
+            hit, rayDirection, deterministicMip0, seed, footprint);
+    }
+};
+
+OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     HitInfo hit,
     PathTraceMaterial material,
     ScenePathTracePush push,
     RayCone rayCone,
     float3 rayDirection,
-    inout uint seed)
+    inout uint seed, TSource source, TextureFootprint footprint)
 {
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
     material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material);
 #endif
-    float4 baseColorSample = loadMaterialTextureForMaterial(
+    float4 baseColorSample = source.loadTexture(
         material.baseColorTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -158,8 +185,8 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed);
-    float4 metallicRoughnessSample = loadMaterialTextureForMaterial(
+        seed, footprint);
+    float4 metallicRoughnessSample = source.loadTexture(
         material.metallicRoughnessTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -168,8 +195,8 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed);
-    float4 emissiveSample = loadMaterialTextureForMaterial(
+        seed, footprint);
+    float4 emissiveSample = source.loadTexture(
         material.emissiveTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -178,8 +205,8 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed);
-    float4 occlusionSample = loadMaterialTextureForMaterial(
+        seed, footprint);
+    float4 occlusionSample = source.loadTexture(
         material.occlusionTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -188,8 +215,8 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed);
-    float4 transmissionSample = loadMaterialTextureForMaterial(
+        seed, footprint);
+    float4 transmissionSample = source.loadTexture(
         material.transmissionTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
@@ -198,11 +225,11 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed);
-    float4 specularSample = loadMaterialTextureForMaterial(material.specularTexture, hit.texcoord,
-        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed);
-    float4 specularColorSample = loadMaterialTextureForMaterial(material.specularColorTexture, hit.texcoord,
-        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed);
+        seed, footprint);
+    float4 specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
+        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint);
+    float4 specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
+        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint);
     if (openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures)) {
         baseColorSample = float4(1.0, 1.0, 1.0, 1.0);
         metallicRoughnessSample = float4(1.0, 1.0, 1.0, 1.0);
@@ -221,7 +248,7 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
     float3 emissive = max(material.emissive.rgb * materialTextureColor(emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
 
-    OpenPBRMaterialEval result;
+    OpenPBRClosure result;
     result.inputs = openpbr_make_default_resolved_inputs();
     result.occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
@@ -268,12 +295,95 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
     return result;
 }
 
+
+// Program-local source state is discarded after evaluate. Closures contain only
+// resolved numeric inputs; stochastic filtering never advances inside lighting.
+struct OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> : ISurfaceMaterialProgram
+{
+    typealias Closure = OpenPBRClosure;
+    TSource source;
+    ScenePathTracePush push;
+    RayCone rayCone;
+    float3 rayDirection;
+    HitInfo hit;
+    uint seed;
+    bool faceForwardNormal;
+    bool applyDebugNormalOverrides;
+    int fixedMetalness;
+    bool opaquePrimary;
+    PathTraceMaterial material;
+    float4 normalSample;
+
+    [mutating]
+    SurfaceMaterialResult<Closure> evaluate(SurfaceMaterialContext context, MaterialInstanceRef instance)
+    {
+        material = source.loadParameters(instance);
+        hit.position = context.positionWS;
+        hit.geometryNormal = context.geometryNormalWS;
+        hit.normal = context.shadingNormalWS;
+        hit.tangent.xyz = context.tangentWS;
+        hit.bitangent = context.bitangentWS;
+        hit.texcoord = context.texCoord0;
+        hit.frontFace = context.frontFace != 0u;
+        hit.materialIndex = instance.parameterOffset / kLegacyMaterialRecordBytes;
+        normalSample = source.loadTexture(material.normalTexture, hit.texcoord,
+            float4(0.5, 0.5, 1.0, 1.0), push, rayCone, hit, rayDirection,
+            materialNeedsDeterministicTextureMip0(material), seed, context.footprint);
+        if (applyDebugNormalOverrides && (openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap) ||
+            openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures))) {
+            normalSample = float4(0.5, 0.5, 1.0, 1.0);
+        }
+        hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent,
+            normalSample, material.textureParams.x);
+        if (applyDebugNormalOverrides && openPbrDebugFlag(push, kOpenPBRDebugForceGeometryNormal)) {
+            hit.normal = hit.geometryNormal;
+            float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
+            float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1, 0, 0));
+            float3 tangent = hit.tangent.xyz - hit.normal * dot(hit.normal, hit.tangent.xyz);
+            tangent = safeNormalize(tangent, fallbackTangent);
+            float tangentSign = hit.tangent.w >= 0.0 ? 1.0 : -1.0;
+            hit.tangent = float4(tangent, tangentSign);
+            hit.bitangent = safeNormalize(cross(hit.normal, tangent) * tangentSign,
+                cross(hit.normal, fallbackTangent));
+        }
+        // Compatibility policy: deferred/guides face-forward after mapping;
+        // the path tracer preserves both sides for nested dielectric transport.
+        if (faceForwardNormal) {
+            hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, rayDirection);
+        }
+        SurfaceMaterialResult<Closure> result;
+        result.closure = resolveOpenPBRInputs(hit, material, push, rayCone, rayDirection, seed, source, context.footprint);
+        if (fixedMetalness >= 0) { result.closure.inputs.base_metalness = float(fixedMetalness); }
+        if (opaquePrimary) { result.closure.inputs.transmission_weight = 0.0; }
+        result.emission = result.closure.inputs.emission_luminance * result.closure.inputs.emission_color;
+        result.flags = 0u;
+        return result;
+    }
+};
+
+typealias SceneOpenPBRMaterialProgram = OpenPBRMaterialProgram<SceneOpenPBRMaterialSource>;
+
+SceneOpenPBRMaterialProgram makeOpenPBRMaterialProgram(HitInfo hit, ScenePathTracePush push,
+    RayCone rayCone, float3 rayDirection, uint seed, bool faceForwardNormal, bool debugNormalOverrides)
+{
+    SceneOpenPBRMaterialProgram program = (SceneOpenPBRMaterialProgram)0;
+    program.hit = hit;
+    program.push = push;
+    program.rayCone = rayCone;
+    program.rayDirection = rayDirection;
+    program.seed = seed;
+    program.faceForwardNormal = faceForwardNormal;
+    program.applyDebugNormalOverrides = debugNormalOverrides;
+    program.fixedMetalness = -1;
+    return program;
+}
+
 float3 openPbrPrimaryDebugColor(
     ScenePathTracePush push,
     HitInfo hit,
     float3 shadingNormal,
     float4 normalSample,
-    OpenPBRMaterialEval materialEval,
+    OpenPBRClosure materialEval,
     float3 rayDirection)
 {
     if (push.debugView == kOpenPBRDebugViewGeometryNormal) {
