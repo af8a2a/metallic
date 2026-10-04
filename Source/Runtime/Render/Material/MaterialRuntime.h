@@ -3,6 +3,7 @@
 #include "Runtime/Render/Material/LegacyMaterialPayload.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Material/MaterialFeatures.h"
 
 #include <memory>
 #include <span>
@@ -109,7 +110,8 @@ public:
     static std::shared_ptr<const MaterialGeneration> create(
         std::span<const LegacyMaterialPayload> parameters,
         uint64_t sourceRevision,
-        std::string& diagnostics);
+        std::string& diagnostics,
+        std::span<const scene::RenderMaterial> authored = {});
     // Lower an authored/versioned parameter layout to the built-in execution ABI.
     // Layout changes preserve semantic IDs/types; defaults belong to the model.
     static std::shared_ptr<const MaterialGeneration> create(
@@ -120,6 +122,7 @@ public:
     uint64_t sourceRevision() const { return sourceRevision_; }
     std::span<const MaterialInstance> instances() const { return instances_; }
     std::span<const LegacyMaterialPayload> parameters() const { return parameters_; }
+    std::span<const material::MaterialFeatureResolution> features() const { return features_; }
     uint32_t programCount() const { return programCount_; }
     bool supports(MaterialEvaluationTarget target, std::string& diagnostics) const;
 
@@ -129,6 +132,7 @@ private:
     uint32_t programCount_ = 0;
     std::vector<MaterialInstance> instances_;
     std::vector<LegacyMaterialPayload> parameters_;
+    std::vector<material::MaterialFeatureResolution> features_;
 };
 
 // One publication owns both the immutable CPU identity and its GPU parameters.

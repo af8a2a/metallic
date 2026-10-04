@@ -4991,7 +4991,8 @@ bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rh
     const auto sameColor = [](const float3& a, const float3& b) {
         return a.x == b.x && a.y == b.y && a.z == b.z;
     };
-    return lhs.valueProgram == rhs.valueProgram && lhs.valueParameters == rhs.valueParameters &&
+    return lhs.featurePolicies == rhs.featurePolicies &&
+        lhs.valueProgram == rhs.valueProgram && lhs.valueParameters == rhs.valueParameters &&
         lhs.baseColorFactor.x == rhs.baseColorFactor.x && lhs.baseColorFactor.y == rhs.baseColorFactor.y &&
         lhs.baseColorFactor.z == rhs.baseColorFactor.z && lhs.baseColorFactor.w == rhs.baseColorFactor.w &&
         lhs.metallicFactor == rhs.metallicFactor && lhs.roughnessFactor == rhs.roughnessFactor &&
@@ -5013,7 +5014,7 @@ bool validMaterialProperties(const RenderMaterial& properties)
     const auto unit = [](float value) { return std::isfinite(value) && value >= 0.0f && value <= 1.0f; };
     const auto positive = [](float value) { return std::isfinite(value) && value >= 0.0f; };
     const auto color = [&](const float3& value) { return unit(value.x) && unit(value.y) && unit(value.z); };
-    return properties.valueProgram.size() <= 16384 &&
+    return material::validFeaturePolicies(properties.featurePolicies) && properties.valueProgram.size() <= 16384 &&
         std::all_of(properties.valueParameters.begin(), properties.valueParameters.end(),
             [](float v) { return std::isfinite(v) && std::abs(v) <= 1e6f; }) &&
         unit(properties.baseColorFactor.x) && unit(properties.baseColorFactor.y) &&
@@ -5038,6 +5039,7 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
     RenderMaterial& current = materials_[static_cast<size_t>(materialIndex)];
     if (materialPropertiesEqual(current, properties)) { return false; }
     current.valueProgram = properties.valueProgram;
+    current.featurePolicies = properties.featurePolicies;
     current.valueParameters = properties.valueParameters;
     current.baseColorFactor = properties.baseColorFactor;
     current.metallicFactor = properties.metallicFactor;

@@ -52,6 +52,140 @@ protected:
     }
 };
 
+TEST_F(MaterialAssets, FeatureSignaturesSeparateProgramVisibilityAndPipeline)
+{
+    scene::RenderMaterial value;
+    value.metallicFactor = 0;
+    const auto original = resolveMaterialFeatures(value);
+    value.baseColorFactor.x = 0.2f;
+    value.roughnessFactor = 0.3f;
+    value.baseColorTexture.textureIndex = 42;
+    EXPECT_EQ(resolveMaterialFeatures(value).programSignature, original.programSignature);
+    for (const auto* mode : {"MASK", "BLEND"}) {
+        value.alphaMode = mode;
+        const auto changed = resolveMaterialFeatures(value);
+        EXPECT_EQ(changed.programSignature, original.programSignature);
+        EXPECT_NE(changed.visibilitySignature, original.visibilitySignature);
+        EXPECT_EQ(changed.pipelineSignature, original.pipelineSignature);
+    }
+    value.alphaMode = "OPAQUE";
+    value.doubleSided = true;
+    const auto twoSided = resolveMaterialFeatures(value);
+    EXPECT_EQ(twoSided.programSignature, original.programSignature);
+    EXPECT_EQ(twoSided.visibilitySignature, original.visibilitySignature);
+    EXPECT_NE(twoSided.pipelineSignature, original.pipelineSignature);
+    uint32_t categories = 0;
+    for (const auto& descriptor : materialFeatureDescriptors()) { categories |= descriptor.categories; }
+    EXPECT_EQ(categories, 63u);
+}
+
+TEST_F(MaterialAssets, FeatureAutoConservativelyClassifiesClosures)
+{
+    scene::RenderMaterial value;
+    EXPECT_EQ(resolveMaterialFeatures(value).surfaceProgram, SurfaceProgramClass::Conductor);
+    value.metallicRoughnessTexture.textureIndex = 12;
+    EXPECT_EQ(resolveMaterialFeatures(value).surfaceProgram, SurfaceProgramClass::Opaque);
+    value.featurePolicies.metalness = FeaturePolicy::Specialization;
+    EXPECT_EQ(resolveMaterialFeatures(value).surfaceProgram, SurfaceProgramClass::Opaque);
+    value.metallicFactor = 0;
+    EXPECT_EQ(resolveMaterialFeatures(value).surfaceProgram, SurfaceProgramClass::Dielectric);
+    value.featurePolicies.metalness = FeaturePolicy::Dynamic;
+    EXPECT_EQ(resolveMaterialFeatures(value).surfaceProgram, SurfaceProgramClass::Opaque);
+    value.featurePolicies.transmission = FeaturePolicy::Dynamic;
+    EXPECT_EQ(resolveMaterialFeatures(value).surfaceProgram, SurfaceProgramClass::General);
+    value.featurePolicies = {};
+    value.transmissionFactor = 0.5f;
+    EXPECT_EQ(resolveMaterialFeatures(value).surfaceProgram, SurfaceProgramClass::General);
+    value.transmissionFactor = 0;
+    value.valueProgram = R"({"version":1,"metallic":{"op":"parameter","index":0}})";
+    const auto graph = resolveMaterialFeatures(value);
+    EXPECT_EQ(graph.surfaceProgram, SurfaceProgramClass::General);
+    value.valueParameters[0] = 0.9f;
+    value.valueProgram = R"({ "metallic": {"index":0,"op":"parameter"}, "version":1 })";
+    EXPECT_EQ(resolveMaterialFeatures(value).programSignature, graph.programSignature);
+    value.valueProgram = R"({"version":1,"metallic":{"op":"parameter","index":1}})";
+    EXPECT_NE(resolveMaterialFeatures(value).programSignature, graph.programSignature);
+    value.valueProgram.clear();
+    EXPECT_EQ(resolveMaterialFeatures(value, FeatureCompileTarget::RayHit).surfaceProgram, SurfaceProgramClass::General);
+}
+
+TEST_F(MaterialAssets, FeaturePoliciesInheritWithoutPersistingCompilerDecisions)
+{
+    definition.featurePolicies.metalness = FeaturePolicy::Dynamic;
+    write("OpenPBR.materialdef", serializeMaterialDefinition(definition));
+    MaterialAssetLibrary library(root);
+    auto parent = instance();
+    parent.featurePolicies = {{"transmission", "Dynamic"}};
+    ASSERT_TRUE(library.save("asset://Parent.material", parent, error)) << error;
+    auto child = instance();
+    child.parent = "asset://Parent.material";
+    child.featurePolicies = {{"transmission", "Auto"}};
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(child, resolved, error)) << error;
+    EXPECT_EQ(resolved.featurePolicies.metalness, FeaturePolicy::Dynamic);
+    EXPECT_EQ(resolved.featurePolicies.transmission, FeaturePolicy::Auto);
+    EXPECT_EQ(resolved.featureResolution.surfaceProgram, SurfaceProgramClass::Opaque);
+    scene::RenderMaterial lowered;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, {}, lowered, error)) << error;
+    EXPECT_EQ(lowered.featurePolicies, resolved.featurePolicies);
+    EXPECT_EQ(resolveMaterialFeatures(lowered).programSignature, resolved.featureResolution.programSignature);
+    const auto text = serializeMaterialInstance(child);
+    EXPECT_EQ(text.find("Signature"), std::string::npos);
+    EXPECT_EQ(text.find("variant"), std::string::npos);
+    auto invalid = Json::parse(text);
+    invalid["variantId"] = 3;
+    MaterialInstance parsed = child;
+    EXPECT_FALSE(deserializeMaterialInstance(invalid.dump(), parsed, error));
+    EXPECT_EQ(parsed.featurePolicies, child.featurePolicies);
+    invalid.erase("variantId");
+    invalid["featurePolicies"]["roughness"] = "Specialization";
+    EXPECT_FALSE(deserializeMaterialInstance(invalid.dump(), parsed, error));
+    invalid["featurePolicies"] = {{"metalness", "Keyword123"}};
+    EXPECT_FALSE(deserializeMaterialInstance(invalid.dump(), parsed, error));
+    MaterialInstance exported;
+    ASSERT_TRUE(createMaterialInstance(lowered, child.definition, definition, {}, exported, error)) << error;
+    ASSERT_TRUE(library.resolve(exported, resolved, error)) << error;
+    EXPECT_EQ(resolved.featurePolicies, lowered.featurePolicies);
+}
+
+TEST_F(MaterialAssets, FeaturePolicyEditsPersistAndAdvanceMaterialRevision)
+{
+    scene::SceneDocument document;
+    loadScene(document);
+    auto edited = document.materials()[0];
+    const auto revision = document.materialRevision();
+    edited.featurePolicies.transmission = FeaturePolicy::Dynamic;
+    ASSERT_TRUE(document.setMaterialProperties(0, edited));
+    EXPECT_GT(document.materialRevision(), revision);
+    ASSERT_TRUE(document.save(error)) << error;
+    scene::SceneDocument loaded;
+    ASSERT_TRUE(loaded.load(document.documentPath())) << loaded.documentWarning();
+    EXPECT_EQ(loaded.materials()[0].featurePolicies, edited.featurePolicies);
+    edited.featurePolicies.transmission = static_cast<FeaturePolicy>(999);
+    EXPECT_FALSE(loaded.setMaterialProperties(0, edited));
+}
+
+TEST_F(MaterialAssets, LocalFeaturePolicyDoesNotFreezeOtherInheritedPolicies)
+{
+    scene::SceneDocument document;
+    loadScene(document);
+    MaterialAssetLibrary library(root);
+    ASSERT_TRUE(library.save("asset://Surface.material", instance(), error)) << error;
+    ASSERT_TRUE(document.setMaterialAsset(0, "asset://Surface.material", root, error)) << error;
+    auto edited = document.materials()[0];
+    edited.featurePolicies.metalness = FeaturePolicy::Dynamic;
+    ASSERT_TRUE(document.setMaterialProperties(0, edited));
+    ASSERT_TRUE(document.save(error)) << error;
+    definition.featurePolicies.transmission = FeaturePolicy::Dynamic;
+    write("OpenPBR.materialdef", serializeMaterialDefinition(definition));
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    EXPECT_EQ(document.materials()[0].featurePolicies.metalness, FeaturePolicy::Dynamic);
+    EXPECT_EQ(document.materials()[0].featurePolicies.transmission, FeaturePolicy::Dynamic);
+    scene::SceneDocument loaded;
+    ASSERT_TRUE(loaded.load(document.documentPath())) << loaded.documentWarning();
+    EXPECT_EQ(loaded.materials()[0].featurePolicies, document.materials()[0].featurePolicies);
+}
+
 TEST_F(MaterialAssets, SparseRoundTripAndInheritedDefaults)
 {
     MaterialAssetLibrary library(root);

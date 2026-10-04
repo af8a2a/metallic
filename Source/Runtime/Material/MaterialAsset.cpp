@@ -132,6 +132,8 @@ void apply(const MaterialInstance& instance, ResolvedMaterialInstance& result)
     overlay(result.definition.schema.parameters, instance.parameters, result.parameters);
     overlay(result.definition.schema.resources, instance.resources, result.resources);
     overlay(result.definition.schema.features, instance.features, result.features);
+    std::string error;
+    if (!overlayFeaturePolicies(instance.featurePolicies, result.featurePolicies, error)) { throw std::runtime_error(error); }
 }
 
 void validateStructure(const MaterialInstance& instance)
@@ -145,11 +147,14 @@ void validateStructure(const MaterialInstance& instance)
     overlay(schema.parameters, instance.parameters, scratch);
     overlay(schema.resources, instance.resources, scratch);
     overlay(schema.features, instance.features, scratch);
+    MaterialFeaturePolicies policies;
+    std::string error;
+    if (!overlayFeaturePolicies(instance.featurePolicies, policies, error)) { throw std::runtime_error(error); }
 }
 
 MaterialInstance instanceFromJson(Json document)
 {
-    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources", "features"});
+    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources", "features", "featurePolicies"});
     require(document.at("type") == "Metallic.MaterialInstance", "Wrong material asset type");
     require(document.at("version").is_number_unsigned() || document.at("version").is_number_integer(), "Invalid instance version");
     const auto version = document.at("version").get<int64_t>();
@@ -170,6 +175,7 @@ MaterialInstance instanceFromJson(Json document)
     result.parameters = document.value("parameters", Json::object());
     result.resources = document.value("resources", Json::object());
     result.features = document.value("features", Json::object());
+    result.featurePolicies = document.value("featurePolicies", Json::object());
     validateStructure(result);
     return result;
 }
@@ -215,7 +221,11 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
         require(version > 0 && version <= UINT32_MAX, "Invalid definition version");
         candidate.definitionVersion = static_cast<uint32_t>(version);
         const auto values = document.value("defaults", Json::object());
-        keys(values, {"parameters", "resources", "features"});
+        keys(values, {"parameters", "resources", "features", "featurePolicies"});
+        std::string policyError;
+        if (!overlayFeaturePolicies(values.value("featurePolicies", Json::object()), candidate.featurePolicies, policyError)) {
+            throw std::runtime_error(policyError);
+        }
         const auto update = [&](auto& schema, const char* group) {
             auto resolved = defaults(schema);
             overlay(schema, values.value(group, Json::object()), resolved);
@@ -230,10 +240,11 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
 
 std::string serializeMaterialDefinition(const MaterialDefinition& definition)
 {
+    require(validFeaturePolicies(definition.featurePolicies), "Invalid definition feature policies");
     return Json{{"type", "Metallic.MaterialDefinition"}, {"version", definition.version},
         {"definitionVersion", definition.definitionVersion}, {"implementation", definition.implementation},
         {"defaults", {{"parameters", defaults(definition.schema.parameters)}, {"resources", defaults(definition.schema.resources)},
-            {"features", defaults(definition.schema.features)}}}}.dump(4) + '\n';
+            {"features", defaults(definition.schema.features)}, {"featurePolicies", serializeFeaturePolicies(definition.featurePolicies)}}}}.dump(4) + '\n';
 }
 
 bool deserializeMaterialInstance(std::string_view text, MaterialInstance& output, std::string& error)
@@ -247,7 +258,7 @@ std::string serializeMaterialInstance(const MaterialInstance& instance)
     return Json{{"type", "Metallic.MaterialInstance"}, {"version", instance.version},
         {"definitionVersion", instance.definitionVersion}, {"definition", instance.definition},
         {"parent", instance.parent ? Json(*instance.parent) : Json(nullptr)}, {"parameters", instance.parameters},
-        {"resources", instance.resources}, {"features", instance.features}}.dump(4) + '\n';
+        {"resources", instance.resources}, {"features", instance.features}, {"featurePolicies", instance.featurePolicies}}.dump(4) + '\n';
 }
 
 bool upgradeMaterial(Json& document, uint32_t versionFrom, uint32_t versionTo, std::string& error)
@@ -333,7 +344,14 @@ bool MaterialAssetLibrary::resolve(const MaterialInstance& instance, ResolvedMat
         candidate.parameters = defaults(candidate.definition.schema.parameters);
         candidate.resources = defaults(candidate.definition.schema.resources);
         candidate.features = defaults(candidate.definition.schema.features);
+        candidate.featurePolicies = candidate.definition.featurePolicies;
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) { apply(*it, candidate); }
+        // Analyze resource presence without loading textures or assigning GPU handles.
+        scene::RenderMaterial semantic;
+        if (!lowerMaterialInstance(candidate, [](std::string_view) { return 0; }, semantic, diagnostic)) {
+            throw std::runtime_error(diagnostic);
+        }
+        candidate.featureResolution = resolveMaterialFeatures(semantic);
         output = std::move(candidate);
     });
 }
@@ -382,6 +400,7 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         require(instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
         require(!output.rtxcrHair, "OpenPBR asset cannot replace a Fiber material");
         auto candidate = output;
+        candidate.featurePolicies = instance.featurePolicies;
         const auto& p = instance.parameters;
         candidate.baseColorFactor = float4(p.at("baseColor")[0].get<float>(), p.at("baseColor")[1].get<float>(),
             p.at("baseColor")[2].get<float>(), p.at("opacity").get<float>());
@@ -450,6 +469,11 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
         candidate.parameters = sparse(definition.schema.parameters, parameters);
         candidate.resources = sparse(definition.schema.resources, resources);
         candidate.features = sparse(definition.schema.features, features);
+        const auto sourcePolicies = serializeFeaturePolicies(source.featurePolicies);
+        const auto defaultPolicies = serializeFeaturePolicies(definition.featurePolicies);
+        for (const auto& [name, value] : sourcePolicies.items()) {
+            if (value != defaultPolicies.at(name)) { candidate.featurePolicies[name] = value; }
+        }
         validateStructure(candidate);
         output = std::move(candidate);
     });

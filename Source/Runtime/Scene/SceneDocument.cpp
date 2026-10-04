@@ -240,6 +240,7 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
         {"alphaMode", properties.alphaMode},
         {"doubleSided", properties.doubleSided},
         {"unlit", properties.unlit},
+        {"featurePolicies", material::serializeFeaturePolicies(properties.featurePolicies)},
     };
     for (const auto& [name, member] : kMaterialScalarFields) { value[name] = properties.*member; }
     if (!properties.valueProgram.empty()) {
@@ -256,6 +257,8 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
 bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& properties, std::string& reason)
 {
     if (!value.is_object()) { reason = "properties must be an object"; return false; }
+    if (value.contains("featurePolicies") &&
+        !material::overlayFeaturePolicies(value["featurePolicies"], properties.featurePolicies, reason)) { return false; }
     if (value.contains("valueProgram")) {
         if (!value["valueProgram"].is_string()) { reason = "valueProgram must be a JSON source string"; return false; }
         properties.valueProgram = value["valueProgram"].get<std::string>();
@@ -878,6 +881,12 @@ bool SceneDocument::reloadMaterialAsset(int32_t materialIndex, std::string& erro
     for (const auto& [name, value] : previous.items()) {
         // M2 code is scene-owned, never inherited from a .material asset.
         if (name == "valueProgram" || name == "valueParameters") { continue; }
+        if (name == "featurePolicies" && overrides.contains(name)) {
+            for (const auto& [feature, policy] : value.items()) {
+                if (overrides[name].contains(feature) && overrides[name][feature] == policy) { overrides[name].erase(feature); }
+            }
+            if (overrides[name].empty()) { overrides.erase(name); }
+        }
         if (overrides.contains(name) && overrides[name] == value) { overrides.erase(name); }
     }
     // Validate local values before publishing; property ranges are independent.
@@ -1690,6 +1699,13 @@ bool SceneDocument::save(std::string& message)
             const auto baseline = serializeMaterialProperties(binding->second.resolved);
             for (const auto& [name, value] : baseline.items()) {
                 if (name == "valueProgram" || name == "valueParameters") { continue; }
+                if (name == "featurePolicies" && saved["properties"].contains(name)) {
+                    auto& policies = saved["properties"][name];
+                    for (const auto& [feature, policy] : value.items()) {
+                        if (policies.contains(feature) && policies[feature] == policy) { policies.erase(feature); }
+                    }
+                    if (policies.empty()) { saved["properties"].erase(name); }
+                }
                 if (saved["properties"].contains(name) && saved["properties"][name] == value) { saved["properties"].erase(name); }
             }
             std::error_code relativeError;

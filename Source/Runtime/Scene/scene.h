@@ -12,6 +12,7 @@
 #include "Runtime/Scene/SceneLoad.h"
 #include "Runtime/Scene/SceneGraph.h"
 #include "Runtime/Scene/SceneLighting.h"
+#include "Runtime/Material/MaterialFeatures.h"
 
 namespace metallic::material { struct ResolvedMaterialInstance; class MaterialAssetLibrary; }
 
@@ -219,6 +220,7 @@ struct RenderNode {
 };
 
 struct RenderMaterial {
+    material::MaterialFeaturePolicies featurePolicies;
     // M2 controlled JSON source; empty means the existing model inputs.
     std::string valueProgram;
     std::array<float, 16> valueParameters{};

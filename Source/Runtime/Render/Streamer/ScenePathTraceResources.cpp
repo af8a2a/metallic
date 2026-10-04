@@ -3097,7 +3097,7 @@ Result<> ScenePathTraceResources::prepare(
         stampTextureFormats(gpuScene.materials,impl_->materialTextures);
         std::string materialLog;
         impl_->pendingMaterialGeneration = MaterialGeneration::create(
-            gpuScene.materials, loadedScene.materialRevision(), materialLog);
+            gpuScene.materials, loadedScene.materialRevision(), materialLog, loadedScene.materials());
         if (!impl_->pendingMaterialGeneration) {
             appendLogBlock(log, materialLog);
             impl_->clear();
@@ -3377,7 +3377,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 stampTextureFormats(impl_->asyncGpuScene.materials,impl_->materialTextures);
                 std::string materialLog;
                 impl_->pendingMaterialGeneration = MaterialGeneration::create(
-                    impl_->asyncGpuScene.materials, impl_->asyncSourceMaterialRevision, materialLog);
+                    impl_->asyncGpuScene.materials, impl_->asyncSourceMaterialRevision, materialLog, impl_->asyncScene->materials());
                 if (!impl_->pendingMaterialGeneration) {
                     appendLogBlock(log, materialLog);
                     impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
@@ -3626,7 +3626,7 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             log);
         stampTextureFormats(materials,impl_->materialTextures);
         std::string materialLog;
-        auto candidate = MaterialGeneration::create(materials, boundScene->materialRevision(), materialLog);
+        auto candidate = MaterialGeneration::create(materials, boundScene->materialRevision(), materialLog, boundScene->materials());
         if (!candidate) {
             appendLogBlock(log, materialLog);
             return makeError(Error::InvalidArgument);

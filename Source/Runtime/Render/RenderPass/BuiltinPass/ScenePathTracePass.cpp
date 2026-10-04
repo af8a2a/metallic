@@ -2876,12 +2876,8 @@ private:
         materialInstanceProgramBins_.resize(generation->instances().size());
         for (size_t index = 0; index < generation->instances().size(); ++index) {
             const auto& instance = generation->instances()[index];
-            const auto& material = generation->parameters()[instance.parameterIndex];
-            uint32_t permutation = 3;
-            if (material.glassParams[0] > 0 || material.textureParams[3] > 1.5f) { permutation = 4; }
-            else if (material.params[0] <= 0) { permutation = 1; }
-            else if (material.params[0] >= 1 && material.metallicRoughnessTexture.textureIndex == UINT32_MAX &&
-                material.metallicRoughnessTexture.ntcTextureSetIndex == UINT32_MAX) { permutation = 2; }
+            const auto& features = generation->features()[instance.parameterIndex];
+            const auto permutation = static_cast<uint32_t>(features.surfaceProgram);
             auto* program = permutation < classifiedPrograms_.size() ? &classifiedPrograms_[permutation]
                 : &programs_[static_cast<size_t>(PathTracePermutation::Base)];
             const auto key = executableKey(program);

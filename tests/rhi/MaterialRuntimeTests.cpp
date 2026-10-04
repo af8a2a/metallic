@@ -89,6 +89,16 @@ public:
         if (!recovered || recovered->instances()[0].program->key != program->key || !log.empty()) {
             return RHITestResult::fail("Recovery recompiled instance parameters or retained an error");
         }
+        input[0].params[0] = 1;
+        input[0].metallicRoughnessTexture.ntcTextureSetIndex = 0;
+        auto neural = MaterialGeneration::create(input, 11, log);
+        if (!neural || neural->features()[0].surfaceProgram != material::SurfaceProgramClass::Opaque) {
+            return RHITestResult::fail("NTC metalness was incorrectly specialized as a constant conductor");
+        }
+        const scene::RenderMaterial single;
+        if (MaterialGeneration::create(input, 12, log, {&single, 1}) || log.empty()) {
+            return RHITestResult::fail("Mismatched feature snapshot was accepted");
+        }
         return RHITestResult::pass("1000 instances, two shared programs, complete schema and immutable generations");
     }
 };
@@ -288,6 +298,7 @@ public:
             const auto* program = first->instances()[0].program;
             const auto original = document.materials()[0];
             auto edited = original;
+            edited.featurePolicies.transmission = material::FeaturePolicy::Dynamic;
             edited.baseColorFactor.x = original.baseColorFactor.x == 0.25f ? 0.75f : 0.25f;
             if (!document.setMaterialProperties(0, edited)) { return RHITestResult::fail("Edit rejected"); }
             const auto oldBinding = resources.materialBinding();
@@ -308,6 +319,12 @@ public:
             }
             if (!resources.syncRuntimeScene(&document, log)) { return RHITestResult::fail(log); }
             auto second = resources.materialGeneration();
+            const auto expectedFeatures = material::resolveMaterialFeatures(edited);
+            if (second->features()[0].programSignature != expectedFeatures.programSignature ||
+                second->features()[0].surfaceProgram != material::SurfaceProgramClass::General ||
+                first->features()[0].programSignature != material::resolveMaterialFeatures(original).programSignature) {
+                return RHITestResult::fail("Feature policy was not atomically published with its material revision");
+            }
             if (!second || first == second || second->instances()[0].program != program ||
                 second->sourceRevision() != document.materialRevision() ||
                 second->parameters()[0].baseColor[0] != edited.baseColorFactor.x ||
@@ -394,6 +411,12 @@ public:
         const ComputeProgramBindingDesc layout[] = {{.binding = 0}, {.binding = 1}};
         SlangShaderDesc source{.moduleName = "MaterialRuntimeProbe", .entryPointName = "materialRuntimeProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"};
+        scene::RenderMaterial semantic;
+        semantic.metallicFactor = 0;
+        const auto features = material::resolveMaterialFeatures(semantic);
+        const auto classification = std::to_string(static_cast<uint32_t>(features.surfaceProgram));
+        const SlangMacroDefine featureDefine{"MATERIAL_CLASS", classification.c_str()};
+        source.macroDefines = {&featureDefine, 1};
         const ComputeProgramDesc description{.bindings = layout, .requiresRayQuery = false,
             .resourceParameters = kMaterialRuntimeProbeLayout};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log)) {
@@ -404,6 +427,21 @@ public:
         const auto cacheBefore = materialProgramCacheStats();
         ComputeProgram sharedProgram;
         std::shared_ptr<const MaterialExecutableArtifact> sharedArtifact;
+        semantic.roughnessFactor = 0.17f;
+        semantic.baseColorFactor.x = 0.42f;
+        semantic.baseColorTexture.textureIndex = 77;
+        semantic.alphaMode = "MASK";
+        semantic.doubleSided = true;
+        semantic.featurePolicies.metalness = material::FeaturePolicy::Specialization;
+        const auto otherFeatures = material::resolveMaterialFeatures(semantic);
+        if (otherFeatures.programSignature != features.programSignature ||
+            otherFeatures.visibilitySignature == features.visibilitySignature ||
+            otherFeatures.pipelineSignature == features.pipelineSignature) {
+            return RHITestResult::fail("Dynamic, visibility or pipeline features leaked into ProgramSignature");
+        }
+        const auto otherClass = std::to_string(static_cast<uint32_t>(otherFeatures.surfaceProgram));
+        const SlangMacroDefine otherDefine{"MATERIAL_CLASS", otherClass.c_str()};
+        source.macroDefines = {&otherDefine, 1};
         if (!compileMaterialExecutable(*device, source, description, sharedProgram, sharedArtifact, log) ||
             sharedArtifact != artifact || sharedArtifact->programKey != artifact->programKey ||
             materialProgramCacheStats().hits != cacheBefore.hits + 1 ||
@@ -550,6 +588,70 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialErrorTest);
+
+class MaterialFeatureRenderingTest final : public RHITest
+{
+public:
+    MaterialFeatureRenderingTest() { name = "material_feature_policy_rendering"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        std::vector<float> reference;
+        double squaredError = 0, squaredReference = 0, maximumError = 0;
+        for (bool dynamic : {false, true}) {
+            RenderSampleLoadResult sample;
+            std::string log;
+            if (!loadBuiltInRenderSample("lookdev-vbuffer", sample, log)) { return RHITestResult::fail(log); }
+            scene::SceneDocument document;
+            if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
+                return RHITestResult::fail("Feature fixture load failed");
+            }
+            if (dynamic) {
+                for (int32_t i = 0; i < static_cast<int32_t>(document.materials().size()); ++i) {
+                    auto edited = document.materials()[i];
+                    edited.featurePolicies = {material::FeaturePolicy::Dynamic, material::FeaturePolicy::Dynamic};
+                    if (!document.setMaterialProperties(i, edited)) { return RHITestResult::fail("Feature policy edit rejected"); }
+                }
+            }
+            RenderGraphPreviewRenderer preview;
+            preview.bindRuntimeScene(&document);
+            preview.setEnvironment(document.environment()); preview.setLighting(document.lighting());
+            preview.setRawReadbackEnabled(true);
+            if (!preview.initialize(context.enableValidation, true, false)) { return RHITestResult::fail("Feature device failed"); }
+            uint64_t builds = 0;
+            for (uint32_t frame = 0; frame < 8; ++frame) {
+                if (!preview.render(sample.graph, 256, 256, "Deferred.color")) { return RHITestResult::fail(preview.lastLog()); }
+                if (frame == 0) { builds = materialProgramCacheStats().pipelineBuilds; }
+                if (materialProgramCacheStats().pipelineBuilds != builds) {
+                    return RHITestResult::fail("Instances sharing a Feature ProgramSignature rebuilt shader pipelines");
+                }
+            }
+            const auto& bytes = preview.readbackBytes();
+            if (preview.readbackFormat() != Format::RGBA32Sfloat || bytes.size() != 256 * 256 * 16) {
+                return RHITestResult::fail("Unexpected Feature HDR readback format");
+            }
+            std::ofstream evidence(context.outputDirectory / (dynamic ? "Dynamic.rgba32f" : "Auto.rgba32f"), std::ios::binary);
+            evidence.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            std::vector<float> pixels(bytes.size() / sizeof(float));
+            std::memcpy(pixels.data(), bytes.data(), bytes.size());
+            for (float value : pixels) { if (!std::isfinite(value)) { return RHITestResult::fail("Nonfinite Feature output"); } }
+            if (!dynamic) { reference = std::move(pixels); }
+            else {
+                for (size_t i = 0; i < pixels.size(); ++i) {
+                    const double difference = double(pixels[i]) - reference[i];
+                    squaredError += difference * difference;
+                    squaredReference += double(reference[i]) * reference[i];
+                    maximumError = std::max(maximumError, std::abs(difference));
+                }
+            }
+        }
+        const double relativeRMSE = std::sqrt(squaredError / std::max(squaredReference, 1e-20));
+        std::ofstream(context.outputDirectory / "FeatureComparison.txt") << "relativeRMSE=" << relativeRMSE << " maxAbsolute=" << maximumError << '\n';
+        if (relativeRMSE > 1e-5) { return RHITestResult::fail("Auto and Dynamic closure policies changed shading: " + std::to_string(relativeRMSE)); }
+        return RHITestResult::pass("Production deferred Auto/Dynamic closures agree; shared signatures allocate no per-frame pipelines");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialFeatureRenderingTest);
 
 class MaterialHDRCaptureTest final : public RHITest
 {

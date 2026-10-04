@@ -1,4 +1,5 @@
 #pragma once
+#include "Runtime/Material/MaterialFeatures.h"
 
 #include <json.hpp>
 #include <cstdint>
@@ -40,6 +41,7 @@ struct MaterialDefinition
     uint32_t definitionVersion = 1;
     std::string implementation = "OpenPBRComposite.Legacy";
     MaterialSchema schema;
+    MaterialFeaturePolicies featurePolicies;
 };
 
 struct MaterialInstance
@@ -51,6 +53,7 @@ struct MaterialInstance
     nlohmann::json parameters = nlohmann::json::object();
     nlohmann::json resources = nlohmann::json::object();
     nlohmann::json features = nlohmann::json::object();
+    nlohmann::json featurePolicies = nlohmann::json::object();
 };
 
 struct ResolvedMaterialInstance
@@ -60,6 +63,8 @@ struct ResolvedMaterialInstance
     nlohmann::json parameters;
     nlohmann::json resources;
     nlohmann::json features;
+    MaterialFeaturePolicies featurePolicies;
+    MaterialFeatureResolution featureResolution;
     std::vector<std::string> dependencies;
 };
 
