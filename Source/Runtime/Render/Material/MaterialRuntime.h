@@ -56,14 +56,25 @@ struct MaterialDefinition
     std::string_view approximations;
 };
 
-using MaterialProgramKey = uint64_t;
+// Executable identity contains no instance index, parameter value or texture
+// handle. Registration keys leave compiler-dependent components at zero.
+struct MaterialProgramKey
+{
+    uint64_t definitionHash = 0;
+    uint64_t irHash = 0;
+    uint64_t specializationSignature = 0;
+    MaterialDomain domain = MaterialDomain::Surface;
+    uint64_t qualityProfile = 0;
+    uint64_t targetCapabilities = 0;
+    bool operator==(const MaterialProgramKey&) const = default;
+};
 
 struct MaterialProgram
 {
     const MaterialDefinition* definition;
     const MaterialSchema* schema;
-    // Built-in semantic key, not the Slang kernel/cache key. Parameters and
-    // texture handles never participate. Kernel keys remain in SlangCompiler.
+    // Built-in registration identity. MaterialExecutable fills the compilation
+    // signature and IR identity; SlangCompiler still owns the disk SPIR-V cache.
     MaterialProgramKey key;
 };
 

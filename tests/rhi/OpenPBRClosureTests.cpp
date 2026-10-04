@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
@@ -57,12 +58,135 @@ void require(const Result<T>& value, const std::string& message)
     require(bool(value), message);
 }
 
-class OpenPBRClosureTest final : public RHITest
+RHITestResult runSurfaceLighting(RHITestContext& context, Device& device,
+    Buffer& parameters, Buffer& output, Buffer& counters, TextureView& view)
+{
+    // Handles embedded in constants must belong to ComputeProgram's heap.
+    auto registry = ResourceRegistry::forDevice(device);
+    require(registry, "Shared lighting registry failed");
+    std::filesystem::create_directories(context.outputDirectory);
+    std::ofstream report(context.outputDirectory / "SurfaceLighting.txt");
+    const auto writeCounts = [&] {
+        auto* mapped = counters.map();
+        require(mapped != nullptr, "Counters mapping failed");
+        std::memset(mapped, 0, 8 * sizeof(uint32_t)); counters.flush(); counters.unmap();
+    };
+    uint32_t pipelineCount = 0;
+    for (auto model : {SurfaceMaterialImplementation::OpenPBR, SurfaceMaterialImplementation::DebugLambert,
+            SurfaceMaterialImplementation::DebugMirror}) {
+        const auto request = specializeSurfaceMaterialProgram({.module = "SurfaceLightingProbe",
+            .entry = "surfaceLightingProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, model);
+        const std::string label = request.defines.back().second;
+        ShaderRequestView source(request);
+        const ComputeProgramBindingDesc counterBinding{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
+        const ComputeResourceField counterField{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer, .offset = 0};
+        const ComputeProgramDesc layout{.pushConstantSize = sizeof(OpenPBRProbeParams), .bindings = {&counterBinding, 1},
+            .requiresRayQuery = false, .resourceParameters = {.size = 4, .fields = {&counterField, 1}}};
+        ComputeProgram program, alias;
+        std::shared_ptr<const MaterialExecutableArtifact> artifact, cached;
+        const auto before = materialProgramCacheStats();
+        std::string log;
+        auto compiled = compileMaterialExecutable(device, source.desc(), layout, program, artifact, log,
+            {.parameterABI = kOpenPBRProbeABI});
+        require(compiled, "Lighting compile: " + log);
+        auto reused = compileMaterialExecutable(device, source.desc(), layout, alias, cached, log,
+            {.parameterABI = kOpenPBRProbeABI});
+        require(reused, "Lighting cache: " + log);
+        require(cached == artifact && cached->programKey == artifact->programKey &&
+            materialProgramCacheStats().hits == before.hits + 1 &&
+            materialProgramCacheStats().pipelineBuilds == before.pipelineBuilds + 1,
+            "Same static ProgramKey created multiple pipelines");
+        ++pipelineCount;
+        std::array<uint32_t, 8> oneLightCounts{};
+        std::vector<Float4> oneLightImage;
+        for (uint32_t lights : {1u, 8u}) {
+            writeCounts();
+            bench::GPUCommands gpu(*device.getQueue(QueueType::Graphics));
+            require(gpu.initialize(device), "Lighting commands failed");
+            ParameterWriter writer(device, **registry);
+            OpenPBRProbeParams params{writer.bufferSpan<Float4>(&parameters), writer.bufferSpan<Float4>(&output),
+                writer.sampledImageHandle(&view), writer.buffer(&counters), lights};
+            // Keep registered handles and parameter attachments alive through completion.
+            auto encoded = writer.encode(params, kOpenPBRProbeABI, ParameterTransport::InlinePush);
+            require(encoded, "Lighting resource encoding failed");
+            const ComputeDispatchBinding binding{.binding = 0, .buffer = &counters};
+            require(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = {&binding, 1}, .pushData = &params,
+                .pushDataSize = sizeof(params), .groupCountX = 24, .groupCountY = 16}), "Lighting dispatch failed");
+            require(gpu.submitAndWait(), "Lighting completion failed");
+            output.invalidate(); counters.invalidate();
+            std::array<uint32_t, 8> counts{};
+            auto* countData = counters.map();
+            require(countData != nullptr, "Lighting counter readback failed");
+            std::memcpy(counts.data(), countData, sizeof(counts)); counters.unmap();
+            const auto* mapped = static_cast<const Float4*>(output.map());
+            require(mapped != nullptr, "Lighting image mapping failed");
+            std::vector<Float4> data(mapped, mapped + 192 * 128 * 3);
+            output.unmap();
+            std::vector<Float4> pixels(192 * 128);
+            std::vector<uint8_t> display(192 * 128 * 4);
+            uint32_t validSamples = 0;
+            double energy = 0;
+            for (uint32_t pixel = 0; pixel < pixels.size(); ++pixel) {
+                pixels[pixel] = data[pixel * 3];
+                for (uint32_t slot = 0; slot < 3; ++slot) {
+                    for (float value : data[pixel * 3 + slot]) { require(std::isfinite(value), "Non-finite generic lighting result"); }
+                }
+                for (uint32_t c = 0; c < 3; ++c) {
+                    require(pixels[pixel][c] >= 0, "Negative lighting output");
+                    energy += pixels[pixel][c];
+                    const float linear = std::clamp(pixels[pixel][c], 0.0f, 1.0f);
+                    display[pixel * 4 + c] = uint8_t(std::lround(255 * (linear <= 0.0031308f ? linear * 12.92f :
+                        1.055f * std::pow(linear, 1 / 2.4f) - 0.055f)));
+                }
+                display[pixel * 4 + 3] = 255;
+                const auto& normalPdf = data[pixel * 3 + 1];
+                const auto& directionFlags = data[pixel * 3 + 2];
+                if (normalPdf[3] <= 0) { continue; }
+                ++validSamples;
+                if (model == SurfaceMaterialImplementation::DebugMirror) {
+                    require(normalPdf[3] == 1 && directionFlags[3] == 17, "Mirror sample is not a discrete reflection");
+                    const float sx = (float(pixel % 192) + 0.5f) / 192 * 2 - 1;
+                    const float sy = (float(pixel / 192) + 0.5f) / 128 * 2 - 1;
+                    std::array<float, 3> incoming{sx * 0.75f * 1.5f, -sy * 0.75f - 0.12f, -1};
+                    const float length = std::sqrt(incoming[0] * incoming[0] + incoming[1] * incoming[1] + 1);
+                    float projection = 0;
+                    for (uint32_t c = 0; c < 3; ++c) { incoming[c] /= length; projection += incoming[c] * normalPdf[c]; }
+                    for (uint32_t c = 0; c < 3; ++c) {
+                        require(std::abs(directionFlags[c] - (incoming[c] - 2 * projection * normalPdf[c])) < 2e-5f,
+                            "Mirror does not reflect about its prepared normal");
+                    }
+                }
+            }
+            require(energy > 100 && validSamples > 1000 && counts[0] == counts[3] && counts[4] == counts[3] * lights &&
+                counts[6] == counts[3], "Missing rendering or repeated material evaluation in generic lighting");
+            if (lights == 1) { oneLightCounts = counts; oneLightImage = pixels; }
+            else {
+                require(counts[0] == oneLightCounts[0] && counts[1] == oneLightCounts[1] && counts[2] == oneLightCounts[2],
+                    "Increasing lights re-evaluated material resources");
+                if (model == SurfaceMaterialImplementation::DebugMirror) {
+                    require(counts[5] == 0 && counts[7] > 1000 && pixels == oneLightImage,
+                        "Delta mirror was incorrectly lit by continuous direct-light eval");
+                }
+            }
+            const std::string stem = label + "-" + std::to_string(lights);
+            std::ofstream hdr(context.outputDirectory / (stem + ".rgba32f"), std::ios::binary);
+            hdr.write(reinterpret_cast<const char*>(pixels.data()), pixels.size() * sizeof(Float4));
+            require(saveRgba8Png(context.outputDirectory / (stem + ".png"), display.data(), 192, 128, log), log);
+            report << label << " lights=" << lights << " generation=" << artifact->generation << " counts=";
+            for (auto count : counts) { report << count << ','; }
+            report << " energy=" << energy << '\n';
+        }
+    }
+    require(pipelineCount == 3, "Expected one executable per concrete Program, not per instance");
+    return RHITestResult::pass("Three CPU-specialized Surface Programs share shadeSurface/direct-light/path continuation; cache hits reuse pipelines");
+}
+
+class OpenPBRClosureTest : public RHITest
 {
 public:
-    OpenPBRClosureTest()
+    explicit OpenPBRClosureTest(bool lighting = false) : lighting_(lighting)
     {
-        name = "material_closure_openpbr_stages";
+        name = lighting ? "material_surface_lighting_framework" : "material_closure_openpbr_stages";
         type = RHITestType::Rendering;
     }
     RHITestResult run(RHITestContext& context) override
@@ -103,8 +227,8 @@ public:
             };
             makeBuffer(parameterData.size() * sizeof(Float4), MemoryLocation::HostUpload, BufferUsageBits::Storage, parameters);
             makeBuffer(sizeof(texels), MemoryLocation::HostUpload, BufferUsageBits::TransferSource, upload);
-            makeBuffer(1024 * 8 * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
-            makeBuffer(5 * sizeof(uint32_t), MemoryLocation::HostReadback, BufferUsageBits::Storage, counters);
+            makeBuffer((lighting_ ? 192 * 128 * 3 : 1024 * 8) * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
+            makeBuffer(8 * sizeof(uint32_t), MemoryLocation::HostReadback, BufferUsageBits::Storage, counters);
             const auto write = [](Buffer& buffer, const void* data, size_t size) {
                 auto* mapped = buffer.map();
                 require(mapped != nullptr, "Upload mapping failed");
@@ -134,6 +258,11 @@ public:
                     .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
                 require(gpu.commands->synchronize({.textures = {&after, 1}}), "Read barrier failed");
                 require(gpu.submitAndWait(), "Texture upload failed");
+            }
+            if (lighting_) {
+                auto result = runSurfaceLighting(context, *device, *parameters, *output, *counters, *view);
+                require(validationErrors == 0, "Lighting Vulkan validation errors");
+                return result;
             }
             std::string shaderLog;
             auto shader = compileSlangShaderToSpirv({.moduleName = "OpenPBRClosureProbe",
@@ -215,7 +344,15 @@ public:
             return RHITestResult::pass("Shared production OpenPBR program; 1/8 lights, vendor equivalence, normal mapping and both IOR sides");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
+private:
+    bool lighting_;
 };
 METALLIC_REGISTER_RHI_TEST(OpenPBRClosureTest);
+class SurfaceLightingTest final : public OpenPBRClosureTest
+{
+public:
+    SurfaceLightingTest() : OpenPBRClosureTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(SurfaceLightingTest);
 } // namespace
 } // namespace metallic::tests

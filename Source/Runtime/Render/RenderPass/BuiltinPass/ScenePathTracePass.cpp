@@ -1142,7 +1142,9 @@ public:
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get(),
                     .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
-                outProgram, artifact, diagnostics);
+                outProgram, artifact, diagnostics,
+                {.definitionHash = useOpenPBR ? findMaterialProgram(MaterialProgramId::OpenPBRComposite)->key.definitionHash : 0,
+                    .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
                 // Reload creates replacement passes. Reject the entire transaction

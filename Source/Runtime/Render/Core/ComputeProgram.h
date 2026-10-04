@@ -129,6 +129,9 @@ public:
     Result<> initialize(Device& device, const ComputeProgramDesc& desc, std::string& log);
     void clear();
     bool valid() const;
+    // Share the immutable executable/layout generation. clear()/initialize()
+    // replace only this handle; already prepared dispatches retain the kernel.
+    ComputeProgram share() const;
     Result<> dispatch(const ComputeDispatchDesc& desc);
     // No command buffer access. Concurrent preparations require stable program,
     // input wrappers and frame generation until all jobs join. A packet is returned

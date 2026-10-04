@@ -6,12 +6,7 @@
 import MaterialProgram;
 using Metallic.Material;
 
-struct OpenPBRSamplingContext
-{
-    float3 throughput;
-    float3 wavelengths;
-    float exteriorIor;
-};
+typealias OpenPBRSamplingContext = SurfaceSamplingContext;
 
 struct OpenPBRPreparedClosure : IWeightedPreparedSurfaceClosure
 {
@@ -20,15 +15,18 @@ struct OpenPBRPreparedClosure : IWeightedPreparedSurfaceClosure
     float transmissionEta;
     bool validTransport;
 
+    float3 shadingNormal() { return normalWS; }
+    override float3 surfaceEmission(float3 resolvedEmission) { return emission(); }
+
     float3 emission() { return validTransport ? bsdf.emission : float3(0); }
 
-    float3 evalProjected(float3 wiWS)
+    override float3 evalProjected(float3 wiWS)
     {
         if (!validTransport) { return float3(0); }
         return openpbr_get_sum_of_diffuse_specular(openpbr_eval(bsdf, wiWS));
     }
 
-    float pdf(float3 wiWS) { return validTransport ? openpbr_pdf(bsdf, wiWS) : 0.0; }
+    override float pdf(float3 wiWS) { return validTransport ? openpbr_pdf(bsdf, wiWS) : 0.0; }
 
     BSDFEval eval(float3 wiWS)
     {
@@ -45,7 +43,7 @@ struct OpenPBRPreparedClosure : IWeightedPreparedSurfaceClosure
         return result;
     }
 
-    BSDFWeightSample sampleWeighted(float3 random)
+    override BSDFWeightSample sampleWeighted(float3 random)
     {
         BSDFWeightSample result = (BSDFWeightSample)0;
         result.eta = 1.0;
@@ -92,7 +90,7 @@ struct OpenPBRClosure : ISurfaceClosure
     OpenPBR_ResolvedInputs inputs;
     float occlusion;
 
-    Prepared prepare(float3 woWS, TransportMode transportMode, OpenPBRSamplingContext sampling)
+    override Prepared prepare(float3 woWS, TransportMode transportMode, OpenPBRSamplingContext sampling)
     {
         Prepared result;
         // Preserve the vendor's existing camera-path convention. Its API has

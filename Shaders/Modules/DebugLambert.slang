@@ -25,6 +25,7 @@ public struct DebugLambertPreparedClosure : IPreparedSurfaceClosure
     public float3 normalWS;
     public float3 reflectanceOverPi;
     public bool valid;
+    public float3 shadingNormal() { return normalWS; }
 
     public BSDFEval eval(float3 wiWS)
     {

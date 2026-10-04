@@ -9,7 +9,11 @@ struct ProbeParams
     ResourceHandle<RWByteAddressBuffer> counters;
     uint lightCount;
 };
+#if METALLIC_LIGHTING_NAMED_PARAMETERS
+#define gProbe lightingProbeParameters()
+#else
 [[vk::push_constant]] ConstantBuffer<ProbeParams> gProbe;
+#endif
 
 // Raw vendor uint16 tables normalized exactly as the production texture upload.
 // Buffer lookup avoids embedding giant arrays in the driver's shader compiler.

@@ -42,6 +42,7 @@ struct CountedSource : IDebugLambertSource
 struct CountedPrepared : IPreparedSurfaceClosure
 {
     DebugLambertPreparedClosure value;
+    float3 shadingNormal() { return value.shadingNormal(); }
     BSDFEval eval(float3 wiWS) { countStage(2); return value.eval(wiWS); }
     BSDFSample sample(float3 random) { countStage(3); return value.sample(random); }
 }

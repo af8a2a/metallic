@@ -51,7 +51,7 @@ constexpr MaterialProgram makeProgram(const MaterialDefinition& definition)
             key = (key ^ ((component >> (byte * 8)) & 255u)) * 1099511628211ull;
         }
     }
-    return {&definition, &kSchema, key};
+    return {&definition, &kSchema, {.definitionHash = key, .domain = definition.domain}};
 }
 
 constexpr std::array kPrograms{

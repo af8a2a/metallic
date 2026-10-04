@@ -399,7 +399,19 @@ public:
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log)) {
             return RHITestResult::fail(log);
         }
-        const auto originalArtifact = artifact;
+        auto originalArtifact = artifact;
+        std::weak_ptr<const MaterialExecutableArtifact> retiredArtifact = artifact;
+        const auto cacheBefore = materialProgramCacheStats();
+        ComputeProgram sharedProgram;
+        std::shared_ptr<const MaterialExecutableArtifact> sharedArtifact;
+        if (!compileMaterialExecutable(*device, source, description, sharedProgram, sharedArtifact, log) ||
+            sharedArtifact != artifact || sharedArtifact->programKey != artifact->programKey ||
+            materialProgramCacheStats().hits != cacheBefore.hits + 1 ||
+            materialProgramCacheStats().pipelineBuilds != cacheBefore.pipelineBuilds) {
+            return RHITestResult::fail("Identical ProgramKey did not reuse the executable generation");
+        }
+        sharedProgram.clear(); sharedArtifact.reset();
+        if (!program.valid()) { return RHITestResult::fail("Clearing a cache alias invalidated its peer"); }
         if (!frame.begin(0) || !commands->begin(frame.submissionContext())) { return RHITestResult::fail("Begin failed"); }
         frame.retain(published);
         const ComputeDispatchBinding bindings[] = {
@@ -426,7 +438,15 @@ public:
         const SlangMacroDefine revision{"MATERIAL_PROBE_REVISION", "1"};
         source.macroDefines = {&revision, 1};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log) ||
-            artifact->key == originalArtifact->key) { return RHITestResult::fail("Executable recovery failed: " + log); }
+            artifact->key == originalArtifact->key || artifact->generation == originalArtifact->generation ||
+            artifact->programKey.irHash == originalArtifact->programKey.irHash ||
+            artifact->programKey.definitionHash != originalArtifact->programKey.definitionHash) {
+            return RHITestResult::fail("Executable recovery failed: " + log);
+        }
+        // The weak cache must not pin the old artifact. Its GPU kernel must
+        // survive solely through the already-recorded, still-blocked dispatch.
+        originalArtifact.reset();
+        if (!retiredArtifact.expired()) { return RHITestResult::fail("Cache pinned an obsolete generation"); }
         values[0].baseColor[0] = 0.75f;
         published = makeBinding(2);
         if (!published || oldBinding.expired() || frame.completion().isComplete()) {

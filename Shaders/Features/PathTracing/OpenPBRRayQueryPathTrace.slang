@@ -220,6 +220,44 @@ float3 openPbrShadowTransmittance(
     return float3(0.0, 0.0, 0.0);
 }
 
+struct PathSurfaceLights : ISurfaceLightProvider
+{
+    ScenePathTracePush push;
+    HitInfo hit;
+    PathTraceMaterial material;
+    OpenPBRInteriorStack interiorStack;
+    float3 viewDirection;
+    uint seed;
+    uint count() { return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting) ? 0u : 1u; }
+    [mutating]
+    SurfaceLightSample sample(uint index)
+    {
+        SurfaceLightSample result = (SurfaceLightSample)0;
+        uint source;
+        float inversePdf;
+        if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, source, inversePdf)) {
+            PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), source, hit.position);
+            result.direction = light.direction;
+            result.illuminance = light.illuminance;
+            result.distance = light.distance;
+            result.inverseSourcePdf = inversePdf;
+            result.source = source;
+        }
+        return result;
+    }
+    float3 visibility(SurfaceLightSample light)
+    {
+        float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
+        OpenPBRInteriorStack shadowStack = interiorStack;
+        if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
+            openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
+        }
+        float distance = max(light.distance - length(origin - hit.position), 0.0);
+        return openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) ? float3(1)
+            : openPbrShadowTransmittance(origin, light.direction, distance, shadowStack, push);
+    }
+};
+
 float3 pathTraceOpenPBRWithPrimaryHit(
     Ray ray,
     RayCone rayCone,
@@ -313,28 +351,17 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         radiance += throughput * max(prepared.emission(), float3(0.0, 0.0, 0.0));
         if (material.emissive.w != 0.0) { break; }
 
-        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
-            uint punctualLightIndex;
-            float punctualInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), punctualLightIndex, hit.position);
-                float3 weight = max(evaluateSurfaceProjected(prepared, light.direction), float3(0.0));
-                if (luminanceMax(weight * light.illuminance) > 0.0) {
-                    float3 origin = offsetRay(hit.position,
-                        openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
-                    OpenPBRInteriorStack shadowStack = interiorStack;
-                    if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
-                        openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
-                    }
-                    float distance = max(light.distance - length(origin - hit.position), 0.0);
-                    float3 visibility = openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)
-                        ? float3(1.0) : openPbrShadowTransmittance(origin, light.direction, distance, shadowStack, push);
-                    // Delta lights cannot be hit by BSDF sampling: MIS weight
-                    // is one, independent of the environment NEE strategy.
-                    radiance += throughput * weight * light.illuminance * visibility * punctualInverseSourcePdf;
-                }
-            }
-        }
+        PathSurfaceLights lights;
+        lights.push = push;
+        lights.hit = hit;
+        lights.material = material;
+        lights.interiorStack = interiorStack;
+        lights.viewDirection = viewDirection;
+        lights.seed = seed;
+        // Delta light sources use MIS weight one. The shared kernel retains
+        // the original throughput-first multiplication and selection PDF.
+        radiance = integrateDirectLighting(prepared, lights, radiance, throughput);
+        seed = lights.seed;
 
         EnvironmentLightSample lightSample;
         bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
