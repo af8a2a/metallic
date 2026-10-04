@@ -1,0 +1,14 @@
+{
+    "type": "Metallic.MaterialInstance",
+    "version": 1,
+    "definitionVersion": 1,
+    "definition": "asset://Materials/OpenPBR.materialdef",
+    "parent": null,
+    "parameters": {
+        "baseColor": [0.8, 0.04, 0.025],
+        "metalness": 0.0,
+        "roughness": 0.4
+    },
+    "resources": {},
+    "features": {}
+}

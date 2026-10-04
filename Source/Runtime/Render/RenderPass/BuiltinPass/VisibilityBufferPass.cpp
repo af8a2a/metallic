@@ -834,6 +834,13 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
+        // Streaming can render geometry before its material snapshot is ready.
+        coverageBinding_ = sharedTextureResources_ ? sharedTextureResources_->materialBinding() : nullptr;
+        coverageHandle_ = {};
+        if (coverageBinding_ && coverageBinding_->valueBuffer()) {
+            result = registry_->storageBuffer(*coverageBinding_->valueBuffer()).transform([&](auto value) { coverageHandle_ = std::move(value); });
+            if (!result) { return result; }
+        }
         result = registry_->sampledImage(*depth.view(), TextureLayout::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
         if (result) { result = registry_->sampledImage(*visibility.view(), TextureLayout::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); }); }
         std::shared_ptr<PreparedBindings> bindings;
@@ -881,7 +888,7 @@ public:
         }
         for (const auto& lease : {streamWorkloadHandle_, streamHybridClusterHandle_, streamHybridPixelHandle_,
              streamCandidateArgumentsHandle_, streamHybridQueueHandle_, streamTessellationHandle_,
-             streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_,
+             streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_, streamCoverageHandle_,
              streamVisibilityImageHandle_, streamDepthImageHandle_, streamInstanceVisibilityHandle_,
              streamVisibleInstanceIdsHandle_, streamVisibleInstanceCounterHandle_, streamHzbHandles_[0], streamHzbHandles_[1]}) {
             if (lease.valid()) {
@@ -915,13 +922,14 @@ public:
         packet.registry = registry_;
         packet.owners.push_back(streamRuntime_);
         packet.owners.push_back(hybridRasterizer_);
+        packet.owners.push_back(coverageBinding_);
         for (const auto& lod : residentLods_) { packet.owners.push_back(lod); }
         auto retain = [&](const ResourceLease& lease) {
             if (lease.valid()) { packet.leases.push_back(lease); }
         };
         for (const auto& lease : {
             hybridQueueHandle_, hybridClusterHandle_, hybridPixelHandle_,
-            tessellationHandle_, hzbSpdCounterHandle_, materialTextureRemapHandle_,
+            tessellationHandle_, hzbSpdCounterHandle_, materialTextureRemapHandle_, coverageHandle_,
             depthImageHandle_, visibilityImageHandle_, cullingDepthImageHandle_,
             streamOwnerMaskHandle_, streamDebugRecordsHandle_, streamDebugGroupsHandle_}) {
             retain(lease);
@@ -2089,6 +2097,7 @@ private:
             .tessellationEdgePixels = tessellationEdgePixels(),
             .tessellationMaxFactor = tessellationMaxFactor(),
             .tessellationMaxSplitDepth = tessellationMaxSplitDepth(),
+            .coverageInputs = coverageHandle_.valid() ? coverageHandle_.shaderIndex() : UINT32_MAX,
         };
     }
 
@@ -2618,6 +2627,11 @@ private:
         }
 
         ResourceRegistry& heap = *streamRuntime_->resourceRegistry();
+        streamCoverageHandle_ = {};
+        if (coverageBinding_ && coverageBinding_->valueBuffer()) {
+            auto coverageResult = heap.storageBuffer(*coverageBinding_->valueBuffer()).transform([&](auto value) { streamCoverageHandle_ = std::move(value); });
+            if (!coverageResult) { return coverageResult; }
+        }
         Result<> instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().instances.buffer).transform([&](auto value) { streamGPUSceneInstanceHandle_ = std::move(value); });
         if (!instanceBinding) { return instanceBinding; }
         instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().materials.buffer).transform([&](auto value) { streamMaterialHandle_ = std::move(value); });
@@ -2692,6 +2706,7 @@ private:
                 .materialBuffer = streamMaterialHandle_.shaderIndex(),
                 .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.shaderIndex(),
                 .materialTextureCount = materialTextureCount_,
+                .coverageInputs = streamCoverageHandle_.valid() ? streamCoverageHandle_.shaderIndex() : UINT32_MAX,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
             return result ? makeError(Error::InvalidArgument) : result;
@@ -4501,6 +4516,9 @@ private:
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::vector<TextureView*> materialViews_;
     std::shared_ptr<ScenePathTraceResources> sharedTextureResources_;
+    std::shared_ptr<MaterialBindingGeneration> coverageBinding_;
+    ResourceLease coverageHandle_;
+    ResourceLease streamCoverageHandle_;
     std::shared_ptr<const ComputeSampledImageSnapshot> materialSnapshot_;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;

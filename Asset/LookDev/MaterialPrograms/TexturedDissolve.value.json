@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "nodes": {
+    "uv": { "op": "uv" },
+    "roughnessTexture": {
+      "op": "textureSample",
+      "texture": "metallicRoughness",
+      "footprint": "RayCone",
+      "args": [{ "ref": "uv" }, 0]
+    },
+    "roughness": {
+      "op": "swizzle",
+      "components": "yyyy",
+      "args": [{ "ref": "roughnessTexture" }]
+    },
+    "dissolve": {
+      "op": "add",
+      "args": [{ "ref": "uv" }, { "op": "parameter", "index": 0 }]
+    }
+  },
+  "outputs": {
+    "baseColor": [0.8, 0.4, 0.2, 1],
+    "roughness": { "op": "clamp", "args": [{ "ref": "roughness" }, 0.1, 0.9] },
+    "coverage": { "op": "mul", "args": [{ "op": "alpha" }, { "ref": "dissolve" }] }
+  }
+}

@@ -56,7 +56,8 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/VisibilityBuffer/VisibilityHybridRaster", {"hybridResetMain", "hybridArgumentsMain", "hybridRasterMain", "hybridResolveVertexMain", "hybridResolveFragmentMain", "hybridClusterResetMain", "hybridClusterHistogramMain", "hybridClusterArgumentsMain", "hybridClusterScatterMain"});
     add("Features/Samples/Triangle", {"triangleVertexMain", "triangleFragmentMain"});
     add("Features/VisibilityBuffer/VisibilityMaterialBinning",
-        {"materialBinningResetMain", "materialBinningClassifyMain", "materialBinningArgumentsMain"},
+        {"materialBinningResetMain", "materialBinningCountMain", "materialBinningAllocateMain",
+            "materialBinningClassifyMain", "materialBinningArgumentsMain"},
         {"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"});
     add("Features/Debug/SceneRayQueryVisualize", {"sceneRayQueryVisualizeMain"}, {"spvRayQueryKHR"});
     add("Features/Debug/SceneRayQueryVisualize", {"sceneRayQueryVisualizeMain"},

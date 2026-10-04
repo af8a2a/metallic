@@ -1,0 +1,52 @@
+{
+    "version": 1,
+    "frames": 256,
+    "warmupFrames": 32,
+    "timingFrames": 64,
+    "display": {
+        "exposureEV100": 0,
+        "multiplier": 1,
+        "transfer": "sRGB",
+        "toneMap": "none"
+    },
+    "cases": [
+        {
+            "id": "OpenPBRPathTrace",
+            "graph": "OpenPBR/PathTrace.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Reference.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 4,
+            "maxDepth": 12,
+            "accumulatedSpp": 1024
+        },
+        {
+            "id": "OpenPBRDeferred",
+            "graph": "OpenPBR/Deferred.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Deferred.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 1,
+            "accumulatedSpp": null,
+            "estimator": "single raster sample, SH diffuse + prefiltered IBL, no progressive accumulation"
+        },
+        {
+            "id": "RTXCRChiang",
+            "graph": "Fiber/Chiang.metallic_graph.json",
+            "scene": null,
+            "output": "PathTrace.color",
+            "width": 768,
+            "height": 432,
+            "samplesPerFrame": 4,
+            "maxDepth": 4,
+            "accumulatedSpp": 1024,
+            "environment": {
+                "path": "External/RTXCR-Assets/EnvironmentMaps/studio_small_09_1k.hdr",
+                "intensity": 1.5,
+                "rotationDegrees": 25.0
+            }
+        }
+    ]
+}

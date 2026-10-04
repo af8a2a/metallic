@@ -157,7 +157,7 @@ struct GPUDrivenStreamAssetRasterBindings
     uint materialBuffer;
     uint materialTextureRemapBuffer;
     uint materialTextureCount;
-    uint materialPadding;
+    uint coverageInputs;
 };
 
 struct GPUDrivenStreamAssetActiveHeader
@@ -4139,15 +4139,34 @@ bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush 
     if ((instance.identity.w & 12u) == 0u) { return true; }
     StructuredBuffer<GPUDrivenPreviewMaterial> materials = resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(bindings.materialBuffer));
     GPUDrivenPreviewMaterial material = materials[instance.identity.y];
+    CoverageContext context;
+    context.uv = uv; context.baseAlpha = 1.0;
+    context.alphaMode = (instance.identity.w & 4u) != 0u ? 1.0 : 2.0;
+    context.cutoff = material.params.z;
+    MaterialInstanceRef reference = coverageInstanceRef(material.identity.z == 0xffffffffu ? 0u : material.identity.z);
+    bool needsAlpha = true;
+    if (bindings.coverageInputs != 0xffffffffu && material.identity.z != 0xffffffffu) {
+        CoverageProgram program;
+        program.inputs = resolveUniform(ResourceHandle<ByteAddressBuffer>(bindings.coverageInputs));
+        needsAlpha = program.usesBaseAlpha(reference);
+    }
     float alpha = material.baseColor.a;
     GPUDrivenPreviewTextureInfo info = material.baseColorTexture;
-    if (info.textureIndex < bindings.materialTextureCount && bindings.materialTextureRemapBuffer != 0xffffffffu) {
+    if (needsAlpha && info.textureIndex < bindings.materialTextureCount && bindings.materialTextureRemapBuffer != 0xffffffffu) {
         StructuredBuffer<uint> remap = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(bindings.materialTextureRemapBuffer));
         Texture2D<float4> texture = resolveNonUniform(ResourceHandle<Texture2D<float4>>(remap[info.textureIndex]));
         float2 transformed = float2(dot(info.transform0.xy, uv) + info.transform0.z, dot(info.transform1.xy, uv) + info.transform1.z);
         alpha *= sampleAlphaCoverage(texture, transformed);
     }
-    return (instance.identity.w & 4u) != 0u ? alpha >= material.params.z : alpha > 0.0;
+    context.baseAlpha = alpha;
+    if (bindings.coverageInputs != 0xffffffffu && material.identity.z != 0xffffffffu) {
+        // Resolve inside the branch; never merge a buffer with an undefined arm.
+        CoverageProgram program;
+        program.inputs = resolveUniform(ResourceHandle<ByteAddressBuffer>(bindings.coverageInputs));
+        return program.evaluateCoverage(context, reference).accepted;
+    }
+    LegacyCoverageEvaluator legacy;
+    return legacy.evaluateCoverage(context, reference).accepted;
 }
 
 // Used by the bounded-queue HW fallback as well as tessellation task shaders.

@@ -368,10 +368,20 @@ void EnvironmentLightingSubsystem::startDecodeJob(
 Result<> EnvironmentLightingSubsystem::beginFrame(
     const RenderSubsystemFrameContext&,
     RenderChangeBits& changes,
-    std::string&)
+    std::string& log)
 {
     if (world_ != nullptr) {
         requestEnvironment(world_->environment(), world_->environmentRevision());
+    }
+    if (resources_ == nullptr && desc_.initialDecodeTimeoutMilliseconds != 0) {
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(desc_.initialDecodeTimeoutMilliseconds);
+        for (auto& job : decodeJobs_) {
+            if (job.future.wait_until(deadline) != std::future_status::ready) {
+                log = "Initial environment decode timed out before deterministic capture";
+                return makeError(Error::Failure);
+            }
+        }
     }
     pollDecodeJobs(changes);
     refreshSnapshot();

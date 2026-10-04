@@ -65,75 +65,96 @@ float3 openPbrDirectVisibility(float3 origin, float3 direction, float distance, 
     return openPbrShadowTransmittance(origin, direction, distance, makeOpenPBRInteriorStack(), push);
 }
 
+struct RealtimeSurfaceLights : ISurfaceLightProvider
+{
+    ScenePathTracePush push;
+    HitInfo hit;
+    float2 pixel;
+#if METALLIC_DEFERRED_LIGHT_GRID
+    ClusterLightGridParams grid;
+    ClusterLightGridLookup lookup;
+#endif
+    uint count()
+    {
+        if (openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) { return 0u; }
+#if METALLIC_DEFERRED_LIGHT_GRID
+        return lookup.count + clusterLightGridGlobalLightCount(grid);
+#else
+        return punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
+#endif
+    }
+    SurfaceLightSample sample(uint index)
+    {
+        SurfaceLightSample result;
+#if METALLIC_DEFERRED_LIGHT_GRID
+        result.source = index < lookup.count
+            ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
+            : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
+        PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[result.source], hit.position);
+#else
+        result.source = index;
+        PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), index, hit.position);
+#endif
+        result.direction = light.direction;
+        result.illuminance = light.illuminance;
+        result.distance = light.distance;
+        result.inverseSourcePdf = 1.0;
+        return result;
+    }
+    float3 visibility(SurfaceLightSample light)
+    {
+        float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
+        float distance = max(light.distance - length(origin - hit.position), 0.0);
+#if METALLIC_REALTIME_DEFERRED
+        ShadowParameters shadow = gRealtimeShadowParameters[0];
+        // SIGMA attenuation is applied only to its selected source.
+        float encoded = gRealtimeShadow.Load(int3(uint2(pixel), 0));
+        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
+            shadow.control.x != 0u && light.source == shadow.control.z) {
+            return float3(encoded * encoded);
+        }
+#endif
+        return openPbrDirectVisibility(origin, light.direction, distance, push);
+    }
+};
+
 float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, bool sampledEnvironment,
     int fixedMetalness = -1, bool opaquePrimary = false)
 {
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
-    PathTraceMaterial material = gMaterials[hit.materialIndex];
     float3 authoredNormal = hit.normal;
-    float4 normalSample = loadMaterialTextureForMaterial(material.normalTexture, hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0), push, cone, hit, ray.direction, materialNeedsDeterministicTextureMip0(material), seed);
-    hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent,
-        hit.bitangent, normalSample, material.textureParams.x);
-    // TBN and geometric normal remain authored; face-forward only the evaluated normal.
-    hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
-    OpenPBRMaterialEval surface = evaluateOpenPBRMaterial(hit, material, push, cone, ray.direction, seed);
-    // Conservative tile classification supplies compile-time constants only
-    // when the source factors/textures guarantee these exact values. Secondary
-    // hits and shadow transmittance retain the unrestricted OpenPBR evaluator.
-    if (fixedMetalness >= 0) { surface.inputs.base_metalness = float(fixedMetalness); }
-    if (opaquePrimary) { surface.inputs.transmission_weight = 0.0; }
+    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+    program.fixedMetalness = fixedMetalness;
+    program.opaquePrimary = opaquePrimary;
+    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, ray.direction),
+        legacyMaterialInstanceRef(hit.materialIndex));
+    let surface = evaluated.closure;
+    hit = program.hit;
+    seed = program.seed;
+    float4 normalSample = program.normalSample;
+    PathTraceMaterial material = program.material;
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }
     if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
     float3 viewDirection = -ray.direction;
-    OpenPBR_PreparedBsdf prepared = prepareOpenPBRMaterial(surface.inputs, float3(1.0),
-        OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, viewDirection);
-    float3 radiance = max(prepared.emission, float3(0.0));
-    if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
+    RealtimeSurfaceLights lights;
+    lights.push = push;
+    lights.hit = hit;
+    lights.pixel = samplePixel;
 #if METALLIC_DEFERRED_LIGHT_GRID
-        ClusterLightGridParams grid = gDeferredGridParams[0];
-        ClusterLightGridLookup lookup = clusterLightGridLookup(grid, gDeferredGridCells,
-            uint2(samplePixel), cameraLinearDepth(hit.position, push));
-        uint count = lookup.count + clusterLightGridGlobalLightCount(grid);
-#else
-        uint count = punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
+    lights.grid = gDeferredGridParams[0];
+    lights.lookup = clusterLightGridLookup(lights.grid, gDeferredGridCells,
+        uint2(samplePixel), cameraLinearDepth(hit.position, push));
 #endif
-        for (uint i = 0u; i < count; ++i) {
-#if METALLIC_DEFERRED_LIGHT_GRID
-            uint source = i < lookup.count
-                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, i)
-                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, i - lookup.count);
-            PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[source], hit.position);
-#else
-            PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), i, hit.position);
-#endif
-            float3 bsdf = max(openpbr_get_sum_of_diffuse_specular(
-                evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
-            if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
-            float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
-            float distance = max(light.distance - length(origin - hit.position), 0.0);
-            float3 visibility;
-#if METALLIC_REALTIME_DEFERRED
-            ShadowParameters shadow = gRealtimeShadowParameters[0];
-            // SIGMA encodes sqrt(visibility); attenuate only the selected light.
-            float encoded = gRealtimeShadow.Load(int3(uint2(samplePixel), 0));
-            if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
-                shadow.control.x != 0u && source == shadow.control.z) {
-                visibility = float3(encoded * encoded);
-                // The selected light already uses the sampled TLAS ray before SIGMA.
-                // A center-ray hard-shadow clamp here would destroy its soft edge.
-            } else {
-                visibility = openPbrDirectVisibility(origin, light.direction, distance, push);
-            }
-#else
-            visibility = openPbrDirectVisibility(origin, light.direction, distance, push);
-#endif
-            radiance += bsdf * light.illuminance * visibility;
-        }
-    }
+    SurfaceSamplingContext sampling;
+    sampling.throughput = float3(1);
+    sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
+    sampling.exteriorIor = OpenPBR_VacuumIor;
+    let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
+    let prepared = shaded.prepared;
+    float3 radiance = shaded.radiance;
 #if METALLIC_REALTIME_DEFERRED
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 normal = hit.normal;
@@ -167,15 +188,12 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
         for (uint i = 0u; i < count; ++i) {
             float3 random = frac(float3((float(i) + 0.5) / float(count),
                 deferredRadicalInverse(i, 2u), deferredRadicalInverse(i, 3u)) + rotation);
-            float3 direction;
-            OpenPBR_DiffuseSpecular weight;
-            float pdf;
-            OpenPBR_BsdfLobeType type;
-            sampleOpenPBRMaterial(prepared, random, direction, weight, pdf, type);
-            if (pdf <= 0.0 || type == OpenPBR_BsdfLobeTypeNone) { continue; }
+            BSDFWeightSample scatter = sampleSurfaceWeight(prepared, random);
+            if (scatter.pdf <= 0.0 || scatter.flags == 0u) { continue; }
+            float3 direction = scatter.wiWS;
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(direction, hit.geometryNormal));
             float3 visibility = openPbrDirectVisibility(origin, direction, max(push.clipOrtho.y, 1.0), push);
-            environment += max(openpbr_get_sum_of_diffuse_specular(weight), float3(0.0)) *
+            environment += max(scatter.weight, float3(0.0)) *
                 environmentRadiance(direction, push, false) * visibility;
         }
         radiance += environment * surface.occlusion / float(count);

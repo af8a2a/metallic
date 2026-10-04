@@ -25,6 +25,8 @@ struct MaterialBinningParams
     uint height;
     uint tileCount;
     uint residentRecordCount;
+    BufferSpan<uint> materialProgramBins;
+    uint programBinCount;
 };
 
 #define gVisibility resolveUniform(getParameters<MaterialBinningParams>().visibility)
@@ -67,23 +69,27 @@ uint materialClassForPixel(uint2 pixel)
     count = push.shadingMaterials.length();
     if (count == 0u) { return kMaterialClassBackground; }
     // Match the deferred reconstruction's fallback material exactly.
-    return classifyDeferredMaterial(gShadingMaterials[sourceMaterial < count ? sourceMaterial : 0u]);
+    sourceMaterial = sourceMaterial < count ? sourceMaterial : 0u;
+    if (push.programBinCount != 0u) {
+        uint bin = push.materialProgramBins.load(sourceMaterial);
+        return bin < push.programBinCount ? bin : 0u;
+    }
+    return classifyDeferredMaterial(gShadingMaterials[sourceMaterial]);
 }
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void materialBinningResetMain(uint lane : SV_GroupIndex)
+void materialBinningResetMain(uint3 id : SV_DispatchThreadID)
 {
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
-    if (lane < kMaterialClassCount && push.bins.contains(lane)) {
-        MaterialBin bin = {lane * push.tileCount, 0u};
+    uint lane = id.x;
+    if (push.bins.contains(lane)) {
+        MaterialBin bin = {push.programBinCount == 0u ? lane * push.tileCount : 0u, 0u};
         gBins.store(lane, bin);
     }
 }
 
-[shader("compute")]
-[numthreads(32, 1, 1)]
-void materialBinningClassifyMain(uint3 group : SV_GroupID)
+void classifyMaterialTile(uint3 group, bool scatter)
 {
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
     uint lane = WaveGetLaneIndex();
@@ -92,6 +98,25 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID)
     uint2 pixel = materialTilePixel(tile, lane, push.width);
     bool valid = all(pixel < uint2(push.width, push.height));
     uint materialClass = valid ? materialClassForPixel(pixel) : kMaterialClassBackground;
+    if (push.programBinCount != 0u) {
+        // Visit only the unique program IDs present in this wave, at most 32.
+        // Every lane participates, including partial edge tiles.
+        uint remaining = WaveActiveBallot(valid).x;
+        while (remaining != 0u) {
+            uint type = WaveReadLaneAt(materialClass, firstbitlow(remaining));
+            uint mask = WaveActiveBallot(valid && materialClass == type).x;
+            if (WaveIsFirstLane()) {
+                uint slot;
+                resolveUniform(gBins.resource).InterlockedAdd(gBins.byteOffset + type * sizeof(MaterialBin) + 4u, 1u, slot);
+                if (scatter) {
+                    tile.laneMask = mask;
+                    gTiles.store(gBins[type].offset + slot, tile);
+                }
+            }
+            remaining &= ~mask;
+        }
+        return;
+    }
     // Keep edge lanes participating in all ballots. Each class gets at most
     // one task per spatial tile, with a disjoint mask, regardless of material IDs.
     [unroll]
@@ -111,10 +136,39 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID)
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void materialBinningArgumentsMain(uint lane : SV_GroupIndex)
+void materialBinningCountMain(uint3 group : SV_GroupID)
+{
+    classifyMaterialTile(group, false);
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void materialBinningAllocateMain()
 {
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
-    if (lane < kMaterialClassCount && push.bins.contains(lane)) {
+    uint offset = 0u;
+    for (uint bin = 0u; bin < push.programBinCount; ++bin) {
+        uint count = gBins[bin].count;
+        MaterialBin allocated = {offset, 0u};
+        gBins.store(bin, allocated);
+        offset += count;
+    }
+}
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void materialBinningClassifyMain(uint3 group : SV_GroupID)
+{
+    classifyMaterialTile(group, true);
+}
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void materialBinningArgumentsMain(uint3 id : SV_DispatchThreadID)
+{
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
+    uint lane = id.x;
+    if (push.bins.contains(lane)) {
         if (push.arguments.length() < (lane + 1u) * 3u) { return; }
         uint offset = gBins[lane].offset;
         uint count = offset < push.tiles.length() ? min(gBins[lane].count, push.tiles.length() - offset) : 0u;

@@ -1,0 +1,12 @@
+{
+    "type": "Metallic.MaterialInstance",
+    "version": 1,
+    "definitionVersion": 1,
+    "definition": "asset://Materials/OpenPBR.materialdef",
+    "parent": "asset://Materials/Examples/RedPlastic.material",
+    "parameters": {
+        "roughness": 0.12
+    },
+    "resources": {},
+    "features": {}
+}

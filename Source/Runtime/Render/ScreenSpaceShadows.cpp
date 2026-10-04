@@ -169,6 +169,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         }
         if (!streamed || streamTlas) {
             layout.push_back({.binding = 0, .kind = ComputeResourceBindingKind::AccelerationStructure});
+            layout.push_back({.binding = kMaterialValueBinding});
         }
         if (streamTlas) {
             layout.push_back({.binding = 6});
@@ -345,6 +346,11 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = kNeuralTextureSamplerBinding, .sampler = &neural->latentSampler()});
     }
     profile.next("Record trace dispatch");
+    if (geometry && (!streamed || streamTlas)) {
+        const auto inputs = geometry->materialBinding();
+        bindings.push_back({.binding = kMaterialValueBinding, .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()});
+        if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(inputs); }
+    }
     result = enterStage(1);
     if (!result) { return makeError(result.error()); }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});

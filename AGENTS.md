@@ -40,7 +40,7 @@ The project uses C++23 through CMake. Match the existing style: 4-space indentat
 
 When applying PascalCase to identifiers and file names, use these exceptions:
 
-- Preserve the established capitalization of technical acronyms with specific meanings, such as `CPU` and `GPU`; use names such as `CPUBuffer` and `GPUPage`, not `CpuBuffer` or `GpuPage`.
+- Preserve the established capitalization of technical acronyms and domain terms with specific meanings, such as `CPU`, `GPU`, `BSDF`, `BRDF`, and `BTDF`; use names such as `CPUBuffer`, `GPUPage`, `BSDFSample`, and `BRDFEvaluation`, not `CpuBuffer`, `GpuPage`, `BsdfSample`, or `BrdfEvaluation`. When renaming identifiers or files to PascalCase, restore acronym segments such as `Bsdf` to their original spelling (`BSDF`), including within compound names.
 - Preserve the official capitalization of explicitly integrated external components, such as `RTXDI` and `RTXCR`; use names such as `RTXDIIntegration` and `RTXCRPass`, not `RtxdiIntegration` or `RtxcrPass`.
 
 Keep official mixed-case spellings such as `glTF`, `sRGB`, and `scRGB`, including at the beginning of a name; examples include `glTFInstance`, `RGBA8sRGB`, and `HDRscRGB`.

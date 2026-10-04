@@ -203,6 +203,22 @@ void EditorApplication::drawMaterialInspector(int32_t materialIndex)
         texture("Diffuse transmission", properties.diffuseTransmissionTexture);
         texture("Diffuse tint", properties.diffuseTransmissionColorTexture);
     }
+    if (ImGui::CollapsingHeader("Feature diagnostics")) {
+        const auto show = [&](const char* target, material::FeatureCompileTarget compileTarget) {
+            const auto resolved = material::resolveMaterialFeatures(edited, compileTarget);
+            ImGui::TextUnformatted(target);
+            ImGui::Text("ProgramSignature: %016llx", static_cast<unsigned long long>(resolved.programSignature));
+            ImGui::Text("VisibilitySignature: %016llx", static_cast<unsigned long long>(resolved.visibilitySignature));
+            ImGui::Text("PipelineSignature: %016llx", static_cast<unsigned long long>(resolved.pipelineSignature));
+            ImGui::Text("Metalness: %s -> %s", material::featurePolicyName(edited.featurePolicies.metalness).data(),
+                material::featurePolicyName(resolved.metalnessDecision).data());
+            ImGui::Text("Transmission: %s -> %s", material::featurePolicyName(edited.featurePolicies.transmission).data(),
+                material::featurePolicyName(resolved.transmissionDecision).data());
+        };
+        show("Deferred compiler", material::FeatureCompileTarget::Deferred);
+        show("Ray-hit compiler", material::FeatureCompileTarget::RayHit);
+        ImGui::TextWrapped("Semantic signatures; executable keys also include backend, layout and quality settings.");
+    }
     ImGui::TextDisabled("Ctrl+Z / Ctrl+Y: undo / redo | Ctrl+S: save scene");
     ImGui::PopID();
     ImGui::PopID();

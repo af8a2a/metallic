@@ -86,12 +86,11 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
     uint materialIndex = gRayStreamInstances[instanceIndex].materialIndex;
     gMaterials.GetDimensions(count, stride);
     if (materialIndex >= count) { return false; }
-    PathTraceMaterial material = gMaterials[materialIndex];
+    PathTraceMaterial material = loadSceneMaterial(materialIndex);
     if (material.textureParams.w < 0.5) { return true; }
     HitInfo hit;
     if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push, hit)) { return false; }
-    float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, hit.texcoord, push);
-    return material.textureParams.w < 1.5 ? alpha >= material.params.z : alpha > 0.0;
+    return evaluateSceneCoverage(materialIndex, material, hit.texcoord, push).accepted;
 }
 
 bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push, out HitInfo hit)

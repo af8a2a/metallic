@@ -394,7 +394,7 @@ struct MeshletStreamGPURasterBindings {
     uint32_t materialBuffer = UINT32_MAX;
     uint32_t materialTextureRemapBuffer = UINT32_MAX;
     uint32_t materialTextureCount = 0;
-    uint32_t materialPadding = 0;
+    uint32_t coverageInputs = UINT32_MAX;
 };
 
 // Non-owning resources required by a unified deferred consumer. The stream

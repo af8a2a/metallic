@@ -65,6 +65,9 @@ constexpr uint16_t kSPIRVOpRayQueryGetIntersectionClusterIdNv = 5345u;
 constexpr uint32_t kSPIRVRayTracingClusterAccelerationStructureNv = 5437u;
 
 // Native DescriptorHandle shaders expose only Slang's unbounded heap arrays.
+// ParameterRoot now loads BufferSpan<uint> through DR; physical storage-buffer
+// pointers are forbidden. The AS address is converted directly to an AS, not
+// dereferenced as a physical storage buffer.
 // A scalar/fixed-array descriptor here would silently restore a per-pass Vulkan
 // binding, even if its binding number happened to match a heap's number.
 bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
@@ -90,7 +93,7 @@ bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
         if (opcode == 59 && count >= 4 && instruction[3] == 9) { ++pushBlocks; }
         offset += count;
     }
-    return heapCapability && heapBuiltin && deviceAddresses && pushBlocks == 1;
+    return heapCapability && heapBuiltin && !deviceAddresses && pushBlocks == 1;
 }
 
 render::EnvironmentSettings sampleEnvironmentSettings(const render::RenderSampleDesc& desc)
@@ -3814,7 +3817,7 @@ public:
                 compileResult.diagnostics);
         }
         if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
-            return RHITestResult::fail("OpenPBR shader must use native heap arrays and address-based compute resources");
+            return RHITestResult::fail("OpenPBR shader must use native heaps and a DR parameter root without physical storage-buffer pointers");
         }
         return RHITestResult::pass(
             std::string("compiled OpenPBR RayQuery path tracing shader, words=") +

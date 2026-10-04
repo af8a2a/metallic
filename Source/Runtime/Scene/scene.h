@@ -12,6 +12,9 @@
 #include "Runtime/Scene/SceneLoad.h"
 #include "Runtime/Scene/SceneGraph.h"
 #include "Runtime/Scene/SceneLighting.h"
+#include "Runtime/Material/MaterialFeatures.h"
+
+namespace metallic::material { struct ResolvedMaterialInstance; class MaterialAssetLibrary; }
 
 namespace metallic::scene {
 
@@ -217,6 +220,7 @@ struct RenderNode {
 };
 
 struct RenderMaterial {
+    material::MaterialFeaturePolicies featurePolicies;
     // M2 controlled JSON source; empty means the existing model inputs.
     std::string valueProgram;
     std::array<float, 16> valueParameters{};
@@ -414,6 +418,10 @@ public:
     bool setObjectCameraProperties(SceneEntity object, const CameraProperties& properties);
     bool setObjectLightProperties(SceneEntity object, const LightProperties& properties);
     bool setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties);
+    // Resolve semantic resources transactionally. New texture bindings invalidate
+    // scene resource identity; factor-only changes retain the old upload fast path.
+    bool applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
+        const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error);
     // SceneDocument import transfers emission ownership while preserving source
     // nodes, transform inheritance and editable LightComponent metadata.
     bool virtualizeImportedLight(SceneEntity object);

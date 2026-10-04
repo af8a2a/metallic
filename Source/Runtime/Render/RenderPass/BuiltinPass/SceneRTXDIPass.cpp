@@ -260,6 +260,7 @@ public:
             {.binding = 4, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 5, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 6, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer},
             {
                 .binding = 7,
                 .kind = ComputeResourceBindingKind::SampledImage,
@@ -519,6 +520,8 @@ public:
             {.binding = 4, .buffer = sceneResources_.primitiveBuffer()},
             {.binding = 5, .buffer = sceneResources_.instanceBuffer()},
             {.binding = 6, .buffer = sceneResources_.materialBuffer()},
+            {.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()
+                ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()},
             {
                 .binding = 7,
                 .textureViews = materialTextureViews,

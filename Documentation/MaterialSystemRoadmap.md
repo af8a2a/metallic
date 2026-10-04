@@ -1,8 +1,18 @@
 # Metallic 材质系统推进路线图
 
+2026-10-04 最新审查：[外部 M1–M4 重新验收](MaterialSystemM1M4Acceptance.md)。M1–M3 在声明范围内通过；M4 的 IR/Slab 原型通过，但 Value IR→Closure→场景材质闭环尚未完成，不能据独立 probe 认定已具备完整 MaterialGraph 基础。另已修复基线环境就绪竞争，三进程 PT/Deferred/Fiber HDR A/A 全部逐位一致。
+
 本文将用户提供的 Pro 模型讨论转化为可逐步合入、验证和调整的工程路线。目标是建立支持 OpenPBR 模板、自定义参数程序、可组合表面散射与 Fiber 扩展的材质系统。建议先交付统一运行时，再完成自定义程序和有界的 Mix / Layer，随后根据实测选择存储与调度后端，并独立扩展 strand 可见性。
 
 本路线基于 2026-10-01 对 Metallic `287bad681` 的静态核对。M0 的场景与采样基线已按用户决定固定为现有 LookDev，运行采样和阶段验收尚未执行；其余阶段仍为规划。已有测试和历史记录仅用于确定可复用基础。文中的新类型、目录和预算均为建议，不表示当前仓库已经提供。
+
+2026-10-04 基线进展：已将三个 LookDev 参考固定为独立图，完成三进程 HDR/GPU timestamp 采集、独立 validation 和管线寄存器诊断。实际结果、当前 ABI、A/B 命令及仍缺失的硬件/分箱指标见 [MaterialSystemPhase0](MaterialSystemPhase0.md)。这不将原始规划文字视为所有阶段的当前实现状态。
+
+2026-10-04 资产模型进展：已实现外部路线图的 **Phase 1 — Material Definition / Instance / Program**，包括 `.material` 稀疏继承、语义 schema、版本迁移入口和 SceneDocument 绑定；复用已有共享程序与 GPU 上传。接口、示例、验收证据和阶段边界见 [MaterialSystemPhase1](MaterialSystemPhase1.md)。外部 Phase 编号与本文原有 M 编号分别记录。
+
+2026-10-04 shader 接口进展：外部 **Phase 2** 的独立 `MaterialProgram` 模块已建立 Context / InstanceRef / BSDF 数据契约，并通过共享 legacy storage program 接入现有 ray、VBuffer 和 stream 材质读取。具体约定、GPU 验证及 Phase 3 的职责边界见 [MaterialSystemPhase2](MaterialSystemPhase2.md)。
+
+2026-10-04 三阶段进展：外部 **Phase 3** 已实现 Material / Closure / PreparedClosure 的 associated-type 接口、Debug Lambert 与 prepared-only 泛型光照/路径延续消费者。GPU 数学检查、多灯纹理读取计数和二次命中诊断渲染已验证；接口、实测数据与生产 OpenPBR 迁移边界见 [MaterialSystemPhase3](MaterialSystemPhase3.md)。
 
 ## 1 目标和首个架构验收点
 

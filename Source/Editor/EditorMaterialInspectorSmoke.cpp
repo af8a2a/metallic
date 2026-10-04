@@ -72,6 +72,8 @@ bool EditorApplication::runMaterialInspectorSmokeTest()
     // Use ImGui's existing navigation geometry to find the real control. This
     // avoids depending on font size, the user's saved docking layout, or a
     // production-only test hook. Mouse events stay inside this ImGui context.
+    bool inspectFeatures = false;
+    std::string featureText;
     const auto inspectorFrame = [&](ImVec2 mouse, bool mouseDown, int32_t locateMaterial = -1,
                                    bool bothMaterials = false, bool ctrl = false, const char* input = nullptr) {
         auto& io = ImGui::GetIO();
@@ -97,7 +99,18 @@ bool EditorApplication::runMaterialInspectorSmokeTest()
             ImGui::FocusWindow(window);
             ImGui::SetNavID(id, ImGuiNavLayer_Main, ImGui::GetCurrentFocusScope(), ImRect());
         }
+        if (inspectFeatures) {
+            ImGui::PushID("MaterialInspector");
+            ImGui::PushID(kMaterialIndex);
+            ImGui::GetStateStorage()->SetInt(ImGui::GetID("Feature diagnostics"), 1);
+            ImGui::PopID(); ImGui::PopID();
+            ImGui::LogToBuffer();
+        }
         drawSelectedMaterialInspector();
+        if (inspectFeatures) {
+            featureText = GImGui->LogBuffer.c_str();
+            ImGui::LogFinish();
+        }
         if (bothMaterials) { drawMaterialInspector(1); }
         if (locateMaterial >= 0 && GImGui->NavIdIsAlive) {
             roughnessRect = ImGui::WindowRectRelToAbs(window, window->NavRectRel[ImGuiNavLayer_Main]);
@@ -235,6 +248,14 @@ bool EditorApplication::runMaterialInspectorSmokeTest()
         return false;
     }
 
+    inspectFeatures = true;
+    inspectorFrame(ImVec2(-100.0f, -100.0f), false);
+    for (const auto* label : {"ProgramSignature:", "VisibilitySignature:", "PipelineSignature:", "Deferred compiler", "Ray-hit compiler"}) {
+        if (!expect(featureText.find(label) != std::string::npos, "Feature diagnostics renders all signatures and compiler targets")) {
+            return false;
+        }
+    }
+    spdlog::info("[Smoke Material Inspector] Feature diagnostics:\n{}", featureText);
     spdlog::info("[Smoke Material Inspector] Passed real Roughness drag, grouped undo/redo, material handoff, dirty state, save/reload and comparison rendering ({} -> {})",
         before.roughnessFactor, edited.roughnessFactor);
     return true;

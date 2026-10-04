@@ -54,7 +54,7 @@ float3 openPbrVolumeTransmittance(OpenPBRInteriorStack stack, float distance)
         return float3(1.0, 1.0, 1.0);
     }
 
-    PathTraceMaterial mediumMaterial = gMaterials[stack.entries[stack.count - 1u].materialIndex];
+    PathTraceMaterial mediumMaterial = loadSceneMaterial(stack.entries[stack.count - 1u].materialIndex);
     float attenuationDistance = max(mediumMaterial.glassParams.w, 0.0);
     if (attenuationDistance <= 0.0001) {
         return float3(1.0, 1.0, 1.0);
@@ -154,7 +154,7 @@ float3 openPbrShadowTransmittance(
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
             transmittance *= openPbrVolumeTransmittance(interiorStack, shadowHit.t);
         }
-        PathTraceMaterial shadowMaterial = gMaterials[shadowHit.materialIndex];
+        PathTraceMaterial shadowMaterial = loadSceneMaterial(shadowHit.materialIndex);
         if (shadowMaterial.textureParams.w > 1.5) {
             float alpha = saturate(shadowMaterial.baseColor.a * loadMaterialAlphaCoverage(
                 shadowMaterial.baseColorTexture, shadowHit.texcoord, push));
@@ -220,6 +220,44 @@ float3 openPbrShadowTransmittance(
     return float3(0.0, 0.0, 0.0);
 }
 
+struct PathSurfaceLights : ISurfaceLightProvider
+{
+    ScenePathTracePush push;
+    HitInfo hit;
+    PathTraceMaterial material;
+    OpenPBRInteriorStack interiorStack;
+    float3 viewDirection;
+    uint seed;
+    uint count() { return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting) ? 0u : 1u; }
+    [mutating]
+    SurfaceLightSample sample(uint index)
+    {
+        SurfaceLightSample result = (SurfaceLightSample)0;
+        uint source;
+        float inversePdf;
+        if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, source, inversePdf)) {
+            PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), source, hit.position);
+            result.direction = light.direction;
+            result.illuminance = light.illuminance;
+            result.distance = light.distance;
+            result.inverseSourcePdf = inversePdf;
+            result.source = source;
+        }
+        return result;
+    }
+    float3 visibility(SurfaceLightSample light)
+    {
+        float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
+        OpenPBRInteriorStack shadowStack = interiorStack;
+        if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
+            openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
+        }
+        float distance = max(light.distance - length(origin - hit.position), 0.0);
+        return openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) ? float3(1)
+            : openPbrShadowTransmittance(origin, light.direction, distance, shadowStack, push);
+    }
+};
+
 float3 pathTraceOpenPBRWithPrimaryHit(
     Ray ray,
     RayCone rayCone,
@@ -272,7 +310,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             break;
         }
 
-        PathTraceMaterial material = gMaterials[hit.materialIndex];
+        PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
         if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
             float alpha = saturate(material.baseColor.a * loadMaterialAlphaCoverage(
                 material.baseColorTexture, hit.texcoord, push));
@@ -285,45 +323,13 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             }
         }
         float3 shadingNormal = hit.normal;
-        float4 normalSample = loadMaterialTextureForMaterial(
-            material.normalTexture,
-            hit.texcoord,
-            float4(0.5, 0.5, 1.0, 1.0),
-            push,
-            rayCone,
-            hit,
-            ray.direction,
-            materialNeedsDeterministicTextureMip0(material),
-            seed);
-        if (openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap) ||
-            openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures)) {
-            normalSample = float4(0.5, 0.5, 1.0, 1.0);
-        }
-        hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
-        if (openPbrDebugFlag(push, kOpenPBRDebugForceGeometryNormal)) {
-            hit.normal = hit.geometryNormal;
-            float3 referenceAxis = abs(hit.normal.z) < 0.999
-                ? float3(0.0, 0.0, 1.0)
-                : float3(0.0, 1.0, 0.0);
-            float3 fallbackTangent = safeNormalize(
-                cross(referenceAxis, hit.normal),
-                float3(1.0, 0.0, 0.0));
-            float3 tangent = hit.tangent.xyz - hit.normal * dot(hit.normal, hit.tangent.xyz);
-            tangent = safeNormalize(tangent, fallbackTangent);
-            float tangentSign = hit.tangent.w >= 0.0 ? 1.0 : -1.0;
-            hit.tangent = float4(tangent, tangentSign);
-            hit.bitangent = safeNormalize(
-                cross(hit.normal, tangent) * tangentSign,
-                cross(hit.normal, fallbackTangent));
-        }
-
-        OpenPBRMaterialEval materialEval = evaluateOpenPBRMaterial(
-            hit,
-            material,
-            push,
-            rayCone,
-            ray.direction,
-            seed);
+        SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, false, true);
+        let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, rayCone, ray.direction),
+            legacyMaterialInstanceRef(hit.materialIndex));
+        let materialEval = evaluated.closure;
+        hit = program.hit;
+        seed = program.seed;
+        float4 normalSample = program.normalSample;
         if (depth == 0u &&
             push.debugView != kOpenPBRDebugViewFinal &&
             push.debugView != kOpenPBRDebugViewShadowTransmittance) {
@@ -336,47 +342,33 @@ float3 pathTraceOpenPBRWithPrimaryHit(
                 ray.direction);
         }
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
-        OpenPBR_PreparedBsdf prepared = prepareOpenPBRMaterial(
-            materialEval.inputs,
-            throughput,
-            OpenPBR_BaseRgbWavelengths_nm,
-            openPbrExteriorIorForHit(interiorStack, hit),
-            viewDirection);
+        OpenPBRSamplingContext sampling;
+        sampling.throughput = throughput;
+        sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
+        sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
+        let prepared = materialEval.prepare(viewDirection, TransportMode.Radiance, sampling);
 
-        radiance += throughput * max(prepared.emission, float3(0.0, 0.0, 0.0));
+        radiance += throughput * max(prepared.emission(), float3(0.0, 0.0, 0.0));
         if (material.emissive.w != 0.0) { break; }
 
-        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
-            uint punctualLightIndex;
-            float punctualInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), punctualLightIndex, hit.position);
-                float3 weight = max(openpbr_get_sum_of_diffuse_specular(
-                    evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
-                if (luminanceMax(weight * light.illuminance) > 0.0) {
-                    float3 origin = offsetRay(hit.position,
-                        openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
-                    OpenPBRInteriorStack shadowStack = interiorStack;
-                    if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
-                        openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
-                    }
-                    float distance = max(light.distance - length(origin - hit.position), 0.0);
-                    float3 visibility = openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)
-                        ? float3(1.0) : openPbrShadowTransmittance(origin, light.direction, distance, shadowStack, push);
-                    // Delta lights cannot be hit by BSDF sampling: MIS weight
-                    // is one, independent of the environment NEE strategy.
-                    radiance += throughput * weight * light.illuminance * visibility * punctualInverseSourcePdf;
-                }
-            }
-        }
+        PathSurfaceLights lights;
+        lights.push = push;
+        lights.hit = hit;
+        lights.material = material;
+        lights.interiorStack = interiorStack;
+        lights.viewDirection = viewDirection;
+        lights.seed = seed;
+        // Delta light sources use MIS weight one. The shared kernel retains
+        // the original throughput-first multiplication and selection PDF.
+        radiance = integrateDirectLighting(prepared, lights, radiance, throughput);
+        seed = lights.seed;
 
         EnvironmentLightSample lightSample;
         bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
         bool sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
         if (sampledEnvironment) {
-            float lightBsdfPdf = openpbr_pdf(prepared, lightSample.direction);
-            OpenPBR_DiffuseSpecular lightBsdf = evalOpenPBRMaterialProjected(prepared, lightSample.direction);
-            float3 lightWeight = openpbr_get_sum_of_diffuse_specular(lightBsdf);
+            float lightBsdfPdf = prepared.pdf(lightSample.direction);
+            float3 lightWeight = evaluateSurfaceProjected(prepared, lightSample.direction);
             float3 shadowTransmittance = float3(0.0, 0.0, 0.0);
             if (lightBsdfPdf > 0.0 && luminanceMax(lightWeight) > 0.0) {
                 OpenPBRInteriorStack shadowInteriorStack = interiorStack;
@@ -432,36 +424,24 @@ float3 pathTraceOpenPBRWithPrimaryHit(
                 : float3(1.0, 0.0, 1.0);
         }
 
-        float3 sampledDirection;
-        OpenPBR_DiffuseSpecular sampledWeight;
-        float sampledPdf;
-        OpenPBR_BsdfLobeType sampledType;
-        sampleOpenPBRMaterial(
-            prepared,
-            float3(rand(seed), rand(seed), rand(seed)),
-            sampledDirection,
-            sampledWeight,
-            sampledPdf,
-            sampledType);
-
-        if (sampledPdf <= 0.0 || sampledType == OpenPBR_BsdfLobeTypeNone) {
-            break;
-        }
+        BSDFWeightSample scatter = sampleSurfaceWeight(prepared, float3(rand(seed), rand(seed), rand(seed)));
+        if (scatter.pdf <= 0.0 || scatter.flags == 0u) { break; }
+        float3 sampledDirection = scatter.wiWS;
 
         if (depth == 0u) {
             captureSpecularHitDistance =
-                bool(sampledType & OpenPBR_BsdfLobeTypeReflection) &&
-                bool(sampledType & (OpenPBR_BsdfLobeTypeGlossy | OpenPBR_BsdfLobeTypeSpecular));
+                bool(scatter.flags & kBSDFReflection) &&
+                bool(scatter.flags & (kBSDFGlossy | kBSDFDelta));
         }
 
         sampledDirection = safeNormalize(sampledDirection, hit.normal);
-        throughput *= max(openpbr_get_sum_of_diffuse_specular(sampledWeight), float3(0.0, 0.0, 0.0));
-        previousBsdfPdf = sampledPdf;
-        previousScatterDelta = bool(sampledType & OpenPBR_BsdfLobeTypeSpecular);
+        throughput *= max(scatter.weight, float3(0.0, 0.0, 0.0));
+        previousBsdfPdf = scatter.pdf;
+        previousScatterDelta = bool(scatter.flags & kBSDFDelta);
         if (!previousScatterDelta) {
             rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf);
         }
-        if (bool(sampledType & OpenPBR_BsdfLobeTypeTransmission)) {
+        if (bool(scatter.flags & kBSDFTransmission)) {
             openPbrUpdateInteriorStackAfterTransmission(interiorStack, hit, material);
         }
         ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(sampledDirection, hit.geometryNormal));

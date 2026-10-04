@@ -130,6 +130,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/Streamer/ScenePathTraceResources.cpp
     Runtime/Render/Material/MaterialRuntime.cpp
+    Runtime/Render/Material/MaterialCoverageProgram.cpp
     Runtime/Render/Material/MaterialValueProgram.cpp
     Runtime/Render/Material/MaterialExecutable.cpp
     Runtime/Render/Streamer/Ktx2Texture.cpp
@@ -276,6 +277,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 add_library(MetallicRuntimeScene STATIC
+    Runtime/Material/MaterialAsset.cpp
+    Runtime/Material/MaterialFeatures.cpp
+    Runtime/Material/MaterialValueIR.cpp
+    Runtime/Material/MaterialClosureIR.cpp
+    Runtime/Material/MaterialClosureClassification.cpp
     Runtime/Scene/glTFGPUInstancing.cpp
     Runtime/Scene/GeometryAttributes.cpp
     Runtime/Scene/MeshletStreamAsset.cpp

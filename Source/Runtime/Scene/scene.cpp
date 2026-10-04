@@ -7,6 +7,8 @@
  */
 
 #include "Runtime/Scene/Scene.h"
+#include "Runtime/Material/MaterialAsset.h"
+#include "Runtime/Material/MaterialAssetFields.h"
 #include "Runtime/Scene/GeometryAttributes.h"
 #include "Runtime/Scene/glTFGPUInstancing.h"
 #include "Runtime/Scene/MeshletBuildParallel.h"
@@ -4989,7 +4991,8 @@ bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rh
     const auto sameColor = [](const float3& a, const float3& b) {
         return a.x == b.x && a.y == b.y && a.z == b.z;
     };
-    return lhs.valueProgram == rhs.valueProgram && lhs.valueParameters == rhs.valueParameters &&
+    return lhs.featurePolicies == rhs.featurePolicies &&
+        lhs.valueProgram == rhs.valueProgram && lhs.valueParameters == rhs.valueParameters &&
         lhs.baseColorFactor.x == rhs.baseColorFactor.x && lhs.baseColorFactor.y == rhs.baseColorFactor.y &&
         lhs.baseColorFactor.z == rhs.baseColorFactor.z && lhs.baseColorFactor.w == rhs.baseColorFactor.w &&
         lhs.metallicFactor == rhs.metallicFactor && lhs.roughnessFactor == rhs.roughnessFactor &&
@@ -5011,7 +5014,7 @@ bool validMaterialProperties(const RenderMaterial& properties)
     const auto unit = [](float value) { return std::isfinite(value) && value >= 0.0f && value <= 1.0f; };
     const auto positive = [](float value) { return std::isfinite(value) && value >= 0.0f; };
     const auto color = [&](const float3& value) { return unit(value.x) && unit(value.y) && unit(value.z); };
-    return properties.valueProgram.size() <= 16384 &&
+    return material::validFeaturePolicies(properties.featurePolicies) && properties.valueProgram.size() <= 16384 &&
         std::all_of(properties.valueParameters.begin(), properties.valueParameters.end(),
             [](float v) { return std::isfinite(v) && std::abs(v) <= 1e6f; }) &&
         unit(properties.baseColorFactor.x) && unit(properties.baseColorFactor.y) &&
@@ -5036,6 +5039,7 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
     RenderMaterial& current = materials_[static_cast<size_t>(materialIndex)];
     if (materialPropertiesEqual(current, properties)) { return false; }
     current.valueProgram = properties.valueProgram;
+    current.featurePolicies = properties.featurePolicies;
     current.valueParameters = properties.valueParameters;
     current.baseColorFactor = properties.baseColorFactor;
     current.metallicFactor = properties.metallicFactor;
@@ -5060,6 +5064,83 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
     current.diffuseTransmissionColor = properties.diffuseTransmissionColor;
     ++materialRevision_;
     if (materialRevision_ == 0) { ++materialRevision_; }
+    return true;
+}
+
+bool Scene::applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
+    const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error)
+{
+    error.clear();
+    if (!valid() || materialIndex < 0 || size_t(materialIndex) >= materials_.size()) {
+        error = "Invalid scene material index";
+        return false;
+    }
+    auto candidate = materials_[materialIndex];
+    std::vector<RenderImage> newImages;
+    std::vector<RenderTexture> newTextures;
+    const auto resolver = [&](std::string_view uri) -> int32_t {
+        if (uri.starts_with("imported://")) {
+            const auto slot = uri.substr(11);
+            for (const auto& [name, member] : material::detail::kTextures) {
+                if (slot == name) { return (imported.*member).textureIndex; }
+            }
+            return kInvalidSceneIndex;
+        }
+        const auto path = library.pathFor(uri);
+        if (!std::filesystem::is_regular_file(path)) { return kInvalidSceneIndex; }
+        const auto text = path.generic_string();
+        for (size_t index = 0; index < textures_.size(); ++index) {
+            const auto image = textures_[index].imageIndex;
+            if (image >= 0 && size_t(image) < images_.size() && images_[image].uri == text &&
+                !textures_[index].hasNeuralSource()) { return static_cast<int32_t>(index); }
+        }
+        for (size_t index = 0; index < newImages.size(); ++index) {
+            if (newImages[index].uri == text) { return static_cast<int32_t>(textures_.size() + index); }
+        }
+        if (textures_.size() + newTextures.size() >= INT32_MAX || images_.size() + newImages.size() >= INT32_MAX) {
+            return kInvalidSceneIndex;
+        }
+        RenderImage image;
+        image.name = path.filename().string();
+        image.uri = text;
+        RenderTexture texture;
+        texture.name = std::string(uri);
+        texture.imageIndex = static_cast<int32_t>(images_.size() + newImages.size());
+        newImages.push_back(std::move(image));
+        newTextures.push_back(std::move(texture));
+        return static_cast<int32_t>(textures_.size() + newTextures.size() - 1);
+    };
+    if (!material::lowerMaterialInstance(instance, resolver, candidate, error)) { return false; }
+    bool changedTextures = false;
+    for (const auto& [name, member] : material::detail::kTextures) {
+        const auto& a = materials_[materialIndex].*member;
+        const auto& b = candidate.*member;
+        if (b.textureIndex < -1 || (b.textureIndex >= 0 && size_t(b.textureIndex) >= textures_.size() + newTextures.size())) {
+            error = "Material texture does not belong to this scene";
+            return false;
+        }
+        changedTextures |= a.textureIndex != b.textureIndex;
+    }
+    // Reserve both before committing either. Resource payloads move only after
+    // every URI and material property has resolved successfully.
+    images_.reserve(images_.size() + newImages.size());
+    textures_.reserve(textures_.size() + newTextures.size());
+    for (auto& image : newImages) { images_.push_back(std::move(image)); }
+    for (auto& texture : newTextures) { textures_.push_back(std::move(texture)); }
+    bool changed = !materialPropertiesEqual(materials_[materialIndex], candidate);
+    for (const auto& [name, member] : material::detail::kTextures) {
+        const auto& a = materials_[materialIndex].*member;
+        const auto& b = candidate.*member;
+        changed |= a.textureIndex != b.textureIndex || a.texCoord != b.texCoord || a.uvTransform != b.uvTransform;
+    }
+    if (changed) {
+        materials_[materialIndex] = std::move(candidate);
+        ++materialRevision_;
+        if (materialRevision_ == 0) { ++materialRevision_; }
+    }
+    if (changedTextures) { resourceIdentity_ = nextSceneResourceIdentity(); }
+    stats_.textureCount = textures_.size();
+    stats_.imageCount = images_.size();
     return true;
 }
 

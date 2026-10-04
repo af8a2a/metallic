@@ -3,6 +3,7 @@
 #include "Runtime/Render/Material/LegacyMaterialPayload.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Material/MaterialFeatures.h"
 
 #include <memory>
 #include <span>
@@ -56,13 +57,26 @@ struct MaterialDefinition
     std::string_view approximations;
 };
 
+// Executable identity contains no instance index, parameter value or texture
+// handle. Registration keys leave compiler-dependent components at zero.
+struct MaterialProgramKey
+{
+    uint64_t definitionHash = 0;
+    uint64_t irHash = 0;
+    uint64_t specializationSignature = 0;
+    MaterialDomain domain = MaterialDomain::Surface;
+    uint64_t qualityProfile = 0;
+    uint64_t targetCapabilities = 0;
+    bool operator==(const MaterialProgramKey&) const = default;
+};
+
 struct MaterialProgram
 {
     const MaterialDefinition* definition;
     const MaterialSchema* schema;
-    // Built-in semantic key, not the Slang kernel/cache key. Parameters and
-    // texture handles never participate. Kernel keys remain in SlangCompiler.
-    uint64_t key;
+    // Built-in registration identity. MaterialExecutable fills the compilation
+    // signature and IR identity; SlangCompiler still owns the disk SPIR-V cache.
+    MaterialProgramKey key;
 };
 
 struct MaterialInstance
@@ -75,6 +89,9 @@ inline constexpr uint64_t kLegacyMaterialABI = 0x4d41544c00000001ull;
 
 std::span<const MaterialProgram> builtinMaterialPrograms();
 const MaterialProgram* findMaterialProgram(MaterialProgramId id);
+// Authoring definition implementation -> shared existing program. Defaults,
+// resource URIs and instance overrides never add shader variants.
+const MaterialProgram* findMaterialProgram(std::string_view implementation);
 MaterialProgramId legacyMaterialProgramId(const LegacyMaterialPayload& parameters);
 
 // Strict layout validation precedes allocation/copy. Destination defaults are
@@ -93,7 +110,8 @@ public:
     static std::shared_ptr<const MaterialGeneration> create(
         std::span<const LegacyMaterialPayload> parameters,
         uint64_t sourceRevision,
-        std::string& diagnostics);
+        std::string& diagnostics,
+        std::span<const scene::RenderMaterial> authored = {});
     // Lower an authored/versioned parameter layout to the built-in execution ABI.
     // Layout changes preserve semantic IDs/types; defaults belong to the model.
     static std::shared_ptr<const MaterialGeneration> create(
@@ -104,6 +122,7 @@ public:
     uint64_t sourceRevision() const { return sourceRevision_; }
     std::span<const MaterialInstance> instances() const { return instances_; }
     std::span<const LegacyMaterialPayload> parameters() const { return parameters_; }
+    std::span<const material::MaterialFeatureResolution> features() const { return features_; }
     uint32_t programCount() const { return programCount_; }
     bool supports(MaterialEvaluationTarget target, std::string& diagnostics) const;
 
@@ -113,6 +132,7 @@ private:
     uint32_t programCount_ = 0;
     std::vector<MaterialInstance> instances_;
     std::vector<LegacyMaterialPayload> parameters_;
+    std::vector<material::MaterialFeatureResolution> features_;
 };
 
 // One publication owns both the immutable CPU identity and its GPU parameters.

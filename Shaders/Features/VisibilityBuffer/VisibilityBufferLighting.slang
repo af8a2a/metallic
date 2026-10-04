@@ -52,53 +52,76 @@ float3 environmentDiffuseIrradiance(float3 normal, ScenePathTracePush push)
     return max(irradiance, float3(0.0)) * push.environmentIntensity;
 }
 
+struct VisibilitySurfaceLights : ISurfaceLightProvider
+{
+    ScenePathTracePush push;
+    float3 position;
+    float2 pixel;
+    ClusterLightGridParams grid;
+    ClusterLightGridLookup lookup;
+    uint count()
+    {
+        return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)
+            ? 0u : lookup.count + clusterLightGridGlobalLightCount(grid);
+    }
+    SurfaceLightSample sample(uint index)
+    {
+        SurfaceLightSample result;
+        result.source = index < lookup.count
+            ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
+            : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
+        PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[result.source], position);
+        result.direction = light.direction;
+        result.illuminance = light.illuminance;
+        result.distance = light.distance;
+        result.inverseSourcePdf = 1.0;
+        return result;
+    }
+    float3 visibility(SurfaceLightSample light)
+    {
+        ShadowParameters shadow = gRealtimeShadowParameters[0];
+        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
+            shadow.control.x != 0u && light.source == shadow.control.z) {
+            float encoded = gRealtimeShadow.Load(int3(uint2(pixel), 0));
+            return float3(encoded * encoded);
+        }
+        return float3(1);
+    }
+};
+
 float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
 {
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
-    PathTraceMaterial material = gMaterials[hit.materialIndex];
     float3 authoredNormal = hit.normal;
-    float4 normalSample = loadMaterialTextureForMaterial(material.normalTexture, hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0), push, cone, hit, ray.direction, materialNeedsDeterministicTextureMip0(material), seed);
-    hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent,
-        hit.bitangent, normalSample, material.textureParams.x);
-    // TBN and geometric normal remain authored; face-forward only the evaluated normal.
-    hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
-    OpenPBRMaterialEval surface = evaluateOpenPBRMaterial(hit, material, push, cone, ray.direction, seed);
-    // The tile classifier only specializes values guaranteed by source materials.
-    if (fixedMetalness >= 0) { surface.inputs.base_metalness = float(fixedMetalness); }
-    if (opaquePrimary) { surface.inputs.transmission_weight = 0.0; }
+    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+    program.fixedMetalness = fixedMetalness;
+    program.opaquePrimary = opaquePrimary;
+    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, ray.direction),
+        legacyMaterialInstanceRef(hit.materialIndex));
+    let surface = evaluated.closure;
+    hit = program.hit;
+    seed = program.seed;
+    float4 normalSample = program.normalSample;
+    PathTraceMaterial material = program.material;
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }
     if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
     float3 viewDirection = -ray.direction;
-    OpenPBR_PreparedBsdf prepared = prepareOpenPBRMaterial(surface.inputs, float3(1.0),
-        OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, viewDirection);
-    float3 radiance = max(prepared.emission, float3(0.0));
-    if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
-        ClusterLightGridParams grid = gDeferredGridParams[0];
-        ClusterLightGridLookup lookup = clusterLightGridLookup(grid, gDeferredGridCells,
-            uint2(samplePixel), cameraLinearDepth(hit.position, push));
-        uint count = lookup.count + clusterLightGridGlobalLightCount(grid);
-        for (uint i = 0u; i < count; ++i) {
-            uint source = i < lookup.count
-                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, i)
-                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, i - lookup.count);
-            PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[source], hit.position);
-            float3 bsdf = max(openpbr_get_sum_of_diffuse_specular(
-                evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
-            if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
-            float visibility = 1.0;
-            ShadowParameters shadow = gRealtimeShadowParameters[0];
-            if (!openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) &&
-                shadow.control.x != 0u && source == shadow.control.z) {
-                float encoded = gRealtimeShadow.Load(int3(uint2(samplePixel), 0));
-                visibility = encoded * encoded;
-            }
-            radiance += bsdf * light.illuminance * visibility;
-        }
-    }
+    VisibilitySurfaceLights lights;
+    lights.push = push;
+    lights.position = hit.position;
+    lights.pixel = samplePixel;
+    lights.grid = gDeferredGridParams[0];
+    lights.lookup = clusterLightGridLookup(lights.grid, gDeferredGridCells,
+        uint2(samplePixel), cameraLinearDepth(hit.position, push));
+    SurfaceSamplingContext sampling;
+    sampling.throughput = float3(1);
+    sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
+    sampling.exteriorIor = OpenPBR_VacuumIor;
+    let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
+    float3 radiance = shaded.radiance;
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 normal = hit.normal;
         float roughness = saturate(surface.inputs.specular_roughness);

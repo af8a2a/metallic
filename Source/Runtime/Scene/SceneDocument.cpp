@@ -1,4 +1,5 @@
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Material/MaterialAsset.h"
 
 #include <algorithm>
 #include <cctype>
@@ -239,6 +240,7 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
         {"alphaMode", properties.alphaMode},
         {"doubleSided", properties.doubleSided},
         {"unlit", properties.unlit},
+        {"featurePolicies", material::serializeFeaturePolicies(properties.featurePolicies)},
     };
     for (const auto& [name, member] : kMaterialScalarFields) { value[name] = properties.*member; }
     if (!properties.valueProgram.empty()) {
@@ -255,6 +257,8 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
 bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& properties, std::string& reason)
 {
     if (!value.is_object()) { reason = "properties must be an object"; return false; }
+    if (value.contains("featurePolicies") &&
+        !material::overlayFeaturePolicies(value["featurePolicies"], properties.featurePolicies, reason)) { return false; }
     if (value.contains("valueProgram")) {
         if (!value["valueProgram"].is_string()) { reason = "valueProgram must be a JSON source string"; return false; }
         properties.valueProgram = value["valueProgram"].get<std::string>();
@@ -806,6 +810,7 @@ void SceneDocument::clear()
     lighting_ = LightingSettings{};
     importedLightSources_.clear();
     importedMaterials_.clear();
+    materialAssets_.clear();
     sidecarLoaded_ = false;
     hasEnvironmentSettings_ = false;
     compositionDocument_ = false;
@@ -846,6 +851,55 @@ bool SceneDocument::setObjectWorldMatrix(SceneEntity object, const float4x4& wor
 bool SceneDocument::setMaterialProperties(int32_t materialIndex, const RenderMaterial& properties)
 {
     if (!Scene::setMaterialProperties(materialIndex, properties)) { return false; }
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setMaterialAsset(int32_t materialIndex, std::string_view uri,
+    const std::filesystem::path& assetRoot, std::string& error)
+{
+    if (materialIndex < 0 || size_t(materialIndex) >= importedMaterials_.size()) {
+        error = "Invalid material source identity";
+        return false;
+    }
+    material::MaterialAssetLibrary library(assetRoot);
+    material::ResolvedMaterialInstance instance;
+    if (!library.resolve(uri, instance, error) ||
+        !applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error)) { return false; }
+    materialAssets_[materialIndex] = {std::string(uri), library.root(), materials()[materialIndex]};
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::reloadMaterialAsset(int32_t materialIndex, std::string& error)
+{
+    const auto found = materialAssets_.find(materialIndex);
+    if (found == materialAssets_.end()) { error = "Material has no asset binding"; return false; }
+    const auto old = found->second;
+    auto overrides = serializeMaterialProperties(materials()[materialIndex]);
+    const auto previous = serializeMaterialProperties(old.resolved);
+    for (const auto& [name, value] : previous.items()) {
+        // M2 code is scene-owned, never inherited from a .material asset.
+        if (name == "valueProgram" || name == "valueParameters") { continue; }
+        if (name == "featurePolicies" && overrides.contains(name)) {
+            for (const auto& [feature, policy] : value.items()) {
+                if (overrides[name].contains(feature) && overrides[name][feature] == policy) { overrides[name].erase(feature); }
+            }
+            if (overrides[name].empty()) { overrides.erase(name); }
+        }
+        if (overrides.contains(name) && overrides[name] == value) { overrides.erase(name); }
+    }
+    // Validate local values before publishing; property ranges are independent.
+    material::MaterialAssetLibrary library(old.root);
+    material::ResolvedMaterialInstance instance;
+    if (!library.resolve(old.uri, instance, error)) { return false; }
+    RenderMaterial check = materials()[materialIndex];
+    if (!parseMaterialProperties(overrides, check, error)) { return false; }
+    if (!applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error)) { return false; }
+    materialAssets_[materialIndex] = {old.uri, old.root, materials()[materialIndex]};
+    auto edited = materials()[materialIndex];
+    if (!parseMaterialProperties(overrides, edited, error)) { return false; }
+    (void)Scene::setMaterialProperties(materialIndex, edited);
     dirty_ = true;
     return true;
 }
@@ -1446,7 +1500,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     !overrideValue["sourceId"].is_string() || !overrideValue.contains("materialIndex") ||
                     !overrideValue["materialIndex"].is_number_integer() ||
                     !overrideValue.contains("sourceName") || !overrideValue["sourceName"].is_string() ||
-                    !overrideValue.contains("properties")) {
+                    (!overrideValue.contains("properties") && !overrideValue.contains("materialAsset"))) {
                     appendWarning(documentWarning_, "Skipped a material override with incomplete source identity or properties.");
                     continue;
                 }
@@ -1468,7 +1522,28 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                 }
                 RenderMaterial properties = materials()[static_cast<size_t>(index)];
                 std::string reason;
-                if (!parseMaterialProperties(overrideValue["properties"], properties, reason)) {
+                // Reject malformed local overrides before an asset publishes
+                // any replacement material or texture resources.
+                if (!parseMaterialProperties(overrideValue.value("properties", nlohmann::json::object()), properties, reason)) {
+                    appendWarning(documentWarning_, "Skipped material override: " + reason);
+                    continue;
+                }
+                if (overrideValue.contains("materialAsset")) {
+                    const auto& binding = overrideValue["materialAsset"];
+                    if (!binding.is_object() || !binding.contains("uri") || !binding["uri"].is_string() ||
+                        !binding.contains("root") || !binding["root"].is_string()) {
+                        appendWarning(documentWarning_, "Skipped invalid materialAsset binding.");
+                        continue;
+                    }
+                    auto root = std::filesystem::path(binding["root"].get<std::string>());
+                    if (root.is_relative()) { root = path.parent_path() / root; }
+                    if (!setMaterialAsset(index, binding["uri"].get<std::string>(), root, reason)) {
+                        appendWarning(documentWarning_, "Skipped material asset: " + reason);
+                        continue;
+                    }
+                    properties = materials()[index];
+                }
+                if (!parseMaterialProperties(overrideValue.value("properties", nlohmann::json::object()), properties, reason)) {
                     appendWarning(documentWarning_, "Skipped material '" + properties.name + "': " + reason + '.');
                     continue;
                 }
@@ -1608,7 +1683,8 @@ bool SceneDocument::save(std::string& message)
     }
     for (size_t index = 0; index < materials().size(); ++index) {
         const RenderMaterial& material = materials()[index];
-        if (materialPropertiesEqual(material, importedMaterials_[index])) { continue; }
+        const auto binding = materialAssets_.find(static_cast<int32_t>(index));
+        if (binding == materialAssets_.end() && materialPropertiesEqual(material, importedMaterials_[index])) { continue; }
         const SceneMaterialSource source = materialSource(static_cast<int32_t>(index));
         if (source.sourceId.empty() || source.materialIndex < 0) {
             message = "Scene material has no stable source identity: " + material.name;
@@ -1618,6 +1694,25 @@ bool SceneDocument::save(std::string& message)
             {"sourceId", source.sourceId}, {"materialIndex", source.materialIndex},
             {"sourceName", material.name}, {"properties", serializeMaterialProperties(material)},
         });
+        if (binding != materialAssets_.end()) {
+            auto& saved = materialOverrides.back();
+            const auto baseline = serializeMaterialProperties(binding->second.resolved);
+            for (const auto& [name, value] : baseline.items()) {
+                if (name == "valueProgram" || name == "valueParameters") { continue; }
+                if (name == "featurePolicies" && saved["properties"].contains(name)) {
+                    auto& policies = saved["properties"][name];
+                    for (const auto& [feature, policy] : value.items()) {
+                        if (policies.contains(feature) && policies[feature] == policy) { policies.erase(feature); }
+                    }
+                    if (policies.empty()) { saved["properties"].erase(name); }
+                }
+                if (saved["properties"].contains(name) && saved["properties"][name] == value) { saved["properties"].erase(name); }
+            }
+            std::error_code relativeError;
+            auto root = std::filesystem::relative(binding->second.root, documentPath_.parent_path(), relativeError);
+            if (relativeError || root.empty()) { root = binding->second.root; }
+            saved["materialAsset"] = {{"uri", binding->second.uri}, {"root", root.generic_string()}};
+        }
     }
     document["materials"] = std::move(materialOverrides);
     nlohmann::json serializedLights = nlohmann::json::array();

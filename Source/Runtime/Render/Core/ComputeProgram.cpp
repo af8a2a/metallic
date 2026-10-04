@@ -79,6 +79,13 @@ ComputeProgram::~ComputeProgram() = default;
 ComputeProgram::ComputeProgram(ComputeProgram&&) noexcept = default;
 ComputeProgram& ComputeProgram::operator=(ComputeProgram&&) noexcept = default;
 
+ComputeProgram ComputeProgram::share() const
+{
+    ComputeProgram shared;
+    shared.impl_ = impl_;
+    return shared;
+}
+
 Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& desc, std::string& log)
 {
     clear();

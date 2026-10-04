@@ -34,6 +34,7 @@ inline constexpr ComputeResourceField kSceneVisualizationResourceFields[] = {
     {94, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, streamPageCount), ComputeResourceFieldFormat::Handle},
     {95, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, textureFeedback), ComputeResourceFieldFormat::Handle},
     {96, ComputeResourceBindingKind::Sampler, offsetof(SceneResourceParameters, materialSampler), ComputeResourceFieldFormat::Handle},
+    {97, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, materialValues), ComputeResourceFieldFormat::Handle},
 };
 inline constexpr ComputeResourceLayout kSceneVisualizationResourceLayout{sizeof(SceneResourceParameters), kSceneVisualizationResourceFields};
 
@@ -335,6 +336,7 @@ inline constexpr ComputeResourceField kRTXDIResourceFields[] = {
     {94, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, streamPageCount), ComputeResourceFieldFormat::Handle},
     {95, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, textureFeedback), ComputeResourceFieldFormat::Handle},
     {96, ComputeResourceBindingKind::Sampler, offsetof(SceneResourceParameters, materialSampler), ComputeResourceFieldFormat::Handle},
+    {97, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, materialValues), ComputeResourceFieldFormat::Handle},
 };
 inline constexpr ComputeResourceLayout kRTXDIResourceLayout{sizeof(SceneResourceParameters), kRTXDIResourceFields};
 

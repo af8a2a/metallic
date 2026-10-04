@@ -734,6 +734,7 @@ struct GPUDrivenPreviewUserPush {
     float tessellationEdgePixels = 8.0f;
     uint32_t tessellationMaxFactor = 4;
     uint32_t tessellationMaxSplitDepth = 2;
+    uint32_t coverageInputs = UINT32_MAX;
 };
 
 static_assert(sizeof(GPUDrivenPreviewGPUVertex) == 64);
@@ -750,7 +751,7 @@ static_assert(sizeof(GPUSceneGPUMeshletDrawRecord) == 16);
 static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
 static_assert(sizeof(GPUDrivenPreviewGPUParams) == 352);
-static_assert(sizeof(GPUDrivenPreviewUserPush) == 132);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 136);
 
 struct SceneMaterialVisualizationPush {
     float eye[4] = {};

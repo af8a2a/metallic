@@ -71,7 +71,7 @@ DLSSRRGuideData evaluateStandardDlssRrGuides(
     }
 
     rayCone = propagateRayCone(rayCone, hit.t);
-    PathTraceMaterial material = gMaterials[hit.materialIndex];
+    PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
     float4 baseColorSample = loadMaterialTextureForMaterial(
         material.baseColorTexture,

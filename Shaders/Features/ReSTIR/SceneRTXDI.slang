@@ -1,4 +1,7 @@
 #include "../../Interop/MaterialTextureDecode.hlsli"
+#include "../../Interop/AlphaCoverage.hlsli"
+import Material;
+using Metallic.Material;
 #ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
 #define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
 #endif
@@ -629,12 +632,26 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
     }
-    float alpha = material.baseColor.a * loadMaterialTexture(
-        material.baseColorTexture,
-        triangleTexcoord(instanceIndex, triangleIndex, bary),
-        float4(1.0, 1.0, 1.0, 1.0),
-        push).a;
-    return blend ? saturate(alpha) > 0.0 : saturate(alpha) >= saturate(material.params.z);
+    CoverageContext context;
+    context.uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
+    context.baseAlpha = material.baseColor.a; context.cutoff = material.params.z; context.alphaMode = material.textureParams.w;
+    CoverageProgram program;
+    // Keep the buffer out of branch phis (no VariablePointersStorageBuffer).
+    program.inputs = resolveUniform(getResourceParameters<SceneResourceParameters>().materialValues);
+    bool custom = material.attenuationColor.w > 0.5;
+    bool needsAlpha = true;
+    if (custom) {
+        needsAlpha = program.usesBaseAlpha(coverageInstanceRef(instance.materialIndex));
+    }
+    if (needsAlpha) {
+        if (hasNeuralMaterialTexture(material.baseColorTexture, push)) {
+            context.baseAlpha *= loadMaterialTexture(material.baseColorTexture, context.uv, float4(1.0), push).a;
+        } else if (hasMaterialTexture(material.baseColorTexture, push)) {
+            context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv));
+        }
+    }
+    if (custom) { return program.evaluateCoverage(context, coverageInstanceRef(instance.materialIndex)).accepted; }
+    return coverageFromOpacity(context, context.baseAlpha).accepted;
 }
 
 void computeTriangleTangentSpace(

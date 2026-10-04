@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "coverage": {
+    "op": "mul",
+    "args": [
+      { "op": "alpha" },
+      {
+        "op": "add",
+        "args": [
+          { "op": "uv" },
+          { "op": "parameter", "index": 0 }
+        ]
+      }
+    ]
+  }
+}

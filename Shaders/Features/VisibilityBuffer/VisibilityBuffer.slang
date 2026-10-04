@@ -85,6 +85,25 @@ float materialBaseColorAlpha(
         sampleAlphaCoverage(texture, transformMaterialUv(textureInfo, uv));
 }
 
+bool materialCoverageAccepts(GPUDrivenPreviewMaterial material, float2 uv, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
+{
+    CoverageContext context;
+    context.uv = uv; context.baseAlpha = 1.0;
+    // GPUScene raster materials encode alpha classification in bucket flags,
+    // not PathTraceMaterial.textureParams.w. This entry is MASK-only.
+    context.cutoff = material.params.z; context.alphaMode = 1.0;
+    MaterialInstanceRef instance = coverageInstanceRef(material.identity.z == 0xffffffffu ? 0u : material.identity.z);
+    if (push.coverageInputs != 0xffffffffu && material.identity.z != 0xffffffffu) {
+        CoverageProgram program;
+        program.inputs = resolveUniform(ResourceHandle<ByteAddressBuffer>(push.coverageInputs));
+        if (program.usesBaseAlpha(instance)) { context.baseAlpha = materialBaseColorAlpha(material, uv, params, push); }
+        return program.evaluateCoverage(context, instance).accepted;
+    }
+    context.baseAlpha = materialBaseColorAlpha(material, uv, params, push);
+    LegacyCoverageEvaluator legacy;
+    return legacy.evaluateCoverage(context, instance).accepted;
+}
+
 bool residentClusterVisible(uint meshletDrawIndex, GPUDrivenPreviewPush push)
 {
     StructuredBuffer<GPUDrivenPreviewParams> paramsHandle =
@@ -377,7 +396,7 @@ uint visibilityBufferMaskedFragmentMain(
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint materialIndex = min(input.materialIndex, max(params.materialCount, 1u) - 1u);
     GPUDrivenPreviewMaterial material = materialHandle[materialIndex];
-    if (materialBaseColorAlpha(material, input.texcoord, params, push) < material.params.z) {
+    if (!materialCoverageAccepts(material, input.texcoord, params, push)) {
         discard;
     }
     return input.visibilityId;

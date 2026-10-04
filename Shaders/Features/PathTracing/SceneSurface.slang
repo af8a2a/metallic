@@ -7,6 +7,7 @@ import Core;
 using Metallic;
 import Material;
 using Metallic.Material;
+import MaterialProgram;
 #if METALLIC_CUSTOM_MATERIALS
 #include "MaterialValueDispatch.hlsli"
 #endif
@@ -155,6 +156,29 @@ struct HitInfo
     float rayConeLodConstant;
     bool frontFace;
 };
+
+// Both ray hits and VBuffer reconstruction already produce HitInfo. Preserve
+// the authored TBN; UV1 is not present in this legacy vertex/hit representation.
+SurfaceMaterialContext sceneSurfaceMaterialContext(HitInfo hit, TextureFootprint footprint)
+{
+    SurfaceMaterialContext context = (SurfaceMaterialContext)0;
+    context.positionWS = hit.position;
+    context.geometryNormalWS = hit.geometryNormal;
+    context.shadingNormalWS = hit.normal;
+    context.tangentWS = hit.tangent.xyz;
+    context.bitangentWS = hit.bitangent;
+    context.texCoord0 = hit.texcoord;
+    context.texCoordMask = 1u;
+    context.frontFace = hit.frontFace ? 1u : 0u;
+    context.footprint = footprint;
+    return context;
+}
+
+PathTraceMaterial loadSceneMaterial(uint materialIndex)
+{
+    LegacyMaterialProgram program;
+    return program.loadParameters(gMaterials, legacyMaterialInstanceRef(materialIndex));
+}
 
 static const float kPi = 3.14159265358979323846;
 static const float3 kEnvironmentKeyLightDirection = float3(0.35, 0.88, 0.22);
@@ -734,13 +758,27 @@ float rayConeTextureLod(
     float3 rayDirection,
     uint width,
     uint height,
-    uint mipCount)
+    uint mipCount,
+    TextureFootprint footprint = (TextureFootprint)0)
 {
     float textureDimensionLod = 0.5 * safeLog2(float(max(width, 1u)) * float(max(height, 1u)));
-    float normalTerm = sqrt(max(abs(dot(rayDirection, hit.geometryNormal)), 0.000001));
-    float footprintLod = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
-    float mipLevel = footprintLod + textureDimensionLod + textureTransformLodBias(textureInfo);
+    SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
+    float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
+    context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
+    context.footprint.flags = kTextureFootprintIsotropic0;
+    float normalizedLod = (footprint.flags & kTextureFootprintIsotropic0) != 0u
+        ? footprint.isotropicLod0 : context.footprint.isotropicLod0;
+    float mipLevel = normalizedLod + textureDimensionLod + textureTransformLodBias(textureInfo);
     return clamp(mipLevel, 0.0, float(max(mipCount, 1u) - 1u));
+}
+
+SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone rayCone, float3 rayDirection)
+{
+    SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
+    float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
+    context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
+    context.footprint.flags = kTextureFootprintIsotropic0;
+    return context;
 }
 
 STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed)
@@ -840,7 +878,8 @@ float4 loadMaterialTexture(
     RayCone rayCone,
     HitInfo hit,
     float3 rayDirection,
-    inout uint seed)
+    inout uint seed,
+    TextureFootprint footprint = (TextureFootprint)0)
 {
     if (hasNeuralMaterialTexture(textureInfo, push)) {
         uint2 baseDimensions;
@@ -861,7 +900,7 @@ float4 loadMaterialTexture(
             rayDirection,
             baseDimensions.x,
             baseDimensions.y,
-            mipCount);
+            mipCount, footprint);
         STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
         float3 samplePosition = samplerState.Texture2DGetSamplePosLevel(
             baseDimensions.x,
@@ -906,7 +945,7 @@ float4 loadMaterialTexture(
         return fallback;
     }
 
-    float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount);
+    float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount, footprint);
     float mipFloor = materialTextureSamplingFloor(textureIndex);
 #if METALLIC_REALTIME_DEFERRED
     if ((push.debugFlags & 256u) == 0u) {
@@ -934,7 +973,8 @@ float4 loadMaterialTextureForMaterial(
     HitInfo hit,
     float3 rayDirection,
     bool deterministicMip0,
-    inout uint seed)
+    inout uint seed,
+    TextureFootprint footprint = (TextureFootprint)0)
 {
 #if METALLIC_DEFERRED_LIGHT_GRID
     // Demand uses the source dimensions, never the currently coarse resident tail.
@@ -946,7 +986,7 @@ float4 loadMaterialTextureForMaterial(
         uint offset = textureInfo.textureIndex * 8u;
         if (offset + 7u < count && feedback[offset] != 0u) {
             float wanted = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection,
-                feedback[offset], feedback[offset + 1u], feedback[offset + 2u]);
+                feedback[offset], feedback[offset + 1u], feedback[offset + 2u], footprint);
             uint ignored;
             InterlockedMin(feedback[offset + 4u], uint(max(floor(wanted), 0.0)), ignored);
             InterlockedAdd(feedback[offset + 5u], 1u, ignored);
@@ -956,8 +996,10 @@ float4 loadMaterialTextureForMaterial(
     if (deterministicMip0) {
         return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
     }
-    return loadMaterialTexture(textureInfo, uv, fallback, push, rayCone, hit, rayDirection, seed);
+    return loadMaterialTexture(textureInfo, uv, fallback, push, rayCone, hit, rayDirection, seed, footprint);
 }
+
+#include "MaterialValueTextures.slang"
 
 bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)
 {
@@ -979,20 +1021,37 @@ float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
         resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2].texcoord.xy * weights.z;
 }
 
+CoverageResult evaluateSceneCoverage(uint materialIndex, PathTraceMaterial material, float2 uv, ScenePathTracePush push)
+{
+    CoverageContext context;
+    context.uv = uv; context.baseAlpha = 1.0;
+    context.cutoff = material.params.z; context.alphaMode = material.textureParams.w;
+    if (context.alphaMode < 0.5) { return coverageFromOpacity(context, 1.0); }
+    if (material.attenuationColor.w > 0.5) {
+        CoverageProgram program;
+        program.inputs = resolveUniform(getResourceParameters<SceneResourceParameters>().materialValues);
+        MaterialInstanceRef instance = coverageInstanceRef(materialIndex);
+        if (program.usesBaseAlpha(instance)) {
+            context.baseAlpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
+        }
+        return program.evaluateCoverage(context, instance);
+    }
+    context.baseAlpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
+    LegacyCoverageEvaluator legacy;
+    return legacy.evaluateCoverage(context, coverageInstanceRef(materialIndex));
+}
+
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, ScenePathTracePush push)
 {
     PathTraceInstance instance = gInstances[instanceIndex];
-    PathTraceMaterial material = gMaterials[instance.materialIndex];
+    PathTraceMaterial material = loadSceneMaterial(instance.materialIndex);
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
     }
 
     float2 uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
-    float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
-    // OMM leaves partial BLEND coverage unknown. Preserve the current opaque
-    // transport for those hits, while zero-alpha holes remain transparent.
-    return blend ? saturate(alpha) > 0.0 : saturate(alpha) >= saturate(material.params.z);
+    return evaluateSceneCoverage(instance.materialIndex, material, uv, push).accepted;
 }
 
 void computeTriangleTangentSpace(

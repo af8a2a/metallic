@@ -48,6 +48,9 @@ class EnvironmentLightingSubsystem final : public IRenderSubsystem {
 public:
     struct Desc {
         uint32_t maxDecodeJobs = 2;
+        // Opt-in deterministic capture: await the first decode before recording
+        // any placeholder frame. Zero preserves interactive asynchronous loading.
+        uint32_t initialDecodeTimeoutMilliseconds = 0;
     };
 
     static constexpr RenderSubsystemId kSubsystemId = "render.environment";

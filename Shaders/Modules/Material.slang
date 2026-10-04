@@ -3,5 +3,6 @@ module Material;
 
 __include "Material/SceneMaterial.slang";
 __include "Material/MaterialRuntime.slang";
+__include "Material/Coverage.slang";
 __include "Material/TextureSampling.slang";
 __include "Material/TextureFootprint.slang";

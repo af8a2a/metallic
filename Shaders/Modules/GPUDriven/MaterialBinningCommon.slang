@@ -6,8 +6,9 @@ using Metallic.Material;
 
 namespace Metallic.GPUDriven
 {
-// One spatial tile and one 32-bit coverage mask per NVIDIA warp. Classification
-// is by executable BSDF features, not source material identity.
+// One spatial tile and one 32-bit coverage mask per NVIDIA warp. Program bins
+// own disjoint contiguous task ranges; a task's program is implicit in its bin.
+// Fixed BSDF classes below remain only for the legacy A/B path and compiler.
 public static const uint kMaterialTileWidth = 8u;
 public static const uint kMaterialTileHeight = 4u;
 public static const uint kMaterialBinGroupSize = 32u;

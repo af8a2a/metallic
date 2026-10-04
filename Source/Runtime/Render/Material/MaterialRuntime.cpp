@@ -1,4 +1,5 @@
 #include "Runtime/Render/Material/MaterialRuntime.h"
+#include "Runtime/Scene/Scene.h"
 
 #include <array>
 #include <atomic>
@@ -51,7 +52,7 @@ constexpr MaterialProgram makeProgram(const MaterialDefinition& definition)
             key = (key ^ ((component >> (byte * 8)) & 255u)) * 1099511628211ull;
         }
     }
-    return {&definition, &kSchema, key};
+    return {&definition, &kSchema, {.definitionHash = key, .domain = definition.domain}};
 }
 
 constexpr std::array kPrograms{
@@ -79,6 +80,14 @@ MaterialProgramId legacyMaterialProgramId(const LegacyMaterialPayload& parameter
 {
     return parameters.rtxcrHairBaseColor[3] > 0.5f
         ? MaterialProgramId::RTXCRChiang : MaterialProgramId::OpenPBRComposite;
+}
+
+const MaterialProgram* findMaterialProgram(std::string_view implementation)
+{
+    for (const auto& program : builtinMaterialPrograms()) {
+        if (program.definition->name == implementation) { return &program; }
+    }
+    return nullptr;
 }
 
 bool validateMaterialSchema(const MaterialSchema& schema, std::string& diagnostics)
@@ -185,12 +194,16 @@ bool MaterialGeneration::supports(MaterialEvaluationTarget target, std::string& 
 std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
     std::span<const LegacyMaterialPayload> parameters,
     uint64_t sourceRevision,
-    std::string& diagnostics)
+    std::string& diagnostics, std::span<const scene::RenderMaterial> authored)
 {
     diagnostics.clear();
     if (!validateMaterialSchema(kSchema, diagnostics)) { return {}; }
     if (parameters.empty() || parameters.size() > std::numeric_limits<uint32_t>::max()) {
         diagnostics = "Material generation requires a nonempty, uint32-indexable parameter array.";
+        return {};
+    }
+    if (!authored.empty() && authored.size() != parameters.size()) {
+        diagnostics = "Feature source and parameter snapshot sizes differ.";
         return {};
     }
     auto candidate = std::make_shared<MaterialGeneration>();
@@ -210,6 +223,22 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
         const auto* program = findMaterialProgram(id);
         payload.textureParams[2] = static_cast<float>(id);
         candidate->instances_.push_back({program, index});
+        scene::RenderMaterial semantic;
+        if (!authored.empty()) { semantic = authored[index]; }
+        // Use the actual uploaded texture presence (including NTC), while policy
+        // and structural source travel with this same immutable scene revision.
+        semantic.metallicFactor = payload.params[0];
+        semantic.transmissionFactor = payload.glassParams[0];
+        semantic.alphaMode = payload.textureParams[3] > 1.5f ? "BLEND" : payload.textureParams[3] > 0.5f ? "MASK" : "OPAQUE";
+        semantic.doubleSided = payload.params[3] > 0.5f;
+        semantic.rtxcrHair = id == MaterialProgramId::RTXCRChiang;
+        semantic.metallicRoughnessTexture.textureIndex = payload.metallicRoughnessTexture.textureIndex != UINT32_MAX ||
+            payload.metallicRoughnessTexture.ntcTextureSetIndex != UINT32_MAX ? 0 : -1;
+        if (!material::validFeaturePolicies(semantic.featurePolicies)) {
+            diagnostics = "Invalid material feature policy.";
+            return {};
+        }
+        candidate->features_.push_back(material::resolveMaterialFeatures(semantic));
         used[static_cast<uint32_t>(id) - 1] = true;
     }
     for (bool value : used) { candidate->programCount_ += value ? 1u : 0u; }
