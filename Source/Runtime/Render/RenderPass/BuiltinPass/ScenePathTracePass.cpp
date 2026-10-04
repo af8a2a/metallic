@@ -1883,6 +1883,7 @@ public:
             }
             if (materialBinningEnabled(context.properties())) {
                 CPUProfileScope binningProfile(profiler, "Record material binning");
+                auto classificationProfile = context.profileScope("Material classification");
                 std::string binningLog;
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
                     .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer

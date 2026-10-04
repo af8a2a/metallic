@@ -1,0 +1,90 @@
+{
+    "version": 1,
+    "name": "OpenPBR/Deferred",
+    "nodes": [
+        {
+            "id": 2,
+            "name": "VBuffer",
+            "type": "VisibilityBufferPass",
+            "position": {
+                "x": 80.0,
+                "y": 440.0
+            },
+            "properties": {
+                "path": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+                "camera": {
+                    "eye": [
+                        0.0,
+                        1.0478609688580036,
+                        3.6447348222404337
+                    ],
+                    "center": [
+                        -0.05485051870346069,
+                        1.0478609688580036,
+                        -0.06448951363563538
+                    ],
+                    "up": [
+                        0.0,
+                        1.0,
+                        0.0
+                    ],
+                    "fovDegrees": 60.0,
+                    "projection": "perspective",
+                    "znear": 0.05,
+                    "zfar": 100.0,
+                    "reversedZ": true
+                },
+                "cameraSyncGroup": "LookDevComparison",
+                "visualization": "none",
+                "autoLod": false,
+                "lodLevel": 0
+            }
+        },
+        {
+            "id": 3,
+            "name": "Deferred",
+            "type": "VisibilityBufferDeferredPass",
+            "position": {
+                "x": 440.0,
+                "y": 440.0
+            },
+            "properties": {
+                "path": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+                "bsdf": "openpbr",
+                "outputLinear": true,
+                "materialBinning": true,
+                "halfPrecision": true,
+                "exportUpscalerGuides": false,
+                "stochasticTextureFiltering": false,
+                "debugDisableShadows": false,
+                "debugDisableTransmission": false,
+                "debugView": "final"
+            }
+        }
+    ],
+    "edges": [
+        {
+            "id": 1,
+            "src": "VBuffer.visibility",
+            "dst": "Deferred.visibility"
+        },
+        {
+            "id": 2,
+            "src": "VBuffer.depth",
+            "dst": "Deferred.depth"
+        },
+        {
+            "id": 3,
+            "src": "VBuffer.rasterInfo",
+            "dst": "Deferred.rasterInfo"
+        },
+        {
+            "id": 8,
+            "src": "VBuffer.domain",
+            "dst": "Deferred.domain"
+        }
+    ],
+    "outputs": [
+        "Deferred.color"
+    ]
+}

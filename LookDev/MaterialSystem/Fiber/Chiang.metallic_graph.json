@@ -1,0 +1,35 @@
+{
+    "edges": [],
+    "name": "Phase0 RTXCR Chiang",
+    "nodes": [
+        {
+            "id": 1,
+            "name": "PathTrace",
+            "position": {
+                "x": 320.0,
+                "y": 240.0
+            },
+            "properties": {
+                "accumulate": true,
+                "bsdf": "standard",
+                "camera": {
+                    "farPlaneScale": 100.0,
+                    "fovDegrees": 34.0,
+                    "nearPlaneScale": 0.001,
+                    "orbitPitchDegrees": -4.0,
+                    "orbitYawDegrees": 10.0
+                },
+                "flipBitangent": false,
+                "maxDepth": 4,
+                "samples": 4,
+                "outputLinear": true,
+                "path": "External/RTXCR-Assets/Claire/ponyTail_15vtx.gltf"
+            },
+            "type": "ScenePathTracePass"
+        }
+    ],
+    "outputs": [
+        "PathTrace.color"
+    ],
+    "version": 1
+}
