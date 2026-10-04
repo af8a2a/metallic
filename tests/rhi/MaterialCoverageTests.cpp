@@ -183,7 +183,7 @@ public:
                 edited.valueProgram = R"({"version":1,"coverage":{"op":"add","args":[{"op":"uv"},{"op":"parameter","index":0}]}})";
                 edited.valueParameters[0] = shift;
                 if (step >= 5) {
-                    edited.valueProgram = R"({"version":1,"baseColor":{"op":"parameter","index":1},"coverage":{"op":"mul","args":[{"op":"alpha"},{"op":"add","args":[{"op":"uv"},{"op":"parameter","index":0}]}]}})";
+                    edited.valueProgram = R"({"version":2,"nodes":{"shift":{"op":"add","args":[{"op":"swizzle","components":"xxxx","args":[{"op":"uv"}]},{"op":"parameter","index":0}]},"mask":{"op":"clamp","args":[{"ref":"shift"},-1000000,1000000]}},"outputs":{"baseColor":{"op":"parameter","index":1},"coverage":{"op":"mul","args":[{"op":"alpha"},{"ref":"mask"}]}}})";
                     edited.valueParameters[4] = step == 5 ? 1.0f : 0.0f;
                     edited.valueParameters[6] = step == 6 ? 1.0f : 0.0f;
                 }

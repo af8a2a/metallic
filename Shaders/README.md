@@ -107,6 +107,8 @@ VisibilityBuffer Deferred 是纯光栅表面的实时 resolve，不包含 ray-qu
 统一分析；AlphaMode / doubleSided 使用独立签名，不能直接当作 lighting shader keyword。
 [Coverage Program](../Documentation/MaterialSystemPhase8.md) 从 Value 源码提取独立的覆盖表达式，
 在 VBuffer 写入深度/可见性之前及 RT/shadow 候选命中处求值，和 Surface 共用不可变材质参数快照。
+[Value IR](../Documentation/MaterialSystemPhase9.md) 统一 Surface/Coverage 的验证、优化、切片与稳定身份；
+TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的隐式导数。
 `Features/PathTracing/SceneSurface.slang` 和 `OpenPBRSurface.slang` 提供共享表面求值，
 `Features/VisibilityBuffer/VisibilityBufferLighting.slang` 负责 ClusterLightGrid、显式阴影输入和 IBL。
 有界 IBL 权重默认使用 native FP16，几何与 HDR 累加保持 FP32；`halfPrecision: false`

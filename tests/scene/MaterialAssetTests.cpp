@@ -125,6 +125,22 @@ TEST_F(MaterialAssets, CoverageAndTransmissionHaveSeparateSignatures)
     EXPECT_NE(resolveMaterialFeatures(value).programSignature, coverage.programSignature);
 }
 
+TEST_F(MaterialAssets, ValueIRSignaturesIgnoreDeadNodesAndCoverageDefinitions)
+{
+    scene::RenderMaterial value;
+    value.alphaMode = "MASK";
+    value.valueProgram = R"({"version":1,"roughness":0.5,"coverage":{"op":"parameter","index":0}})";
+    const auto nested = resolveMaterialFeatures(value);
+    value.valueProgram = R"({"version":2,"nodes":{"dead":{"op":"textureSample"},"r":{"op":"add","args":[0.25,0.25]},"c":{"op":"parameter","index":0}},"outputs":{"roughness":{"ref":"r"},"coverage":{"ref":"c"}}})";
+    const auto graph = resolveMaterialFeatures(value);
+    EXPECT_EQ(nested.programSignature, graph.programSignature);
+    EXPECT_EQ(nested.visibilitySignature, graph.visibilitySignature);
+    value.valueProgram = R"({"version":2,"nodes":{"dead":{"op":"textureSample"}},"outputs":{"coverage":{"op":"parameter","index":0}}})";
+    const auto coverageOnly = resolveMaterialFeatures(value);
+    value.valueProgram.clear();
+    EXPECT_EQ(coverageOnly.programSignature, resolveMaterialFeatures(value).programSignature);
+}
+
 TEST_F(MaterialAssets, FeaturePoliciesInheritWithoutPersistingCompilerDecisions)
 {
     definition.featurePolicies.metalness = FeaturePolicy::Dynamic;

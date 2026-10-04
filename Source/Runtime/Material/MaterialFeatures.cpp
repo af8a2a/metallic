@@ -1,4 +1,5 @@
 #include "Runtime/Material/MaterialFeatures.h"
+#include "Runtime/Material/MaterialValueIR.h"
 #include "Runtime/Scene/Scene.h"
 #include <json.hpp>
 #include <array>
@@ -77,13 +78,21 @@ MaterialFeatureResolution resolveMaterialFeatures(const scene::RenderMaterial& m
 {
     MaterialFeatureResolution result;
     const bool transmitting = material.transmissionFactor > 0.0f;
-    auto graph = nlohmann::json::parse(material.valueProgram, nullptr, false);
-    std::string coverageCode;
-    if (graph.is_object() && graph.contains("coverage")) {
-        coverageCode = graph["coverage"].dump();
-        graph.erase("coverage");
+    std::string coverageCode, surfaceCode;
+    bool surfaceValues = !material.valueProgram.empty();
+    if (surfaceValues) {
+        try {
+            const auto ir = render::MaterialValueIR::parse(material.valueProgram);
+            const auto surface = ir.slice(false), coverage = ir.slice(true);
+            surfaceValues = !surface.outputs().empty();
+            if (surfaceValues) { surfaceCode = surface.canonical(); }
+            if (!coverage.outputs().empty()) { coverageCode = coverage.canonical(); }
+        } catch (const std::exception&) {
+            // Diagnostics/publication reject invalid source later. Classification
+            // remains conservative and cannot select an unsafe specialized lobe.
+            surfaceCode = material.valueProgram;
+        }
     }
-    const bool surfaceValues = !material.valueProgram.empty() && (!graph.is_object() || graph.size() > 1);
     // Value programs may change metalness per hit. Ray-hit programs already use
     // the general closure. Policy hints must never remove a reachable lobe.
     const bool general = target == FeatureCompileTarget::RayHit || material.rtxcrHair ||
@@ -104,15 +113,15 @@ MaterialFeatureResolution resolveMaterialFeatures(const scene::RenderMaterial& m
     }
     // Domain/version, structural code and compiler choices only. Dynamic values,
     // resource identities, alpha mode and culling never enter this signature.
-    auto signature = hash(material.rtxcrHair ? "Features/v1/RTXCRChiang" : "Features/v1/OpenPBRComposite");
+    auto signature = hash(material.rtxcrHair ? "Features/v2/RTXCRChiang" : "Features/v2/OpenPBRComposite");
     signature = hash(std::to_string(static_cast<uint32_t>(target)), signature);
     signature = hash(std::to_string(static_cast<uint32_t>(result.surfaceProgram)), signature);
     if (surfaceValues) {
-        signature = hash(graph.is_discarded() ? material.valueProgram : graph.dump(), signature);
+        signature = hash(surfaceCode, signature);
     }
     result.programSignature = signature;
     // Coverage affects hit existence; transmission affects transport at a hit.
-    result.visibilitySignature = hash("Visibility/v2/coverage/");
+    result.visibilitySignature = hash("Visibility/v3/coverage/");
     result.visibilitySignature = hash(material.alphaMode, result.visibilitySignature);
     result.visibilitySignature = hash(coverageCode, result.visibilitySignature);
     result.pipelineSignature = hash(material.doubleSided ? "Pipeline/v1/two-sided" : "Pipeline/v1/back-cull");

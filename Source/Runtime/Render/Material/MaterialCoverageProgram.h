@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <json.hpp>
+#include "Runtime/Material/MaterialValueIR.h"
 
 namespace metallic::render {
 
@@ -25,5 +26,6 @@ struct MaterialCoverageSlice
 // Throws on malformed/unsupported expressions; the owning generation publishes
 // only after both Surface and Coverage compilation and upload have succeeded.
 MaterialCoverageSlice compileMaterialCoverageSlice(const nlohmann::json& expression);
+MaterialCoverageSlice compileMaterialCoverageSlice(const MaterialValueIR& coverage);
 
 } // namespace metallic::render

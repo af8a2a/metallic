@@ -1,5 +1,8 @@
 # Material System Phase 8 — Coverage Program 分离
 
+后续更新：[Phase 9 Value IR](MaterialSystemPhase9.md) 已统一 Surface/Coverage 前端并新增 v2 图引用。
+下文保留 Phase 8 交付时的后端和验收记录。
+
 Phase 8 将“命中是否存在”从 Surface/Closure 求值中分离。Slang 接口位于
 [Coverage.slang](../Shaders/Modules/Material/Coverage.slang)：
 `ICoverageEvaluator.evaluateCoverage(CoverageContext, MaterialInstanceRef)` 返回 opacity 和 accepted。

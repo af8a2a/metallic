@@ -85,6 +85,20 @@ public struct CoverageProgram : ICoverageEvaluator
                 else if (op == 9u) { value = frac(a); }
                 else if (op == 10u) { value = abs(a); }
                 else if (op == 11u) { value = saturate(a); }
+                else if (op == 12u) { value = min(max(a, values[instruction.z]), values[instruction.w]); }
+                else if (op == 13u || op == 14u) {
+                    float3 n = op == 14u ? a.xyz * 2.0 - 1.0 : a.xyz;
+                    value = float4(dot(n, n) > 1e-20 ? normalize(n) : float3(0, 0, 1), 0);
+                }
+                else if (op == 15u) {
+                    float4 b = values[instruction.z], c = values[instruction.w];
+                    value = float4(dot(a.xy, b.xy) + b.z, dot(a.xy, c.xy) + c.z, 0, 0);
+                }
+                else if (op == 16u) {
+                    uint components = uint(asfloat(inputs.Load(address + 16u)));
+                    value = float4(a[components & 3u], a[(components >> 2u) & 3u], a[(components >> 4u) & 3u], a[(components >> 6u) & 3u]);
+                }
+                else if (op == 17u) { value = a.x > 0.0 ? values[instruction.z] : values[instruction.w]; }
             }
             values[i] = clamp(value, -1e6, 1e6);
         }

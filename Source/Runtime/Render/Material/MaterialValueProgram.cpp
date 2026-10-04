@@ -20,94 +20,72 @@ void require(bool condition, const char* message)
     if (!condition) { throw std::runtime_error(message); }
 }
 
-std::string number(const Json& value)
+std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueManifest& manifest)
 {
-    require(value.is_number(), "Expected a numeric constant");
-    const double v = value.get<double>();
-    require(std::isfinite(v) && std::abs(v) <= 1e6, "Constants must be finite and within +/-1e6");
-    return Json(static_cast<float>(v)).dump();
-}
-
-struct Emitter
-{
-    uint32_t nodes = 0;
-    uint32_t temporaries = 0;
-    MaterialValueManifest manifest;
-    std::string statements;
-
-    std::string expression(const Json& node, uint32_t depth = 0)
-    {
-        require(depth <= 24 && ++nodes <= 256, "Value expression exceeds depth/node budget (24/256)");
-        if (node.is_number()) { return "float4(" + number(node) + ")"; }
-        if (node.is_array()) {
-            require(node.size() == 4, "Vector constants require four components");
-            return "float4(" + number(node[0]) + "," + number(node[1]) + "," +
-                number(node[2]) + "," + number(node[3]) + ")";
-        }
-        require(node.is_object() && node.contains("op") && node["op"].is_string(), "Expected an expression with op");
-        const std::string op = node["op"].get<std::string>();
-        if (op == "parameter") {
-            require(node.size() == 2 && node.contains("index") && node["index"].is_number_integer(), "parameter requires index");
-            const auto index = node["index"].get<int64_t>();
-            require(index >= 0 && index < 4, "Parameter index must be 0..3");
-            manifest.parameterMask |= 1u << index;
-            return "instance.parameters[" + std::to_string(index) + "]";
-        }
-        const std::map<std::string, std::string> inputs{
-            {"position", "float4(position, 0.0)"}, {"geometryNormal", "float4(geometryNormal, 0.0)"},
-            {"uv", "float4(uv, 0.0, 0.0)"}, {"baseColor", "material.baseColor"},
-            {"metallic", "float4(material.params.x)"}, {"roughness", "float4(material.params.y)"},
-            {"emissive", "material.emissive"}};
-        if (auto it = inputs.find(op); it != inputs.end()) {
-            require(node.size() == 1, "Input expressions do not accept arguments");
-            const std::array<std::string_view, 7> names{"position", "geometryNormal", "uv", "baseColor", "metallic", "roughness", "emissive"};
-            manifest.inputMask |= 1u << std::distance(names.begin(), std::find(names.begin(), names.end(), op));
-            return it->second;
-        }
-        const uint32_t arity = op == "mix" ? 3 :
-            (op == "add" || op == "mul" || op == "dot" ? 2 :
-            (op == "sin" || op == "fract" || op == "abs" || op == "saturate" ? 1 : 0));
-        require(arity != 0, "Unsupported Surface op: only read-only arithmetic is supported; texture sampling belongs to the material adapter");
-        require(node.size() == 2 && node.contains("args") && node["args"].is_array() &&
-            node["args"].size() == arity, "Wrong expression arguments");
-        std::vector<std::string> args;
-        for (const auto& arg : node["args"]) { args.push_back(expression(arg, depth + 1)); }
-        std::string result;
-        if (op == "add" || op == "mul") { result = "(" + args[0] + (op == "add" ? "+" : "*") + args[1] + ")"; }
-        else if (op == "dot") { result = "float4(dot(" + args[0] + "," + args[1] + "))"; }
-        else if (op == "mix") { result = "lerp(" + args[0] + "," + args[1] + ",saturate(" + args[2] + "))"; }
-        else { result = (op == "fract" ? "frac" : op) + "(" + args[0] + ")"; }
-        const std::string name = "v" + std::to_string(temporaries++);
-        // Bound intermediates as well as constants; repeated multiplication cannot overflow.
-        statements += "    float4 " + name + " = clamp(" + result + ", -1e6, 1e6);\n";
-        return name;
-    }
-};
-
-std::string emitProgram(const Json& root, uint32_t id, MaterialValueManifest& manifest)
-{
-    require(root.is_object() && root.contains("version") && root["version"] == 1, "Value program version must be 1");
-    Emitter emitter;
-    std::string assignments;
-    for (const auto& [key, value] : root.items()) {
-        if (key == "version") { continue; }
-        require(key == "baseColor" || key == "metallic" || key == "roughness" || key == "emissive",
-            "Unsupported output: only baseColor, metallic, roughness and emissive are supported");
-        const std::array<std::string_view, 4> outputs{"baseColor", "metallic", "roughness", "emissive"};
-        emitter.manifest.outputMask |= 1u << std::distance(outputs.begin(), std::find(outputs.begin(), outputs.end(), key));
-        const std::string expr = "(" + emitter.expression(value) + ")";
-        if (key == "baseColor") { assignments += "    result.baseColor.rgb = saturate(" + expr + ".rgb);\n"; }
-        if (key == "metallic") { assignments += "    result.params.x = saturate(" + expr + ".x);\n"; }
-        if (key == "roughness") { assignments += "    result.params.y = saturate(" + expr + ".x);\n"; }
-        if (key == "emissive") { assignments += "    result.emissive.rgb = clamp(" + expr + ".rgb, 0.0, 1e6);\n"; }
-    }
-    require(!assignments.empty(), "Value program must write at least one supported output");
-    manifest = emitter.manifest;
     manifest.programId = id;
-    manifest.expressionNodes = emitter.nodes;
+    manifest.parameterMask = ir.usage().parameterMask;
+    manifest.inputMask = ir.usage().inputMask;
+    manifest.textureMask = ir.usage().textureMask;
+    manifest.footprintMask = ir.usage().footprintMask;
+    manifest.featureMask = ir.usage().features;
+    manifest.irHash = ir.hash();
+    manifest.expressionNodes = static_cast<uint32_t>(ir.nodes().size());
+    std::string statements;
+    for (size_t index = 0; index < ir.nodes().size(); ++index) {
+        const auto& node = ir.nodes()[index];
+        const auto operand = [&](uint32_t i) { return "v" + std::to_string(node.operands[i]); };
+        const auto a = operand(0), b = operand(1), c = operand(2);
+        std::string value;
+        switch (node.op) {
+        case MaterialValueOp::Constant:
+            value = "float4(";
+            for (uint32_t i = 0; i < 4; ++i) { value += (i ? "," : "") + Json(node.constant[i]).dump(); }
+            value += ")"; break;
+        case MaterialValueOp::Parameter: value = "instance.parameters[" + std::to_string(node.index) + "]"; break;
+        case MaterialValueOp::Position: value = "float4(position,0.0)"; break;
+        case MaterialValueOp::GeometryNormal: value = "float4(geometryNormal,0.0)"; break;
+        case MaterialValueOp::UV: value = "float4(uv,0.0,0.0)"; break;
+        case MaterialValueOp::BaseColor: value = "material.baseColor"; break;
+        case MaterialValueOp::Metallic: value = "float4(material.params.x)"; break;
+        case MaterialValueOp::Roughness: value = "float4(material.params.y)"; break;
+        case MaterialValueOp::Emissive: value = "material.emissive"; break;
+        case MaterialValueOp::Add: value = a + "+" + b; break;
+        case MaterialValueOp::Multiply: value = a + "*" + b; break;
+        case MaterialValueOp::Dot: value = "float4(dot(" + a + "," + b + "))"; break;
+        case MaterialValueOp::Lerp: value = "lerp(" + a + "," + b + ",saturate(" + c + "))"; break;
+        case MaterialValueOp::Sin: value = "sin(" + a + ")"; break;
+        case MaterialValueOp::Fract: value = "frac(" + a + ")"; break;
+        case MaterialValueOp::Abs: value = "abs(" + a + ")"; break;
+        case MaterialValueOp::Saturate: value = "saturate(" + a + ")"; break;
+        case MaterialValueOp::Clamp: value = "min(max(" + a + "," + b + ")," + c + ")"; break;
+        case MaterialValueOp::Normalize: value = "materialValueNormalize(" + a + ")"; break;
+        case MaterialValueOp::NormalMap: value = "materialValueNormalize(" + a + "*2.0-1.0)"; break;
+        case MaterialValueOp::UVTransform: value = "float4(dot("+a+".xy,"+b+".xy)+"+b+".z,dot("+a+".xy,"+c+".xy)+"+c+".z,0,0)"; break;
+        case MaterialValueOp::Swizzle:
+            value = a + ".";
+            for (uint32_t i = 0; i < 4; ++i) { value += "xyzw"[(node.index >> (2*i)) & 3]; }
+            break;
+        case MaterialValueOp::Select: value = "(" + a + ".x>0.0?" + b + ":" + c + ")"; break;
+        case MaterialValueOp::TextureSample:
+            value = "sampleMaterialValueTexture(material," + std::to_string(node.index) + "u," + a + ".xy," +
+                std::to_string(static_cast<uint32_t>(node.footprint)) + "u," + b + "," +
+                (node.operandCount == 3 ? c : "float4(0)") + ",textureContext)"; break;
+        default: throw std::runtime_error("Surface IR cannot consume Coverage alpha input");
+        }
+        // Preserve the legacy input semantics; bound arithmetic intermediates.
+        if (node.operandCount) { value = "clamp(" + value + ",-1e6,1e6)"; }
+        statements += "    float4 v" + std::to_string(index) + " = " + value + ";\n";
+    }
+    for (const auto& [key, root] : ir.outputs()) {
+        const auto value = "v" + std::to_string(root);
+        if (key == "baseColor") { statements += "    result.baseColor.rgb = saturate(" + value + ".rgb);\n"; manifest.outputMask |= 1; }
+        if (key == "metallic") { statements += "    result.params.x = saturate(" + value + ".x);\n"; manifest.outputMask |= 2; }
+        if (key == "roughness") { statements += "    result.params.y = saturate(" + value + ".x);\n"; manifest.outputMask |= 4; }
+        if (key == "emissive") { statements += "    result.emissive.rgb = clamp(" + value + ".rgb,0.0,1e6);\n"; manifest.outputMask |= 8; }
+    }
     return "PathTraceMaterial materialValue" + std::to_string(id) +
-        "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material)\n{\n"
-        "    PathTraceMaterial result = material;\n" + emitter.statements + assignments + "    return result;\n}\n";
+        "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext)\n{\n"
+        "    PathTraceMaterial result = material;\n" + statements + "    return result;\n}\n";
 }
 } // namespace
 
@@ -119,6 +97,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
         require(materials.size() <= UINT32_MAX / sizeof(MaterialValueInstance), "Material input offsets exceed uint32");
         auto result = std::make_shared<MaterialValueProgramSet>();
         std::map<std::string, uint32_t> programs;
+        std::map<std::string, MaterialValueIR> surfaceIR;
         std::vector<std::string> sources;
         std::vector<std::string> coverageSources;
         std::map<std::string, MaterialCoverageSlice> coveragePrograms;
@@ -126,59 +105,49 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             require(std::all_of(material.valueParameters.begin(), material.valueParameters.end(),
                 [](float v) { return std::isfinite(v) && std::abs(v) <= 1e6f; }), "Value parameters must be finite and within +/-1e6");
             if (material.valueProgram.empty()) { sources.emplace_back(); coverageSources.emplace_back(); continue; }
-            require(material.valueProgram.size() <= kMaxMaterialValueSourceBytes, "Value program source exceeds 16 KiB");
-            // Reject excessive JSON nesting before recursive JSON parsing.
-            uint32_t nesting = 0;
-            bool quoted = false, escaped = false;
-            for (char c : material.valueProgram) {
-                if (quoted) {
-                    if (escaped) { escaped = false; }
-                    else if (c == '\\') { escaped = true; }
-                    else if (c == '"') { quoted = false; }
-                } else if (c == '"') { quoted = true; }
-                else if (c == '{' || c == '[') { require(++nesting <= 64, "Value JSON nesting exceeds 64"); }
-                else if (c == '}' || c == ']') { require(nesting != 0, "Unbalanced Value JSON"); --nesting; }
-            }
-            auto root = Json::parse(material.valueProgram);
-            require(root.is_object() && root.contains("version") && root["version"] == 1, "Value program version must be 1");
+            const auto ir = MaterialValueIR::parse(material.valueProgram);
+            const auto coverage = ir.slice(true);
+            const auto surface = ir.slice(false);
             std::string coverageSource;
-            if (root.contains("coverage")) {
+            if (!coverage.outputs().empty()) {
                 require(material.alphaMode == "MASK" && !material.rtxcrHair,
                     "Coverage programs require alphaMode MASK on a Surface material");
-                coverageSource = root["coverage"].dump();
+                coverageSource = coverage.canonical();
                 if (!coveragePrograms.contains(coverageSource)) {
-                    coveragePrograms.emplace(coverageSource, compileMaterialCoverageSlice(root["coverage"]));
+                    coveragePrograms.emplace(coverageSource, compileMaterialCoverageSlice(coverage));
                 }
-                root.erase("coverage");
             }
             coverageSources.push_back(coverageSource);
             std::string source;
-            if (root.size() > 1) {
+            if (!surface.outputs().empty()) {
                 require((material.alphaMode == "OPAQUE" || material.alphaMode == "MASK") && !material.rtxcrHair && !material.unlit &&
                     material.transmissionFactor == 0.0f && material.diffuseTransmissionFactor == 0.0f,
                     "Surface Value programs require lit, non-transmissive Surface materials");
-                source = root.dump();
+                source = surface.canonical();
                 programs.emplace(source, 0);
-            } else { require(!coverageSource.empty(), "Value program has no outputs"); }
+                surfaceIR.emplace(source, surface);
+            }
             require(programs.size() <= kMaxMaterialValuePrograms, "Scene exceeds 64 custom Value programs");
             require(coveragePrograms.size() <= kMaxMaterialValuePrograms, "Scene exceeds 64 Coverage programs");
             sources.push_back(source);
         }
-        // Preserve the generated Surface ABI/cache identity. Its reserved header
-        // words now carry Coverage metadata, consumed separately as raw bytes.
-        result->source_ = "// Material Value ABI v1: generated, read-only, no coverage or texture sampling.\n"
-            "struct MaterialValueInstance { uint programId; uint reserved0; uint reserved1; uint reserved2; float4 parameters[4]; };\n";
+        result->source_ = "// Material Value IR v1; generated Surface slice, shared 80-byte instance ABI.\n"
+            "struct MaterialValueTextureContext { float normalizedRayLod; uint textureCount; uint ntcCount; };\n"
+            "struct MaterialValueInstance { uint programId; uint coverageOffset; uint coverageCount; uint coverageFlags; float4 parameters[4]; };\n"
+            "float4 materialValueNormalize(float4 v) { return float4(dot(v.xyz,v.xyz)>1e-20?normalize(v.xyz):float3(0,0,1),0); }\n";
+        const bool usesTextures = std::any_of(surfaceIR.begin(), surfaceIR.end(), [](const auto& item) { return item.second.usage().textureMask != 0; });
+        if (usesTextures) { result->source_ += "float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 uv, uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context);\n"; }
         for (auto& [source, id] : programs) {
             id = ++result->programCount_;
             result->manifests_.emplace_back();
-            result->source_ += emitProgram(Json::parse(source), id, result->manifests_.back());
+            result->source_ += emitProgram(surfaceIR.at(source), id, result->manifests_.back());
         }
-        result->source_ += "PathTraceMaterial evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material)\n{\n"
+        result->source_ += "PathTraceMaterial evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext = (MaterialValueTextureContext)0)\n{\n"
             "    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex];\n"
             "    switch (instance.programId) {\n";
         for (const auto& [source, id] : programs) {
             const auto name = std::to_string(id);
-            result->source_ += "    case " + name + ": return materialValue" + name + "(instance, position, geometryNormal, uv, material);\n";
+            result->source_ += "    case " + name + ": return materialValue" + name + "(instance, position, geometryNormal, uv, material, textureContext);\n";
         }
         result->source_ += "    default: return material;\n    }\n}\n";
         result->key_ = 14695981039346656037ull;

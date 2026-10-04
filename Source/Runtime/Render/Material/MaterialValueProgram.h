@@ -38,6 +38,8 @@ struct MaterialValueManifest
     // Outputs: baseColor, metallic, roughness, emissive.
     uint32_t outputMask = 0;
     uint32_t expressionNodes = 0;
+    uint32_t textureMask = 0, footprintMask = 0, featureMask = 0;
+    uint64_t irHash = 0;
     // Surface slice only; Coverage has independent resource requirements/code.
 };
 

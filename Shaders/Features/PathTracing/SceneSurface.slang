@@ -999,6 +999,8 @@ float4 loadMaterialTextureForMaterial(
     return loadMaterialTexture(textureInfo, uv, fallback, push, rayCone, hit, rayDirection, seed, footprint);
 }
 
+#include "MaterialValueTextures.slang"
+
 bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)
 {
     // Specular transmission magnifies stochastic/material-unaware mips into hard surface bands.

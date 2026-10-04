@@ -174,7 +174,12 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
 {
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
-    material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material);
+    MaterialValueTextureContext valueContext;
+    valueContext.normalizedRayLod = (footprint.flags & kTextureFootprintIsotropic0) != 0u
+        ? footprint.isotropicLod0 : sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection).footprint.isotropicLod0;
+    valueContext.textureCount = push.materialTextureCount;
+    valueContext.ntcCount = push.ntcTextureSetCount;
+    material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material, valueContext);
 #endif
     float4 baseColorSample = source.loadTexture(
         material.baseColorTexture,
