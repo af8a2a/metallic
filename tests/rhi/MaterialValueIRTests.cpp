@@ -5,9 +5,11 @@
 #include "Runtime/Scene/Scene.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedResourceParameters.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -92,7 +94,7 @@ public:
                     }
                 }, &validationErrors}})
                 .transform([&](auto value) { device = std::move(value); })), "IR device failed");
-            std::vector<scene::RenderMaterial> materials(10);
+            std::vector<scene::RenderMaterial> materials(14);
             for (uint32_t i = 0; i < 5; ++i) {
                 Json sample{{"op", "textureSample"}, {"texture", "baseColor"}, {"footprint", "ExplicitLOD"},
                     {"args", Json::array({Json{{"op", "uv"}}, Json{{"op", "parameter"}, {"index", 0}}})}};
@@ -113,6 +115,18 @@ public:
             materials[8].valueProgram = R"({"version":1,"baseColor":{"op":"uvTransform","args":[{"op":"uv"},[2,0,0.25,0],[0,1,0.5,0]]}})";
             materials[9].valueProgram = R"({"version":1,"baseColor":{"op":"select","args":[{"op":"parameter","index":0},{"op":"swizzle","components":"zyxx","args":[{"op":"parameter","index":1}]},0]}})";
             materials[9].valueParameters = {1, 0, 0, 0, 0.2f, 0.3f, 0.4f, 0};
+            // These programs exercise the production wide-source -> legacy IR
+            // -> working output path, including a value above display white.
+            materials[10].valueProgram = R"({"version":1,"baseColor":{"op":"textureSample","texture":"baseColor","footprint":"ExplicitLOD","args":[{"op":"uv"},0]}})";
+            materials[11].valueProgram = R"({"version":1,"emissive":{"op":"textureSample","texture":"emissive","footprint":"ExplicitLOD","args":[{"op":"uv"},0]}})";
+            materials[12].valueProgram = R"({"version":1,"emissive":{"op":"mul","args":[{"op":"textureSample","texture":"emissive","footprint":"ExplicitLOD","args":[{"op":"uv"},0]},4]}})";
+            materials[13].valueProgram = R"({"version":1,"baseColor":{"op":"textureSample","texture":"baseColor","footprint":"ExplicitLOD","args":[{"op":"uv"},1]}})";
+            for (uint32_t i = 10; i < materials.size(); ++i) {
+                materials[i].baseColorTexture.colorMetadata = {TextureSemantic::Color, kACEScg};
+                materials[i].emissiveTexture.colorMetadata = {TextureSemantic::Color, kACEScg};
+                // The probe reads the same CPU-derived texture flags as upload.
+                materials[i].valueParameters[12] = float(textureColorFlags(materials[i].baseColorTexture.colorMetadata));
+            }
             std::string log;
             const auto values = MaterialValueProgramSet::create(materials, log);
             check(bool(values), log.c_str());
@@ -177,15 +191,26 @@ public:
             check(bool(gpu.submitAndWait()), "IR GPU execution failed");
             output->invalidate(); const auto* data = static_cast<const Float4*>(output->map());
             check(data != nullptr, "IR readback failed");
-            std::array<Float4, 10> actual; std::memcpy(actual.data(), data, sizeof(actual)); output->unmap();
-            const std::array<Float4, 10> expected{{{1,0,0}, {0,1,0}, {0.5f,0.5f,0}, {0,1,0}, {0,1,0},
+            std::array<Float4, 14> actual; std::memcpy(actual.data(), data, sizeof(actual)); output->unmap();
+            const std::array<color::RGB, 10> authoredExpected{{{1,0,0}, {0,1,0}, {0.5f,0.5f,0}, {0,1,0}, {0,1,0},
                 {0,0.5f,1}, {0.6f,0,0.8f}, {0,0,1}, {0.75f,0.75f,0}, {0.4f,0.3f,0.2f}}};
+            std::array<color::RGB, 14> expected;
+            for (size_t i = 0; i < authoredExpected.size(); ++i) { expected[i] = color::fromLinearRec709(authoredExpected[i]); }
+            expected[10] = color::fromSource({1,0,0}, kACEScg);
+            expected[11] = color::fromSource({1,0,0}, kACEScg);
+            expected[12] = color::fromSource({4,0,0}, kACEScg);
+            expected[13] = color::fromSource({0,1,0}, kACEScg);
+            // Compatibility mode still bounds its own Rec.709 material basis;
+            // signed out-of-gamut coordinates are not valid reflectance there.
+            for (size_t i = 10; i < expected.size(); ++i) {
+                for (float& channel : expected[i]) { channel = std::clamp(channel, 0.0f, i == 11 || i == 12 ? 1e6f : 1.0f); }
+            }
             for (uint32_t i = 0; i < actual.size(); ++i) { for (uint32_t c = 0; c < 3; ++c) {
                 check(std::isfinite(actual[i][c]) && std::abs(actual[i][c] - expected[i][c]) < 1e-5f,
                     ("IR footprint/arithmetic mismatch case=" + std::to_string(i) + " actual=" + Json(actual).dump()).c_str());
             }}
             check(validationErrors == 0, "Value IR GPU probe emitted Vulkan validation errors");
-            return RHITestResult::pass("Production IR: five actual mip/footprint cases and five dynamic arithmetic/normal/UV/select cases");
+            return RHITestResult::pass("Production IR: five mip/footprint cases, five dynamic arithmetic cases and four native AP1 reflectance/emission/HDR cases");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

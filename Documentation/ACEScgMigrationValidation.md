@@ -1,5 +1,9 @@
 # ACEScg migration validation
 
+The subsequent correctness review and its repairs are recorded in
+[ACEScg migration review fixes](ACEScgMigrationFixes.md). The results below
+retain the original migration run; use the supplement for the reviewed fixes.
+
 Validated on 2026-10-04, Windows x64 / MSVC Release, NVIDIA GeForce RTX 5070 Ti,
 NVIDIA driver 616.92, Vulkan core validation enabled for the GPU regressions.
 Metallic now defaults to scene-linear ACEScg/AP1/ACES white. Rec.709 compatibility

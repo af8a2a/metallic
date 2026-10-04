@@ -74,7 +74,7 @@ public:
         if (!program.initialize(gpuDevice, {.spirv = shader.spirv, .bindings = {&layout, 1},
                 .requiresRayQuery = false, .resourceParameters = kBatchBarrierProbeLayout}, log)) { return fail("program"); }
         std::unique_ptr<Buffer> output;
-        if (!gpuDevice.createBuffer({.size = 10*16, .structureStride = 16, .usage = BufferUsageBits::Storage,
+        if (!gpuDevice.createBuffer({.size = 11*16, .structureStride = 16, .usage = BufferUsageBits::Storage,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { output = std::move(value); })) { return fail("buffer"); }
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -111,6 +111,8 @@ public:
         for (size_t c = 0; c < 3; ++c) { ap1Product[c] *= sample[c]; }
         const auto expectedAP1 = color::fromSource(ap1Product, kACEScg);
         for (size_t c = 0; c < 3; ++c) { matches &= std::abs(actual[36 + c] - expectedAP1[c]) < 1e-5f; }
+        const auto expectedKey = color::fromLinearRec709({5.2f, 4.8f, 4.2f});
+        for (size_t c = 0; c < 3; ++c) { matches &= std::abs(actual[40 + c] - expectedKey[c]) < 1e-5f; }
         output->unmap();
         return matches ? RHITestResult::pass() : RHITestResult::fail("CPU/GPU matrix, texture Color/Data or factor modulation mismatch");
     }

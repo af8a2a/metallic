@@ -138,7 +138,8 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
         }
     }
     color /= float(samples);
-    color = max(color, float3(0.0, 0.0, 0.0));
+    color = push.debugView != kOpenPBRDebugViewFinal
+        ? openPbrDisplayDebugColor(push, color) : max(color, float3(0.0));
 
     if (push.enableAccumulation != 0u) {
         if (push.hasHistory != 0u) {

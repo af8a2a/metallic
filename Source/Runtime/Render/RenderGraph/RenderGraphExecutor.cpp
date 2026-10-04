@@ -2369,20 +2369,6 @@ struct RenderGraphExecutor::Impl {
             executionProperties["camera"] = frameCameraProperties;
             executionProperties["temporalJitter"] = frameView.frame[2] != 0;
         }
-        if (snapshots) {
-            snapshots->reserve(bindings.size());
-            std::unordered_map<RenderGraphResource*, RenderGraphResource*> copies;
-            for (auto& binding : bindings) {
-                if (!binding.resource) { continue; }
-                if (binding.resource->type == RenderGraphResourceType::AccelerationStructure) { continue; }
-                auto [entry, inserted] = copies.try_emplace(binding.resource);
-                if (inserted) {
-                    snapshots->push_back(*binding.resource);
-                    entry->second = &snapshots->back();
-                }
-                binding.resource = entry->second;
-            }
-        }
         prepared.reset(new RenderGraphExecutionContext(
             commandBuffer,
             frameIndex,
@@ -2410,6 +2396,21 @@ struct RenderGraphExecutor::Impl {
         context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
         context.debugPassId_ = node.id;
+        node.pass->prepareResourceMetadata(context);
+        if (snapshots) {
+            snapshots->reserve(context.bindings_.size());
+            std::unordered_map<RenderGraphResource*, RenderGraphResource*> copies;
+            for (auto& binding : context.bindings_) {
+                if (!binding.resource) { continue; }
+                if (binding.resource->type == RenderGraphResourceType::AccelerationStructure) { continue; }
+                auto [entry, inserted] = copies.try_emplace(binding.resource);
+                if (inserted) {
+                    snapshots->push_back(*binding.resource);
+                    entry->second = &snapshots->back();
+                }
+                binding.resource = entry->second;
+            }
+        }
         return {};
     }
 

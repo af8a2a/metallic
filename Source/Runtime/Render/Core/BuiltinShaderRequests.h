@@ -45,6 +45,7 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/PostProcess/ColorGradingLUT", {"composeColorGradingLUT"});
     add("Features/PostProcess/StreamlineDLSSSupport", {"streamlineDlssDepthVertexMain", "streamlineDlssDepthFragmentMain", "streamlineDlssAlphaMain"});
     add("Features/PostProcess/UpscalerGuideResolve", {"upscalerGuideResolveMain"});
+    requests.push_back(makeColorResizeShaderRequest());
     add("Features/ReSTIR/RTXDIComposite", {"rtxdiCompositeMain"});
     add("Features/ReSTIR/RTXDIConfidence", {"rtxdiConfidenceMain"});
     add("Features/Samples/BunnyWireframe", {"bunnyWireframeVertexMain", "bunnyWireframeFragmentMain"});

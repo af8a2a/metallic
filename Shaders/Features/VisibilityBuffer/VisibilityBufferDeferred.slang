@@ -297,6 +297,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
             MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3);
     }
 #endif
+    if (push.debugView != kOpenPBRDebugViewFinal && !hasSurface) { radiance = float3(0.0); }
     if (gRealtimeShadowParameters[0].control.w != 0u) {
         float encoded = gRealtimeShadow.Load(int3(pixel, 0));
         radiance = float3(encoded * encoded);

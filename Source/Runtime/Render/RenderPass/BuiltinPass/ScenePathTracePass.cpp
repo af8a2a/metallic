@@ -649,6 +649,18 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        if (auto* color = context.output("color")) {
+            const auto debug = debugViewFromProperties(context.properties());
+            const bool displayDebug = useOpenPBRBsdf(context.properties()) &&
+                debug != kScenePathTraceDebugViewFinal;
+            color->colorEncoding = !displayDebug ? DisplayColorEncoding::SceneLinear :
+                (debug == kScenePathTraceDebugViewBaseColor || debug == kScenePathTraceDebugViewShadowTransmittance
+                    ? DisplayColorEncoding::DisplayLinearRec709 : DisplayColorEncoding::sRGB);
+        }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         if (realtime_) {

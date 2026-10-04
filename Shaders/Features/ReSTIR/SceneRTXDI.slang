@@ -1236,7 +1236,8 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
         sky *= push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
         gEmissive[pixel] = float4(sky, 1.0);
-        gOutput[pixel] = float4(push.outputLinear != 0u ? sky : toneMap(sky, push.exposure), 1.0);
+        gOutput[pixel] = float4(visualizationMode(push) != kVisualizationShaded ? float3(0.0)
+            : (push.outputLinear != 0u ? sky : toneMap(sky, push.exposure)), 1.0);
         return;
     }
 

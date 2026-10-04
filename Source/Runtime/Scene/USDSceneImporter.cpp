@@ -226,7 +226,7 @@ public:
     RenderTextureInfo directTexture(const TextureBinding& binding)
     {
         if (!validSource(binding.sourceIndex)) {
-            return {};
+            return {.colorMetadata = render::ksRGBColorTexture};
         }
         const auto found = directTextures_.find(binding.sourceIndex);
         if (found != directTextures_.end()) {
@@ -254,7 +254,7 @@ public:
         std::string_view materialName)
     {
         if (!color && !opacity) {
-            return {};
+            return {.colorMetadata = render::ksRGBColorTexture};
         }
         if (color && !opacity) {
             return directTexture(color);
@@ -587,10 +587,7 @@ void convertMaterials(
                 destination.warning,
                 "USD material '" + material.name +
                     "' has no supported UsdPreviewSurface shader");
-            material.metallicRoughnessTexture.colorMetadata = {};
-        material.normalTexture.colorMetadata = {};
-        material.occlusionTexture.colorMetadata = {};
-        destination.materials.push_back(std::move(material));
+            destination.materials.push_back(std::move(material));
             continue;
         }
 

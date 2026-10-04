@@ -78,10 +78,12 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
     }
     for (const auto& [key, root] : ir.outputs()) {
         const auto value = "v" + std::to_string(root);
-        if (key == "baseColor") { statements += "    result.baseColor.rgb = Metallic.WorkingColor::fromLinearRec709(saturate(" + value + ".rgb));\n"; manifest.outputMask |= 1; }
+        // IR arithmetic stays in its authored Rec.709 basis. Material bounds
+        // apply after returning to working RGB so native AP1 colors survive.
+        if (key == "baseColor") { statements += "    result.baseColor.rgb = saturate(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb));\n"; manifest.outputMask |= 1; }
         if (key == "metallic") { statements += "    result.params.x = saturate(" + value + ".x);\n"; manifest.outputMask |= 2; }
         if (key == "roughness") { statements += "    result.params.y = saturate(" + value + ".x);\n"; manifest.outputMask |= 4; }
-        if (key == "emissive") { statements += "    result.emissive.rgb = Metallic.WorkingColor::fromLinearRec709(clamp(" + value + ".rgb,0.0,1e6));\n"; manifest.outputMask |= 8; }
+        if (key == "emissive") { statements += "    result.emissive.rgb = clamp(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb),0.0,1e6);\n"; manifest.outputMask |= 8; }
     }
     return "PathTraceMaterial materialValue" + std::to_string(id) +
         "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext)\n{\n"

@@ -1304,6 +1304,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                         documentWarning_ = "Unsupported world.environment.colorSpace";
                         return false;
                     }
+                    environment_.sourceColorSpaceExplicit = environment.contains("colorSpace");
                     hasEnvironmentSettings_ = true;
                     environment_.enabled = environment.value("enabled", true);
                     environment_.visible = environment.value("visible", true);
@@ -1756,9 +1757,11 @@ bool SceneDocument::save(std::string& message)
             {"intensity", environment_.intensity},
             {"rotationDegrees", environment_.rotationDegrees},
             {"visible", environment_.visible},
-            {"colorSpace", render::colorSpaceName(environment_.sourceColorSpace)},
         }},
     };
+    if (environment_.hasExplicitSourceColorSpace()) {
+        document["world"]["environment"]["colorSpace"] = render::colorSpaceName(environment_.sourceColorSpace);
+    }
     if (!writeAtomically(documentPath_, document.dump(2) + '\n', message)) {
         return false;
     }

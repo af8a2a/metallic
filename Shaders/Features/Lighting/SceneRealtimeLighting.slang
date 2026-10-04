@@ -17,9 +17,10 @@ void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     ray.direction = rayDirectionFromPixel(samplePixel, push);
     HitInfo hit;
     uint seed = hash(pixel.x + pixel.y * push.width);
-    float3 radiance = traceClosest(ray, push, hit)
+    bool hasSurface = traceClosest(ray, push, hit);
+    float3 radiance = hasSurface
         ? shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, false)
-        : environmentRadiance(ray.direction, push, true);
+        : (push.debugView != kOpenPBRDebugViewFinal ? float3(0.0) : environmentRadiance(ray.direction, push, true));
     if (push.outputLinear != 0u) {
         gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
         return;

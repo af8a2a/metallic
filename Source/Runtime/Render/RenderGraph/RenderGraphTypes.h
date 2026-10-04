@@ -549,6 +549,10 @@ public:
     virtual SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const { return {}; }
     // Pure view description; scene scheduling and IO belong to StreamerSubsystem.
     virtual void describeSceneView(const RenderGraphExecutionContext&, MeshletStreamFrameDesc&) const {}
+    // Publish output encodings on the coordinator in graph order, before
+    // resources are frozen for parallel recording. Only output metadata may
+    // change here; do not issue commands or mutate input/pass/global state.
+    virtual void prepareResourceMetadata(RenderGraphExecutionContext&) const {}
     // Render-only camera, HZB and descriptor setup before the subsystem's traversal.
     virtual Result<> prepareExecution(RenderGraphExecutionContext&) { return {}; }
     virtual void sceneTraversalCheckpoint(RenderGraphExecutionContext&, std::string_view) const {}

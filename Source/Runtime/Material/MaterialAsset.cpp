@@ -419,12 +419,11 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         candidate.alphaMode = mode == "opaque" ? "OPAQUE" : mode == "mask" ? "MASK" : "BLEND";
         candidate.doubleSided = instance.features.at("doubleSided").get<bool>();
         candidate.unlit = instance.features.at("unlit").get<bool>();
+        const scene::RenderMaterial textureDefaults;
         for (const auto& [name, member] : detail::kTextures) {
             auto& info = candidate.*member;
-            const auto semantic = info.colorMetadata.semantic;
             info = {};
-            info.colorMetadata = semantic == render::TextureSemantic::Color
-                ? render::ksRGBColorTexture : render::TextureColorMetadata{};
+            info.colorMetadata = (textureDefaults.*member).colorMetadata;
             const auto value = texture(instance.resources.at(name));
             if (value.is_null()) { continue; }
             require(bool(resolver), "Material texture resolver is missing");

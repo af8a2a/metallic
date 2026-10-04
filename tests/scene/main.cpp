@@ -1369,6 +1369,13 @@ void testUsdFeatureScene(const std::filesystem::path& directory)
         scene.materials().end(),
         [](const metallic::scene::RenderMaterial& material) { return material.name == "Red"; });
     ASSERT_NE(red, scene.materials().end());
+    for (const auto& material : scene.materials()) {
+        EXPECT_EQ(material.baseColorTexture.colorMetadata, metallic::render::ksRGBColorTexture);
+        EXPECT_EQ(material.emissiveTexture.colorMetadata, metallic::render::ksRGBColorTexture);
+        EXPECT_EQ(material.metallicRoughnessTexture.colorMetadata.semantic, metallic::render::TextureSemantic::Data);
+        EXPECT_EQ(material.normalTexture.colorMetadata.semantic, metallic::render::TextureSemantic::Data);
+        EXPECT_EQ(material.occlusionTexture.colorMetadata.semantic, metallic::render::TextureSemantic::Data);
+    }
     expectVec4(red->baseColorFactor, float4(0.8f, 0.1f, 0.05f, 0.75f), "USD red material");
     EXPECT_EQ(red->alphaMode, "BLEND");
     ASSERT_GE(red->metallicRoughnessTexture.textureIndex, 0);
@@ -3907,6 +3914,7 @@ void testSceneDocumentRoundTrip(const std::filesystem::path& baseDirectory)
     EXPECT_FLOAT_EQ(autoDiscovered.environment().rotationDegrees, 37.0f);
     EXPECT_FALSE(autoDiscovered.environment().visible);
     EXPECT_EQ(autoDiscovered.environment().sourceColorSpace, metallic::render::kACEScg);
+    EXPECT_TRUE(autoDiscovered.environment().sourceColorSpaceExplicit);
 
     metallic::scene::SceneDocument directlyOpened;
     ASSERT_TRUE(directlyOpened.load(sidecarPath)) << directlyOpened.lastLoadResult().error;
@@ -5143,6 +5151,44 @@ TEST(SceneEditing, MutableVisibility)
 TEST(SceneEditing, DocumentRoundTrip)
 {
     testSceneDocumentRoundTrip(prepareOutputDirectory());
+}
+
+TEST(SceneEditing, EnvironmentColorSpaceDeclarationRoundTrip)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "environment_color_declaration";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    const auto sidecar = SceneDocument::sidecarPathForSource(source);
+    std::filesystem::remove(sidecar);
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.lastLoadResult().error;
+    const EnvironmentSettings legacy{.enabled = true, .path = directory / "Legacy.png"};
+    ASSERT_TRUE(document.setEnvironment(legacy));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    nlohmann::json saved;
+    {
+        std::ifstream stream(sidecar);
+        stream >> saved;
+    }
+    EXPECT_FALSE(saved["world"]["environment"].contains("colorSpace"));
+    SceneDocument reloaded;
+    ASSERT_TRUE(reloaded.load(source)) << reloaded.lastLoadResult().error;
+    EXPECT_FALSE(reloaded.environment().hasExplicitSourceColorSpace());
+    auto explicitLinear = reloaded.environment();
+    explicitLinear.sourceColorSpaceExplicit = true;
+    ASSERT_TRUE(reloaded.setEnvironment(explicitLinear));
+    ASSERT_TRUE(reloaded.save(message)) << message;
+    {
+        std::ifstream stream(sidecar);
+        stream >> saved;
+    }
+    EXPECT_EQ(saved["world"]["environment"].value("colorSpace", std::string{}), "lin_rec709");
+    SceneDocument tagged;
+    ASSERT_TRUE(tagged.load(source)) << tagged.lastLoadResult().error;
+    EXPECT_TRUE(tagged.environment().sourceColorSpaceExplicit);
+    EXPECT_EQ(tagged.environment().sourceColorSpace, metallic::render::kLinearRec709);
 }
 
 TEST(SceneEditing, MaterialProperties)

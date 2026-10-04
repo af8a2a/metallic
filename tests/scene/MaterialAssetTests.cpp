@@ -327,6 +327,28 @@ TEST_F(MaterialAssets, ColorTextureTagsSurviveExportAndRejectDataUsage)
     EXPECT_NE(error.find("Data textures"), std::string::npos);
 }
 
+TEST_F(MaterialAssets, TextureSemanticsComeFromTheSlotRatherThanExistingMetadata)
+{
+    auto asset = instance();
+    asset.resources["baseColorTexture"] = {{"uri", "asset://Textures/Tagged.png"}, {"colorSpace", "acescg"}};
+    asset.resources["emissiveTexture"] = {{"uri", "asset://Textures/Emission.png"}};
+    asset.resources["normalTexture"] = {{"uri", "asset://Textures/Normal.png"}};
+    MaterialAssetLibrary library(root);
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(asset, resolved, error)) << error;
+    scene::RenderMaterial output;
+    output.baseColorTexture = {};
+    output.emissiveTexture = {};
+    output.normalTexture.colorMetadata = render::ksRGBColorTexture;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error)) << error;
+    EXPECT_EQ(output.baseColorTexture.colorMetadata, (render::TextureColorMetadata{render::TextureSemantic::Color, render::kACEScg}));
+    EXPECT_EQ(output.emissiveTexture.colorMetadata, render::ksRGBColorTexture);
+    EXPECT_EQ(output.normalTexture.colorMetadata, render::TextureColorMetadata{});
+    resolved.resources["normalTexture"]["colorSpace"] = "acescg";
+    EXPECT_FALSE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error));
+    EXPECT_NE(error.find("Data textures"), std::string::npos);
+}
+
 TEST_F(MaterialAssets, RejectsCyclesMissingParentsAndDefinitionMismatch)
 {
     MaterialAssetLibrary library(root);

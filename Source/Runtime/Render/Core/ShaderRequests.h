@@ -155,6 +155,11 @@ inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program, cons
     return request;
 }
 
+inline ShaderRequest makeColorResizeShaderRequest()
+{
+    return {.module = "Features/PostProcess/ColorResize", .entry = "colorResizeMain"};
+}
+
 struct ShadowShaderOptions {
     bool streamed = false;
     bool streamTlas = false;

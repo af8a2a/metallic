@@ -5887,15 +5887,8 @@ public:
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
-        // Debug views are display-referred. Histogram auto-exposure remeters
-        // each view and makes otherwise-identical diagnostics incomparable.
-        render::RenderGraphNode* autoExposure = sample.graph.findNode("AutoExposure");
-        if (autoExposure == nullptr || !sample.graph.removeNode(autoExposure->id)) {
-            return RHITestResult::fail("failed to remove AutoExposure from OpenPBR debug views");
-        }
-        if (sample.graph.addEdge("PathTrace.color", "FinalBlit.source") == nullptr) {
-            return RHITestResult::fail("failed to connect PathTrace.color to FinalBlit for OpenPBR debug views");
-        }
+        // Keep the production exposure and ACES LUT chain: display/data diagnostics
+        // must publish their encoding and bypass scene exposure/grading at runtime.
 
         struct DebugCase {
             const char* name;
@@ -6099,8 +6092,13 @@ public:
                 const uint32_t frontFaceR = frontFacePixel & 0xffu;
                 const uint32_t frontFaceG = (frontFacePixel >> 8u) & 0xffu;
                 const uint32_t frontFaceB = (frontFacePixel >> 16u) & 0xffu;
-                const bool isFrontFace = frontFaceG > 200u && frontFaceR < 64u && frontFaceB < 80u;
-                const bool isBackFace = frontFaceR > 200u && frontFaceG < 64u && frontFaceB < 80u;
+                const auto nearCode = [](uint32_t actual, uint32_t expected) {
+                    return std::abs(int(actual) - int(expected)) <= 1;
+                };
+                // These authored display code values must be unchanged by the working basis,
+                // auto exposure or the ACES output LUT (FP16 storage permits one code value).
+                const bool isFrontFace = nearCode(frontFaceR, 26u) && nearCode(frontFaceG, 230u) && nearCode(frontFaceB, 51u);
+                const bool isBackFace = nearCode(frontFaceR, 230u) && nearCode(frontFaceG, 26u) && nearCode(frontFaceB, 51u);
                 if (!isFrontFace && !isBackFace) {
                     continue;
                 }

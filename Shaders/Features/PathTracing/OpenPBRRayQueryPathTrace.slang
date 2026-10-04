@@ -287,6 +287,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             found = traceClosest(ray, push, hit);
         }
         if (!found) {
+            // Diagnostic colors carry display/data encoding, not scene radiance.
+            if (push.debugView != kOpenPBRDebugViewFinal) { return float3(0.0); }
             if (captureSpecularHitDistance) {
                 specularHitDistance = 65504.0;
                 captureSpecularHitDistance = false;
@@ -504,8 +506,7 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     color /= float(samples);
 
     if (debugViewEnabled) {
-        if (push.debugView == kOpenPBRDebugViewShadowTransmittance) { color = Metallic.WorkingColor::toLinearRec709(color); }
-        color = saturate(color);
+        color = openPbrDisplayDebugColor(push, color);
     } else if (push.outputLinear == 0u) {
         color = Metallic.WorkingColor::toLinearRec709(color);
         color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));

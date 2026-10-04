@@ -98,6 +98,7 @@ TEST(ShaderRequests, DeferredDoesNotRequestRayTracingCapabilities)
 TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequests)
 {
     const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    EXPECT_TRUE(contains(catalog, makeColorResizeShaderRequest()));
     size_t deferredCount = 0;
     for (size_t i = 0; i < catalog.size(); ++i) {
         EXPECT_EQ(std::count(catalog.begin(), catalog.end(), catalog[i]), 1);

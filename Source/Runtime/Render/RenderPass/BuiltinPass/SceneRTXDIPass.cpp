@@ -89,6 +89,14 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        if (auto* color = context.output("color")) {
+            color->colorEncoding = visualizationModeFromProperties(context.properties()) == kRTXDIVisualizationShaded
+                ? DisplayColorEncoding::SceneLinear : DisplayColorEncoding::sRGB;
+        }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{

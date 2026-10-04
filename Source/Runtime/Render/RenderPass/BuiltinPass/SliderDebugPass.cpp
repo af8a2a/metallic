@@ -45,6 +45,13 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        if (const auto* source = context.input("sourceA")) {
+            if (auto* color = context.output("color")) { color->colorEncoding = source->colorEncoding; }
+        }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
@@ -79,6 +86,11 @@ public:
         if (!isComparisonSource(sourceA, context.width(), context.height()) ||
             !isComparisonSource(sourceB, context.width(), context.height()) ||
             !color.valid() || color.view() == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        const auto* inputA = context.input("sourceA");
+        const auto* inputB = context.input("sourceB");
+        if (!inputA || !inputB || inputA->colorEncoding != inputB->colorEncoding) {
             return makeError(Error::InvalidArgument);
         }
         const auto& properties = context.properties();

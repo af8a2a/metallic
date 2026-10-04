@@ -9,6 +9,10 @@ using Metallic.ColorGrading;
 
 float3 displayOutput(float3 color, DisplayOutputPush push)
 {
+    if (push.inputEncoding == 4u) {
+        return push.hdr != 0u ? color * (push.paperWhiteNits / 80.0)
+            : displayLinearToSrgb(saturate(color));
+    }
 #if FINAL_USE_LUT
     if ((push.inputEncoding == 1u || push.inputEncoding == 3u) && push.hasLut != 0u) {
         color = float3(isfinite(color.x) ? max(color.x, 0.0) : 0.0,

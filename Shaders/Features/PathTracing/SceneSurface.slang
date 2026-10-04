@@ -476,7 +476,7 @@ float3 environmentKeyLightRadiance(ScenePathTracePush push)
     if (push.environmentMode == kEnvironmentModeDisabled) {
         return float3(0.0, 0.0, 0.0);
     }
-    return kEnvironmentKeyLightRadiance * max(push.environmentIntensity, 0.0);
+    return Metallic.WorkingColor::fromLinearRec709(kEnvironmentKeyLightRadiance) * max(push.environmentIntensity, 0.0);
 }
 
 float3 environmentLocalDirectionFromUv(float2 uv)

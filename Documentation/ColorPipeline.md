@@ -36,9 +36,11 @@ at upload: base color, emission, specular tint, attenuation, diffuse transmissio
 hair color and hair diffuse tint. Scalar weights, alpha, IOR and geometry data
 are unchanged. GPUScene, streamed materials and resident ray-query materials use
 this common boundary. Material Value IR performs its old authoring-space math
-and converts color-valued outputs back to working RGB. Untagged Rec.709 texture
-samples retain IR v1 semantics; explicitly tagged wide-gamut colors enter the
-Rec.709 authoring basis before IR arithmetic.
+and converts color-valued outputs back to working RGB before applying reflectance
+or emission bounds. This preserves native AP1 colors whose Rec.709 coordinates
+can be negative or exceed one. Untagged Rec.709 texture samples retain IR v1
+semantics; explicitly tagged wide-gamut colors enter the Rec.709 authoring basis
+before IR arithmetic.
 
 Texture semantics belong to the **material usage**, allowing one image to be
 referenced by both color and data slots. Base color, emission, specular color and
@@ -79,8 +81,14 @@ Environment settings store `sourceColorSpace`; world JSON accepts `colorSpace`
 with the same names. Untagged HDR is linear Rec.709/D65. Explicitly tagged native
 ACEScg HDR images are accepted. Color conversion occurs **before** spherical
 mips, SH projection, specular convolution and importance PDF generation. Changing
-only the source tag invalidates/reloads the environment. The existing stb decoder
-supports HDR and its existing image formats; EXR ingestion is not added here.
+only the source tag invalidates/reloads the environment. Tagged LDR images load
+raw normalized 8/16-bit samples before the declared transfer function is decoded;
+HDR images retain floating-point samples. Untagged LDR environments preserve the
+historical stb gamma 2.2 decode for compatibility. A missing JSON `colorSpace`
+remains missing when saved. C++ callers declaring linear Rec.709 explicitly set
+`sourceColorSpaceExplicit=true`; non-default source spaces imply an explicit tag.
+The existing stb decoder supports HDR and its existing image formats; EXR
+ingestion is not added here.
 
 ## Lighting and post processing
 
@@ -113,7 +121,12 @@ DLSS-SR/RR receive linear HDR working color (`colorBuffersHDR=true`). RR albedos
 use the same linear working basis; normals, roughness and motion remain Data.
 The integrated Streamline guides require linear/HDR inputs and do not prescribe
 RGB primaries, so retaining ACEScg is an integration choice, not a claim about
-model training. DLSS-NR retains its display sRGB RGBA8 input.
+model training. Display/data diagnostics bypass SR/RR evaluation, resize in their
+own encoding and retain it through post processing. Returning to scene rendering
+resets SDK history. Same-size diagnostic copies also work without bindless;
+resizing diagnostics requires the bindless resize kernel. Existing RR beauty
+and RR/SR Off compilation keep their previous heap requirements. DLSS-NR retains
+its display sRGB RGBA8 input.
 [SR guide](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS.md)
 and [RR guide](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_RR.md).
 
@@ -138,7 +151,15 @@ input to display Rec.709 before its legacy curve or scRGB mapping.
 | HDR10 | Display BT.2020/D65, absolute ST 2084 PQ |
 
 UI, calibration ramps and normal/ID debug images remain display/data colors.
-SliderDebug retains its existing requirement for equal input encodings. The
+BaseColor and shadow-transmittance diagnostics use `DisplayLinearRec709`, fixed
+linear Rec.709/D65; normal/ID/front-face diagnostics retain authored sRGB display
+code values. Diagnostic misses are black so a single output never mixes scene
+radiance and display/data encodings. Both diagnostic encodings bypass physical
+exposure and ACES grading; SDR encodes display-linear values to sRGB and HDR maps
+them to scRGB paper white. Per-frame metadata is published in graph order before
+parallel recording snapshots are frozen, allowing debug/final hot switching.
+AutoExposure, CopyColor, SliderDebug and SR/RR propagate those encodings.
+SliderDebug requires equal input encodings. The
 standalone RTXCR procedural material demo retains its independent Rec.709-to-sRGB
 display fixture; it does not supply a scene-linear graph signal.
 

@@ -441,5 +441,14 @@ float3 openPbrPrimaryDebugColor(
     return float3(1.0, 0.0, 1.0);
 }
 
+float3 openPbrDisplayDebugColor(ScenePathTracePush push, float3 color)
+{
+    // BaseColor is already display-linear Rec.709; normal/ID values are display code values.
+    if (push.debugView == kOpenPBRDebugViewShadowTransmittance) {
+        color = Metallic.WorkingColor::toLinearRec709(color);
+    }
+    return saturate(color);
+}
+
 
 #endif
