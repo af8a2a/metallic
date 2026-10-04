@@ -10,6 +10,8 @@
 
 2026-10-04 shader 接口进展：外部 **Phase 2** 的独立 `MaterialProgram` 模块已建立 Context / InstanceRef / BSDF 数据契约，并通过共享 legacy storage program 接入现有 ray、VBuffer 和 stream 材质读取。具体约定、GPU 验证及 Phase 3 的职责边界见 [MaterialSystemPhase2](MaterialSystemPhase2.md)。
 
+2026-10-04 三阶段进展：外部 **Phase 3** 已实现 Material / Closure / PreparedClosure 的 associated-type 接口、Debug Lambert 与 prepared-only 泛型光照/路径延续消费者。GPU 数学检查、多灯纹理读取计数和二次命中诊断渲染已验证；接口、实测数据与生产 OpenPBR 迁移边界见 [MaterialSystemPhase3](MaterialSystemPhase3.md)。
+
 ## 1 目标和首个架构验收点
 
 最终统一的是材质定义、编译、实例、资源生命周期和散射接口。Surface、Fiber 及特殊输运仍保留各自的交互数据、能力边界和执行策略。

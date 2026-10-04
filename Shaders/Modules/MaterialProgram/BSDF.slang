@@ -22,7 +22,7 @@ public struct BSDFEval
 
 // Directions point away from the surface, in world space. eta is eta_i/eta_t
 // for transmission, 1 for reflection. Transport-mode scaling belongs to the
-// future prepared closure; these records do not silently apply it.
+// prepared closure; these records do not silently apply it.
 public struct BSDFSample
 {
     public float3 wiWS;

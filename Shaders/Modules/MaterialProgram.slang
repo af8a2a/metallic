@@ -5,3 +5,4 @@ module MaterialProgram;
 __include "MaterialProgram/SurfaceMaterialContext.slang";
 __include "MaterialProgram/MaterialInstanceRef.slang";
 __include "MaterialProgram/BSDF.slang";
+__include "MaterialProgram/SurfaceClosure.slang";
