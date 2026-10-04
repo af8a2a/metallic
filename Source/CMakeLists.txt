@@ -280,6 +280,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Material/MaterialAsset.cpp
     Runtime/Material/MaterialFeatures.cpp
     Runtime/Material/MaterialValueIR.cpp
+    Runtime/Material/MaterialClosureIR.cpp
     Runtime/Scene/glTFGPUInstancing.cpp
     Runtime/Scene/GeometryAttributes.cpp
     Runtime/Scene/MeshletStreamAsset.cpp

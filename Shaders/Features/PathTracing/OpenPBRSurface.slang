@@ -305,7 +305,7 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
 // resolved numeric inputs; stochastic filtering never advances inside lighting.
 struct OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> : ISurfaceMaterialProgram
 {
-    typealias Closure = OpenPBRClosure;
+    typealias Closure = OpenPBRCompositeClosure;
     TSource source;
     ScenePathTracePush push;
     RayCone rayCone;

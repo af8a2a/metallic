@@ -115,4 +115,7 @@ struct OpenPBRClosure : ISurfaceClosure
     }
 };
 
+// Canonical Phase 10 family name. The vendor-backed reference stays intact.
+typealias OpenPBRCompositeClosure = OpenPBRClosure;
+
 #endif
