@@ -36,7 +36,7 @@ struct MaterialValueManifest
     uint32_t parameterMask = 0;
     // Inputs: position, geometry normal, UV, baseColor, metallic, roughness, emissive.
     uint32_t inputMask = 0;
-    // Outputs: baseColor, metallic, roughness, emissive.
+    // Outputs: baseColor, metallic, roughness, emissive, OpenPBR surface/volume inputs.
     uint32_t outputMask = 0;
     uint32_t expressionNodes = 0;
     uint32_t textureMask = 0, footprintMask = 0, featureMask = 0;

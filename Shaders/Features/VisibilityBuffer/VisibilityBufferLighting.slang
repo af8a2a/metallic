@@ -128,7 +128,10 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     float3 radiance = shaded.radiance;
 #if METALLIC_CUSTOM_MATERIALS
-    if (surface.family != 0u) { return radiance + sceneSlabEnvironment(shaded.prepared, push, seed); }
+    if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
+        surface.inputs.specular_roughness_anisotropy > 0.0) {
+        return radiance + sceneSurfaceEnvironment(shaded.prepared, push, seed) * surface.occlusion;
+    }
 #endif
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 normal = hit.normal;

@@ -97,6 +97,78 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MaterialValueCompilerTest);
 
+class PainterLookDevScenesTest final : public RHITest
+{
+public:
+    PainterLookDevScenesTest() { name = "painter_lookdev_scenes"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto samples = listBuiltInRenderSamples();
+        std::erase_if(samples, [](const auto& sample) { return sample.category != "Painter Validation"; });
+        if (samples.empty()) { return RHITestResult::skip("Run Tools/MaterialValidation/BuildLookDevScenes.py first"); }
+        if (samples.size() != 24) { return RHITestResult::fail("Expected all 24 Painter scenes"); }
+        std::string log;
+        RenderGraphPreviewRenderer preview;
+        if (!preview.initialize(context.enableValidation, true, false)) { return RHITestResult::fail("Device failed"); }
+        preview.setRawReadbackEnabled(true);
+        scene::SceneDocument document;
+        nlohmann::json evidence = nlohmann::json::array();
+        for (const auto& desc : samples) {
+            RenderSampleLoadResult sample;
+            if (!loadBuiltInRenderSample(desc.id, sample, log) || !document.load(desc.scenePath) ||
+                !document.documentWarning().empty()) {
+                return RHITestResult::fail(desc.id + ": " + log + document.documentWarning());
+            }
+            for (const auto& material : document.materials()) {
+                if (material.valueProgram.empty()) { return RHITestResult::fail(desc.id + ": material inputs missing"); }
+            }
+            preview.bindRuntimeScene(&document);
+            preview.setEnvironment(document.environment());
+            preview.setLighting(document.lighting());
+            for (const char* pass : {"Reference", "Deferred"}) {
+                auto* node = sample.graph.findNode(pass);
+                node->properties["samples"] = 4;
+                node->properties["maxDepth"] = 8;
+                node->properties["accumulate"] = false;
+            }
+            sample.graph.markDirty();
+            for (const char* output : {"Reference.color", "Deferred.color"}) {
+                for (int frame = 0; frame < 3; ++frame) {
+                    if (!preview.render(sample.graph, 256, 256, output)) { return RHITestResult::fail(desc.id + ": " + preview.lastLog()); }
+                    if (preview.lastLog().find("error material") != std::string::npos ||
+                        preview.lastLog().find("error[E") != std::string::npos) {
+                        return RHITestResult::fail(desc.id + ": " + preview.lastLog());
+                    }
+                }
+                if (preview.readbackFormat() != Format::RGBA32Sfloat || preview.readbackBytes().empty()) {
+                    return RHITestResult::fail("Expected linear float32 output");
+                }
+                float maximum = 0;
+                size_t errorPixels = 0;
+                for (size_t offset = 0; offset + 16 <= preview.readbackBytes().size(); offset += 16) {
+                    std::array<float, 4> pixel;
+                    std::memcpy(pixel.data(), preview.readbackBytes().data() + offset, 16);
+                    if ((pixel[0] == 1.0f || pixel[0] == 0.08f) && pixel[1] == 0 && pixel[2] == pixel[0]) { ++errorPixels; }
+                }
+                if (errorPixels > 16) { return RHITestResult::fail(desc.id + ": material compiler error checker detected"); }
+                for (size_t offset = 0; offset < preview.readbackBytes().size(); offset += 4) {
+                    float value; std::memcpy(&value, preview.readbackBytes().data() + offset, 4);
+                    if (!std::isfinite(value)) { return RHITestResult::fail(desc.id + ": nonfinite HDR"); }
+                    if ((offset / 4) % 4 != 3) { maximum = std::max(maximum, value); }
+                }
+                if (maximum <= 0) { return RHITestResult::fail(desc.id + ": black image"); }
+                if (!saveRgba8Png(context.outputDirectory / (desc.id + "-" + output + ".png"),
+                    reinterpret_cast<const uint8_t*>(preview.pixels().data()), 256, 256, log)) { return RHITestResult::fail(log); }
+                evidence.push_back({{"scene", desc.id}, {"output", output}, {"maximum", maximum},
+                    {"materials", document.materials().size()}, {"textures", document.textures().size()}});
+                std::ofstream(context.outputDirectory / "PainterScenes.json") << evidence.dump(2);
+            }
+        }
+        return RHITestResult::pass("24 complete Painter scenes, sequential PT/Deferred rendering, finite HDR, screenshots saved; no pixel equivalence claim");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PainterLookDevScenesTest);
+
 class MaterialValuePublicationTest : public RHITest
 {
 public:

@@ -37,6 +37,44 @@ cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
 
 ## Inspector 材质编辑
 
+### Painter 验证场景选项
+
+RenderGraph 设置中的 **Painter Material Scene** 可以切换整组 Painter 验证场景，
+包括网格、各材质实例、贴图、固定相机、中性环境和 PT / VBuffer 比较图。
+当前本地包共有 24 项：M01–M08 的 uniform/textured、六组 5×5 参数扫描，
+以及 H01 HDR 发光补充的两个版本。左侧 Reference 是 PT，右侧是 Deferred；
+使用现有 Slider 调整比较范围。有未保存的场景修改时沿用保存/放弃/取消提示。
+
+这些选项来自本地生成的 `build/MaterialValidation/PainterLookDev/Catalog.json`，
+不依赖正在运行的 Painter，也不加入默认构建。缺少资源时先执行：
+
+```powershell
+python Tools/MaterialValidation/BuildLookDevScenes.py --root build/MaterialValidation/PainterValidation
+cmake --build build-scheduling-release --target LookDev
+.\build-scheduling-release\Source\LookDev.exe --sample painter-M03_CoatedPaint-textured --skip-shader-warmup
+```
+
+重新生成资源必须使用空输出目录；默认目录已有内容时不会覆盖。启动时读取目录，
+导入新包后重启 LookDev。完整参数及转换限制见生成目录的 `ImportReceipt.json`。
+原始 SPP / EXR 仍保留在 PainterValidation 中。
+
+材质颜色以 ACEScg 为真值，Value IR 常量无裁切转换到作者 Rec.709 空间，
+彩色贴图显式标记 ACEScg。当前 resident 纹理上传使用 RGBA8，预览 PNG
+由 Painter EXR 转换并记录量化误差；它们不能代替原始 32f EXR 做精密输入验收。
+发光亮度除以 1000，与 Painter shader 的 nits 约定一致。
+M06 / S05 使用引擎原有体积传输；Iray 绝对尺度仍未标定，Deferred 和 PT
+的体积/阴影行为也不保证一致，因此切换成功不代表跨渲染器物理一致性通过。
+
+高级参数通过 Value IR 的 `coatWeight`、`coatRoughness`、`coatIOR`、
+`fuzzWeight`、`fuzzColor`、`fuzzRoughness`、`specularAnisotropy` 和
+`anisotropyTangent` 进入同一 OpenPBR Closure。切线输入为编码 XY 方向，
+0.5 对应零分量；颜色输出遵循 Value IR 的 linear Rec.709 约定。
+`attenuationColor` 显式启用 OpenPBR 吸收颜色，避免额外叠加旧 glTF 的基础色透射染色；
+仅这一显式体积输入允许 Surface Value program 绑定透射材质，Slab 的限制不变。
+coat/fuzz/各向异性的实时环境项采样实际 BSDF，避免旧 split-sum 忽略高级层。
+
+### 编辑当前选中材质
+
 在视口或 Scene Browser 选中模型、Mesh、Primitive，或在 Scene List 中直接选中
 Material，即可在 Inspector 的 **Material** 区域编辑关联材质。一个网格使用多个
 材质时分别显示；共享同一材质的实例会一起更新。

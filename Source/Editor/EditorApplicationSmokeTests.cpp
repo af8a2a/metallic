@@ -313,6 +313,43 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
 
 bool EditorApplication::runSceneSwitchSmokeTest()
 {
+    if (std::getenv("METALLIC_SMOKE_TEST_PAINTER_SWITCH")) {
+        for (const char* id : {"painter-M01_NeutralDielectric-uniform", "painter-M03_CoatedPaint-textured",
+                "painter-M08_MaskedCard-textured", "painter-H01_HDREmission-textured", "painter-M01_NeutralDielectric-uniform"}) {
+            loadBuiltInSample(id);
+            render::RenderSampleLoadResult expected;
+            std::string message;
+            if (!render::loadBuiltInRenderSample(id, expected, message)) { return false; }
+            bool ready = false;
+            for (uint32_t frame = 0; frame < 180; ++frame) {
+                auto profileFrame = profiler_.beginFrame();
+                const render::vulkan::StreamlineFrameScope streamlineFrame;
+                if (!waitForFrameSlotBeforeInput()) { return false; }
+                pollEvents();
+                if (!renderFrame()) { return false; }
+                if (viewportPreviewValid_ && scene_.sourcePath() == std::filesystem::path(expected.desc.scenePath)) {
+                    ready = true;
+                    if (frame > 4) { break; }
+                }
+            }
+            if (!ready || !scene_.documentWarning().empty()) {
+                spdlog::error("[Smoke Painter Switch] Failed {}: {}", id, scene_.documentWarning());
+                return false;
+            }
+            spdlog::info("[Smoke Painter Switch] Rendered {} with {} materials and {} textures", id,
+                scene_.materials().size(), scene_.textures().size());
+        }
+        const auto source = scene_.sourcePath();
+        scene_.setDirty(true);
+        loadBuiltInSample("painter-M08_MaskedCard-textured");
+        const bool protectedEdits = scene_.sourcePath() == source && pendingSceneAction_ == PendingSceneAction::LoadSample;
+        scene_.setDirty(false);
+        pendingSceneAction_ = PendingSceneAction::None;
+        pendingSceneValue_.clear();
+        if (!protectedEdits) { return false; }
+        spdlog::info("[Smoke Painter Switch] Passed full scene changes, return to baseline and unsaved-edit protection");
+        return true;
+    }
     if (std::getenv("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
         const auto render = [&]() {
             auto profileFrame = profiler_.beginFrame();

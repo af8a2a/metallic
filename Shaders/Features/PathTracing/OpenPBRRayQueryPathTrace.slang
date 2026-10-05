@@ -329,6 +329,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, rayCone, ray.direction),
             legacyMaterialInstanceRef(hit.materialIndex));
         let materialEval = evaluated.closure;
+        // Value inputs (including textured volume absorption) belong to this hit.
+        material = program.material;
         hit = program.hit;
         seed = program.seed;
         float4 normalSample = program.normalSample;

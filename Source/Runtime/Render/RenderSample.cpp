@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #include <algorithm>
+#include <fstream>
 #include <string>
 #include <utility>
 
@@ -777,6 +778,52 @@ const RenderSample& gpuDrivenTerrainP1UnifiedSample()
     return sample;
 }
 
+class PainterValidationSample final : public RenderSample
+{
+public:
+    explicit PainterValidationSample(const nlohmann::json& value) :
+        id_(value.at("id")), name_(value.at("name")), description_(value.at("description")),
+        scene_(value.at("scenePath")), graph_(value.at("graphPath")), environment_(value.at("environment")) {}
+    std::string_view id() const override { return id_; }
+    std::string_view name() const override { return name_; }
+    std::string_view category() const override { return "Painter Validation"; }
+    std::string_view description() const override { return description_; }
+    std::string scenePath() const override { return scene_; }
+    std::string graphPath() const override { return graph_; }
+    std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        return RenderSampleEnvironmentDesc{.path = environment_};
+    }
+private:
+    std::string id_, name_, description_, scene_, graph_, environment_;
+};
+
+const std::vector<PainterValidationSample>& painterValidationSamples()
+{
+    // Optional locally generated assets. Read once, not on every ImGui frame.
+    static const auto samples = [] {
+        std::vector<PainterValidationSample> result;
+        std::ifstream file(projectPath("build/MaterialValidation/PainterLookDev/Catalog.json"));
+        if (!file) { return result; }
+        try {
+            const auto catalog = nlohmann::json::parse(file);
+            if (catalog.at("version") != 1 || !catalog.at("samples").is_array() || catalog.at("samples").size() > 64) { return result; }
+            for (const auto& entry : catalog.at("samples")) {
+                PainterValidationSample sample(entry);
+                if (!sample.id().starts_with("painter-") ||
+                    std::any_of(result.begin(), result.end(), [&](const auto& other) { return other.id() == sample.id(); }) ||
+                    !std::filesystem::is_regular_file(sample.scenePath()) ||
+                    !std::filesystem::is_regular_file(sample.graphPath())) { return std::vector<PainterValidationSample>{}; }
+                result.push_back(std::move(sample));
+            }
+        } catch (const std::exception&) { result.clear(); }
+        return result;
+    }();
+    return samples;
+}
+
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
@@ -792,7 +839,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GPUDrivenZorahFullSample gpuDrivenZorahFull;
     static const GPUDrivenMiniZorahSample gpuDrivenMiniZorah;
     static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
-    return {
+    std::vector<const RenderSample*> samples{
         &realtimeLighting,
         &gpuDrivenTessellation,
         &lightGridDebug,
@@ -822,6 +869,8 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainP1UnifiedSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
+    for (const auto& sample : painterValidationSamples()) { samples.push_back(&sample); }
+    return samples;
 }
 
 } // namespace

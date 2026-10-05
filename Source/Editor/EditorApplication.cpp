@@ -2212,7 +2212,8 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
-        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
             const bool passed = runSceneSwitchSmokeTest();
@@ -7349,7 +7350,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         spdlog::warn("[Startup] Built-in sample load failed: {}", message);
         return;
     }
-    if (!startupScenePath_.empty() &&
+    if (!sample.desc.id.starts_with("painter-") && !startupScenePath_.empty() &&
         !render::setRenderSampleScenePath(sample, startupScenePath_, message)) {
         renderGraphStatus_ = message;
         spdlog::warn("[Startup] Built-in sample scene override failed: {}", message);
@@ -8571,6 +8572,25 @@ void EditorApplication::drawRenderGraphSettingsPanel()
             }
         }
         ImGui::EndCombo();
+    }
+    if (!gpuDrivenScenesOnly_) {
+        const auto samples = render::listBuiltInRenderSamples();
+        const auto current = std::find_if(samples.begin(), samples.end(), [&](const auto& sample) {
+            return sample.category == "Painter Validation" && sample.graphPath == graphFilePath_;
+        });
+        if (ImGui::BeginCombo("Painter Material Scene", current != samples.end() ? current->name.c_str() : "Select scene...")) {
+            bool available = false;
+            for (const auto& sample : samples) {
+                if (sample.category != "Painter Validation") { continue; }
+                available = true;
+                if (ImGui::Selectable(sample.name.c_str(), current != samples.end() && sample.id == current->id)) {
+                    loadBuiltInSample(sample.id.c_str());
+                }
+                if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", sample.description.c_str()); }
+            }
+            if (!available) { ImGui::TextDisabled("No imported Painter scenes. Run BuildLookDevScenes.py and restart."); }
+            ImGui::EndCombo();
+        }
     }
     ImGui::Separator();
     const std::string presentationOutput = renderGraph_.presentationOutputName();

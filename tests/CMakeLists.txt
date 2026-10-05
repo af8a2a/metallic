@@ -158,6 +158,18 @@ if(WIN32)
     set_tests_properties(MetallicLookDevMaterialInspectorSmoke PROPERTIES
         LABELS "editor" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
     )
+    # Local Painter references are generated explicitly, never a build dependency.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/build/MaterialValidation/PainterLookDev/Catalog.json")
+        add_test(NAME MetallicLookDevPainterSceneSwitchSmoke
+            COMMAND ${CMAKE_COMMAND}
+                "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+                "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-painter-switch"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunPainterSceneSwitchSmoke.cmake"
+        )
+        set_tests_properties(MetallicLookDevPainterSceneSwitchSmoke PROPERTIES
+            LABELS "editor;painter" TIMEOUT 660 RESOURCE_LOCK MetallicEditor
+        )
+    endif()
     add_test(NAME MetallicLookDevSceneSwitchSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"

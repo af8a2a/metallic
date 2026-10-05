@@ -227,7 +227,10 @@ MaterialValueIR MaterialValueIR::lower(const Json& root)
     } else { outputs.erase("version"); }
     require(closures || !outputs.empty(), "Value program has no outputs");
     for (const auto& [name, value] : outputs.items()) {
-        require(name == "baseColor" || name == "metallic" || name == "roughness" || name == "emissive" || name == "coverage", "Unsupported Value IR output");
+        const bool openPBR = name == "coatWeight" || name == "coatRoughness" || name == "coatIOR" ||
+            name == "fuzzWeight" || name == "fuzzColor" || name == "fuzzRoughness" ||
+            name == "specularAnisotropy" || name == "anisotropyTangent" || name == "attenuationColor";
+        require(name == "baseColor" || name == "metallic" || name == "roughness" || name == "emissive" || name == "coverage" || openPBR, "Unsupported Value IR output");
         require(!closures || name == "emissive" || name == "coverage", "Slab material outputs support only emissive and coverage");
         builder.ir.outputs_[name] = builder.expression(value);
     }

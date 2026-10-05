@@ -7,7 +7,11 @@ using Metallic;
 #define OPENPBR_LANGUAGE_TARGET_SLANG 1
 #define OPENPBR_USE_TEXTURE_LUTS 1
 #define OPENPBR_ENERGY_TABLES_USE_UINT16 0
+#if METALLIC_CUSTOM_MATERIALS
+#define OPENPBR_FEATURE_EnableSheenAndCoat true
+#else
 #define OPENPBR_FEATURE_EnableSheenAndCoat false
+#endif
 #define OPENPBR_FEATURE_EnableDispersion false
 #define OPENPBR_FEATURE_EnableTranslucency true
 #define OPENPBR_FEATURE_EnableMetallic true
@@ -167,7 +171,7 @@ struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
 
 OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     HitInfo hit,
-    PathTraceMaterial material,
+    inout PathTraceMaterial material,
     ScenePathTracePush push,
     RayCone rayCone,
     float3 rayDirection,
@@ -180,7 +184,8 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
         ? footprint.isotropicLod0 : sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection).footprint.isotropicLod0;
     valueContext.textureCount = push.materialTextureCount;
     valueContext.ntcCount = push.ntcTextureSetCount;
-    material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material, valueContext);
+    MaterialValueOpenPBRInputs surface = defaultMaterialValueOpenPBRInputs();
+    material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material, valueContext, surface);
 #endif
     float4 baseColorSample = source.loadTexture(
         material.baseColorTexture,
@@ -297,6 +302,20 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
         safeNormalize(hit.tangent.xyz, float3(1.0, 0.0, 0.0)),
         safeNormalize(hit.bitangent, float3(0.0, 1.0, 0.0)));
     result.inputs.geometry_coat_basis = result.inputs.geometry_basis;
+#if METALLIC_CUSTOM_MATERIALS
+    result.inputs.coat_weight = surface.coatWeight;
+    result.inputs.coat_roughness = surface.coatRoughness;
+    result.inputs.coat_ior = surface.coatIOR;
+    result.inputs.fuzz_weight = surface.fuzzWeight;
+    result.inputs.fuzz_color = surface.fuzzColor;
+    result.inputs.fuzz_roughness = surface.fuzzRoughness;
+    result.inputs.specular_roughness_anisotropy = surface.specularAnisotropy;
+    result.inputs.specular_anisotropy_rotation_cos_sin = dot(surface.anisotropyTangent, surface.anisotropyTangent) > 1e-12
+        ? normalize(surface.anisotropyTangent) : float2(1, 0);
+    // Explicit OpenPBR volume color is applied by the interior stack, without
+    // the legacy glTF base-color surface tint being applied a second time.
+    if (surface.volumeColor) { result.inputs.transmission_color = float3(1); }
+#endif
     return result;
 }
 
@@ -413,7 +432,7 @@ typealias SceneOpenPBRMaterialProgram = OpenPBRMaterialProgram<SceneOpenPBRMater
 #if METALLIC_CUSTOM_MATERIALS
 // Realtime IBL integrates the actual Slab BSDF; OpenPBR's analytic split-sum
 // approximation cannot represent the angle-dependent two-slab layer.
-float3 sceneSlabEnvironment(ScenePreparedSurfaceClosure prepared, ScenePathTracePush push, inout uint seed)
+float3 sceneSurfaceEnvironment(ScenePreparedSurfaceClosure prepared, ScenePathTracePush push, inout uint seed)
 {
     if (push.environmentMode == kEnvironmentModeDisabled || push.environmentIntensity <= 0.0) { return float3(0); }
     float3 radiance = float3(0);
