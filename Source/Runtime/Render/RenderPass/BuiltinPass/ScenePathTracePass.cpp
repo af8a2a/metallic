@@ -21,7 +21,7 @@
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
-#include "openpbr_data_constants.h"
+#include "Runtime/Render/Material/OpenPBRLutData.h"
 
 #include <chrono>
 
@@ -48,7 +48,7 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-using OpenPBRLutScalar = uint16_t;
+using namespace openpbr;
 
 // Radiance-cache related constants (RTXGI SHaRC / NVIDIA NRC integrations).
 constexpr uint32_t kSharcDefaultEntriesLog2 = 22;
@@ -87,51 +87,9 @@ constexpr const char* toString(PathTracePermutation permutation)
     }
 }
 
-struct OpenPBRVec3 {
-    float x;
-    float y;
-    float z;
-};
-
-constexpr OpenPBRVec3 vec3(float x, float y, float z)
-{
-    return OpenPBRVec3{x, y, z};
-}
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_dielectric_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricAverageEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_dielectric_avg_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricReflectionRatio[] = {
-#include "impl/data/openpbr_ideal_dielectric_reflection_ratio_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBROpaqueDielectricEnergyComplement[] = {
-#include "impl/data/openpbr_opaque_dielectric_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBROpaqueDielectricAverageEnergyComplement[] = {
-#include "impl/data/openpbr_opaque_dielectric_avg_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealMetalEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_metal_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealMetalAverageEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_metal_avg_energy_complement_data.h"
-};
-
-static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
-#include "impl/data/openpbr_ltc_data.h"
-};
-
 constexpr uint32_t kOpenPBRLut2DBinding = 11;
 constexpr uint32_t kOpenPBRLut3DBinding = 12;
+constexpr uint32_t kOpenPBRLutSamplerBinding = 98;
 constexpr uint32_t kEnvironmentImportancePdfBinding = 13;
 constexpr uint32_t kDLSSRRAlbedoBinding = 14;
 constexpr uint32_t kDLSSRRSpecularAlbedoBinding = 15;
@@ -142,19 +100,6 @@ constexpr uint32_t kDLSSRRSpecularHitDistanceBinding = 19;
 constexpr uint32_t kDLSSDepthBinding = 20;
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
-constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
-constexpr uint32_t kOpenPBRLtcSize = OpenPBR_LTCTableSize;
-constexpr float kOpenPBRLutScalarScale = 1.0f / 65535.0f;
-
-static_assert(std::size(kOpenPBRIdealDielectricEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealDielectricAverageEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealDielectricReflectionRatio) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBROpaqueDielectricEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBROpaqueDielectricAverageEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealMetalEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealMetalAverageEnergyComplement) == kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRLtc) == kOpenPBRLtcSize * kOpenPBRLtcSize);
-
 struct OpenPBRLutTexture {
     struct UploadState {
         ResourceState state = ResourceState::Undefined;
@@ -178,101 +123,16 @@ public:
         }
 
         clear();
-        Result<> result = createScalarLut(
-            device,
-            kOpenPBRIdealDielectricAverageEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR ideal dielectric average energy complement LUT",
-            lut2D_[0],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealDielectricReflectionRatio,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR ideal dielectric reflection ratio LUT",
-            lut2D_[1],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBROpaqueDielectricAverageEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR opaque dielectric average energy complement LUT",
-            lut2D_[2],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealMetalEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR ideal metal energy complement LUT",
-            lut2D_[3],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealMetalAverageEnergyComplement,
-            kOpenPBRLutSize,
-            1,
-            1,
-            "OpenPBR ideal metal average energy complement LUT",
-            lut2D_[4],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createLtcLut(device, lut2D_[5], log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealDielectricEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            "OpenPBR ideal dielectric energy complement LUT",
-            lut3D_[0],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBROpaqueDielectricEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            "OpenPBR opaque dielectric energy complement LUT",
-            lut3D_[1],
-            log);
-        if (!result) {
-            clear();
-            return result;
+        // Stable Adobe LUT IDs: the shader stores 2D and 3D views separately.
+        uint32_t next2D = 0, next3D = 0;
+        for (const auto& payload : kLutPayloads) {
+            auto& texture = payload.depth > 1 ? lut3D_[next3D++] : lut2D_[next2D++];
+            auto result = createLutTexture(device, payload.pixels, payload.byteSize, payload.format,
+                payload.width, payload.height, payload.depth, payload.label, texture, log);
+            if (!result) {
+                clear();
+                return result;
+            }
         }
 
         refreshViews();
@@ -345,57 +205,11 @@ private:
         }
     }
 
-    template <size_t ValueCount>
-    static Result<> createScalarLut(
+    static Result<> createLutTexture(
         Device& device,
-        const OpenPBRLutScalar (&values)[ValueCount],
-        uint32_t width,
-        uint32_t height,
-        uint32_t depth,
-        std::string_view label,
-        OpenPBRLutTexture& outTexture,
-        std::string& log)
-    {
-        const uint64_t texelCount =
-            static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * static_cast<uint64_t>(depth);
-        if (texelCount != ValueCount) {
-            log += "OpenPBR LUT dimensions do not match table data: ";
-            log += label;
-            log += '\n';
-            return makeError(Error::InvalidArgument);
-        }
-
-        std::vector<float> pixels(static_cast<size_t>(texelCount) * 4u, 0.0f);
-        for (size_t index = 0; index < static_cast<size_t>(texelCount); ++index) {
-            pixels[index * 4u] = static_cast<float>(values[index]) * kOpenPBRLutScalarScale;
-            pixels[index * 4u + 3u] = 1.0f;
-        }
-        return createRgbaLutTexture(device, pixels.data(), width, height, depth, label, outTexture, log);
-    }
-
-    static Result<> createLtcLut(Device& device, OpenPBRLutTexture& outTexture, std::string& log)
-    {
-        std::vector<float> pixels(std::size(kOpenPBRLtc) * 4u, 0.0f);
-        for (size_t index = 0; index < std::size(kOpenPBRLtc); ++index) {
-            pixels[index * 4u] = kOpenPBRLtc[index].x;
-            pixels[index * 4u + 1u] = kOpenPBRLtc[index].y;
-            pixels[index * 4u + 2u] = kOpenPBRLtc[index].z;
-            pixels[index * 4u + 3u] = 1.0f;
-        }
-        return createRgbaLutTexture(
-            device,
-            pixels.data(),
-            kOpenPBRLtcSize,
-            kOpenPBRLtcSize,
-            1,
-            "OpenPBR LTC LUT",
-            outTexture,
-            log);
-    }
-
-    static Result<> createRgbaLutTexture(
-        Device& device,
-        const float* pixels,
+        const void* pixels,
+        uint64_t byteSize,
+        Format format,
         uint32_t width,
         uint32_t height,
         uint32_t depth,
@@ -411,12 +225,6 @@ private:
         outTexture.width = width;
         outTexture.height = height;
         outTexture.depth = depth;
-        const uint64_t byteSize =
-            static_cast<uint64_t>(width) *
-            static_cast<uint64_t>(height) *
-            static_cast<uint64_t>(depth) *
-            4ull *
-            sizeof(float);
         Result<> result = device.createBuffer(BufferDesc{
                 .size = byteSize,
                 .usage = BufferUsageBits::TransferSource,
@@ -442,7 +250,7 @@ private:
         result = device.createTexture(TextureDesc{
                 .type = depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::RGBA32Sfloat,
+                .format = format,
                 .width = width,
                 .height = height,
                 .depth = depth,
@@ -458,7 +266,7 @@ private:
 
         result = device.createTextureView(*outTexture.texture,
             TextureViewDesc{
-                .format = Format::RGBA32Sfloat,
+                .format = format,
                 .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
         if (!result || outTexture.view == nullptr) {
@@ -1076,6 +884,7 @@ public:
             }
         }
         if (useOpenPBR) {
+            baseBindings.push_back({.binding = kOpenPBRLutSamplerBinding, .kind = ComputeResourceBindingKind::Sampler});
             baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kOpenPBRLut2DBinding,
                 .kind = ComputeResourceBindingKind::SampledImage,
@@ -1944,6 +1753,7 @@ public:
             }
         }
         if (useOpenPBR) {
+            bindings.push_back({.binding = kOpenPBRLutSamplerBinding, .sampler = &openPBRLutSampler_});
             const auto& lut2DViews = openPBRLuts_.lut2DViews();
             const auto& lut3DViews = openPBRLuts_.lut3DViews();
             bindings.push_back(ComputeDispatchBinding{
@@ -3255,6 +3065,14 @@ private:
     bool streamMaterials_ = false;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
+    SamplerDesc openPBRLutSampler_{
+        .minFilter = SamplerFilter::Linear,
+        .magFilter = SamplerFilter::Linear,
+        .mipFilter = SamplerFilter::Nearest,
+        .addressU = SamplerAddressMode::ClampToEdge,
+        .addressV = SamplerAddressMode::ClampToEdge,
+        .addressW = SamplerAddressMode::ClampToEdge,
+    };
     OpenPBRLutResources openPBRLuts_;
     std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel sharcClearProgram_;

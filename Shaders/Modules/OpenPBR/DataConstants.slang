@@ -22,16 +22,9 @@ namespace Metallic.OpenPBR
 
 // LUT dimensions and LUT ID constants.
 //
-// This file is part of the public API and is intentionally dependency-free.
-// It can be included by host-side CPU code in isolation (e.g. texture allocation
-// code that needs table dimensions or LUT IDs) without pulling in openpbr.h,
-// the interop layer, or any shading-language-specific macros.
-// All values are plain #defines for the same reason.
-//
-// The actual precomputed table data lives in impl/data/:
-//   - openpbr_energy_arrays.h / *_data.h  - energy compensation tables (array mode)
-//   - openpbr_ltc_array.h / openpbr_ltc_data.h  - LTC sheen table (array mode)
-// Those files are included automatically by openpbr.h when OPENPBR_USE_TEXTURE_LUTS = 0.
+// Metallic supports texture mode only. CPU texture payloads are defined in
+// Runtime/Render/Material/OpenPBRLutData.h from Adobe's offline-integrated data.
+// No table arrays or LUT integration code are compiled into this Slang module.
 
 // =======================
 // Lookup Table Dimensions
@@ -43,7 +36,7 @@ namespace Metallic.OpenPBR
 
 // Integer IDs for all 8 OpenPBR precomputed lookup textures.
 // Used as the 'id' argument to OPENPBR_SAMPLE_2D_TEXTURE / OPENPBR_SAMPLE_3D_TEXTURE
-// (texture mode), or as the array selector in openpbr_energy_array_access.h (array mode).
+// (texture mode).
 // Renderers storing OpenPBR textures consecutively can use these IDs directly as slot offsets.
 //
 // IDs 0-6: energy compensation tables (used by openpbr_look_up_* functions)

@@ -23,8 +23,10 @@ headers remain in the test and CPU LUT upload paths.
 | Zero diffuse/MMS multipliers still evaluate tables/BRDF | Exact physical-zero fast paths | Never infer zero BSDF from throughput-dependent sampling weights |
 | Absent fuzz still performs LTC and mixture work | Skip zero coverage work; bypass the mixture only when its probability is zero | Preserve the all-black 0/0 fallback and sample weight/PDF round trip |
 
-Hardware-filtered LUT replacement, approximate square roots, altered lobe
-thresholds and feature removal were deliberately not used. Joint Eval/PDF
+This initial port did not change LUT filtering. Production now uses the
+separately validated [precomputed texture LUT path](OpenPBRTextureLuts.md).
+Approximate square roots, altered lobe thresholds and feature removal remain
+excluded. Joint Eval/PDF
 evaluation and smaller feature-specific prepared states remain separate work.
 
 ## Acceptance — 2026-10-05

@@ -41,6 +41,13 @@ instantiation or dynamic interface dispatch.
 
 ## Material integration
 
+Production LUTs use embedded precomputed R16_UNORM energy textures and a
+RGBA32_FLOAT LTC texture. The shared texture provider performs hardware linear
+sampling; 3D lookup combines two XY slices in float to bound filtering error.
+There is no production array/manual-load option. See
+[texture LUTs](../../../Documentation/OpenPBRTextureLuts.md) for formats,
+sampler bindings, numerical tests and the dedicated `--texture-luts` benchmark.
+
 `Shaders/Interop/OpenPBRModule.hlsli` is a small compatibility boundary for the
 existing renderer names. Its stateless provider resolves the owning program's
 LUTs and static features. `OpenPBRClosure.hlsli` still implements

@@ -19,76 +19,24 @@ using Metallic.Material;
 #define GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE 0
 #endif
 
-uint openPBRLut2DSlot(int lutId)
-{
-    if (lutId == 1) {
-        return 0u;
-    }
-    if (lutId == 2) {
-        return 1u;
-    }
-    if (lutId == 4) {
-        return 2u;
-    }
-    if (lutId == 5) {
-        return 3u;
-    }
-    if (lutId == 6) {
-        return 4u;
-    }
-    return 5u;
-}
-
-uint openPBRLut3DSlot(int lutId)
-{
-    return lutId == 3 ? 1u : 0u;
-}
+// Legacy preview callers must bind a linear clamp sampler at this handle.
+#ifndef GPU_DRIVEN_OPENPBR_LUT_SAMPLER
+#define GPU_DRIVEN_OPENPBR_LUT_SAMPLER 0
+#endif
+#include "../../Interop/OpenPBRTextureLut.hlsli"
 
 float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
-    Texture2D<float4> textureHandle =
-        resolveUniform(ResourceHandle<Texture2D<float4>>(GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE + openPBRLut2DSlot(lutId)));
-    Texture2D<float4> texture = textureHandle;
-    uint width = 1u;
-    uint height = 1u;
-    texture.GetDimensions(width, height);
-    float2 size = float2(max(width, 1u), max(height, 1u));
-    float2 texel = clamp(uv * size - 0.5, float2(0.0), size - 1.0);
-    int2 baseTexel = int2(floor(texel));
-    int2 nextTexel = min(baseTexel + int2(1, 1), int2(width - 1u, height - 1u));
-    float2 fraction = texel - float2(baseTexel);
-    float4 v00 = texture.Load(int3(baseTexel.x, baseTexel.y, 0));
-    float4 v10 = texture.Load(int3(nextTexel.x, baseTexel.y, 0));
-    float4 v01 = texture.Load(int3(baseTexel.x, nextTexel.y, 0));
-    float4 v11 = texture.Load(int3(nextTexel.x, nextTexel.y, 0));
-    return lerp(lerp(v00, v10, fraction.x), lerp(v01, v11, fraction.x), fraction.y);
+    return sampleOpenPBRTexture2D(
+        resolveUniform(ResourceHandle<Texture2D<float4>>(GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE + openPBRLut2DSlot(lutId))),
+        resolveUniform(SamplerHandle(GPU_DRIVEN_OPENPBR_LUT_SAMPLER)), uv);
 }
 
 float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
-    Texture3D<float4> textureHandle =
-        resolveUniform(ResourceHandle<Texture3D<float4>>(GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE + openPBRLut3DSlot(lutId)));
-    Texture3D<float4> texture = textureHandle;
-    uint width = 1u;
-    uint height = 1u;
-    uint depth = 1u;
-    texture.GetDimensions(width, height, depth);
-    float3 size = float3(max(width, 1u), max(height, 1u), max(depth, 1u));
-    float3 texel = clamp(uvw * size - 0.5, float3(0.0), size - 1.0);
-    int3 baseTexel = int3(floor(texel));
-    int3 nextTexel = min(baseTexel + int3(1, 1, 1), int3(width - 1u, height - 1u, depth - 1u));
-    float3 fraction = texel - float3(baseTexel);
-    float4 v000 = texture.Load(int4(baseTexel.x, baseTexel.y, baseTexel.z, 0));
-    float4 v100 = texture.Load(int4(nextTexel.x, baseTexel.y, baseTexel.z, 0));
-    float4 v010 = texture.Load(int4(baseTexel.x, nextTexel.y, baseTexel.z, 0));
-    float4 v110 = texture.Load(int4(nextTexel.x, nextTexel.y, baseTexel.z, 0));
-    float4 v001 = texture.Load(int4(baseTexel.x, baseTexel.y, nextTexel.z, 0));
-    float4 v101 = texture.Load(int4(nextTexel.x, baseTexel.y, nextTexel.z, 0));
-    float4 v011 = texture.Load(int4(baseTexel.x, nextTexel.y, nextTexel.z, 0));
-    float4 v111 = texture.Load(int4(nextTexel.x, nextTexel.y, nextTexel.z, 0));
-    float4 z0 = lerp(lerp(v000, v100, fraction.x), lerp(v010, v110, fraction.x), fraction.y);
-    float4 z1 = lerp(lerp(v001, v101, fraction.x), lerp(v011, v111, fraction.x), fraction.y);
-    return lerp(z0, z1, fraction.z);
+    return sampleOpenPBRTexture3D(
+        resolveUniform(ResourceHandle<Texture3D<float4>>(GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE + openPBRLut3DSlot(lutId))),
+        resolveUniform(SamplerHandle(GPU_DRIVEN_OPENPBR_LUT_SAMPLER)), uvw);
 }
 
 #define OPENPBR_SAMPLE_2D_TEXTURE(lut_id, uv) sampleOpenPBRLut2D(lut_id, uv)

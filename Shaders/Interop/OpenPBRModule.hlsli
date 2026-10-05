@@ -1,4 +1,7 @@
 // Renderer boundary: no vendor headers or language interop macros.
+#if defined(OPENPBR_USE_TEXTURE_LUTS) && !OPENPBR_USE_TEXTURE_LUTS
+#error Metallic OpenPBR supports texture LUTs only.
+#endif
 import OpenPBR;
 using Metallic.OpenPBR;
 struct SceneOpenPBRContext : IOpenPBRContext

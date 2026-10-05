@@ -17,72 +17,18 @@ using Metallic;
 
 #define gOpenPBRLut3D(index) resolveNonUniform(ResourceHandle<Texture3D<float4>>(getResourceParameters<SceneResourceParameters>().openPBRLut3D.load(index)))
 
-uint openPBRLut2DSlot(int lutId)
-{
-    if (lutId == 1) {
-        return 0u;
-    }
-    if (lutId == 2) {
-        return 1u;
-    }
-    if (lutId == 4) {
-        return 2u;
-    }
-    if (lutId == 5) {
-        return 3u;
-    }
-    if (lutId == 6) {
-        return 4u;
-    }
-    return 5u;
-}
-
-uint openPBRLut3DSlot(int lutId)
-{
-    return lutId == 3 ? 1u : 0u;
-}
+#include "../../Interop/OpenPBRTextureLut.hlsli"
 
 float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
-    Texture2D<float4> texture = gOpenPBRLut2D(openPBRLut2DSlot(lutId));
-    uint width;
-    uint height;
-    texture.GetDimensions(width, height);
-    float2 size = float2(max(width, 1u), max(height, 1u));
-    float2 texel = clamp(uv * size - 0.5, float2(0.0, 0.0), size - 1.0);
-    int2 baseTexel = int2(floor(texel));
-    int2 nextTexel = min(baseTexel + int2(1, 1), int2(width - 1u, height - 1u));
-    float2 frac = texel - float2(baseTexel);
-    float4 v00 = texture.Load(int3(baseTexel.x, baseTexel.y, 0));
-    float4 v10 = texture.Load(int3(nextTexel.x, baseTexel.y, 0));
-    float4 v01 = texture.Load(int3(baseTexel.x, nextTexel.y, 0));
-    float4 v11 = texture.Load(int3(nextTexel.x, nextTexel.y, 0));
-    return lerp(lerp(v00, v10, frac.x), lerp(v01, v11, frac.x), frac.y);
+    return sampleOpenPBRTexture2D(gOpenPBRLut2D(openPBRLut2DSlot(lutId)),
+        resolveUniform(getResourceParameters<SceneResourceParameters>().openPBRLutSampler), uv);
 }
 
 float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
-    Texture3D<float4> texture = gOpenPBRLut3D(openPBRLut3DSlot(lutId));
-    uint width;
-    uint height;
-    uint depth;
-    texture.GetDimensions(width, height, depth);
-    float3 size = float3(max(width, 1u), max(height, 1u), max(depth, 1u));
-    float3 texel = clamp(uvw * size - 0.5, float3(0.0, 0.0, 0.0), size - 1.0);
-    int3 baseTexel = int3(floor(texel));
-    int3 nextTexel = min(baseTexel + int3(1, 1, 1), int3(width - 1u, height - 1u, depth - 1u));
-    float3 frac = texel - float3(baseTexel);
-    float4 v000 = texture.Load(int4(baseTexel.x, baseTexel.y, baseTexel.z, 0));
-    float4 v100 = texture.Load(int4(nextTexel.x, baseTexel.y, baseTexel.z, 0));
-    float4 v010 = texture.Load(int4(baseTexel.x, nextTexel.y, baseTexel.z, 0));
-    float4 v110 = texture.Load(int4(nextTexel.x, nextTexel.y, baseTexel.z, 0));
-    float4 v001 = texture.Load(int4(baseTexel.x, baseTexel.y, nextTexel.z, 0));
-    float4 v101 = texture.Load(int4(nextTexel.x, baseTexel.y, nextTexel.z, 0));
-    float4 v011 = texture.Load(int4(baseTexel.x, nextTexel.y, nextTexel.z, 0));
-    float4 v111 = texture.Load(int4(nextTexel.x, nextTexel.y, nextTexel.z, 0));
-    float4 z0 = lerp(lerp(v000, v100, frac.x), lerp(v010, v110, frac.x), frac.y);
-    float4 z1 = lerp(lerp(v001, v101, frac.x), lerp(v011, v111, frac.x), frac.y);
-    return lerp(z0, z1, frac.z);
+    return sampleOpenPBRTexture3D(gOpenPBRLut3D(openPBRLut3DSlot(lutId)),
+        resolveUniform(getResourceParameters<SceneResourceParameters>().openPBRLutSampler), uvw);
 }
 
 #ifndef OPENPBR_SAMPLE_2D_TEXTURE
