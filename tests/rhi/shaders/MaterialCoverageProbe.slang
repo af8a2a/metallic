@@ -20,5 +20,6 @@ void materialCoverageProbeMain(uint3 id : SV_DispatchThreadID)
     }
     float t = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? query.CommittedRayT() : 0.0;
     float shadow = traceGeometryShadow(ray.Origin, ray.Direction, 4.0);
-    resolveUniform(getResourceParameters<SceneResourceParameters>().output)[id.xy] = float4(t, shadow, 0, 1);
+    float opacity = evaluateSceneCoverage(0,loadSceneMaterial(0),uv,push).opacity;
+    resolveUniform(getResourceParameters<SceneResourceParameters>().output)[id.xy] = float4(t, shadow, opacity, 1);
 }

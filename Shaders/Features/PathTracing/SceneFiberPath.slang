@@ -92,17 +92,17 @@ bool shadeSceneFiber(PathTraceMaterial material, HitInfo hit, float3 stableNorma
     inout uint seed, inout float3 throughput, inout float3 radiance,
     inout float previousBsdfPdf, inout bool previousScatterDelta)
 {
-    FiberMaterialContext context = (FiberMaterialContext)0;
-    context.positionWS = hit.position;
-    context.normalWS = stableNormal;
-    context.tangentWS = hit.tangent.xyz;
-    context.bitangentWS = hit.bitangent;
-    context.materialCoordinates = hit.texcoord;
-    context.flags = kFiberHasMaterialCoordinates;
-    // DOTS has no authoritative radius/strand parameter yet. Validity bits
-    // distinguish these unavailable attributes from physically zero values.
-    let materialResult = evaluateSceneFiberMaterial(material, context);
-    let prepared = materialResult.closure.prepare(-ray.direction, TransportMode.Radiance);
+    RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
+    let frame = makeRTXCRHairSurface(stableNormal, hit.tangent.xyz, stableNormal);
+    work.surface.shadingNormalWS = frame.shadingNormal;
+    work.surface.tangentWS = frame.tangent;
+    work.surface.bitangentWS = cross(frame.shadingNormal, frame.tangent);
+    RTXCRChiangMaterialProgram<SceneRTXCRHairParameters> program;
+    program.parameters.value = material;
+    // Adapter holds the already selected instance, so offsets are relative to it.
+    work.instance = (MaterialInstanceRef)0;
+    let materialResult = evaluateRayFiber(program, work);
+    let prepared = prepareRayFiber(materialResult.closure, work);
     return integrateSceneFiber(prepared, sceneFiberMISRoughness(material), hit, push, depth,
         ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta);
 }

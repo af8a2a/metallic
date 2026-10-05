@@ -769,10 +769,42 @@ public:
             check(reloaded.setMaterialProperties(1, edited), "Edit IBL optical depth");
             const auto iblAbsorbed = capture("Deferred.color", "environment-layer-absorbed");
             check(energy(iblAbsorbed) < energy(ibl) * 0.999, "IBL ignored actual Layer closure");
+            // M8: a ray-only graph can mix Fiber receivers and Surface Slab
+            // secondary hits. No opaque VBuffer or screen closure is available.
+            auto rayProperties = sample.graph.findNode("Reference")->properties;
+            const auto rayType = sample.graph.findNode("Reference")->type;
+            sample.graph = RenderGraph{};
+            sample.graph.addNode(rayType, "Reference", rayProperties);
+            sample.graph.markOutput("Reference.color");
+            check(reloaded.setMaterialAsset(0, "asset://Materials/Examples/ChestnutFiber.material",
+                PROJECT_SOURCE_DIR "/Asset", log), "Bind mixed Fiber receiver");
+            environment.enabled = false;
+            edited = reloaded.materials()[2];
+            edited.valueParameters[8] = edited.valueParameters[9] = edited.valueParameters[10] = 1;
+            check(reloaded.setMaterialProperties(2, edited), "Set mixed secondary emitter");
+            sample.graph.findNode("Reference")->properties["maxDepth"] = 1; sample.graph.markDirty();
+            restart();
+            check(energy(capture("Reference.color", "mixed-primary-only")) < 1e-5, "Mixed emitter visible to primary rays");
+            sample.graph.findNode("Reference")->properties["maxDepth"] = 3; sample.graph.markDirty();
+            restart();
+            const auto mixedSecondary = capture("Reference.color", "mixed-fiber-surface-secondary");
+            check(energy(mixedSecondary) > 1, "Mixed ray domains produced no secondary radiance");
+            edited.valueParameters[8] = edited.valueParameters[9] = edited.valueParameters[10] = 2;
+            check(reloaded.setMaterialProperties(2, edited), "Double mixed emitter");
+            restart();
+            const auto mixedDoubled = capture("Reference.color", "mixed-fiber-surface-secondary-double");
+            check(error(mixedDoubled, mixedSecondary, 2) < 1e-5, "Mixed ray execution reused wrong instance/prepared state");
+            auto fiberReceiver = reloaded.materials()[0]; fiberReceiver.rtxcrHairMelanin = 0.05f;
+            check(reloaded.setMaterialProperties(0, fiberReceiver), "Edit secondary-lit Fiber receiver");
+            restart();
+            const auto mixedFiberEdited = capture("Reference.color", "mixed-fiber-surface-melanin");
+            check(error(mixedFiberEdited, mixedDoubled) > 0.001, "Mixed indirect radiance did not execute Fiber scattering");
             std::ofstream(root / "ClosureSceneAcceptance.json") << Json{{"programs", 3}, {"binRelativeError", error(direct, unbinned)},
                 {"ptLayerBoundaryError", error(directPT, transparentPT)},
                 {"layerBoundaryError", error(direct, transparent)}, {"secondaryEnergy", energy(secondary)},
-                {"secondaryLinearityError", error(doubled, secondary, 2)}}.dump(2);
+                {"secondaryLinearityError", error(doubled, secondary, 2)}, {"mixedSecondaryEnergy", energy(mixedSecondary)},
+                {"mixedSecondaryLinearityError", error(mixedDoubled, mixedSecondary, 2)},
+                {"mixedFiberEditRelativeDifference", error(mixedFiberEdited, mixedDoubled)}}.dump(2);
             return RHITestResult::pass("Persistent Single/Mix/Layer assets; actual sparse/fallback VBuffer equivalence; dynamic scattering; PT secondary-only emission and linearity oracle");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }

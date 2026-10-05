@@ -1,5 +1,7 @@
 # Metallic 材质系统推进路线图
 
+2026-10-05 Ray 进展：外部 **M8 / Phase 17** 增加按命中点独立求值/prepare 的统一 Surface/Fiber ray execution 契约及有界 Program 队列；继续共享 raster 使用的 Material Program / Value IR / Closure，不共享屏幕 PreparedClosure。生产场景与队列验收、Coverage 和执行范围见 [MaterialSystemM8RayExecution](MaterialSystemM8RayExecution.md)。
+
 2026-10-05 Strand 进展：外部 **M7 / Phase 16** 已有原生变半径曲线 → 有限多层 Strand Visibility → 共享 Fiber Lighting 的小型 groom 后端，包含容量/溢出诊断、覆盖合成、稳定身份、运动与密度 LOD。接口、GPU 验收和大规模 groom / 高级输运边界见 [MaterialSystemM7Strands](MaterialSystemM7Strands.md)。
 
 2026-10-05 Fiber 进展：外部 **M6 / Phase 15** 已接入独立 Fiber 三阶段接口、共享材质资产和标准/OpenPBR ray-hit 路径。RTXCR Hair 已作为原生 Slang vendored 模块保留来源与许可证，通过上游 GPU 对比和资产驱动 groom 渲染验收。接口、能力边界与证据见 [MaterialSystemM6Fiber](MaterialSystemM6Fiber.md)。

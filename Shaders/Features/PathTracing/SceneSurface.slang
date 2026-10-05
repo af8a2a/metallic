@@ -768,6 +768,18 @@ SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone ra
     return context;
 }
 
+import RayMaterialExecution;
+RayMaterialWork sceneRayMaterialWork(HitInfo hit, RayCone cone, float3 direction, uint seed, uint bounce)
+{
+    RayMaterialWork work = (RayMaterialWork)0;
+    work.surface = sceneSurfaceMaterialContextForRay(hit, cone, direction);
+    work.woWS = safeNormalize(-direction, hit.normal);
+    work.instance = legacyMaterialInstanceRef(hit.materialIndex);
+    work.seed = seed;
+    work.bounce = bounce;
+    return work;
+}
+
 STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed)
 {
     STF_SamplerState samplerState = STF_SamplerState::Create(rand4(seed));

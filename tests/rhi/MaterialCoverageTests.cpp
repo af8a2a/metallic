@@ -52,6 +52,8 @@ public:
             if (MaterialValueProgramSet::create({&material, 1}, log) || log.empty()) { return RHITestResult::fail("Unsupported Coverage expression accepted"); }
         }
         material.valueProgram = R"({"version":1,"coverage":0})";
+        material.alphaMode = "BLEND";
+        if (MaterialValueProgramSet::create({&material, 1}, log)) { return RHITestResult::fail("Custom BLEND Coverage was not rejected"); }
         material.alphaMode = "OPAQUE";
         if (MaterialValueProgramSet::create({&material, 1}, log)) { return RHITestResult::fail("Opaque Coverage was not rejected"); }
         return RHITestResult::pass("Minimal independent slices, resource dependency elimination, shared inputs and validation");
@@ -232,7 +234,28 @@ public:
             }
             report << "step=" << step << " frontWinners=" << winners << " checked=3844 opacityMicromaps=" << *micromapCount << '\n';
         }
-        return RHITestResult::pass("Layered VBuffer winner, production RT/shadow Coverage, texture alpha, shared parameters and legacy restoration agree for 30752 pixels");
+        // BLEND uses the shared legacy Coverage evaluator. Custom Coverage on
+        // BLEND remains rejected by the authoring contract (tested above).
+        sample.graph = RenderGraph{};
+        sample.graph.addNode("CoverageRayProbe", "CoverageProbe", {{"path",path.generic_string()}});
+        sample.graph.markOutput("CoverageProbe.color");
+        for (float opacity : {0.0f,0.25f,0.75f,1.0f}) {
+            auto edited=scene.materials()[0]; edited.alphaMode="BLEND";
+            edited.valueProgram.clear(); edited.baseColorFactor.w=opacity;
+            if (!scene.setMaterialProperties(0,edited)) { return RHITestResult::fail("BLEND Coverage edit failed"); }
+            if (!preview.render(sample.graph,64,64,"CoverageProbe.color")) { return RHITestResult::fail(preview.lastLog()); }
+            std::vector<float> rays(preview.readbackBytes().size()/4);
+            std::memcpy(rays.data(),preview.readbackBytes().data(),preview.readbackBytes().size());
+            for (uint32_t y=1;y<63;++y) {
+                for (uint32_t x=1;x<63;++x) {
+                    size_t i=(y*64+x)*4;
+                    if (std::abs(rays[i]-(opacity>0 ? 2.0f : 3.0f))>1e-5f || std::abs(rays[i+2]-opacity*192.0f/255.0f)>1e-5f) {
+                        return RHITestResult::fail("BLEND Coverage ignored instance/texture opacity");
+                    }
+                }
+            }
+        }
+        return RHITestResult::pass("30752 MASK raster/RT/shadow pixels agree; BLEND instance/texture alpha uses shared Coverage opacity");
     }
 private:
     bool slab_;

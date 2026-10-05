@@ -19,6 +19,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/OpenPBR.slang`、`Modules/OpenPBR/` | Adobe OpenPBR 1.1 原生 Slang 移植、静态泛型 LUT/Feature provider；见 [模块说明](Modules/OpenPBR/README.md) |
 | `Modules/FiberMaterial.slang`、`Modules/FiberLighting.slang`、`Modules/RTXCRFiber.slang` | 独立 Fiber 三阶段契约、projected lighting、RTXCR Chiang Program；见 [M6](../Documentation/MaterialSystemM6Fiber.md) |
 | `Features/Strands/NativeStrands.slang` | 原生曲线有限多层 visibility、Fiber 着色、motion/identity 与显式 overflow；见 [M7](../Documentation/MaterialSystemM7Strands.md) |
+| `Modules/RayMaterialExecution.slang`、`Features/PathTracing/RayMaterialQueue.slang` | 按命中点独立的 Surface/Fiber 求值与 prepare、有界 Program 分类；见 [M8](../Documentation/MaterialSystemM8RayExecution.md) |
 | `Modules/RTXCRHair.slang`、`Modules/RTXCRHair/` | RTXCR Chiang / Separate Chiang / Far Field 原生 Slang vendored 实现；见 [来源与接口](Modules/RTXCRHair/README.md) |
 | `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
 | `Features/PathTracing/OpenPBRSurface.slang`、`Interop/OpenPBRClosure.hlsli` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |

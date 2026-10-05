@@ -156,8 +156,7 @@ float3 openPbrShadowTransmittance(
         }
         PathTraceMaterial shadowMaterial = loadSceneMaterial(shadowHit.materialIndex);
         if (shadowMaterial.textureParams.w > 1.5) {
-            float alpha = saturate(shadowMaterial.baseColor.a * loadMaterialAlphaCoverage(
-                shadowMaterial.baseColorTexture, shadowHit.texcoord, push));
+            float alpha = evaluateSceneCoverage(shadowHit.materialIndex, shadowMaterial, shadowHit.texcoord, push).opacity;
             transmittance *= 1.0 - alpha;
             remainingDistance -= shadowHit.t;
             ray.origin = offsetRay(shadowHit.position, openPbrRayOffsetNormal(ray.direction, shadowHit.geometryNormal));
@@ -321,8 +320,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             continue;
         }
         if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
-            float alpha = saturate(material.baseColor.a * loadMaterialAlphaCoverage(
-                material.baseColorTexture, hit.texcoord, push));
+            float alpha = evaluateSceneCoverage(hit.materialIndex, material, hit.texcoord, push).opacity;
             if (rand(seed) >= alpha) {
                 if (++alphaLayers >= 16u) { break; }
                 ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
@@ -332,9 +330,11 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             }
         }
         float3 shadingNormal = hit.normal;
+        RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
         SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, false, true);
-        let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, rayCone, ray.direction),
-            legacyMaterialInstanceRef(hit.materialIndex));
+        // Always dispatch from this hit's instance. Raster specialization and
+        // primary PreparedClosure are never inherited by a secondary hit.
+        let evaluated = evaluateRaySurface(program, work);
         let materialEval = evaluated.closure;
         // Value inputs (including textured volume absorption) belong to this hit.
         material = program.material;
@@ -357,7 +357,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         sampling.throughput = throughput;
         sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
         sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
-        let prepared = materialEval.prepare(viewDirection, TransportMode.Radiance, sampling);
+        let prepared = prepareRaySurface(materialEval, work, sampling);
 
         radiance += throughput * max(prepared.emission(), float3(0.0, 0.0, 0.0));
         if (material.emissive.w != 0.0) { break; }
