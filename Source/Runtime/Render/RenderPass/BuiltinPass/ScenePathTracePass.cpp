@@ -2762,8 +2762,7 @@ private:
         const auto generation = sceneResources_.materialGeneration();
         if (!generation) { log = "Missing material generation"; return false; }
         const auto target = visibilityDeferred_ ? MaterialEvaluationTarget::VisibilityBuffer :
-            (!useOpenPBRBsdf(properties()) && METALLIC_HAS_RTXCR
-                ? MaterialEvaluationTarget::RayHitWithFiber : MaterialEvaluationTarget::SurfaceRayHit);
+            MaterialEvaluationTarget::RayHitWithFiber;
         return generation->supports(target, log);
     }
 

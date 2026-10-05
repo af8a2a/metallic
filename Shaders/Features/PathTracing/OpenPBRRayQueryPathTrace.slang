@@ -313,6 +313,13 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         }
 
         PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
+        if (materialDomain(material) == kMaterialDomainFiber) {
+            const float3 stableNormal = hit.normal;
+            if (dot(hit.normal, ray.direction) > 0) { hit.normal = -hit.normal; }
+            if (!shadeSceneFiber(material, hit, stableNormal, push, depth,
+                    ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta)) { break; }
+            continue;
+        }
         if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
             float alpha = saturate(material.baseColor.a * loadMaterialAlphaCoverage(
                 material.baseColorTexture, hit.texcoord, push));

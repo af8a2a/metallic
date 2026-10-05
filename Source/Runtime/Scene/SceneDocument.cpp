@@ -1,5 +1,6 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
+#include "Runtime/Material/MaterialAssetFields.h"
 
 #include <algorithm>
 #include <cctype>
@@ -243,6 +244,10 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
         {"featurePolicies", material::serializeFeaturePolicies(properties.featurePolicies)},
     };
     for (const auto& [name, member] : kMaterialScalarFields) { value[name] = properties.*member; }
+    value["rtxcrHair"] = properties.rtxcrHair;
+    if (properties.rtxcrHair) {
+        for (const auto& field : material::detail::kFiberScalars) { value[field.name] = properties.*field.member; }
+    }
     if (!properties.valueProgram.empty()) {
         value["valueProgram"] = properties.valueProgram;
         value["valueParameters"] = properties.valueParameters;
@@ -257,6 +262,15 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
 bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& properties, std::string& reason)
 {
     if (!value.is_object()) { reason = "properties must be an object"; return false; }
+    if (value.contains("rtxcrHair")) {
+        if (!value["rtxcrHair"].is_boolean()) { reason = "rtxcrHair must be a boolean"; return false; }
+        properties.rtxcrHair = value["rtxcrHair"].get<bool>();
+    }
+    for (const auto& field : material::detail::kFiberScalars) {
+        double number = properties.*field.member;
+        if (!readOptionalFiniteNumber(value, field.name, number, reason)) { return false; }
+        properties.*field.member = static_cast<float>(number);
+    }
     if (value.contains("featurePolicies") &&
         !material::overlayFeaturePolicies(value["featurePolicies"], properties.featurePolicies, reason)) { return false; }
     if (value.contains("valueProgram")) {

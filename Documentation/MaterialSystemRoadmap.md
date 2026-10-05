@@ -1,5 +1,7 @@
 # Metallic 材质系统推进路线图
 
+2026-10-05 Fiber 进展：外部 **M6 / Phase 15** 已接入独立 Fiber 三阶段接口、共享材质资产和标准/OpenPBR ray-hit 路径。RTXCR Hair 已作为原生 Slang vendored 模块保留来源与许可证，通过上游 GPU 对比和资产驱动 groom 渲染验收。接口、能力边界与证据见 [MaterialSystemM6Fiber](MaterialSystemM6Fiber.md)；不代表外部 M7 strand visibility 已完成。
+
 2026-10-05 authoring 进展：外部 **M5 / Phase 13** 的 MaterialGraph、编辑器、资产导出和场景应用已接入共用 IR；同时提供 Phase 14 方向的受限只读 SDK expression profile。使用方法、验收和原生 Slang SDK 尚未覆盖的范围见 [MaterialSystemM5MaterialGraph](MaterialSystemM5MaterialGraph.md)。
 
 2026-10-04 首次审查：[外部 M1–M4 重新验收](MaterialSystemM1M4Acceptance.md)。当时 M1–M3 在声明范围内通过，M4 缺少 Value IR→Closure→场景材质闭环；该 P1 后续已补齐，见 [M4 场景 Closure 补充](MaterialSystemM4SceneClosure.md)。原始审查记录保留历史状态。另已修复基线环境就绪竞争，三进程 PT/Deferred/Fiber HDR A/A 全部逐位一致。

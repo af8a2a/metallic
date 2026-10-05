@@ -30,17 +30,11 @@ using Metallic.Lighting;
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
 
-#ifndef METALLIC_HAS_RTXCR
-#define METALLIC_HAS_RTXCR 0
-#endif
-
 #ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
 #define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
 #endif
 
-#if METALLIC_HAS_RTXCR
-#include <rtxcr/HairChiangBSDF.hlsli>
-#endif
+import RTXCRHair;
 
 
 #define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
@@ -218,14 +212,7 @@ float rand(inout uint state)
     return float(state & 0x00ffffffu) / 16777216.0;
 }
 
-bool isRtxcrHairMaterial(PathTraceMaterial material)
-{
-    return materialProgramId(material) == kMaterialProgramRTXCRChiang;
-}
-
-#if METALLIC_HAS_RTXCR
 #include "../../Interop/RTXCRMaterialAdapter.hlsli"
-#endif
 
 float4 rand4(inout uint state)
 {

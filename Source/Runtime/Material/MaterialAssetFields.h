@@ -34,6 +34,16 @@ struct ColorField
     float3 RenderMaterial::* member;
     double maximum;
 };
+// RTXCRChiang.DOTS uses the normalized melanin absorption model. Base color
+// and the Far Field diffuse extension are deliberately not editable here.
+inline constexpr std::array kFiberScalars{
+    ScalarField{"melanin", &RenderMaterial::rtxcrHairMelanin, 0, 1},
+    ScalarField{"melaninRedness", &RenderMaterial::rtxcrHairMelaninRedness, 0, 1},
+    ScalarField{"longitudinalRoughness", &RenderMaterial::rtxcrHairLongitudinalRoughness, 0.02f, 1},
+    ScalarField{"azimuthalRoughness", &RenderMaterial::rtxcrHairAzimuthalRoughness, 0.02f, 1},
+    ScalarField{"hairIor", &RenderMaterial::rtxcrHairIor, 1.01f, 3},
+    ScalarField{"cuticleAngle", &RenderMaterial::rtxcrHairCuticleAngleDegrees, -10, 10},
+};
 inline constexpr std::array kColors{
     ColorField{"emission", &RenderMaterial::emissiveFactor, 3.4028234663852886e38},
     ColorField{"specularColor", &RenderMaterial::specularColorFactor, 1},

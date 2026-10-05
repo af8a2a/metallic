@@ -5240,8 +5240,10 @@ TEST(SceneEditing, MaterialProperties)
     EXPECT_EQ(scene.materials()[1].baseColorTexture.texCoord, original.baseColorTexture.texCoord);
     EXPECT_EQ(scene.materials()[1].baseColorTexture.uvTransform, original.baseColorTexture.uvTransform);
     EXPECT_EQ(scene.materials()[1].normalTexture.textureIndex, original.normalTexture.textureIndex);
-    EXPECT_EQ(scene.materials()[1].rtxcrHair, original.rtxcrHair);
-    EXPECT_EQ(scene.materials()[1].rtxcrHairMelanin, original.rtxcrHairMelanin);
+    // M6 makes Fiber domain and parameters editable through the same scene
+    // property transaction; texture identities and imported names remain fixed.
+    EXPECT_EQ(scene.materials()[1].rtxcrHair, changed.rtxcrHair);
+    EXPECT_EQ(scene.materials()[1].rtxcrHairMelanin, changed.rtxcrHairMelanin);
     EXPECT_EQ(scene.contentRevision(), revision + 1);
     EXPECT_EQ(scene.materialRevision(), materialRevision + 1);
     EXPECT_EQ(scene.geometryTransformRevision(), geometryRevision);

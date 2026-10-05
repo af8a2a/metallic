@@ -1,4 +1,5 @@
 #include "SceneSurface.slang"
+#include "SceneFiberPath.slang"
 
 // ---------------------------------------------------------------------------
 // Radiance cache integration (reference: RTXGI v2 SDK)
@@ -437,101 +438,11 @@ float3 pathTrace(
         float3 emissive = max(materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
         radiance += throughput * emissive;
 
-#if METALLIC_HAS_RTXCR
-        if (isRtxcrHairMaterial(material)) {
-            FiberInteraction fiber;
-            fiber.authoredNormal = stableShadingNormal;
-            fiber.tangent = hit.tangent.xyz;
-            fiber.outgoingDirection = -ray.direction;
-            RTXCRPreparedMaterial preparedHair = prepareRTXCRMaterial(material, fiber);
-            RTXCR_HairMaterialData hairMaterial = preparedHair.parameters;
-
-            uint hairLightIndex;
-            float hairInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), hairLightIndex, hit.position);
-                float3 hairBsdf = max(evalRTXCRMaterial(preparedHair, light.direction), 0.0);
-                if (luminanceMax(hairBsdf * light.illuminance) > 0.0) {
-                    float3 shadowOrigin = offsetRay(hit.position,
-                        dot(light.direction, hit.geometryNormal) >= 0.0
-                            ? hit.geometryNormal : -hit.geometryNormal);
-                    if (!traceShadow(shadowOrigin, light.direction,
-                            max(light.distance - length(shadowOrigin - hit.position), 0.0), push)) {
-                        // Punctual lights are delta distributions: the BSDF and
-                        // environment samplers cannot hit them, so MIS is one.
-                        radiance += throughput * hairBsdf * light.illuminance * hairInverseSourcePdf;
-                    }
-                }
-            }
-
-            EnvironmentLightSample hairLightSample;
-            if (sampleEnvironmentLight(push, seed, hairLightSample)) {
-                float approximateHairPdf = fallbackBsdfPdf(
-                    ray.direction,
-                    hit.normal,
-                    hairLightSample.direction,
-                    0.0,
-                    hairMaterial.longitudinalRoughness,
-                    0.5);
-                float lightMisWeight = environmentLightMisWeight(
-                    push,
-                    hairLightSample.pdfSolidAngle,
-                    approximateHairPdf);
-                float3 lightRadianceOverPdf =
-                    hairLightSample.radiance * lightMisWeight /
-                    max(hairLightSample.pdfSolidAngle, 0.000001);
-                float3 shadowOffsetNormal = dot(hairLightSample.direction, hit.geometryNormal) >= 0.0
-                    ? hit.geometryNormal
-                    : -hit.geometryNormal;
-                bool occluded = traceShadow(
-                    offsetRay(hit.position, shadowOffsetNormal),
-                    hairLightSample.direction,
-                    10000.0,
-                    push);
-                if (!occluded) {
-                    float3 hairBsdf = evalRTXCRMaterial(preparedHair, hairLightSample.direction);
-                    radiance += throughput * max(hairBsdf, 0.0) * lightRadianceOverPdf;
-                }
-            }
-
-            float2 hairRandom[2] = {
-                float2(rand(seed), rand(seed)),
-                float2(rand(seed), rand(seed)),
-            };
-            float3 hairDirection;
-            float hairPdf;
-            float3 hairWeight;
-            RTXCR_HairLobeType hairLobe;
-            if (!sampleRTXCRMaterial(
-                    preparedHair,
-                    hairRandom,
-                    hairDirection,
-                    hairPdf,
-                    hairWeight,
-                    hairLobe)) {
-                break;
-            }
-
-            ray.direction = safeNormalize(hairDirection, reflect(ray.direction, hit.normal));
-            throughput *= max(hairWeight, 0.0) / max(hairPdf, 0.000001);
-            previousBsdfPdf = max(hairPdf, 0.000001);
-            previousScatterDelta = false;
-            rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf);
-            float3 offsetNormal = dot(ray.direction, hit.geometryNormal) >= 0.0
-                ? hit.geometryNormal
-                : -hit.geometryNormal;
-            ray.origin = offsetRay(hit.position, offsetNormal);
-
-            if (depth >= 2u) {
-                float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
-                if (rand(seed) > continueProbability) {
-                    break;
-                }
-                throughput /= max(continueProbability, 0.001);
-            }
+        if (materialDomain(material) == kMaterialDomainFiber) {
+            if (!shadeSceneFiber(material, hit, stableShadingNormal, push, depth,
+                    ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta)) { break; }
             continue;
         }
-#endif
 
         if (transmission > 0.01) {
             float eta = hit.frontFace ? 1.0 / max(ior, 1.001) : max(ior, 1.001);

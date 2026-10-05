@@ -52,6 +52,92 @@ protected:
     }
 };
 
+TEST_F(MaterialAssets, FiberAssetRoundTripInheritanceAndDomainValidation)
+{
+    auto fiber = defaultRTXCRChiangDefinition();
+    write("Fiber.materialdef", serializeMaterialDefinition(fiber));
+    MaterialDefinition decoded;
+    ASSERT_TRUE(deserializeMaterialDefinition(serializeMaterialDefinition(fiber), decoded, error)) << error;
+    EXPECT_EQ(decoded.implementation, "RTXCRChiang.DOTS");
+    EXPECT_TRUE(decoded.schema.resources.empty());
+    MaterialAssetLibrary library(root);
+    scene::RenderMaterial source;
+    source.rtxcrHair = true;
+    source.rtxcrHairMelanin = 0.3f;
+    source.rtxcrHairLongitudinalRoughness = 0.17f;
+    source.rtxcrHairCuticleAngleDegrees = -2;
+    source.doubleSided = true;
+    MaterialInstance parent;
+    ASSERT_TRUE(createMaterialInstance(source, "asset://Fiber.materialdef", fiber, {}, parent, error)) << error;
+    ASSERT_TRUE(library.save("asset://Parent.material", parent, error)) << error;
+    MaterialInstance child;
+    child.definition = parent.definition;
+    child.parent = "asset://Parent.material";
+    child.parameters["azimuthalRoughness"] = 0.4;
+    ASSERT_TRUE(library.save("asset://Child.material", child, error)) << error;
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve("asset://Child.material", resolved, error)) << error;
+    scene::RenderMaterial result;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, {}, result, error)) << error;
+    EXPECT_TRUE(result.rtxcrHair);
+    EXPECT_TRUE(result.doubleSided);
+    EXPECT_FLOAT_EQ(result.rtxcrHairMelanin, source.rtxcrHairMelanin);
+    EXPECT_FLOAT_EQ(result.rtxcrHairLongitudinalRoughness, source.rtxcrHairLongitudinalRoughness);
+    EXPECT_FLOAT_EQ(result.rtxcrHairAzimuthalRoughness, 0.4f);
+    EXPECT_FLOAT_EQ(result.rtxcrHairCuticleAngleDegrees, -2);
+    child.parameters["roughness"] = 0.2;
+    EXPECT_FALSE(library.resolve(child, resolved, error));
+    child.parameters.erase("roughness");
+    child.parameters["longitudinalRoughness"] = 0;
+    EXPECT_FALSE(library.save("asset://Child.material", child, error));
+    child.parameters.erase("longitudinalRoughness");
+    child.valueParameters["0"] = {1, 0, 0, 0};
+    EXPECT_FALSE(library.resolve(child, resolved, error));
+    child.valueParameters.clear();
+    child.featurePolicies["metalness"] = "specialization";
+    EXPECT_FALSE(library.resolve(child, resolved, error));
+    auto document = Json::parse(serializeMaterialDefinition(fiber));
+    document["surfaceProgram"] = Json::object();
+    EXPECT_FALSE(deserializeMaterialDefinition(document.dump(), decoded, error));
+    auto surface = instance();
+    surface.parameters["melanin"] = 0.5;
+    EXPECT_FALSE(library.resolve(surface, resolved, error));
+}
+
+TEST_F(MaterialAssets, FiberSceneEditsPersistReloadAndValidateTransactionally)
+{
+    const auto fiber = defaultRTXCRChiangDefinition();
+    write("Fiber.materialdef", serializeMaterialDefinition(fiber));
+    MaterialInstance asset;
+    asset.definition = "asset://Fiber.materialdef";
+    asset.parameters["melanin"] = 0.2;
+    MaterialAssetLibrary library(root);
+    ASSERT_TRUE(library.save("asset://Fiber.material", asset, error)) << error;
+    scene::SceneDocument document;
+    loadScene(document);
+    ASSERT_TRUE(document.setMaterialAsset(0, "asset://Fiber.material", root, error)) << error;
+    EXPECT_TRUE(document.materials()[0].rtxcrHair);
+    auto edited = document.materials()[0];
+    edited.rtxcrHairCuticleAngleDegrees = 5;
+    const auto revision = document.materialRevision();
+    ASSERT_TRUE(document.setMaterialProperties(0, edited));
+    EXPECT_GT(document.materialRevision(), revision);
+    edited.rtxcrHairIor = 0;
+    EXPECT_FALSE(document.setMaterialProperties(0, edited));
+    asset.parameters["melanin"] = 0.7;
+    ASSERT_TRUE(library.save("asset://Fiber.material", asset, error)) << error;
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    EXPECT_FLOAT_EQ(document.materials()[0].rtxcrHairMelanin, 0.7f);
+    EXPECT_FLOAT_EQ(document.materials()[0].rtxcrHairCuticleAngleDegrees, 5);
+    ASSERT_TRUE(document.save(error)) << error;
+    scene::SceneDocument reloaded;
+    ASSERT_TRUE(reloaded.load(document.documentPath())) << reloaded.documentWarning();
+    EXPECT_TRUE(reloaded.documentWarning().empty()) << reloaded.documentWarning();
+    EXPECT_TRUE(reloaded.materials()[0].rtxcrHair);
+    EXPECT_FLOAT_EQ(reloaded.materials()[0].rtxcrHairMelanin, 0.7f);
+    EXPECT_FLOAT_EQ(reloaded.materials()[0].rtxcrHairCuticleAngleDegrees, 5);
+}
+
 TEST_F(MaterialAssets, FeatureSignaturesSeparateProgramVisibilityAndPipeline)
 {
     scene::RenderMaterial value;

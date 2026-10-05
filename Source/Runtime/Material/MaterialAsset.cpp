@@ -160,7 +160,11 @@ void validateStructure(const MaterialInstance& instance)
     require(!instance.parent || (instance.parent->starts_with("asset://") && instance.parent->ends_with(".material")), "Invalid material parent URI");
     require(instance.parameters.is_object() && instance.resources.is_object() && instance.features.is_object(), "Material overrides must be objects");
     validateValueParameters(instance.valueParameters);
-    const auto schema = defaultOpenPBRDefinition().schema;
+    auto schema = defaultOpenPBRDefinition().schema;
+    // The definition URI is resolved later. Structural parsing accepts known
+    // fields from both domains; apply() enforces the resolved definition schema.
+    const auto fiber = defaultRTXCRChiangDefinition();
+    schema.parameters.insert(schema.parameters.end(), fiber.schema.parameters.begin(), fiber.schema.parameters.end());
     Json scratch = Json::object();
     overlay(schema.parameters, instance.parameters, scratch);
     overlay(schema.resources, instance.resources, scratch);
@@ -225,6 +229,18 @@ MaterialDefinition defaultOpenPBRDefinition()
     return result;
 }
 
+MaterialDefinition defaultRTXCRChiangDefinition()
+{
+    MaterialDefinition result;
+    result.implementation = "RTXCRChiang.DOTS";
+    const scene::RenderMaterial source;
+    for (const auto& field : detail::kFiberScalars) {
+        result.schema.parameters.push_back({field.name, MaterialValueType::Scalar, source.*field.member, field.minimum, field.maximum});
+    }
+    result.schema.features = {{"doubleSided", MaterialValueType::Boolean, false}};
+    return result;
+}
+
 bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& output, std::string& error)
 {
     return attempt(error, [&] {
@@ -232,16 +248,17 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
         keys(document, {"type", "version", "definitionVersion", "implementation", "defaults", "surfaceProgram"});
         require(document.at("type") == "Metallic.MaterialDefinition" && document.at("version").is_number_integer() && document.at("version") == 1,
             "Unsupported material definition format");
-        MaterialDefinition candidate = defaultOpenPBRDefinition();
+        const bool fiber = document.at("implementation") == "RTXCRChiang.DOTS";
+        MaterialDefinition candidate = fiber ? defaultRTXCRChiangDefinition() : defaultOpenPBRDefinition();
         candidate.implementation = document.at("implementation").get<std::string>();
         require(candidate.implementation == "OpenPBRComposite.Legacy" || candidate.implementation == "Slab.Surface" ||
-            candidate.implementation == "OpenPBR.Value", "Unsupported material implementation");
-        if (candidate.implementation != "OpenPBRComposite.Legacy") {
+            candidate.implementation == "OpenPBR.Value" || fiber, "Unsupported material implementation");
+        if (!fiber && candidate.implementation != "OpenPBRComposite.Legacy") {
             require(document.contains("surfaceProgram") && document["surfaceProgram"].is_object(), "Program definition requires surfaceProgram");
             candidate.surfaceProgram = document["surfaceProgram"].dump();
             require(render::MaterialValueIR::parse(candidate.surfaceProgram).closure().has_value() == (candidate.implementation == "Slab.Surface"),
                 "Definition implementation does not match Closure IR");
-        } else { require(!document.contains("surfaceProgram"), "OpenPBR definition does not own a Slab program"); }
+        } else { require(!document.contains("surfaceProgram"), "This definition does not own a Surface program"); }
         require(document.at("definitionVersion").is_number_integer(), "Invalid definition version");
         const auto version = document.at("definitionVersion").get<int64_t>();
         require(version > 0 && version <= UINT32_MAX, "Invalid definition version");
@@ -254,6 +271,8 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
         if (!overlayFeaturePolicies(values.value("featurePolicies", Json::object()), candidate.featurePolicies, policyError)) {
             throw std::runtime_error(policyError);
         }
+        require(!fiber || (candidate.valueParameters.empty() && candidate.featurePolicies == MaterialFeaturePolicies{}),
+            "Fiber does not support Surface Value IR or Surface feature policies");
         const auto update = [&](auto& schema, const char* group) {
             auto resolved = defaults(schema);
             overlay(schema, values.value(group, Json::object()), resolved);
@@ -433,6 +452,26 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
     scene::RenderMaterial& output, std::string& error)
 {
     return attempt(error, [&] {
+        if (instance.definition.implementation == "RTXCRChiang.DOTS") {
+            require(instance.definition.surfaceProgram.empty() && instance.valueParameters.empty() && output.valueProgram.empty(),
+                "Fiber does not support Surface Value/Closure IR");
+            require(instance.resources.empty() && instance.featurePolicies == MaterialFeaturePolicies{},
+                "Fiber does not support Surface resources or feature policies");
+            auto candidate = output;
+            candidate.rtxcrHair = true;
+            candidate.alphaMode = "OPAQUE";
+            candidate.unlit = false;
+            candidate.featurePolicies = instance.featurePolicies;
+            candidate.doubleSided = instance.features.at("doubleSided").get<bool>();
+            for (const auto& field : detail::kFiberScalars) {
+                const auto& value = instance.parameters.at(field.name);
+                number(value, field.minimum, field.maximum);
+                candidate.*field.member = value.get<float>();
+            }
+            require(scene::validMaterialProperties(candidate), "Resolved Fiber material is invalid");
+            output = std::move(candidate);
+            return;
+        }
         const bool slab = instance.definition.implementation == "Slab.Surface";
         const bool value = instance.definition.implementation == "OpenPBR.Value";
         require(slab || value || instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
@@ -495,6 +534,27 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
     MaterialInstance& output, std::string& error)
 {
     return attempt(error, [&] {
+        if (definition.implementation == "RTXCRChiang.DOTS") {
+            require(source.rtxcrHair && scene::validMaterialProperties(source), "Invalid Fiber source material");
+            require(source.valueProgram.empty() && definition.surfaceProgram.empty() &&
+                source.featurePolicies == MaterialFeaturePolicies{} && source.alphaMode == "OPAQUE" && !source.unlit,
+                "Fiber source has unsupported Surface behavior");
+            MaterialInstance candidate;
+            candidate.definition = std::move(definitionUri);
+            candidate.definitionVersion = definition.definitionVersion;
+            const auto baseline = defaults(definition.schema.parameters);
+            for (const auto& field : detail::kFiberScalars) {
+                const float value = source.*field.member;
+                number(value, field.minimum, field.maximum);
+                if (Json(value) != baseline.at(field.name)) { candidate.parameters[field.name] = value; }
+            }
+            if (Json(source.doubleSided) != defaults(definition.schema.features).at("doubleSided")) {
+                candidate.features["doubleSided"] = source.doubleSided;
+            }
+            validateStructure(candidate);
+            output = std::move(candidate);
+            return;
+        }
         require(!source.rtxcrHair && scene::validMaterialProperties(source), "Invalid OpenPBR source material");
         require(definition.surfaceProgram.empty() ? source.valueProgram.empty() : (!source.valueProgram.empty() &&
             render::MaterialValueIR::parse(source.valueProgram).canonical() == render::MaterialValueIR::parse(definition.surfaceProgram).canonical()),

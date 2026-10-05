@@ -46,14 +46,13 @@ public uint materialProgramId(PathTraceMaterial parameters)
         ? kMaterialProgramRTXCRChiang : kMaterialProgramOpenPBRComposite;
 }
 
-// Minimal DOTS interaction. Authored normal/tangent stay independent of the ray;
-// outgoingDirection is the only view-dependent field. No invented curve radius,
-// strand ID or cross-sectional coordinate is inferred from a triangle hit.
-public struct FiberInteraction
+public static const uint kMaterialDomainSurface = 0u;
+public static const uint kMaterialDomainFiber = 1u;
+
+// Model registration belongs to the material runtime, never the integrator.
+public uint materialDomain(PathTraceMaterial parameters)
 {
-    public float3 authoredNormal;
-    public float3 tangent;
-    public float3 outgoingDirection;
-};
+    return materialProgramId(parameters) == kMaterialProgramRTXCRChiang ? kMaterialDomainFiber : kMaterialDomainSurface;
+}
 
 } // namespace Metallic.Material

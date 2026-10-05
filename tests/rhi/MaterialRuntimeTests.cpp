@@ -690,6 +690,13 @@ public:
             for (uint32_t frame = 0; frame < 256; ++frame) {
                 preview.setRawReadbackEnabled(frame == 255);
                 if (!preview.render(sample.graph, 768, fiber ? 432 : 768, outputName)) { return RHITestResult::fail(preview.lastLog()); }
+                if (frame == 0) {
+                    std::ofstream(context.outputDirectory / (std::string(outputName) + ".compile.log")) << preview.lastLog();
+                    if (preview.lastLog().find("error[") != std::string::npos ||
+                        preview.lastLog().find("error material") != std::string::npos) {
+                        return RHITestResult::fail(preview.lastLog());
+                    }
+                }
             }
             const auto format = preview.readbackFormat();
             if (format != Format::RGBA16Sfloat && format != Format::RGBA32Sfloat) {
