@@ -387,17 +387,49 @@ struct OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> : ISurfaceMateri
 typealias SceneOpenPBRMaterialProgram = OpenPBRMaterialProgram<SceneOpenPBRMaterialSource>;
 
 #if METALLIC_CUSTOM_MATERIALS
-// Realtime IBL integrates the actual Slab BSDF; OpenPBR's analytic split-sum
-// approximation cannot represent the angle-dependent two-slab layer.
-float3 sceneSurfaceEnvironment(ScenePreparedSurfaceClosure prepared, ScenePathTracePush push, inout uint seed)
+float sceneEnvironmentRadicalInverse(uint index, uint base)
+{
+    float value = 0.0;
+    float scale = 1.0 / float(base);
+    while (index != 0u) {
+        value += float(index % base) * scale;
+        index /= base;
+        scale /= float(base);
+    }
+    return value;
+}
+
+// Integrate the actual layered/anisotropic BSDF where split-sum IBL is insufficient.
+// These passes have no temporal accumulation. Share deterministic quadrature across
+// pixels instead of decorrelating a few samples into high-variance spatial noise.
+float3 sceneSurfaceEnvironment(ScenePreparedSurfaceClosure prepared, ScenePathTracePush push)
 {
     if (push.environmentMode == kEnvironmentModeDisabled || push.environmentIntensity <= 0.0) { return float3(0); }
     float3 radiance = float3(0);
     uint count = max(push.samples, 1u);
+    // Reuse the environment importance distribution, with the same directions
+    // at every pixel. MIS covers small HDR emitters as well as narrow BSDF lobes.
+    // The procedural sky sampler represents only its key light, so it cannot
+    // be combined with an integral of the full sky using this estimator.
+    bool useEnvironmentMis = push.environmentMode == kEnvironmentModeMap;
+    uint environmentSeed = 0x51ed270bu;
     for (uint i = 0u; i < count; ++i) {
-        BSDFWeightSample scatter = sampleSurfaceWeight(prepared, float3(rand(seed), rand(seed), rand(seed)));
+        if (useEnvironmentMis) {
+            EnvironmentLightSample light;
+            if (sampleEnvironmentLight(push, environmentSeed, light)) {
+                float bsdfPdf = prepared.pdf(light.direction);
+                radiance += evaluateSurfaceProjected(prepared, light.direction) * light.radiance *
+                    (misPowerHeuristic(light.pdfSolidAngle, bsdfPdf) / light.pdfSolidAngle);
+            }
+        }
+        float3 random = float3((float(i) + 0.5) / float(count),
+            sceneEnvironmentRadicalInverse(i + 1u, 2u), sceneEnvironmentRadicalInverse(i + 1u, 3u));
+        BSDFWeightSample scatter = sampleSurfaceWeight(prepared, random);
         if (scatter.pdf > 0.0 && scatter.flags != 0u) {
-            radiance += max(scatter.weight, float3(0)) * environmentRadiance(scatter.wiWS, push, false);
+            float misWeight = useEnvironmentMis
+                ? environmentBsdfMisWeight(push, scatter.pdf, scatter.wiWS, (scatter.flags & kBSDFDelta) != 0u)
+                : 1.0;
+            radiance += max(scatter.weight, float3(0)) * environmentRadiance(scatter.wiWS, push, false) * misWeight;
         }
     }
     return radiance / float(count);

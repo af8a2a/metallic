@@ -163,7 +163,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
 #if METALLIC_CUSTOM_MATERIALS
         if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
             surface.inputs.specular_roughness_anisotropy > 0.0) {
-            return radiance + sceneSurfaceEnvironment(prepared, push, seed) * surface.occlusion;
+            return radiance + sceneSurfaceEnvironment(prepared, push) * surface.occlusion;
         }
 #endif
         float3 normal = hit.normal;
@@ -208,7 +208,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
         radiance += environment * surface.occlusion / float(count);
     } else if (!sampledEnvironment) {
 #if METALLIC_CUSTOM_MATERIALS
-        if (surface.family != 0u) { return radiance + sceneSurfaceEnvironment(prepared, push, seed); }
+        if (surface.family != 0u) { return radiance + sceneSurfaceEnvironment(prepared, push); }
 #endif
         float3 normal = dot(hit.normal, viewDirection) >= 0.0 ? hit.normal : -hit.normal;
         float diffuseWeight = surface.inputs.base_weight * (1.0 - surface.inputs.base_metalness) *

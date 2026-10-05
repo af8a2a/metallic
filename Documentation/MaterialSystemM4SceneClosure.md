@@ -58,6 +58,14 @@ PT 每次命中重新选择程序，因此 secondary hit 不沿用 primary 的�
 Slab 的实时环境光也使用其实际 PreparedClosure 积分，而不是 OpenPBR split-sum
 近似。调试/guide 的 Layer albedo 是法线入射反射率摘要，不能用于代替真实 Layer eval。
 
+实时高级 IBL（Slab、Fuzz、Coat、各向异性）使用独立的 `samples` 预算，默认 64，
+范围 1–1024，运行时显示为 **Advanced IBL Samples**。它不改变栅格主射线数量，
+也不受 PT 每帧 16 样本的上限限制。HDRI 积分混合环境重要性采样与 BSDF 采样（MIS），
+采样序列跨像素、帧和分箱调度保持一致；程序天空只积分完整天空的 BSDF 样本。
+每次迭代最多求值一个环境样本和一个 BSDF 样本，因此提高预算会增加高级材质的 GPU 成本。
+`RHIRendering.painter_fuzz_environment` 对 M05 单帧 64/1024 预算的收敛、分箱一致性与
+跨帧稳定性进行 GPU 回归；所需 Painter 资产缺失时会明确跳过。
+
 resident VBuffer 依据完整编译 ProgramKey 调度：每个 Slab 程序有自己的静态 ID
 编译请求，Single 属于 SingleSlab family，Mix 与 Layer 都属于 DualSlab family。
 默认仍是 fused 调度；没有新建全屏 packed Closure buffer。关闭 `materialBinning`

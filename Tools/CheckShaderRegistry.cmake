@@ -18,7 +18,8 @@ foreach(path IN LISTS shader_clients)
     string(REGEX REPLACE "//[^\n]*|/\\*([^*]|\\*+[^*/])*\\*+/" "" source "${source}")
     if(source MATCHES "compileSlangShaderToSpirv[ \r\n\t]*\\(" OR
        source MATCHES "(->|\\.)[ \r\n\t]*create(ShaderModule|ComputePipeline|GraphicsPipeline|GraphicsShaderObjectProgram|PipelineCache)[ \r\n\t]*\\(" OR
-       source MATCHES "vkCreate(ShaderModule|ComputePipelines|GraphicsPipelines)[ \r\n\t]*\\(")
+       source MATCHES "vkCreate(ShaderModule|ComputePipelines|GraphicsPipelines|ShadersEXT)[ \r\n\t]*\\(" OR
+       source MATCHES "vkGetShaderBinaryDataEXT[ \r\n\t]*\\(")
         message(FATAL_ERROR "${relative} bypasses ShaderRegistry (${CMAKE_MATCH_0}); acquire shaders/pipelines through its unified API")
     endif()
 endforeach()

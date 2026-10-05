@@ -68,7 +68,7 @@ flowchart TB
 
 架构的主干是“数据驱动 RenderGraph + 反射式 Pass + Vulkan RHI”。编辑器只负责组织交互、选择输出和提交一帧；图资源的创建、状态转换和 Pass 执行顺序由 `RenderGraphExecutor` 统一管理。
 
-运行时和预热统一通过进程单例 `ShaderRegistry` 获取 shader；compute/raster 的持久 PSO 缓存由 Registry 自动管理，native cache 按 Device 保存和释放。接口、源码失效与设备生存期契约见 [ShaderRegistry](ShaderRegistry.md)。
+运行时和预热统一通过进程单例 `ShaderRegistry` 获取 shader；compute/raster 的持久 PSO 缓存和 linked Shader Object binary 缓存由 Registry 自动管理，native cache 按 Device 保存和释放。接口、源码失效与设备生存期契约见 [ShaderRegistry](ShaderRegistry.md)。
 
 ## 3. 目录与职责
 
@@ -536,7 +536,9 @@ OMM 的 CPU 分类覆盖 `AlphaCoverage.hlsli` 所用双线性 repeat 采样的�
 
 `SlangCompiler` 根据 module、entry point、profile、capability 和宏定义生成 SPIR-V。大部分 Pass 在 `compile()` 阶段按自身属性选择 Slang 模块/入口并创建 RHI pipeline。
 
-RHI 通过 `PipelineCache` 暴露不依赖图形后端的 PSO 缓存生命周期。Pass 可由 `Device::createPipelineCache()` 创建内存缓存或指定 `.pso` 持久化路径，并在 graphics/compute pipeline 描述中传入同一个缓存。公共层按 shader 二进制内容、entry point 与完整 RHI pipeline state 计算版本化 PSO hash；hash 命中时复用后端缓存，shader 或 pipeline state 改变时形成新 hash 并重新创建 PSO。`.pso` 是版本化容器，保存排序后的 PSO hash 表、后端/设备兼容键、校验值和不透明后端数据；损坏、后端不匹配、驱动或设备身份改变时会安全回退为空缓存。当前 Vulkan 实现用 `VkPipelineCache`，该端口可由后续 D3D12 后端映射到 `ID3D12PipelineLibrary`。
+RHI 通过 `PipelineCache` 暴露不依赖图形后端的 PSO 缓存生命周期；运行时 Pass 通过 `ShaderRegistry` 自动选择和保存，底层测试仍可显式传入独立缓存。公共层按 shader 二进制内容、entry point 与完整 RHI pipeline state 计算版本化 PSO hash；hash 命中时复用后端缓存，shader 或 pipeline state 改变时形成新 hash 并重新创建 PSO。`.pso` 是版本化容器，保存排序后的 PSO hash 表、后端/设备兼容键、校验值和不透明后端数据；损坏、后端不匹配、驱动或设备身份改变时会安全回退为空缓存。当前 Vulkan 实现用 `VkPipelineCache`，该端口可由后续 D3D12 后端映射到 `ID3D12PipelineLibrary`。
+
+`VK_EXT_shader_object` 使用 Registry 自动管理的独立 `.shaderbin` 文件，保存整个 linked vertex/fragment binary pair。兼容文件以 BINARY 创建，文件或驱动拒绝时回退 SPIR-V；命中由实际 Vulkan BINARY 创建成功确认。详见 [ShaderRegistry](ShaderRegistry.md)。
 
 PSO 缓存不替代 Slang 源码到 SPIR-V 的编译缓存；它优化的是驱动侧 graphics/compute pipeline 创建。GPUDriven 样例将缓存保存在 `.cache/pso/VisibilityBufferPass.pso`，并记录 load status、hit/miss、PSO 数和后端数据大小。
 

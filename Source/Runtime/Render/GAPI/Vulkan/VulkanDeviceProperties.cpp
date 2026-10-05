@@ -16,6 +16,7 @@ VulkanDeviceProperties queryDeviceProperties(VkPhysicalDevice physicalDevice,
     };
     append(result.driver);
     append(result.maintenance4);
+    if (features.shaderObject) { append(result.shaderObject); }
     if (features.rayTracingAccelerationStructure) { append(result.accelerationStructure); }
     if (features.bindlessDescriptorHeap) { append(result.descriptorHeap); }
     if (features.deviceGeneratedCommands) { append(result.generatedCommands); }

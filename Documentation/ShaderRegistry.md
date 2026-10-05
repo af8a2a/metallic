@@ -21,7 +21,11 @@ Registry 是进程单例，但全局仅保存源码字节标识与缓存分组�
 
 成功创建的新 PSO 立即保存，失败候选不记录为成功；命中时底层 `save()` 不做重复文件写入。缓存保存失败会记录 warning，但有效的当前管线仍可执行。显式 `desc.pipelineCache` 仅供需要独立控制缓存的底层调用者/测试使用，沿用调用者的保存契约；默认 null 必须走 Registry 持久缓存。
 
-Shader Objects 通过 `getGraphicsShaderObjectProgram` 使用统一入口，但当前 RHI 没有 Shader Object 二进制持久化输入，不能宣称它们命中 `.pso`；其 SPIR-V 仍经过统一缓存。第三方 SDK 内部 shader 不由 Registry 管理。
+Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shader-objects/<group>/<shaderBinaryUUID>/<programHash>.shaderbin`。首次从 SPIR-V 创建成功后，使用 `vkGetShaderBinaryDataEXT` 导出 linked vertex/fragment 的完整二进制对并原子保存；后续进程用 `VK_SHADER_CODE_TYPE_BINARY_EXT` 成对创建。它们使用独立容器，不使用 `VkPipelineCache`。第三方 SDK 内部 shader 不由 Registry 管理。
+
+缓存标识包含两阶段最终设备 SPIR-V、入口、stage/nextStage、link/descriptor-heap/indirect flags、user push ABI、实际 heap mapping 和 RHI 创建契约版本。动态 raster/color state 不属于 shader object 编译输入。文件验证格式、阶段长度、载荷校验和、programHash，以及 UUID 相同且当前 binaryVersion 不低于保存版本的兼容关系。损坏/不兼容文件或驱动拒绝 binary 时清理部分 handles、回退 SPIR-V 并重新导出；导出/保存失败只记录 warning，当前 shader 继续执行。导入和导出缓冲区均显式保证 16 字节对齐。规则依据 [Vulkan binary compatibility](https://docs.vulkan.org/spec/latest/chapters/shaders.html#shaders-binary-compatibility) 和 [vkGetShaderBinaryDataEXT](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetShaderBinaryDataEXT.html)。
+
+`GraphicsShaderObjectProgram::cacheStats().binaryCacheHit` 只在 Vulkan 成功完成 BINARY 创建后为 true；`creationTimeNanoseconds` 仅统计 `vkCreateShadersEXT`，不包含 Slang、磁盘读取/保存和 binary 导出。`persisted` 表示已成功保存或使用已有有效文件。默认 Registry 自动持久化；显式 `binaryCacheDirectory` 可隔离缓存，空字符串关闭持久化；直接 RHI 调用默认不写磁盘。
 
 编辑器显示使用 ImGui 的独立 descriptor/vertex ABI，经 `getShaderModule` 与 `getExternalGraphicsPipeline` 接入相同缓存。native 适配器提供完整稳定状态标识，调用 Vulkan 后端的 `createCachedGraphicsPipeline`，由后端锁住创建过程并仅在成功后记录 PSO。ImGui 的固定布局/混合/光栅契约变化时必须更新适配器的 ABI 版本；原始 native handles 由适配器拥有并在 Device 销毁前释放。
 
@@ -31,6 +35,11 @@ Shader Objects 通过 `getGraphicsShaderObjectProgram` 使用统一入口，但�
 
 - `MetallicShaderRegistryUsageAudit`：禁止 `Source/` 与 `Tools/` 中的 compiler/RHI/native Vulkan 获取旁路，Slang/RHI 实现和 Registry 是明确例外；底层 RHI 测试仍可直接验证后端。
 - `shader_registry_source_pso_and_device_lifetime`：源码冷/热缓存、shader 与管线状态变体、失败发布、并发创建、不同 Device 的持久复用。
+- `MetallicShaderObjectCacheFileTests`：文件兼容性、损坏、尺寸边界、原子替换与并发保存。
+- `shader_object_binary_persistence_readback`：SPIR-V 导出、BINARY 命中、片元变体、损坏回退和第二 Device 的像素一致性。
+- `MetallicShaderObjectBinaryProcessSmoke`：关闭驱动内部缓存，独立进程检查 binary 加载与精确像素读回。
+- `MetallicShaderObjectBinaryRenderingSmoke`：检查 Vulkan 校验日志、Material/Wireframe 的两个 Device 生命周期及逐帧像素一致性。
+- `shader_object_material_readback`：通过 BINARY 创建的两套 bindless 材质 shader 实际绘制与读回。
 - `hdr_editor_imgui_composite`：编辑器显示管线的 native 缓存复用与 scRGB/PQ 像素读回。
 - `MetallicLookDevPathTracePipelineCacheSmoke`：关闭驱动内部缓存，用两个实际 LookDev 进程检查 OpenPBR PT、SHaRC 与 NRC 的 Registry 缓存覆盖。
 

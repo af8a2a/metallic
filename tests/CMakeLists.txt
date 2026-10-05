@@ -403,6 +403,7 @@ add_executable(MetallicRHITests
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
     rhi/ShaderRegistryTests.cpp
+    rhi/ShaderObjectBinaryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp
@@ -628,6 +629,32 @@ if(MSVC)
 endif()
 add_test(NAME MetallicVulkanDeviceFeaturesTests COMMAND MetallicVulkanDeviceFeaturesTests --gtest_color=no)
 set_tests_properties(MetallicVulkanDeviceFeaturesTests PROPERTIES LABELS "rhi;device" TIMEOUT 30)
+
+# Shader object binary persistence format tests; no Vulkan loader, GPU, or optional SDK required.
+add_executable(MetallicShaderObjectCacheFileTests
+    rhi/ShaderObjectCacheFileTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/ShaderObjectCacheFile.cpp")
+target_include_directories(MetallicShaderObjectCacheFileTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicShaderObjectCacheFileTests PRIVATE GTest::gtest_main Threads::Threads)
+if(MSVC)
+    target_compile_options(MetallicShaderObjectCacheFileTests PRIVATE /EHsc /utf-8)
+endif()
+add_test(NAME MetallicShaderObjectCacheFileTests COMMAND MetallicShaderObjectCacheFileTests --gtest_color=no)
+set_tests_properties(MetallicShaderObjectCacheFileTests PROPERTIES LABELS "shader;cache" TIMEOUT 30)
+
+add_test(NAME MetallicShaderObjectBinaryProcessSmoke COMMAND ${CMAKE_COMMAND}
+    "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"
+    "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/shader-object-binary-process"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/RunShaderObjectBinarySmoke.cmake")
+set_tests_properties(MetallicShaderObjectBinaryProcessSmoke PROPERTIES LABELS "rhi;shader;cache"
+    RESOURCE_LOCK MetallicGPU TIMEOUT 210)
+
+add_test(NAME MetallicShaderObjectBinaryRenderingSmoke COMMAND ${CMAKE_COMMAND}
+    "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"
+    "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/shader-object-binary-rendering"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/RunShaderObjectBinaryRendering.cmake")
+set_tests_properties(MetallicShaderObjectBinaryRenderingSmoke PROPERTIES LABELS "rhi;shader;cache"
+    RESOURCE_LOCK MetallicGPU TIMEOUT 120)
 
 # Small host-side tests for callback ownership and loss accounting; no Vulkan device.
 add_executable(MetallicShaderPrintfTests

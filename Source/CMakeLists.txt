@@ -87,6 +87,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
     Runtime/Render/RayTracing/OpacityMicromapBake.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
+    Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/Streamer/UploadStreamer.cpp
     Runtime/Render/RenderSample.cpp

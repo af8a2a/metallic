@@ -50,6 +50,11 @@ namespace {
 
 using namespace openpbr;
 
+// Single-frame quadrature for closures that cannot use the split-sum IBL path.
+// This budget is independent of the path tracer's samples per frame.
+constexpr uint32_t kDefaultRealtimeEnvironmentSamples = 64;
+constexpr uint32_t kMaxRealtimeEnvironmentSamples = 1024;
+
 // Radiance-cache related constants (RTXGI SHaRC / NVIDIA NRC integrations).
 constexpr uint32_t kSharcDefaultEntriesLog2 = 22;
 constexpr uint32_t kSharcMinEntriesLog2 = 16;
@@ -475,6 +480,8 @@ public:
             std::vector<RenderGraphRuntimeSetting> settings{
                 runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
                 runtimeBoolSetting("debugDisableShadows", "Disable Shadows", false, true),
+                runtimeIntSetting("samples", "Advanced IBL Samples", kDefaultRealtimeEnvironmentSamples,
+                    1, kMaxRealtimeEnvironmentSamples, true),
             };
             if (visibilityDeferred_) {
                 settings.erase(settings.begin()); // Deferred resolve always exports physical HDR.
@@ -1414,6 +1421,10 @@ public:
             environment.settings,
             environment.mapAvailable,
             push);
+        if (realtime_) {
+            push.samples = uintProperty(context.properties(), "samples", kDefaultRealtimeEnvironmentSamples,
+                1, kMaxRealtimeEnvironmentSamples);
+        }
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
@@ -1496,7 +1507,6 @@ public:
             // Jitter is metadata, not part of the unjittered camera history.
             push.eye[3] = 0.0f;
             push.center[3] = 0.0f;
-            push.samples = 1;
             push.deferredSettings = 0;
             visibilityView = visibility.view();
             visibilityDepthView = visibilityDepth.view();

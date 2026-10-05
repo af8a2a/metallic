@@ -87,6 +87,9 @@ Shader bytes, pipeline state and device/backend compatibility still control
 cache reuse; a new shader can require driver compilation even after SPIR-V warmup.
 All runtime shader and pipeline acquisition uses ShaderRegistry; default pipeline
 requests automatically load/persist PSOs without pass-owned cache plumbing.
+Linked vertex/fragment Shader Objects also persist driver binaries in
+`.cache/shader-objects/`; compatible entries are loaded with Vulkan's BINARY
+creation path, and invalid/rejected entries rebuild from SPIR-V automatically.
 Cache `hits` in Registry logs describe the application's PSO hash table, not Vulkan
 creation feedback. The cross-process `MetallicLookDevPathTracePipelineCacheSmoke`
 test disables the driver internal cache to verify application cache coverage.

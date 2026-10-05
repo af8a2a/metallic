@@ -123,9 +123,19 @@ Result<std::unique_ptr<GraphicsPipeline>> ShaderRegistry::getGraphicsPipeline(De
 Result<std::unique_ptr<GraphicsShaderObjectProgram>> ShaderRegistry::getGraphicsShaderObjectProgram(
     Device& device, const GraphicsShaderObjectProgramDesc& desc)
 {
-    // Shader Objects have their own RHI binary/creation contract and no
-    // PipelineCache input. Source retrieval still uses the same registry.
-    return device.createGraphicsShaderObjectProgram(desc);
+    if (!desc.vertexShader.module) { return makeError(Error::InvalidArgument); }
+    const std::string group = cacheGroup(desc.vertexShader.module->contentHash());
+    const std::string directory = std::string(PROJECT_SOURCE_DIR "/.cache/shader-objects/") + group;
+    auto managed = desc;
+    if (!managed.binaryCacheDirectory) { managed.binaryCacheDirectory = directory.c_str(); }
+    auto program = device.createGraphicsShaderObjectProgram(managed);
+    if (program) {
+        const auto stats = (*program)->cacheStats();
+        spdlog::info("[ShaderRegistry] ShaderObject cache group={} key={:016x} binaryHit={} persisted={} bytes={} createMs={:.3f}",
+            group, stats.programHash, stats.binaryCacheHit, stats.persisted, stats.binaryDataSize,
+            static_cast<double>(stats.creationTimeNanoseconds) / 1'000'000.0);
+    }
+    return program;
 }
 
 Result<> ShaderRegistry::getExternalGraphicsPipeline(Device& device, uint64_t shaderHash,

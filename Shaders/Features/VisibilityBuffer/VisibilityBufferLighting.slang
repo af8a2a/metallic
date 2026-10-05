@@ -130,7 +130,7 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
 #if METALLIC_CUSTOM_MATERIALS
     if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
         surface.inputs.specular_roughness_anisotropy > 0.0) {
-        return radiance + sceneSurfaceEnvironment(shaded.prepared, push, seed) * surface.occlusion;
+        return radiance + sceneSurfaceEnvironment(shaded.prepared, push) * surface.occlusion;
     }
 #endif
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {

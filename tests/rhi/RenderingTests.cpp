@@ -2,6 +2,7 @@
 #include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 
 #include <array>
 #include <cstdint>
@@ -723,7 +724,7 @@ public:
         if (!alternateFragmentModule) { return RHITestResult::fail("createShaderModule(alternateFragment) failed"); }
 
         std::unique_ptr<render::GraphicsShaderObjectProgram> defaultProgram;
-        result = device->createGraphicsShaderObjectProgram(render::GraphicsShaderObjectProgramDesc{
+        result = render::ShaderRegistry::instance().getGraphicsShaderObjectProgram(*device, render::GraphicsShaderObjectProgramDesc{
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,
@@ -734,7 +735,7 @@ public:
         }
 
         std::unique_ptr<render::GraphicsShaderObjectProgram> alternateProgram;
-        result = device->createGraphicsShaderObjectProgram(render::GraphicsShaderObjectProgramDesc{
+        result = render::ShaderRegistry::instance().getGraphicsShaderObjectProgram(*device, render::GraphicsShaderObjectProgramDesc{
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {alternateFragmentModule->get()},
                 .usesBindlessHeap = true,
@@ -742,6 +743,20 @@ public:
             }).transform([&](auto rhiValue) { alternateProgram = std::move(rhiValue); });
         if (!result || alternateProgram == nullptr) {
             return RHITestResult::fail(std::string("createGraphicsShaderObjectProgram(alternate) returned ") + toString(result));
+        }
+
+        // Render with BINARY-created stages, including the native descriptor
+        // heap ABI and two independently linked fragment variants.
+        for (const bool alternate : {false, true}) {
+            auto cached = render::ShaderRegistry::instance().getGraphicsShaderObjectProgram(*device, {
+                .vertexShader = {vertexModule->get()},
+                .fragmentShader = {alternate ? alternateFragmentModule->get() : fragmentModule->get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MaterialUserPush)});
+            if (!cached || !(*cached)->cacheStats().binaryCacheHit) {
+                return RHITestResult::fail("material binary cache recreation failed");
+            }
+            (alternate ? alternateProgram : defaultProgram) = std::move(*cached);
         }
 
         constexpr std::array<float, 24> kPositions{

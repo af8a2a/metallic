@@ -21,6 +21,11 @@ VKAPI_ATTR void VKAPI_CALL fakeQuery(VkPhysicalDevice, VkPhysicalDevicePropertie
         if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES) {
             reinterpret_cast<VkPhysicalDeviceMaintenance4Properties*>(node)->maxBufferSize = 4096;
         }
+        if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT) {
+            auto& properties = *reinterpret_cast<VkPhysicalDeviceShaderObjectPropertiesEXT*>(node);
+            properties.shaderBinaryVersion = 42;
+            properties.shaderBinaryUUID[0] = 17;
+        }
         if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT) {
             auto& properties = *reinterpret_cast<VkPhysicalDeviceOpacityMicromapPropertiesEXT*>(node);
             properties.maxOpacity2StateSubdivisionLevel = 8;
@@ -36,6 +41,7 @@ void expectDetached(const VulkanDeviceProperties& properties)
 {
     EXPECT_EQ(properties.driver.pNext, nullptr);
     EXPECT_EQ(properties.maintenance4.pNext, nullptr);
+    EXPECT_EQ(properties.shaderObject.pNext, nullptr);
     EXPECT_EQ(properties.accelerationStructure.pNext, nullptr);
     EXPECT_EQ(properties.descriptorHeap.pNext, nullptr);
     EXPECT_EQ(properties.generatedCommands.pNext, nullptr);
@@ -67,6 +73,7 @@ TEST(VulkanDeviceProperties, EnabledExtensionsShareOneQueryWithExclusiveMicromap
 {
     for (bool useExt : {false, true}) {
         negotiation::VulkanDeviceFeatureSelection features{};
+        features.shaderObject = true;
         features.rayTracingAccelerationStructure = true;
         features.bindlessDescriptorHeap = true;
         features.deviceGeneratedCommands = true;
@@ -79,6 +86,7 @@ TEST(VulkanDeviceProperties, EnabledExtensionsShareOneQueryWithExclusiveMicromap
         std::set<VkStructureType> expected{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES,
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT,
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT,
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT,
@@ -88,6 +96,8 @@ TEST(VulkanDeviceProperties, EnabledExtensionsShareOneQueryWithExclusiveMicromap
         expected.insert(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV);
 #endif
         EXPECT_EQ(queriedTypes, expected);
+        EXPECT_EQ(snapshot.shaderObject.shaderBinaryVersion, 42u);
+        EXPECT_EQ(snapshot.shaderObject.shaderBinaryUUID[0], 17u);
         EXPECT_EQ(snapshot.opacityMicromap.maxMicromapTriangles,
             useExt ? std::numeric_limits<uint32_t>::max() : 123u);
         if (useExt) {

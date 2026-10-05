@@ -11,6 +11,7 @@ struct VulkanDeviceProperties {
     VkPhysicalDeviceProperties core{};
     VkPhysicalDeviceDriverProperties driver{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     VkPhysicalDeviceMaintenance4Properties maintenance4{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
+    VkPhysicalDeviceShaderObjectPropertiesEXT shaderObject{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
     VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructure{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
     VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptorHeap{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
     VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT generatedCommands{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};

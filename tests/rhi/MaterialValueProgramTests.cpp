@@ -169,6 +169,122 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(PainterLookDevScenesTest);
 
+class PainterFuzzEnvironmentTest final : public RHITest
+{
+public:
+    PainterFuzzEnvironmentTest() { name = "painter_fuzz_environment"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const auto samples = listBuiltInRenderSamples();
+        auto desc = std::find_if(samples.begin(), samples.end(), [](const auto& value) {
+            return value.id == "painter-M05_Fuzz-textured";
+        });
+        if (desc == samples.end()) { return RHITestResult::skip("Run Tools/MaterialValidation/BuildLookDevScenes.py first"); }
+        std::string log;
+        RenderSampleLoadResult sample;
+        scene::SceneDocument document;
+        if (!loadBuiltInRenderSample(desc->id, sample, log) || !document.load(desc->scenePath)) {
+            return RHITestResult::fail(log + document.lastLoadResult().error);
+        }
+        RenderGraphPreviewRenderer preview;
+        if (!preview.initialize(context.enableValidation, true, false)) { return RHITestResult::fail("Device failed"); }
+        preview.setRawReadbackEnabled(true);
+        preview.bindRuntimeScene(&document);
+        preview.setEnvironment(document.environment());
+        preview.setLighting(document.lighting());
+        constexpr uint32_t width = 512, height = 256;
+        std::array<std::vector<float>, 3> images;
+        const std::array budgets{1, 64, 1024};
+        for (size_t index = 0; index < budgets.size(); ++index) {
+            sample.graph.findNode("Deferred")->properties["samples"] = budgets[index];
+            sample.graph.markDirty();
+            for (int frame = 0; frame < 3; ++frame) {
+                if (!preview.render(sample.graph, width, height, "Deferred.color") ||
+                    preview.lastLog().find("error material") != std::string::npos ||
+                    preview.lastLog().find("error[E") != std::string::npos) {
+                    return RHITestResult::fail(preview.lastLog());
+                }
+            }
+            if (preview.readbackFormat() != Format::RGBA32Sfloat || preview.readbackBytes().size() != width * height * 16) {
+                return RHITestResult::fail("Expected linear RGBA32F output");
+            }
+            auto& pixels = images[index];
+            pixels.resize(width * height * 4);
+            std::memcpy(pixels.data(), preview.readbackBytes().data(), preview.readbackBytes().size());
+            if (std::any_of(pixels.begin(), pixels.end(), [](float value) { return !std::isfinite(value); })) {
+                return RHITestResult::fail("Nonfinite Fuzz environment output");
+            }
+            const auto stem = context.outputDirectory / ("Fuzz-" + std::to_string(budgets[index]));
+            std::vector<uint8_t> display(pixels.size(), 255);
+            for (size_t offset = 0; offset < pixels.size(); offset += 4) {
+                const auto rgb = color::toLinearRec709({pixels[offset], pixels[offset + 1], pixels[offset + 2]});
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    const float linear = std::max(rgb[channel], 0.0f);
+                    const float srgb = linear <= 0.0031308f ? 12.92f * linear : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+                    display[offset + channel] = uint8_t(std::clamp(srgb, 0.0f, 1.0f) * 255.0f + 0.5f);
+                }
+            }
+            if (!saveRgba8Png(stem.string() + ".png", display.data(), width, height, log)) {
+                return RHITestResult::fail(log);
+            }
+            std::ofstream raw(stem.string() + ".rgba32f", std::ios::binary);
+            raw.write(reinterpret_cast<const char*>(pixels.data()), pixels.size() * sizeof(float));
+        }
+        if (images[0] == images[1] || images[1] == images[2]) {
+            return RHITestResult::fail("Deferred ignored or clamped its environment sample budget");
+        }
+        // Sphere interiors in the fixed M05 camera: avoid background and silhouette
+        // coverage masking an IBL regression. Compare single frames, never accumulation.
+        double squaredError = 0, referenceEnergy = 0, mean = 0, referenceMean = 0;
+        for (uint32_t y = 108; y < 148; ++y) {
+            for (uint32_t x = 163; x < 349; ++x) {
+                bool interior = false;
+                for (int center : {183, 256, 329}) {
+                    const int dx = int(x) - center, dy = int(y) - 128;
+                    interior |= dx * dx + dy * dy < 20 * 20;
+                }
+                if (!interior) { continue; }
+                for (size_t c = 0; c < 3; ++c) {
+                    const size_t offset = (y * width + x) * 4 + c;
+                    const double value = images[1][offset], reference = images[2][offset];
+                    squaredError += (value - reference) * (value - reference);
+                    referenceEnergy += reference * reference;
+                    mean += value;
+                    referenceMean += reference;
+                }
+            }
+        }
+        const double relativeRms = std::sqrt(squaredError / std::max(referenceEnergy, 1e-20));
+        const double relativeMean = std::abs(mean / std::max(referenceMean, 1e-20) - 1.0);
+        std::ofstream(context.outputDirectory / "FuzzQuality.json") << nlohmann::json{
+            {"relativeRms64Vs1024", relativeRms}, {"relativeMean64Vs1024", relativeMean}}.dump(2);
+        if (referenceEnergy < 0.01 || relativeRms > 0.08 || relativeMean > 0.08) {
+            return RHITestResult::fail("Single-frame Fuzz integration did not converge: RMS=" + std::to_string(relativeRms));
+        }
+        auto* deferred = sample.graph.findNode("Deferred");
+        deferred->properties["samples"] = 64;
+        deferred->properties["materialBinning"] = true;
+        sample.graph.markDirty();
+        for (int frame = 0; frame < 3; ++frame) {
+            if (!preview.render(sample.graph, width, height, "Deferred.color") ||
+                preview.lastLog().find("error material") != std::string::npos ||
+                preview.lastLog().find("error[E") != std::string::npos ||
+                preview.readbackBytes().size() != images[1].size() * sizeof(float)) {
+                return RHITestResult::fail("Binned Fuzz render failed: " + preview.lastLog());
+            }
+            for (size_t i = 0; i < images[1].size(); ++i) {
+                float value;
+                std::memcpy(&value, preview.readbackBytes().data() + i * sizeof(float), sizeof(float));
+                if (!std::isfinite(value) || std::abs(value - images[1][i]) > 1e-5f * std::max(1.0f, std::abs(images[1][i]))) {
+                    return RHITestResult::fail("Fuzz IBL changed with frame index or material binning");
+                }
+            }
+        }
+        return RHITestResult::pass("M05 Fuzz single-frame convergence, sample budgets, frame stability and binned/unbinned equivalence; HDR captures saved");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PainterFuzzEnvironmentTest);
+
 class MaterialValuePublicationTest : public RHITest
 {
 public:

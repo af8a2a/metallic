@@ -1256,6 +1256,21 @@ struct GraphicsShaderObjectProgramDesc {
     uint32_t bindlessUserPushDataSize = 0;
     // Required for membership in a DGC indirect execution set.
     bool indirectBindable = false;
+    // Optional backend binary persistence. Registry supplies its default
+    // directory; direct RHI callers opt in explicitly. Borrowed for creation.
+    const char* binaryCacheDirectory = nullptr;
+};
+
+struct ShaderObjectCacheStats {
+    PipelineCacheLoadStatus loadStatus = PipelineCacheLoadStatus::NotFound;
+    uint64_t programHash = 0;
+    uint64_t binaryDataSize = 0;
+    // Time inside vkCreateShadersEXT only, including any failed binary attempt.
+    uint64_t creationTimeNanoseconds = 0;
+    // True only after the driver successfully creates both stages from BINARY.
+    bool binaryCacheHit = false;
+    bool persisted = false;
+    bool driverRejected = false;
 };
 
 
@@ -1673,6 +1688,8 @@ class GraphicsShaderObjectProgram {
         friend struct detail::VulkanNativeAccess;
     )
 
+    ShaderObjectCacheStats cacheStats() const;
+    const char* binaryCacheFilePath() const;
     PreparedExecution execution(const RasterExecutionState& state = {}) const;
 };
 

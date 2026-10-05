@@ -47,6 +47,8 @@ public:
     // stable state identity through the backend's cached native creation API.
     [[nodiscard]] Result<> getExternalGraphicsPipeline(Device& device, uint64_t shaderHash,
         const std::function<Result<>(PipelineCache&)>& factory);
+    // Linked stages persist as one driver-binary pair. Null directory selects
+    // the registry cache; an explicit directory supports isolated RHI tests.
     [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> getGraphicsShaderObjectProgram(
         Device& device, const GraphicsShaderObjectProgramDesc& desc);
     [[nodiscard]] Result<std::vector<ShaderRegistryCacheStats>> pipelineCacheStats(Device& device);
