@@ -766,10 +766,13 @@ public:
             return {};
         }
 
-        if (visibilityDeferred_ && deferredPipelineCache_ == nullptr) {
-            result = context.device->createPipelineCache(PipelineCacheDesc{.filePath = PROJECT_SOURCE_DIR "/.cache/pso/VisibilityBufferDeferredPass.pso"}).transform([&](auto rhiValue) { deferredPipelineCache_ = std::move(rhiValue); });
-            if (!result || deferredPipelineCache_ == nullptr) {
-                log += "createPipelineCache(VisibilityBufferDeferredPass) failed\n";
+        const char* pipelineCacheName = visibilityDeferred_ ? "VisibilityBufferDeferredPass"
+            : realtime_ ? "RealtimeLightingPass" : "ScenePathTracePass";
+        if (pipelineCache_ == nullptr) {
+            const std::string cachePath = std::string(PROJECT_SOURCE_DIR "/.cache/pso/") + pipelineCacheName + ".pso";
+            result = context.device->createPipelineCache(PipelineCacheDesc{.filePath = cachePath.c_str()}).transform([&](auto rhiValue) { pipelineCache_ = std::move(rhiValue); });
+            if (!result || pipelineCache_ == nullptr) {
+                log += std::string("createPipelineCache(") + pipelineCacheName + ") failed\n";
                 return result ? makeError(Error::Failure) : result;
             }
         }
@@ -969,7 +972,7 @@ public:
             auto compiled = compileMaterialExecutable(*context.device,
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
-                    .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get(),
+                    .debugName = debugName.c_str(), .pipelineCache = pipelineCache_.get(),
                     .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
@@ -1117,6 +1120,7 @@ public:
                         .spirv = maintenanceCompile.spirv,
                         .parameters = parameterAbi<SharcMaintenanceParams>(kSharcMaintenanceABI, ParameterTransport::InlinePush),
                         .debugName = maintenanceDebugName.c_str(),
+                        .pipelineCache = pipelineCache_.get(),
                     },
                     programLog);
                 if (!programLog.empty()) {
@@ -1226,6 +1230,7 @@ public:
                         .spirv = tonemapCompile.spirv,
                         .parameters = parameterAbi<PathTraceTonemapParams>(kPathTraceTonemapABI, ParameterTransport::InlinePush),
                         .debugName = "ScenePathTracePass.Tonemap",
+                        .pipelineCache = pipelineCache_.get(),
                     },
                     programLog);
                 if (!programLog.empty()) {
@@ -1246,14 +1251,14 @@ public:
         }
 #endif
 
-        if (deferredPipelineCache_ != nullptr) {
-            const Result<> saveResult = deferredPipelineCache_->save();
-            const PipelineCacheStats stats = deferredPipelineCache_->stats();
-            spdlog::info("[VisibilityBufferDeferredPass] PSO cache hits={} misses={}",
-                stats.hitCount, stats.missCount);
+        if (pipelineCache_ != nullptr) {
+            const Result<> saveResult = pipelineCache_->save();
+            const PipelineCacheStats stats = pipelineCache_->stats();
+            spdlog::info("[{}] PSO cache hits={} misses={}",
+                pipelineCacheName, stats.hitCount, stats.missCount);
             if (!saveResult) {
-                spdlog::warn("[VisibilityBufferDeferredPass] Could not persist PSO cache: {}",
-                    resultToString(saveResult));
+                spdlog::warn("[{}] Could not persist PSO cache: {}",
+                    pipelineCacheName, resultToString(saveResult));
             }
         }
         compiledShaderKey_ = shaderKey;
@@ -3031,7 +3036,7 @@ private:
     std::vector<std::shared_ptr<const MaterialExecutableArtifact>> materialArtifacts_;
     bool realtime_ = false;
     bool visibilityDeferred_ = false;
-    std::unique_ptr<PipelineCache> deferredPipelineCache_;
+    std::unique_ptr<PipelineCache> pipelineCache_;
     MaterialBinning materialBinning_;
     struct ActiveMaterialProgramBin
     {

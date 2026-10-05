@@ -109,6 +109,16 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
 endif()
 
 if(WIN32)
+    add_test(NAME MetallicLookDevPathTracePipelineCacheSmoke
+        COMMAND ${CMAKE_COMMAND}
+            "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-path-trace-pipeline-cache"
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            "-DHAS_NRC=${METALLIC_HAS_NRC}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunPathTracePipelineCacheSmoke.cmake")
+    set_tests_properties(MetallicLookDevPathTracePipelineCacheSmoke PROPERTIES
+        LABELS "editor;shader;gpu" TIMEOUT 1500 RESOURCE_LOCK MetallicEditor
+        SKIP_REGULAR_EXPRESSION "SKIP:")
     add_test(NAME MetallicDLSSNRConfiguration
         COMMAND ${CMAKE_COMMAND}
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"

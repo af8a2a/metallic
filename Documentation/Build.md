@@ -79,6 +79,16 @@ Build and run `MetallicShaderRequestsTests` in an existing tests-enabled tree to
 verify catalog coverage, warmup-to-runtime cache reuse, and compiled SPIR-V
 equivalence for folded material classes. These checks do not require a GPU.
 
+Scene path tracing also persists Vulkan PSOs in `.cache/pso/ScenePathTracePass.pso`.
+Base/OpenPBR, SHaRC/NRC update/query and SHaRC clear/resolve/NRC tonemap use the
+same pass cache. Realtime lighting and Deferred use separate
+`RealtimeLightingPass.pso` and `VisibilityBufferDeferredPass.pso` files.
+Shader bytes, pipeline state and device/backend compatibility still control
+cache reuse; a new shader can require driver compilation even after SPIR-V warmup.
+Cache `hits` in pass logs describe the application's PSO hash table, not Vulkan
+creation feedback. The cross-process `MetallicLookDevPathTracePipelineCacheSmoke`
+test disables the driver internal cache to verify application cache coverage.
+
 ## NVIDIA Neural Radiance Cache
 
 `External/NRC` is a Git submodule of the official
