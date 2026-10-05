@@ -1,5 +1,5 @@
 #include "Editor/EditorDisplayRenderer.h"
-#include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRequests.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>
@@ -85,11 +85,6 @@ bool EditorDisplayRenderer::initialize(const render::vulkan::NativeDevice& nativ
 VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits, bool encodePQ)
 {
     const std::string white = std::to_string(paperWhiteNits);
-    const render::SlangMacroDefine defines[] = {
-        {"DISPLAY_HDR", hdr ? "1" : "0"}, {"DISPLAY_SCRGB_IMAGE", scRgbImage ? "1" : "0"},
-        {"DISPLAY_SRGB_ATTACHMENT", format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB ? "1" : "0"},
-        {"DISPLAY_WHITE_NITS", white.c_str()},
-    };
     VkShaderModule modules[2]{};
     auto destroyModules = [&] {
         for (auto module : modules) { if (module) { functions_->vkDestroyShaderModule(device_, module, nullptr); } }
@@ -98,13 +93,10 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         encodePQ ? "editorOutputPQFragment" : "editorDisplayFragment"};
     for (uint32_t index = 0; index < 2; ++index) {
         render::ShaderCompileResult shader;
-        if (!render::compileSlangShaderToSpirv({
-            .moduleName = "Features/PostProcess/EditorDisplay",
-            .entryPointName = entries[index],
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .macroDefines = {defines, 4},
-            .descriptorHeapMode = render::SlangDescriptorHeapMode::Mapped,
-        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); })) {
+        const auto request = render::makeEditorDisplayShaderRequest(entries[index], hdr, scRgbImage,
+            format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB, white);
+        const render::ShaderRequestView source(request);
+        if (!render::compileSlangShaderToSpirv(source.desc(), shader.diagnostics).transform([&](auto value) { shader = std::move(value); })) {
             spdlog::error("Editor display shader: {}", shader.diagnostics);
             destroyModules();
             return VK_NULL_HANDLE;

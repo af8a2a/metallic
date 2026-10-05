@@ -39,7 +39,22 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"});
     add("Features/Lighting/PrepareLightsPdf", {"prepareLightsPdfMain"});
     add("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"});
-    add("Features/PostProcess/EditorDisplay", {"editorDisplayVertex", "editorDisplayFragment"});
+    for (bool hdr : {false, true}) {
+        for (bool scRgb : {false, true}) {
+            for (bool sRGB : {false, true}) {
+                for (float white : {80.0f, 203.0f}) {
+                    for (const char* entry : {"editorDisplayVertex", "editorDisplayFragment"}) {
+                        requests.push_back(makeEditorDisplayShaderRequest(entry, hdr, scRgb, sRGB, std::to_string(white)));
+                    }
+                }
+            }
+        }
+    }
+    for (float white : {80.0f, 203.0f}) {
+        for (const char* entry : {"editorOutputVertex", "editorOutputPQFragment"}) {
+            requests.push_back(makeEditorDisplayShaderRequest(entry, true, false, false, std::to_string(white)));
+        }
+    }
     add("Features/PostProcess/FinalBlit", {"finalBlitUvMain", "finalBlitMain"}, {}, {{"FINAL_USE_LUT", "0"}});
     add("Features/PostProcess/FinalBlit", {"finalBlitMain"}, {}, {{"FINAL_USE_LUT", "1"}});
     add("Features/PostProcess/ColorGradingLUT", {"composeColorGradingLUT"});
@@ -105,31 +120,41 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
         add("Features/Samples/RTXCRMaterialSample", {"rtxcrMaterialSampleMain"}, {}, {}, rtxcrPaths);
     }
     // Conventional textures, both position-fetch capability variants. Optional
-    // NTC/NRD SDK and generated material programs remain runtime-compiled.
+    // NTC/NRD SDK permutations remain runtime-compiled; local generated material
+    // programs are appended by Tools/MaterialShaderWarmupRequests.cpp.
     for (bool positionFetch : {false, true}) {
         for (auto program : {SceneRayQueryProgram::RTXDI, SceneRayQueryProgram::MaterialVisualization}) {
             requests.push_back(makeSceneRayQueryRequest(program, {.positionFetch = positionFetch}));
         }
-        SceneShaderOptions options{.hasRTXCR = hasRtxcr, .positionFetch = positionFetch, .rtxcrInclude = rtxcrInclude};
-        for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve, SceneShaderProgram::Tonemap,
-                SceneShaderProgram::RealtimeLighting, SceneShaderProgram::PathTraceGuides,
-                SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
-            requests.push_back(makeSceneShaderRequest(program, options));
-        }
-        requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options));
-        for (const char* cacheDefine : {"SHARC_UPDATE", "SHARC_QUERY", "NRC_UPDATE", "NRC_QUERY"}) {
-            const SlangMacroDefine define{cacheDefine, "1"};
-            requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1}));
+        for (bool streamed : {false, true}) {
+            if (streamed && positionFetch) { continue; }
+            SceneShaderOptions options{.streamMaterials = streamed, .hasRTXCR = hasRtxcr,
+                .positionFetch = positionFetch, .rtxcrInclude = rtxcrInclude};
+            for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve, SceneShaderProgram::Tonemap,
+                    SceneShaderProgram::RealtimeLighting, SceneShaderProgram::PathTraceGuides,
+                    SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                requests.push_back(makeSceneShaderRequest(program, options));
+            }
+            requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options));
+            for (const char* cacheDefine : {"SHARC_UPDATE", "SHARC_QUERY", "NRC_UPDATE", "NRC_QUERY"}) {
+                const SlangMacroDefine define{cacheDefine, "1"};
+                requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1}));
+            }
         }
     }
     for (bool streamed : {false, true}) {
         for (bool guides : {false, true}) {
-            const SceneShaderOptions options{.streamMaterials = streamed, .globalView = true, .upscalerGuides = guides};
-            requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, options));
-            for (int materialClass = 0; materialClass < 5; ++materialClass) {
-                const std::string value = std::to_string(materialClass);
-                const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
-                requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1}));
+            for (bool view : {false, true}) {
+                for (bool half : {false, true}) {
+                    const SceneShaderOptions options{.streamMaterials = streamed, .globalView = view,
+                        .deferredFloat16 = half, .upscalerGuides = guides};
+                    requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, options));
+                    for (int materialClass = 0; materialClass < 5; ++materialClass) {
+                        const std::string value = std::to_string(materialClass);
+                        const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+                        requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1}));
+                    }
+                }
             }
         }
     }

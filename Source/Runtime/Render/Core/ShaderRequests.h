@@ -160,6 +160,17 @@ inline ShaderRequest makeColorResizeShaderRequest()
     return {.module = "Features/PostProcess/ColorResize", .entry = "colorResizeMain"};
 }
 
+inline ShaderRequest makeEditorDisplayShaderRequest(const char* entry, bool hdr,
+    bool scRgbImage, bool sRGBAttachment, const std::string& whiteNits)
+{
+    return {.module = "Features/PostProcess/EditorDisplay", .entry = entry,
+        .defines = {{"DISPLAY_HDR", hdr ? "1" : "0"},
+            {"DISPLAY_SCRGB_IMAGE", scRgbImage ? "1" : "0"},
+            {"DISPLAY_SRGB_ATTACHMENT", sRGBAttachment ? "1" : "0"},
+            {"DISPLAY_WHITE_NITS", whiteNits}},
+        .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
+}
+
 struct ShadowShaderOptions {
     bool streamed = false;
     bool streamTlas = false;

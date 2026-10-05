@@ -7,13 +7,14 @@ set_tests_properties(MetallicWorkingColorAudit PROPERTIES LABELS "shader;color")
 find_package(Threads REQUIRED)
 add_executable(MetallicShaderWarmupStartupTests
     editor/ShaderWarmupStartupTests.cpp
-    "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp")
+    "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp"
+    "${CMAKE_SOURCE_DIR}/Tools/MaterialShaderWarmupRequests.cpp")
 target_include_directories(MetallicShaderWarmupStartupTests PRIVATE
     "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/Source")
 target_compile_definitions(MetallicShaderWarmupStartupTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
-target_link_libraries(MetallicShaderWarmupStartupTests PRIVATE GTest::gtest_main spdlog::spdlog Threads::Threads)
+target_link_libraries(MetallicShaderWarmupStartupTests PRIVATE GTest::gtest_main spdlog::spdlog Threads::Threads MetallicMaterialValueCompiler)
 if(MSVC)
     target_compile_options(MetallicShaderWarmupStartupTests PRIVATE /EHsc /utf-8)
 endif()
@@ -23,7 +24,7 @@ set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;
 
 
 add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp)
-target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source" "${CMAKE_SOURCE_DIR}")
 target_compile_definitions(MetallicShaderRequestsTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
