@@ -249,7 +249,7 @@ public:
 #endif
         const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI, shaderOptions);
         const ShaderRequestView source(request);
-        result = compileSlangShaderToSpirv(source.desc(), computeCompile.diagnostics)
+        result = ShaderRegistry::instance().getShader(source.desc(), computeCompile.diagnostics)
             .transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(SceneRTXDI.sceneRtxdiMain) returned ";

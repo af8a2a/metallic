@@ -766,17 +766,6 @@ public:
             return {};
         }
 
-        const char* pipelineCacheName = visibilityDeferred_ ? "VisibilityBufferDeferredPass"
-            : realtime_ ? "RealtimeLightingPass" : "ScenePathTracePass";
-        if (pipelineCache_ == nullptr) {
-            const std::string cachePath = std::string(PROJECT_SOURCE_DIR "/.cache/pso/") + pipelineCacheName + ".pso";
-            result = context.device->createPipelineCache(PipelineCacheDesc{.filePath = cachePath.c_str()}).transform([&](auto rhiValue) { pipelineCache_ = std::move(rhiValue); });
-            if (!result || pipelineCache_ == nullptr) {
-                log += std::string("createPipelineCache(") + pipelineCacheName + ") failed\n";
-                return result ? makeError(Error::Failure) : result;
-            }
-        }
-
         SceneShaderOptions shaderOptions{
             .customMaterials = hasValuePrograms(),
             .streamMaterials = streamMaterials_,
@@ -972,7 +961,7 @@ public:
             auto compiled = compileMaterialExecutable(*context.device,
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
-                    .debugName = debugName.c_str(), .pipelineCache = pipelineCache_.get(),
+                    .debugName = debugName.c_str(),
                     .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
@@ -1095,7 +1084,7 @@ public:
                 const ShaderRequestView source(request);
                 const char* entryPointName = request.entry.c_str();
                 ShaderCompileResult maintenanceCompile;
-                Result<> maintenanceResult = compileSlangShaderToSpirv(source.desc(), maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
+                Result<> maintenanceResult = ShaderRegistry::instance().getShader(source.desc(), maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
                 if (!maintenanceResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kSceneSharcMaintenanceShaderModuleName;
@@ -1120,7 +1109,6 @@ public:
                         .spirv = maintenanceCompile.spirv,
                         .parameters = parameterAbi<SharcMaintenanceParams>(kSharcMaintenanceABI, ParameterTransport::InlinePush),
                         .debugName = maintenanceDebugName.c_str(),
-                        .pipelineCache = pipelineCache_.get(),
                     },
                     programLog);
                 if (!programLog.empty()) {
@@ -1209,7 +1197,7 @@ public:
                 const auto request = makeSceneShaderRequest(SceneShaderProgram::Tonemap, shaderOptions);
                 const ShaderRequestView source(request);
                 ShaderCompileResult tonemapCompile;
-                Result<> tonemapResult = compileSlangShaderToSpirv(source.desc(), tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
+                Result<> tonemapResult = ShaderRegistry::instance().getShader(source.desc(), tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
                 if (!tonemapResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kScenePathTraceTonemapShaderModuleName;
@@ -1230,7 +1218,6 @@ public:
                         .spirv = tonemapCompile.spirv,
                         .parameters = parameterAbi<PathTraceTonemapParams>(kPathTraceTonemapABI, ParameterTransport::InlinePush),
                         .debugName = "ScenePathTracePass.Tonemap",
-                        .pipelineCache = pipelineCache_.get(),
                     },
                     programLog);
                 if (!programLog.empty()) {
@@ -1251,16 +1238,6 @@ public:
         }
 #endif
 
-        if (pipelineCache_ != nullptr) {
-            const Result<> saveResult = pipelineCache_->save();
-            const PipelineCacheStats stats = pipelineCache_->stats();
-            spdlog::info("[{}] PSO cache hits={} misses={}",
-                pipelineCacheName, stats.hitCount, stats.missCount);
-            if (!saveResult) {
-                spdlog::warn("[{}] Could not persist PSO cache: {}",
-                    pipelineCacheName, resultToString(saveResult));
-            }
-        }
         compiledShaderKey_ = shaderKey;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
@@ -3036,7 +3013,6 @@ private:
     std::vector<std::shared_ptr<const MaterialExecutableArtifact>> materialArtifacts_;
     bool realtime_ = false;
     bool visibilityDeferred_ = false;
-    std::unique_ptr<PipelineCache> pipelineCache_;
     MaterialBinning materialBinning_;
     struct ActiveMaterialProgramBin
     {

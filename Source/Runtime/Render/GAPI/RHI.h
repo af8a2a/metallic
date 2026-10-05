@@ -1588,6 +1588,7 @@ class ShaderModule {
     METALLIC_RHI_HANDLE(ShaderModule, unique_ptr,
         friend class Device;
         friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
     )
 
     uint64_t contentHash() const;
@@ -1597,6 +1598,7 @@ class PipelineCache {
     METALLIC_RHI_HANDLE(PipelineCache, unique_ptr,
         friend class Device;
         friend struct detail::DeviceImpl;
+        friend struct detail::VulkanNativeAccess;
     )
 
     const char* filePath() const;

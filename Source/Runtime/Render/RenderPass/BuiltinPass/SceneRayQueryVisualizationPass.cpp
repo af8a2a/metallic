@@ -131,7 +131,7 @@ public:
         const uint32_t capabilityCount = clusterIdSupported
             ? static_cast<uint32_t>(std::size(clusterIdCapabilities))
             : static_cast<uint32_t>(std::size(rayQueryCapabilities));
-        result = compileSlangShaderToSpirv(SlangShaderDesc{
+        result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = kSceneRayQueryVisualizationShaderModuleName,
             .entryPointName = kSceneRayQueryVisualizationEntryPoint,
             .searchPath = kTriangleShaderSearchPath,

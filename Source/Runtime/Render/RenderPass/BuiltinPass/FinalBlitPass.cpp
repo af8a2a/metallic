@@ -168,7 +168,7 @@ private:
         }
         ShaderCompileResult shader;
         const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", withLut ? "1" : "0"}};
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = "Features/PostProcess/FinalBlit",
             .entryPointName = entryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",

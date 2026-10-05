@@ -44,7 +44,7 @@ public:
             return result;
         }
 
-        result = context.device->createComputePipeline(ComputePipelineDesc{
+        result = ShaderRegistry::instance().getComputePipeline(*context.device, ComputePipelineDesc{
             .computeShader = {shader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
@@ -124,7 +124,7 @@ public:
             return result;
         }
 
-        result = context.device->createComputePipeline(ComputePipelineDesc{
+        result = ShaderRegistry::instance().getComputePipeline(*context.device, ComputePipelineDesc{
             .computeShader = {shader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),

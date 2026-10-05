@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 
 #include <bit>
 #include <vector>
@@ -29,12 +30,12 @@ Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc
         word += count;
     }
     auto impl = std::make_shared<Impl>();
-    auto result = device.createShaderModule({
+    auto result = ShaderRegistry::instance().getShaderModule(device, {
         .spirv = desc.spirv,
         .debugName = desc.debugName,
     }).transform([&](auto rhiValue) { impl->shader = std::move(rhiValue); });
     if (result) {
-        result = device.createComputePipeline({
+        result = ShaderRegistry::instance().getComputePipeline(device, {
             .computeShader = {impl->shader.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = desc.parameters.transport == ParameterTransport::InlinePush

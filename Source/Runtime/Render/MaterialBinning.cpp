@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -70,7 +71,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
         if (!sparse && (i == 1 || i == 2)) { continue; }
         if (programs_[i].valid()) { continue; }
         ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv({
+        auto result = ShaderRegistry::instance().getShader({
             .moduleName = "Features/VisibilityBuffer/VisibilityMaterialBinning",
             .entryPointName = entries[i],
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",

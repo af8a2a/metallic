@@ -63,6 +63,12 @@ struct NativeTexture {
 NativeDevice nativeDevice(Device& device);
 NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
+// Borrowed module; the owning ShaderModule must outlive native creation.
+VkShaderModule nativeShaderModule(ShaderModule& shader);
+// For external ABIs (e.g. ImGui). Lock creation and record a successful stable
+// state key in the same RHI cache. The caller owns the resulting native pipeline.
+Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,
+    uint64_t stateHash, VkPipeline& pipeline);
 NativePipeline nativePipeline(ComputePipeline& pipeline);
 // Available only when diagnostic replay was enabled at shader creation.
 std::vector<uint8_t> nativeComputeSpirv(ComputePipeline& pipeline, bool deviceCode);

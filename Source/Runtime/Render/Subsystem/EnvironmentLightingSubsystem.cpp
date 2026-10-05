@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -120,7 +121,7 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
     Result<> initialize(Device& device, std::string& log)
     {
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
                 .moduleName = "Features/Environment/EnvironmentLightingPrecompute",
                 .entryPointName = "environmentLightingPrecomputeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders",

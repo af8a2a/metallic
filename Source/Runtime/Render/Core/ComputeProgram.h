@@ -51,7 +51,7 @@ struct ComputeProgramDesc {
     std::span<const ComputeProgramBindingDesc> bindings;
     const char* debugName = nullptr;
     bool requiresRayQuery = true;
-    // Optional cache borrowed only during pipeline creation.
+    // Optional explicit cache borrowed during creation. Null uses ShaderRegistry.
     PipelineCache* pipelineCache = nullptr;
     // Required direct CPU/Slang resource struct. There is no implicit slot layout.
     ComputeResourceLayout resourceParameters;

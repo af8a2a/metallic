@@ -12,6 +12,7 @@ struct ComputeKernelDesc {
     std::span<const uint32_t> spirv;
     ParameterABI parameters;
     const char* debugName = nullptr;
+    // Null automatically selects ShaderRegistry's persistent cache.
     PipelineCache* pipelineCache = nullptr;
 };
 

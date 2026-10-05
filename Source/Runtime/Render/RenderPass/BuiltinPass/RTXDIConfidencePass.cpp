@@ -115,7 +115,7 @@ public:
 
         device_ = context.device;
         ShaderCompileResult compileResult;
-        result = compileSlangShaderToSpirv(SlangShaderDesc{
+        result = ShaderRegistry::instance().getShader(SlangShaderDesc{
                 .moduleName = kRTXDIConfidenceShaderModuleName,
                 .entryPointName = kRTXDIConfidenceEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,

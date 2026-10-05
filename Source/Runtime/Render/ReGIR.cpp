@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ReGIR.h"
@@ -103,7 +104,7 @@ Result<> ReGIRLightSelector::initialize(Device& device, std::string& log)
     }
 
     ShaderCompileResult compileResult;
-    const Result<> compile = compileSlangShaderToSpirv(SlangShaderDesc{
+    const Result<> compile = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = kBuildReGIRShaderModuleName,
             .entryPointName = kBuildReGIREntryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",

@@ -2865,7 +2865,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             pipelineInfo.PipelineRenderingCreateInfo = renderingInfo;
             ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
         }
-        if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_), colorFormat,
+        if (!displayRenderer_.initialize(*device_, colorFormat,
                 render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED)) {
             return false;
@@ -2942,7 +2942,7 @@ bool EditorApplication::initializeImGuiBackends()
         spdlog::error("ImGui Vulkan renderer backend initialization failed");
         return false;
     }
-    return displayRenderer_.initialize(nativeDevice, colorFormat,
+    return displayRenderer_.initialize(*device_, colorFormat,
         render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED);
 }

@@ -236,7 +236,7 @@ public:
             ShaderCompileResult resizeShader;
             const auto resizeRequest = makeColorResizeShaderRequest();
             const ShaderRequestView resizeSource(resizeRequest);
-            auto resizeResult = compileSlangShaderToSpirv(resizeSource.desc(), log)
+            auto resizeResult = ShaderRegistry::instance().getShader(resizeSource.desc(), log)
                 .transform([&](auto value) { resizeShader = std::move(value); });
             if (!resizeResult) { return resizeResult; }
             resizeResult = colorResize_.initialize(*context.device, {.spirv = resizeShader.spirv,
@@ -246,7 +246,7 @@ public:
         }
         if (boolProperty(&properties(), "exportOutputGuides", false)) {
             ShaderCompileResult shader;
-            auto result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
+            auto result = ShaderRegistry::instance().getShader({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
                 .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
             const ComputeProgramBindingDesc bindings[] = {
@@ -943,7 +943,7 @@ private:
             if (!result) {
                 return result;
             }
-            result = device.createGraphicsPipeline(GraphicsPipelineDesc{
+            result = ShaderRegistry::instance().getGraphicsPipeline(device, GraphicsPipelineDesc{
                 .vertexShader = {depthVertexShader_.get()},
                 .fragmentShader = {depthFragmentShader_.get()},
                 .depthStencilFormat = Format::D32Sfloat,
@@ -972,7 +972,7 @@ private:
             if (!result) {
                 return result;
             }
-            result = device.createComputePipeline(ComputePipelineDesc{
+            result = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
                 .computeShader = {alphaShader_.get()},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(StreamlineDLSSAlphaUserPush),

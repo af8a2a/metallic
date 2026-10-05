@@ -4,6 +4,7 @@
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <cstring>
@@ -53,7 +54,7 @@ public:
         }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv({
+        auto result = ShaderRegistry::instance().getShader({
             .moduleName = "Features/VisibilityBuffer/VisibilityBufferMaterial",
             .entryPointName = "visibilityBufferMaterialMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });

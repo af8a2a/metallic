@@ -114,7 +114,7 @@ public:
         }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/LightGridDebug",
+        Result<> result = ShaderRegistry::instance().getShader({.moduleName = "Features/Debug/LightGridDebug",
             .entryPointName = "lightGridDebugMain", .searchPath = kTriangleShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) {
             log = "LightGridDebug shader compilation failed: " + shader.diagnostics;

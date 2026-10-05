@@ -1,4 +1,5 @@
 #include "Editor/EditorDisplayRenderer.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
 
 #include <imgui.h>
@@ -45,17 +46,20 @@ void EditorDisplayRenderer::shutdown()
     layout_ = VK_NULL_HANDLE;
     setLayouts_[0] = setLayouts_[1] = VK_NULL_HANDLE;
     device_ = VK_NULL_HANDLE;
+    rhiDevice_ = nullptr;
 }
 
-bool EditorDisplayRenderer::initialize(const render::vulkan::NativeDevice& native, VkFormat mainFormat, bool hdr, float paperWhiteNits,
+bool EditorDisplayRenderer::initialize(render::Device& rhiDevice, VkFormat mainFormat, bool hdr, float paperWhiteNits,
     VkFormat pqOutputFormat)
 {
+    const auto native = render::vulkan::nativeDevice(rhiDevice);
     const VkDevice device = native.device;
     if (device_ == device && mainPipeline_ && mainImagePipeline_ && mainFormat_ == mainFormat &&
         hdr_ == hdr && paperWhiteNits_ == paperWhiteNits && pqOutputFormat_ == pqOutputFormat &&
         (pqOutputFormat == VK_FORMAT_UNDEFINED || pqPipeline_)) { return true; }
     shutdown();
     device_ = device;
+    rhiDevice_ = &rhiDevice;
     functions_ = native.functions;
     mainFormat_ = mainFormat;
     hdr_ = hdr;
@@ -85,10 +89,7 @@ bool EditorDisplayRenderer::initialize(const render::vulkan::NativeDevice& nativ
 VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits, bool encodePQ)
 {
     const std::string white = std::to_string(paperWhiteNits);
-    VkShaderModule modules[2]{};
-    auto destroyModules = [&] {
-        for (auto module : modules) { if (module) { functions_->vkDestroyShaderModule(device_, module, nullptr); } }
-    };
+    std::unique_ptr<render::ShaderModule> modules[2];
     const char* entries[] = {encodePQ ? "editorOutputVertex" : "editorDisplayVertex",
         encodePQ ? "editorOutputPQFragment" : "editorDisplayFragment"};
     for (uint32_t index = 0; index < 2; ++index) {
@@ -96,23 +97,20 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         const auto request = render::makeEditorDisplayShaderRequest(entries[index], hdr, scRgbImage,
             format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_R8G8B8A8_SRGB, white);
         const render::ShaderRequestView source(request);
-        if (!render::compileSlangShaderToSpirv(source.desc(), shader.diagnostics).transform([&](auto value) { shader = std::move(value); })) {
+        if (!render::ShaderRegistry::instance().getShader(source.desc(), shader.diagnostics).transform([&](auto value) { shader = std::move(value); })) {
             spdlog::error("Editor display shader: {}", shader.diagnostics);
-            destroyModules();
             return VK_NULL_HANDLE;
         }
-        VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .codeSize = shader.spirv.size() * sizeof(uint32_t), .pCode = shader.spirv.data()};
-        if (functions_->vkCreateShaderModule(device_, &info, nullptr, &modules[index]) != VK_SUCCESS) {
-            destroyModules();
+        if (!render::ShaderRegistry::instance().getShaderModule(*rhiDevice_, {.spirv = shader.spirv})
+                .transform([&](auto module) { modules[index] = std::move(module); })) {
             return VK_NULL_HANDLE;
         }
     }
     VkPipelineShaderStageCreateInfo stages[] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .module = modules[0], .pName = "main"},
+            .module = render::vulkan::nativeShaderModule(*modules[0]), .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .module = modules[1], .pName = "main"},
+            .module = render::vulkan::nativeShaderModule(*modules[1]), .pName = "main"},
     };
     VkVertexInputBindingDescription binding{0, sizeof(ImDrawVert), VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes[] = {
@@ -154,9 +152,21 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         .pInputAssemblyState = &assembly, .pViewportState = &viewport, .pRasterizationState = &raster,
         .pMultisampleState = &multisample, .pColorBlendState = &blend, .pDynamicState = &dynamic, .layout = layout_};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    const VkResult result = functions_->vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
-    destroyModules();
-    if (result != VK_SUCCESS) { spdlog::error("Editor display pipeline creation failed: {}", int(result)); }
+    // The native ImGui descriptor/vertex ABI has fixed raster/blend/layout
+    // state above. Increment this version if that fixed contract changes.
+    constexpr uint64_t kPipelineABIVersion = 1;
+    uint64_t stateHash = 14695981039346656037ull;
+    const uint64_t identity[] = {0x494d47554950534full, kPipelineABIVersion,
+        modules[0]->contentHash(), modules[1]->contentHash(), uint64_t(format), uint64_t(encodePQ),
+        sizeof(ImDrawVert), offsetof(ImDrawVert, pos), offsetof(ImDrawVert, uv), offsetof(ImDrawVert, col)};
+    for (uint64_t value : identity) {
+        for (uint32_t byte = 0; byte < 8; ++byte) { stateHash = (stateHash ^ ((value >> (byte * 8)) & 255)) * 1099511628211ull; }
+    }
+    const auto result = render::ShaderRegistry::instance().getExternalGraphicsPipeline(*rhiDevice_,
+        modules[0]->contentHash(), [&](render::PipelineCache& cache) {
+            return render::vulkan::createCachedGraphicsPipeline(cache, info, stateHash, pipeline);
+        });
+    if (!result) { spdlog::error("Editor display pipeline creation failed: {}", render::resultToString(result)); }
     return pipeline;
 }
 

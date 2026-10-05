@@ -3,11 +3,15 @@ include(GoogleTest)
 add_test(NAME MetallicWorkingColorAudit COMMAND ${CMAKE_COMMAND}
     "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckWorkingColor.cmake")
 set_tests_properties(MetallicWorkingColorAudit PROPERTIES LABELS "shader;color")
+add_test(NAME MetallicShaderRegistryUsageAudit COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckShaderRegistry.cmake")
+set_tests_properties(MetallicShaderRegistryUsageAudit PROPERTIES LABELS "shader;architecture")
 
 find_package(Threads REQUIRED)
 add_executable(MetallicShaderWarmupStartupTests
     editor/ShaderWarmupStartupTests.cpp
     "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/ShaderRegistryCompiler.cpp"
     "${CMAKE_SOURCE_DIR}/Tools/MaterialShaderWarmupRequests.cpp")
 target_include_directories(MetallicShaderWarmupStartupTests PRIVATE
     "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/Source")
@@ -398,6 +402,7 @@ add_executable(MetallicRHITests
     rhi/MaterialValueIRTests.cpp
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
+    rhi/ShaderRegistryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp

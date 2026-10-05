@@ -1,5 +1,6 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -127,7 +128,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     slang->release();
     render::ShaderCompileResult compiled;
     render::setSlangShaderDebugMode(render::SlangShaderDebugMode::Disabled);
-    const auto result = render::compileSlangShaderToSpirv({
+    const auto result = render::ShaderRegistry::instance().getShader({
         .moduleName = trace ? "ShaderTraceFixture" : "ShaderPrintfEcho",
         .entryPointName = entry,
         .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
@@ -177,14 +178,14 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         {"driverInfo", driver.driverInfo}, {"vendorId", properties.vendorID}, {"deviceId", properties.deviceID},
         {"descriptorHeap", native.descriptorHeapEnabled}};
     report["loadedLayerModule"] = loadedModule(L"VkLayer_khronos_validation.dll");
-    auto shader = require(device->createShaderModule({
+    auto shader = require(render::ShaderRegistry::instance().getShaderModule(*device, {
         .spirv = compiled.spirv,
     }), "createShaderModule");
     struct Push { uint32_t inputBuffer; uint32_t cookie; };
     Push push{0, 305397763};
     report["phase"] = "pipeline-create";
     save(directory / "Report.json", report);
-    auto pipeline = require(device->createComputePipeline({
+    auto pipeline = require(render::ShaderRegistry::instance().getComputePipeline(*device, {
         .computeShader = {shader.get(), "main"},
         .usesBindlessHeap = heapMode,
         .bindlessUserPushDataSize = heapMode ? sizeof(Push) : 0,

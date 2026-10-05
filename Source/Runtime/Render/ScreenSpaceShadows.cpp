@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ShaderRequests.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
@@ -158,7 +159,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         const auto request = makeShadowShaderRequest(shaderOptions);
         const ShaderRequestView source(request);
         ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv(source.desc(), shader.diagnostics)
+        auto result = ShaderRegistry::instance().getShader(source.desc(), shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         std::vector<ComputeProgramBindingDesc> layout = {

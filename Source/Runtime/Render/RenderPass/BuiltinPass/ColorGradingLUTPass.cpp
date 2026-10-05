@@ -58,21 +58,11 @@ public:
         if (!result) {
             return result;
         }
-        ShaderCompileResult shader;
-        result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/ColorGradingLUT",
-                                            .entryPointName = "composeColorGradingLUT",
-                                            .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-                                           shader.diagnostics)
-                     .transform([&](auto value) { shader = std::move(value); });
-        if (!result) {
-            log += shader.diagnostics;
-            return result;
-        }
-        return program_.initialize(*context.device,
-                                   {.spirv = shader.spirv,
-                                    .parameters = parameterAbi<ColorGradingLUTParams>(kColorGradingLUTABI),
-                                    .debugName = "ColorGradingLUT"},
-                                   log);
+        return ShaderRegistry::instance().getComputeKernel(*context.device,
+            {.moduleName = "Features/PostProcess/ColorGradingLUT",
+                .entryPointName = "composeColorGradingLUT", .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+            {.parameters = parameterAbi<ColorGradingLUTParams>(kColorGradingLUTABI), .debugName = "ColorGradingLUT"},
+            program_, log);
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override

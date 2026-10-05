@@ -10187,6 +10187,31 @@ struct VulkanNativeAccess {
         };
     }
 
+    static VkShaderModule nativeShaderModule(ShaderModule& shader)
+    {
+        return shader.impl_ ? shader.impl_->module : VK_NULL_HANDLE;
+    }
+
+    static Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,
+        uint64_t stateHash, VkPipeline& pipeline)
+    {
+        auto* impl = cache.impl_.get();
+        if (!impl || !impl->device || !impl->pipelineCache || pipeline != VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+        std::lock_guard lock(impl->mutex);
+        VkPipeline candidate = VK_NULL_HANDLE;
+        const VkResult result = impl->device->functions.vkCreateGraphicsPipelines(
+            impl->device->device, impl->pipelineCache, 1, &info, nullptr, &candidate);
+        if (result != VK_SUCCESS) {
+            if (candidate) { impl->device->functions.vkDestroyPipeline(impl->device->device, candidate, nullptr); }
+            return resultFromVk(result);
+        }
+        impl->recordPsoLocked(stateHash);
+        pipeline = candidate;
+        return {};
+    }
+
     static vulkan::NativePipeline nativePipeline(ComputePipeline& pipeline)
     {
         return pipeline.impl_ ? vulkan::NativePipeline{pipeline.impl_->device->device,
@@ -10305,6 +10330,17 @@ VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
 void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
 {
     detail::VulkanNativeAccess::notifyExternalDescriptorSetBinding(commandBuffer);
+}
+
+VkShaderModule nativeShaderModule(ShaderModule& shader)
+{
+    return detail::VulkanNativeAccess::nativeShaderModule(shader);
+}
+
+Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,
+    uint64_t stateHash, VkPipeline& pipeline)
+{
+    return detail::VulkanNativeAccess::createCachedGraphicsPipeline(cache, info, stateHash, pipeline);
 }
 
 NativePipeline nativePipeline(ComputePipeline& pipeline)

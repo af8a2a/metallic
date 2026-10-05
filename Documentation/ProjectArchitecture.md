@@ -33,7 +33,7 @@ flowchart TB
     History["HistoryResourceManager<br/>跨帧双缓冲资源"]
     Streaming["Streaming 子系统<br/>Streamer + Meshlet Stream Runtime"]
     Scene["Scene Runtime<br/>glTF / OpenUSD、材质、meshlet、LOD"]
-    Shader["SlangCompiler<br/>Slang -> SPIR-V"]
+    Shader["ShaderRegistry<br/>Slang / SPIR-V 缓存 / 持久 PSO"]
     RHI["RHI API<br/>Device / Queue / Resource / Command"]
     Vulkan["Vulkan Backend<br/>Volk + VMA + 原生扩展"]
     RTX["Scene RTX<br/>BLAS/TLAS、CLAS、PTLAS、Ray Query"]
@@ -67,6 +67,8 @@ flowchart TB
 ```
 
 架构的主干是“数据驱动 RenderGraph + 反射式 Pass + Vulkan RHI”。编辑器只负责组织交互、选择输出和提交一帧；图资源的创建、状态转换和 Pass 执行顺序由 `RenderGraphExecutor` 统一管理。
+
+运行时和预热统一通过进程单例 `ShaderRegistry` 获取 shader；compute/raster 的持久 PSO 缓存由 Registry 自动管理，native cache 按 Device 保存和释放。接口、源码失效与设备生存期契约见 [ShaderRegistry](ShaderRegistry.md)。
 
 ## 3. 目录与职责
 

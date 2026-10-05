@@ -68,7 +68,7 @@ public:
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
+        Result<> result = ShaderRegistry::instance().getShader({.moduleName = "Features/Debug/SliderDebug",
             .entryPointName = "sliderDebugMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
         return program_.initialize(*context.device, {

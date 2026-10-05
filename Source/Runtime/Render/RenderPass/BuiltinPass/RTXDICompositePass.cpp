@@ -53,7 +53,7 @@ public:
 
         device_ = context.device;
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
                 .moduleName = kRTXDICompositeShaderModuleName,
                 .entryPointName = kRTXDICompositeEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,

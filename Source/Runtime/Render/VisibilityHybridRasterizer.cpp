@@ -3,6 +3,7 @@
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include <algorithm>
 #include <cmath>
 
@@ -69,14 +70,14 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
     if (!result) { return result; }
     for (size_t i = 0; i < clusterShaders_.size(); ++i) {
         ShaderCompileResult shader;
-        result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
+        result = ShaderRegistry::instance().getShader({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
             .entryPointName = clusterEntries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = device.createShaderModule({
+        result = ShaderRegistry::instance().getShaderModule(device, {
             .spirv = shader.spirv,
             .debugName = clusterEntries[i],
         }).transform([&](auto rhiValue) { clusterShaders_[i] = std::move(rhiValue); });
-        if (result) { result = device.createComputePipeline({
+        if (result) { result = ShaderRegistry::instance().getComputePipeline(device, {
             .computeShader = {clusterShaders_[i].get()},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(Push),
@@ -87,16 +88,16 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         "hybridResolveVertexMain", "hybridResolveFragmentMain"};
     for (size_t i = 0; i < shaders_.size(); ++i) {
         ShaderCompileResult shader;
-        result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
+        result = ShaderRegistry::instance().getShader({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = device.createShaderModule({
+        result = ShaderRegistry::instance().getShaderModule(device, {
             .spirv = shader.spirv,
             .debugName = entries[i],
         }).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
         if (!result) { return result; }
         if (i < compute_.size()) {
-            result = device.createComputePipeline({
+            result = ShaderRegistry::instance().getComputePipeline(device, {
                 .computeShader = {shaders_[i].get()},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(Push),
@@ -105,7 +106,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         }
     }
     for (size_t i = 0; i < resolve_.size(); ++i) {
-        result = device.createGraphicsPipeline({
+        result = ShaderRegistry::instance().getGraphicsPipeline(device, {
             .vertexShader = {shaders_[3].get()},
             .fragmentShader = {shaders_[4].get()},
             .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,

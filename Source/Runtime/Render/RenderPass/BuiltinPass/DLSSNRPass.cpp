@@ -233,7 +233,7 @@ private:
     {
         if (sliderProgram_.valid()) { return {}; }
         ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
+        auto result = ShaderRegistry::instance().getShader({.moduleName = "Features/Debug/SliderDebug",
             .entryPointName = "sliderDebugOverlayMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         return sliderProgram_.initialize(*device_, {

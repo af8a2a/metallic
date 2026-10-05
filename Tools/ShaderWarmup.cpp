@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "ShaderWarmupRequests.h"
 
 #include <spdlog/spdlog.h>
@@ -35,7 +36,7 @@ CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& reques
         .outCacheHit = &cacheHit,
     };
     std::string diagnostics;
-    const auto compiled = compileSlangShaderToSpirv(desc, options, diagnostics);
+    const auto compiled = ShaderRegistry::instance().getShader(desc, options, diagnostics);
     if (!compiled) {
         return {false, std::string(resultToString(compiled)) + "\n" + diagnostics};
     }
@@ -43,7 +44,7 @@ CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& reques
     // Every worker owns its compiler sessions and output. Keep cache read-back
     // validation identical to the serial warmup.
     if (!cacheHit) {
-        const auto cached = compileSlangShaderToSpirv(desc, options, diagnostics);
+        const auto cached = ShaderRegistry::instance().getShader(desc, options, diagnostics);
         if (!cached || !cacheHit || cached->spirv != compiled->spirv) {
             return {false, "cache read-back verification failed"};
         }

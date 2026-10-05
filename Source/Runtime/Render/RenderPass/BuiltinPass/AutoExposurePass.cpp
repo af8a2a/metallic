@@ -67,15 +67,12 @@ public:
         const char* entries[] = {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"};
         for (size_t i = 0; i < programs_.size(); ++i) {
             if (programs_[i].valid()) { continue; }
-            ShaderCompileResult shader;
-            Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/AutoExposure",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-            if (!result) { log += shader.diagnostics; return result; }
-            result = programs_[i].initialize(*context.device, {
-                .spirv = shader.spirv,
+            auto result = ShaderRegistry::instance().getComputeKernel(*context.device,
+                {.moduleName = "Features/PostProcess/AutoExposure",
+                    .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, {
                 .parameters = parameterAbi<AutoExposureParams>(kAutoExposureABI, ParameterTransport::InlinePush),
                 .debugName = entries[i],
-            }, log);
+            }, programs_[i], log);
             if (!result) { return result; }
         }
         state_ = std::make_shared<State>();

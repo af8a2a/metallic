@@ -81,13 +81,16 @@ equivalence for folded material classes. These checks do not require a GPU.
 
 Scene path tracing also persists Vulkan PSOs in `.cache/pso/ScenePathTracePass.pso`.
 Base/OpenPBR, SHaRC/NRC update/query and SHaRC clear/resolve/NRC tonemap use the
-same pass cache. Realtime lighting and Deferred use separate
+same device-owned [ShaderRegistry](ShaderRegistry.md) cache. Realtime lighting and Deferred use separate
 `RealtimeLightingPass.pso` and `VisibilityBufferDeferredPass.pso` files.
 Shader bytes, pipeline state and device/backend compatibility still control
 cache reuse; a new shader can require driver compilation even after SPIR-V warmup.
-Cache `hits` in pass logs describe the application's PSO hash table, not Vulkan
+All runtime shader and pipeline acquisition uses ShaderRegistry; default pipeline
+requests automatically load/persist PSOs without pass-owned cache plumbing.
+Cache `hits` in Registry logs describe the application's PSO hash table, not Vulkan
 creation feedback. The cross-process `MetallicLookDevPathTracePipelineCacheSmoke`
 test disables the driver internal cache to verify application cache coverage.
+`MetallicShaderRegistryUsageAudit` rejects new acquisition paths bypassing the registry.
 
 ## NVIDIA Neural Radiance Cache
 

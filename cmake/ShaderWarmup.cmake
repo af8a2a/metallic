@@ -12,6 +12,7 @@ add_library(MetallicShaderWarmupCore STATIC EXCLUDE_FROM_ALL
     "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp"
     "${CMAKE_SOURCE_DIR}/Tools/MaterialShaderWarmupRequests.cpp"
     "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/SlangCompiler.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/ShaderRegistryCompiler.cpp"
 )
 target_include_directories(MetallicShaderWarmupCore PUBLIC "${CMAKE_SOURCE_DIR}/Source")
 find_package(Threads REQUIRED)

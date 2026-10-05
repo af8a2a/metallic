@@ -74,6 +74,8 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 当前固定的 Slang 2026.18.2 下，模块公开结构体的成员仍显式标注 `public`。
 
 新 compute pass 使用 `ComputeKernel` + `ParameterWriter`，以具名 typed 参数承载资源。
+Shader 获取使用 [ShaderRegistry](../Documentation/ShaderRegistry.md) 的 `getComputeKernel` /
+`getComputeProgram`，或 `getShader` 后由统一管线入口创建；默认自动复用持久 PSO，Pass 不管理缓存文件。
 DR-first 的新接口使用 `ResourceHandle<T>` / `SamplerHandle`（32 位）和
 `BufferSpan<T>` / `RWBufferSpan<T>`（descriptor、字节偏移、元素数）。通过
 `resolveUniform` / `resolveNonUniform` 解析资源，通过 span 的 `load` / `store` 或

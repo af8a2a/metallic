@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -303,7 +304,7 @@ Result<> ImportancePdfCompute::initialize(Device& device, std::string& log)
     }
 
     ShaderCompileResult compileResult;
-    const Result<> compile = compileSlangShaderToSpirv(SlangShaderDesc{
+    const Result<> compile = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = kPrepareLightsPdfShaderModuleName,
             .entryPointName = kPrepareLightsPdfEntryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",

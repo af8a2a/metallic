@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 
 #include <algorithm>
 #include <mutex>
@@ -64,7 +65,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     // unchanged-source path). Source edits cannot hit a stale executable here.
     auto candidate = std::make_shared<MaterialExecutableArtifact>();
     candidate->parameterABI = options.parameterABI;
-    auto compiled = compileSlangShaderToSpirv(source, log);
+    auto compiled = ShaderRegistry::instance().getShader(source, log);
     if (!compiled) { return makeError(compiled.error()); }
     candidate->shader = std::move(*compiled);
     candidate->resources.assign(layout.bindings.begin(), layout.bindings.end());
