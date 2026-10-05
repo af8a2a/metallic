@@ -59,6 +59,9 @@ public:
         if (!ui.display.initialize(device, format, true, 203.0f, VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
             return RHITestResult::fail("HDR ImGui cached initialization failed");
         }
+        if (!render::ShaderRegistry::instance().flushPipelineCaches(device)) {
+            return RHITestResult::fail("HDR ImGui cache flush failed");
+        }
         auto cacheStats = render::ShaderRegistry::instance().pipelineCacheStats(device);
         bool editorCacheHit = false;
         if (cacheStats) {

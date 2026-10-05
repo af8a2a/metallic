@@ -2051,12 +2051,12 @@ struct PipelineCacheImpl {
     std::unordered_set<uint64_t> storedPsoHashes;
     std::unordered_set<uint64_t> sessionPsoHashes;
     mutable std::mutex mutex;
+    std::mutex saveMutex;
     bool saveOnDestroy = true;
-    bool dirty = false;
 
     ~PipelineCacheImpl();
     Result<> initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
-    Result<> saveLocked();
+    Result<> save();
     bool recordPsoLocked(uint64_t psoHash);
 };
 
@@ -2588,17 +2588,16 @@ PipelineCacheImpl::~PipelineCacheImpl()
         return;
     }
 
-    {
-        std::lock_guard lock(mutex);
-        if (saveOnDestroy && dirty && !filePath.empty()) {
-            const Result<> result = saveLocked();
-            if (!result) {
-                spdlog::warn("Failed to save pipeline cache '{}'", filePath.string());
-            }
+    // Registry's device-owned writer has already joined before cache handles
+    // are destroyed. Explicit cache owners also finish all accesses first.
+    if (saveOnDestroy && !filePath.empty()) {
+        const Result<> result = save();
+        if (!result) {
+            spdlog::warn("Failed to save pipeline cache '{}'", filePath.string());
         }
-        device->functions.vkDestroyPipelineCache(device->device, pipelineCache, nullptr);
-        pipelineCache = VK_NULL_HANDLE;
     }
+    device->functions.vkDestroyPipelineCache(device->device, pipelineCache, nullptr);
+    pipelineCache = VK_NULL_HANDLE;
 }
 
 Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc)
@@ -2684,18 +2683,51 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
     return {};
 }
 
-Result<> PipelineCacheImpl::saveLocked()
+Result<> PipelineCacheImpl::save()
 {
+    // Serialize file replacement without holding the PSO creation/statistics
+    // mutex during driver extraction, checksum calculation or durable I/O.
+    std::lock_guard saveLock(saveMutex);
     if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
     if (filePath.empty()) {
         return {};
     }
-    if (!dirty) {
-        return {};
+    const auto begin = std::chrono::steady_clock::now();
+    uint64_t revision = 0;
+    std::vector<uint64_t> hashes;
+    {
+        std::lock_guard lock(mutex);
+        if (stats.dirtyRevision == stats.persistedRevision) {
+            return {};
+        }
+        revision = stats.dirtyRevision;
+        hashes.reserve(storedPsoHashes.size() + sessionPsoHashes.size());
+        hashes.insert(hashes.end(), storedPsoHashes.begin(), storedPsoHashes.end());
+        hashes.insert(hashes.end(), sessionPsoHashes.begin(), sessionPsoHashes.end());
+        stats.saveInProgress = true;
     }
 
+    struct SaveAttempt {
+        PipelineCacheImpl& cache;
+        bool completed = false;
+        ~SaveAttempt()
+        {
+            if (!completed) {
+                std::lock_guard lock(cache.mutex);
+                ++cache.stats.saveFailureCount;
+                cache.stats.saveInProgress = false;
+            }
+        }
+    } attempt{*this};
+    const auto nanoseconds = [](auto duration) {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count());
+    };
+    const auto extractBegin = std::chrono::steady_clock::now();
+    // Cache flags are zero: Vulkan internally synchronizes native cache access.
+    // Snapshot hashes BEFORE extraction so they never describe a later PSO
+    // that is missing from the extracted blob. Extra native entries are safe.
     size_t byteSize = 0;
     VkResult vkResult = device->functions.vkGetPipelineCacheData(
         device->device,
@@ -2707,7 +2739,8 @@ Result<> PipelineCacheImpl::saveLocked()
     }
 
     std::vector<uint8_t> backendData(byteSize);
-    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+    constexpr uint32_t kMaxExtractAttempts = 3;
+    for (uint32_t retry = 0; retry < kMaxExtractAttempts; ++retry) {
         size_t writtenSize = backendData.size();
         vkResult = device->functions.vkGetPipelineCacheData(
             device->device,
@@ -2720,6 +2753,12 @@ Result<> PipelineCacheImpl::saveLocked()
         }
         if (vkResult != VK_INCOMPLETE) {
             return resultFromVk(vkResult);
+        }
+        if (retry + 1 == kMaxExtractAttempts) {
+            // A successful size query is not a successful data extraction.
+            // Leave the revision pending if concurrent cache growth exhausted
+            // retries instead of persisting a truncated/unfilled buffer.
+            return resultFromVk(VK_INCOMPLETE);
         }
 
         byteSize = 0;
@@ -2737,25 +2776,41 @@ Result<> PipelineCacheImpl::saveLocked()
         return resultFromVk(vkResult);
     }
 
-    std::vector<uint64_t> hashes;
-    hashes.reserve(storedPsoHashes.size() + sessionPsoHashes.size());
-    hashes.insert(hashes.end(), storedPsoHashes.begin(), storedPsoHashes.end());
-    hashes.insert(hashes.end(), sessionPsoHashes.begin(), sessionPsoHashes.end());
+    const auto extractEnd = std::chrono::steady_clock::now();
+    const auto writeBegin = extractEnd;
     std::string reason;
     if (!savePipelineCacheFile(filePath, fileIdentity, hashes, backendData, reason)) {
         spdlog::warn("Failed to write pipeline cache '{}': {}", filePath.string(), reason);
         return makeError(Error::Failure);
     }
 
-    storedPsoHashes.insert(sessionPsoHashes.begin(), sessionPsoHashes.end());
-    stats.storedPsoCount = storedPsoHashes.size();
-    stats.backendDataSize = backendData.size();
-    dirty = false;
+    const auto writeEnd = std::chrono::steady_clock::now();
+    uint64_t storedCount = 0;
+    const uint64_t extractNs = nanoseconds(extractEnd - extractBegin);
+    const uint64_t writeNs = nanoseconds(writeEnd - writeBegin);
+    uint64_t saveNs = 0;
+    {
+        std::lock_guard lock(mutex);
+        storedPsoHashes.insert(hashes.begin(), hashes.end());
+        storedCount = stats.storedPsoCount = storedPsoHashes.size();
+        stats.backendDataSize = backendData.size();
+        stats.persistedRevision = revision;
+        ++stats.saveCount;
+        stats.lastExtractTimeNanoseconds = extractNs;
+        stats.lastWriteTimeNanoseconds = writeNs;
+        saveNs = stats.lastSaveTimeNanoseconds = nanoseconds(std::chrono::steady_clock::now() - begin);
+        stats.saveInProgress = false;
+        attempt.completed = true;
+    }
     spdlog::info(
-        "Saved pipeline cache '{}' with {} PSO hashes and {} backend bytes",
+        "Saved pipeline cache '{}' with {} PSO hashes and {} backend bytes (revision={}, extractMs={:.3f}, writeMs={:.3f}, totalMs={:.3f})",
         filePath.string(),
-        stats.storedPsoCount,
-        stats.backendDataSize);
+        storedCount,
+        backendData.size(),
+        revision,
+        static_cast<double>(extractNs) / 1'000'000.0,
+        static_cast<double>(writeNs) / 1'000'000.0,
+        static_cast<double>(saveNs) / 1'000'000.0);
     return {};
 }
 
@@ -2769,7 +2824,7 @@ bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash)
         ++stats.hitCount;
     } else {
         ++stats.missCount;
-        dirty = true;
+        ++stats.dirtyRevision;
     }
     return cacheHit;
 }
@@ -4001,8 +4056,7 @@ Result<> PipelineCache::save()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    std::lock_guard lock(impl_->mutex);
-    return impl_->saveLocked();
+    return impl_->save();
 }
 
 const void* PreparedExecution::deviceIdentity() const

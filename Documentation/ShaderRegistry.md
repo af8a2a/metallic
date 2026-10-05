@@ -19,7 +19,9 @@ Registry 是进程单例，但全局仅保存源码字节标识与缓存分组�
 
 缓存放在 `.cache/pso/`。PT、SHaRC/NRC、实时光照、Deferred、VisibilityBuffer 与 GPUDrivenStreamAsset 保留既有文件名；其他 module 自动使用 `ShaderRegistry-<module basename>-<full module hash>.pso`，无来源元数据的原始 SPIR-V 使用 `ShaderRegistry.pso`。同一 module 的入口和变体共享容器，shader 字节、入口、完整 RHI 管线状态及 backend/device 兼容性决定实际 PSO 身份。分组只决定存储文件，不决定执行对象是否相同。
 
-成功创建的新 PSO 立即保存，失败候选不记录为成功；命中时底层 `save()` 不做重复文件写入。缓存保存失败会记录 warning，但有效的当前管线仍可执行。显式 `desc.pipelineCache` 仅供需要独立控制缓存的底层调用者/测试使用，沿用调用者的保存契约；默认 null 必须走 Registry 持久缓存。
+成功创建的新 PSO 交给设备持有的后台 worker 保存；同一 group 的请求合并，在最后一次新状态请求后 750 ms 保存，持续新增请求最多等待 5 s（不含已有保存任务的执行时间）。命中不延长等待；失败候选不记录为成功。正常 Device 销毁先排空并 join worker，再销毁 native cache；需要立即确保持久化的工具/测试可调用 `flushPipelineCaches(device)`，普通管线获取无需调用。保存失败会记录 warning 并保留待保存状态，后台延迟重试，当前管线仍可执行；退出/显式 flush 的失败尝试有界，避免永久等待。显式 `desc.pipelineCache` 沿用调用者的保存契约，`PipelineCache::save()` 仍同步；默认 null 必须走 Registry 持久缓存。
+
+后台提取与文件处理不持有 PSO 创建/统计共用的元数据锁，独立保存锁防止旧文件覆盖较新保存。提取前捕获 hash 与 revision，成功后只提交该快照，保存期间新增的 PSO 留待下一次保存。默认 Vulkan cache 未设置 externally-synchronized 标志，native cache 访问由驱动内部同步，仍可能存在驱动锁竞争，依据 [Vulkan pipeline cache synchronization](https://docs.vulkan.org/spec/latest/chapters/pipelines.html#pipelines-cache)。`Saved pipeline cache` 在操作完成后打印，并记录 `extractMs`（驱动提取及输出缓冲分配）、`writeMs`（容器排序、校验和、写盘与原子替换）、`totalMs`；这些不是 shader 编译、PSO 创建或启动总耗时。`PipelineCacheStats` 的 revision、保存次数和阶段时间可验证合并及持久化状态。
 
 Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shader-objects/<group>/<shaderBinaryUUID>/<programHash>.shaderbin`。首次从 SPIR-V 创建成功后，使用 `vkGetShaderBinaryDataEXT` 导出 linked vertex/fragment 的完整二进制对并原子保存；后续进程用 `VK_SHADER_CODE_TYPE_BINARY_EXT` 成对创建。它们使用独立容器，不使用 `VkPipelineCache`。第三方 SDK 内部 shader 不由 Registry 管理。
 
@@ -35,6 +37,8 @@ Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shad
 
 - `MetallicShaderRegistryUsageAudit`：禁止 `Source/` 与 `Tools/` 中的 compiler/RHI/native Vulkan 获取旁路，Slang/RHI 实现和 Registry 是明确例外；底层 RHI 测试仍可直接验证后端。
 - `shader_registry_source_pso_and_device_lifetime`：源码冷/热缓存、shader 与管线状态变体、失败发布、并发创建、不同 Device 的持久复用。
+- `MetallicDeferredShaderCacheWriterTests`：合并、后台阻塞隔离、保存期间的新请求、失败重试和退出排空。
+- `pipeline_cache_deferred_save_and_snapshot`：实际 Vulkan 缓存保存的同步/后台计时、并发新增与全量重新加载。
 - `MetallicShaderObjectCacheFileTests`：文件兼容性、损坏、尺寸边界、原子替换与并发保存。
 - `shader_object_binary_persistence_readback`：SPIR-V 导出、BINARY 命中、片元变体、损坏回退和第二 Device 的像素一致性。
 - `MetallicShaderObjectBinaryProcessSmoke`：关闭驱动内部缓存，独立进程检查 binary 加载与精确像素读回。

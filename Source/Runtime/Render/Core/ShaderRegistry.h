@@ -52,6 +52,10 @@ public:
     [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> getGraphicsShaderObjectProgram(
         Device& device, const GraphicsShaderObjectProgramDesc& desc);
     [[nodiscard]] Result<std::vector<ShaderRegistryCacheStats>> pipelineCacheStats(Device& device);
+    // Automatic saves run on the device-owned worker. This explicit durability
+    // barrier blocks until pending attempts finish; ordinary acquisition never
+    // calls it. Device teardown drains the worker before native cache teardown.
+    [[nodiscard]] Result<> flushPipelineCaches(Device& device);
 
 private:
     ShaderRegistry() = default;

@@ -1209,6 +1209,16 @@ struct PipelineCacheStats {
     uint64_t hitCount = 0;
     uint64_t missCount = 0;
     uint64_t backendDataSize = 0;
+    // Revisions advance only for successful, previously unseen PSO identities.
+    // A save commits its snapshot; concurrent newer revisions remain pending.
+    uint64_t dirtyRevision = 0;
+    uint64_t persistedRevision = 0;
+    uint64_t saveCount = 0;
+    uint64_t saveFailureCount = 0;
+    uint64_t lastExtractTimeNanoseconds = 0;
+    uint64_t lastWriteTimeNanoseconds = 0;
+    uint64_t lastSaveTimeNanoseconds = 0;
+    bool saveInProgress = false;
 };
 
 // Stages borrow their module only for creation; executables own backend state.

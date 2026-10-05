@@ -403,6 +403,7 @@ add_executable(MetallicRHITests
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
     rhi/ShaderRegistryTests.cpp
+    rhi/PipelineCacheSaveTests.cpp
     rhi/ShaderObjectBinaryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
@@ -641,6 +642,18 @@ if(MSVC)
 endif()
 add_test(NAME MetallicShaderObjectCacheFileTests COMMAND MetallicShaderObjectCacheFileTests --gtest_color=no)
 set_tests_properties(MetallicShaderObjectCacheFileTests PROPERTIES LABELS "shader;cache" TIMEOUT 30)
+
+# Deferred persistence scheduling is host-only and needs no renderer or GPU.
+add_executable(MetallicDeferredShaderCacheWriterTests
+    rhi/DeferredShaderCacheWriterTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/DeferredShaderCacheWriter.cpp")
+target_include_directories(MetallicDeferredShaderCacheWriterTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicDeferredShaderCacheWriterTests PRIVATE GTest::gtest_main Threads::Threads)
+if(MSVC)
+    target_compile_options(MetallicDeferredShaderCacheWriterTests PRIVATE /EHsc /utf-8)
+endif()
+add_test(NAME MetallicDeferredShaderCacheWriterTests COMMAND MetallicDeferredShaderCacheWriterTests --gtest_color=no)
+set_tests_properties(MetallicDeferredShaderCacheWriterTests PROPERTIES LABELS "shader;cache" TIMEOUT 30)
 
 add_test(NAME MetallicShaderObjectBinaryProcessSmoke COMMAND ${CMAKE_COMMAND}
     "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"

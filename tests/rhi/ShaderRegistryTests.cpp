@@ -136,6 +136,9 @@ public:
             graphics->get()->psoHash() == otherFormat->get()->psoHash()) {
             return RHITestResult::fail("default graphics cache aliased shader/state variants or omitted caching");
         }
+        if (!registry.flushPipelineCaches(context.device)) {
+            return RHITestResult::fail("registry deferred cache flush failed");
+        }
         auto stats = registry.pipelineCacheStats(context.device);
         if (!stats || std::none_of(stats->begin(), stats->end(), [](const auto& group) {
                 return group.group.starts_with("ShaderRegistry-RegistrySource-") &&

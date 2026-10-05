@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
 
 #include <map>
 #include <spdlog/spdlog.h>
@@ -10,6 +11,8 @@ namespace {
 struct DeviceShaders {
     std::mutex mutex;
     std::map<std::string, std::unique_ptr<PipelineCache>> caches;
+    // Reverse member destruction drains/joins the writer before cache handles.
+    DeferredShaderCacheWriter writer;
 };
 
 Result<std::shared_ptr<DeviceShaders>> deviceShaders(Device& device)
@@ -40,16 +43,25 @@ Result<PipelineCache*> acquireCache(Device& device, const std::string& group)
     return cache.get();
 }
 
-void persist(PipelineCache& cache, const std::string& group)
+void persist(Device& device, PipelineCache& cache, const std::string& group)
 {
-    // save() already avoids I/O on unchanged hits. Persist newly compiled PSOs
-    // here, including early-return/error-program paths in a caller's compile.
-    const auto result = cache.save();
     const auto stats = cache.stats();
     spdlog::info("[ShaderRegistry] PSO cache group={} hits={} misses={}", group, stats.hitCount, stats.missCount);
-    if (!result) {
-        spdlog::warn("[ShaderRegistry] Could not persist PSO cache group={}: {}", group, resultToString(result));
+    if (stats.dirtyRevision == stats.persistedRevision) { return; }
+    auto state = deviceShaders(device);
+    if (!state) {
+        spdlog::warn("[ShaderRegistry] Could not queue PSO cache group={}", group);
+        return;
     }
+    // Hits do not extend the deadline. Bursts of new PSOs share a save, and
+    // ongoing work has a bounded deadline instead of deferring indefinitely.
+    (*state)->writer.request(group, stats.dirtyRevision, [&cache, group] {
+        const auto result = cache.save();
+        if (!result) {
+            spdlog::warn("[ShaderRegistry] Could not persist PSO cache group={}: {}", group, resultToString(result));
+        }
+        return static_cast<bool>(result);
+    });
 }
 
 } // namespace
@@ -101,7 +113,7 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Devi
     auto managed = desc;
     managed.pipelineCache = *cache;
     auto pipeline = device.createComputePipeline(managed);
-    if (pipeline) { persist(**cache, group); }
+    if (pipeline) { persist(device, **cache, group); }
     return pipeline;
 }
 
@@ -116,7 +128,7 @@ Result<std::unique_ptr<GraphicsPipeline>> ShaderRegistry::getGraphicsPipeline(De
     auto managed = desc;
     managed.pipelineCache = *cache;
     auto pipeline = device.createGraphicsPipeline(managed);
-    if (pipeline) { persist(**cache, group); }
+    if (pipeline) { persist(device, **cache, group); }
     return pipeline;
 }
 
@@ -146,7 +158,7 @@ Result<> ShaderRegistry::getExternalGraphicsPipeline(Device& device, uint64_t sh
     auto cache = acquireCache(device, group);
     if (!cache) { return makeError(cache.error()); }
     auto result = factory(**cache);
-    if (result) { persist(**cache, group); }
+    if (result) { persist(device, **cache, group); }
     return result;
 }
 
@@ -158,6 +170,21 @@ Result<std::vector<ShaderRegistryCacheStats>> ShaderRegistry::pipelineCacheStats
     std::vector<ShaderRegistryCacheStats> result;
     for (const auto& [group, cache] : (*state)->caches) { result.push_back({group, cache->stats()}); }
     return result;
+}
+
+Result<> ShaderRegistry::flushPipelineCaches(Device& device)
+{
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    // Never hold the map mutex while waiting for callbacks. The device-owned
+    // state keeps all borrowed cache pointers alive through this barrier.
+    (*state)->writer.flush();
+    std::lock_guard lock((*state)->mutex);
+    for (const auto& [group, cache] : (*state)->caches) {
+        const auto stats = cache->stats();
+        if (stats.dirtyRevision != stats.persistedRevision) { return makeError(Error::Failure); }
+    }
+    return {};
 }
 
 } // namespace metallic::render
