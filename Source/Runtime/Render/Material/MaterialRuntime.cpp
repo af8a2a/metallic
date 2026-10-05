@@ -185,7 +185,9 @@ bool MaterialGeneration::supports(MaterialEvaluationTarget target, std::string& 
     diagnostics.clear();
     for (const auto& instance : instances_) {
         const auto& definition = *instance.program->definition;
-        const bool supported = target == MaterialEvaluationTarget::VisibilityBuffer
+        const bool supported = target == MaterialEvaluationTarget::StrandVisibility
+            ? definition.domain == MaterialDomain::Fiber
+            : target == MaterialEvaluationTarget::VisibilityBuffer
             ? definition.capabilities.visibilityBuffer
             : definition.capabilities.rayHit && (definition.domain != MaterialDomain::Fiber ||
                 target == MaterialEvaluationTarget::RayHitWithFiber);

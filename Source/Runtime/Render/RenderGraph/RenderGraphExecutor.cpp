@@ -143,6 +143,7 @@ uint32_t previewReadbackTexelByteSize(Format format)
     case Format::RGBA16Sfloat:
         return 8;
     case Format::RGBA32Sfloat:
+    case Format::RGBA32Uint:
         return 16;
     default:
         return 0;
@@ -200,6 +201,16 @@ bool convertPreviewReadback(
         std::fill(destination.begin(), destination.end(), 0u);
         std::memcpy(destination.data(), source, pixelCount * texelByteSize);
         return true;
+    }
+    if (format == Format::RGBA32Uint) {
+        const auto* sourceBytes = static_cast<const std::byte*>(source);
+        auto* destinationBytes = reinterpret_cast<uint8_t*>(destination.data());
+        for (size_t i = 0; i < pixelCount * 4; ++i) {
+            uint32_t value;
+            std::memcpy(&value, sourceBytes + i * sizeof(uint32_t), sizeof(value));
+            destinationBytes[i] = uint8_t(std::min(value,255u));
+        }
+        return true; // Raw readback retains full integer IDs; preview is diagnostic only.
     }
     if (format == Format::RGBA32Sfloat) {
         const auto* sourceBytes = static_cast<const std::byte*>(source);

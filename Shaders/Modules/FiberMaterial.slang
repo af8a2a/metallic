@@ -9,6 +9,7 @@ namespace Metallic.Material
 public static const uint kFiberHasRadius = 1u;
 public static const uint kFiberHasStrandParameter = 2u;
 public static const uint kFiberHasMaterialCoordinates = 4u;
+public static const uint kFiberHasCrossSectionOffset = 8u;
 public struct FiberMaterialContext
 {
     public float3 positionWS;
@@ -17,6 +18,7 @@ public struct FiberMaterialContext
     public float3 bitangentWS;
     public float radius;
     public float strandParameter;
+    public float crossSectionOffset; // signed projected cylinder offset h in [-1,1]
     public float2 materialCoordinates;
     public TextureFootprint footprint;
     public uint flags;

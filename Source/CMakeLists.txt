@@ -125,6 +125,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/RTXDIConfidencePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RTXDICompositePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RTXCRMaterialSamplePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/StrandPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRTXDIPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneAccelerationStructurePass.cpp
@@ -293,6 +294,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/MeshletBuildParallel.cpp
     Runtime/Scene/Scene.cpp
     Runtime/Scene/SceneDocument.cpp
+    Runtime/Scene/StrandAsset.cpp
     Runtime/Scene/SceneGraph.cpp
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp

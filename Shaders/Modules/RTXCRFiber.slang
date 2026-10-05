@@ -48,6 +48,8 @@ public struct RTXCRChiangClosure : IFiberClosure
     public Metallic.RTXCR.HairMaterialData parameters;
     public float3 normalWS;
     public float3 tangentWS;
+    public float crossSectionOffset;
+    public bool hasCrossSectionOffset;
 
     public Prepared prepare(float3 woWS, TransportMode mode)
     {
@@ -66,6 +68,10 @@ public struct RTXCRChiangClosure : IFiberClosure
         result.valid = mode == TransportMode.Radiance && dot(transverseView, transverseView) > 1e-12;
         result.interaction = (Metallic.RTXCR.HairMaterialInteraction)0;
         if (result.valid) { result.interaction = Metallic.RTXCR.createHairMaterialInteraction(parameters, surface); }
+        if (result.valid && hasCrossSectionOffset) {
+            result.interaction.h = clamp(crossSectionOffset, -1.0, 1.0);
+            result.interaction.gammaI = asin(result.interaction.h);
+        }
         return result;
     }
 };
@@ -82,6 +88,8 @@ public struct RTXCRChiangMaterialProgram<TParameters : IRTXCRHairParameterProvid
         result.closure.parameters = parameters.load(instance);
         result.closure.normalWS = context.normalWS;
         result.closure.tangentWS = context.tangentWS;
+        result.closure.crossSectionOffset = context.crossSectionOffset;
+        result.closure.hasCrossSectionOffset = (context.flags & kFiberHasCrossSectionOffset) != 0u;
         result.emission = 0;
         return result;
     }

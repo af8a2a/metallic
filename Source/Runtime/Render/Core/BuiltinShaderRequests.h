@@ -58,6 +58,7 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/PostProcess/FinalBlit", {"finalBlitUvMain", "finalBlitMain"}, {}, {{"FINAL_USE_LUT", "0"}});
     add("Features/PostProcess/FinalBlit", {"finalBlitMain"}, {}, {{"FINAL_USE_LUT", "1"}});
     add("Features/PostProcess/ColorGradingLUT", {"composeColorGradingLUT"});
+    add("Features/Strands/NativeStrands", {"strandVisibilityMain", "strandLightingMain"});
     add("Features/PostProcess/StreamlineDLSSSupport", {"streamlineDlssDepthVertexMain", "streamlineDlssDepthFragmentMain", "streamlineDlssAlphaMain"});
     add("Features/PostProcess/UpscalerGuideResolve", {"upscalerGuideResolveMain"});
     requests.push_back(makeColorResizeShaderRequest());

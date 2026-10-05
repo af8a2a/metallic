@@ -54,4 +54,4 @@ cmake --build build-scheduling-release --target Metallic MetallicSceneTests Meta
 
 保留上游 Chiang 的采样 PDF 和已有环境 NEE 的近似 standalone PDF/MIS 策略，运行时 `exactStandalonePdf=false`。本次数值一致性验收不证明该近似估计器无偏，也不声称性能提升。
 
-Opaque VBuffer 明确拒绝 Fiber。原生曲线交互、真实 radius/strand parameter、strand visibility、多层覆盖与运动/LOD 验收属于 **M7**；本次只验证现有 DOTS。RTXCR geometry 导入和 Sample 的 Subsurface 部分继续依赖对应 SDK，Hair 数学模块本身不依赖 SDK include path。
+Opaque VBuffer 明确拒绝 Fiber。原生曲线交互、真实 radius/strand parameter、strand visibility、多层覆盖与运动/LOD 验收见后续 [M7](MaterialSystemM7Strands.md)；本页 M6 证据只验证现有 DOTS。RTXCR geometry 导入和 Sample 的 Subsurface 部分继续依赖对应 SDK，Hair 数学模块本身不依赖 SDK include path。

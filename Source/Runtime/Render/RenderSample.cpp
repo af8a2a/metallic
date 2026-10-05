@@ -802,6 +802,20 @@ private:
     std::string id_, name_, description_, scene_, graph_, environment_, category_;
 };
 
+class NativeStrandSample final : public RenderSample
+{
+public:
+    std::string_view id() const override { return "native-strands"; }
+    std::string_view name() const override { return "Native Strand Groom"; }
+    std::string_view category() const override { return "Material LookDev"; }
+    std::string_view description() const override { return "Layered native curves, Fiber materials, motion, density LOD and explicit overflow"; }
+    std::string scenePath() const override { return {}; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/native_strands.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 std::vector<LocalLookDevSample> loadLocalLookDevSamples(const char* path, const char* category, const char* prefix)
 {
     std::vector<LocalLookDevSample> result;
@@ -825,6 +839,7 @@ std::vector<LocalLookDevSample> loadLocalLookDevSamples(const char* path, const 
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
+    static const NativeStrandSample nativeStrands;
     static const GPUDrivenTessellationSample gpuDrivenTessellation;
     static const LightGridDebugSample lightGridDebug;
     static const HDRCalibrationSample hdrCalibration;
@@ -839,6 +854,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
     std::vector<const RenderSample*> samples{
         &realtimeLighting,
+        &nativeStrands,
         &gpuDrivenTessellation,
         &lightGridDebug,
         &hdrCalibration,

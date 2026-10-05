@@ -292,6 +292,7 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 
 add_executable(MetallicSceneTests
     scene/MaterialAssetTests.cpp
+    scene/StrandAssetTests.cpp
     scene/MaterialGraphTests.cpp
     scene/glTFInstancingTests.cpp
     scene/GeometryAttributesTests.cpp
@@ -394,6 +395,7 @@ add_executable(MetallicRHITests
     rhi/OpenPBRClosureTests.cpp
     rhi/OpenPBRTextureLutTests.cpp
     rhi/FiberMaterialTests.cpp
+    rhi/StrandRenderingTests.cpp
     rhi/MaterialAssetTests.cpp
     rhi/MaterialGraphTests.cpp
     rhi/MaterialBaselineTests.cpp
