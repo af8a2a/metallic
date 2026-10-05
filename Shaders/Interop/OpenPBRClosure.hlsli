@@ -1,7 +1,7 @@
 #ifndef METALLIC_OPENPBR_CLOSURE
 #define METALLIC_OPENPBR_CLOSURE
 
-// Include after the program's canonical vendor owner (and its LUT callbacks).
+// Include after OpenPBRModule.hlsli and the program's LUT provider.
 // No material resources, hit records, texture provider or renderer are needed.
 import MaterialProgram;
 using Metallic.Material;
@@ -115,7 +115,7 @@ struct OpenPBRClosure : ISurfaceClosure
     }
 };
 
-// Canonical Phase 10 family name. The vendor-backed reference stays intact.
+// Canonical Phase 10 family name; the implementation is the native OpenPBR module.
 typealias OpenPBRCompositeClosure = OpenPBRClosure;
 
 #endif

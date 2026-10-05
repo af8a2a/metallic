@@ -1,0 +1,36 @@
+#language slang 2026
+module OpenPBR;
+
+__include "OpenPBR/Context.slang";
+__include "OpenPBR/AggregateLobe.slang";
+__include "OpenPBR/Api.slang";
+__include "OpenPBR/Basis.slang";
+__include "OpenPBR/BSDF.slang";
+__include "OpenPBR/BSDFLobeType.slang";
+__include "OpenPBR/CoatingLobe.slang";
+__include "OpenPBR/Complex.slang";
+__include "OpenPBR/ComprehensiveMicrofacetLobe.slang";
+__include "OpenPBR/ConstantReflectionCoefficient.slang";
+__include "OpenPBR/Constants.slang";
+__include "OpenPBR/DataConstants.slang";
+__include "OpenPBR/DiffuseLobe.slang";
+__include "OpenPBR/DiffuseSpecular.slang";
+__include "OpenPBR/DispersionUtils.slang";
+__include "OpenPBR/FuzzLobe.slang";
+__include "OpenPBR/GenericFlippedLobe.slang";
+__include "OpenPBR/GenericMinimalMicrofacetLobe.slang";
+__include "OpenPBR/HomogeneousVolume.slang";
+__include "OpenPBR/IORReflectionCoefficient.slang";
+__include "OpenPBR/LobeUtils.slang";
+__include "OpenPBR/Math.slang";
+__include "OpenPBR/MicrofacetMultipleScatteringData.slang";
+__include "OpenPBR/MicrofacetMultipleScatteringLobes.slang";
+__include "OpenPBR/ReflectionTransmissionCoefficient.slang";
+__include "OpenPBR/ReflectionTransmissionCoefficientStructs.slang";
+__include "OpenPBR/ResolvedInputs.slang";
+__include "OpenPBR/Sampling.slang";
+__include "OpenPBR/ThinFilmIridescenceUtils.slang";
+__include "OpenPBR/ThinWallDiffuseTransmissionLobe.slang";
+__include "OpenPBR/ThinWallSpecularTransmissionLobe.slang";
+__include "OpenPBR/VNDFMicrofacetDistribution.slang";
+__include "OpenPBR/VolumeUtils.slang";

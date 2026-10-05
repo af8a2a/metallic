@@ -16,6 +16,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
 | `Modules/DebugLambert.slang`、`Modules/DebugMirror.slang`、`Modules/SurfaceLighting.slang` | 三阶段 Surface Programs、泛型 `shadeSurface` 与生产共用的直接光循环；见 [Phase 3](../Documentation/MaterialSystemPhase3.md)、[Phase 5](../Documentation/MaterialSystemPhase5.md) |
 | `Modules/SlabClosure.slang` | Single / Dual Slab canonical families、Mix / Layer 原型；见 [Phase 10](../Documentation/MaterialSystemPhase10.md) |
+| `Modules/OpenPBR.slang`、`Modules/OpenPBR/` | Adobe OpenPBR 1.1 原生 Slang 移植、静态泛型 LUT/Feature provider；见 [模块说明](Modules/OpenPBR/README.md) |
 | `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
 | `Features/PathTracing/OpenPBRSurface.slang`、`Interop/OpenPBRClosure.hlsli` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
@@ -30,8 +31,9 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Features/` | Shader programs：入口、pass 资源和流程相关代码；路径保持兼容现有 C++ 和管线资产 |
 | `Licenses/` | 第三方 shader 许可证 |
 
-测试探针放在 `tests/rhi/shaders/`。OpenPBR、RTXCR、RTXTF、NTC 等 SDK 继续使用
-`External/` 下的源码。ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
+测试探针放在 `tests/rhi/shaders/`。RTXCR、RTXTF、NTC 等 SDK 继续使用
+`External/` 下的源码。OpenPBR GPU 实现使用原生模块，`External/openpbr-bsdf` 保留为独立验收基线和 CPU LUT 数据来源。
+ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
 来源记录、许可证和使用说明见 [ShaderToHuman](Modules/ShaderToHuman/README.md)。
 所有 vendor 文件与许可证保持原有内容。
 

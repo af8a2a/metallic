@@ -1,7 +1,7 @@
 #ifndef METALLIC_OPENPBR_MATERIAL_ADAPTER
 #define METALLIC_OPENPBR_MATERIAL_ADAPTER
 
-// Included by the program after its canonical vendor owner: LUT callbacks and
+// Included by the program after OpenPBRModule.hlsli: LUT callbacks and
 // feature macros remain program-specific. Prepared state is view-dependent.
 OpenPBR_PreparedBsdf prepareOpenPBRMaterial(OpenPBR_ResolvedInputs inputs,
     float3 throughput, float3 wavelengths, float exteriorIor, float3 outgoingDirection)

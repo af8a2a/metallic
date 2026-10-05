@@ -4,9 +4,6 @@
 import Core;
 using Metallic;
 
-#define OPENPBR_LANGUAGE_TARGET_SLANG 1
-#define OPENPBR_USE_TEXTURE_LUTS 1
-#define OPENPBR_ENERGY_TABLES_USE_UINT16 0
 #if METALLIC_CUSTOM_MATERIALS
 #define OPENPBR_FEATURE_EnableSheenAndCoat true
 #else
@@ -15,7 +12,6 @@ using Metallic;
 #define OPENPBR_FEATURE_EnableDispersion false
 #define OPENPBR_FEATURE_EnableTranslucency true
 #define OPENPBR_FEATURE_EnableMetallic true
-#define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
 #define gOpenPBRLut2D(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().openPBRLut2D.load(index)))
 
@@ -96,7 +92,7 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 #define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
 #endif
 
-#include "../../../External/openpbr-bsdf/openpbr.h"
+#include "../../Interop/OpenPBRModule.hlsli"
 #include "../../Interop/OpenPBRClosure.hlsli"
 import SurfaceLighting;
 using Metallic.Lighting;
