@@ -313,9 +313,16 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
 
 bool EditorApplication::runSceneSwitchSmokeTest()
 {
-    if (std::getenv("METALLIC_SMOKE_TEST_PAINTER_SWITCH")) {
-        for (const char* id : {"painter-M01_NeutralDielectric-uniform", "painter-M03_CoatedPaint-textured",
-                "painter-M08_MaskedCard-textured", "painter-H01_HDREmission-textured", "painter-M01_NeutralDielectric-uniform"}) {
+    const bool studioSwitch = std::getenv("METALLIC_SMOKE_TEST_STUDIO_SWITCH") != nullptr;
+    if (std::getenv("METALLIC_SMOKE_TEST_PAINTER_SWITCH") || studioSwitch) {
+        const char* label = studioSwitch ? "Studio" : "Painter";
+        const std::vector<const char*> ids = studioSwitch
+            ? std::vector<const char*>{"studio-white-overview", "studio-white-chart", "studio-white-M03_CoatedPaint-textured", "studio-white-overview"}
+            : std::vector<const char*>{"painter-M01_NeutralDielectric-uniform", "painter-M03_CoatedPaint-textured",
+                "painter-M08_MaskedCard-textured", "painter-H01_HDREmission-textured", "painter-M01_NeutralDielectric-uniform"};
+        for (const char* id : ids) {
+            // A complete studio preset must reset previously edited environment settings.
+            if (studioSwitch) { environmentUserEdited_ = true; }
             loadBuiltInSample(id);
             render::RenderSampleLoadResult expected;
             std::string message;
@@ -333,21 +340,23 @@ bool EditorApplication::runSceneSwitchSmokeTest()
                 }
             }
             if (!ready || !scene_.documentWarning().empty()) {
-                spdlog::error("[Smoke Painter Switch] Failed {}: {}", id, scene_.documentWarning());
+                spdlog::error("[Smoke {} Switch] Failed {}: {}", label, id, scene_.documentWarning());
                 return false;
             }
-            spdlog::info("[Smoke Painter Switch] Rendered {} with {} materials and {} textures", id,
+            if (studioSwitch && (renderWorld_.environment().path.filename() != "WhiteStudio02.hdr" ||
+                !renderWorld_.environment().hasExplicitSourceColorSpace())) { return false; }
+            spdlog::info("[Smoke {} Switch] Rendered {} with {} materials and {} textures", label, id,
                 scene_.materials().size(), scene_.textures().size());
         }
         const auto source = scene_.sourcePath();
         scene_.setDirty(true);
-        loadBuiltInSample("painter-M08_MaskedCard-textured");
+        loadBuiltInSample(ids[1]);
         const bool protectedEdits = scene_.sourcePath() == source && pendingSceneAction_ == PendingSceneAction::LoadSample;
         scene_.setDirty(false);
         pendingSceneAction_ = PendingSceneAction::None;
         pendingSceneValue_.clear();
         if (!protectedEdits) { return false; }
-        spdlog::info("[Smoke Painter Switch] Passed full scene changes, return to baseline and unsaved-edit protection");
+        spdlog::info("[Smoke {} Switch] Passed full scene changes, return to baseline and unsaved-edit protection", label);
         return true;
     }
     if (std::getenv("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {

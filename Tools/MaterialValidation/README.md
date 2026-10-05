@@ -52,6 +52,9 @@ python Tools/MaterialValidation/GenerateReport.py --root build/MaterialValidatio
 
 ## 下一步对照
 
+已有 HDRI + 实拍色卡可使用 `BuildStudioLookDev.py` 构建独立灯光版本，
+具体参数、照片测量与反射率的区别见 [White Studio LookDev](../../Documentation/WhiteStudioLookDev.md)。
+
 Metallic 整组场景导入入口为 `BuildLookDevScenes.py --root <Painter验证包>`。
 默认输出 `build/MaterialValidation/PainterLookDev`，重启 LookDev 后在
 **RenderGraph → Graph Editor Settings → Painter Material Scene** 下拉框选择。详见

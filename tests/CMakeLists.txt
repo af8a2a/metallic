@@ -170,6 +170,17 @@ if(WIN32)
             LABELS "editor;painter" TIMEOUT 660 RESOURCE_LOCK MetallicEditor
         )
     endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/build/MaterialValidation/WhiteStudio02/Catalog.json")
+        add_test(NAME MetallicLookDevStudioSceneSwitchSmoke
+            COMMAND ${CMAKE_COMMAND}
+                "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+                "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-studio-switch"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunStudioSceneSwitchSmoke.cmake"
+        )
+        set_tests_properties(MetallicLookDevStudioSceneSwitchSmoke PROPERTIES
+            LABELS "editor;studio" TIMEOUT 660 RESOURCE_LOCK MetallicEditor
+        )
+    endif()
     add_test(NAME MetallicLookDevSceneSwitchSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
@@ -361,6 +372,7 @@ add_executable(MetallicRHITests
     rhi/MaterialAssetTests.cpp
     rhi/MaterialBaselineTests.cpp
     rhi/MaterialValueProgramTests.cpp
+    rhi/StudioLookDevTests.cpp
     rhi/MaterialValueIRTests.cpp
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp

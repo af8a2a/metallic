@@ -37,6 +37,10 @@ cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
 
 ## Inspector 材质编辑
 
+公开 HDRI 的新场景入口为 **Studio LookDev Scene**，包括九球材质总览、
+实拍色卡参考及 White Studio 灯光下的 Painter 用例，见
+[White Studio 02 使用与色彩约定](WhiteStudioLookDev.md)。
+
 ### Painter 验证场景选项
 
 RenderGraph 设置中的 **Painter Material Scene** 可以切换整组 Painter 验证场景，

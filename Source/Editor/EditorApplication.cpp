@@ -2213,6 +2213,7 @@ int EditorApplication::run(
             return passed ? 0 : 1;
         }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_STUDIO_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
@@ -7350,7 +7351,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         spdlog::warn("[Startup] Built-in sample load failed: {}", message);
         return;
     }
-    if (!sample.desc.id.starts_with("painter-") && !startupScenePath_.empty() &&
+    if (!sample.desc.id.starts_with("painter-") && !sample.desc.id.starts_with("studio-white-") && !startupScenePath_.empty() &&
         !render::setRenderSampleScenePath(sample, startupScenePath_, message)) {
         renderGraphStatus_ = message;
         spdlog::warn("[Startup] Built-in sample scene override failed: {}", message);
@@ -7389,6 +7390,10 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         sample.desc.scenePath,
         sample.desc.previewOutput);
 
+    if (sample.desc.category == "Studio LookDev") {
+        environmentUserEdited_ = false;
+        environmentFromSample_ = false;
+    }
     if (!environmentUserEdited_) {
         if (sample.desc.environment.has_value()) {
             const render::RenderSampleEnvironmentDesc& sourceEnvironment =
@@ -8575,6 +8580,19 @@ void EditorApplication::drawRenderGraphSettingsPanel()
     }
     if (!gpuDrivenScenesOnly_) {
         const auto samples = render::listBuiltInRenderSamples();
+        const auto studio = std::find_if(samples.begin(), samples.end(), [&](const auto& sample) {
+            return sample.category == "Studio LookDev" && sample.graphPath == graphFilePath_;
+        });
+        if (ImGui::BeginCombo("Studio LookDev Scene", studio != samples.end() ? studio->name.c_str() : "Select studio scene...")) {
+            for (const auto& sample : samples) {
+                if (sample.category != "Studio LookDev") { continue; }
+                if (ImGui::Selectable(sample.name.c_str(), studio != samples.end() && sample.id == studio->id)) {
+                    loadBuiltInSample(sample.id.c_str());
+                }
+                if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", sample.description.c_str()); }
+            }
+            ImGui::EndCombo();
+        }
         const auto current = std::find_if(samples.begin(), samples.end(), [&](const auto& sample) {
             return sample.category == "Painter Validation" && sample.graphPath == graphFilePath_;
         });
