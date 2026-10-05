@@ -67,9 +67,11 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
             break;
         case MaterialValueOp::Select: value = "(" + a + ".x>0.0?" + b + ":" + c + ")"; break;
         case MaterialValueOp::TextureSample:
+        case MaterialValueOp::TextureSampleLinear:
             value = "sampleMaterialValueTexture(material," + std::to_string(node.index) + "u," + a + ".xy," +
                 std::to_string(static_cast<uint32_t>(node.footprint)) + "u," + b + "," +
-                (node.operandCount == 3 ? c : "float4(0)") + ",textureContext)"; break;
+                (node.operandCount == 3 ? c : "float4(0)") + ",textureContext," +
+                (node.op == MaterialValueOp::TextureSampleLinear ? "true" : "false") + ")"; break;
         default: throw std::runtime_error("Surface IR cannot consume Coverage alpha input");
         }
         // Preserve the legacy input semantics; bound arithmetic intermediates.
@@ -80,10 +82,17 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
         const auto value = "v" + std::to_string(root);
         // IR arithmetic stays in its authored Rec.709 basis. Material bounds
         // apply after returning to working RGB so native AP1 colors survive.
-        if (key == "baseColor") { statements += "    result.baseColor.rgb = saturate(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb));\n"; manifest.outputMask |= 1; }
-        if (key == "metallic") { statements += "    result.params.x = saturate(" + value + ".x);\n"; manifest.outputMask |= 2; }
-        if (key == "roughness") { statements += "    result.params.y = saturate(" + value + ".x);\n"; manifest.outputMask |= 4; }
-        if (key == "emissive") { statements += std::string("    result.") + (ir.closure() ? "emission" : "emissive.rgb") + " = clamp(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb),0.0,1e6);\n"; manifest.outputMask |= 8; }
+        if (key == "baseColor" || key == "surfaceBaseColor") { statements += "    result.baseColor.rgb = saturate(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb));\n"; manifest.outputMask |= 1; }
+        if (key == "metallic" || key == "surfaceMetallic") { statements += "    result.params.x = saturate(" + value + ".x);\n"; manifest.outputMask |= 2; }
+        if (key == "roughness" || key == "surfaceRoughness") { statements += "    result.params.y = saturate(" + value + ".x);\n"; manifest.outputMask |= 4; }
+        if (key == "emissive" || key == "surfaceEmission") { statements += std::string("    result.") + (ir.closure() ? "emission" : "emissive.rgb") + " = clamp(Metallic.WorkingColor::fromLinearRec709(" + value + ".rgb),0.0,1e6);\n"; manifest.outputMask |= 8; }
+        const uint32_t overrideBit = key == "surfaceBaseColor" ? 1 : key == "surfaceMetallic" ? 2 :
+            key == "surfaceRoughness" ? 4 : key == "surfaceEmission" ? 8 : 0;
+        if (overrideBit) { statements += "    surface.overrideMask |= " + std::to_string(overrideBit) + "u;\n"; }
+        if (key == "normalTS") {
+            statements += "    surface.normalTS = " + value + ".xyz; surface.hasNormal = true;\n";
+            manifest.outputMask |= 16;
+        }
         if (key == "coatWeight" || key == "coatRoughness" || key == "fuzzWeight" ||
             key == "fuzzRoughness" || key == "specularAnisotropy") {
             statements += "    surface." + key + " = saturate(" + value + ".x);\n";
@@ -178,12 +187,12 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             "import SlabClosure;\n"
             "struct SlabMaterialEvaluation { Metallic.Material.SlabMaterialInputs inputs; float3 emission; };\n"
             "struct MaterialValueTextureContext { float normalizedRayLod; uint textureCount; uint ntcCount; };\n"
-            "struct MaterialValueOpenPBRInputs { float coatWeight; float coatRoughness; float coatIOR; float fuzzWeight; float3 fuzzColor; float fuzzRoughness; float specularAnisotropy; float2 anisotropyTangent; bool volumeColor; };\n"
+            "struct MaterialValueOpenPBRInputs { float coatWeight; float coatRoughness; float coatIOR; float fuzzWeight; float3 fuzzColor; float fuzzRoughness; float specularAnisotropy; float2 anisotropyTangent; bool volumeColor; uint overrideMask; float3 normalTS; bool hasNormal; };\n"
             "MaterialValueOpenPBRInputs defaultMaterialValueOpenPBRInputs() { MaterialValueOpenPBRInputs v = (MaterialValueOpenPBRInputs)0; v.coatIOR=1.5; v.coatRoughness=0.03; v.fuzzRoughness=0.5; v.fuzzColor=1.0; v.anisotropyTangent=float2(1,0); return v; }\n"
             "struct MaterialValueInstance { uint programId; uint coverageOffset; uint coverageCount; uint coverageFlags; float4 parameters[4]; };\n"
             "float4 materialValueNormalize(float4 v) { return float4(dot(v.xyz,v.xyz)>1e-20?normalize(v.xyz):float3(0,0,1),0); }\n";
         const bool usesTextures = std::any_of(surfaceIR.begin(), surfaceIR.end(), [](const auto& item) { return item.second.usage().textureMask != 0; });
-        if (usesTextures) { result->source_ += "float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 uv, uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context);\n"; }
+        if (usesTextures) { result->source_ += "float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 uv, uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context, bool linearColor);\n"; }
         for (auto& [source, id] : programs) {
             id = ++result->programCount_;
             result->manifests_.emplace_back();

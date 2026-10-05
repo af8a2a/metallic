@@ -4,6 +4,7 @@
 #include "Editor/EditorProfiler.h"
 #include "Editor/EditorRenderGraphViewer.h"
 #include "Editor/EditorDisplayRenderer.h"
+#include "Editor/EditorMaterialGraph.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/WorkControlShaderTrace.h"
 #include "Editor/NVMLMonitor.h"
@@ -64,6 +65,10 @@ private:
     bool runNsightCaptureSmokeTest();
     bool runVisibilityPreviewSmokeTest();
     bool runMaterialInspectorSmokeTest();
+    bool runMaterialGraphSmokeTest();
+    void drawMaterialGraphEditor();
+    bool applyMaterialGraph(int32_t materialIndex, const material::CompiledMaterialFrontend& compiled);
+    EditorMaterialGraph materialGraphEditor_;
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();

@@ -234,11 +234,13 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
             "Unsupported material definition format");
         MaterialDefinition candidate = defaultOpenPBRDefinition();
         candidate.implementation = document.at("implementation").get<std::string>();
-        require(candidate.implementation == "OpenPBRComposite.Legacy" || candidate.implementation == "Slab.Surface", "Unsupported material implementation");
-        if (candidate.implementation == "Slab.Surface") {
-            require(document.contains("surfaceProgram") && document["surfaceProgram"].is_object(), "Slab definition requires surfaceProgram");
+        require(candidate.implementation == "OpenPBRComposite.Legacy" || candidate.implementation == "Slab.Surface" ||
+            candidate.implementation == "OpenPBR.Value", "Unsupported material implementation");
+        if (candidate.implementation != "OpenPBRComposite.Legacy") {
+            require(document.contains("surfaceProgram") && document["surfaceProgram"].is_object(), "Program definition requires surfaceProgram");
             candidate.surfaceProgram = document["surfaceProgram"].dump();
-            require(render::MaterialValueIR::parse(candidate.surfaceProgram).closure().has_value(), "Slab definition requires Closure IR");
+            require(render::MaterialValueIR::parse(candidate.surfaceProgram).closure().has_value() == (candidate.implementation == "Slab.Surface"),
+                "Definition implementation does not match Closure IR");
         } else { require(!document.contains("surfaceProgram"), "OpenPBR definition does not own a Slab program"); }
         require(document.at("definitionVersion").is_number_integer(), "Invalid definition version");
         const auto version = document.at("definitionVersion").get<int64_t>();
@@ -432,11 +434,12 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
 {
     return attempt(error, [&] {
         const bool slab = instance.definition.implementation == "Slab.Surface";
-        require(slab || instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
+        const bool value = instance.definition.implementation == "OpenPBR.Value";
+        require(slab || value || instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
         require(!output.rtxcrHair, "OpenPBR asset cannot replace a Fiber material");
         auto candidate = output;
-        if (slab) {
-            require(render::MaterialValueIR::parse(instance.definition.surfaceProgram).closure().has_value(), "Slab definition requires Closure IR");
+        if (slab || value) {
+            require(render::MaterialValueIR::parse(instance.definition.surfaceProgram).closure().has_value() == slab, "Definition Closure IR mismatch");
             candidate.valueProgram = instance.definition.surfaceProgram;
             candidate.valueParameters = {};
             validateValueParameters(instance.valueParameters);
@@ -458,9 +461,12 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         candidate.alphaMode = mode == "opaque" ? "OPAQUE" : mode == "mask" ? "MASK" : "BLEND";
         candidate.doubleSided = instance.features.at("doubleSided").get<bool>();
         candidate.unlit = instance.features.at("unlit").get<bool>();
-        if (slab) {
-            require(!candidate.unlit && candidate.alphaMode != "BLEND" && candidate.transmissionFactor == 0 &&
-                candidate.diffuseTransmissionFactor == 0, "Slab assets require a lit opaque or masked non-transmissive Surface");
+        if (slab || value) {
+            const auto ir = render::MaterialValueIR::parse(candidate.valueProgram);
+            require(!candidate.unlit && candidate.alphaMode != "BLEND" &&
+                (candidate.transmissionFactor == 0 || (!slab && ir.outputs().contains("attenuationColor"))) &&
+                candidate.diffuseTransmissionFactor == 0, "IR assets require lit opaque/MASK Surface; transmission requires explicit OpenPBR attenuationColor");
+            require(!ir.outputs().contains("coverage") || candidate.alphaMode == "MASK", "Coverage assets require alphaMode mask");
         }
         const scene::RenderMaterial textureDefaults;
         for (const auto& [name, member] : detail::kTextures) {

@@ -67,7 +67,7 @@ struct MaterialValueIRBuilder
     {
         // Fold only fully constant arithmetic. Do not use x*0 or similar
         // identities that would change finite saturation/NaN behavior.
-        bool fold = node.operandCount != 0 && node.op != MaterialValueOp::TextureSample;
+        bool fold = node.operandCount != 0 && node.op != MaterialValueOp::TextureSample && node.op != MaterialValueOp::TextureSampleLinear;
         for (uint32_t i = 0; i < node.operandCount; ++i) { fold &= ir.nodes_[node.operands[i]].op == MaterialValueOp::Constant; }
         if (fold) {
             const auto a = ir.nodes_[node.operands[0]].constant;
@@ -154,7 +154,8 @@ struct MaterialValueIRBuilder
             {"abs", {MaterialValueOp::Abs, 1}}, {"saturate", {MaterialValueOp::Saturate, 1}}, {"clamp", {MaterialValueOp::Clamp, 3}},
             {"normalize", {MaterialValueOp::Normalize, 1}}, {"normalMap", {MaterialValueOp::NormalMap, 1}},
             {"uvTransform", {MaterialValueOp::UVTransform, 3}}, {"swizzle", {MaterialValueOp::Swizzle, 1}},
-            {"select", {MaterialValueOp::Select, 3}}, {"textureSample", {MaterialValueOp::TextureSample, 2}}};
+            {"select", {MaterialValueOp::Select, 3}}, {"textureSample", {MaterialValueOp::TextureSample, 2}},
+            {"textureSampleLinear", {MaterialValueOp::TextureSampleLinear, 2}}};
         const auto found = operations.find(op);
         require(found != operations.end(), "Unsupported Value IR operation");
         node.op = found->second.first; node.operandCount = found->second.second;
@@ -169,7 +170,7 @@ struct MaterialValueIRBuilder
             }
             fields = 3;
         }
-        if (node.op == MaterialValueOp::TextureSample) {
+        if (node.op == MaterialValueOp::TextureSample || node.op == MaterialValueOp::TextureSampleLinear) {
             require(value.contains("texture") && value["texture"].is_string() && value.contains("footprint") && value["footprint"].is_string(),
                 "TextureSample requires a texture slot and explicit footprint");
             const std::array<std::string_view, 6> slots{"baseColor", "metallicRoughness", "normal", "occlusion", "emissive", "specular"};
@@ -229,7 +230,9 @@ MaterialValueIR MaterialValueIR::lower(const Json& root)
     for (const auto& [name, value] : outputs.items()) {
         const bool openPBR = name == "coatWeight" || name == "coatRoughness" || name == "coatIOR" ||
             name == "fuzzWeight" || name == "fuzzColor" || name == "fuzzRoughness" ||
-            name == "specularAnisotropy" || name == "anisotropyTangent" || name == "attenuationColor";
+            name == "specularAnisotropy" || name == "anisotropyTangent" || name == "attenuationColor" ||
+            name == "surfaceBaseColor" || name == "surfaceMetallic" || name == "surfaceRoughness" ||
+            name == "surfaceEmission" || name == "normalTS";
         require(name == "baseColor" || name == "metallic" || name == "roughness" || name == "emissive" || name == "coverage" || openPBR, "Unsupported Value IR output");
         require(!closures || name == "emissive" || name == "coverage", "Slab material outputs support only emissive and coverage");
         builder.ir.outputs_[name] = builder.expression(value);
@@ -262,7 +265,7 @@ void MaterialValueIR::finalize()
         if (input != inputs.end()) { usage_.inputMask |= 1u << (input - inputs.begin()); }
         if (node.op == MaterialValueOp::Position || node.op == MaterialValueOp::GeometryNormal || node.op == MaterialValueOp::UV) { usage_.features |= ValueGeometry; }
         if (node.op == MaterialValueOp::NormalMap) { usage_.features |= ValueNormalMapping; }
-        if (node.op == MaterialValueOp::TextureSample || node.op == MaterialValueOp::Alpha) {
+        if (node.op == MaterialValueOp::TextureSample || node.op == MaterialValueOp::TextureSampleLinear || node.op == MaterialValueOp::Alpha) {
             usage_.features |= ValueTextures; usage_.textureMask |= 1u << node.index;
             usage_.footprintMask |= 1u << static_cast<uint32_t>(node.footprint);
             if (node.footprint == MaterialTextureFootprint::RayCone) { usage_.features |= ValueRayCone; }

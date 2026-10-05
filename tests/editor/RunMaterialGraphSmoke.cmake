@@ -1,0 +1,21 @@
+if(NOT DEFINED LOOKDEV_EXECUTABLE OR NOT DEFINED TEST_DIRECTORY OR NOT DEFINED SOURCE_DIRECTORY)
+    message(FATAL_ERROR "LOOKDEV_EXECUTABLE, TEST_DIRECTORY and SOURCE_DIRECTORY are required")
+endif()
+file(MAKE_DIRECTORY "${TEST_DIRECTORY}/scene")
+set(scene_directory "${TEST_DIRECTORY}/scene")
+set(source_scene_directory "${SOURCE_DIRECTORY}/Asset/LookDev/OpenPBRDefault")
+configure_file("${source_scene_directory}/OpenPbrDefault.gltf" "${scene_directory}/OpenPbrDefault.gltf" COPYONLY)
+configure_file("${source_scene_directory}/Shaderball.bin" "${scene_directory}/Shaderball.bin" COPYONLY)
+file(REMOVE "${scene_directory}/OpenPbrDefault.metallic_scene.json")
+set(ENV{METALLIC_SMOKE_TEST_MATERIAL_GRAPH} 1)
+set(ENV{METALLIC_DEBUG_VALIDATION} 1)
+execute_process(COMMAND "${LOOKDEV_EXECUTABLE}" --sample lookdev-vbuffer
+    --scene "${scene_directory}/OpenPbrDefault.gltf" --smoke-test --debug-control
+    WORKING_DIRECTORY "${TEST_DIRECTORY}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 240)
+set(log "${output}\n${errors}")
+file(WRITE "${TEST_DIRECTORY}/editor.log" "${log}")
+if(NOT result STREQUAL "0" OR log MATCHES "Vulkan validation:|\\[error\\]" OR NOT log MATCHES "\\[Smoke Material Graph\\] Passed")
+    message(FATAL_ERROR "Material Graph smoke failed (${result}):\n${log}")
+endif()
+message(STATUS "Material Graph editor smoke passed")

@@ -2212,6 +2212,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_MATERIAL_GRAPH")) {
+            const bool passed = runMaterialGraphSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_STUDIO_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
@@ -3007,6 +3012,7 @@ void EditorApplication::shutdown()
     }
 
     if (imnodesContextCreated_) {
+        materialGraphEditor_.shutdown();
         ImNodes::DestroyContext();
         imnodesContextCreated_ = false;
     }
@@ -3511,6 +3517,7 @@ void EditorApplication::drawDockspace()
         }
 
         if (ImGui::BeginMenu("Window")) {
+            ImGui::MenuItem("Material Graph", nullptr, &materialGraphEditor_.open);
             if (ImGui::MenuItem("Open Render Graph Editor")) {
                 renderGraphEditorOpen_ = true;
             }
@@ -3548,6 +3555,7 @@ void EditorApplication::drawDockspace()
         if (ImGui::Button("Open Render Graph Editor")) {
             renderGraphEditorOpen_ = true;
         }
+        if (ImGui::Button("Material Graph")) { materialGraphEditor_.open = true; }
 
         ImGui::EndMenuBar();
     }
@@ -3559,6 +3567,7 @@ void EditorApplication::drawDockspace()
 
 void EditorApplication::drawPanels()
 {
+    drawMaterialGraphEditor();
     {
         auto profileScope = profiler_.scope("Streamline Debug Panel");
         drawStreamlineDebugPanel();

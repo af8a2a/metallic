@@ -19,7 +19,8 @@ enum class MaterialValueOp : uint32_t
 {
     Constant, Parameter, UV, Alpha, Add, Multiply, Dot, Lerp, Sin, Fract, Abs, Saturate,
     Clamp, Normalize, NormalMap, UVTransform, Swizzle, Select,
-    Position, GeometryNormal, BaseColor, Metallic, Roughness, Emissive, TextureSample
+    Position, GeometryNormal, BaseColor, Metallic, Roughness, Emissive, TextureSample,
+    TextureSampleLinear // Linear Rec.709 for Color slots; raw values for Data slots.
 };
 enum class MaterialTextureFootprint : uint32_t { ExplicitLOD, SampleGrad, RayCone };
 enum class MaterialValueTexture : uint32_t { BaseColor, MetallicRoughness, Normal, Occlusion, Emissive, Specular };

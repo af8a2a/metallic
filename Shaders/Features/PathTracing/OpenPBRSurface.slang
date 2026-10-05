@@ -170,12 +170,12 @@ struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
 };
 
 OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
-    HitInfo hit,
+    inout HitInfo hit,
     inout PathTraceMaterial material,
     ScenePathTracePush push,
     RayCone rayCone,
     float3 rayDirection,
-    inout uint seed, TSource source, TextureFootprint footprint)
+    inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal)
 {
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
@@ -186,6 +186,14 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     valueContext.ntcCount = push.ntcTextureSetCount;
     MaterialValueOpenPBRInputs surface = defaultMaterialValueOpenPBRInputs();
     material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material, valueContext, surface);
+    if (surface.hasNormal && !openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap) &&
+        !openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures) &&
+        !openPbrDebugFlag(push, kOpenPBRDebugForceGeometryNormal)) {
+        // Graph normals replace the legacy map, using stable authored TBN before face-forward.
+        hit.normal = applyNormalMap(authoredNormal, hit.geometryNormal, hit.tangent, hit.bitangent,
+            float4(safeNormalize(surface.normalTS, float3(0,0,1)) * 0.5 + 0.5, 1), 1.0);
+        if (faceForwardNormal) { hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, rayDirection); }
+    }
 #endif
     float4 baseColorSample = source.loadTexture(
         material.baseColorTexture,
@@ -258,6 +266,13 @@ OpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     }
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
     float3 emissive = max(materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
+#if METALLIC_CUSTOM_MATERIALS
+    // Frontends author final surface inputs; texture expressions must not be multiplied twice.
+    if ((surface.overrideMask & 1u) != 0u) { baseColor = material.baseColor.rgb; }
+    if ((surface.overrideMask & 2u) != 0u) { metallic = saturate(material.params.x); }
+    if ((surface.overrideMask & 4u) != 0u) { roughness = clamp(material.params.y, 0.001, 1.0); }
+    if ((surface.overrideMask & 8u) != 0u) { emissive = material.emissive.rgb; }
+#endif
 
     OpenPBRClosure result;
     result.inputs = openpbr_make_default_resolved_inputs();
@@ -413,11 +428,11 @@ struct OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> : ISurfaceMateri
             result.emission = values.emission;
             return result;
         }
-        let openPBR = resolveOpenPBRInputs(hit, material, push, rayCone, rayDirection, seed, source, context.footprint);
+        let openPBR = resolveOpenPBRInputs(hit, material, push, rayCone, rayDirection, seed, source, context.footprint, context.shadingNormalWS, faceForwardNormal);
         result.closure.inputs = openPBR.inputs;
         result.closure.occlusion = openPBR.occlusion;
 #else
-        result.closure = resolveOpenPBRInputs(hit, material, push, rayCone, rayDirection, seed, source, context.footprint);
+        result.closure = resolveOpenPBRInputs(hit, material, push, rayCone, rayDirection, seed, source, context.footprint, context.shadingNormalWS, faceForwardNormal);
 #endif
         if (fixedMetalness >= 0) { result.closure.inputs.base_metalness = float(fixedMetalness); }
         if (opaquePrimary) { result.closure.inputs.transmission_weight = 0.0; }

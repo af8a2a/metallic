@@ -1,6 +1,8 @@
 # Metallic 材质系统推进路线图
 
-2026-10-04 最新审查：[外部 M1–M4 重新验收](MaterialSystemM1M4Acceptance.md)。M1–M3 在声明范围内通过；M4 的 IR/Slab 原型通过，但 Value IR→Closure→场景材质闭环尚未完成，不能据独立 probe 认定已具备完整 MaterialGraph 基础。另已修复基线环境就绪竞争，三进程 PT/Deferred/Fiber HDR A/A 全部逐位一致。
+2026-10-05 authoring 进展：外部 **M5 / Phase 13** 的 MaterialGraph、编辑器、资产导出和场景应用已接入共用 IR；同时提供 Phase 14 方向的受限只读 SDK expression profile。使用方法、验收和原生 Slang SDK 尚未覆盖的范围见 [MaterialSystemM5MaterialGraph](MaterialSystemM5MaterialGraph.md)。
+
+2026-10-04 首次审查：[外部 M1–M4 重新验收](MaterialSystemM1M4Acceptance.md)。当时 M1–M3 在声明范围内通过，M4 缺少 Value IR→Closure→场景材质闭环；该 P1 后续已补齐，见 [M4 场景 Closure 补充](MaterialSystemM4SceneClosure.md)。原始审查记录保留历史状态。另已修复基线环境就绪竞争，三进程 PT/Deferred/Fiber HDR A/A 全部逐位一致。
 
 本文将用户提供的 Pro 模型讨论转化为可逐步合入、验证和调整的工程路线。目标是建立支持 OpenPBR 模板、自定义参数程序、可组合表面散射与 Fiber 扩展的材质系统。建议先交付统一运行时，再完成自定义程序和有界的 Mix / Layer，随后根据实测选择存储与调度后端，并独立扩展 strand 可见性。
 

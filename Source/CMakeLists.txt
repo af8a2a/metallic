@@ -278,6 +278,8 @@ endif()
 
 add_library(MetallicRuntimeScene STATIC
     Runtime/Material/MaterialAsset.cpp
+    Runtime/Material/MaterialGraph.cpp
+    Runtime/Material/MaterialSlangFrontend.cpp
     Runtime/Material/MaterialFeatures.cpp
     Runtime/Material/MaterialValueIR.cpp
     Runtime/Material/MaterialClosureIR.cpp
@@ -379,6 +381,11 @@ metallic_copy_openusd_runtime(MetallicResidentMeshletCook)
 metallic_copy_spdlog_runtime(MetallicResidentMeshletCook)
 
 # Keep shader symbols independent of opt-in Nsight capture injection.
+add_executable(MetallicMaterialCompile EXCLUDE_FROM_ALL Tools/MaterialCompileMain.cpp)
+target_link_libraries(MetallicMaterialCompile PRIVATE MetallicRuntimeScene)
+metallic_copy_openusd_runtime(MetallicMaterialCompile)
+metallic_copy_spdlog_runtime(MetallicMaterialCompile)
+
 set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     METALLIC_DEFAULT_SHADER_CAPTURE_SYMBOLS=$<CONFIG:RelWithDebInfo>
 )
@@ -391,6 +398,8 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorRasterComparison.cpp
     Editor/EditorMaterialInspector.cpp
     Editor/EditorMaterialInspectorSmoke.cpp
+    Editor/EditorMaterialGraph.cpp
+    Editor/EditorMaterialGraphSmoke.cpp
     Editor/EditorSliderDebug.cpp
     Editor/EditorStreamlineDebug.cpp
     Editor/EditorProfiler.cpp

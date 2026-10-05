@@ -155,6 +155,13 @@ if(WIN32)
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunMaterialInspectorSmoke.cmake"
     )
+    add_test(NAME MetallicLookDevMaterialGraphSmoke
+        COMMAND "${CMAKE_COMMAND}"
+            "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/material-graph-smoke"
+            "-DSOURCE_DIRECTORY=${PROJECT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunMaterialGraphSmoke.cmake")
+    set_tests_properties(MetallicLookDevMaterialGraphSmoke PROPERTIES TIMEOUT 270 RUN_SERIAL TRUE)
     set_tests_properties(MetallicLookDevMaterialInspectorSmoke PROPERTIES
         LABELS "editor" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
     )
@@ -270,6 +277,7 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 
 add_executable(MetallicSceneTests
     scene/MaterialAssetTests.cpp
+    scene/MaterialGraphTests.cpp
     scene/glTFInstancingTests.cpp
     scene/GeometryAttributesTests.cpp
     scene/MeshletStreamReferenceCodecTests.cpp
@@ -370,6 +378,7 @@ add_executable(MetallicRHITests
     rhi/MaterialClosureSchedulingTests.cpp
     rhi/OpenPBRClosureTests.cpp
     rhi/MaterialAssetTests.cpp
+    rhi/MaterialGraphTests.cpp
     rhi/MaterialBaselineTests.cpp
     rhi/MaterialValueProgramTests.cpp
     rhi/StudioLookDevTests.cpp
