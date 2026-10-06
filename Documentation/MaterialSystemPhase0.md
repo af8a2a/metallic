@@ -59,7 +59,7 @@ Python runner 依赖 NumPy；绘图额外使用 Matplotlib/Pillow，不进入默
 | RTXCR | NV_materials_hair→payload；groom→DOTS triangle geometry；RTXCRMaterialAdapter | Chiang prepare/eval/sample；保留 authored normal/tangent，不套 Surface N·L；现有环境 NEE PDF 近似保持 |
 | 生命周期 | MaterialBindingGeneration 保留 CPU snapshot 和 GPU 参数 buffer | RenderFrameContext/PreparedComputeDispatch 保留至提交完成；revision 变化重置相关历史；失败发布保留旧 generation |
 
-关键源码：[LegacyMaterialPayload](../Source/Runtime/Render/Material/LegacyMaterialPayload.h)、[Slang payload](../Shaders/Modules/Material/SceneMaterial.slang)、[上传](../Source/Runtime/Render/Streamer/ScenePathTraceResources.cpp)、[VBuffer resolve](../Shaders/Features/VisibilityBuffer/VisibilityBufferDeferred.slang)、[分类](../Shaders/Features/VisibilityBuffer/VisibilityMaterialBinning.slang)、[OpenPBR adapter](../Shaders/Interop/OpenPBRMaterialAdapter.hlsli)、[RTXCR adapter](../Shaders/Interop/RTXCRMaterialAdapter.hlsli)。
+关键源码：[LegacyMaterialPayload](../Source/Runtime/Render/Material/LegacyMaterialPayload.h)、[Slang payload](../Shaders/Modules/Material/SceneMaterial.slang)、[上传](../Source/Runtime/Render/Streamer/ScenePathTraceResources.cpp)、[VBuffer resolve](../Shaders/Features/VisibilityBuffer/VisibilityBufferDeferred.slang)、[分类](../Shaders/Features/VisibilityBuffer/VisibilityMaterialBinning.slang)、[OpenPBR Slang closure](../Shaders/Modules/OpenPBRClosure.slang)、[RTXCR adapter](../Shaders/Interop/RTXCRMaterialAdapter.hlsli)。
 
 依赖边界：visibility/depth/rasterInfo/domain 必须来自同一 VBuffer；shading material generation 与 GPUScene source-index 映射必须一致；OpenPBR LUT、环境 SH/prefilter、light grid、阴影/RTAS 和纹理资源均影响结果。固定当前 TBN 规则：normal/geometryNormal 在法线贴图前不得按观察射线翻转，只能对最终 shading normal 单独 face-forward。
 

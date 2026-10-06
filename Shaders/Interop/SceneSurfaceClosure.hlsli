@@ -8,7 +8,7 @@ import SlabClosure;
 
 struct ScenePreparedSurfaceClosure : IWeightedPreparedSurfaceClosure
 {
-    OpenPBRPreparedClosure openPBR;
+    SceneOpenPBRPreparedClosure openPBR;
     SlabPreparedClosure slab;
     uint family;
     float3 resolvedEmission;
@@ -29,7 +29,7 @@ struct SceneSurfaceClosure : ISurfaceClosure
 {
     typealias Prepared = ScenePreparedSurfaceClosure;
     // OpenPBR inputs also supply conservative diagnostic/guide summaries for Slab.
-    OpenPBR_ResolvedInputs inputs;
+    OpenPBRResolvedInputs inputs;
     float occlusion;
     uint family; // 0 OpenPBR, 1 SingleSlab, 2 DualSlab.
     DualSlabClosure slab;
@@ -40,7 +40,8 @@ struct SceneSurfaceClosure : ISurfaceClosure
         result.family = family;
         result.resolvedEmission = resolvedEmission;
         if (family == 0u) {
-            OpenPBRClosure closure;
+            SceneOpenPBRClosure closure;
+            closure.context = SceneOpenPBRContext();
             closure.inputs = inputs;
             closure.occlusion = occlusion;
             result.openPBR = closure.prepare(wo, mode, sampling);
@@ -58,12 +59,12 @@ struct SceneSurfaceClosure : ISurfaceClosure
     {
         SurfaceSamplingContext sampling;
         sampling.throughput = float3(1);
-        sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
-        sampling.exteriorIor = OpenPBR_VacuumIor;
+        sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
+        sampling.exteriorIor = OpenPBRVacuumIor;
         return prepare(wo, mode, sampling);
     }
 };
 #else
-typealias SceneSurfaceClosure = OpenPBRCompositeClosure;
+typealias SceneSurfaceClosure = SceneOpenPBRClosure;
 #endif
 #endif

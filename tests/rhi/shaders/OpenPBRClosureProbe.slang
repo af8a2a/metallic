@@ -34,9 +34,32 @@ float4 probeLut(int id, float3 uvw, int3 size)
         lerp(probeLutTexel(id, int3(lo.x, hi.yz), size), probeLutTexel(id, hi, size), f.x), f.y);
     return float4(lerp(a, b, f.z));
 }
-#define OPENPBR_SAMPLE_2D_TEXTURE(id, uv) probeLut(id, float3(uv, 0.5), int3(32, (id == 6 ? 1 : 32), 1))
-#define OPENPBR_SAMPLE_3D_TEXTURE(id, uvw) probeLut(id, uvw, int3(32))
+import OpenPBR;
+using Metallic.OpenPBR;
+struct ProbeOpenPBRContext : IOpenPBRContext
+{
+    static bool enableSheenAndCoat() { return false; }
+    static bool enableDispersion() { return false; }
+    static bool enableTranslucency() { return true; }
+    static bool enableMetallic() { return true; }
+    float4 sample2D(int id, float2 uv) { return probeLut(id, float3(uv, 0.5), int3(32, id == 6 ? 1 : 32, 1)); }
+    float4 sample3D(int id, float3 uvw) { return probeLut(id, uvw, int3(32)); }
+};
+#define METALLIC_OPENPBR_CONTEXT_TYPE ProbeOpenPBRContext
 #include "../../../Shaders/Features/PathTracing/OpenPBRSurface.slang"
+
+// Exercise a second specialization with nonempty context state. Both prepare
+// and subsequent evaluation must use the supplied LUT context, not a default.
+struct StatefulOpenPBRContext : IOpenPBRContext
+{
+    float scale;
+    static bool enableSheenAndCoat() { return true; }
+    static bool enableDispersion() { return false; }
+    static bool enableTranslucency() { return true; }
+    static bool enableMetallic() { return true; }
+    float4 sample2D(int id, float2 uv) { return ProbeOpenPBRContext().sample2D(id, uv) * scale; }
+    float4 sample3D(int id, float3 uvw) { return ProbeOpenPBRContext().sample3D(id, uvw) * scale; }
+};
 
 void countStage(uint index)
 {
@@ -105,40 +128,62 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
     let evaluated = evaluateHit(program, context, instance);
     let closure = evaluated.closure;
     float3 wo = normalize(float3(0.2, 0.1, variant == 6 ? -1 : 1));
-    OpenPBRSamplingContext sampling;
+    SurfaceSamplingContext sampling;
     sampling.throughput = float3(0.2, 0.7, 0.4);
-    sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
+    sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
     sampling.exteriorIor = 1.1;
     countStage(3);
     let prepared = closure.prepare(wo, TransportMode.Radiance, sampling);
-    let native = openpbr_prepare(closure.inputs, sampling.throughput, sampling.wavelengths, sampling.exteriorIor, wo);
+    let native = openPBRPrepare(ProbeOpenPBRContext(), closure.inputs, sampling.throughput, sampling.wavelengths, sampling.exteriorIor, wo);
+    OpenPBRClosure<StatefulOpenPBRContext> standalone;
+    standalone.context.scale = 0.8;
+    standalone.inputs = closure.inputs;
+    standalone.occlusion = closure.occlusion;
+    let standalonePrepared = standalone.prepare(wo, TransportMode.Radiance, sampling);
+    let standaloneNative = openPBRPrepare(standalone.context, standalone.inputs,
+        sampling.throughput, sampling.wavelengths, sampling.exteriorIor, wo);
     float3 error = float3(0);
     for (uint light = 0; light < gProbe.lightCount; ++light) {
         float3 wi = normalize(float3(float(light) * 0.13 - 0.3, 0.2, (light & 1) ? -1 : 1));
-        float3 expected = openpbr_get_sum_of_diffuse_specular(openpbr_eval(native, wi));
+        float3 expected = openPBRGetSumOfDiffuseSpecular(openPBREval(ProbeOpenPBRContext(), native, wi));
         countStage(4);
         float3 projected = evaluateSurfaceProjected(prepared, wi);
         BSDFEval value = prepared.eval(wi);
         error = max(error, abs(projected - expected));
         error = max(error, abs(value.f * abs(dot(closure.inputs.geometry_basis.n, wi)) - expected));
-        error = max(error, float3(abs(value.pdf - openpbr_pdf(native, wi))));
+        error = max(error, float3(abs(value.pdf - openPBRPdf(ProbeOpenPBRContext(), native, wi))));
+        error = max(error, abs(standalonePrepared.evalProjected(wi) -
+            openPBRGetSumOfDiffuseSpecular(openPBREval(standalone.context, standaloneNative, wi))));
+        error = max(error, float3(abs(standalonePrepared.pdf(wi) - openPBRPdf(standalone.context, standaloneNative, wi))));
     }
     float3 random = float3((float(lane % 128) + 0.5) / 128, frac(float(lane) * 0.61803398875), frac(float(lane) * 0.41421356237));
     BSDFWeightSample weighted = sampleSurfaceWeight(prepared, random);
     BSDFSample sample = sampleSurfaceContinuation(prepared, random);
     float3 nativeDirection;
-    OpenPBR_DiffuseSpecular nativeWeight;
+    OpenPBRDiffuseSpecular nativeWeight;
     float nativePdf;
-    OpenPBR_BsdfLobeType nativeType;
-    openpbr_sample(native, random, nativeDirection, nativeWeight, nativePdf, nativeType);
+    uint nativeType;
+    openPBRSample(ProbeOpenPBRContext(), native, random, nativeDirection, nativeWeight, nativePdf, nativeType);
     float3 sampleError = float3(abs(weighted.pdf - nativePdf));
     if (nativePdf > 0) {
         sampleError = max(sampleError, abs(weighted.wiWS - nativeDirection));
-        sampleError = max(sampleError, abs(weighted.weight - openpbr_get_sum_of_diffuse_specular(nativeWeight)));
+        sampleError = max(sampleError, abs(weighted.weight - openPBRGetSumOfDiffuseSpecular(nativeWeight)));
         sampleError = max(sampleError, abs(sample.f * abs(dot(closure.inputs.geometry_basis.n, sample.wiWS)) / sample.pdf - weighted.weight));
         sampleError = max(sampleError, float3(abs(float(weighted.flags) - float(nativeType))));
     } else {
         sampleError = max(sampleError, abs(sample.f) + abs(weighted.weight));
+    }
+    float3 standaloneDirection;
+    OpenPBRDiffuseSpecular standaloneWeight;
+    float standalonePdf;
+    uint standaloneType;
+    openPBRSample(standalone.context, standaloneNative, random, standaloneDirection, standaloneWeight, standalonePdf, standaloneType);
+    let standaloneSample = standalonePrepared.sampleWeighted(random);
+    sampleError = max(sampleError, float3(abs(standaloneSample.pdf - standalonePdf)));
+    if (standalonePdf > 0) {
+        sampleError = max(sampleError, abs(standaloneSample.wiWS - standaloneDirection));
+        sampleError = max(sampleError, abs(standaloneSample.weight - openPBRGetSumOfDiffuseSpecular(standaloneWeight)));
+        sampleError = max(sampleError, float3(abs(float(standaloneSample.flags) - float(standaloneType))));
     }
     // Reusing the resolved closure for a second view must not load textures.
     let second = closure.prepare(normalize(float3(-0.4, 0.2, 1)), TransportMode.Radiance);

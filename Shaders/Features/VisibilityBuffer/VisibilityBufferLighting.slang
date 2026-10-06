@@ -123,8 +123,8 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
         uint2(samplePixel), cameraLinearDepth(hit.position, push));
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);
-    sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
-    sampling.exteriorIor = OpenPBR_VacuumIor;
+    sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
+    sampling.exteriorIor = OpenPBRVacuumIor;
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     float3 radiance = shaded.radiance;
 #if METALLIC_CUSTOM_MATERIALS

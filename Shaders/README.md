@@ -22,7 +22,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/RayMaterialExecution.slang`、`Features/PathTracing/RayMaterialQueue.slang` | 按命中点独立的 Surface/Fiber 求值与 prepare、有界 Program 分类；见 [M8](../Documentation/MaterialSystemM8RayExecution.md) |
 | `Modules/RTXCRHair.slang`、`Modules/RTXCRHair/` | RTXCR Chiang / Separate Chiang / Far Field 原生 Slang vendored 实现；见 [来源与接口](Modules/RTXCRHair/README.md) |
 | `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
-| `Features/PathTracing/OpenPBRSurface.slang`、`Interop/OpenPBRClosure.hlsli` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
+| `Features/PathTracing/OpenPBRSurface.slang`、`Modules/OpenPBRClosure.slang` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Features/VisibilityBuffer/VisibilityMaterialBinning.slang` | 8×4 Wave32 稀疏 Program 分箱、prefix allocation 和 indirect dispatch；见 [Phase 6](../Documentation/MaterialSystemPhase6.md) |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |

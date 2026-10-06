@@ -48,14 +48,25 @@ There is no production array/manual-load option. See
 [texture LUTs](../../../Documentation/OpenPBRTextureLuts.md) for formats,
 sampler bindings, numerical tests and the dedicated `--texture-luts` benchmark.
 
-`Shaders/Interop/OpenPBRModule.hlsli` is a small compatibility boundary for the
-existing renderer names. Its stateless provider resolves the owning program's
-LUTs and static features. `OpenPBRClosure.hlsli` still implements
-`ISurfaceClosure` / `IWeightedPreparedSurfaceClosure`; `OpenPBRSurface.slang`
-continues to handle material parameters/textures and MaterialGraph Value IR.
-Both production PathTrace/Deferred and the legacy visibility preview use the
-native module. Material definitions, GPU layouts, normal/TBN construction and
-lighting kernels are unchanged.
+`import OpenPBRClosure; using Metallic.Material;` exposes
+`OpenPBRClosure<TContext>` and `OpenPBRPreparedClosure<TContext>` through the
+Surface interfaces. Assign the closure's `context`, `inputs` and `occlusion`;
+`prepare` copies the immutable BSDF LUT context into its prepared result, so
+prepare/eval/pdf/sample share the same static feature specialization and lookup
+resources. This context must not contain material-instance or material texture
+evaluation state. Production uses an empty, statically bound context.
+`SurfaceSamplingContext` supplies throughput, wavelengths and exterior IOR.
+Importance transport still fails closed; projected evaluation, sample weight,
+event flags and transmission eta retain the existing conventions.
+
+`import OpenPBRTextureLUT;` exposes texture-only LUT sampling functions.
+`OpenPBRSurface.slang` owns production resource access and material parameter /
+texture evaluation. It calls native Slang types and functions directly, without
+legacy OpenPBR HLSL name wrappers or Adobe feature / LUT callback macros.
+PT, Deferred and the legacy visibility preview specialize the same closure
+module. Only the reference branch of the independent Adobe comparison probe
+retains the upstream API and macros. Material payload ABI, normal/TBN and BSDF
+math are unchanged.
 
 ## Exact-work optimizations
 
@@ -76,6 +87,16 @@ opportunities include joint Eval/PDF microfacet evaluation and feature-specific
 prepared storage; both require separate contract and correctness work.
 
 ## Validation and performance scope
+
+The closure-module migration is covered by `material_closure_openpbr_stages`
+(two concrete contexts, including stateful LUT access),
+`material_surface_lighting_framework`, `material_value_closure_scene`,
+`ray_material_execution_queue`, and `render_graph_pathtracing_guides_shader_compile`.
+`lookdev_render_paths` also saves raw `.hdr.bin` evidence. On 2026-10-06,
+the shaderball and Studio M05 Fuzz each produced byte-identical RGBA32_FLOAT
+PT/Deferred images before and after migration (256x256, 32 frames).
+The local comparison record is `build/openpbr-closure-image-comparison.json`.
+This is correctness evidence, not a GPU performance measurement.
 
 `RHIRendering.material_openpbr_native_equivalence` compiles the unchanged Adobe
 headers and native module into separate kernels. It checks 32,768 cases in each

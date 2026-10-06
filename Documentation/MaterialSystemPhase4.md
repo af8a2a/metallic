@@ -1,14 +1,14 @@
 # Material System Phase 4 — OpenPBR 三阶段适配
 
-Phase 4 将生产 OpenPBR 的参数/纹理求值、法线映射与散射准备接到 Phase 3 接口。继续使用原始 vendor `openpbr_prepare`、`openpbr_eval`、`openpbr_sample`、`openpbr_pdf`；不修改 `External/openpbr-bsdf` 或 720 字节材质上传 ABI。
+Phase 4 将生产 OpenPBR 的参数/纹理求值、法线映射与散射准备接到 Phase 3 接口。当前调用原生 Slang `OpenPBR` 模块的 `openPBRPrepare`、`openPBREval`、`openPBRSample`、`openPBRPdf`；不修改 `External/openpbr-bsdf` 或 720 字节材质上传 ABI。
 
 ## 生产调用
 
 [OpenPBRSurface.slang](../Shaders/Features/PathTracing/OpenPBRSurface.slang) 定义 `OpenPBRMaterialProgram<TSource> : ISurfaceMaterialProgram`；生产别名 `SceneOpenPBRMaterialProgram` 静态绑定 `SceneOpenPBRMaterialSource`：
 
-1. `evaluate(context, instance)` 读取材质参数，依次求值 normal、base color、metallic/roughness、emission、occlusion、transmission、specular 和 specular color，完成 glTF/OpenPBR 参数映射，返回 `SurfaceMaterialResult<OpenPBRClosure>`。
-2. `OpenPBRClosure` 仅保存已解析的 `OpenPBR_ResolvedInputs` 和 occlusion，没有纹理、实例引用、资源 provider、观察方向或随机状态。
-3. `prepare(wo, mode)` 生成 `OpenPBRPreparedClosure`。路径追踪使用额外的 `OpenPBRSamplingContext` overload，明确传入原有 throughput、RGB wavelengths 和嵌套介质 exterior IOR；这些采样状态不会进入 view-independent Closure。
+1. `evaluate(context, instance)` 读取材质参数，依次求值 normal、base color、metallic/roughness、emission、occlusion、transmission、specular 和 specular color，完成 glTF/OpenPBR 参数映射，返回 `SurfaceMaterialResult<SceneOpenPBRClosure>`（自定义 family 由 `SceneSurfaceClosure` 包装）。
+2. `OpenPBRClosure<TContext>` 保存已解析的 `OpenPBRResolvedInputs`、occlusion 和不可变 BSDF LUT context。生产 context 是静态绑定的空类型；不保留材质纹理求值 provider、实例引用、观察方向或随机状态。
+3. `prepare(wo, mode)` 生成 `OpenPBRPreparedClosure<TContext>`。路径追踪使用额外的 `SurfaceSamplingContext` overload，明确传入原有 throughput、RGB wavelengths 和嵌套介质 exterior IOR；这些采样状态不会进入 view-independent Closure。
 4. 光源循环只消费 Prepared；路径延续使用统一 `BSDFWeightSample` 和事件位，不再读取 vendor 的 lobe 类型或返回结构。
 
 `ISurfaceMaterialProgram.evaluate` 标记为 `[mutating]`，允许 STF 在 Program 内推进 RNG。生产调用在 evaluate 后取回 RNG 和 mapped hit；法线 debug 数据只留在 Program，不污染 Closure。纯函数式 Debug Lambert 仍满足同一接口。
@@ -26,7 +26,7 @@ VBuffer/realtime 的环境 SH/prefilter 近似、guide albedo 近似、介质堆
 
 ## BSDF 语义桥接
 
-[OpenPBRClosure.hlsli](../Shaders/Interop/OpenPBRClosure.hlsli) 在程序的 canonical vendor include 之后包含。LUT 的宏配置/资源仍由程序拥有，没有第二份 vendor module 或修改版 SDK。
+[OpenPBRClosure.slang](../Shaders/Modules/OpenPBRClosure.slang) 通过 `import OpenPBRClosure;` 使用，只依赖 `OpenPBR` 和 `MaterialProgram`。泛型 `IOpenPBRContext` 显式提供静态 Feature 与 LUT 访问；准备结果保留同一 context。生产的 Texture LUT 辅助函数位于 `OpenPBRTextureLUT` 模块，不再依赖旧 HLSL adapter、`OpenPBR_*` 类型别名或 `openpbr_*` 包装函数。
 
 统一 `eval().f` 不含 cosine：适配器把 vendor projected value 除以 shading normal 的绝对 cosine；`sample().f` 从 vendor 的 `weight * pdf / abs(cosine)` 恢复。失败样本只依据 vendor 保证有效的 pdf 判断，其余未定义输出不再被读取。Reflection、Transmission、Diffuse、Glossy、Delta 显式映射到统一位；透射 eta 取 vendor 实际准备后的、含 specular-weight 修正和 clamp 的相对 IOR 的倒数，反射/失败为 1。
 

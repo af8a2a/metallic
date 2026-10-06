@@ -7,10 +7,11 @@ using Metallic;
 import Material;
 using Metallic.Material;
 
-#define OPENPBR_FEATURE_EnableSheenAndCoat false
-#define OPENPBR_FEATURE_EnableDispersion false
-#define OPENPBR_FEATURE_EnableTranslucency true
-#define OPENPBR_FEATURE_EnableMetallic true
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRTextureLUT;
+import MaterialProgram;
+using Metallic.OpenPBR;
 
 #ifndef GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE
 #define GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE 0
@@ -23,7 +24,6 @@ using Metallic.Material;
 #ifndef GPU_DRIVEN_OPENPBR_LUT_SAMPLER
 #define GPU_DRIVEN_OPENPBR_LUT_SAMPLER 0
 #endif
-#include "../../Interop/OpenPBRTextureLut.hlsli"
 
 float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
@@ -39,11 +39,16 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
         resolveUniform(SamplerHandle(GPU_DRIVEN_OPENPBR_LUT_SAMPLER)), uvw);
 }
 
-#define OPENPBR_SAMPLE_2D_TEXTURE(lut_id, uv) sampleOpenPBRLut2D(lut_id, uv)
-#define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
-
-#include "../../Interop/OpenPBRModule.hlsli"
-#include "../../Interop/OpenPBRClosure.hlsli"
+struct PreviewOpenPBRContext : IOpenPBRContext
+{
+    static bool enableSheenAndCoat() { return false; }
+    static bool enableDispersion() { return false; }
+    static bool enableTranslucency() { return true; }
+    static bool enableMetallic() { return true; }
+    float4 sample2D(int id, float2 uv) { return sampleOpenPBRLut2D(id, uv); }
+    float4 sample3D(int id, float3 uvw) { return sampleOpenPBRLut3D(id, uvw); }
+};
+typealias SceneOpenPBRClosure = OpenPBRClosure<PreviewOpenPBRContext>;
 
 static const uint kModeMeshlet = 0u;
 static const uint kModePrimitive = 1u;
@@ -959,7 +964,7 @@ uint shadeDeferredSurface(
         saturate(occlusionSample.r),
         saturate(material.textureParams.y));
 
-    OpenPBR_ResolvedInputs inputs = openpbr_make_default_resolved_inputs();
+    OpenPBRResolvedInputs inputs = openPBRMakeDefaultResolvedInputs();
     inputs.base_weight = 1.0;
     inputs.base_color = baseColor;
     // glTF specifies a Lambertian diffuse lobe, independently of GGX roughness.
@@ -982,10 +987,11 @@ uint shadeDeferredSurface(
         : float3(1.0);
     inputs.geometry_opacity = saturate(material.baseColor.a * baseColorSample.a);
     inputs.geometry_thin_walled = false;
-    inputs.geometry_basis = openpbr_make_basis(normal, tangent, bitangent);
+    inputs.geometry_basis = openPBRMakeBasis(normal, tangent, bitangent);
     inputs.geometry_coat_basis = inputs.geometry_basis;
 
-    OpenPBRClosure closure;
+    SceneOpenPBRClosure closure;
+    closure.context = PreviewOpenPBRContext();
     closure.inputs = inputs;
     closure.occlusion = occlusion;
     let prepared = closure.prepare(viewDirection, TransportMode.Radiance);

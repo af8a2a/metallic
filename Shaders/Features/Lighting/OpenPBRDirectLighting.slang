@@ -153,8 +153,8 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
 #endif
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);
-    sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
-    sampling.exteriorIor = OpenPBR_VacuumIor;
+    sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
+    sampling.exteriorIor = OpenPBRVacuumIor;
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     let prepared = shaded.prepared;
     float3 radiance = shaded.radiance;

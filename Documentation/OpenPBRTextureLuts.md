@@ -29,7 +29,7 @@ per resource lifetime, with the existing submission rollback and lifetime rules.
 
 ## Sampling and integration
 
-[`OpenPBRTextureLut.hlsli`](../Shaders/Interop/OpenPBRTextureLut.hlsli) is shared
+[`OpenPBRTextureLUT.slang`](../Shaders/Modules/OpenPBRTextureLUT.slang) is shared
 by PathTrace, production Deferred, legacy visibility preview and the GPU probe.
 2D lookup uses one hardware bilinear sample instead of four loads. 3D lookup
 uses two hardware-filtered XY slices and float Z interpolation instead of eight

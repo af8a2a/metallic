@@ -133,6 +133,9 @@ public:
                 else {
                     if (reference != bytes) { return RHITestResult::fail("Isolated HDR differs from comparison branch"); }
                     const std::string label = pt ? "PathTraceOnly" : "DeferredOnly";
+                    std::ofstream hdr(context.outputDirectory / (label + ".hdr.bin"), std::ios::binary);
+                    hdr.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                    if (!hdr) { return RHITestResult::fail("HDR evidence write failed"); }
                     if (!saveRenderGraphToFile(graph, context.outputDirectory / (label + ".metallic_graph.json"), log)) { return RHITestResult::fail(log); }
                     if (!preview.render(graph, kSize, kSize, "FinalBlit.color") ||
                         !saveRgba8Png(context.outputDirectory / (label + ".png"),

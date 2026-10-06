@@ -1,6 +1,7 @@
 import ShaderCore;
 using Metallic;
-#include "../../../Shaders/Interop/OpenPBRTextureLut.hlsli"
+import OpenPBRTextureLUT;
+using Metallic.OpenPBR;
 
 struct ProbeParams
 {

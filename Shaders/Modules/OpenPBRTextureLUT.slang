@@ -1,25 +1,27 @@
-#ifndef METALLIC_OPENPBR_TEXTURE_LUT
-#define METALLIC_OPENPBR_TEXTURE_LUT
+#language slang 2026
+module OpenPBRTextureLUT;
 
+namespace Metallic.OpenPBR
+{
 // Adobe's precomputed energy tables are linear R16_UNORM; LTC is RGBA32_FLOAT.
 // One mip, linear min/mag, clamp-to-edge on all axes. Coordinates already include
 // the half-texel transform in the OpenPBR module. Never apply sRGB conversion.
-uint openPBRLut2DSlot(int id)
+public uint openPBRLut2DSlot(int id)
 {
     return id == 1 ? 0u : id == 2 ? 1u : id == 4 ? 2u : id == 5 ? 3u : id == 6 ? 4u : 5u;
 }
 
-uint openPBRLut3DSlot(int id)
+public uint openPBRLut3DSlot(int id)
 {
     return id == 3 ? 1u : 0u;
 }
 
-float4 sampleOpenPBRTexture2D(Texture2D<float4> texture, SamplerState linearClamp, float2 uv)
+public float4 sampleOpenPBRTexture2D(Texture2D<float4> texture, SamplerState linearClamp, float2 uv)
 {
     return texture.SampleLevel(linearClamp, uv, 0.0);
 }
 
-float4 sampleOpenPBRTexture3D(Texture3D<float4> texture, SamplerState linearClamp, float3 uvw)
+public float4 sampleOpenPBRTexture3D(Texture3D<float4> texture, SamplerState linearClamp, float3 uvw)
 {
     // Keep the inter-slice interpolation in float. Native 3D filtering can add
     // intermediate weight rounding beyond the 2D sub-texel precision bound.
@@ -32,4 +34,4 @@ float4 sampleOpenPBRTexture3D(Texture3D<float4> texture, SamplerState linearClam
     return lerp(lo, hi, z - slice);
 }
 
-#endif
+} // namespace Metallic.OpenPBR

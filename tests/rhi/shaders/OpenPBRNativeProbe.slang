@@ -29,6 +29,7 @@ float4 lut(int id, float3 uvw, int3 size)
     return lerp(a, b, f.z);
 }
 
+#if METALLIC_OPENPBR_REFERENCE
 #define OPENPBR_LANGUAGE_TARGET_SLANG 1
 #define OPENPBR_USE_TEXTURE_LUTS 1
 #define OPENPBR_ENERGY_TABLES_USE_UINT16 0
@@ -39,10 +40,19 @@ float4 lut(int id, float3 uvw, int3 size)
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 #define OPENPBR_SAMPLE_2D_TEXTURE(id, uv) lut(id, float3(uv, 0.5), int3(32, id == 6 ? 1 : 32, 1))
 #define OPENPBR_SAMPLE_3D_TEXTURE(id, uvw) lut(id, uvw, int3(32))
-#if METALLIC_OPENPBR_REFERENCE
 #include "../../../External/openpbr-bsdf/openpbr.h"
 #else
-#include "../../../Shaders/Interop/OpenPBRModule.hlsli"
+import OpenPBR;
+using Metallic.OpenPBR;
+struct NativeProbeContext : IOpenPBRContext
+{
+    static bool enableSheenAndCoat() { return true; }
+    static bool enableDispersion() { return true; }
+    static bool enableTranslucency() { return true; }
+    static bool enableMetallic() { return true; }
+    float4 sample2D(int id, float2 uv) { return lut(id, float3(uv, 0.5), int3(32, id == 6 ? 1 : 32, 1)); }
+    float4 sample3D(int id, float3 uvw) { return lut(id, uvw, int3(32)); }
+};
 #endif
 
 float random(inout uint state)
@@ -60,9 +70,15 @@ void openPBRNativeProbeMain(uint3 id : SV_DispatchThreadID)
     // Both divergent waves and coherent material regions use the same cases.
     uint variant = gProbe.lightCount == 0 ? lane % 16 : lane / 2048;
     uint state = lane + 12345;
+#if METALLIC_OPENPBR_REFERENCE
     OpenPBR_ResolvedInputs inputs = openpbr_make_default_resolved_inputs();
     inputs.geometry_basis = openpbr_make_basis(float3(0, 0, 1));
     inputs.geometry_coat_basis = openpbr_make_basis(normalize(float3(0.12, -0.08, 1)));
+#else
+    OpenPBRResolvedInputs inputs = openPBRMakeDefaultResolvedInputs();
+    inputs.geometry_basis = openPBRMakeBasis(float3(0, 0, 1));
+    inputs.geometry_coat_basis = openPBRMakeBasis(normalize(float3(0.12, -0.08, 1)));
+#endif
     inputs.base_color = float3(random(state), random(state), random(state));
     inputs.specular_roughness = ((lane & 256) != 0) ? max(0.001, random(state)) : 0.001;
     inputs.base_diffuse_roughness = random(state);
@@ -98,6 +114,7 @@ void openPBRNativeProbeMain(uint3 id : SV_DispatchThreadID)
     if ((lane & 64) != 0) { wo = -wo; }
     float3 wi = normalize(float3(random(state) * 2 - 1, random(state) * 2 - 1, random(state) * 2 - 1));
     float3 throughput = float3(0.3, 0.6, 0.9);
+#if METALLIC_OPENPBR_REFERENCE
     let bsdf = openpbr_prepare(inputs, throughput, float3(610, 550, 460), 1.1, wo);
     let value = openpbr_eval(bsdf, wi);
     float pdf = openpbr_pdf(bsdf, wi);
@@ -108,6 +125,18 @@ void openPBRNativeProbeMain(uint3 id : SV_DispatchThreadID)
     float3 rand = float3(random(state), random(state), random(state));
     openpbr_sample(bsdf, rand, direction, weight, density, eventType);
     if (density <= 0) { direction = 0; weight = (OpenPBR_DiffuseSpecular)0; eventType = 0; }
+#else
+    let bsdf = openPBRPrepare(NativeProbeContext(), inputs, throughput, float3(610, 550, 460), 1.1, wo);
+    let value = openPBREval(NativeProbeContext(), bsdf, wi);
+    float pdf = openPBRPdf(NativeProbeContext(), bsdf, wi);
+    float3 direction;
+    OpenPBRDiffuseSpecular weight;
+    float density;
+    uint eventType;
+    float3 rand = float3(random(state), random(state), random(state));
+    openPBRSample(NativeProbeContext(), bsdf, rand, direction, weight, density, eventType);
+    if (density <= 0) { direction = 0; weight = (OpenPBRDiffuseSpecular)0; eventType = 0; }
+#endif
     uint base = lane * 8;
     gProbe.output.store(base, float4(value.diffuse, pdf));
     gProbe.output.store(base + 1, float4(value.specular, density));

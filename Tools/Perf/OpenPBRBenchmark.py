@@ -93,11 +93,11 @@ def run(args):
     root.mkdir(parents=True, exist_ok=False)
     exe = args.exe.resolve()
     sources = [*repo.glob('Shaders/Modules/OpenPBR/*.slang'), repo / 'Shaders/Modules/OpenPBR.slang',
-               repo / 'Shaders/Interop/OpenPBRModule.hlsli', repo / 'tests/rhi/OpenPBRClosureTests.cpp',
+               repo / 'Shaders/Modules/OpenPBRClosure.slang', repo / 'tests/rhi/OpenPBRClosureTests.cpp',
                repo / 'tests/rhi/shaders/OpenPBRNativeProbe.slang',
                *repo.glob('External/openpbr-bsdf/**/*.h')]
     if args.texture_luts:
-        sources += [repo / 'Shaders/Interop/OpenPBRTextureLut.hlsli',
+        sources += [repo / 'Shaders/Modules/OpenPBRTextureLUT.slang',
                     repo / 'Source/Runtime/Render/Material/OpenPBRLutData.h',
                     repo / 'tests/rhi/OpenPBRTextureLutTests.cpp',
                     repo / 'tests/rhi/shaders/OpenPBRTextureLutProbe.slang']

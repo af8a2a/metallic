@@ -29,12 +29,12 @@ float openPbrMaterialIor(PathTraceMaterial material)
 
 float openPbrInteriorStackTopIor(OpenPBRInteriorStack stack)
 {
-    return stack.count > 0u ? stack.entries[stack.count - 1u].ior : OpenPBR_VacuumIor;
+    return stack.count > 0u ? stack.entries[stack.count - 1u].ior : OpenPBRVacuumIor;
 }
 
 float openPbrInteriorStackNextIor(OpenPBRInteriorStack stack)
 {
-    return stack.count > 1u ? stack.entries[stack.count - 2u].ior : OpenPBR_VacuumIor;
+    return stack.count > 1u ? stack.entries[stack.count - 2u].ior : OpenPBRVacuumIor;
 }
 
 float openPbrExteriorIorForHit(OpenPBRInteriorStack stack, HitInfo hit)
@@ -353,9 +353,9 @@ float3 pathTraceOpenPBRWithPrimaryHit(
                 ray.direction);
         }
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
-        OpenPBRSamplingContext sampling;
+        SurfaceSamplingContext sampling;
         sampling.throughput = throughput;
-        sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
+        sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
         sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
         let prepared = prepareRaySurface(materialEval, work, sampling);
 
