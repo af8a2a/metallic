@@ -355,6 +355,40 @@ nlohmann::json serializeLightProperties(const LightProperties& properties)
     return value;
 }
 
+nlohmann::json serializeCelestialLight(const environment::CelestialLight& light)
+{
+    return {{"enabled", light.enabled}, {"direction", {light.direction.x, light.direction.y, light.direction.z}},
+        {"color", {light.color.x, light.color.y, light.color.z}}, {"illuminance", light.illuminance},
+        {"angularRadius", light.angularRadius}};
+}
+
+bool parseCelestialLight(const nlohmann::json& value, environment::CelestialLight& light, std::string& reason)
+{
+    if (!value.is_object() || (value.contains("enabled") && !value["enabled"].is_boolean())) {
+        reason = "celestial light must be an object with a boolean enabled field";
+        return false;
+    }
+    if (!readOptionalColor(value, light.color, reason) ||
+        (value.contains("direction") && !readOptionalColor(nlohmann::json{{"color", value["direction"]}},
+            light.direction, reason))) {
+        return false;
+    }
+    double illuminance = light.illuminance;
+    double angularRadius = light.angularRadius;
+    if (!readOptionalFiniteNumber(value, "illuminance", illuminance, reason) ||
+        !readOptionalFiniteNumber(value, "angularRadius", angularRadius, reason)) {
+        return false;
+    }
+    light.illuminance = static_cast<float>(illuminance);
+    light.angularRadius = static_cast<float>(angularRadius);
+    light.enabled = value.value("enabled", light.enabled);
+    if (!environment::validCelestialLight(light)) {
+        reason = "invalid celestial color, direction, lux or angular radius";
+        return false;
+    }
+    return true;
+}
+
 bool isSceneDocumentPath(const std::filesystem::path& path)
 {
     const std::string filename = path.filename().string();
@@ -552,7 +586,7 @@ bool compatibleImportedProperties(const LightProperties& current, const LightPro
 {
     // Match the source component's editable fields before publishing a batch.
     return current.type == next.type &&
-        (current.type != "directional" || current.range == next.range) &&
+        (current.type == "point" || current.type == "spot") &&
         (current.type == "spot" || (current.innerConeAngle == next.innerConeAngle &&
             current.outerConeAngle == next.outerConeAngle));
 }
@@ -767,6 +801,7 @@ bool SceneDocument::loadInternalInPlace(
     if (!loaded) {
         return false;
     }
+    appendWarning(documentWarning_, lastLoadResult().warning);
 
     sourcePath_ = sourcePath;
     documentPath_ = documentPath.empty()
@@ -987,7 +1022,20 @@ bool SceneDocument::setEnvironment(EnvironmentSettings environment)
         return false;
     }
     environment_ = std::move(environment);
+    ++environmentLightingRevision_;
     hasEnvironmentSettings_ = true;
+    dirty_ = true;
+    return true;
+}
+
+bool SceneDocument::setWorldEnvironment(environment::WorldEnvironment environment)
+{
+    if (!environment::validWorldEnvironment(environment) || worldEnvironment_ == environment) {
+        return false;
+    }
+    worldEnvironment_ = std::move(environment);
+    ++celestialRevision_;
+    ++environmentLightingRevision_;
     dirty_ = true;
     return true;
 }
@@ -1043,6 +1091,7 @@ bool SceneDocument::setLighting(LightingSettings lighting)
         }
     }
     lighting_ = std::move(lighting);
+    ++environmentLightingRevision_;
     dirty_ = true;
     return true;
 }
@@ -1107,7 +1156,6 @@ void SceneDocument::importVirtualLights()
             // Non-applicable fields are deliberately not serialized. Restore
             // their exact source defaults (tinygltf's pi/4 is rounded) before
             // checking the component editor's unchanged-field contract.
-            if (light.properties.type == "directional") { light.properties.range = component->properties.range; }
             if (light.properties.type != "spot") {
                 light.properties.innerConeAngle = component->properties.innerConeAngle;
                 light.properties.outerConeAngle = component->properties.outerConeAngle;
@@ -1130,6 +1178,7 @@ void SceneDocument::importVirtualLights()
 bool SceneDocument::applySidecar(const std::filesystem::path& path)
 {
     nlohmann::json document;
+    std::optional<PunctualLight> legacySun;
     std::string error;
     if (!readJsonFile(path, document, error)) {
         documentWarning_ = std::move(error);
@@ -1188,6 +1237,7 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
 
     environment_ = EnvironmentSettings{};
     lighting_ = LightingSettings{};
+    worldEnvironment_ = environment::WorldEnvironment{};
     if (version >= 2 && document.contains("world")) {
         if (!document["world"].is_object()) {
             appendWarning(documentWarning_, "Ignored a non-object world setting.");
@@ -1288,7 +1338,26 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                             }
                             light.imported = std::move(binding);
                         }
-                        lighting_.lights.push_back(std::move(light));
+                        if (light.properties.type == "directional") {
+                            if (legacySun) {
+                                documentWarning_ = "Multiple legacy directional lights require explicit Sun/Moon migration.";
+                                return false;
+                            }
+                            const auto& direction = light.direction;
+                            if (!validLightProperties(light.properties) ||
+                                double(direction.x) * direction.x + double(direction.y) * direction.y +
+                                    double(direction.z) * direction.z < 1e-12 ||
+                                (light.imported &&
+                                    double(light.imported->localDirection.x) * light.imported->localDirection.x +
+                                    double(light.imported->localDirection.y) * light.imported->localDirection.y +
+                                    double(light.imported->localDirection.z) * light.imported->localDirection.z < 1e-12)) {
+                                documentWarning_ = "Invalid legacy directional light.";
+                                return false;
+                            }
+                            legacySun = std::move(light);
+                        } else {
+                            lighting_.lights.push_back(std::move(light));
+                        }
                     }
                 }
                 if (!validLightingSettings(lighting_)) {
@@ -1301,6 +1370,19 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     appendWarning(documentWarning_, "Ignored a non-object world.environment setting.");
                 } else {
                     const nlohmann::json& environment = world["environment"];
+                    for (const auto& [name, destination] : {
+                            std::pair{"sun", &worldEnvironment_.sun}, std::pair{"moon", &worldEnvironment_.moon}}) {
+                        if (!environment.contains(name)) { continue; }
+                        if (legacySun && std::string_view(name) == "sun") {
+                            documentWarning_ = "Legacy directional light conflicts with world.environment.sun; explicit migration required.";
+                            return false;
+                        }
+                        std::string reason;
+                        if (!parseCelestialLight(environment[name], *destination, reason)) {
+                            documentWarning_ = std::string("Invalid world.environment.") + name + ": " + reason;
+                            return false;
+                        }
+                    }
                     if ((environment.contains("enabled") &&
                          !environment["enabled"].is_boolean()) ||
                         (environment.contains("visible") &&
@@ -1574,6 +1656,31 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
             }
         }
     }
+    if (legacySun) {
+        auto& sun = worldEnvironment_.sun;
+        sun.direction = legacySun->direction;
+        sun.color = legacySun->properties.color;
+        sun.illuminance = static_cast<float>(lightIntensitySI("directional", legacySun->properties.intensityUnit,
+            legacySun->properties.intensity));
+        sun.enabled = legacySun->enabled;
+        if (legacySun->imported) {
+            const auto& binding = *legacySun->imported;
+            const auto object = objectForSourceNode(binding.sourceId, binding.sourceNodeIndex);
+            if (object) {
+                if (const auto* transform = object.tryGetComponent<TransformComponent>()) {
+                    sun.direction = lightDirection(lightVector(transform->worldMatrix, binding.localDirection));
+                }
+                if (const auto* visibility = object.tryGetComponent<VisibilityComponent>()) {
+                    sun.enabled = sun.enabled && visibility->worldVisible;
+                }
+            } else {
+                sun.enabled = false;
+                appendWarning(documentWarning_, "Migrated Sun has no matching imported source node and remains disabled.");
+            }
+        }
+        appendWarning(documentWarning_, "Migrated legacy directional light '" + legacySun->name +
+            "' to world.environment.sun; save the document to persist this migration.");
+    }
     sidecarLoaded_ = true;
     return true;
 }
@@ -1628,7 +1735,7 @@ bool SceneDocument::save(std::string& message)
             hasOverride = true;
         }
         if (const LightComponent* light = object.tryGetComponent<LightComponent>();
-            light != nullptr && !lightPropertiesNearlyEqualForDocument(
+            light != nullptr && light->properties.type != "directional" && !lightPropertiesNearlyEqualForDocument(
                 light->properties,
                 light->authoredProperties)) {
             nodeOverride["light"] = serializeLightProperties(light->properties);
@@ -1768,6 +1875,8 @@ bool SceneDocument::save(std::string& message)
             {"importedSources", std::move(serializedImportedSources)},
         }},
         {"environment", {
+            {"sun", serializeCelestialLight(worldEnvironment_.sun)},
+            {"moon", serializeCelestialLight(worldEnvironment_.moon)},
             {"enabled", environment_.enabled},
             {"path", serializedEnvironmentPath.generic_string()},
             {"intensity", environment_.intensity},

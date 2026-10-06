@@ -462,6 +462,14 @@ Result<> EnvironmentLightingSubsystem::recordPreGraph(
     if (context.commandBuffer == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    CelestialLightingResources celestial;
+    auto celestialResult = updateCelestial(context.device, *context.commandBuffer, context.host,
+        resolveWorldEnvironment(world_ != nullptr ? world_->scene() : nullptr, world_))
+        .transform([&](auto value) { celestial = std::move(value); });
+    if (!celestialResult) { return celestialResult; }
+    celestialLightsBuffer_ = std::move(celestial.buffer);
+    celestialResourceRevision_ = celestial.revision;
+    refreshSnapshot();
     if (pendingPublication_ != nullptr && !pendingPublication_->resolved()) {
         log = "Environment publication must be submitted or cancelled before recording again";
         return makeError(Error::InvalidArgument);
@@ -742,8 +750,51 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     return {};
 }
 
+Result<CelestialLightingResources> EnvironmentLightingSubsystem::updateCelestial(Device& device,
+    CommandBuffer& commands, RenderSubsystemHost& host, const environment::EnvironmentSnapshot& environment)
+{
+    const auto records = buildCelestialLightRecords(environment);
+    std::scoped_lock lock(celestialMutex_);
+    CelestialLightingResources resources;
+    auto found = std::find_if(celestialPublications_.begin(), celestialPublications_.end(),
+        [&](const auto& publication) {
+            return std::memcmp(records.data(), publication.records.data(), sizeof(records)) == 0;
+        });
+    if (found != celestialPublications_.end()) {
+        // Reuse a content-specific revision: graph scene overrides must not reset
+        // their accumulation whenever pre-graph recording publishes the world.
+        resources = found->resources;
+        auto publication = std::move(*found);
+        celestialPublications_.erase(found);
+        celestialPublications_.push_back(std::move(publication));
+    } else {
+        std::unique_ptr<Buffer> next;
+        auto result = device.createBuffer({.size = sizeof(records), .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::HostUpload})
+            .transform([&](auto buffer) { next = std::move(buffer); });
+        if (!result) { return makeError(result.error()); }
+        if (next == nullptr) { return makeError(Error::Failure); }
+        void* mapped = next->map();
+        if (mapped == nullptr) { return makeError(Error::Failure); }
+        std::memcpy(mapped, records.data(), sizeof(records));
+        next->flush({0, sizeof(records)});
+        next->unmap();
+        resources = {.buffer = std::move(next), .revision = ++nextCelestialResourceRevision_};
+        if (celestialPublications_.size() == 8) {
+            host.retire(celestialPublications_.front().resources.buffer);
+            celestialPublications_.erase(celestialPublications_.begin());
+        }
+        celestialPublications_.push_back({records, resources});
+    }
+    if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(resources.buffer); }
+    commands.hostWriteBarrier();
+    return resources;
+}
+
 void EnvironmentLightingSubsystem::refreshSnapshot()
 {
+    snapshot_.celestialLightsBuffer = celestialLightsBuffer_.get();
+    snapshot_.celestialResourceRevision = celestialResourceRevision_;
     snapshot_.settings = requestedSettings_;
     snapshot_.settingsRevision = requestedSettingsRevision_;
     snapshot_.resourceRevision = resourceRevision_;
@@ -780,6 +831,10 @@ void EnvironmentLightingSubsystem::shutdown()
     pendingDecodeGeneration_ = 0;
     readyDecode_.reset();
     resources_.reset();
+    celestialLightsBuffer_.reset();
+    celestialPublications_.clear();
+    nextCelestialResourceRevision_ = 0;
+    celestialResourceRevision_ = 0;
     pdfCompute_.clear();
     gpuPrecompute_.reset();
     snapshot_ = {};

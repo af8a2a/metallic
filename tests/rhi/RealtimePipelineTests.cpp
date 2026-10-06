@@ -750,11 +750,10 @@ public:
         scene::LightingSettings lighting;
         lighting.autoExposure.enabled = false;
         lighting.exposureEV100 = 4.0f;
-        scene::PunctualLight sun;
-        sun.properties.type = "directional";
-        sun.properties.intensity = 30;
-        sun.direction = float3(0.6f, -1.0f, -0.3f);
-        // A disabled prefix and an active local light must not compact the sun's source slot.
+        environment::WorldEnvironment environment;
+        environment.sun = {.direction = float3(0.6f, -1.0f, -0.3f), .illuminance = 30.0f,
+            .angularRadius = 1.5f * 0.01745329252f, .enabled = true};
+        // Disabled and active local sources must not change the fixed Sun slot.
         scene::PunctualLight inactive;
         inactive.enabled = false;
         lighting.lights.push_back(inactive);
@@ -762,15 +761,14 @@ public:
         point.enabled = true;
         point.properties.intensity = 0.001;
         lighting.lights.push_back(point);
-        lighting.lights.push_back(sun);
         preview.setLighting(lighting);
+        preview.setWorldEnvironment(environment);
         const auto* shadowNode = sample.graph.findNode("Shadows");
         if (shadowNode == nullptr || shadowNode->type != "RayTracedShadowPass") {
             return realtimeFailure("Realtime pipeline is missing the explicit shadow stage");
         }
         const auto shadows = shadowNode->id;
         const auto deferred = sample.graph.findNode("Deferred")->id;
-        sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", 1.5f);
         sample.graph.setNodeRuntimeProperty(shadows, "shadowRayLength", 100000.0f);
         std::vector<uint32_t> unshadowed;
         for (uint32_t mode = 0; mode < 4; ++mode) {
@@ -810,7 +808,8 @@ public:
         view["temporalJitter"] = false;
         sample.graph.setViewProperties(view);
         sample.graph.setNodeRuntimeProperty(shadows, "sigmaDenoise", false);
-        sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", 0.0f);
+        environment.sun.angularRadius = 0.0f;
+        preview.setWorldEnvironment(environment);
         sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", true);
         sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", -1);
         const auto draw = [&]() {
@@ -821,7 +820,7 @@ public:
             return preview.pixels();
         };
         const auto automatic = draw();
-        sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", int(scene.lights().size()) + 2);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", 0);
         if (draw() != automatic) { return realtimeFailure("Explicit sun slot and Auto produce different shadow signals"); }
         sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", 1412);
         if (draw() != automatic) { return realtimeFailure("Invalid slot did not fall back to Auto"); }
@@ -844,7 +843,7 @@ public:
         for (size_t i = 0; i < shortLighting.size(); ++i) {
             changed += int(shortLighting[i] & 255u) - int(longLighting[i] & 255u) > 8;
         }
-        if (changed < 30) { return realtimeFailure("Trace settings did not affect the selected stable LightGrid sun slot"); }
+        if (changed < 30) { return realtimeFailure("Trace settings did not affect the selected celestial Sun slot"); }
         const auto hardLighting = longLighting;
         // Live source-radius edits must widen the full geometry penumbra and
         // lighten pixels inside the old hard shadow in final deferred lighting.
@@ -857,7 +856,8 @@ public:
         uint32_t fullyLit = 0;
         for (auto pixel : hardVisibility) { fullyLit = std::max(fullyLit, pixel & 255u); }
         for (size_t angle = 0; angle < 3; ++angle) {
-            sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", angles[angle]);
+            environment.sun.angularRadius = angles[angle] * 0.01745329252f;
+            preview.setWorldEnvironment(environment);
             const auto visibility = draw();
             for (size_t i = 0; i < visibility.size(); ++i) {
                 const auto value = visibility[i] & 255u;
@@ -948,7 +948,6 @@ public:
                 graph.addEdge("Deferred.color", "AutoExposure.source");
                 graph.addEdge("AutoExposure.color", "FinalBlit.source");
                 graph.findNode("Shadows")->properties["sigmaDenoise"] = false;
-                graph.findNode("Shadows")->properties["shadowAngularRadius"] = 0.0;
             }
             registerRenderGraphPassType("RealtimeReadbackPass", "Realtime GPU regression readback",
                 [] { return std::make_unique<RealtimeReadbackPass>(); });
@@ -964,10 +963,10 @@ public:
             scene::LightingSettings lighting;
             lighting.autoExposure.enabled = miniZorah_;
             lighting.exposureEV100 = 2;
-            scene::PunctualLight sun;
-            sun.properties.type = "directional"; sun.properties.intensity = 10;
-            sun.direction = float3(.6f, -1, -.3f);
-            lighting.lights.push_back(sun);
+            environment::WorldEnvironment environment;
+            environment.sun = {.direction = float3(.6f, -1, -.3f), .illuminance = 10.0f,
+                .angularRadius = 0.0f, .enabled = true};
+            world.setWorldEnvironment(environment);
             world.setLighting(lighting);
             RenderGraphExecutor executor;
             executor.bindRenderWorld(&world);

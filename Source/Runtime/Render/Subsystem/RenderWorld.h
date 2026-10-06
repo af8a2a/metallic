@@ -2,6 +2,7 @@
 
 #include "Runtime/Scene/SceneEnvironment.h"
 #include "Runtime/Scene/SceneLighting.h"
+#include "Runtime/Environment/WorldEnvironment.h"
 
 #include <cstdint>
 
@@ -55,6 +56,13 @@ public:
 
     void setEnvironment(EnvironmentSettings settings);
     const EnvironmentSettings& environment() const { return environment_; }
+    bool setWorldEnvironment(environment::WorldEnvironment environment);
+    bool hasWorldEnvironmentOverride() const { return worldEnvironmentOverride_; }
+    const environment::WorldEnvironment& worldEnvironment() const { return worldEnvironment_; }
+    environment::EnvironmentSnapshot environmentSnapshot() const
+    {
+        return worldEnvironment_.snapshot(celestialRevision_, lightingRevision_);
+    }
     bool setLighting(scene::LightingSettings lighting);
     const scene::LightingSettings& lighting() const { return lighting_; }
     uint64_t lightingRevision() const { return lightingRevision_; }
@@ -69,6 +77,9 @@ private:
     const scene::Scene* scene_ = nullptr;
     EnvironmentSettings environment_;
     scene::LightingSettings lighting_;
+    environment::WorldEnvironment worldEnvironment_;
+    bool worldEnvironmentOverride_ = false;
+    uint64_t celestialRevision_ = 1;
     uint64_t lightingRevision_ = 1;
     uint64_t sceneRevision_ = 1;
     uint64_t sceneContentRevision_ = 1;

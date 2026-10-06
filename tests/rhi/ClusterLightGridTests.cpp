@@ -288,13 +288,11 @@ public:
         }
         uint32_t globalMask = 0;
         float globalIntensity = 0.0f;
-        for (const auto& globals : {visible->directionalLights, visible->unboundedLocalLights}) {
-            for (const auto id : globals) {
-                globalMask |= 1u << id.index;
-                globalIntensity += scene.light(id)->source.gpu.colorIntensity[3];
-            }
+        for (const auto id : visible->unboundedLocalLights) {
+            globalMask |= 1u << id.index;
+            globalIntensity += scene.light(id)->source.gpu.colorIntensity[3];
         }
-        GRID_CHECK(output.lookup[8][0] == visible->directionalLights.size() + visible->unboundedLocalLights.size());
+        GRID_CHECK(output.lookup[8][0] == visible->unboundedLocalLights.size());
         GRID_CHECK(output.lookup[8][1] == globalMask);
         GRID_CHECK(output.lookup[8][2] == UINT32_MAX);
         GRID_CHECK(output.lookup[8][3] == static_cast<uint32_t>(std::round(globalIntensity)));
@@ -474,7 +472,7 @@ public:
         auto desc = gridDesc();
         std::vector<scene::PunctualLight> lights{
             makeGridLight("point", float3(0.0f, 0.0f, -6.0f), 100.0),
-            makeGridLight("directional", float3(0.0f), 0.0),
+            makeGridLight("point", float3(0.0f), 0.0),
             makeGridLight("point", float3(1000.0f), 0.0),
             makeGridLight("point", float3(-3.0f, 3.0f, -6.0f), 0.2),
             makeGridLight("point", float3(3.0f, -3.0f, -6.0f), 0.2),
@@ -485,7 +483,7 @@ public:
         GridReadback data;
         result = harness.run(grid, scene, view, 0, desc, data);
         if (!result.passed) { return result; }
-        GRID_CHECK((data.snapshot.params.counts == std::array<uint32_t, 4>{3, 1, 1, 6}));
+        GRID_CHECK((data.snapshot.params.counts == std::array<uint32_t, 4>{3, 0, 2, 6}));
         GRID_CHECK(data.cells.size() == 16);
         for (uint32_t index = 0; index < 16; ++index) {
             const std::vector<uint32_t> expected = index == 8 ? std::vector<uint32_t>{3}
@@ -563,7 +561,7 @@ public:
         desc.orthoHeight = 8.0f;
         std::vector<scene::PunctualLight> lights(5,
             makeGridLight("point", float3(0.0f, 0.0f, -5.0f), 1.0));
-        lights.push_back(makeGridLight("directional", float3(0.0f), 0.0));
+        lights.push_back(makeGridLight("point", float3(0.0f), 0.0));
         lights.push_back(makeGridLight("point", float3(1000.0f), 0.0));
         GRID_CHECK(scene.syncLights({}, lights));
         result = harness.acceptUntracked(first, scene, view, desc);
@@ -571,7 +569,7 @@ public:
         GridReadback firstData, slotData, viewData;
         result = harness.run(first, scene, view, 0, desc, firstData);
         if (!result.passed) { return result; }
-        GRID_CHECK((firstData.snapshot.params.counts == std::array<uint32_t, 4>{5, 1, 1, 7}));
+        GRID_CHECK((firstData.snapshot.params.counts == std::array<uint32_t, 4>{5, 0, 2, 7}));
         GRID_CHECK(firstData.cells[0].count == 2 && firstData.cells[0].totalCount == 5 && firstData.cells[0].overflow == 1);
         const auto stored = firstData.cellLights(0);
         GRID_CHECK(stored.size() == 2 && stored[0] < stored[1] && stored[1] < 5);

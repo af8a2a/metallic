@@ -61,12 +61,13 @@ public:
             }
             scene::EnvironmentSettings environment; environment.enabled=false;
             scene::LightingSettings lighting; lighting.autoExposure.enabled=false;
-            scene::PunctualLight sun; sun.properties.type="directional"; sun.properties.intensity=2;
-            sun.direction=float3(-.4f,-.6f,-1); lighting.lights.push_back(sun);
+            environment::WorldEnvironment celestial;
+            auto& sun=celestial.sun; sun.enabled=true; sun.illuminance=2;
+            sun.direction=float3(-.4f,-.6f,-1);
             const auto capture=[&](const char* output,const std::string& label) {
                 // Restart replays frame zero, including camera/path sample seeds.
                 RenderGraphPreviewRenderer preview;
-                preview.bindRuntimeScene(&document); preview.setEnvironment(environment); preview.setLighting(lighting); preview.setRawReadbackEnabled(true);
+                preview.bindRuntimeScene(&document); preview.setWorldEnvironment(celestial); preview.setEnvironment(environment); preview.setLighting(lighting); preview.setRawReadbackEnabled(true);
                 check(preview.initialize(context.enableValidation,true,false),"Initialize preview");
                 check(preview.render(sample.graph,128,128,output),label+": "+preview.lastLog());
                 check(preview.readbackFormat()==Format::RGBA32Sfloat && preview.readbackBytes().size()==128*128*16,"HDR readback format");

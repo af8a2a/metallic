@@ -44,30 +44,38 @@ void writeCameraMatrices(const ViewCameraConstants& camera, float* worldToView, 
 
 } // namespace
 
-std::vector<GPUPunctualLight> buildScreenSpaceShadowLightRecords(
-    const scene::Scene* scene, const scene::LightingSettings& lighting)
+std::vector<ScreenSpaceShadowLightRecord> buildScreenSpaceShadowLightRecords(
+    const scene::Scene* scene, const scene::LightingSettings& lighting,
+    const environment::EnvironmentSnapshot& environment)
 {
     const auto sources = buildSceneLightRecords(scene != nullptr
         ? std::span<const scene::RenderLight>(scene->lights()) : std::span<const scene::RenderLight>(), lighting.lights);
-    std::vector<GPUPunctualLight> lights(sources.size() + 1);
-    lights[0].positionRange[0] = static_cast<float>(sources.size());
-    for (size_t i = 0; i < sources.size(); ++i) { lights[i + 1] = sources[i].gpu; }
+    const auto celestial = buildCelestialLightRecords(environment);
+    std::vector<ScreenSpaceShadowLightRecord> lights(celestial.size() + sources.size());
+    for (size_t i = 0; i < celestial.size(); ++i) {
+        lights[i] = {.celestial = celestial[i], .sourceIndex = static_cast<uint32_t>(i),
+            .isCelestial = true, .enabled = (celestial[i].flags & kGPUCelestialLightEnabled) != 0};
+    }
+    for (size_t i = 0; i < sources.size(); ++i) {
+        lights[celestial.size() + i] = {.local = sources[i].gpu,
+            .sourceIndex = static_cast<uint32_t>(i), .enabled = sources[i].enabled};
+    }
     return lights;
 }
 
-uint32_t selectScreenSpaceShadowLight(std::span<const GPUPunctualLight> lights, int32_t requestedIndex)
+uint32_t selectScreenSpaceShadowLight(std::span<const ScreenSpaceShadowLightRecord> lights, int32_t requestedIndex)
 {
     const auto enabled = [&](size_t entry) {
-        return entry < lights.size() && lights[entry].colorIntensity[3] > 0.0f;
+        return entry < lights.size() && lights[entry].enabled;
     };
-    if (requestedIndex >= 0 && enabled(size_t(requestedIndex) + 1)) {
+    if (requestedIndex >= 0 && enabled(size_t(requestedIndex))) {
         return static_cast<uint32_t>(requestedIndex);
     }
     uint32_t selected = UINT32_MAX;
-    for (size_t i = 1; i < lights.size(); ++i) {
+    for (size_t i = 0; i < lights.size(); ++i) {
         if (!enabled(i)) { continue; }
-        if (selected == UINT32_MAX) { selected = static_cast<uint32_t>(i - 1); }
-        if (lights[i].directionType[3] < 0.5f) { return static_cast<uint32_t>(i - 1); }
+        if (selected == UINT32_MAX) { selected = static_cast<uint32_t>(i); }
+        if (lights[i].isCelestial) { return static_cast<uint32_t>(i); }
     }
     return selected;
 }
@@ -86,6 +94,7 @@ struct ScreenSpaceShadows::State {
     bool initialized = false;
     bool cancelled = false;
     bool traceEnabled = false;
+    float angularRadius = 0.0f;
 #if METALLIC_HAS_NRD
     NRDRuntime sigma;
 #endif
@@ -103,7 +112,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     Streamer& streamer,
     TextureView& depth,
     const ViewConstants& view,
-    std::span<const GPUPunctualLight> lights,
+    std::span<const ScreenSpaceShadowLightRecord> lights,
     uint64_t sceneRevision,
     uint64_t transformRevision,
     const ScreenSpaceShadowSettings& settings,
@@ -121,7 +130,6 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     if (width == 0 || height == 0 || width > UINT16_MAX || height > UINT16_MAX ||
         !std::isfinite(settings.maxDistance) || settings.maxDistance <= 0 || settings.maxDistance > 1000000 ||
         !std::isfinite(settings.normalBias) || settings.normalBias < 0 ||
-        !std::isfinite(settings.angularRadiusDegrees) || settings.angularRadiusDegrees < 0 || settings.angularRadiusDegrees > 10 ||
         !std::isfinite(settings.lightRadius) || settings.lightRadius < 0) {
         log = "Invalid ray-traced shadow dimensions or trace settings";
         return makeError(Error::InvalidArgument);
@@ -238,16 +246,31 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         [state] { state->cancelled = true; }));
     if (!result) { return makeError(result.error()); }
 
-    // Deferred compares this index with the stable LightGrid source slot.
+    // Deferred compares the domain-tagged identity with the lighting sample.
     const uint32_t selected = selectScreenSpaceShadowLight(lights, settings.lightIndex);
     ScreenSpaceShadowParameters parameters{};
     parameters.view = view;
-    if (selected != UINT32_MAX) { parameters.light = lights[selected + 1]; }
+    if (selected != UINT32_MAX) {
+        const auto& light = lights[selected];
+        parameters.control[1] = light.isCelestial ? 1u : 0u;
+        parameters.control[2] = light.sourceIndex | (light.isCelestial ? kCelestialLightSourceTag : 0u);
+        if (light.isCelestial) {
+            for (size_t i = 0; i < 3; ++i) {
+                parameters.light.directionType[i] = light.celestial.direction[i];
+                parameters.light.colorIntensity[i] = light.celestial.irradiance[i];
+            }
+            parameters.light.colorIntensity[3] = 1.0f;
+            parameters.trace[3] = static_cast<float>(std::tan(std::min(
+                double(light.celestial.angularRadius), 1.57079632679489661923 - 1e-6)));
+        } else {
+            parameters.light = light.local;
+        }
+    } else {
+        parameters.control[2] = UINT32_MAX;
+    }
     parameters.trace[0] = settings.maxDistance;
     parameters.trace[2] = settings.normalBias;
-    parameters.trace[3] = std::tan(settings.angularRadiusDegrees * 0.01745329252f);
     parameters.control[0] = settings.enabled && selected != UINT32_MAX && (!streamed || streamTlas);
-    parameters.control[2] = selected;
     parameters.control[3] = settings.debug;
     parameters.shape[0] = settings.lightRadius;
     const bool denoise = METALLIC_HAS_NRD && settings.denoise && parameters.control[0];
@@ -395,15 +418,16 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         common.denoisingRange = std::min(view.current.clipOrtho[1], 500000.0f);
         common.timeDeltaBetweenFrames = 1000.0f / 60.0f;
         common.accumulationMode = !state->initialized || !view.frame[1] || sceneRevision != state->sceneRevision ||
-            transformRevision != state->transformRevision || parameters.control[0] != state->traceEnabled ||
+            transformRevision != state->transformRevision || (parameters.control[0] != 0) != state->traceEnabled ||
             selected != state->lightIndex || settings != state->settings ||
+            parameters.trace[3] != state->angularRadius ||
             std::memcmp(&parameters.light, &state->light, sizeof(GPUPunctualLight)) != 0
             ? denoising::AccumulationMode::CLEAR_AND_RESTART : denoising::AccumulationMode::CONTINUE;
         result = state->sigma.setCommonSettings(common);
         if (!result) { return makeError(result.error()); }
         denoising::SigmaSettings sigma;
         sigma.maxStabilizedFrameNum = std::min(settings.historyLength, denoising::SIGMA_MAX_HISTORY_FRAME_NUM);
-        if (parameters.light.directionType[3] < 0.5f) {
+        if (parameters.control[1] != 0) {
             for (size_t i = 0; i < 3; ++i) { sigma.lightDirection[i] = -parameters.light.directionType[i]; }
         }
         result = state->sigma.setSigmaSettings(sigma);
@@ -421,6 +445,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     state->light = parameters.light;
     state->settings = settings;
     state->traceEnabled = parameters.control[0] != 0;
+    state->angularRadius = parameters.trace[3];
     output = {.texture = state->textures[4].get(), .shadow = state->views[4].get(), .parameters = state->parameters.get()};
     return output;
 }

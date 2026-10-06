@@ -4,6 +4,7 @@
 // handles; arrays and ordinary data are descriptor-relative spans.
 #ifdef __cplusplus
 #include "Runtime/Render/Core/ShaderResourceABI.h"
+#include <cstddef>
 namespace metallic::render {
 #define DR_PUBLIC
 #define DR_PADDING uint32_t
@@ -29,6 +30,15 @@ DR_PUBLIC struct GPUProbeResourceParameters
 };
 #ifdef __cplusplus
 static_assert(sizeof(GPUProbeResourceParameters) == 8);
+#endif
+
+DR_PUBLIC struct EnvironmentResourceParameters
+{
+    // Fixed celestial domain: Sun at slot 0, Moon at slot 1; no count header.
+    DR_PUBLIC DR_BUFFER celestialLights;
+};
+#ifdef __cplusplus
+static_assert(sizeof(EnvironmentResourceParameters) == 4);
 #endif
 
 DR_PUBLIC struct SceneResourceParameters
@@ -131,9 +141,11 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_BUFFER view;
     DR_PUBLIC DR_SAMPLED(2D<uint>) visibility;
     DR_PUBLIC DR_SAMPLED(2D<float>) visibilityDepth;
+    DR_PUBLIC EnvironmentResourceParameters environment;
 };
 #ifdef __cplusplus
 static_assert(sizeof(SceneResourceParameters) == 448);
+static_assert(offsetof(SceneResourceParameters, environment) == 444);
 #endif
 
 DR_PUBLIC struct OutputImageResourceParameters

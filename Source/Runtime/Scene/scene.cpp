@@ -4416,6 +4416,12 @@ bool Scene::loadInternal(
             const LightProperties properties = validIndex(gltfNode.light, model.lights.size())
                 ? makeLightProperties(model.lights[static_cast<size_t>(gltfNode.light)])
                 : LightProperties{};
+            if (properties.type == "directional") {
+                appendWarning(lastLoadResult_.warning,
+                    "Ignored glTF directional light on node '" + gltfNode.name +
+                    "'; author Sun/Moon in world.environment explicitly.");
+                continue;
+            }
             object.addComponent<LightComponent>(LightComponent{
                 .lightIndex = gltfNode.light,
                 .authoredProperties = properties,
@@ -4498,7 +4504,7 @@ bool Scene::loadInternal(
             object.addOrReplaceComponent<CameraComponent>(std::move(boundCameraComponent));
             cameras_.push_back(std::move(camera));
         }
-        if (validIndex(gltfNode.light, model.lights.size())) {
+        if (validIndex(gltfNode.light, model.lights.size()) && object.hasComponent<LightComponent>()) {
             const LightComponent& lightComponent = object.getComponent<LightComponent>();
             RenderLight light = makeRenderLight(
                 model.lights[static_cast<size_t>(gltfNode.light)],
@@ -5240,7 +5246,7 @@ bool Scene::setObjectLightProperties(
         static_cast<const SceneGraph&>(sceneGraph_).object(object);
     const LightComponent* lightComponent =
         sceneObject.tryGetComponent<LightComponent>();
-    if (!valid() || !sceneObject ||
+    if ((properties.type != "point" && properties.type != "spot") || !valid() || !sceneObject ||
         sceneObject.hasComponent<GeneratedComponent>() ||
         lightComponent == nullptr || lightComponent->renderLightIndex < 0 ||
         static_cast<size_t>(lightComponent->renderLightIndex) >= lights_.size()) {
@@ -5483,6 +5489,9 @@ void Scene::clearParsedData()
 {
     streamGeometry_ = false;
     lighting_ = LightingSettings{};
+    worldEnvironment_ = environment::WorldEnvironment{};
+    celestialRevision_ = 1;
+    environmentLightingRevision_ = 1;
     filename_.clear();
     sceneName_.clear();
     sceneIndex_ = kInvalidSceneIndex;

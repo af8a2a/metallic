@@ -13,6 +13,21 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     // Compatibility policy: RTXCR's previous environment MIS proxy is retained
     // explicitly. It is not an exact standalone fiber PDF; no NdotL multiplies
     // projected scattering. A future PDF capability can replace this policy.
+    for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
+        let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+            getResourceParameters<SceneResourceParameters>().environment.celestialLights);
+        PunctualLightSample light = sampleCelestialLight(celestial, celestialSlot);
+        if (!any(light.illuminance > 0.0)) { continue; }
+        float3 scattering = max(prepared.evalProjected(light.direction), 0.0);
+        if (luminanceMax(scattering * light.illuminance) > 0.0) {
+            float3 origin = offsetRay(hit.position,
+                dot(light.direction, hit.geometryNormal) >= 0.0 ? hit.geometryNormal : -hit.geometryNormal);
+            if (!celestialLightCastsShadow(celestial, celestialSlot) ||
+                !traceShadow(origin, light.direction, light.distance, push)) {
+                radiance += throughput * scattering * light.illuminance;
+            }
+        }
+    }
     uint fiberLightIndex;
     float fiberInverseSourcePdf;
     if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, fiberLightIndex, fiberInverseSourcePdf)) {

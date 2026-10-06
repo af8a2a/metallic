@@ -527,6 +527,22 @@ float3 pathTrace(
 #endif
 
         EnvironmentLightSample lightSample;
+        // Sun and Moon are deterministic fixed sources, independent of local RIS.
+        for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
+            let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights);
+            PunctualLightSample light = sampleCelestialLight(celestial, celestialSlot);
+            float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
+                baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
+            if (luminanceMax(bsdf * light.illuminance) > 0.0) {
+                float3 origin = offsetRay(hit.position,
+                    dot(light.direction, hit.geometryNormal) >= 0.0 ? hit.geometryNormal : -hit.geometryNormal);
+                if (!celestialLightCastsShadow(celestial, celestialSlot) ||
+                    !traceShadow(origin, light.direction, light.distance, push)) {
+                    radiance += throughput * bsdf * light.illuminance;
+                }
+            }
+        }
         uint punctualLightIndex;
         float punctualInverseSourcePdf;
         if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {

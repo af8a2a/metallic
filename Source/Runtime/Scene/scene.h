@@ -12,6 +12,7 @@
 #include "Runtime/Scene/SceneLoad.h"
 #include "Runtime/Scene/SceneGraph.h"
 #include "Runtime/Scene/SceneLighting.h"
+#include "Runtime/Environment/WorldEnvironment.h"
 #include "Runtime/Material/MaterialFeatures.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 
@@ -468,6 +469,11 @@ public:
     // Authored document lights remain available when a render graph resolves
     // this scene independently of the editor's active RenderWorld.
     const LightingSettings& authoredLighting() const { return lighting_; }
+    const environment::WorldEnvironment& worldEnvironment() const { return worldEnvironment_; }
+    environment::EnvironmentSnapshot environmentSnapshot() const
+    {
+        return worldEnvironment_.snapshot(celestialRevision_, environmentLightingRevision_);
+    }
     uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
     // Only mesh-instance world transforms contribute. Track resource identity
     // and visibility separately; moving a light or camera alone is not geometry.
@@ -479,6 +485,9 @@ public:
 
 protected:
     mutable LightingSettings lighting_;
+    environment::WorldEnvironment worldEnvironment_;
+    uint64_t celestialRevision_ = 1;
+    uint64_t environmentLightingRevision_ = 1;
 
 private:
     struct DeferredMeshletCacheTarget {

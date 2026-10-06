@@ -791,6 +791,7 @@ public:
         // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeProgramBindingDesc> baseBindings{
             ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeProgramBindingDesc{.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
             ComputeProgramBindingDesc{
                 .binding = 0,
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
@@ -1308,6 +1309,22 @@ public:
         if (lightScene == nullptr || context.subsystems() == nullptr) {
             return makeError(Error::InvalidArgument);
         }
+        const auto celestialRecords = buildCelestialLightRecords(resolveWorldEnvironment(lightScene, context.world()));
+        CelestialLightingResources celestial;
+        auto celestialResult = environmentSubsystem->updateCelestial(*device_, context.commandBuffer(),
+            *context.subsystems(), resolveWorldEnvironment(lightScene, context.world()))
+            .transform([&](auto value) { celestial = std::move(value); });
+        if (!celestialResult) { return celestialResult; }
+        if (!celestialRecordsInitialized_ ||
+            std::memcmp(celestialRecords.data(), celestialRecords_.data(), sizeof(celestialRecords)) != 0) {
+            celestialRecords_ = celestialRecords;
+            celestialRecordsInitialized_ = true;
+            resetAccumulation_ = true;
+            sharcClearPending_ = true;
+#if METALLIC_HAS_NRC
+            nrcSceneRevision_ = 0;
+#endif
+        }
         profile.next("Prepare lights and sampling");
         const uint64_t previousLightRevision = lights_.revision();
         const auto resolvedLighting = resolveSceneLighting(lightScene, context.world());
@@ -1570,6 +1587,7 @@ public:
         profile.next("Prepare dispatch bindings");
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
+            ComputeDispatchBinding{.binding = 55, .buffer = celestial.buffer.get()},
             ComputeDispatchBinding{
                 .binding = 0,
                 .accelerationStructure = visibilityDeferred_ ? nullptr :
@@ -3094,6 +3112,8 @@ private:
 #endif
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
+    GPUCelestialLightRecords celestialRecords_{};
+    bool celestialRecordsInitialized_ = false;
     uint64_t environmentSettingsRevision_ = 0;
     uint32_t accumulationFrame_ = 0;
     ScenePathTraceCameraSnapshot previousCamera_;

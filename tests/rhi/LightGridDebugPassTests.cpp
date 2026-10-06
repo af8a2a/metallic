@@ -3,6 +3,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Environment/WorldEnvironment.h"
 
 #include <algorithm>
 #include <array>
@@ -185,15 +186,19 @@ public:
 
         lighting.lights.assign(1, debugPoint());
         lighting.lights.push_back(debugPoint(float3(0.0f), 0.0));
-        auto directional = debugPoint();
-        directional.properties.type = "directional";
-        directional.properties.intensityUnit = scene::LightUnit::Lux;
-        directional.direction = float3(0.0f, 0.0f, -1.0f);
-        lighting.lights.push_back(directional);
+        lighting.lights.push_back(debugPoint(float3(1000.0f), 0.0));
+        environment::WorldEnvironment environment;
+        environment.sun = {.illuminance = 1000.0f, .enabled = true};
+        LIGHT_DEBUG_CHECK(preview.setWorldEnvironment(environment));
         LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
         if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kCyan));
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "includeGlobalLights", true));
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
+        LIGHT_DEBUG_CHECK(solidColor(preview, kYellow));
+        // Celestial lighting never contributes to local/global LightGrid counts.
+        environment.moon = {.illuminance = 1.0f, .enabled = true};
+        LIGHT_DEBUG_CHECK(preview.setWorldEnvironment(environment));
         if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kYellow));
         // Global lights do not occupy local-list capacity and must not report overflow.

@@ -153,11 +153,12 @@ public:
                 require(bool(preview.initialize(context.enableValidation, true, false)), preview.lastLog());
                 preview.setEnvironment({.enabled=false});
                 auto lighting = scene.lighting(); lighting.autoExposure.enabled=false; lighting.exposureEV100=0;
-                scene::PunctualLight light;
-                light.properties.type = "directional";
-                light.properties.intensity = 3.0;
+                environment::WorldEnvironment celestial;
+                auto& light = celestial.sun;
+                light.enabled = true;
+                light.illuminance = 3.0;
                 light.direction = float3(-.2f, -.3f, -1.0f);
-                lighting.lights = {light};
+                preview.setWorldEnvironment(celestial);
                 preview.setLighting(lighting);
                 auto graph = materialGraph(path, cache, streamed);
                 auto render = [&]() { require(bool(preview.render(graph, 256,128)), preview.lastLog()); };
@@ -390,8 +391,9 @@ public:
                 require(bool(preview.initialize(context.enableValidation,true,false)),preview.lastLog());
                 preview.setEnvironment({.enabled=false});
                 auto lighting=scene.lighting(); lighting.autoExposure.enabled=false;
-                scene::PunctualLight sun; sun.properties.type="directional"; sun.properties.intensity=3;
-                sun.direction=float3(2,0,-1); lighting.lights={sun}; preview.setLighting(lighting);
+                environment::WorldEnvironment celestial;
+                auto& sun = celestial.sun; sun.enabled=true; sun.illuminance=3; sun.angularRadius=0;
+                sun.direction=float3(2,0,-1); preview.setWorldEnvironment(celestial); preview.setLighting(lighting);
                 auto graph=materialGraph(path,cache,streamed);
                 const auto raster=graph.findNode("Raster")->id, deferred=graph.findNode("Deferred")->id;
                 graph.setNodeRuntimeProperty(raster,"enableClas",streamed);
@@ -399,7 +401,7 @@ public:
                 graph.setNodeRuntimeProperty(raster,"maxClasBytes",16777216);
                 graph.setNodeRuntimeProperty(deferred,"debugView","final");
                 graph.addNode("RayTracedShadowPass","Shadows",{{"rayTracedShadows",true},{"sigmaDenoise",false},
-                    {"shadowAngularRadius",0},{"shadowBias",.001},{"shadowDebug",true}});
+                    {"shadowBias",.001},{"shadowDebug",true}});
                 graph.addEdge("Raster.depth","Shadows.depth");
                 graph.addEdge("Raster.rasterInfo","Shadows.rasterInfo");
                 graph.addEdge("Shadows.shadow","Deferred.shadow");
@@ -537,8 +539,9 @@ public:
                     require(bool(preview.initialize(context.enableValidation,true,false)),preview.lastLog());
                     preview.setEnvironment({.enabled=false});
                     auto lighting=scene.lighting(); lighting.autoExposure.enabled=false;
-                    scene::PunctualLight light; light.properties.type="directional"; light.properties.intensity=3;
-                    light.direction=float3(-.3f,-.4f,-1); lighting.lights={light}; preview.setLighting(lighting);
+                    environment::WorldEnvironment celestial;
+                    auto& light = celestial.sun; light.enabled=true; light.illuminance=3;
+                    light.direction=float3(-.3f,-.4f,-1); preview.setWorldEnvironment(celestial); preview.setLighting(lighting);
                     auto graph=materialGraph(streamed ? source : referencePath,cache,streamed);
                     const auto raster=graph.findNode("Raster")->id,deferred=graph.findNode("Deferred")->id;
                     const auto rasterProperties=[&]() {

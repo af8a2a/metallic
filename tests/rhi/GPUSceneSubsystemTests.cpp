@@ -2058,9 +2058,9 @@ public:
         nodes[0].materialIndex = 0;
         std::vector<scene::RenderMaterial> materials(1);
         std::vector<scene::RenderLight> imported(2);
-        imported[0].type = "directional";
+        imported[0].type = "point";
         imported[0].intensity = 4.0;
-        imported[0].intensityUnit = scene::LightUnit::Lux;
+        imported[0].intensityUnit = scene::LightUnit::Candela;
         imported[0].object = static_cast<scene::SceneEntity>(42);
         imported[1].type = "point";
         imported[1].range = 2.0;
@@ -2097,14 +2097,14 @@ public:
             records[4].source.enabled) {
             return RHITestResult::fail("light source provenance, SI intensity or inactive slots are incorrect");
         }
-        const auto directionalId = records[0].id;
+        const auto unboundedId = records[0].id;
         const auto pointId = records[2].id;
         const uint32_t lightGeneration = gpuScene.drawSet().lightGeneration;
         const uint64_t lightRevision = gpuScene.drawSet().lightRevision;
         const uint32_t geometryGeneration = gpuScene.drawSet().generation;
         const uint64_t geometryRevision = gpuScene.drawSet().revision;
         if (lightGeneration == 0 || lightRevision == 0 ||
-            gpuScene.light(directionalId) == nullptr || gpuScene.light(pointId) == nullptr) {
+            gpuScene.light(unboundedId) == nullptr || gpuScene.light(pointId) == nullptr) {
             return RHITestResult::fail("light collection did not establish generational source IDs");
         }
         const auto firstView = gpuScene.createView();
@@ -2122,9 +2122,8 @@ public:
         if (visible == nullptr || drawSet == nullptr || !drawSet->instances.empty() ||
             !visible->validFor(lightGeneration, lightRevision) ||
             visible->sourceLightCount != 2 ||
-            visible->directionalLights != std::vector{directionalId} ||
-            visible->localLights != std::vector{pointId} ||
-            !visible->unboundedLocalLights.empty()) {
+            visible->unboundedLocalLights != std::vector{unboundedId} ||
+            visible->localLights != std::vector{pointId}) {
             return RHITestResult::fail("mesh predicate incorrectly affected independent light collection");
         }
         const uint64_t hzbEpoch = drawSet->stats.hzbHistoryEpoch;
@@ -2164,11 +2163,23 @@ public:
             !gpuScene.visibleDrawSet(firstView, 0)->stats.hzbValid) {
             return RHITestResult::fail("light collection refresh leaked across frame slots or views");
         }
+        auto legacyDirectional = makeCullingTestLight("point", float3(0.0f), 0.0);
+        legacyDirectional.properties.type = "directional";
+        virtualLights.push_back(legacyDirectional);
+        if (gpuScene.syncLights(imported, virtualLights) ||
+            gpuScene.drawSet().lightRevision != updatedLightRevision ||
+            gpuScene.light(pointId) == nullptr) {
+            return RHITestResult::fail("legacy distant sources entered the local GPUScene collection");
+        }
+        virtualLights.back().enabled = false;
+        if (gpuScene.syncLights(imported, virtualLights)) {
+            return RHITestResult::fail("inactive legacy distant sources retained local slots");
+        }
         virtualLights.push_back(makeCullingTestLight(
-            "directional", float3(0.0f, 0.0f, 0.0f), 0.0));
+            "point", float3(0.0f, 0.0f, 0.0f), 0.0));
         if (!gpuScene.syncLights(imported, virtualLights) ||
             gpuScene.drawSet().lightGeneration == lightGeneration ||
-            gpuScene.light(pointId) != nullptr || gpuScene.light(directionalId) != nullptr ||
+            gpuScene.light(pointId) != nullptr || gpuScene.light(unboundedId) != nullptr ||
             gpuScene.drawSet().generation != geometryGeneration ||
             gpuScene.drawSet().revision != geometryRevision ||
             !gpuScene.prepareView(firstView, 0, info)) {
@@ -2176,7 +2187,7 @@ public:
         }
         const auto lastId = gpuScene.lights().back().id;
         visible = gpuScene.visibleLights(firstView, 0);
-        if (visible == nullptr || visible->directionalLights.size() != 2 ||
+        if (visible == nullptr || visible->unboundedLocalLights.size() != 2 ||
             visible->sourceLightCount != 4) {
             return RHITestResult::fail("added light was not included in the next view collection");
         }
@@ -2205,7 +2216,7 @@ public:
     RHITestResult run(RHITestContext&) override
     {
         std::vector<scene::PunctualLight> lights{
-            makeCullingTestLight("directional", float3(1000.0f, 0.0f, 0.0f), 0.0),
+            makeCullingTestLight("point", float3(1000.0f, 0.0f, 0.0f), 0.0),
             makeCullingTestLight("point", float3(1000.0f, 0.0f, 0.0f), 0.0),
             makeCullingTestLight("spot", float3(1000.0f, 0.0f, 0.0f), 0.0),
             makeCullingTestLight("point", float3(0.0f, 0.0f, 0.0f), 1.0),
@@ -2276,8 +2287,7 @@ public:
         }
         const auto* visible = gpuScene.visibleLights(firstView, 0);
         if (visible == nullptr || visible->sourceLightCount != 11 ||
-            visible->directionalLights != std::vector{records[0].id} ||
-            visible->unboundedLocalLights != std::vector{records[1].id, records[2].id} ||
+            visible->unboundedLocalLights != std::vector{records[0].id, records[1].id, records[2].id} ||
             visible->localLights != std::vector{
                 records[3].id, records[5].id, records[6].id, records[9].id, records[10].id}) {
             return RHITestResult::fail("light frustum lost tangent/intersecting bounds or retained outside spheres");
@@ -2298,7 +2308,7 @@ public:
             containsLight(visible->localLights, records[3].id) ||
             visible->localLights != secondVisible->localLights ||
             gpuScene.visibleLights(firstView, 0)->localLights != firstLocalIds ||
-            visible->unboundedLocalLights.size() != 2 || visible->directionalLights.size() != 1) {
+            visible->unboundedLocalLights.size() != 3) {
             return RHITestResult::fail("light frustum collection leaked between cameras or frame slots");
         }
         if (!gpuScene.prepareView(secondView, 1) ||

@@ -294,6 +294,7 @@ public:
             {.binding = 21, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 23, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 53, .kind = ComputeResourceBindingKind::SampledImage},
         };
@@ -374,6 +375,18 @@ public:
         }
         const scene::Scene* lightScene = context.runtimeScene();
         if (!lightScene || !context.subsystems()) { return makeError(Error::InvalidArgument); }
+        const auto celestialRecords = buildCelestialLightRecords(resolveWorldEnvironment(lightScene, context.world()));
+        CelestialLightingResources celestial;
+        auto celestialResult = environmentSubsystem->updateCelestial(*device_, context.commandBuffer(),
+            *context.subsystems(), resolveWorldEnvironment(lightScene, context.world()))
+            .transform([&](auto value) { celestial = std::move(value); });
+        if (!celestialResult) { return celestialResult; }
+        if (!celestialRecordsInitialized_ ||
+            std::memcmp(celestialRecords.data(), celestialRecords_.data(), sizeof(celestialRecords)) != 0) {
+            celestialRecords_ = celestialRecords;
+            celestialRecordsInitialized_ = true;
+            resetHistory_ = true;
+        }
         Result<> lightResult;
         auto lighting = resolveSceneLighting(lightScene, context.world());
         const bool benchmark = context.properties().value("lightSource", std::string("scene")) == "bench";
@@ -565,6 +578,7 @@ public:
                 .textureViews = {environmentImportanceTextureViews, static_cast<uint32_t>(std::size(environmentImportanceTextureViews))},
             },
             {.binding = 50, .buffer = lights_.buffer()},
+            {.binding = 55, .buffer = celestial.buffer.get()},
             {.binding = 52, .buffer = lights_.reGIRBuffer()},
         };
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
@@ -1032,6 +1046,8 @@ private:
     float previousBenchmarkIntensity_ = 0.0f;
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
+    GPUCelestialLightRecords celestialRecords_{};
+    bool celestialRecordsInitialized_ = false;
     uint64_t environmentSettingsRevision_ = 0;
     uint32_t frameIndex_ = 0;
     SceneRTXDICameraSnapshot previousCamera_;

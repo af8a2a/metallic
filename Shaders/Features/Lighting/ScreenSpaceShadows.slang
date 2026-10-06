@@ -168,7 +168,19 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
     float distance = kNRDFP16Max;
     float penumbra = kNRDFP16Max;
     if (!background && p.control.x != 0u) {
-        PunctualLightSample light = samplePunctualLightData(p.light, position);
+        // The shadow adapter carries an explicit domain; generic local records
+        // never regain a directional variant through this shader-only conversion.
+        bool celestialSource = p.control.y != 0u;
+        PunctualLightSample light;
+        if (celestialSource) {
+            GPUCelestialLight celestial = (GPUCelestialLight)0;
+            celestial.direction = p.light.directionType.xyz;
+            celestial.irradiance = p.light.colorIntensity.xyz * p.light.colorIntensity.w;
+            celestial.flags = kCelestialLightEnabled | kCelestialLightCastsShadow;
+            light = sampleCelestialLightData(celestial);
+        } else {
+            light = samplePunctualLightData(p.light, position);
+        }
         if (any(light.illuminance > 0.0)) {
             uint seed = shadowHash(pixel.x + pixel.y * size.x + shadowHash(p.view.frame.x));
             float2 random = float2(shadowRandom(seed), shadowRandom(seed));
@@ -176,14 +188,14 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
             float radius = sqrt(random.y);
             float3 tangent = normalize(cross(abs(light.direction.z) < 0.99 ? float3(0, 0, 1) : float3(0, 1, 0), light.direction));
             float3 bitangent = cross(light.direction, tangent);
-            float angularRadius = p.light.directionType.w < 0.5 ? p.trace.w : p.shape.x / max(light.distance, 1e-4);
+            float angularRadius = celestialSource ? p.trace.w : p.shape.x / max(light.distance, 1e-4);
             // NRD-Sample/TraceOpaque.cs.hlsl: sample the source disk, query the
             // scene TLAS, then pack the blocker distance and tan(angular radius).
             float3 disk = radius * (cos(angle) * tangent + sin(angle) * bitangent);
             float3 origin = position + normal * p.trace.z;
             float3 direction;
             float rayLength = p.trace.x;
-            if (p.light.directionType.w < 0.5) {
+            if (celestialSource) {
                 direction = normalize(light.direction + angularRadius * disk);
             } else {
                 // End at the sampled local emitter, accounting for the origin offset.
@@ -194,7 +206,7 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
                 rayLength = min(rayLength, targetDistance - 0.001);
             }
             if (rayLength > 0.001) { distance = traceGeometryShadow(origin, direction, rayLength); }
-            penumbra = p.light.directionType.w < 0.5 ? packNrdPenumbra(distance, p.trace.w)
+            penumbra = celestialSource ? packNrdPenumbra(distance, p.trace.w)
                 : packNrdPenumbra(distance, light.distance, p.shape.x * 2.0);
         }
     }

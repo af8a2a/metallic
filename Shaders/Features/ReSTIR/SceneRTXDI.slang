@@ -906,12 +906,8 @@ Surface makeSurface(HitInfo hit, Ray ray, SceneRTXDIPush push)
     return surface;
 }
 
-LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRTXDIPush push)
+LightEvaluation evaluateDeltaLight(PunctualLightSample light, Surface surface)
 {
-    if (lightIndex >= punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))) {
-        return emptyLightEvaluation();
-    }
-    PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), lightIndex, surface.position);
     float3 lightDirection = light.direction;
     float nDotL = saturate(dot(surface.normal, lightDirection));
     float3 halfVector = safeNormalize(lightDirection + surface.viewDirection, surface.normal);
@@ -930,6 +926,15 @@ LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRTXDIPush p
     evaluation.distance = light.distance;
     evaluation.target = max(luminance(evaluation.contribution), 0.0);
     return evaluation;
+}
+
+LightEvaluation evaluateLight(uint lightIndex, Surface surface, SceneRTXDIPush push)
+{
+    if (lightIndex >= punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))) {
+        return emptyLightEvaluation();
+    }
+    return evaluateDeltaLight(samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(
+        getResourceParameters<SceneResourceParameters>().lights), lightIndex, surface.position), surface);
 }
 
 bool isEnvironmentSample(uint lightIndex)
@@ -1383,6 +1388,23 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 noisySpecular = float3(0.0, 0.0, 0.0);
     float lightDistance = 0.0;
     float3 color = surface.emissive;
+    // Celestial sources are summed independently of the local/environment DI
+    // reservoir, so an empty local domain still illuminates every surface.
+    for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
+        let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+            getResourceParameters<SceneResourceParameters>().environment.celestialLights);
+        LightEvaluation selected = evaluateDeltaLight(sampleCelestialLight(celestial, celestialSlot), surface);
+        if (selected.target <= 0.0) { continue; }
+        float3 offsetNormal = dot(selected.direction, surface.geometryNormal) >= 0.0
+            ? surface.geometryNormal : -surface.geometryNormal;
+        if (!celestialLightCastsShadow(celestial, celestialSlot) ||
+            !traceShadow(surface.position + offsetNormal * 0.001, selected.direction, selected.distance, push)) {
+            noisyDiffuse += selected.diffuseRadiance;
+            noisySpecular += selected.specularRadiance;
+            color += selected.contribution;
+            lightDistance = min(max(push.clipOrtho.y, push.sceneCenterRadius.w * 16.0), 65504.0);
+        }
+    }
     if (reservoirValid(reservoir, push)) {
         LightEvaluation selected = evaluateLightSample(reservoir.lightIndex, surface, push);
         float reservoirWeight = reservoir.weightSum /
@@ -1396,10 +1418,10 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             selected.distance,
             push);
         if (!occluded) {
-            noisyDiffuse = selected.diffuseRadiance * reservoirWeight;
-            noisySpecular = selected.specularRadiance * reservoirWeight;
-            // Directional light visibility uses an unbounded shadow ray, but
-            // NRD stores hit distance in a finite, half-float-sized channel.
+            noisyDiffuse += selected.diffuseRadiance * reservoirWeight;
+            noisySpecular += selected.specularRadiance * reservoirWeight;
+            // Environment visibility can use an unbounded shadow ray; NRD stores
+            // hit distance in a finite, half-float-sized channel.
             lightDistance = min(selected.distance,
                 min(max(push.clipOrtho.y, push.sceneCenterRadius.w * 16.0), 65504.0));
             color += selected.contribution * reservoirWeight;

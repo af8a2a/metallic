@@ -439,8 +439,8 @@ struct GPUSceneVisibleDrawSetStats {
 
 struct GPUSceneVisibleLightSet {
     // Only bounded local lights are candidates for a future spatial LightGrid.
-    // Directional and unbounded local lights are evaluated separately.
-    std::vector<GPUSceneLightId> directionalLights;
+    // Unbounded local lights are evaluated separately; Sun/Moon belong to the
+    // environment snapshot and never participate in GPUScene visibility.
     std::vector<GPUSceneLightId> localLights;
     std::vector<GPUSceneLightId> unboundedLocalLights;
     uint32_t sourceLightGeneration = 0;

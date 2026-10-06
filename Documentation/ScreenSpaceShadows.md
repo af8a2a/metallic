@@ -17,12 +17,14 @@ The implementation follows the sun-shadow section of the user-provided
 `E:/NRD-Sample/Shaders/TraceOpaque.cs.hlsl` (lines 858–896): sample the light disk,
 trace scene geometry, and pass the occluder distance and tangent of the angular
 radius to `SIGMA_FrontEnd_PackPenumbra`. `NRDSample.cpp` sets SIGMA's light direction
-and computes `tan(radians(sunAngularDiameter * 0.5))`. Metallic's control is already
-an angular **radius**, so it is converted to radians without another factor of 0.5.
+and computes `tan(radians(sunAngularDiameter * 0.5))`. Metallic reads the selected
+Sun/Moon `angularRadius` from [WorldEnvironment](../Source/Runtime/Environment/WorldEnvironment.h)
+in radians and computes its tangent without another factor of 0.5. The Environment
+editor displays this authored radius in degrees.
 
 One random light-disk sample is generated per valid receiver per frame. Metallic
 uses a pixel/frame hash rather than the sample's scrambling/ranking texture set;
-there is no longer an eight-frame repeating sequence. Directional rays sample the
+there is no longer an eight-frame repeating sequence. Celestial rays sample the
 angular disk. Point and spot rays end at a sampled emitter position, accounting
 for both source radius and origin offset, and cannot intersect past that endpoint.
 
@@ -40,27 +42,32 @@ Authored hit normals and normal-map tangent frames are not modified.
 ## Pipeline and controls
 
 `Shadows.shadow` is sqrt-encoded R8 visibility. `Shadows.parameters` identifies the
-selected stable light slot. Deferred squares visibility once and applies it to
+selected celestial/local source identity. Deferred squares visibility once and applies it to
 that light's direct contribution. It does not clamp the result with another hard
 shadow. Both material-binned and ordinary deferred dispatches consume this signal.
 Other lights, environment illumination and emission keep their existing evaluation.
 
-Automatic light selection prefers the first active directional light, then the
-first active local light. Disabled slots remain in the source table, matching
-GPUScene/LightGrid. Invalid or disabled explicit selections fall back to Auto.
+The shadow selection table always begins with Sun at index 0 and Moon at index 1,
+followed by local GPUScene source slots at index `2 + localSourceSlot`. Disabled
+celestial/local entries remain present. Automatic selection prefers enabled Sun,
+then enabled Moon, then the first enabled local light. Invalid or disabled explicit
+selections fall back to Auto. The published identity tags celestial sources with
+bit `0x80000000`, separating them from local source indices; it is not a compact
+punctual/ReGIR index. Sun/Moon do not enter GPUScene or LightGrid local lists.
 
 | Property | Default | Meaning |
 | --- | --- | --- |
 | `rayTracedShadows` | `true` | Apply ray-traced/SIGMA visibility for the selected light |
 | `sigmaDenoise` | `true` | Filter shadow samples with SIGMA |
 | `shadowDebug` | `false` | Show unpacked shadow visibility |
-| `shadowLightIndex` | `-1` | Auto or a stable scene light slot |
+| `shadowLightIndex` | `-1` | Auto; 0 Sun, 1 Moon, then `2 + localSourceSlot` |
 | `shadowRayLength` | `100000` | Maximum TLAS ray length in metres; local rays also stop at the emitter |
 | `shadowBias` | `0.01` | Receiver normal offset in metres |
-| `shadowAngularRadius` | `0.266` | Directional source angular radius in degrees |
 | `shadowLightRadius` | `0.05` | Point/spot emitter radius in metres |
 | `sigmaHistoryLength` | `5` | Stabilization history, 0–7; zero still uses spatial filtering |
 
+Celestial radius comes from `world.environment.sun.angularRadius` or
+`.moon.angularRadius`, whose default is 0.00465 radians (about 0.266 degrees).
 Zero source radius produces hard shadows. Nonzero radius widens the penumbra with
 blocker distance. Without SIGMA (including `METALLIC_ENABLE_NRD=OFF`), the raw
 stochastic shadow sample is displayed. `Deferred.debugDisableShadows` bypasses all
@@ -74,7 +81,10 @@ The original C++/shader/document file names are retained to avoid disrupting
 existing callers and worktree changes. They contain the full ray-traced path.
 The old `screenSpaceShadows` enable key is read only when `rayTracedShadows` is
 absent. Old `shadowSteps`, `shadowDistance`, `shadowThickness` and
-`preserveGeometryShadows` values are ignored and have no UI controls.
+`preserveGeometryShadows` values are ignored and have no UI controls. The former
+`shadowAngularRadius` graph property is also ignored; move its value, converted
+from degrees to radians, to the appropriate authored Sun/Moon state. Old explicit
+local-light shadow indices need the fixed two-slot prefix added.
 
 Existing realtime Deferred graphs without connected shadow inputs use the same
 full ray-traced implementation internally. Connect both `shadow` and
@@ -110,6 +120,6 @@ noise reduction, history changes, disabled/no-light behavior, resize and discard
 
 The realtime test checks Auto/explicit/invalid light selection, ineffective legacy
 screen-space settings, effective ray length, both deferred resolve paths and
-0/1/8 degree penumbra growth. It verifies brighter pixels inside the previous
+authored Sun radii of 0/1/8 degrees. It verifies brighter pixels inside the previous
 hard-shadow edge in final lighting. Captures include `ShadowAngle0.png`,
 `ShadowAngle1.png`, `ShadowAngle8.png` and `ShadowAngle8Lighting.png`.

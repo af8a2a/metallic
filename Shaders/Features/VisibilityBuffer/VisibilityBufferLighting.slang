@@ -64,19 +64,27 @@ struct VisibilitySurfaceLights : ISurfaceLightProvider
     uint count()
     {
         return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)
-            ? 0u : lookup.count + clusterLightGridGlobalLightCount(grid);
+            ? 0u : kCelestialLightCount + lookup.count + clusterLightGridGlobalLightCount(grid);
     }
     SurfaceLightSample sample(uint index)
     {
         SurfaceLightSample result;
-        result.source = index < lookup.count
-            ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
-            : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
-        PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[result.source], position);
+        PunctualLightSample light;
+        if (index < kCelestialLightCount) {
+            result.source = celestialSourceIdentity(index);
+            light = sampleCelestialLight(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index);
+        } else {
+            index -= kCelestialLightCount;
+            result.source = index < lookup.count
+                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
+                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
+            light = samplePunctualLightData(gDeferredGridLights[result.source], position);
+        }
         result.direction = light.direction;
         result.illuminance = light.illuminance;
         result.distance = light.distance;
-        result.inverseSourcePdf = 1.0;
+        result.inverseSourcePdf = any(light.illuminance > 0.0) ? 1.0 : 0.0;
         return result;
     }
     float3 visibility(SurfaceLightSample light)

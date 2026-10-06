@@ -11,6 +11,7 @@
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
 #include <fstream>
 
 #include <gtest/gtest.h>
@@ -47,27 +48,135 @@ rd::CommonSettings commonSettings(uint16_t width = 63, uint16_t height = 37)
 TEST(NRDPlan, ShadowLightUsesStableSourceSlots)
 {
     scene::LightingSettings lighting;
-    lighting.lights.resize(3);
+    lighting.lights.resize(2);
     lighting.lights[0].enabled = false;
     lighting.lights[1].properties.type = "point";
-    lighting.lights[2].properties.type = "directional";
-    auto lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
+    environment::WorldEnvironment world;
+    world.sun.enabled = true;
+    world.sun.illuminance = 1000.0f;
+    world.moon.enabled = true;
+    world.moon.illuminance = 1.0f;
+    auto lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting, world.snapshot());
     ASSERT_EQ(lights.size(), 4u);
-    EXPECT_EQ(lights[1].colorIntensity[3], 0);
-    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 2u);
-    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 2), 2u);
-    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 1), 1u);
-    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 0), 2u);
-    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 1412), 2u);
-    lighting.lights[0].enabled = true;
-    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
-    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 2u) << "Enabling earlier lights changed the sun slot";
-    lighting.lights[2].enabled = false;
-    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
+    EXPECT_FALSE(lights[2].enabled);
+    EXPECT_TRUE(lights[0].isCelestial);
+    EXPECT_TRUE(lights[1].isCelestial);
+    EXPECT_EQ(lights[0].sourceIndex, 0u);
+    EXPECT_EQ(lights[1].sourceIndex, 1u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 0u);
     EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 2), 0u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 1), 1u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 3), 3u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 0), 0u);
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, 1412), 0u);
+    lighting.lights[0].enabled = true;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting, world.snapshot());
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 0u) << "Enabling locals changed the sun slot";
+    world.sun.enabled = false;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting, world.snapshot());
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 1u) << "Disabling Sun changed the Moon slot";
+    world.moon.enabled = false;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting, world.snapshot());
+    EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 2u);
     for (auto& light : lighting.lights) { light.enabled = false; }
-    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting);
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, lighting, world.snapshot());
     EXPECT_EQ(render::selectScreenSpaceShadowLight(lights, -1), UINT32_MAX);
+}
+
+TEST(NRDPlan, CelestialGPURecordsPreserveIlluminanceAndFixedSlots)
+{
+    environment::WorldEnvironment world;
+    world.sun = {.direction = float3(0.0f, -2.0f, 0.0f), .color = float3(0.9f, 0.5f, 0.2f),
+        .illuminance = 120000.0f, .angularRadius = 0.01f, .enabled = true};
+    const auto snapshot = world.snapshot();
+    const auto records = render::buildCelestialLightRecords(snapshot);
+    EXPECT_EQ(records.size(), 2u);
+    EXPECT_EQ(records[0].flags, render::kGPUCelestialLightEnabled | render::kGPUCelestialLightCastsShadow);
+    EXPECT_EQ(records[1].flags, 0u);
+    EXPECT_FLOAT_EQ(records[0].direction[1], -1.0f);
+    const auto color = render::color::fromLinearRec709({0.9f, 0.5f, 0.2f});
+    const double projectedSolidAngle = std::acos(-1.0) * std::pow(std::sin(0.01), 2);
+    for (size_t channel = 0; channel < 3; ++channel) {
+        EXPECT_FLOAT_EQ(records[0].irradiance[channel], color[channel] * 120000.0f);
+        EXPECT_NEAR(records[0].diskRadiance[channel] * projectedSolidAngle,
+            records[0].irradiance[channel], 0.02);
+    }
+    world.sun.enabled = false;
+    world.moon = snapshot.celestial[0];
+    const auto moon = render::buildCelestialLightRecords(world.snapshot());
+    EXPECT_EQ(moon[0].flags, 0u);
+    EXPECT_EQ(moon[1].flags, records[0].flags);
+    EXPECT_EQ(render::buildCelestialLightRecords(snapshot)[0].flags, records[0].flags);
+}
+
+TEST(NRDPlan, LegacyDirectionalSourcesNeverEnterLocalResources)
+{
+    scene::RenderLight imported;
+    imported.type = "directional";
+    scene::PunctualLight legacy;
+    legacy.properties.type = "directional";
+    scene::PunctualLight local;
+    const std::array importedLights{imported};
+    const std::array virtualLights{legacy, local};
+    const auto records = render::buildSceneLightRecords(importedLights, virtualLights);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].sourceVirtualLightIndex, 1);
+    EXPECT_EQ(records[0].gpu.directionType[3], 1.0f);
+    legacy.enabled = false;
+    EXPECT_TRUE(render::buildSceneLightRecords(importedLights, std::span(&legacy, 1)).empty());
+}
+
+TEST(NRDPlan, CelestialResolverPreservesSceneOwnershipAndExplicitOverrides)
+{
+    scene::SceneDocument first;
+    scene::SceneDocument second;
+    environment::WorldEnvironment firstEnvironment;
+    firstEnvironment.sun = {.illuminance = 1000.0f, .enabled = true};
+    environment::WorldEnvironment secondEnvironment;
+    secondEnvironment.moon = {.illuminance = 2.0f, .enabled = true};
+    ASSERT_TRUE(first.setWorldEnvironment(firstEnvironment));
+    ASSERT_TRUE(second.setWorldEnvironment(secondEnvironment));
+    const auto detached = first.environmentSnapshot();
+
+    render::RenderWorld world;
+    world.setScene(&first);
+    EXPECT_FALSE(world.hasWorldEnvironmentOverride());
+    EXPECT_EQ(render::resolveWorldEnvironment(&first, &world).celestial, detached.celestial);
+    auto edited = firstEnvironment;
+    edited.sun.illuminance = 2000.0f;
+    ASSERT_TRUE(world.setWorldEnvironment(edited));
+    EXPECT_EQ(render::resolveWorldEnvironment(&first, &world).celestial, edited.snapshot().celestial);
+    EXPECT_EQ(render::resolveWorldEnvironment(&second, &world).celestial, second.environmentSnapshot().celestial);
+    EXPECT_EQ(first.environmentSnapshot().celestial, detached.celestial);
+    EXPECT_EQ(detached.celestial[0].illuminance, 1000.0f);
+
+    render::RenderWorld unbound;
+    EXPECT_FALSE(unbound.hasWorldEnvironmentOverride());
+    EXPECT_EQ(render::resolveWorldEnvironment(&first, &unbound).celestial, first.environmentSnapshot().celestial);
+    const auto revision = unbound.lightingRevision();
+    const auto contentRevision = unbound.sceneContentRevision();
+    // Even equal all-disabled data changes the resolver from inheritance to an
+    // explicit override, so the next frame must discard the inherited history.
+    ASSERT_TRUE(unbound.setWorldEnvironment({}));
+    EXPECT_TRUE(unbound.hasWorldEnvironmentOverride());
+    EXPECT_GT(unbound.lightingRevision(), revision);
+    EXPECT_EQ(unbound.sceneContentRevision(), contentRevision);
+    const auto changes = unbound.consumeChanges();
+    EXPECT_TRUE(render::hasRenderChange(changes, render::RenderChangeBits::Lighting));
+    EXPECT_TRUE(render::hasRenderChange(changes, render::RenderChangeBits::InvalidateTemporalHistory));
+    const auto suppressed = render::resolveWorldEnvironment(&first, &unbound);
+    EXPECT_FALSE(suppressed.celestial[0].enabled);
+    EXPECT_FALSE(suppressed.celestial[1].enabled);
+    EXPECT_EQ(render::buildCelestialLightRecords(suppressed)[0].flags, 0u);
+    EXPECT_FALSE(unbound.setWorldEnvironment({}));
+    EXPECT_EQ(unbound.consumeChanges(), render::RenderChangeBits::None);
+
+    unbound.setScene(&second);
+    EXPECT_FALSE(unbound.hasWorldEnvironmentOverride());
+    EXPECT_EQ(render::resolveWorldEnvironment(&first, &unbound).celestial, first.environmentSnapshot().celestial);
+    EXPECT_EQ(render::resolveWorldEnvironment(&second, &unbound).celestial, second.environmentSnapshot().celestial);
+    EXPECT_EQ(render::resolveWorldEnvironment(&second, nullptr).celestial, second.environmentSnapshot().celestial);
+    EXPECT_EQ(render::resolveWorldEnvironment(nullptr, &unbound).celestial, unbound.environmentSnapshot().celestial);
 }
 
 TEST(NRDPlan, HistoryCountersAndPassSchedule)
@@ -565,14 +674,10 @@ TEST(NRDWorkingColor, RTXDIRelaxSceneChromaticity)
     ASSERT_TRUE(initialized);
     preview.setRawReadbackEnabled(true);
     preview.setEnvironment({.enabled = false, .visible = false});
-    scene::LightingSettings lighting;
-    auto& light = lighting.lights.emplace_back();
-    light.properties.type = "directional";
-    light.properties.intensityUnit = scene::LightUnit::Lux;
-    light.properties.intensity = 1000;
-    light.properties.color = float3(0.9f, 0.5f, 0.2f);
-    light.direction = float3(0, -0.2f, -1);
-    ASSERT_TRUE(preview.setLighting(lighting));
+    environment::WorldEnvironment world;
+    world.sun = {.direction = float3(0, -0.2f, -1), .color = float3(0.9f, 0.5f, 0.2f),
+        .illuminance = 1000.0f, .enabled = true};
+    ASSERT_TRUE(preview.setWorldEnvironment(world));
     std::array<render::color::RGB, 2> chromaticities{};
     for (size_t mode = 0; mode < 2; ++mode) {
         const char* output = mode == 0 ? "RTXDI.color" : "Composite.color";
@@ -604,13 +709,12 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
 {
     render::ScreenSpaceShadows shadows;
     render::ScreenSpaceShadowSettings settings;
-    settings.angularRadiusDegrees = 0.5f;
     settings.maxDistance = 100000;
     if (!device->capabilities().rayQuery || !device->capabilities().rayTracingAccelerationStructure) {
         GTEST_SKIP() << "Ray queries unavailable";
     }
     // The blocker is behind the camera (z=-1), so it never appears in the depth
-    // buffer. It casts onto the visible z=3 plane along the directional-light ray.
+    // buffer. It casts onto the visible z=3 plane along the celestial-light ray.
     const auto fixtureDirectory = std::filesystem::path(PROJECT_SOURCE_DIR) / ".tmp/NRDRayTracedShadowGeometry";
     std::filesystem::create_directories(fixtureDirectory);
     const float vertices[] = {
@@ -670,12 +774,10 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     pose.nearPlane = 0.1f;
     pose.farPlane = 10;
     ASSERT_TRUE(camera.setCamera(pose));
-    std::array<render::GPUPunctualLight, 2> lights{};
-    lights[0].positionRange[0] = 1;
-    lights[1].directionType[0] = -0.70710678f;
-    lights[1].directionType[2] = 0.70710678f;
-    lights[1].colorIntensity[0] = lights[1].colorIntensity[1] = lights[1].colorIntensity[2] = 1;
-    lights[1].colorIntensity[3] = 10;
+    environment::WorldEnvironment world;
+    world.sun = {.direction = float3(-0.70710678f, 0, 0.70710678f), .illuminance = 10.0f,
+        .angularRadius = 0.5f * 0.01745329252f, .enabled = true};
+    auto lights = render::buildScreenSpaceShadowLightRecords(nullptr, {}, world.snapshot());
     std::unique_ptr<render::Texture> depth;
     std::unique_ptr<render::TextureView> depthView;
     std::unique_ptr<render::Buffer> upload;
@@ -774,7 +876,27 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
             }
         }
     }
-    settings.angularRadiusDegrees = 3.0f;
+    // Moon keeps slot 1 and traces its own visibility when Sun is disabled.
+    world.moon = world.sun;
+    world.sun.enabled = false;
+    world.moon.angularRadius = 0.0f;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, {}, world.snapshot());
+    ASSERT_EQ(render::selectScreenSpaceShadowLight(lights, -1), 1u);
+    for (bool denoise : {false, true}) {
+        settings.denoise = denoise;
+        const auto flat = renderShadow(false);
+        EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Moon-only flat surface self-shadowed";
+        const auto blocked = renderShadow(true);
+        size_t dark = 0;
+        for (uint32_t y = 5; y < h - 5; ++y) {
+            for (uint32_t x = 21; x < w - 5; ++x) { dark += blocked[y * w + x] < 128; }
+        }
+        EXPECT_GT(dark, 30u) << "Moon-only offscreen geometry did not cast a shadow";
+    }
+    world.sun.enabled = true;
+    world.moon.enabled = false;
+    world.sun.angularRadius = 3.0f * 0.01745329252f;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, {}, world.snapshot());
     auto temporalVariation = [&](bool denoise) {
         settings.denoise = denoise;
         std::vector<uint8_t> last;
@@ -795,9 +917,14 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     EXPECT_GT(rawVariation, 0.0);
     EXPECT_LT(filteredVariation, rawVariation) << "SIGMA did not reduce temporal shadow noise";
     // Local-light penumbra packing and source switching use the same history owner.
-    lights[1].directionType[3] = 1.0f;
-    lights[1].positionRange[0] = 6.0f;
-    lights[1].positionRange[2] = -4.0f;
+    scene::LightingSettings localLighting;
+    auto& localLight = localLighting.lights.emplace_back();
+    localLight.properties.intensity = 10.0;
+    localLight.properties.intensityUnit = scene::LightUnit::Candela;
+    localLight.position = float3(6.0f, 0.0f, -4.0f);
+    world.sun.enabled = false;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, localLighting, world.snapshot());
+    settings.lightIndex = 2;
     for (bool denoise : {false, true}) {
         settings.denoise = denoise;
         auto local = renderShadow(true);
@@ -821,7 +948,9 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     auto disabled = renderShadow(true);
     EXPECT_EQ(*std::min_element(disabled.begin(), disabled.end()), 255);
     settings.enabled = true;
-    lights[1].colorIntensity[3] = 0;
+    settings.lightIndex = -1;
+    world.sun.enabled = false;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, {}, world.snapshot());
     auto noLight = renderShadow(true);
     EXPECT_EQ(*std::min_element(noLight.begin(), noLight.end()), 255);
     w = 31;
@@ -832,7 +961,8 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         .format = render::Format::R32Sfloat, .width = w, .height = h}).transform([&](auto rhiValue) { depth = std::move(rhiValue); }));
     require(device->createTextureView(*depth, {.format = render::Format::R32Sfloat}).transform([&](auto rhiValue) { depthView = std::move(rhiValue); }));
     depthReady = false;
-    lights[1].colorIntensity[3] = 10;
+    world.sun.enabled = true;
+    lights = render::buildScreenSpaceShadowLightRecords(nullptr, {}, world.snapshot());
     auto resized = renderShadow(false);
     EXPECT_EQ(resized.size(), size_t(w) * h);
     EXPECT_EQ(*std::min_element(resized.begin(), resized.end()), 255);

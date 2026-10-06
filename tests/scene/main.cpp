@@ -607,7 +607,7 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
       "lights": [
         {
           "name": "Key Light",
-          "type": "directional",
+          "type": "point",
           "color": [1.0, 0.8, 0.6],
           "intensity": 3.0
         }
@@ -811,7 +811,7 @@ std::filesystem::path writeNativePunctualScene(const std::filesystem::path& dire
   "extensions": {
     "KHR_lights_punctual": {
       "lights": [
-        { "name": "Imported Sun", "type": "directional", "color": [1, 0.8, 0.6], "intensity": 12 },
+        { "name": "Imported Fill", "type": "point", "color": [1, 0.8, 0.6], "intensity": 12 },
         { "name": "Shared Point", "type": "point", "color": [0.2, 0.4, 0.8], "intensity": 100, "range": 7 },
         { "name": "Imported Spot", "type": "spot", "color": [0.7, 0.5, 0.3], "intensity": 40, "range": 9,
           "spot": { "innerConeAngle": 0.1, "outerConeAngle": 0.6 } },
@@ -1593,7 +1593,7 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(nearlyEqual(static_cast<float>(orthoCamera.ymag), 3.0f), "orthographic ymag");
 
     expect(scene.lights().size() == 1, "punctual light count");
-    expect(scene.lights().front().type == "directional", "punctual light type");
+    expect(scene.lights().front().type == "point", "punctual light type");
     expect(
         scene.lights().front().object == scene.objectForNode(4).entity(),
         "light object mapping");
@@ -5445,7 +5445,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         .compensation = 1.5f, .lowPercent = 60.0f, .highPercent = 95.0f,
         .histogramMinEV100 = -12.0f, .histogramMaxEV100 = 22.0f,
         .speedUp = 4.0f, .speedDown = 0.5f, .transitionDistance = 2.0f};
-    for (const char* type : {"directional", "point", "spot"}) {
+    for (const char* type : {"point", "spot"}) {
         PunctualLight light;
         light.name = type;
         light.properties.type = type;
@@ -5467,7 +5467,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     ASSERT_TRUE(document.save(message)) << message;
     SceneDocument restored;
     ASSERT_TRUE(restored.load(document.documentPath())) << restored.lastLoadResult().error;
-    ASSERT_EQ(restored.lighting().lights.size(), 4u);
+    ASSERT_EQ(restored.lighting().lights.size(), 3u);
     EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 12.0f);
     const auto& exposure = restored.lighting().autoExposure;
     EXPECT_TRUE(exposure.enabled);
@@ -5481,7 +5481,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     EXPECT_FLOAT_EQ(exposure.speedUp, 4.0f);
     EXPECT_FLOAT_EQ(exposure.speedDown, 0.5f);
     EXPECT_FLOAT_EQ(exposure.transitionDistance, 2.0f);
-    for (size_t i = 0; i < 3; ++i) {
+    for (size_t i = 0; i < 2; ++i) {
         const auto& light = restored.lighting().lights[i + 1];
         EXPECT_FALSE(light.imported.has_value());
         EXPECT_EQ(light.properties.type, lighting.lights[i + 1].properties.type);
@@ -5500,7 +5500,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     EXPECT_FALSE(restored.setLighting(invalid));
     ASSERT_TRUE(restored.setLighting({}));
     ASSERT_TRUE(restored.revert(message)) << message;
-    EXPECT_EQ(restored.lighting().lights.size(), 4u);
+    EXPECT_EQ(restored.lighting().lights.size(), 3u);
     restored.clear();
     EXPECT_TRUE(restored.lighting().lights.empty());
 }
@@ -5558,6 +5558,138 @@ TEST(SceneEditing, AutoExposureValidationAndLegacyLoading)
     }
 }
 
+TEST(WorldEnvironment, FixedSlotsSnapshotsAndValidation)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    SceneDocument document;
+    const auto initial = document.environmentSnapshot();
+    ASSERT_EQ(initial.celestial.size(), 2u);
+    EXPECT_FALSE(initial.celestial[static_cast<size_t>(CelestialLightIndex::Sun)].enabled);
+    EXPECT_FALSE(initial.celestial[static_cast<size_t>(CelestialLightIndex::Moon)].enabled);
+    WorldEnvironment world;
+    world.sun = {.direction = float3(0.0f, -2.0f, -1.0f), .color = float3(1.0f, 0.8f, 0.6f),
+        .illuminance = 80000.0f, .angularRadius = 0.00465f, .enabled = true};
+    world.moon = {.direction = float3(0.0f, -1.0f, 1.0f), .color = float3(0.7f, 0.8f, 1.0f),
+        .illuminance = 0.25f, .angularRadius = 0.0045f, .enabled = true};
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto captured = document.environmentSnapshot();
+    EXPECT_EQ(captured.celestial[0], world.sun);
+    EXPECT_EQ(captured.celestial[1], world.moon);
+    EXPECT_GT(captured.celestialRevision, initial.celestialRevision);
+    EXPECT_GT(captured.lightingRevision, initial.lightingRevision);
+    EXPECT_FALSE(document.setWorldEnvironment(world));
+    EXPECT_EQ(document.environmentSnapshot().celestialRevision, captured.celestialRevision);
+    world.sun.direction = float3(1.0f, -1.0f, 0.0f);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    EXPECT_FLOAT_EQ(captured.celestial[0].direction.x, 0.0f);
+    const auto beforeInvalid = document.worldEnvironment();
+    for (int invalidCase = 0; invalidCase < 4; ++invalidCase) {
+        auto invalid = beforeInvalid;
+        if (invalidCase == 0) { invalid.sun.direction = float3(0.0f); }
+        if (invalidCase == 1) { invalid.moon.illuminance = -1.0f; }
+        if (invalidCase == 2) { invalid.sun.angularRadius = std::numeric_limits<float>::infinity(); }
+        if (invalidCase == 3) { invalid.moon.color.x = -0.1f; }
+        EXPECT_FALSE(document.setWorldEnvironment(invalid));
+        EXPECT_EQ(document.worldEnvironment(), beforeInvalid);
+    }
+    LightingSettings invalidProduction;
+    invalidProduction.lights.emplace_back().properties.type = "directional";
+    EXPECT_FALSE(validLightingSettings(invalidProduction));
+    EXPECT_FALSE(document.setLighting(invalidProduction));
+    const auto beforeHDRI = document.environmentSnapshot();
+    auto hdri = document.environment();
+    hdri.intensity = 2.0f;
+    ASSERT_TRUE(document.setEnvironment(hdri));
+    EXPECT_EQ(document.environmentSnapshot().celestialRevision, beforeHDRI.celestialRevision);
+    EXPECT_GT(document.environmentSnapshot().lightingRevision, beforeHDRI.lightingRevision);
+}
+
+TEST(WorldEnvironment, glTFDirectionalImportIsIgnoredWithWarning)
+{
+    using namespace metallic::scene;
+    const auto path = writeNativePunctualScene(prepareOutputDirectory() / "ignored_directional");
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
+    nlohmann::json asset;
+    { std::ifstream stream(path); stream >> asset; }
+    asset["extensions"]["KHR_lights_punctual"]["lights"][0]["type"] = "directional";
+    writeTextFile(path, asset.dump(2));
+    Scene scene;
+    ASSERT_TRUE(scene.load(path)) << scene.lastLoadResult().error;
+    EXPECT_EQ(scene.lights().size(), 3u);
+    EXPECT_FALSE(scene.objectForNode(1).hasComponent<LightComponent>());
+    EXPECT_NE(scene.lastLoadResult().warning.find("Ignored glTF directional light"), std::string::npos);
+    EXPECT_FALSE(scene.worldEnvironment().sun.enabled);
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    EXPECT_EQ(document.lighting().lights.size(), 3u);
+    EXPECT_NE(document.documentWarning().find("Ignored glTF directional light"), std::string::npos);
+    EXPECT_FALSE(document.worldEnvironment().sun.enabled);
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(document.documentPath())) << document.documentWarning();
+    EXPECT_EQ(document.lighting().lights.size(), 3u);
+    EXPECT_FALSE(document.worldEnvironment().sun.enabled);
+}
+
+TEST(WorldEnvironment, LegacyDirectionalMigratesToSunAndPersistsCelestialOnly)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "legacy_celestial_migration";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    const auto sidecar = SceneDocument::sidecarPathForSource(source);
+    const nlohmann::json legacyLight{{"name", "Legacy Sun"}, {"type", "directional"},
+        {"intensity", 5.0}, {"intensityUnit", "ev100"}, {"color", {1.0, 0.8, 0.6}},
+        {"direction", {0.0, -2.0, -1.0}}, {"enabled", true}};
+    nlohmann::json legacy{{"version", 3}, {"source", source.filename().generic_string()}, {"sceneIndex", 0},
+        {"nodes", nlohmann::json::array()}, {"world", {{"lighting", {{"lights", {legacyLight}}}}}}};
+    writeTextFile(sidecar, legacy.dump(2));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    EXPECT_NE(document.documentWarning().find("Migrated legacy directional"), std::string::npos);
+    const auto sun = document.worldEnvironment().sun;
+    EXPECT_TRUE(sun.enabled);
+    EXPECT_FLOAT_EQ(sun.illuminance, 80.0f);
+    expectVec3(sun.direction, float3(0.0f, -2.0f, -1.0f), "legacy emitted direction unchanged");
+    expectVec3(sun.color, float3(1.0f, 0.8f, 0.6f), "legacy linear color unchanged");
+    EXPECT_FALSE(document.worldEnvironment().moon.enabled);
+    EXPECT_TRUE(std::ranges::all_of(document.lighting().lights,
+        [](const auto& light) { return light.properties.type == "point" || light.properties.type == "spot"; }));
+    auto world = document.worldEnvironment();
+    world.moon.enabled = true;
+    world.moon.illuminance = 0.25f;
+    world.moon.direction = float3(0.5f, -1.0f, 0.2f);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    nlohmann::json saved;
+    { std::ifstream stream(sidecar); stream >> saved; }
+    ASSERT_TRUE(saved["world"]["environment"].contains("sun"));
+    ASSERT_TRUE(saved["world"]["environment"].contains("moon"));
+    EXPECT_FLOAT_EQ(saved["world"]["environment"]["sun"]["illuminance"].get<float>(), 80.0f);
+    for (const auto& light : saved["world"]["lighting"]["lights"]) {
+        EXPECT_NE(light["type"].get<std::string>(), "directional");
+    }
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_EQ(restored.documentWarning().find("Migrated legacy directional"), std::string::npos);
+    const auto identity = restored.resourceIdentity();
+    legacy["world"]["lighting"]["lights"].push_back(legacyLight);
+    writeTextFile(sidecar, legacy.dump(2));
+    EXPECT_FALSE(restored.load(sidecar));
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_EQ(restored.resourceIdentity(), identity);
+    EXPECT_NE(restored.documentWarning().find("Multiple legacy directional"), std::string::npos);
+    legacy["world"]["lighting"]["lights"].erase(1);
+    legacy["world"]["environment"]["sun"] = saved["world"]["environment"]["sun"];
+    writeTextFile(sidecar, legacy.dump(2));
+    EXPECT_FALSE(restored.load(sidecar));
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_NE(restored.documentWarning().find("conflicts"), std::string::npos);
+}
+
 TEST(SceneEditing, ImportedglTFLightsBecomeNativeVirtualLights)
 {
     using namespace metallic::scene;
@@ -5571,14 +5703,14 @@ TEST(SceneEditing, ImportedglTFLightsBecomeNativeVirtualLights)
     ASSERT_EQ(imported.lights.size(), 4u);
     const std::array<float3, 4> positions{float3(10, 20, 28), float3(10, 23, 30),
         float3(14, 20, 30), float3(10, 20, 32)};
-    const std::array<const char*, 4> types{"directional", "point", "spot", "point"};
+    const std::array<const char*, 4> types{"point", "point", "spot", "point"};
     const std::array<double, 4> intensities{12.0, 100.0, 40.0, 100.0};
     const std::array<double, 4> ranges{0.0, 7.0, 9.0, 7.0};
     for (int32_t node = 1; node <= 4; ++node) {
         const auto* light = findImportedLight(imported, "main", node);
         ASSERT_NE(light, nullptr) << node;
         EXPECT_EQ(light->properties.type, types[node - 1]);
-        EXPECT_EQ(light->properties.intensityUnit, node == 1 ? LightUnit::Lux : LightUnit::Candela);
+        EXPECT_EQ(light->properties.intensityUnit, LightUnit::Candela);
         EXPECT_DOUBLE_EQ(light->properties.intensity, intensities[node - 1]);
         EXPECT_DOUBLE_EQ(light->properties.range, ranges[node - 1]);
         EXPECT_TRUE(light->enabled);

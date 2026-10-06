@@ -25,14 +25,62 @@ public struct PunctualLightSample
     public float distance;
 };
 
+// Environment-owned, fixed-slot wire contract. Angular radius and disk radiance
+// are retained for finite-disk sampling; Checkpoint A evaluates delta direct light.
+public struct GPUCelestialLight
+{
+    public float3 direction;
+    public float angularRadius;
+    public float3 irradiance;
+    public uint flags;
+    public float3 diskRadiance;
+    public float shadowImportance;
+};
+
+public static const uint kCelestialLightCount = 2u;
+public static const uint kCelestialLightEnabled = 1u;
+public static const uint kCelestialLightCastsShadow = 2u;
+public static const uint kCelestialSourceBit = 0x80000000u;
+
+public uint celestialSourceIdentity(uint slot) { return kCelestialSourceBit | slot; }
+
+public PunctualLightSample sampleCelestialLightData(GPUCelestialLight light)
+{
+    PunctualLightSample sample;
+    sample.direction = -light.direction;
+    sample.distance = 1e30;
+    sample.illuminance = (light.flags & kCelestialLightEnabled) != 0u ? light.irradiance : float3(0.0);
+    return sample;
+}
+
+public PunctualLightSample sampleCelestialLight(StructuredBuffer<GPUCelestialLight> lights, uint slot)
+{
+    uint count, stride;
+    lights.GetDimensions(count, stride);
+    // Unbound fallback descriptors and short test fixtures must stay dark.
+    return slot < min(count, kCelestialLightCount)
+        ? sampleCelestialLightData(lights[slot]) : PunctualLightSample();
+}
+
+public bool celestialLightCastsShadow(StructuredBuffer<GPUCelestialLight> lights, uint slot)
+{
+    uint count, stride;
+    lights.GetDimensions(count, stride);
+    return slot < min(count, kCelestialLightCount) &&
+        (lights[slot].flags & (kCelestialLightEnabled | kCelestialLightCastsShadow)) ==
+        (kCelestialLightEnabled | kCelestialLightCastsShadow);
+}
+
 // Delta lights supply incident illuminance before the surface cosine/BSDF.
 // Point/spot intensity is cd, distance is m: E = I / r^2 (lux).
 public PunctualLightSample samplePunctualLightData(GPUPunctualLight light, float3 position)
 {
     PunctualLightSample sample;
-    sample.direction = -light.directionType.xyz;
-    sample.distance = 1e30;
+    sample.direction = float3(0.0);
+    sample.distance = 0.0;
     float attenuation = 1.0;
+    // Directional records are not part of the local light domain.
+    if (light.directionType.w < 0.5) { return PunctualLightSample(); }
     if (light.directionType.w > 0.5) {
         float3 delta = light.positionRange.xyz - position;
         float distanceSquared = dot(delta, delta);

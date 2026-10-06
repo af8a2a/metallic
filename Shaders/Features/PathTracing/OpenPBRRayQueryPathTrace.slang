@@ -227,11 +227,21 @@ struct PathSurfaceLights : ISurfaceLightProvider
     OpenPBRInteriorStack interiorStack;
     float3 viewDirection;
     uint seed;
-    uint count() { return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting) ? 0u : 1u; }
+    uint count() { return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting) ? 0u : kCelestialLightCount + 1u; }
     [mutating]
     SurfaceLightSample sample(uint index)
     {
         SurfaceLightSample result = (SurfaceLightSample)0;
+        if (index < kCelestialLightCount) {
+            PunctualLightSample light = sampleCelestialLight(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index);
+            result.direction = light.direction;
+            result.illuminance = light.illuminance;
+            result.distance = light.distance;
+            result.inverseSourcePdf = any(light.illuminance > 0.0) ? 1.0 : 0.0;
+            result.source = celestialSourceIdentity(index);
+            return result;
+        }
         uint source;
         float inversePdf;
         if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, source, inversePdf)) {
@@ -246,6 +256,10 @@ struct PathSurfaceLights : ISurfaceLightProvider
     }
     float3 visibility(SurfaceLightSample light)
     {
+        if ((light.source & kCelestialSourceBit) != 0u &&
+            !celestialLightCastsShadow(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights),
+                light.source & ~kCelestialSourceBit)) { return float3(1.0); }
         float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
         OpenPBRInteriorStack shadowStack = interiorStack;
         if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {

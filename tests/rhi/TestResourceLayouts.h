@@ -108,6 +108,7 @@ inline constexpr render::ComputeResourceField kPhotometricProbeFields[] = {
     {0, render::ComputeResourceBindingKind::StorageBuffer, offsetof(PhotometricProbeResources, output), render::ComputeResourceFieldFormat::Handle},
     {1, render::ComputeResourceBindingKind::StorageBuffer, offsetof(PhotometricProbeResources, irradiance), render::ComputeResourceFieldFormat::Handle},
     {50, render::ComputeResourceBindingKind::StorageBuffer, offsetof(PhotometricProbeResources, lights), render::ComputeResourceFieldFormat::Handle},
+    {55, render::ComputeResourceBindingKind::StorageBuffer, offsetof(PhotometricProbeResources, celestialLights), render::ComputeResourceFieldFormat::Handle},
 };
 inline constexpr render::ComputeResourceLayout kPhotometricProbeLayout{sizeof(PhotometricProbeResources), kPhotometricProbeFields};
 

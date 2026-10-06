@@ -1,12 +1,14 @@
 #pragma once
 
 #include "Runtime/Render/ImportanceSampling.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -29,6 +31,8 @@ struct EnvironmentLightingSnapshot {
     Buffer* sphericalHarmonicsBuffer = nullptr;
     // Eight 256x128 lat-long layers, linear perceptual roughness, GGX filtered.
     Buffer* prefilteredSpecularBuffer = nullptr;
+    Buffer* celestialLightsBuffer = nullptr;
+    uint64_t celestialResourceRevision = 0;
     uint32_t width = 1;
     uint32_t height = 1;
     uint64_t settingsRevision = 0;
@@ -42,6 +46,11 @@ struct EnvironmentLightingSnapshot {
             pdfView != nullptr &&
             sphericalHarmonicsBuffer != nullptr;
     }
+};
+
+struct CelestialLightingResources {
+    std::shared_ptr<Buffer> buffer;
+    uint64_t revision = 0;
 };
 
 class EnvironmentLightingSubsystem final : public IRenderSubsystem {
@@ -71,6 +80,8 @@ public:
     void shutdown() override;
 
     const EnvironmentLightingSnapshot& snapshot() const { return snapshot_; }
+    Result<CelestialLightingResources> updateCelestial(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+        const environment::EnvironmentSnapshot& environment);
     uint64_t decodeCount() const { return decodeCount_; }
 
 private:
@@ -95,6 +106,15 @@ private:
     ImportancePdfCompute pdfCompute_;
     std::unique_ptr<GPUPrecompute> gpuPrecompute_;
     std::shared_ptr<Resources> resources_;
+    std::shared_ptr<Buffer> celestialLightsBuffer_;
+    struct CelestialPublication {
+        GPUCelestialLightRecords records;
+        CelestialLightingResources resources;
+    };
+    std::vector<CelestialPublication> celestialPublications_;
+    std::mutex celestialMutex_;
+    uint64_t nextCelestialResourceRevision_ = 0;
+    uint64_t celestialResourceRevision_ = 0;
     std::vector<DecodeJob> decodeJobs_;
     std::filesystem::path pendingDecodePath_;
     uint64_t pendingDecodeGeneration_ = 0;

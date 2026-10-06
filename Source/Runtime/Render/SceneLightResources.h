@@ -26,7 +26,8 @@ struct GPUPunctualLight {
 };
 static_assert(sizeof(GPUPunctualLight) == 64);
 
-// Stable source slots: imported lights first, then virtual world lights. Inactive
+// Stable local source slots: imported point/spot lights first, then virtual
+// point/spot lights. Unsupported source types never enter this list. Inactive
 // or invalid sources retain their slot and provenance, with enabled=false.
 // Document-owned imports emit only from their native virtual slot, whose pose
 // and visibility are resolved against the matching current RenderLight source.

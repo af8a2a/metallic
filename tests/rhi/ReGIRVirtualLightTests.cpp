@@ -9,6 +9,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/SceneLightResources.h"
+#include "Runtime/Environment/WorldEnvironment.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -55,7 +56,7 @@ float cpuLightPower(const render::GPUPunctualLight& light)
 {
     const float luminance = light.colorIntensity[3] * render::color::luminance(
         {light.colorIntensity[0], light.colorIntensity[1], light.colorIntensity[2]});
-    if (light.directionType[3] < 0.5f) { return luminance; }
+    if (light.directionType[3] != 1.0f && light.directionType[3] != 2.0f) { return 0.0f; }
     const float solidAngle = light.directionType[3] < 1.5f ? 4.0f * std::numbers::pi_v<float>
         : 2.0f * std::numbers::pi_v<float> *
             ((1.0f - light.spot[0]) + (light.spot[0] - light.spot[1]) / 3.0f);
@@ -357,7 +358,7 @@ private:
 scene::LightingSettings mixedVirtualLights()
 {
     scene::LightingSettings settings;
-    for (const char* type : {"point", "spot", "directional"}) {
+    for (const char* type : {"point", "spot", "point"}) {
         scene::PunctualLight light;
         light.properties.type = type;
         light.position = float3(0, 0, 3);
@@ -365,8 +366,8 @@ scene::LightingSettings mixedVirtualLights()
         const size_t index = settings.lights.size();
         light.properties.color = index == 0 ? float3(1, 0, 0)
             : (index == 1 ? float3(0, 1, 0) : float3(0, 0, 1));
-        light.properties.intensity = index == 2 ? 1.0 : 3.0;
-        light.properties.intensityUnit = index == 2 ? scene::LightUnit::Lux : scene::LightUnit::Candela;
+        light.properties.intensity = index == 2 ? 9.0 : 3.0;
+        light.properties.intensityUnit = scene::LightUnit::Candela;
         settings.lights.push_back(light);
     }
     return settings;
@@ -458,7 +459,7 @@ public:
         if (empty.mean != std::array<double, 3>{} || empty.rootWeight != 0.0f) {
             return RHITestResult::fail("all-zero source table produced illumination");
         }
-        return RHITestResult::pass("GPU point/spot/directional power, ReGIR and global-PDF estimates, inactive slots and edits/deletion");
+        return RHITestResult::pass("GPU point/spot power, ReGIR and global-PDF estimates, inactive slots and edits/deletion");
     }
 };
 
@@ -586,28 +587,30 @@ RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* r
     const auto darkEnergy = rgbEnergy(preview);
     scene::LightingSettings settings;
     settings.exposureEV100 = 8;
-    auto& light = settings.lights.emplace_back();
-    light.properties.type = "directional";
-    light.properties.intensityUnit = scene::LightUnit::Lux;
-    light.properties.intensity = 1000;
-    light.properties.color = float3(1, 0, 0);
-    light.direction = float3(0.0f, -0.2f, -1.0f);
-    if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid directional fixture"); }
+    environment::WorldEnvironment environment;
+    environment.sun = {.direction = float3(0.0f, -0.2f, -1.0f), .color = float3(1, 0, 0),
+        .illuminance = 1000.0f, .enabled = true};
+    if (!preview.setLighting(settings) || !preview.setWorldEnvironment(environment)) {
+        return RHITestResult::fail("invalid celestial fixture");
+    }
     status = renderFrames();
     if (!status.passed) { return status; }
     auto litEnergy = rgbEnergy(preview);
     if (litEnergy[0] < darkEnergy[0] + 1024 || litEnergy[1] > darkEnergy[1] + 1024 ||
         litEnergy[2] > darkEnergy[2] + 1024) {
-        return RHITestResult::fail(std::string(renderer) + " did not transport the red scene directional light");
+        return RHITestResult::fail(std::string(renderer) + " did not transport the red Sun light");
     }
-    light.properties.color = float3(0, 0, 1);
-    if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid color edit fixture"); }
+    environment.sun.color = float3(0, 0, 1);
+    if (!preview.setWorldEnvironment(environment)) { return RHITestResult::fail("invalid celestial color edit fixture"); }
     status = renderFrames();
     if (!status.passed) { return status; }
     litEnergy = rgbEnergy(preview);
     if (litEnergy[2] < darkEnergy[2] + 1024 || litEnergy[0] > darkEnergy[0] + 1024) {
         return RHITestResult::fail(std::string(renderer) + " retained stale red-light history after a blue edit");
     }
+    environment.sun.enabled = false;
+    if (!preview.setWorldEnvironment(environment)) { return RHITestResult::fail("could not disable Sun"); }
+    auto& light = settings.lights.emplace_back();
     for (const char* localType : {"point", "spot"}) {
         light.properties.type = localType;
         light.properties.intensityUnit = scene::LightUnit::Candela;
@@ -638,7 +641,7 @@ RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* r
     if (preview.pixels() != dark) {
         return RHITestResult::fail(std::string(renderer) + " retained illumination after deleting all virtual lights");
     }
-    return RHITestResult::pass(std::string(renderer) + ": directional/point/spot RGB transport and edit/delete history invalidation");
+    return RHITestResult::pass(std::string(renderer) + ": celestial/point/spot RGB transport and edit/delete history invalidation");
 }
 
 class ReGIRStandardPathTraceLightsTest final : public RHITest {

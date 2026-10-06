@@ -4529,14 +4529,17 @@ bool EditorApplication::drawRuntimeSettingsForNode(
             if (gpuScene != nullptr && gpuScene->sourceOverride() != nullptr) { source = gpuScene->sourceOverride(); }
         }
         const auto lighting = render::resolveSceneLighting(source, &renderWorld_);
-        const auto lights = render::buildScreenSpaceShadowLightRecords(source, lighting);
+        const auto lights = render::buildScreenSpaceShadowLightRecords(source, lighting,
+            render::resolveWorldEnvironment(source, &renderWorld_));
         const auto slotLabel = [&](uint32_t slot) {
-            const float type = lights[slot + 1].directionType[3];
-            std::string label = "Slot " + std::to_string(slot) + " - " +
-                (type < 0.5f ? "Directional" : type < 1.5f ? "Point" : "Spot");
+            const auto& light = lights[slot];
+            if (light.isCelestial) { return std::string(slot == 0 ? "Sun" : "Moon"); }
+            std::string label = "Local slot " + std::to_string(slot - environment::kCelestialLightCount) + " - " +
+                (light.local.directionType[3] < 1.5f ? "Point" : "Spot");
             const size_t nativeCount = source != nullptr ? source->lights().size() : 0;
-            if (slot >= nativeCount && slot - nativeCount < lighting.lights.size()) {
-                label += " - " + lighting.lights[slot - nativeCount].name;
+            const size_t localSlot = slot - environment::kCelestialLightCount;
+            if (localSlot >= nativeCount && localSlot - nativeCount < lighting.lights.size()) {
+                label += " - " + lighting.lights[localSlot - nativeCount].name;
             }
             return label;
         };
@@ -4547,8 +4550,8 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         setting.label = "Shadow Light";
         setting.options = {{automatic == UINT32_MAX ? "Auto (-1): no active light"
             : "Auto (-1): " + slotLabel(automatic), -1}};
-        for (uint32_t i = 1; i < lights.size(); ++i) {
-            if (lights[i].colorIntensity[3] > 0) { setting.options.push_back({slotLabel(i - 1), i - 1}); }
+        for (uint32_t i = 0; i < lights.size(); ++i) {
+            if (lights[i].enabled) { setting.options.push_back({slotLabel(i), i}); }
         }
         shadowLightStatus = selected == UINT32_MAX ? "No active shadow light." : "Resolved: " + slotLabel(selected);
         if (requested >= 0 && selected != static_cast<uint32_t>(requested)) {
@@ -4750,6 +4753,42 @@ void EditorApplication::drawEnvironmentControls()
         changed = true;
     }
     ImGui::PopItemWidth();
+    ImGui::BeginDisabled(!scene_.valid());
+    auto celestialEnvironment = scene_.worldEnvironment();
+    bool celestialChanged = false;
+    for (auto entry : {std::pair{"Sun", &celestialEnvironment.sun},
+                      std::pair{"Moon", &celestialEnvironment.moon}}) {
+        auto& light = *entry.second;
+        if (ImGui::TreeNode(entry.first)) {
+            celestialChanged |= ImGui::Checkbox("Enabled", &light.enabled);
+            float color[] = {light.color.x, light.color.y, light.color.z};
+            if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
+                light.color = float3(color[0], color[1], color[2]);
+                celestialChanged = true;
+            }
+            celestialChanged |= ImGui::DragFloat("Illuminance (lux)", &light.illuminance,
+                0.1f, 0.0f, 1e12f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            float direction[] = {light.direction.x, light.direction.y, light.direction.z};
+            if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
+                light.direction = float3(direction[0], direction[1], direction[2]);
+                celestialChanged = true;
+            }
+            float radiusDegrees = light.angularRadius * 57.295779513f;
+            if (ImGui::SliderFloat("Angular radius (deg)", &radiusDegrees, 0.0f, 10.0f)) {
+                light.angularRadius = radiusDegrees / 57.295779513f;
+                celestialChanged = true;
+            }
+            ImGui::TreePop();
+        }
+    }
+    if (celestialChanged && scene_.setWorldEnvironment(celestialEnvironment)) {
+        renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
+        sceneNonTransformDirty_ = true;
+        updateSceneDirtyState();
+        viewportPreviewNeedsRender_ = true;
+        renderGraphStatus_ = "Updated celestial lighting";
+    }
+    ImGui::EndDisabled();
     ImGui::PopID();
 
     if (!changed) {
@@ -4812,14 +4851,13 @@ void EditorApplication::drawLightingControls()
         ImGui::TreePop();
     }
     ImGui::EndDisabled();
-    for (const char* type : {"directional", "point", "spot"}) {
+    for (const char* type : {"point", "spot"}) {
         const std::string label = std::string("Add ") + type;
         if (ImGui::Button(label.c_str())) {
             scene::PunctualLight light;
             light.name = type;
             light.properties.type = type;
-            light.properties.intensityUnit = light.properties.type == "directional"
-                ? scene::LightUnit::Lux : scene::LightUnit::Candela;
+            light.properties.intensityUnit = scene::LightUnit::Candela;
             lighting.lights.push_back(std::move(light));
             changed = true;
         }
@@ -4841,7 +4879,6 @@ void EditorApplication::drawLightingControls()
                 p.color = float3(color[0], color[1], color[2]);
                 changed = true;
             }
-            const bool directional = p.type == "directional";
             const bool spot = p.type == "spot";
             scene::LightUnit unit = p.intensityUnit;
             if (ImGui::BeginCombo("Unit", scene::lightUnitName(unit))) {
@@ -4864,7 +4901,7 @@ void EditorApplication::drawLightingControls()
             const double maxIntensity = p.intensityUnit == scene::LightUnit::EV100 ? 38.0 : 1e12;
             changed |= ImGui::DragScalar("Intensity", ImGuiDataType_Double, &p.intensity,
                 0.1f, &minIntensity, &maxIntensity, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-            if (!directional) {
+            {
                 float position[] = {light.position.x, light.position.y, light.position.z};
                 if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
                     light.position = float3(position[0], position[1], position[2]);
@@ -4874,7 +4911,7 @@ void EditorApplication::drawLightingControls()
                 changed |= ImGui::DragScalar("Range (m; 0 = infinite)", ImGuiDataType_Double,
                     &p.range, 0.1f, &minRange, nullptr, "%.2f");
             }
-            if (directional || spot) {
+            if (spot) {
                 float direction[] = {light.direction.x, light.direction.y, light.direction.z};
                 if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
                     light.direction = float3(direction[0], direction[1], direction[2]);
@@ -4910,6 +4947,7 @@ void EditorApplication::drawLightingControls()
     ImGui::EndDisabled();
     if (changed && scene_.setLighting(lighting)) {
         renderWorld_.setLighting(scene_.lighting());
+        renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
         sceneNonTransformDirty_ = true;
         updateSceneDirtyState();
         viewportPreviewNeedsRender_ = true;
@@ -5322,6 +5360,7 @@ bool EditorApplication::applySceneEditValue(
         return false;
     }
     renderWorld_.setLighting(scene_.lighting());
+    renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
     notifyScenePropertiesChanged();
     return true;
 }
@@ -5487,6 +5526,7 @@ void EditorApplication::executePendingSceneAction()
         clearSceneAccelerationStructure();
         scene_.clear();
         renderWorld_.setLighting({});
+        renderWorld_.setWorldEnvironment({});
         renderWorld_.notifySceneChanged();
         resetTransformHistory();
         sceneSelection_ = SceneSelection{};
@@ -5550,6 +5590,7 @@ void EditorApplication::drawUnsavedSceneModal()
                 : "Failed to discard scene changes: " + message;
         } else {
             renderWorld_.setLighting(scene_.lighting());
+            renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
             sceneSelection_ = SceneSelection{};
             renderWorld_.notifySceneChanged();
             if (environmentEditBaselineValid_) {
@@ -5959,7 +6000,7 @@ void EditorApplication::drawSelectedLightComponentInspector()
     const bool directional = properties.type == "directional";
     const bool point = properties.type == "point";
     const bool spot = properties.type == "spot";
-    const bool supportedType = directional || point || spot;
+    const bool supportedType = point || spot;
     const auto& nativeLights = scene_.lighting().lights;
     const bool hasNativeLight = std::any_of(nativeLights.begin(), nativeLights.end(),
         [&object](const scene::PunctualLight& candidate) {
@@ -6124,6 +6165,7 @@ void EditorApplication::drawSelectedLightComponentInspector()
         }
         if (scene_.setObjectLightProperties(object.entity(), edited)) {
             renderWorld_.setLighting(scene_.lighting());
+            renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
             notifyScenePropertiesChanged();
             sceneStatus_ = "Updated LightComponent properties.";
         } else {
@@ -7451,6 +7493,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     clearSceneAccelerationStructure();
     scene_.clear();
     renderWorld_.setLighting({});
+    renderWorld_.setWorldEnvironment({});
     renderWorld_.notifySceneChanged();
     resetTransformHistory();
     sceneSelection_ = SceneSelection{};
@@ -7998,6 +8041,7 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     historyResources_.invalidateAll();
     scene_ = std::move(*loadedScene);
     renderWorld_.setLighting(scene_.lighting());
+    renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
     if (renderWorld_.scene() == &scene_) {
         renderWorld_.notifySceneChanged();
     } else {

@@ -147,8 +147,8 @@ void lightGridDebugMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
     }
 
-    // Visualize the pre-truncation count. Global directionals and unbounded
-    // locals are outside cell storage and never cause a local-list overflow.
+    // Visualize the pre-truncation count. Unbounded local lights are outside
+    // cell storage and never cause a local-list overflow.
     uint count = localCount;
     if (validDepth && (push.flags & kLightGridDebugIncludeGlobals) != 0u) {
         count += clusterLightGridGlobalLightCount(params);

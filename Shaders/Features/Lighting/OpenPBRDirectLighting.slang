@@ -78,31 +78,43 @@ struct RealtimeSurfaceLights : ISurfaceLightProvider
     {
         if (openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) { return 0u; }
 #if METALLIC_DEFERRED_LIGHT_GRID
-        return lookup.count + clusterLightGridGlobalLightCount(grid);
+        return kCelestialLightCount + lookup.count + clusterLightGridGlobalLightCount(grid);
 #else
-        return punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
+        return kCelestialLightCount + punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
 #endif
     }
     SurfaceLightSample sample(uint index)
     {
         SurfaceLightSample result;
+        PunctualLightSample light;
+        if (index < kCelestialLightCount) {
+            result.source = celestialSourceIdentity(index);
+            light = sampleCelestialLight(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index);
+        } else {
+            index -= kCelestialLightCount;
 #if METALLIC_DEFERRED_LIGHT_GRID
-        result.source = index < lookup.count
-            ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
-            : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
-        PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[result.source], hit.position);
+            result.source = index < lookup.count
+                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
+                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
+            light = samplePunctualLightData(gDeferredGridLights[result.source], hit.position);
 #else
-        result.source = index;
-        PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), index, hit.position);
+            result.source = index;
+            light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), index, hit.position);
 #endif
+        }
         result.direction = light.direction;
         result.illuminance = light.illuminance;
         result.distance = light.distance;
-        result.inverseSourcePdf = 1.0;
+        result.inverseSourcePdf = any(light.illuminance > 0.0) ? 1.0 : 0.0;
         return result;
     }
     float3 visibility(SurfaceLightSample light)
     {
+        if ((light.source & kCelestialSourceBit) != 0u &&
+            !celestialLightCastsShadow(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights),
+                light.source & ~kCelestialSourceBit)) { return float3(1.0); }
         float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
         float distance = max(light.distance - length(origin - hit.position), 0.0);
 #if METALLIC_REALTIME_DEFERRED

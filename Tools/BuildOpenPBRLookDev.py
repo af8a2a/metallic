@@ -102,10 +102,11 @@ def main():
     direction = [direction[2], direction[1], -direction[0]]
     environment = {"enabled": True, "path": "san_giuseppe_bridge_split.hdr",
         "intensity": 1.0, "rotationDegrees": 0.0, "visible": True}
+    environment["sun"] = {"enabled": True, "direction": direction,
+        "color": [float(v) for v in light_inputs["color"].split(",")],
+        "illuminance": float(light_inputs["intensity"]), "angularRadius": 0.00465}
     lighting = {"exposureEV100": 0.0, "autoExposure": {"enabled": False, "compensation": 0.0},
-        "lights": [{"name": "MaterialX Split Sun", "type": "directional", "enabled": True,
-            "direction": direction, "color": [float(v) for v in light_inputs["color"].split(",")],
-            "intensity": float(light_inputs["intensity"])}]}
+        "lights": []}
     scene = {"version": 3, "source": "OpenPbrDefault.gltf", "sceneIndex": 0, "nodes": [],
         "world": {"environment": environment, "lighting": lighting}}
     camera = {"eye": eye, "center": center, "up": [0.0, 1.0, 0.0], "fovDegrees": 60.0,

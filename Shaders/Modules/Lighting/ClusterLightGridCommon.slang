@@ -123,11 +123,11 @@ public uint clusterLightGridLocalLightIndex(
 
 public uint clusterLightGridGlobalLightCount(ClusterLightGridParams params)
 {
-    return params.counts.y + params.counts.z;
+    return params.counts.z;
 }
 
-// Directionals precede unbounded local lights. Both are deliberately outside the
-// cell lists and must be evaluated once in addition to the bounded-local lookup.
+// Unbounded local lights are outside cell lists and are evaluated once alongside
+// the bounded-local lookup. Celestial sources belong to a separate fixed domain.
 public uint clusterLightGridGlobalLightIndex(
     ClusterLightGridParams params, StructuredBuffer<uint> candidates, uint index)
 {

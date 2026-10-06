@@ -11,8 +11,11 @@
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
 
 #include <array>
+#include <bit>
 #include <cstring>
 #include <thread>
 #include <map>
@@ -2086,6 +2089,106 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(NamedResourceParametersTest);
+
+class CelestialResourceParametersTest final : public RHITest {
+public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"environment.celestial.fixed.slots.abi"}, bench::Layer::Core,
+            "binding", "binding", {"celestial-slots-0.bin", "celestial-slots-1.bin",
+                "celestial-slots-2.bin", "celestial-slots-3.bin"});
+    }
+    CelestialResourceParametersTest()
+    {
+        type = RHITestType::Resource;
+        name = "celestial_fixed_slots_named_environment_abi";
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice fixture;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Celestial named environment ABI",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { fixture = std::move(value); }));
+        auto& device = *fixture;
+        auto* queue = device.getQueue(QueueType::Graphics);
+        REG_CHECK(queue != nullptr);
+        ShaderCompileResult shader;
+        REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "CelestialLightingProbe", .entryPointName = "main",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
+            .transform([&](auto value) { shader = std::move(value); }));
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 63, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        ComputeProgram program;
+        std::string log;
+        const auto initialized = program.initialize(device, {.spirv = shader.spirv, .bindings = bindings,
+            .requiresRayQuery = false, .resourceParameters = kSceneProbeResourceLayout}, log);
+        if (!initialized) { return RHITestResult::fail(log + ": " + toString(initialized)); }
+        std::unique_ptr<Buffer> celestial, output;
+        const auto create = [&](std::unique_ptr<Buffer>& buffer, uint32_t size, uint32_t stride) {
+            return device.createBuffer({.size = size, .structureStride = stride,
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute})
+                .transform([&](auto value) { buffer = std::move(value); });
+        };
+        REG_REQUIRE(create(celestial, sizeof(GPUCelestialLightRecords), sizeof(GPUCelestialLight)));
+        REG_REQUIRE(create(output, 128, 16));
+        GPUCelestialLightRecords records{};
+        records[0] = {.direction = {0.0f, -1.0f, 0.0f}, .angularRadius = 0.00465f,
+            .irradiance = {10.0f, 20.0f, 30.0f}, .diskRadiance = {1.0f, 2.0f, 3.0f}, .shadowImportance = 4.0f};
+        records[1] = {.direction = {-1.0f, 0.0f, 0.0f}, .angularRadius = 0.006f,
+            .irradiance = {2.0f, 3.0f, 5.0f}, .diskRadiance = {6.0f, 7.0f, 8.0f}, .shadowImportance = 9.0f};
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, *queue));
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(device, *queue));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{*queue, *gate};
+        const ComputeDispatchBinding resources[] = {
+            {.binding = 55, .buffer = celestial.get()}, {.binding = 63, .buffer = output.get()}};
+        for (uint32_t enabledMask = 0; enabledMask < 4; ++enabledMask) {
+            for (uint32_t slot = 0; slot < 2; ++slot) {
+                records[slot].flags = (enabledMask & (1u << slot)) != 0 ? 3u : 0u;
+            }
+            void* mapped = celestial->map();
+            REG_CHECK(mapped != nullptr);
+            std::memcpy(mapped, records.data(), sizeof(records));
+            celestial->flush(); celestial->unmap();
+            REG_REQUIRE(recording.begin(enabledMask));
+            REG_REQUIRE(program.dispatch({.commandBuffer = recording.commands.get(), .bindings = resources}));
+            REG_REQUIRE(recording.submit(tracker, *gate));
+            REG_REQUIRE(recording.frame.wait());
+            output->invalidate();
+            const auto* values = static_cast<const float*>(output->map());
+            REG_CHECK(values != nullptr);
+            std::array<float, 32> actual{};
+            std::memcpy(actual.data(), values, sizeof(actual));
+            output->unmap();
+            for (uint32_t slot = 0; slot < 2; ++slot) {
+                const auto& expected = records[slot];
+                const size_t base = slot * 12;
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    REG_CHECK(actual[base + channel] == -expected.direction[channel]);
+                    REG_CHECK(actual[base + 4 + channel] == expected.irradiance[channel]);
+                    REG_CHECK(actual[base + 8 + channel] == expected.diskRadiance[channel]);
+                    float sum = 0;
+                    for (const auto& record : records) { if (record.flags != 0) { sum += record.irradiance[channel]; } }
+                    REG_CHECK(actual[24 + channel] == sum);
+                }
+                REG_CHECK(actual[base + 3] == expected.angularRadius);
+                REG_CHECK(std::bit_cast<uint32_t>(actual[base + 7]) == expected.flags);
+                REG_CHECK(actual[base + 11] == expected.shadowImportance);
+                REG_CHECK(std::bit_cast<uint32_t>(actual[28 + slot]) == (kCelestialLightSourceTag | slot));
+                REG_CHECK(actual[30 + slot] == (expected.flags != 0 ? 1.0f : 0.0f));
+            }
+            bench::readbackEvidence(context, "celestial-slots-" + std::to_string(enabledMask) + ".bin", std::span<const float>(actual));
+        }
+        return RHITestResult::pass("Nested environment handle, 48-byte fixed Sun/Moon slots, independent enable states and source tags");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(CelestialResourceParametersTest);
 
 class RegistryDeviceLifetimeTest final : public RHITest {
 public:
