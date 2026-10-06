@@ -123,7 +123,7 @@
                     "zfar": 10000.0,
                     "znear": 0.0010000000474974513
                 },
-                "mode": "Balanced",
+                "mode": "Quality",
                 "resetSerial": 0
             },
             "type": "StreamlineDLSSRRPass"

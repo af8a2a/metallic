@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ShaderWarmup.h"
+#include "Runtime/Render/RenderSample.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 
@@ -11,7 +12,6 @@ namespace {
 
 constexpr const char* kPathTracingSampleId = "pathtracing-sample";
 constexpr const char* kPathTracingDLSSSRSampleId = "pathtracing-sample-dlss-sr";
-constexpr const char* kPathTracingDLSSRRSampleId = "pathtracing-sample-dlss-rr";
 
 void printUsage()
 {
@@ -19,8 +19,10 @@ void printUsage()
     std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "MetallicPathTracingSample options:\n"
+        "  Default: DLSS-RR with DLSS Super Resolution Quality\n"
+        "  --native                    Use native-resolution path tracing without DLSS\n"
         "  --dlss-sr                   Use the NVIDIA DLSS-SR upscaling graph\n"
-        "  --dlss-rr                   Use the NVIDIA DLSS-RR denoiser graph\n"
+        "  --dlss-rr                   Use DLSS-RR with Super Resolution Quality (default)\n"
         "  --smoke-test                 Render one frame and exit\n"
         "  --scene <path>               Override the sample glTF scene\n"
         "  --wait-for-graphics-debugger Wait before Vulkan initialization");
@@ -34,7 +36,7 @@ int main(int argc, char** argv)
     metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
-    const char* sampleId = kPathTracingSampleId;
+    const char* sampleId = metallic::render::kDefaultPathTracingSampleId;
     std::string scenePath;
     for (int index = 1; index < argc; ++index) {
         if (warmupOptions.consume(argv[index])) { continue; }
@@ -51,7 +53,11 @@ int main(int argc, char** argv)
             continue;
         }
         if (argument == "--dlss-rr") {
-            sampleId = kPathTracingDLSSRRSampleId;
+            sampleId = metallic::render::kDefaultPathTracingSampleId;
+            continue;
+        }
+        if (argument == "--native") {
+            sampleId = kPathTracingSampleId;
             continue;
         }
         if (argument == "--dlss-sr") {

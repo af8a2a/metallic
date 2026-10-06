@@ -148,7 +148,7 @@ public:
             runtimeEnumSetting(
                 "mode",
                 "Mode",
-                "Balanced",
+                "Quality",
                 {
                     {"Balanced", "Balanced"},
                     {"Quality", "Quality"},
@@ -853,7 +853,7 @@ private:
 
     static vulkan::StreamlineDLSSRRMode modeFromProperties(const RenderGraphProperties& properties)
     {
-        const std::string mode = stringProperty(properties, "mode", "Balanced");
+        const std::string mode = stringProperty(properties, "mode", "Quality");
         if (mode == "Off" || mode == "off") {
             return vulkan::StreamlineDLSSRRMode::Off;
         }

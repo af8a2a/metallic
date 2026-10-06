@@ -71,7 +71,7 @@ constexpr float kMinViewportCameraSpeed = 0.01f;
 constexpr float kMaxViewportCameraSpeed = 100.0f;
 constexpr float kViewportCameraWheelSpeedStep = 1.25f;
 constexpr float kMaxDollyDisplacement = 0.99f;
-constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
+constexpr const char* kDefaultRenderSampleId = render::kDefaultPathTracingSampleId;
 
 bool environmentFlagEnabled(const char* name, bool defaultValue = false)
 {
