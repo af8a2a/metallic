@@ -17,14 +17,15 @@ void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     ray.direction = rayDirectionFromPixel(samplePixel, push);
     HitInfo hit;
     uint seed = hash(pixel.x + pixel.y * push.width);
-    float3 radiance = traceClosest(ray, push, hit)
+    bool hasSurface = traceClosest(ray, push, hit);
+    float3 radiance = hasSurface
         ? shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, false)
-        : environmentRadiance(ray.direction, push, true);
+        : (push.debugView != kOpenPBRDebugViewFinal ? float3(0.0) : environmentRadiance(ray.direction, push, true));
     if (push.outputLinear != 0u) {
         gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
         return;
     }
-    float3 exposed = max(radiance * lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights)), float3(0.0));
+    float3 exposed = max(Metallic.WorkingColor::toLinearRec709(radiance) * lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights)), float3(0.0));
     float3 color = pow(exposed / (exposed + 1.0), 1.0 / 2.2);
     gOutput[pixel] = float4(saturate(color), 1.0);
 }

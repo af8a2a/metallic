@@ -1,0 +1,12 @@
+{
+  "type": "Metallic.MaterialGraph",
+  "version": 1,
+  "output": 3,
+  "nodes": [
+    {"id": 1, "kind": "Parameter", "position": [20, 70], "inputs": {}, "slot": 0, "default": [0.12, 0.35, 0.65, 1]},
+    {"id": 2, "kind": "OpenPBR", "position": [280, 60], "inputs": {
+      "baseColor": {"node": 1}, "metallic": 0, "roughness": 0.3,
+      "normalTS": [0, 0, 1, 0], "coatWeight": 1, "coatRoughness": 0.08}},
+    {"id": 3, "kind": "Output", "position": [560, 80], "inputs": {"surface": {"node": 2}, "emissive": 0, "coverage": 1}}
+  ]
+}

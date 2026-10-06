@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/GPUDebugProbe.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -122,7 +123,7 @@ Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::stri
 {
     if (program.valid()) { return {}; }
     ShaderCompileResult shader;
-    auto result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/GPUProbe", .entryPointName = "probe",
+    auto result = ShaderRegistry::instance().getShader({.moduleName = "Features/Debug/GPUProbe", .entryPointName = "probe",
         .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
     const ComputeProgramBindingDesc bindings[] = {{0}, {1}};

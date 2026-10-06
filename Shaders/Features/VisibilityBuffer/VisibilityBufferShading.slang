@@ -2,18 +2,16 @@
 import GPUDriven;
 using Metallic.GPUDriven;
 import Core;
+#include "../../Interop/MaterialTextureDecode.hlsli"
 using Metallic;
 import Material;
 using Metallic.Material;
 
-#define OPENPBR_LANGUAGE_TARGET_SLANG 1
-#define OPENPBR_USE_TEXTURE_LUTS 1
-#define OPENPBR_ENERGY_TABLES_USE_UINT16 0
-#define OPENPBR_FEATURE_EnableSheenAndCoat false
-#define OPENPBR_FEATURE_EnableDispersion false
-#define OPENPBR_FEATURE_EnableTranslucency true
-#define OPENPBR_FEATURE_EnableMetallic true
-#define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRTextureLUT;
+import MaterialProgram;
+using Metallic.OpenPBR;
 
 #ifndef GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE
 #define GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE 0
@@ -22,83 +20,35 @@ using Metallic.Material;
 #define GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE 0
 #endif
 
-uint openPBRLut2DSlot(int lutId)
-{
-    if (lutId == 1) {
-        return 0u;
-    }
-    if (lutId == 2) {
-        return 1u;
-    }
-    if (lutId == 4) {
-        return 2u;
-    }
-    if (lutId == 5) {
-        return 3u;
-    }
-    if (lutId == 6) {
-        return 4u;
-    }
-    return 5u;
-}
-
-uint openPBRLut3DSlot(int lutId)
-{
-    return lutId == 3 ? 1u : 0u;
-}
+// Legacy preview callers must bind a linear clamp sampler at this handle.
+#ifndef GPU_DRIVEN_OPENPBR_LUT_SAMPLER
+#define GPU_DRIVEN_OPENPBR_LUT_SAMPLER 0
+#endif
 
 float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
-    Texture2D<float4> textureHandle =
-        resolveUniform(ResourceHandle<Texture2D<float4>>(GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE + openPBRLut2DSlot(lutId)));
-    Texture2D<float4> texture = textureHandle;
-    uint width = 1u;
-    uint height = 1u;
-    texture.GetDimensions(width, height);
-    float2 size = float2(max(width, 1u), max(height, 1u));
-    float2 texel = clamp(uv * size - 0.5, float2(0.0), size - 1.0);
-    int2 baseTexel = int2(floor(texel));
-    int2 nextTexel = min(baseTexel + int2(1, 1), int2(width - 1u, height - 1u));
-    float2 fraction = texel - float2(baseTexel);
-    float4 v00 = texture.Load(int3(baseTexel.x, baseTexel.y, 0));
-    float4 v10 = texture.Load(int3(nextTexel.x, baseTexel.y, 0));
-    float4 v01 = texture.Load(int3(baseTexel.x, nextTexel.y, 0));
-    float4 v11 = texture.Load(int3(nextTexel.x, nextTexel.y, 0));
-    return lerp(lerp(v00, v10, fraction.x), lerp(v01, v11, fraction.x), fraction.y);
+    return sampleOpenPBRTexture2D(
+        resolveUniform(ResourceHandle<Texture2D<float4>>(GPU_DRIVEN_OPENPBR_LUT_2D_SHADER_BASE + openPBRLut2DSlot(lutId))),
+        resolveUniform(SamplerHandle(GPU_DRIVEN_OPENPBR_LUT_SAMPLER)), uv);
 }
 
 float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
-    Texture3D<float4> textureHandle =
-        resolveUniform(ResourceHandle<Texture3D<float4>>(GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE + openPBRLut3DSlot(lutId)));
-    Texture3D<float4> texture = textureHandle;
-    uint width = 1u;
-    uint height = 1u;
-    uint depth = 1u;
-    texture.GetDimensions(width, height, depth);
-    float3 size = float3(max(width, 1u), max(height, 1u), max(depth, 1u));
-    float3 texel = clamp(uvw * size - 0.5, float3(0.0), size - 1.0);
-    int3 baseTexel = int3(floor(texel));
-    int3 nextTexel = min(baseTexel + int3(1, 1, 1), int3(width - 1u, height - 1u, depth - 1u));
-    float3 fraction = texel - float3(baseTexel);
-    float4 v000 = texture.Load(int4(baseTexel.x, baseTexel.y, baseTexel.z, 0));
-    float4 v100 = texture.Load(int4(nextTexel.x, baseTexel.y, baseTexel.z, 0));
-    float4 v010 = texture.Load(int4(baseTexel.x, nextTexel.y, baseTexel.z, 0));
-    float4 v110 = texture.Load(int4(nextTexel.x, nextTexel.y, baseTexel.z, 0));
-    float4 v001 = texture.Load(int4(baseTexel.x, baseTexel.y, nextTexel.z, 0));
-    float4 v101 = texture.Load(int4(nextTexel.x, baseTexel.y, nextTexel.z, 0));
-    float4 v011 = texture.Load(int4(baseTexel.x, nextTexel.y, nextTexel.z, 0));
-    float4 v111 = texture.Load(int4(nextTexel.x, nextTexel.y, nextTexel.z, 0));
-    float4 z0 = lerp(lerp(v000, v100, fraction.x), lerp(v010, v110, fraction.x), fraction.y);
-    float4 z1 = lerp(lerp(v001, v101, fraction.x), lerp(v011, v111, fraction.x), fraction.y);
-    return lerp(z0, z1, fraction.z);
+    return sampleOpenPBRTexture3D(
+        resolveUniform(ResourceHandle<Texture3D<float4>>(GPU_DRIVEN_OPENPBR_LUT_3D_SHADER_BASE + openPBRLut3DSlot(lutId))),
+        resolveUniform(SamplerHandle(GPU_DRIVEN_OPENPBR_LUT_SAMPLER)), uvw);
 }
 
-#define OPENPBR_SAMPLE_2D_TEXTURE(lut_id, uv) sampleOpenPBRLut2D(lut_id, uv)
-#define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
-
-#include "../../../External/openpbr-bsdf/openpbr.h"
-#include "../../Interop/OpenPBRClosure.hlsli"
+struct PreviewOpenPBRContext : IOpenPBRContext
+{
+    static bool enableSheenAndCoat() { return false; }
+    static bool enableDispersion() { return false; }
+    static bool enableTranslucency() { return true; }
+    static bool enableMetallic() { return true; }
+    float4 sample2D(int id, float2 uv) { return sampleOpenPBRLut2D(id, uv); }
+    float4 sample3D(int id, float3 uvw) { return sampleOpenPBRLut3D(id, uvw); }
+};
+typealias SceneOpenPBRClosure = OpenPBRClosure<PreviewOpenPBRContext>;
 
 static const uint kModeMeshlet = 0u;
 static const uint kModePrimitive = 1u;
@@ -844,7 +794,7 @@ float3 proceduralSky(float3 direction, float rotationRadians)
         float3(0.0, 1.0, 0.0));
     float t = saturate(direction.y * 0.5 + 0.5);
     float3 sky = lerp(float3(0.62, 0.70, 0.78), float3(0.12, 0.24, 0.48), t) * 0.45;
-    return sky + pow(saturate(dot(direction, sunDirection)), 256.0) * float3(7.0, 6.4, 5.3);
+    return Metallic.WorkingColor::fromLinearRec709(sky + pow(saturate(dot(direction, sunDirection)), 256.0) * float3(7.0, 6.4, 5.3));
 }
 
 float3 environmentRadiance(float3 direction, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
@@ -908,7 +858,7 @@ uint packColor(float3 color)
 
 uint packHdrColor(float3 color)
 {
-    return packColor(linearToSrgb(acesToneMap(max(color, float3(0.0)))));
+    return packColor(linearToSrgb(acesToneMap(max(Metallic.WorkingColor::toLinearRec709(color), float3(0.0)))));
 }
 
 uint shadeDeferredSurface(
@@ -995,9 +945,9 @@ uint shadeDeferredSurface(
         push);
 
     float3 baseColor = saturate(
-        material.baseColor.rgb * srgbToLinear(baseColorSample.rgb));
+        materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w));
     if (params.mode == kModeBaseColor) {
-        return packColor(linearToSrgb(baseColor));
+        return packColor(linearToSrgb(Metallic.WorkingColor::toLinearRec709(baseColor)));
     }
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(
@@ -1007,14 +957,14 @@ uint shadeDeferredSurface(
     float transmission = saturate(
         material.glassParams.x * transmissionSample.r) * (1.0 - metallic);
     float3 emissive = max(
-        material.emissive.rgb * srgbToLinear(emissiveSample.rgb),
+        materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w),
         float3(0.0));
     float occlusion = lerp(
         1.0,
         saturate(occlusionSample.r),
         saturate(material.textureParams.y));
 
-    OpenPBR_ResolvedInputs inputs = openpbr_make_default_resolved_inputs();
+    OpenPBRResolvedInputs inputs = openPBRMakeDefaultResolvedInputs();
     inputs.base_weight = 1.0;
     inputs.base_color = baseColor;
     // glTF specifies a Lambertian diffuse lobe, independently of GGX roughness.
@@ -1037,10 +987,11 @@ uint shadeDeferredSurface(
         : float3(1.0);
     inputs.geometry_opacity = saturate(material.baseColor.a * baseColorSample.a);
     inputs.geometry_thin_walled = false;
-    inputs.geometry_basis = openpbr_make_basis(normal, tangent, bitangent);
+    inputs.geometry_basis = openPBRMakeBasis(normal, tangent, bitangent);
     inputs.geometry_coat_basis = inputs.geometry_basis;
 
-    OpenPBRClosure closure;
+    SceneOpenPBRClosure closure;
+    closure.context = PreviewOpenPBRContext();
     closure.inputs = inputs;
     closure.occlusion = occlusion;
     let prepared = closure.prepare(viewDirection, TransportMode.Radiance);

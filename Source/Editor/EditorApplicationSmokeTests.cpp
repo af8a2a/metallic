@@ -313,6 +313,104 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
 
 bool EditorApplication::runSceneSwitchSmokeTest()
 {
+    if (std::getenv("METALLIC_SMOKE_TEST_LOOKDEV_PATHS")) {
+        using render::LookDevRenderPath;
+        if (!lookDevComparisonGraph_) { return false; }
+        const auto renderFrames = [&]() {
+            for (uint32_t frame = 0; frame < 8; ++frame) {
+                auto profileFrame = profiler_.beginFrame();
+                const render::vulkan::StreamlineFrameScope streamlineFrame;
+                if (!waitForFrameSlotBeforeInput()) { return false; }
+                pollEvents();
+                if (!renderFrame()) { return false; }
+            }
+            return viewportPreviewValid_ && graphExecutor_ && graphExecutor_->compiled();
+        };
+        if (!renderFrames()) { return false; }
+        const auto source = scene_.sourcePath();
+        auto camera = viewportCameraProperties();
+        camera["camera"]["eye"][0] = camera["camera"]["eye"][0].get<float>() + 0.05f;
+        applyViewportCameraProperties(camera, "LookDev path switch camera");
+        camera = viewportCameraProperties();
+        const auto materialCount = scene_.materials().size();
+        scene_.setDirty(true);
+        for (const auto path : {LookDevRenderPath::PathTraceOnly, LookDevRenderPath::DeferredOnly,
+                LookDevRenderPath::Comparison, LookDevRenderPath::DeferredOnly, LookDevRenderPath::PathTraceOnly}) {
+            setLookDevRenderPath(path);
+            if (!renderFrames() || viewportCameraProperties() != camera || scene_.sourcePath() != source ||
+                !scene_.dirty() || scene_.materials().size() != materialCount || activePreviewOutput_ != "FinalBlit.color") {
+                spdlog::error("[Smoke LookDev Paths] Scene, camera, edits or display lost");
+                return false;
+            }
+            bool pt = false, deferred = false, vbuffer = false, slider = false;
+            for (const auto& node : graphExecutor_->executionStats().nodes) {
+                pt |= node.name == "Reference";
+                deferred |= node.name == "Deferred";
+                vbuffer |= node.name == "VBuffer";
+                slider |= node.name == "Slider";
+            }
+            if (pt != (path != LookDevRenderPath::DeferredOnly) ||
+                deferred != (path != LookDevRenderPath::PathTraceOnly) || vbuffer != deferred ||
+                slider != (path == LookDevRenderPath::Comparison)) {
+                spdlog::error("[Smoke LookDev Paths] Inactive pass executed");
+                return false;
+            }
+        }
+        scene_.setDirty(false);
+        loadBuiltInSample("lookdev-vbuffer");
+        if (!renderFrames() || renderGraph_.findNode("Deferred") || !renderGraph_.findNode("Reference")) {
+            spdlog::error("[Smoke LookDev Paths] Render path preference lost on sample load");
+            return false;
+        }
+        spdlog::info("[Smoke LookDev Paths] Passed live mode switches, active GPU passes, camera/unsaved scene retention and sample reload");
+        return true;
+    }
+    const bool studioSwitch = std::getenv("METALLIC_SMOKE_TEST_STUDIO_SWITCH") != nullptr;
+    if (std::getenv("METALLIC_SMOKE_TEST_PAINTER_SWITCH") || studioSwitch) {
+        const char* label = studioSwitch ? "Studio" : "Painter";
+        const std::vector<const char*> ids = studioSwitch
+            ? std::vector<const char*>{"studio-white-overview", "studio-white-chart", "studio-white-M03_CoatedPaint-textured", "studio-white-overview"}
+            : std::vector<const char*>{"painter-M01_NeutralDielectric-uniform", "painter-M03_CoatedPaint-textured",
+                "painter-M08_MaskedCard-textured", "painter-H01_HDREmission-textured", "painter-M01_NeutralDielectric-uniform"};
+        for (const char* id : ids) {
+            // A complete studio preset must reset previously edited environment settings.
+            if (studioSwitch) { environmentUserEdited_ = true; }
+            loadBuiltInSample(id);
+            render::RenderSampleLoadResult expected;
+            std::string message;
+            if (!render::loadBuiltInRenderSample(id, expected, message)) { return false; }
+            bool ready = false;
+            for (uint32_t frame = 0; frame < 180; ++frame) {
+                auto profileFrame = profiler_.beginFrame();
+                const render::vulkan::StreamlineFrameScope streamlineFrame;
+                if (!waitForFrameSlotBeforeInput()) { return false; }
+                pollEvents();
+                if (!renderFrame()) { return false; }
+                if (viewportPreviewValid_ && scene_.sourcePath() == std::filesystem::path(expected.desc.scenePath)) {
+                    ready = true;
+                    if (frame > 4) { break; }
+                }
+            }
+            if (!ready || !scene_.documentWarning().empty()) {
+                spdlog::error("[Smoke {} Switch] Failed {}: {}", label, id, scene_.documentWarning());
+                return false;
+            }
+            if (studioSwitch && (renderWorld_.environment().path.filename() != "WhiteStudio02.hdr" ||
+                !renderWorld_.environment().hasExplicitSourceColorSpace())) { return false; }
+            spdlog::info("[Smoke {} Switch] Rendered {} with {} materials and {} textures", label, id,
+                scene_.materials().size(), scene_.textures().size());
+        }
+        const auto source = scene_.sourcePath();
+        scene_.setDirty(true);
+        loadBuiltInSample(ids[1]);
+        const bool protectedEdits = scene_.sourcePath() == source && pendingSceneAction_ == PendingSceneAction::LoadSample;
+        scene_.setDirty(false);
+        pendingSceneAction_ = PendingSceneAction::None;
+        pendingSceneValue_.clear();
+        if (!protectedEdits) { return false; }
+        spdlog::info("[Smoke {} Switch] Passed full scene changes, return to baseline and unsaved-edit protection", label);
+        return true;
+    }
     if (std::getenv("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
         const auto render = [&]() {
             auto profileFrame = profiler_.beginFrame();

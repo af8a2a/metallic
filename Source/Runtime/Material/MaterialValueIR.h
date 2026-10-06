@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 #include <json.hpp>
+#include "MaterialClosureIR.h"
+#include <optional>
 
 namespace metallic::render {
 
@@ -17,7 +19,8 @@ enum class MaterialValueOp : uint32_t
 {
     Constant, Parameter, UV, Alpha, Add, Multiply, Dot, Lerp, Sin, Fract, Abs, Saturate,
     Clamp, Normalize, NormalMap, UVTransform, Swizzle, Select,
-    Position, GeometryNormal, BaseColor, Metallic, Roughness, Emissive, TextureSample
+    Position, GeometryNormal, BaseColor, Metallic, Roughness, Emissive, TextureSample,
+    TextureSampleLinear // Linear Rec.709 for Color slots; raw values for Data slots.
 };
 enum class MaterialTextureFootprint : uint32_t { ExplicitLOD, SampleGrad, RayCone };
 enum class MaterialValueTexture : uint32_t { BaseColor, MetallicRoughness, Normal, Occlusion, Emissive, Specular };
@@ -46,6 +49,7 @@ class MaterialValueIR final
 public:
     // v1 nested expressions and v2 {nodes:{name:expression}, outputs:{...}}.
     // v2 references use {"ref":"name"}; unreachable definitions are removed.
+    // v3 adds a Slab/Mix/Layer closure with Value expressions as its inputs.
     // Throws diagnostic exceptions. No partially validated IR is returned.
     static MaterialValueIR parse(std::string_view source);
     static MaterialValueIR lower(const nlohmann::json& root);
@@ -55,6 +59,9 @@ public:
     const MaterialValueUsage& usage() const { return usage_; }
     const std::string& canonical() const { return canonical_; }
     uint64_t hash() const { return hash_; }
+    // v3 binds closure leaf inputs to named Value outputs. Topology is validated
+    // by the same Closure IR/backend profile as the resolved Slab prototype.
+    const std::optional<MaterialClosureIR>& closure() const { return closure_; }
 private:
     friend struct MaterialValueIRBuilder;
     void finalize();
@@ -63,6 +70,7 @@ private:
     MaterialValueUsage usage_;
     std::string canonical_;
     uint64_t hash_ = 0;
+    std::optional<MaterialClosureIR> closure_;
 };
 
 } // namespace metallic::render

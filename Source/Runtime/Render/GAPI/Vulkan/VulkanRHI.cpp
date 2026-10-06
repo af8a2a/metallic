@@ -6,6 +6,7 @@
 #include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
+#include "Runtime/Render/GAPI/ShaderObjectCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
@@ -2050,12 +2051,12 @@ struct PipelineCacheImpl {
     std::unordered_set<uint64_t> storedPsoHashes;
     std::unordered_set<uint64_t> sessionPsoHashes;
     mutable std::mutex mutex;
+    std::mutex saveMutex;
     bool saveOnDestroy = true;
-    bool dirty = false;
 
     ~PipelineCacheImpl();
     Result<> initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
-    Result<> saveLocked();
+    Result<> save();
     bool recordPsoLocked(uint64_t psoHash);
 };
 
@@ -2085,6 +2086,8 @@ struct GraphicsShaderObjectProgramImpl {
     VkShaderEXT vertexShader = VK_NULL_HANDLE;
     VkShaderEXT fragmentShader = VK_NULL_HANDLE;
     bool usesBindlessHeap = false;
+    ShaderObjectCacheStats cacheStats;
+    std::string binaryCacheFilePath;
     ~GraphicsShaderObjectProgramImpl();
 };
 
@@ -2173,6 +2176,9 @@ struct BindlessHeapImpl {
 
 struct DeviceImpl {
     std::mutex sharedStateMutex;
+    // Requests for the same binary serialize creation/export; unrelated keys
+    // may compile concurrently. Files are also replaced atomically on disk.
+    std::array<std::mutex, 16> shaderObjectCacheMutexes;
     std::unordered_map<const void*, std::shared_ptr<void>> sharedStates;
     DebugCallbackContext debugContext;
     VkInstance instance = VK_NULL_HANDLE;
@@ -2582,17 +2588,16 @@ PipelineCacheImpl::~PipelineCacheImpl()
         return;
     }
 
-    {
-        std::lock_guard lock(mutex);
-        if (saveOnDestroy && dirty && !filePath.empty()) {
-            const Result<> result = saveLocked();
-            if (!result) {
-                spdlog::warn("Failed to save pipeline cache '{}'", filePath.string());
-            }
+    // Registry's device-owned writer has already joined before cache handles
+    // are destroyed. Explicit cache owners also finish all accesses first.
+    if (saveOnDestroy && !filePath.empty()) {
+        const Result<> result = save();
+        if (!result) {
+            spdlog::warn("Failed to save pipeline cache '{}'", filePath.string());
         }
-        device->functions.vkDestroyPipelineCache(device->device, pipelineCache, nullptr);
-        pipelineCache = VK_NULL_HANDLE;
     }
+    device->functions.vkDestroyPipelineCache(device->device, pipelineCache, nullptr);
+    pipelineCache = VK_NULL_HANDLE;
 }
 
 Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc)
@@ -2678,18 +2683,51 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
     return {};
 }
 
-Result<> PipelineCacheImpl::saveLocked()
+Result<> PipelineCacheImpl::save()
 {
+    // Serialize file replacement without holding the PSO creation/statistics
+    // mutex during driver extraction, checksum calculation or durable I/O.
+    std::lock_guard saveLock(saveMutex);
     if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
     if (filePath.empty()) {
         return {};
     }
-    if (!dirty) {
-        return {};
+    const auto begin = std::chrono::steady_clock::now();
+    uint64_t revision = 0;
+    std::vector<uint64_t> hashes;
+    {
+        std::lock_guard lock(mutex);
+        if (stats.dirtyRevision == stats.persistedRevision) {
+            return {};
+        }
+        revision = stats.dirtyRevision;
+        hashes.reserve(storedPsoHashes.size() + sessionPsoHashes.size());
+        hashes.insert(hashes.end(), storedPsoHashes.begin(), storedPsoHashes.end());
+        hashes.insert(hashes.end(), sessionPsoHashes.begin(), sessionPsoHashes.end());
+        stats.saveInProgress = true;
     }
 
+    struct SaveAttempt {
+        PipelineCacheImpl& cache;
+        bool completed = false;
+        ~SaveAttempt()
+        {
+            if (!completed) {
+                std::lock_guard lock(cache.mutex);
+                ++cache.stats.saveFailureCount;
+                cache.stats.saveInProgress = false;
+            }
+        }
+    } attempt{*this};
+    const auto nanoseconds = [](auto duration) {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count());
+    };
+    const auto extractBegin = std::chrono::steady_clock::now();
+    // Cache flags are zero: Vulkan internally synchronizes native cache access.
+    // Snapshot hashes BEFORE extraction so they never describe a later PSO
+    // that is missing from the extracted blob. Extra native entries are safe.
     size_t byteSize = 0;
     VkResult vkResult = device->functions.vkGetPipelineCacheData(
         device->device,
@@ -2701,7 +2739,8 @@ Result<> PipelineCacheImpl::saveLocked()
     }
 
     std::vector<uint8_t> backendData(byteSize);
-    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+    constexpr uint32_t kMaxExtractAttempts = 3;
+    for (uint32_t retry = 0; retry < kMaxExtractAttempts; ++retry) {
         size_t writtenSize = backendData.size();
         vkResult = device->functions.vkGetPipelineCacheData(
             device->device,
@@ -2714,6 +2753,12 @@ Result<> PipelineCacheImpl::saveLocked()
         }
         if (vkResult != VK_INCOMPLETE) {
             return resultFromVk(vkResult);
+        }
+        if (retry + 1 == kMaxExtractAttempts) {
+            // A successful size query is not a successful data extraction.
+            // Leave the revision pending if concurrent cache growth exhausted
+            // retries instead of persisting a truncated/unfilled buffer.
+            return resultFromVk(VK_INCOMPLETE);
         }
 
         byteSize = 0;
@@ -2731,25 +2776,41 @@ Result<> PipelineCacheImpl::saveLocked()
         return resultFromVk(vkResult);
     }
 
-    std::vector<uint64_t> hashes;
-    hashes.reserve(storedPsoHashes.size() + sessionPsoHashes.size());
-    hashes.insert(hashes.end(), storedPsoHashes.begin(), storedPsoHashes.end());
-    hashes.insert(hashes.end(), sessionPsoHashes.begin(), sessionPsoHashes.end());
+    const auto extractEnd = std::chrono::steady_clock::now();
+    const auto writeBegin = extractEnd;
     std::string reason;
     if (!savePipelineCacheFile(filePath, fileIdentity, hashes, backendData, reason)) {
         spdlog::warn("Failed to write pipeline cache '{}': {}", filePath.string(), reason);
         return makeError(Error::Failure);
     }
 
-    storedPsoHashes.insert(sessionPsoHashes.begin(), sessionPsoHashes.end());
-    stats.storedPsoCount = storedPsoHashes.size();
-    stats.backendDataSize = backendData.size();
-    dirty = false;
+    const auto writeEnd = std::chrono::steady_clock::now();
+    uint64_t storedCount = 0;
+    const uint64_t extractNs = nanoseconds(extractEnd - extractBegin);
+    const uint64_t writeNs = nanoseconds(writeEnd - writeBegin);
+    uint64_t saveNs = 0;
+    {
+        std::lock_guard lock(mutex);
+        storedPsoHashes.insert(hashes.begin(), hashes.end());
+        storedCount = stats.storedPsoCount = storedPsoHashes.size();
+        stats.backendDataSize = backendData.size();
+        stats.persistedRevision = revision;
+        ++stats.saveCount;
+        stats.lastExtractTimeNanoseconds = extractNs;
+        stats.lastWriteTimeNanoseconds = writeNs;
+        saveNs = stats.lastSaveTimeNanoseconds = nanoseconds(std::chrono::steady_clock::now() - begin);
+        stats.saveInProgress = false;
+        attempt.completed = true;
+    }
     spdlog::info(
-        "Saved pipeline cache '{}' with {} PSO hashes and {} backend bytes",
+        "Saved pipeline cache '{}' with {} PSO hashes and {} backend bytes (revision={}, extractMs={:.3f}, writeMs={:.3f}, totalMs={:.3f})",
         filePath.string(),
-        stats.storedPsoCount,
-        stats.backendDataSize);
+        storedCount,
+        backendData.size(),
+        revision,
+        static_cast<double>(extractNs) / 1'000'000.0,
+        static_cast<double>(writeNs) / 1'000'000.0,
+        static_cast<double>(saveNs) / 1'000'000.0);
     return {};
 }
 
@@ -2763,7 +2824,7 @@ bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash)
         ++stats.hitCount;
     } else {
         ++stats.missCount;
-        dirty = true;
+        ++stats.dirtyRevision;
     }
     return cacheHit;
 }
@@ -3995,8 +4056,7 @@ Result<> PipelineCache::save()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    std::lock_guard lock(impl_->mutex);
-    return impl_->saveLocked();
+    return impl_->save();
 }
 
 const void* PreparedExecution::deviceIdentity() const
@@ -4017,6 +4077,16 @@ PreparedExecution GraphicsPipeline::execution() const
 PreparedExecution GraphicsShaderObjectProgram::execution(const RasterExecutionState& state) const
 {
     PreparedExecution result; result.shaders_ = impl_; result.raster_ = state; return result;
+}
+
+ShaderObjectCacheStats GraphicsShaderObjectProgram::cacheStats() const
+{
+    return impl_ ? impl_->cacheStats : ShaderObjectCacheStats{};
+}
+
+const char* GraphicsShaderObjectProgram::binaryCacheFilePath() const
+{
+    return impl_ ? impl_->binaryCacheFilePath.c_str() : "";
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsPipeline)
@@ -5230,6 +5300,23 @@ void CommandBuffer::setDepthStencilState(const DepthStencilState& state)
 
 namespace {
 
+struct GraphicsShaderObjectStages {
+    std::array<VkShaderStageFlagBits, 7> stages{VK_SHADER_STAGE_VERTEX_BIT,
+        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+        VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+    uint32_t count = 5;
+};
+
+GraphicsShaderObjectStages graphicsShaderObjectStages(const DeviceCapabilities& capabilities)
+{
+    GraphicsShaderObjectStages result;
+    // Enabled task/mesh stages must have an explicit binding, including null
+    // bindings when executing a conventional vertex/fragment program.
+    if (capabilities.taskShader) { result.stages[result.count++] = VK_SHADER_STAGE_TASK_BIT_EXT; }
+    if (capabilities.meshShader) { result.stages[result.count++] = VK_SHADER_STAGE_MESH_BIT_EXT; }
+    return result;
+}
+
 void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
 {
     if (!commandBuffer.currentGraphicsShaderObjectBound ||
@@ -5241,17 +5328,11 @@ void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
         return;
     }
 
-    const std::array<VkShaderStageFlagBits, 5> stages{
-        VK_SHADER_STAGE_VERTEX_BIT,
-        VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
-        VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-        VK_SHADER_STAGE_GEOMETRY_BIT,
-        VK_SHADER_STAGE_FRAGMENT_BIT,
-    };
+    const auto stages = graphicsShaderObjectStages(commandBuffer.device->capabilities);
     commandBuffer.device->functions.vkCmdBindShadersEXT(
         commandBuffer.commandBuffer,
-        static_cast<uint32_t>(stages.size()),
-        stages.data(),
+        stages.count,
+        stages.stages.data(),
         nullptr);
     commandBuffer.currentGraphicsShaderObjectBound = false;
     commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap = false;
@@ -5335,11 +5416,9 @@ Result<> CommandBuffer::bindExecutionImpl(
         auto result = retainResource(execution.shaders_);
         if (!result) { return result; }
         const auto& program = *execution.shaders_;
-        const std::array<VkShaderStageFlagBits, 5> stages{VK_SHADER_STAGE_VERTEX_BIT,
-            VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
-            VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
-        const std::array<VkShaderEXT, 5> shaders{program.vertexShader, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, program.fragmentShader};
-        impl_->device->functions.vkCmdBindShadersEXT(impl_->commandBuffer, uint32_t(stages.size()), stages.data(), shaders.data());
+        const auto stages = graphicsShaderObjectStages(impl_->device->capabilities);
+        const std::array<VkShaderEXT, 7> shaders{program.vertexShader, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, program.fragmentShader};
+        impl_->device->functions.vkCmdBindShadersEXT(impl_->commandBuffer, stages.count, stages.stages.data(), shaders.data());
         impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
         impl_->currentGraphicsPipelineUsesBindlessHeap = false;
         impl_->currentGraphicsShaderObjectBound = true;
@@ -9117,6 +9196,72 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
     return std::unique_ptr<ComputePipeline>(new ComputePipeline(std::move(pipelineImpl)));
 }
 
+namespace {
+
+// Both the binary import and export APIs require 16-byte aligned buffers.
+struct alignas(16) ShaderBinaryBlock {
+    std::array<uint8_t, 16> bytes;
+};
+using AlignedShaderBinary = std::vector<ShaderBinaryBlock>;
+constexpr size_t kMaxShaderBinarySize = 64u * 1024u * 1024u;
+
+uint64_t shaderObjectProgramHash(const GraphicsShaderObjectProgramDesc& desc,
+    const std::array<VkShaderCreateInfoEXT, 2>& infos,
+    std::span<const VkDescriptorSetAndBindingMappingEXT> mappings)
+{
+    uint64_t hash = 14695981039346656037ull;
+    auto bytes = [&hash](const void* data, size_t size) {
+        const auto* source = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < size; ++i) { hash = (hash ^ source[i]) * 1099511628211ull; }
+    };
+    auto value = [&bytes](uint64_t number) { bytes(&number, sizeof(number)); };
+    // Increment when implicit layouts, push ranges or specialization change.
+    value(0x534f424a00000001ull);
+    value(desc.vertexShader.module->contentHash());
+    value(desc.fragmentShader.module->contentHash());
+    value(desc.usesBindlessHeap);
+    value(desc.bindlessUserPushDataSize);
+    for (const auto& info : infos) {
+        value(info.flags); value(info.stage); value(info.nextStage);
+        const size_t length = std::strlen(info.pName);
+        value(length); bytes(info.pName, length);
+        // No layouts/push ranges/specialization are currently supplied.
+        value(info.setLayoutCount); value(info.pushConstantRangeCount);
+        value(info.pNext != nullptr);
+    }
+    value(mappings.size());
+    for (const auto& mapping : mappings) {
+        value(mapping.descriptorSet); value(mapping.firstBinding); value(mapping.bindingCount);
+        value(mapping.resourceMask); value(mapping.source);
+        value(mapping.sourceData.constantOffset.heapOffset);
+        value(mapping.sourceData.constantOffset.heapArrayStride);
+        value(mapping.sourceData.constantOffset.samplerHeapOffset);
+        value(mapping.sourceData.constantOffset.samplerHeapArrayStride);
+    }
+    return hash;
+}
+
+bool exportShaderObjectBinary(detail::DeviceImpl& device, VkShaderEXT shader,
+    std::vector<uint8_t>& binary)
+{
+    if (!device.functions.vkGetShaderBinaryDataEXT) { return false; }
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+        size_t size = 0;
+        VkResult result = device.functions.vkGetShaderBinaryDataEXT(device.device, shader, &size, nullptr);
+        if (result != VK_SUCCESS || size == 0 || size > kMaxShaderBinarySize) { return false; }
+        AlignedShaderBinary storage((size + 15) / 16);
+        result = device.functions.vkGetShaderBinaryDataEXT(device.device, shader, &size, storage.data());
+        if (result == VK_INCOMPLETE) { continue; }
+        if (result != VK_SUCCESS || size == 0 || size > storage.size() * sizeof(ShaderBinaryBlock)) { return false; }
+        const auto* data = reinterpret_cast<const uint8_t*>(storage.data());
+        binary.assign(data, data + size);
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
 Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShaderObjectProgram(
     const GraphicsShaderObjectProgramDesc& desc)
 {
@@ -9189,19 +9334,87 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
         VK_NULL_HANDLE,
         VK_NULL_HANDLE,
     };
-    const VkResult result = impl_->functions.vkCreateShadersEXT(
-        impl_->device,
-        static_cast<uint32_t>(shaderInfos.size()),
-        shaderInfos.data(),
-        nullptr,
-        shaders.data());
-    if (result != VK_SUCCESS) {
+    ShaderObjectCacheStats stats;
+    stats.programHash = shaderObjectProgramHash(desc, shaderInfos,
+        desc.usesBindlessHeap ? std::span<const VkDescriptorSetAndBindingMappingEXT>(bindlessMappings) :
+            std::span<const VkDescriptorSetAndBindingMappingEXT>{});
+    detail::ShaderObjectCacheFileIdentity identity{.binaryVersion = impl_->physicalProperties.shaderObject.shaderBinaryVersion,
+        .programHash = stats.programHash};
+    std::copy_n(impl_->physicalProperties.shaderObject.shaderBinaryUUID, identity.binaryUUID.size(), identity.binaryUUID.begin());
+    std::filesystem::path cachePath;
+    std::unique_lock<std::mutex> cacheLock;
+    if (desc.binaryCacheDirectory && desc.binaryCacheDirectory[0]) {
+        std::string uuid;
+        for (const uint8_t byte : identity.binaryUUID) { uuid += fmt::format("{:02x}", byte); }
+        cachePath = std::filesystem::path(desc.binaryCacheDirectory) / uuid /
+            fmt::format("{:016x}.shaderbin", stats.programHash);
+        cacheLock = std::unique_lock(impl_->shaderObjectCacheMutexes[stats.programHash % impl_->shaderObjectCacheMutexes.size()]);
+    }
+    auto destroyShaders = [&] {
         for (VkShaderEXT shader : shaders) {
             if (shader != VK_NULL_HANDLE) {
                 impl_->functions.vkDestroyShaderEXT(impl_->device, shader, nullptr);
             }
         }
-        return std::unexpected(resultFromVk(result).error());
+        shaders.fill(VK_NULL_HANDLE);
+    };
+    auto createShaders = [&](const auto& infos) {
+        const auto begin = std::chrono::steady_clock::now();
+        const VkResult result = impl_->functions.vkCreateShadersEXT(impl_->device,
+            static_cast<uint32_t>(infos.size()), infos.data(), nullptr, shaders.data());
+        stats.creationTimeNanoseconds += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - begin).count());
+        return result;
+    };
+    if (!cachePath.empty()) {
+        detail::ShaderObjectCacheFileData cached;
+        std::string reason;
+        const auto status = detail::loadShaderObjectCacheFile(cachePath, identity, cached, reason);
+        stats.loadStatus = static_cast<PipelineCacheLoadStatus>(status);
+        if (status == detail::ShaderObjectCacheFileLoadStatus::Loaded) {
+            auto binaryInfos = shaderInfos;
+            std::array<AlignedShaderBinary, 2> storage;
+            for (size_t i = 0; i < storage.size(); ++i) {
+                storage[i].resize((cached.binaries[i].size() + 15) / 16);
+                std::memcpy(storage[i].data(), cached.binaries[i].data(), cached.binaries[i].size());
+                binaryInfos[i].codeType = VK_SHADER_CODE_TYPE_BINARY_EXT;
+                binaryInfos[i].codeSize = cached.binaries[i].size();
+                binaryInfos[i].pCode = storage[i].data();
+                // Descriptor mappings are baked into the exported binary.
+                binaryInfos[i].pNext = nullptr;
+            }
+            const VkResult result = createShaders(binaryInfos);
+            if (result == VK_SUCCESS) {
+                stats.binaryCacheHit = true;
+                stats.persisted = true;
+                stats.binaryDataSize = cached.binaries[0].size() + cached.binaries[1].size();
+            } else {
+                destroyShaders();
+                stats.driverRejected = true;
+                spdlog::warn("[ShaderObjectCache] Driver rejected {} (VkResult {}); rebuilding from SPIR-V", cachePath.string(), static_cast<int>(result));
+            }
+        } else if (status != detail::ShaderObjectCacheFileLoadStatus::NotFound) {
+            spdlog::warn("[ShaderObjectCache] Ignoring {}: {}", cachePath.string(), reason);
+        }
+    }
+    if (!stats.binaryCacheHit) {
+        const VkResult result = createShaders(shaderInfos);
+        if (result != VK_SUCCESS) {
+            destroyShaders();
+            return std::unexpected(resultFromVk(result).error());
+        }
+        if (!cachePath.empty()) {
+            detail::ShaderObjectCacheFileData data;
+            if (exportShaderObjectBinary(*impl_, shaders[0], data.binaries[0]) &&
+                exportShaderObjectBinary(*impl_, shaders[1], data.binaries[1])) {
+                stats.binaryDataSize = data.binaries[0].size() + data.binaries[1].size();
+                std::string reason;
+                stats.persisted = detail::saveShaderObjectCacheFile(cachePath, identity, data, reason);
+                if (!stats.persisted) { spdlog::warn("[ShaderObjectCache] Could not save {}: {}", cachePath.string(), reason); }
+            } else {
+                spdlog::warn("[ShaderObjectCache] Could not export both stages for {}; current shader remains usable", cachePath.string());
+            }
+        }
     }
     profiling::registerNsightAftermathShaderBinary(vertex.deviceSpirv.data(), vertex.deviceSpirv.size() * sizeof(uint32_t));
     profiling::registerNsightAftermathShaderBinary(fragment.deviceSpirv.data(), fragment.deviceSpirv.size() * sizeof(uint32_t));
@@ -9211,6 +9424,8 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
     programImpl->vertexShader = shaders[0];
     programImpl->fragmentShader = shaders[1];
     programImpl->usesBindlessHeap = desc.usesBindlessHeap;
+    programImpl->cacheStats = stats;
+    programImpl->binaryCacheFilePath = cachePath.string();
     return std::unique_ptr<GraphicsShaderObjectProgram>(new GraphicsShaderObjectProgram(std::move(programImpl)));
 }
 
@@ -10187,6 +10402,31 @@ struct VulkanNativeAccess {
         };
     }
 
+    static VkShaderModule nativeShaderModule(ShaderModule& shader)
+    {
+        return shader.impl_ ? shader.impl_->module : VK_NULL_HANDLE;
+    }
+
+    static Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,
+        uint64_t stateHash, VkPipeline& pipeline)
+    {
+        auto* impl = cache.impl_.get();
+        if (!impl || !impl->device || !impl->pipelineCache || pipeline != VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+        std::lock_guard lock(impl->mutex);
+        VkPipeline candidate = VK_NULL_HANDLE;
+        const VkResult result = impl->device->functions.vkCreateGraphicsPipelines(
+            impl->device->device, impl->pipelineCache, 1, &info, nullptr, &candidate);
+        if (result != VK_SUCCESS) {
+            if (candidate) { impl->device->functions.vkDestroyPipeline(impl->device->device, candidate, nullptr); }
+            return resultFromVk(result);
+        }
+        impl->recordPsoLocked(stateHash);
+        pipeline = candidate;
+        return {};
+    }
+
     static vulkan::NativePipeline nativePipeline(ComputePipeline& pipeline)
     {
         return pipeline.impl_ ? vulkan::NativePipeline{pipeline.impl_->device->device,
@@ -10305,6 +10545,17 @@ VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
 void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
 {
     detail::VulkanNativeAccess::notifyExternalDescriptorSetBinding(commandBuffer);
+}
+
+VkShaderModule nativeShaderModule(ShaderModule& shader)
+{
+    return detail::VulkanNativeAccess::nativeShaderModule(shader);
+}
+
+Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,
+    uint64_t stateHash, VkPipeline& pipeline)
+{
+    return detail::VulkanNativeAccess::createCachedGraphicsPipeline(cache, info, stateHash, pipeline);
 }
 
 NativePipeline nativePipeline(ComputePipeline& pipeline)

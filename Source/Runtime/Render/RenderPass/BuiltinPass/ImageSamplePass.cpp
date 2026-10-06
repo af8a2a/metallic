@@ -75,7 +75,7 @@ public:
             return result;
         }
 
-        result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
+        result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, GraphicsPipelineDesc{
             .vertexShader = {vertexShader_.get()},
             .fragmentShader = {fragmentShader_.get()},
             .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
@@ -139,7 +139,7 @@ private:
         std::string& log)
     {
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
                 .moduleName = kImageSampleShaderModuleName,
                 .entryPointName = entryPointName,
                 .searchPath = kTriangleShaderSearchPath,
@@ -159,7 +159,7 @@ private:
 
         const std::string shaderDebugName =
             std::string(kImageSampleShaderModuleName) + "." + entryPointName;
-        result = device.createShaderModule(ShaderModuleDesc{
+        result = ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
             .spirv = compileResult.spirv,
             .debugName = shaderDebugName.c_str(),
         }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });

@@ -44,6 +44,9 @@ Phase 8 将“命中是否存在”从 Surface/Closure 求值中分离。Slang �
 这是现有 M2 表达式语言的 Coverage 切片；Phase 9 的通用 Value IR/图编译器尚未实现。
 自定义 Coverage 仅开放给 MASK Surface 材质；OPAQUE、BLEND 和 Fiber 的自定义 coverage 被拒绝。
 Coverage-only 可以搭配透射；同时写 Surface 输出时仍遵守 M2 的 lit、非透射、非 Fiber 限制。
+
+后续 Painter LookDev 的显式 OpenPBR `attenuationColor` Surface 输入允许普通透射，
+见 [当前接入说明](OpenPbrLookDev.md#painter-验证场景选项)；Coverage 字节码及独立执行约束不变。
 没有新增编辑器图形界面，也没有放宽 `.material` 资产对自定义程序源码的既有限制。
 
 ## 共享快照与生产接入

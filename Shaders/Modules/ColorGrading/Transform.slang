@@ -22,8 +22,7 @@ public float3 evaluateColorGrading(float3 sceneLinear, ColorGradingParameters p,
     const float3x3 AP1_2_sRGB = mul(XYZ_2_sRGB_MAT, mul(D60_2_D65_CAT, AP1_2_XYZ_MAT));
     const float3x3 AP0_2_AP1 = mul(XYZ_2_AP1_MAT, AP0_2_XYZ_MAT);
     const float3x3 AP1_2_AP0 = mul(XYZ_2_AP0_MAT, AP1_2_XYZ_MAT);
-    const float3x3 sRGB_2_AP1 = mul(XYZ_2_AP1_MAT, mul(D65_2_D60_CAT, sRGB_2_XYZ_MAT));
-    float3 ColorAP1 = mul(sRGB_2_AP1, sceneLinear);
+    float3 ColorAP1 = Metallic.WorkingColor::toACEScg(sceneLinear);
     if (all(sceneLinear == 0.0)) { ColorAP1 = float3(1e-10); }
 
     float  LumaAP1 = dot( ColorAP1, AP1_RGB2Y );

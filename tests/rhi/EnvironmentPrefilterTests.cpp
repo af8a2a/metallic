@@ -164,6 +164,74 @@ public:
     }
 };
 
+class EnvironmentLDRColorSpaceTest final : public RHITest {
+public:
+    EnvironmentLDRColorSpaceTest() { type = RHITestType::Rendering; name = "environment_ldr_source_color_space"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::filesystem::create_directories(context.outputDirectory);
+        const auto path = std::filesystem::absolute(context.outputDirectory / "TaggedEnvironment.png");
+        constexpr std::array<uint8_t, 3> encoded{128, 64, 192};
+        std::vector<uint8_t> image(16 * 8 * 3);
+        for (size_t index = 0; index < image.size(); index += 3) {
+            std::copy(encoded.begin(), encoded.end(), image.begin() + index);
+        }
+        if (!stbi_write_png(path.string().c_str(), 16, 8, 3, image.data(), 16 * 3)) {
+            return RHITestResult::fail("Write LDR environment fixture");
+        }
+        std::unique_ptr<render::Device> device;
+        auto result = render::createDevice({.applicationName = "LDR environment color regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); });
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires native bindless resources"); }
+        if (!result) { return RHITestResult::fail("Create environment color device"); }
+        render::registerRenderGraphPassType("EnvironmentPrefilterFieldProbe", "HDR prefilter field",
+            [] { return std::make_unique<EnvironmentPrefilterFieldProbe>(); });
+        render::RenderWorld world;
+        render::RenderGraph graph;
+        graph.addNode("EnvironmentPrefilterFieldProbe", "Probe");
+        graph.markOutput("Probe.field");
+        render::RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        std::string log;
+        if (!executor.compile(*device, graph, 1, 1, log)) { return RHITestResult::fail(log); }
+        uint64_t previousRevision = 0;
+        for (uint32_t fixture = 0; fixture < 4; ++fixture) {
+            scene::EnvironmentSettings settings{.enabled = true, .path = path};
+            if (fixture == 1) { settings.sourceColorSpaceExplicit = true; }
+            if (fixture == 2) { settings.sourceColorSpace = render::ksRGB; }
+            if (fixture == 3) { settings.sourceColorSpace = render::kACEScg; }
+            world.setEnvironment(settings);
+            bool ready = false;
+            for (uint32_t frame = 0; frame < 200 && !ready; ++frame) {
+                if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
+                    !executor.waitForSubmittedWork()) { return RHITestResult::fail("Environment color dispatch"); }
+                const auto& snapshot = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot();
+                ready = snapshot.mapAvailable && snapshot.status == render::EnvironmentLightingStatus::Ready &&
+                    snapshot.resourceRevision > previousRevision;
+                if (ready) { previousRevision = snapshot.resourceRevision; }
+                else { std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
+            }
+            if (!ready) { return RHITestResult::fail("Changing the LDR source tag did not publish a new environment"); }
+            render::color::RGB source{encoded[0] / 255.0f, encoded[1] / 255.0f, encoded[2] / 255.0f};
+            if (fixture == 0) {
+                for (float& component : source) { component = std::pow(component, 2.2f); }
+            }
+            const auto expected = render::color::fromSource(source, settings.sourceColorSpace);
+            auto* buffer = executor.outputResource("Probe.field")->buffer;
+            buffer->invalidate();
+            const auto* pixels = static_cast<const std::array<float, 4>*>(buffer->map());
+            if (pixels == nullptr) { return RHITestResult::fail("Environment color readback"); }
+            bool valid = true;
+            for (uint32_t channel = 0; channel < 3; ++channel) {
+                valid &= std::isfinite(pixels[kTexels][channel]) && std::abs(pixels[kTexels][channel] - expected[channel]) < 0.0001f;
+            }
+            buffer->unmap();
+            if (!valid) { return RHITestResult::fail("LDR environment transfer and gamut must be applied once before mip filtering"); }
+        }
+        return RHITestResult::pass("Legacy LDR remains compatible; explicit linear/sRGB/AP1 tags decode once and reload independently");
+    }
+};
+
 class EnvironmentPrefilterCaptureViewTest final : public RHITest {
 public:
     EnvironmentPrefilterCaptureViewTest() { type = RHITestType::Rendering; name = "environment_prefilter_capture_view"; }
@@ -205,6 +273,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterImpulseTest);
+METALLIC_REGISTER_RHI_TEST(EnvironmentLDRColorSpaceTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterCaptureViewTest);
 } // namespace
 } // namespace metallic::tests

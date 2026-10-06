@@ -1,15 +1,24 @@
 include(GoogleTest)
 
+add_test(NAME MetallicWorkingColorAudit COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckWorkingColor.cmake")
+set_tests_properties(MetallicWorkingColorAudit PROPERTIES LABELS "shader;color")
+add_test(NAME MetallicShaderRegistryUsageAudit COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckShaderRegistry.cmake")
+set_tests_properties(MetallicShaderRegistryUsageAudit PROPERTIES LABELS "shader;architecture")
+
 find_package(Threads REQUIRED)
 add_executable(MetallicShaderWarmupStartupTests
     editor/ShaderWarmupStartupTests.cpp
-    "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp")
+    "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/ShaderRegistryCompiler.cpp"
+    "${CMAKE_SOURCE_DIR}/Tools/MaterialShaderWarmupRequests.cpp")
 target_include_directories(MetallicShaderWarmupStartupTests PRIVATE
     "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/Source")
 target_compile_definitions(MetallicShaderWarmupStartupTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
-target_link_libraries(MetallicShaderWarmupStartupTests PRIVATE GTest::gtest_main spdlog::spdlog Threads::Threads)
+target_link_libraries(MetallicShaderWarmupStartupTests PRIVATE GTest::gtest_main spdlog::spdlog Threads::Threads MetallicMaterialValueCompiler)
 if(MSVC)
     target_compile_options(MetallicShaderWarmupStartupTests PRIVATE /EHsc /utf-8)
 endif()
@@ -19,7 +28,7 @@ set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;
 
 
 add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp)
-target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source" "${CMAKE_SOURCE_DIR}")
 target_compile_definitions(MetallicShaderRequestsTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
@@ -104,6 +113,16 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
 endif()
 
 if(WIN32)
+    add_test(NAME MetallicLookDevPathTracePipelineCacheSmoke
+        COMMAND ${CMAKE_COMMAND}
+            "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-path-trace-pipeline-cache"
+            "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+            "-DHAS_NRC=${METALLIC_HAS_NRC}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunPathTracePipelineCacheSmoke.cmake")
+    set_tests_properties(MetallicLookDevPathTracePipelineCacheSmoke PROPERTIES
+        LABELS "editor;shader;gpu" TIMEOUT 1500 RESOURCE_LOCK MetallicEditor
+        SKIP_REGULAR_EXPRESSION "SKIP:")
     add_test(NAME MetallicDLSSNRConfiguration
         COMMAND ${CMAKE_COMMAND}
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
@@ -151,9 +170,39 @@ if(WIN32)
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunMaterialInspectorSmoke.cmake"
     )
+    add_test(NAME MetallicLookDevMaterialGraphSmoke
+        COMMAND "${CMAKE_COMMAND}"
+            "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+            "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/material-graph-smoke"
+            "-DSOURCE_DIRECTORY=${PROJECT_SOURCE_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunMaterialGraphSmoke.cmake")
+    set_tests_properties(MetallicLookDevMaterialGraphSmoke PROPERTIES TIMEOUT 270 RUN_SERIAL TRUE)
     set_tests_properties(MetallicLookDevMaterialInspectorSmoke PROPERTIES
         LABELS "editor" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
     )
+    # Local Painter references are generated explicitly, never a build dependency.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/build/MaterialValidation/PainterLookDev/Catalog.json")
+        add_test(NAME MetallicLookDevPainterSceneSwitchSmoke
+            COMMAND ${CMAKE_COMMAND}
+                "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+                "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-painter-switch"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunPainterSceneSwitchSmoke.cmake"
+        )
+        set_tests_properties(MetallicLookDevPainterSceneSwitchSmoke PROPERTIES
+            LABELS "editor;painter" TIMEOUT 660 RESOURCE_LOCK MetallicEditor
+        )
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/build/MaterialValidation/WhiteStudio02/Catalog.json")
+        add_test(NAME MetallicLookDevStudioSceneSwitchSmoke
+            COMMAND ${CMAKE_COMMAND}
+                "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
+                "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-studio-switch"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunStudioSceneSwitchSmoke.cmake"
+        )
+        set_tests_properties(MetallicLookDevStudioSceneSwitchSmoke PROPERTIES
+            LABELS "editor;studio" TIMEOUT 660 RESOURCE_LOCK MetallicEditor
+        )
+    endif()
     add_test(NAME MetallicLookDevSceneSwitchSmoke
         COMMAND ${CMAKE_COMMAND}
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
@@ -243,6 +292,8 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 
 add_executable(MetallicSceneTests
     scene/MaterialAssetTests.cpp
+    scene/StrandAssetTests.cpp
+    scene/MaterialGraphTests.cpp
     scene/glTFInstancingTests.cpp
     scene/GeometryAttributesTests.cpp
     scene/MeshletStreamReferenceCodecTests.cpp
@@ -338,16 +389,25 @@ add_executable(MetallicRHITests
     rhi/MaterialBinningTests.cpp
     rhi/MaterialRuntimeTests.cpp
     rhi/MaterialProgramTests.cpp
+    rhi/RayMaterialTests.cpp
     rhi/MaterialClosureTests.cpp
     rhi/MaterialSlabTests.cpp
     rhi/MaterialClosureSchedulingTests.cpp
     rhi/OpenPBRClosureTests.cpp
+    rhi/OpenPBRTextureLutTests.cpp
+    rhi/FiberMaterialTests.cpp
+    rhi/StrandRenderingTests.cpp
     rhi/MaterialAssetTests.cpp
+    rhi/MaterialGraphTests.cpp
     rhi/MaterialBaselineTests.cpp
     rhi/MaterialValueProgramTests.cpp
+    rhi/StudioLookDevTests.cpp
     rhi/MaterialValueIRTests.cpp
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
+    rhi/ShaderRegistryTests.cpp
+    rhi/PipelineCacheSaveTests.cpp
+    rhi/ShaderObjectBinaryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp
@@ -364,6 +424,7 @@ add_executable(MetallicRHITests
     rhi/FinalBlitTests.cpp
     rhi/RTXDIPostProcessTests.cpp
     rhi/DisplayOutputTests.cpp
+    rhi/ColorSpaceTests.cpp
     rhi/EditorDisplayTests.cpp
     ../Source/Editor/EditorDisplayRenderer.cpp
     rhi/GPUSceneSubsystemTests.cpp
@@ -398,6 +459,8 @@ add_executable(MetallicRHITests
     rhi/SphericalHarmonicsTests.cpp
     rhi/ReGIRVirtualLightTests.cpp
     rhi/RenderGraphTests.cpp
+    rhi/RenderGraphReadySetTests.cpp
+    rhi/LookDevRenderPathTests.cpp
     rhi/RenderGraphAccessPlanTests.cpp
     rhi/RenderGraphTextureAliasPlanTests.cpp
     rhi/RenderPassTransientTests.cpp
@@ -572,6 +635,44 @@ if(MSVC)
 endif()
 add_test(NAME MetallicVulkanDeviceFeaturesTests COMMAND MetallicVulkanDeviceFeaturesTests --gtest_color=no)
 set_tests_properties(MetallicVulkanDeviceFeaturesTests PROPERTIES LABELS "rhi;device" TIMEOUT 30)
+
+# Shader object binary persistence format tests; no Vulkan loader, GPU, or optional SDK required.
+add_executable(MetallicShaderObjectCacheFileTests
+    rhi/ShaderObjectCacheFileTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/ShaderObjectCacheFile.cpp")
+target_include_directories(MetallicShaderObjectCacheFileTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicShaderObjectCacheFileTests PRIVATE GTest::gtest_main Threads::Threads)
+if(MSVC)
+    target_compile_options(MetallicShaderObjectCacheFileTests PRIVATE /EHsc /utf-8)
+endif()
+add_test(NAME MetallicShaderObjectCacheFileTests COMMAND MetallicShaderObjectCacheFileTests --gtest_color=no)
+set_tests_properties(MetallicShaderObjectCacheFileTests PROPERTIES LABELS "shader;cache" TIMEOUT 30)
+
+# Deferred persistence scheduling is host-only and needs no renderer or GPU.
+add_executable(MetallicDeferredShaderCacheWriterTests
+    rhi/DeferredShaderCacheWriterTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/DeferredShaderCacheWriter.cpp")
+target_include_directories(MetallicDeferredShaderCacheWriterTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicDeferredShaderCacheWriterTests PRIVATE GTest::gtest_main Threads::Threads)
+if(MSVC)
+    target_compile_options(MetallicDeferredShaderCacheWriterTests PRIVATE /EHsc /utf-8)
+endif()
+add_test(NAME MetallicDeferredShaderCacheWriterTests COMMAND MetallicDeferredShaderCacheWriterTests --gtest_color=no)
+set_tests_properties(MetallicDeferredShaderCacheWriterTests PROPERTIES LABELS "shader;cache" TIMEOUT 30)
+
+add_test(NAME MetallicShaderObjectBinaryProcessSmoke COMMAND ${CMAKE_COMMAND}
+    "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"
+    "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/shader-object-binary-process"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/RunShaderObjectBinarySmoke.cmake")
+set_tests_properties(MetallicShaderObjectBinaryProcessSmoke PROPERTIES LABELS "rhi;shader;cache"
+    RESOURCE_LOCK MetallicGPU TIMEOUT 210)
+
+add_test(NAME MetallicShaderObjectBinaryRenderingSmoke COMMAND ${CMAKE_COMMAND}
+    "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"
+    "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/shader-object-binary-rendering"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/RunShaderObjectBinaryRendering.cmake")
+set_tests_properties(MetallicShaderObjectBinaryRenderingSmoke PROPERTIES LABELS "rhi;shader;cache"
+    RESOURCE_LOCK MetallicGPU TIMEOUT 120)
 
 # Small host-side tests for callback ownership and loss accounting; no Vulkan device.
 add_executable(MetallicShaderPrintfTests

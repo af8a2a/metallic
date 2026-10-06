@@ -79,7 +79,8 @@ public:
         return {
             runtimeEnumSetting("inputEncoding", "Input Color", "auto",
                 {{"Automatic", "auto"}, {"sRGB display color", "srgb"},
-                    {"Exposed scene-linear", "linear"}, {"scRGB (absolute)", "scrgb"}}),
+                    {"Exposed scene-linear", "linear"}, {"Linear display Rec.709", "displayLinearRec709"},
+                    {"scRGB (absolute)", "scrgb"}}),
             runtimeBoolSetting("calibrationPattern", "HDR Calibration Pattern", false),
         };
     }
@@ -116,6 +117,7 @@ public:
         if (inputEncoding == "srgb") { encoding = DisplayColorEncoding::sRGB; }
         if (inputEncoding == "linear") { encoding = DisplayColorEncoding::ExposedLinear; }
         if (inputEncoding == "scrgb") { encoding = DisplayColorEncoding::scRGB; }
+        if (inputEncoding == "displayLinearRec709") { encoding = DisplayColorEncoding::DisplayLinearRec709; }
         // sRGB texture sampling already decodes the transfer function.
         const bool sampledSrgb = sampleSource &&
             (source.desc().format == Format::RGBA8sRGB || source.desc().format == Format::BGRA8sRGB);
@@ -127,7 +129,8 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const bool hasLut = lut.valid() && lut.view() && lut.desc().type == TextureType::Texture3D;
-        if (!hasLut && sampleSource && (toneCurve == "aces2" || toneCurve == "unreal")) {
+        const bool sceneInput = encoding == DisplayColorEncoding::SceneLinear || encoding == DisplayColorEncoding::ExposedLinear;
+        if (!hasLut && sampleSource && sceneInput && (toneCurve == "aces2" || toneCurve == "unreal")) {
             return makeError(Error::InvalidArgument); // Migrate grading to ColorGradingLUTPass.
         }
         const DisplayOutputPush push{isHDROutput(displayOutput_.mode) ? 1u : 0u,
@@ -165,7 +168,7 @@ private:
         }
         ShaderCompileResult shader;
         const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", withLut ? "1" : "0"}};
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = "Features/PostProcess/FinalBlit",
             .entryPointName = entryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",

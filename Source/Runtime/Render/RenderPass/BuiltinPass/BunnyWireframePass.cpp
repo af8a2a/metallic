@@ -164,11 +164,11 @@ public:
             return result;
         }
 
-        auto vertexModule = context.device->createShaderModule({.spirv = vertexCompile.spirv});
+        auto vertexModule = ShaderRegistry::instance().getShaderModule(*context.device, {.spirv = vertexCompile.spirv});
         if (!vertexModule) { return makeError(vertexModule.error()); }
-        auto fragmentModule = context.device->createShaderModule({.spirv = fragmentCompile.spirv});
+        auto fragmentModule = ShaderRegistry::instance().getShaderModule(*context.device, {.spirv = fragmentCompile.spirv});
         if (!fragmentModule) { return makeError(fragmentModule.error()); }
-        result = context.device->createGraphicsShaderObjectProgram(GraphicsShaderObjectProgramDesc{
+        result = ShaderRegistry::instance().getGraphicsShaderObjectProgram(*context.device, GraphicsShaderObjectProgramDesc{
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,

@@ -1,0 +1,7 @@
+{
+    "type": "Metallic.MaterialInstance",
+    "version": 1,
+    "definitionVersion": 1,
+    "definition": "asset://Materials/SlabLayer.materialdef",
+    "valueParameters": {"2": [0.2, 0.4, 0.8, 0]}
+}

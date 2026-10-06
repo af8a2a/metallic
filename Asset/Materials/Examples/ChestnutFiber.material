@@ -1,0 +1,14 @@
+{
+    "type": "Metallic.MaterialInstance",
+    "version": 1,
+    "definitionVersion": 1,
+    "definition": "asset://Materials/RTXCRChiang.materialdef",
+    "parameters": {
+        "melanin": 0.45,
+        "melaninRedness": 0.2,
+        "longitudinalRoughness": 0.3,
+        "azimuthalRoughness": 0.3,
+        "hairIor": 1.55,
+        "cuticleAngle": 3.0
+    }
+}

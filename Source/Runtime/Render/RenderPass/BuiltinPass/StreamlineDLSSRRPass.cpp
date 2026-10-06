@@ -1,5 +1,8 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/ColorResizeParameters.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -72,7 +75,8 @@ public:
             .storageReadWrite();
         inputColor.format = Format::RGBA16Sfloat;
         inputColor.usage = inputColor.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
-        inputColor.stageAccess(RenderGraphResourceAccess::TextureTransferRead);
+        inputColor.stageAccess(RenderGraphResourceAccess::TextureTransferRead)
+            .stageAccess(RenderGraphResourceAccess::TextureSampleRead);
 
         if (rayReconstruction) {
             const auto addGuide = [&](const char* name, const char* description, Format format) {
@@ -131,13 +135,20 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        const auto* source = context.input("inputColor");
+        auto* color = context.output("color");
+        if (source && color) { color->colorEncoding = source->colorEncoding; }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{
             runtimeEnumSetting(
                 "mode",
                 "Mode",
-                "Balanced",
+                "Quality",
                 {
                     {"Balanced", "Balanced"},
                     {"Quality", "Quality"},
@@ -219,9 +230,23 @@ public:
             log = std::string(passTypeName()) + " requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
         }
+        device_ = context.device;
+        colorResize_.clear();
+        if (context.device->capabilities().bindlessDescriptorHeap) {
+            ShaderCompileResult resizeShader;
+            const auto resizeRequest = makeColorResizeShaderRequest();
+            const ShaderRequestView resizeSource(resizeRequest);
+            auto resizeResult = ShaderRegistry::instance().getShader(resizeSource.desc(), log)
+                .transform([&](auto value) { resizeShader = std::move(value); });
+            if (!resizeResult) { return resizeResult; }
+            resizeResult = colorResize_.initialize(*context.device, {.spirv = resizeShader.spirv,
+                .parameters = parameterAbi<ColorResizeParams>(kColorResizeABI, ParameterTransport::InlinePush),
+                .debugName = "DLSSDebugColorResize"}, log);
+            if (!resizeResult) { return resizeResult; }
+        }
         if (boolProperty(&properties(), "exportOutputGuides", false)) {
             ShaderCompileResult shader;
-            auto result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
+            auto result = ShaderRegistry::instance().getShader({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
                 .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
             const ComputeProgramBindingDesc bindings[] = {
@@ -320,6 +345,39 @@ public:
                 preparedOutputWidth_,
                 preparedOutputHeight_);
             return makeError(Error::InvalidArgument);
+        }
+        const auto encoding = context.input("inputColor")->colorEncoding;
+        const bool sceneColor = encoding == DisplayColorEncoding::SceneLinear ||
+            encoding == DisplayColorEncoding::ExposedLinear;
+        if (!sceneColor) {
+            const bool sameExtent = renderWidth == outputWidth && renderHeight == outputHeight;
+            if (!sameExtent && !colorResize_.valid()) {
+                spdlog::error("[Streamline] {} display/debug resize requires DeviceCapabilities::bindlessDescriptorHeap", featureName());
+                return makeError(Error::Unsupported);
+            }
+            const std::array colorUses{
+                RenderGraphStageUse{"inputColor", sameExtent ? RenderGraphResourceAccess::TextureTransferRead : RenderGraphResourceAccess::TextureSampleRead},
+                RenderGraphStageUse{"color", sameExtent ? RenderGraphResourceAccess::TextureTransferWrite : RenderGraphResourceAccess::TextureStorageWrite}};
+            const std::array guideUses{
+                RenderGraphStageUse{"input.motionVectors", RenderGraphResourceAccess::TextureSampleRead},
+                RenderGraphStageUse{rayReconstruction ? "linearDepth" : "input.depth", RenderGraphResourceAccess::TextureSampleRead},
+                RenderGraphStageUse{"output.motionVectors", RenderGraphResourceAccess::TextureStorageWrite},
+                RenderGraphStageUse{"output.depth", RenderGraphResourceAccess::TextureStorageWrite}};
+            std::vector<RenderGraphStage> stages{{"DLSS display/data bypass", colorUses,
+                [&](CommandBuffer& command) {
+                    return sameExtent ? copyInputToOutput(command, inputColor, outputColor) :
+                        resizeInputToOutput(command, inputColor, outputColor);
+                }}};
+            if (boolProperty(&properties(), "exportOutputGuides", false)) {
+                stages.push_back({"DLSS output guides", guideUses,
+                    [&](CommandBuffer&) { return resolveOutputGuides(context, motionVectors, depth, {}); }});
+            }
+            auto result = context.executeStages(stages);
+            // Display/debug pixels must not enter or preserve scene HDR history.
+            // Returning to scene shading starts a fresh SDK history sequence.
+            forceReset_ = true;
+            hasPreviousCamera_ = false;
+            return result;
         }
         if (mode == vulkan::StreamlineDLSSRRMode::Off) {
             if (renderWidth != outputWidth || renderHeight != outputHeight) {
@@ -522,6 +580,20 @@ public:
     }
 
 private:
+    Result<> resizeInputToOutput(CommandBuffer& commands, TextureHandle input, TextureHandle output)
+    {
+        auto registry = ResourceRegistry::forDevice(*device_);
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
+        ColorResizeParams params;
+        params.source = writer.sampledImageHandle(input.view());
+        params.output = writer.storageImageHandle(output.view());
+        auto encoded = writer.encode(params, kColorResizeABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return colorResize_.dispatch(commands, *encoded,
+            (output.desc().width + 7) / 8, (output.desc().height + 7) / 8);
+    }
+
     Result<> resolveOutputGuides(RenderGraphExecutionContext& context, TextureHandle motion,
         TextureHandle depth, std::array<float, 2> jitter)
     {
@@ -781,7 +853,7 @@ private:
 
     static vulkan::StreamlineDLSSRRMode modeFromProperties(const RenderGraphProperties& properties)
     {
-        const std::string mode = stringProperty(properties, "mode", "Balanced");
+        const std::string mode = stringProperty(properties, "mode", "Quality");
         if (mode == "Off" || mode == "off") {
             return vulkan::StreamlineDLSSRRMode::Off;
         }
@@ -871,7 +943,7 @@ private:
             if (!result) {
                 return result;
             }
-            result = device.createGraphicsPipeline(GraphicsPipelineDesc{
+            result = ShaderRegistry::instance().getGraphicsPipeline(device, GraphicsPipelineDesc{
                 .vertexShader = {depthVertexShader_.get()},
                 .fragmentShader = {depthFragmentShader_.get()},
                 .depthStencilFormat = Format::D32Sfloat,
@@ -900,7 +972,7 @@ private:
             if (!result) {
                 return result;
             }
-            result = device.createComputePipeline(ComputePipelineDesc{
+            result = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
                 .computeShader = {alphaShader_.get()},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(StreamlineDLSSAlphaUserPush),
@@ -1039,6 +1111,8 @@ private:
         return {};
     }
 
+    Device* device_ = nullptr;
+    ComputeKernel colorResize_;
     ComputeProgram guideResolve_;
     uint64_t lastFrame_ = 0;
     uint64_t lastHistoryRevision_ = 0;

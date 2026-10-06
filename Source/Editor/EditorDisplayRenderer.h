@@ -15,7 +15,7 @@ class EditorDisplayRenderer {
 public:
     static bool loadBackendFunctions(render::vulkan::NativeDevice device);
     ~EditorDisplayRenderer();
-    bool initialize(const render::vulkan::NativeDevice& device, VkFormat mainFormat, bool hdr, float paperWhiteNits,
+    bool initialize(render::Device& device, VkFormat mainFormat, bool hdr, float paperWhiteNits,
         VkFormat pqOutputFormat = VK_FORMAT_UNDEFINED);
     void shutdown();
     VkPipeline mainPipeline() const { return mainPipeline_; }
@@ -27,6 +27,7 @@ private:
     VkPipeline createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits, bool encodePQ = false);
 
     VkDevice device_ = VK_NULL_HANDLE;
+    render::Device* rhiDevice_ = nullptr;
     const VolkDeviceTable* functions_ = nullptr;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout setLayouts_[2]{};

@@ -1,5 +1,11 @@
 # DLSS Ray Reconstruction temporal inputs
 
+The editor's default path-tracing graph and `MetallicPathTracingSample` use
+DLSS-RR with Super Resolution **Quality**. RR denoising and super resolution run
+in the same pass. The standalone sample accepts `--native` for progressive
+native-resolution path tracing, `--dlss-sr` for SR-only Quality, and `--dlss-rr`
+for the default RR path. Explicit modes in saved render graphs remain in effect.
+
 The comparison used the local NVIDIA sample at `E:/vk_denoise_dlssrr`, commit
 `f8113a84fa952278bb1286e7899f81b7afe8f41e`.
 

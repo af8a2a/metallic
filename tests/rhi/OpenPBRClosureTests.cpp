@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -46,6 +47,12 @@ static constexpr uint16_t kLut5[] = {
 };
 static constexpr uint16_t kLut6[] = {
 #include "../../External/openpbr-bsdf/impl/data/openpbr_ideal_metal_avg_energy_complement_data.h"
+};
+
+static constexpr Float4 kLtc[] = {
+#define vec3(x, y, z) Float4{x, y, z, 0}
+#include "../../External/openpbr-bsdf/impl/data/openpbr_ltc_data.h"
+#undef vec3
 };
 
 void require(bool value, const std::string& message)
@@ -181,12 +188,156 @@ RHITestResult runSurfaceLighting(RHITestContext& context, Device& device,
     return RHITestResult::pass("Three CPU-specialized Surface Programs share shadeSurface/direct-light/path continuation; cache hits reuse pipelines");
 }
 
+RHITestResult runNativeOpenPBR(RHITestContext &context, Device &device, ResourceRegistry &registry, Buffer &parameters,
+                               Buffer &output)
+{
+    constexpr uint32_t lanes = 32768;
+    // Performance must use device-local LUTs and output, not PCIe-backed
+    // HostUpload/HostReadback memory. Upload/readback stay outside timestamps.
+    std::unique_ptr<Buffer> deviceParameters, deviceOutput;
+    require(device
+                .createBuffer({.size = parameters.desc().size,
+                               .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+                               .memoryLocation = MemoryLocation::Device})
+                .transform([&](auto value) { deviceParameters = std::move(value); }),
+            "Device LUT allocation failed");
+    require(device
+                .createBuffer({.size = output.desc().size,
+                               .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                               .memoryLocation = MemoryLocation::Device})
+                .transform([&](auto value) { deviceOutput = std::move(value); }),
+            "Device output allocation failed");
+    {
+        bench::GPUCommands upload(*device.getQueue(QueueType::Graphics));
+        require(upload.initialize(device), "LUT upload commands failed");
+        auto source = parameters.slice(), destination = deviceParameters->slice();
+        require(source, "LUT source slice failed");
+        require(destination, "LUT destination slice failed");
+        require(upload.commands->copyBuffer(*source, *destination), "LUT copy failed");
+        const MemoryBarrierDesc ready{.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                                      .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+        require(upload.commands->synchronize({.memory = {&ready, 1}}), "LUT visibility failed");
+        require(upload.submitAndWait(), "LUT upload failed");
+    }
+    const auto saveArtifact = [&](const std::string &name, std::span<const std::byte> bytes) {
+        std::filesystem::create_directories(context.outputDirectory);
+        std::ofstream file(context.outputDirectory / name, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
+        require(bool(file), "Cannot save native OpenPBR evidence: " + name);
+    };
+    std::array<ComputeKernel, 2> kernels;
+    std::filesystem::create_directories(context.outputDirectory);
+    for (uint32_t side = 0; side < 2; ++side) {
+        const SlangMacroDefine define{"METALLIC_OPENPBR_REFERENCE", side == 0 ? "1" : "0"};
+        std::string log;
+        auto shader = compileSlangShaderToSpirv({.moduleName = "OpenPBRNativeProbe",
+                                                 .entryPointName = "openPBRNativeProbeMain",
+                                                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                                                 .macroDefines = {&define, 1}},
+                                                {.enableDiskCache = false}, log);
+        require(shader, "Native differential compile: " + log);
+        saveArtifact(side == 0 ? "Vendor.spv" : "Native.spv", std::as_bytes(std::span<const uint32_t>(shader->spirv)));
+        require(kernels[side].initialize(
+                    device,
+                    {.spirv = shader->spirv,
+                     .parameters = parameterAbi<OpenPBRProbeParams>(kOpenPBRProbeABI, ParameterTransport::InlinePush)},
+                    log),
+                log);
+    }
+    require(device.capabilities().timestampQueries, "Differential timing requires timestamp queries");
+    std::unique_ptr<TimestampQueryPool> timestamps;
+    require(device.createTimestampQueryPool(*device.getQueue(QueueType::Graphics), {.queryCount = 2})
+                .transform([&](auto value) { timestamps = std::move(value); }),
+            "Timestamp allocation failed");
+    std::array<std::vector<Float4>, 2> results;
+    std::ofstream timing(context.outputDirectory / "OpenPBRNativeTiming.csv");
+    timing << "mode,block,side,warmup,validation,dispatches,gpu_ms\n";
+    std::ofstream report(context.outputDirectory / "OpenPBRNative.txt");
+    for (uint32_t mode : {0u, 1u}) {
+        // Alternating AB/BA, two warmups per variant. Each process remains one
+        // independent observation; dispatches are not independent experiments.
+        for (uint32_t block = 0; block < 10; ++block) {
+            for (uint32_t order = 0; order < 2; ++order) {
+                uint32_t side = order ^ (block & 1);
+                require(timestamps->reset(0, 2), "Timestamp reset failed");
+                bench::GPUCommands gpu(*device.getQueue(QueueType::Graphics));
+                require(gpu.initialize(device), "Native commands failed");
+                ParameterWriter writer(device, registry);
+                OpenPBRProbeParams params{};
+                params.parameters = writer.bufferSpan<Float4>(deviceParameters.get());
+                params.output = writer.bufferSpan<Float4>(deviceOutput.get());
+                params.lightCount = mode;
+                auto encoded = writer.encode(params, kOpenPBRProbeABI, ParameterTransport::InlinePush);
+                require(encoded, "Native parameters failed");
+                require(gpu.commands->writeTimestamp(*timestamps, 0, PipelineStageBits::AllCommands),
+                        "Timestamp begin failed");
+                const MemoryBarrierDesc dependency{
+                    .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                    .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+                for (uint32_t repeat = 0; repeat < 8; ++repeat) {
+                    if (repeat != 0) {
+                        require(gpu.commands->synchronize({.memory = {&dependency, 1}}), "Native WAW barrier failed");
+                    }
+                    require(kernels[side].dispatch(*gpu.commands, *encoded, lanes / 64), "Native dispatch failed");
+                }
+                require(gpu.commands->writeTimestamp(*timestamps, 1, PipelineStageBits::AllCommands),
+                        "Timestamp end failed");
+                if (block == 9) {
+                    const MemoryBarrierDesc ready{.before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                                                  .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                    require(gpu.commands->synchronize({.memory = {&ready, 1}}), "Readback visibility failed");
+                    auto source = deviceOutput->slice(), destination = output.slice();
+                    require(source, "Output source failed");
+                    require(destination, "Readback destination failed");
+                    require(gpu.commands->copyBuffer(*source, *destination), "Native readback copy failed");
+                }
+                require(gpu.submitAndWait(), "Native completion failed");
+                std::array<TimestampQueryResult, 2> times;
+                require(timestamps->readResults(0, times), "Timestamp read failed");
+                require(times[0].available && times[1].available, "Unavailable timestamp");
+                timing << mode << ',' << block << ',' << side << ',' << (block < 2) << ',' << context.enableValidation
+                       << ",8," << timestamps->durationMilliseconds(times[0].value, times[1].value) / 8.0 << '\n';
+                if (block == 9) {
+                    output.invalidate();
+                    const auto *data = static_cast<const Float4 *>(output.map());
+                    require(data != nullptr, "Native readback failed");
+                    results[side].assign(data, data + lanes * 8);
+                    output.unmap();
+                    saveArtifact(std::string(side == 0 ? "Vendor" : "Native") + "-" + std::to_string(mode) + ".bin",
+                                 std::as_bytes(std::span<const Float4>(results[side])));
+                }
+            }
+        }
+        double maxScaledError = 0;
+        uint32_t validSamples = 0, eventMask = 0;
+        for (uint32_t i = 0; i < lanes * 8; ++i) {
+            for (uint32_t c = 0; c < 4; ++c) {
+                float a = results[0][i][c], b = results[1][i][c];
+                require(std::isfinite(a) && std::isfinite(b), "Non-finite differential output at " + std::to_string(i));
+                double error = std::abs(double(a) - b) / std::max(1.0, std::abs(double(a)));
+                maxScaledError = std::max(maxScaledError, error);
+                require(error <= 2e-4, "Native/vendor mismatch at " + std::to_string(i) + ": " + std::to_string(error));
+            }
+            if (i % 8 == 2) {
+                require(results[0][i][3] == results[1][i][3], "Sample event mismatch");
+                eventMask |= uint32_t(results[0][i][3]);
+                validSamples += results[0][i][3] != 0;
+            }
+        }
+        require(validSamples > 1000 && eventMask == 15, "Insufficient scattering event coverage");
+        report << "mode=" << mode << " lanes=" << lanes << " variants=16 maxScaledError=" << maxScaledError
+               << " validSamples=" << validSamples << " eventMask=" << eventMask << '\n';
+    }
+    return RHITestResult::pass(
+        "Native Slang versus unchanged Adobe: 32768 cases, 16 material families, Eval/PDF/Sample/emission/volume");
+}
+
 class OpenPBRClosureTest : public RHITest
 {
 public:
-    explicit OpenPBRClosureTest(bool lighting = false) : lighting_(lighting)
+    explicit OpenPBRClosureTest(bool lighting = false, bool native = false) : lighting_(lighting), native_(native)
     {
-        name = lighting ? "material_surface_lighting_framework" : "material_closure_openpbr_stages";
+        name = native ? "material_openpbr_native_equivalence" : lighting ? "material_surface_lighting_framework" : "material_closure_openpbr_stages";
         type = RHITestType::Rendering;
     }
     RHITestResult run(RHITestContext& context) override
@@ -220,14 +371,15 @@ public:
             appendLut(kLut0); appendLut(kLut1); appendLut(kLut2); appendLut(kLut3);
             appendLut(kLut4); appendLut(kLut5); appendLut(kLut6);
             require(parameterData.size() == 69666, "Vendor LUT dimensions changed");
+            if (native_) { parameterData.insert(parameterData.end(), std::begin(kLtc), std::end(kLtc)); }
             std::unique_ptr<Buffer> parameters, upload, output, counters;
             const auto makeBuffer = [&](size_t bytes, MemoryLocation location, BufferUsageBits usage, auto& target) {
                 require(device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = location})
                     .transform([&](auto value) { target = std::move(value); }), "Buffer allocation failed");
             };
-            makeBuffer(parameterData.size() * sizeof(Float4), MemoryLocation::HostUpload, BufferUsageBits::Storage, parameters);
+            makeBuffer(parameterData.size() * sizeof(Float4), MemoryLocation::HostUpload, BufferUsageBits::Storage | BufferUsageBits::TransferSource, parameters);
             makeBuffer(sizeof(texels), MemoryLocation::HostUpload, BufferUsageBits::TransferSource, upload);
-            makeBuffer((lighting_ ? 192 * 128 * 3 : 1024 * 8) * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
+            makeBuffer((native_ ? 32768 * 8 : lighting_ ? 192 * 128 * 3 : 1024 * 8) * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage | BufferUsageBits::TransferDestination, output);
             makeBuffer(8 * sizeof(uint32_t), MemoryLocation::HostReadback, BufferUsageBits::Storage, counters);
             const auto write = [](Buffer& buffer, const void* data, size_t size) {
                 auto* mapped = buffer.map();
@@ -258,6 +410,11 @@ public:
                     .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
                 require(gpu.commands->synchronize({.textures = {&after, 1}}), "Read barrier failed");
                 require(gpu.submitAndWait(), "Texture upload failed");
+            }
+            if (native_) {
+                auto result = runNativeOpenPBR(context, *device, registry, *parameters, *output);
+                require(validationErrors == 0, "Native OpenPBR validation errors");
+                return result;
             }
             if (lighting_) {
                 auto result = runSurfaceLighting(context, *device, *parameters, *output, *counters, *view);
@@ -320,8 +477,13 @@ public:
                         require(std::abs(eta - expectedEta) < 1e-5f, "Transmission eta is not eta_i / eta_t");
                         entering += variant != 6; exiting += variant == 6;
                     } else { require(eta == 1, "Reflection or failed sample eta differs from one"); }
+                    // Probe parameters are already working RGB; texture flags
+                    // declare linear Rec.709. Modulation occurs in that source basis.
+                    auto sourceFactor = color::toLinearRec709({factors[lane & 1][0], factors[lane & 1][1], factors[lane & 1][2]});
+                    for (uint32_t c = 0; c < 3; ++c) { sourceFactor[c] *= texels[lane & 3][c]; }
+                    const auto workingBase = color::fromLinearRec709(sourceFactor);
                     for (uint32_t c = 0; c < 3; ++c) {
-                        const float expectedBase = variant == 7 ? 0 : factors[lane & 1][c] * texels[lane & 3][c];
+                        const float expectedBase = variant == 7 ? 0 : std::clamp(workingBase[c], 0.f, 1.f);
                         require(std::abs(data[base + 2][c] - expectedBase) < 1e-6f, "Program parameter/texture mapping differs");
                     }
                     require(std::abs(data[base + 3][0]) < 1e-6f &&
@@ -346,8 +508,15 @@ public:
     }
 private:
     bool lighting_;
+    bool native_;
 };
 METALLIC_REGISTER_RHI_TEST(OpenPBRClosureTest);
+class NativeOpenPBRTest final : public OpenPBRClosureTest
+{
+public:
+    NativeOpenPBRTest() : OpenPBRClosureTest(false, true) {}
+};
+METALLIC_REGISTER_RHI_TEST(NativeOpenPBRTest);
 class SurfaceLightingTest final : public OpenPBRClosureTest
 {
 public:

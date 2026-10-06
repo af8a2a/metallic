@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
@@ -30,7 +31,7 @@ float3 safeNormalize(const float3& value, const float3& fallback)
 Result<> compileClusterLightGridProgram(std::vector<uint32_t>& spirv, std::string& log)
 {
     ShaderCompileResult shader;
-    Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Lighting/ClusterLightGrid",
+    Result<> result = ShaderRegistry::instance().getShader({.moduleName = "Features/Lighting/ClusterLightGrid",
         .entryPointName = "clusterLightGridMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
     spirv = std::move(shader.spirv);

@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": 1,
+      "name": "Strands",
+      "type": "StrandVisibilityPass",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "properties": {
+        "path": "Asset/Strands/NativeGroom.strands.json",
+        "capacity": 8,
+        "camera": {
+          "eye": [0, 0, 2.4],
+          "center": [0, 0, 0],
+          "up": [0, 1, 0],
+          "fovDegrees": 45
+        }
+      }
+    },
+    {
+      "id": 2,
+      "name": "Fiber",
+      "type": "StrandLightingPass",
+      "position": {
+        "x": 350,
+        "y": 0
+      },
+      "properties": {}
+    },
+    {
+      "id": 3,
+      "name": "FinalBlit",
+      "type": "FinalBlitPass",
+      "position": {
+        "x": 700,
+        "y": 0
+      },
+      "properties": {}
+    },
+    {
+      "id": 4,
+      "name": "ColorGrading",
+      "type": "ColorGradingLUTPass",
+      "position": {
+        "x": 350,
+        "y": 300
+      },
+      "properties": {
+        "toneCurve": "aces2"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 1,
+      "src": "Strands.segments",
+      "dst": "Fiber.segments"
+    },
+    {
+      "id": 2,
+      "src": "Strands.materials",
+      "dst": "Fiber.materials"
+    },
+    {
+      "id": 3,
+      "src": "Strands.frame",
+      "dst": "Fiber.frame"
+    },
+    {
+      "id": 4,
+      "src": "Strands.records",
+      "dst": "Fiber.records"
+    },
+    {
+      "id": 5,
+      "src": "Strands.counts",
+      "dst": "Fiber.counts"
+    },
+    {
+      "id": 6,
+      "src": "Fiber.color",
+      "dst": "FinalBlit.source"
+    },
+    {
+      "id": 7,
+      "src": "ColorGrading.lut",
+      "dst": "FinalBlit.lut"
+    }
+  ],
+  "outputs": []
+}

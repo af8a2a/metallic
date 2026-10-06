@@ -22,7 +22,9 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").storageReadWrite().format = render::Format::RGBA32Sfloat;
+        auto& color = reflection.addTextureOutput("color").storageReadWrite();
+        color.format = render::Format::RGBA32Sfloat;
+        color.colorEncoding = render::DisplayColorEncoding::SceneLinear;
         return reflection;
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override

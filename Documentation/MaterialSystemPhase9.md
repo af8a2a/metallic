@@ -94,6 +94,10 @@ Coverage 不接受任意 TextureSample、Surface 位置/法线输入或不同 pa
 已删除的无效采样不会触发这些后端约束。
 
 Surface 仍限制为 lit、非透射、非 Fiber 的 OPAQUE/MASK；Coverage-only 的约束与 Phase 8 相同。
+
+后续的 [Painter LookDev 场景接入](OpenPbrLookDev.md#painter-验证场景选项) 增加了
+OpenPBR coat/fuzz/各向异性输入，以及显式 `attenuationColor` 的 Surface 透射例外；
+未声明该输入的旧 Value 程序和 Slab 仍保留原有透射限制。
 80 字节参数记录、720 字节 legacy 材质载荷、共享 generation 发布与 OMM 禁用/恢复协议不变。
 无自定义程序的内置 OpenPBR 路径不运行 Value IR。
 本阶段没有实现 MaterialGraph 编辑器、任意 shader language、Closure IR、资产格式扩展或 NTC alpha 跨路径一致性。

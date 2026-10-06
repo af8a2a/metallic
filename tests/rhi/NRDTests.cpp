@@ -8,6 +8,9 @@
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Render/Core/ColorSpace.h"
+#include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include <fstream>
 
 #include <gtest/gtest.h>
@@ -546,6 +549,56 @@ class NRDRayTracingGPU : public NRDGPU {
 protected:
     bool requiresRayQueries() const override { return true; }
 };
+
+TEST(NRDWorkingColor, RTXDIRelaxSceneChromaticity)
+{
+    ASSERT_TRUE(SDL_Init(SDL_INIT_VIDEO)) << SDL_GetError();
+    struct VideoLifetime { ~VideoLifetime() { SDL_Quit(); } } video;
+    render::RenderSampleLoadResult sample;
+    std::string log;
+    ASSERT_TRUE(render::loadBuiltInRenderSample("rtxdi-sample", sample, log)) << log;
+    sample.graph.findNode("RTXDI")->properties["lightSource"] = "scene";
+    sample.graph.findNode("RTXDI")->properties["environmentSamples"] = 0;
+    render::RenderGraphPreviewRenderer preview;
+    const auto initialized = preview.initialize(true, true);
+    if (render::hasError(initialized, render::Error::Unsupported)) { GTEST_SKIP() << "Ray query unavailable"; }
+    ASSERT_TRUE(initialized);
+    preview.setRawReadbackEnabled(true);
+    preview.setEnvironment({.enabled = false, .visible = false});
+    scene::LightingSettings lighting;
+    auto& light = lighting.lights.emplace_back();
+    light.properties.type = "directional";
+    light.properties.intensityUnit = scene::LightUnit::Lux;
+    light.properties.intensity = 1000;
+    light.properties.color = float3(0.9f, 0.5f, 0.2f);
+    light.direction = float3(0, -0.2f, -1);
+    ASSERT_TRUE(preview.setLighting(lighting));
+    std::array<render::color::RGB, 2> chromaticities{};
+    for (size_t mode = 0; mode < 2; ++mode) {
+        const char* output = mode == 0 ? "RTXDI.color" : "Composite.color";
+        for (uint32_t frame = 0; frame < 16; ++frame) {
+            ASSERT_TRUE(preview.render(sample.graph, 64, 64, output, frame == 15)) << preview.lastLog();
+        }
+        ASSERT_EQ(preview.readbackFormat(), render::Format::RGBA32Sfloat);
+        ASSERT_EQ(preview.readbackBytes().size(), 64 * 64 * 16);
+        const auto* values = reinterpret_cast<const float*>(preview.readbackBytes().data());
+        render::color::RGB energy{};
+        for (size_t pixel = 0; pixel < 64 * 64; ++pixel) {
+            for (size_t channel = 0; channel < 3; ++channel) {
+                ASSERT_TRUE(std::isfinite(values[pixel * 4 + channel]));
+                energy[channel] += values[pixel * 4 + channel];
+            }
+        }
+        energy = render::color::toLinearRec709(energy);
+        const float total = energy[0] + energy[1] + energy[2];
+        ASSERT_GT(total, 1.0f);
+        for (size_t channel = 0; channel < 3; ++channel) { chromaticities[mode][channel] = energy[channel] / total; }
+    }
+    for (size_t channel = 0; channel < 3; ++channel) {
+        EXPECT_NEAR(chromaticities[0][channel], chromaticities[1][channel], 0.015f)
+            << "NRD changed scene chromaticity in channel " << channel;
+    }
+}
 
 TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
 {

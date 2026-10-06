@@ -34,11 +34,40 @@ struct MaterialValueIRBuilder
     std::set<std::string> active;
     uint32_t visited = 0;
 
+    uint32_t closureExpression(const Json& value, std::vector<MaterialClosureNode>& nodes, uint32_t depth = 0)
+    {
+        require(depth <= 24 && nodes.size() < 256, "Closure expression exceeds safety budget");
+        require(value.is_object() && value.contains("op") && value["op"].is_string(), "Closure requires an operator");
+        const auto op = value["op"].get<std::string>();
+        MaterialClosureNode node;
+        if (op == "slab") {
+            require(value.contains("reflectance") && value.size() == (value.contains("opticalDepth") ? 3 : 2),
+                "Slab requires reflectance and optional opticalDepth");
+        } else {
+            require(op == "mix" || op == "layer", "Unsupported closure operator");
+            require(value.contains("a") && value.contains("b") &&
+                value.size() == (op == "mix" ? 4 : 3) && (op != "mix" || value.contains("weight")),
+                "Mix/Layer requires ordered a/b operands and Mix weight");
+            node.op = op == "mix" ? MaterialClosureOp::Mix : MaterialClosureOp::Layer;
+            node.operands = {closureExpression(value["a"], nodes, depth + 1), closureExpression(value["b"], nodes, depth + 1)};
+        }
+        const auto id = static_cast<uint32_t>(nodes.size());
+        const auto prefix = "closure" + std::to_string(id);
+        if (node.op == MaterialClosureOp::Slab) {
+            ir.outputs_[prefix + "Reflectance"] = expression(value["reflectance"]);
+            ir.outputs_[prefix + "OpticalDepth"] = expression(value.value("opticalDepth", Json(0)));
+        } else if (node.op == MaterialClosureOp::Mix) {
+            ir.outputs_[prefix + "Weight"] = expression(value["weight"]);
+        }
+        nodes.push_back(node);
+        return id;
+    }
+
     uint32_t insert(MaterialValueNode node)
     {
         // Fold only fully constant arithmetic. Do not use x*0 or similar
         // identities that would change finite saturation/NaN behavior.
-        bool fold = node.operandCount != 0 && node.op != MaterialValueOp::TextureSample;
+        bool fold = node.operandCount != 0 && node.op != MaterialValueOp::TextureSample && node.op != MaterialValueOp::TextureSampleLinear;
         for (uint32_t i = 0; i < node.operandCount; ++i) { fold &= ir.nodes_[node.operands[i]].op == MaterialValueOp::Constant; }
         if (fold) {
             const auto a = ir.nodes_[node.operands[0]].constant;
@@ -125,7 +154,8 @@ struct MaterialValueIRBuilder
             {"abs", {MaterialValueOp::Abs, 1}}, {"saturate", {MaterialValueOp::Saturate, 1}}, {"clamp", {MaterialValueOp::Clamp, 3}},
             {"normalize", {MaterialValueOp::Normalize, 1}}, {"normalMap", {MaterialValueOp::NormalMap, 1}},
             {"uvTransform", {MaterialValueOp::UVTransform, 3}}, {"swizzle", {MaterialValueOp::Swizzle, 1}},
-            {"select", {MaterialValueOp::Select, 3}}, {"textureSample", {MaterialValueOp::TextureSample, 2}}};
+            {"select", {MaterialValueOp::Select, 3}}, {"textureSample", {MaterialValueOp::TextureSample, 2}},
+            {"textureSampleLinear", {MaterialValueOp::TextureSampleLinear, 2}}};
         const auto found = operations.find(op);
         require(found != operations.end(), "Unsupported Value IR operation");
         node.op = found->second.first; node.operandCount = found->second.second;
@@ -140,7 +170,7 @@ struct MaterialValueIRBuilder
             }
             fields = 3;
         }
-        if (node.op == MaterialValueOp::TextureSample) {
+        if (node.op == MaterialValueOp::TextureSample || node.op == MaterialValueOp::TextureSampleLinear) {
             require(value.contains("texture") && value["texture"].is_string() && value.contains("footprint") && value["footprint"].is_string(),
                 "TextureSample requires a texture slot and explicit footprint");
             const std::array<std::string_view, 6> slots{"baseColor", "metallicRoughness", "normal", "occlusion", "emissive", "specular"};
@@ -179,17 +209,32 @@ MaterialValueIR MaterialValueIR::parse(std::string_view source)
 
 MaterialValueIR MaterialValueIR::lower(const Json& root)
 {
-    require(root.is_object() && root.contains("version") && (root["version"] == 1 || root["version"] == 2), "Value program version must be 1 or 2");
+    require(root.is_object() && root.contains("version") && root["version"].is_number_integer() &&
+        (root["version"] == 1 || root["version"] == 2 || root["version"] == 3), "Value program version must be 1, 2 or 3");
     MaterialValueIRBuilder builder;
     Json outputs = root;
-    if (root["version"] == 2) {
-        require(root.size() == 3 && root.contains("nodes") && root["nodes"].is_object() && root["nodes"].size() <= 256 &&
+    const bool closures = root["version"] == 3;
+    if (root["version"] == 2 || closures) {
+        require(root.size() == (closures ? 4 : 3) && root.contains("nodes") && root["nodes"].is_object() && root["nodes"].size() <= 256 &&
             root.contains("outputs") && root["outputs"].is_object(), "Value graph requires nodes and outputs objects");
         builder.definitions = root["nodes"]; outputs = root["outputs"];
+        if (closures) {
+            require(root.contains("closure"), "v3 material requires a closure");
+            std::vector<MaterialClosureNode> nodes;
+            const auto id = builder.closureExpression(root["closure"], nodes);
+            builder.ir.closure_ = MaterialClosureIR::create(nodes, id);
+            (void)lowerMaterialClosure(*builder.ir.closure_);
+        }
     } else { outputs.erase("version"); }
-    require(!outputs.empty(), "Value program has no outputs");
+    require(closures || !outputs.empty(), "Value program has no outputs");
     for (const auto& [name, value] : outputs.items()) {
-        require(name == "baseColor" || name == "metallic" || name == "roughness" || name == "emissive" || name == "coverage", "Unsupported Value IR output");
+        const bool openPBR = name == "coatWeight" || name == "coatRoughness" || name == "coatIOR" ||
+            name == "fuzzWeight" || name == "fuzzColor" || name == "fuzzRoughness" ||
+            name == "specularAnisotropy" || name == "anisotropyTangent" || name == "attenuationColor" ||
+            name == "surfaceBaseColor" || name == "surfaceMetallic" || name == "surfaceRoughness" ||
+            name == "surfaceEmission" || name == "normalTS";
+        require(name == "baseColor" || name == "metallic" || name == "roughness" || name == "emissive" || name == "coverage" || openPBR, "Unsupported Value IR output");
+        require(!closures || name == "emissive" || name == "coverage", "Slab material outputs support only emissive and coverage");
         builder.ir.outputs_[name] = builder.expression(value);
     }
     builder.ir.finalize();
@@ -220,7 +265,7 @@ void MaterialValueIR::finalize()
         if (input != inputs.end()) { usage_.inputMask |= 1u << (input - inputs.begin()); }
         if (node.op == MaterialValueOp::Position || node.op == MaterialValueOp::GeometryNormal || node.op == MaterialValueOp::UV) { usage_.features |= ValueGeometry; }
         if (node.op == MaterialValueOp::NormalMap) { usage_.features |= ValueNormalMapping; }
-        if (node.op == MaterialValueOp::TextureSample || node.op == MaterialValueOp::Alpha) {
+        if (node.op == MaterialValueOp::TextureSample || node.op == MaterialValueOp::TextureSampleLinear || node.op == MaterialValueOp::Alpha) {
             usage_.features |= ValueTextures; usage_.textureMask |= 1u << node.index;
             usage_.footprintMask |= 1u << static_cast<uint32_t>(node.footprint);
             if (node.footprint == MaterialTextureFootprint::RayCone) { usage_.features |= ValueRayCone; }
@@ -228,7 +273,9 @@ void MaterialValueIR::finalize()
         }
     }
     if (outputs_.contains("coverage")) { usage_.features |= ValueCoverage; }
-    canonical_ = Json{{"ir", 1}, {"nodes", encoded}, {"outputs", outputs_}}.dump();
+    Json canonical{{"ir", 1}, {"nodes", encoded}, {"outputs", outputs_}};
+    if (closure_) { canonical["closure"] = closure_->canonical(); }
+    canonical_ = canonical.dump();
     hash_ = 14695981039346656037ull;
     for (const unsigned char c : canonical_) { hash_ = (hash_ ^ c) * 1099511628211ull; }
 }
@@ -236,6 +283,7 @@ void MaterialValueIR::finalize()
 MaterialValueIR MaterialValueIR::slice(bool coverage) const
 {
     auto result = *this;
+    if (coverage) { result.closure_.reset(); }
     std::erase_if(result.outputs_, [&](const auto& item) { return (item.first == "coverage") != coverage; });
     result.finalize();
     return result;

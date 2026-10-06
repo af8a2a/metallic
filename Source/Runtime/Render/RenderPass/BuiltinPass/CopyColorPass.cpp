@@ -24,6 +24,13 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        const auto* source = context.input("source");
+        auto* color = context.output("color");
+        if (source && color) { color->colorEncoding = source->colorEncoding; }
+    }
+
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle source = context.inputTexture("source");

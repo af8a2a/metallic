@@ -8,6 +8,7 @@
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -936,7 +937,7 @@ inline Result<> createSlangShaderModule(
     std::string& log)
 {
     ShaderCompileResult compileResult;
-    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+    Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
@@ -957,7 +958,7 @@ inline Result<> createSlangShaderModule(
     }
 
     const std::string shaderDebugName = std::string(moduleName) + "." + entryPointName;
-    result = device.createShaderModule(ShaderModuleDesc{
+    result = ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
         .spirv = compileResult.spirv,
         .debugName = shaderDebugName.c_str(),
     }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
@@ -974,7 +975,7 @@ inline Result<> compileSlangShader(
     ShaderCompileResult& outCompileResult,
     std::string& log)
 {
-    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+    Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,

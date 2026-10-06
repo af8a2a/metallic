@@ -4,6 +4,7 @@
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -218,7 +219,7 @@ public:
         const auto* values = static_cast<const std::array<float, 4>*>(buffer->map());
         if (values == nullptr) { return realtimeFailure("Prefilter readback failed"); }
         bool valid = true;
-        const std::array expected{2.0f, 1.0f, 0.5f};
+        const auto expected = render::color::fromLinearRec709({2.0f, 1.0f, 0.5f});
         for (size_t i = 0; i < 8; ++i) {
             for (size_t c = 0; c < 3; ++c) {
                 valid &= std::isfinite(values[i][c]) && std::abs(values[i][c] - expected[c]) < 0.002f;
@@ -426,6 +427,288 @@ public:
 private:
     bool sponza_ = false;
 };
+
+class WorkingColorDisplayReadbackPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
+        reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 4).transferWrite();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        return context.outputBuffer("pixels").buffer()->slice().and_then([&](const auto& slice) {
+            return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+                .buffer = slice, .bufferRowPitch = context.width() * 4,
+                .bufferSlicePitch = context.width() * context.height() * 4,
+                .width = context.width(), .height = context.height()});
+        });
+    }
+};
+
+class WorkingColorDLSSRRTest final : public RHITest {
+public:
+    WorkingColorDLSSRRTest() { type = RHITestType::Rendering; name = "working_color_dlss_rr_history"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        if (!render::vulkan::deviceCapabilities(context.device).streamlineDlssRr) {
+            return RHITestResult::skip("Requires --rhi-streamline and DLSS-RR support");
+        }
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-rr", sample, log)) { return realtimeFailure(log); }
+        scene::SceneDocument document;
+        if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
+            return realtimeFailure(document.lastLoadResult().error);
+        }
+        // Legacy RR assets use per-pass cameras. Bind one shared view for the
+        // camera-motion portion of this test, as the realtime sample already does.
+        sample.graph.setViewProperties({{"camera", sample.graph.findNode("PathTrace")->properties.at("camera")}});
+        sample.graph.findNode("PathTrace")->properties.erase("camera");
+        sample.graph.findNode("DLSSRR")->properties.erase("camera");
+        render::RenderWorld world;
+        world.setScene(&document);
+        if (sample.desc.environment) {
+            world.setEnvironment({.path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
+        }
+        render::registerRenderGraphPassType("WorkingColorDisplayReadbackPass", "SDK color regression readback",
+            [] { return std::make_unique<WorkingColorDisplayReadbackPass>(); });
+        sample.graph.addNode("WorkingColorDisplayReadbackPass", "Readback");
+        sample.graph.addEdge("FinalBlit.color", "Readback.color");
+
+        sample.graph.markOutput("Readback.pixels");
+
+        render::RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        const uint32_t initialValidationCount = context.validationMessageCount ? context.validationMessageCount->load() : 0;
+        for (uint32_t variant = 0; variant < 2; ++variant) {
+            const uint32_t width = variant == 0 ? 384 : 321, height = variant == 0 ? 256 : 217;
+            if (!executor.compile(context.device, sample.graph, width, height, log)) { return realtimeFailure(log); }
+            for (uint32_t frame = 0; frame < 12; ++frame) {
+                if (frame == 6) {
+                    auto camera = executor.renderView()->camera();
+                    camera.eye[0] += 0.05f;
+                    executor.renderView()->setCamera(camera);
+                }
+                if (!executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
+                    return realtimeFailure("ACEScg DLSS-RR frame/history execution failed");
+                }
+
+            }
+            auto* buffer = executor.outputResource("Readback.pixels")->buffer;
+            buffer->invalidate();
+            const auto* pixels = static_cast<const uint8_t*>(buffer->map());
+            if (!pixels) { return realtimeFailure("RR color readback failed"); }
+            uint64_t energy = 0;
+            for (size_t i = 0; i < size_t(width) * height; ++i) {
+                for (size_t c = 0; c < 3; ++c) { energy += pixels[i * 4 + c]; }
+            }
+            const bool saved = saveRgba8Png(context.outputDirectory / ("DLSSRRWorkingColor" + std::to_string(variant) + ".png"),
+                pixels, width, height, log);
+            buffer->unmap();
+            if (!saved) { return realtimeFailure(log); }
+            if (energy == 0 || energy == uint64_t(width) * height * 3 * 255) { return realtimeFailure("RR color is entirely black or white"); }
+        }
+        executor = render::RenderGraphExecutor{};
+        if (context.validationMessageCount && context.validationMessageCount->load() != initialValidationCount) {
+            return realtimeFailure("RR produced Vulkan validation messages");
+        }
+        return RHITestResult::pass("DLSS-RR working HDR/albedo, 24 frames, camera change and odd-size resize");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(WorkingColorDLSSRRTest);
+
+class WorkingColorDLSSNonBindlessCompileTest final : public RHITest {
+public:
+    WorkingColorDLSSNonBindlessCompileTest() { type = RHITestType::Resource; name = "working_color_dlss_non_bindless_compile"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        // Run this case in its own process without --rhi-streamline: Streamline
+        // stores the active Vulkan device globally, so do not replace a live one.
+        if (vulkan::deviceCapabilities(context.device).streamline) {
+            return RHITestResult::skip("Run without --rhi-streamline to isolate the non-bindless SDK device");
+        }
+        std::unique_ptr<Device> device;
+        auto created = createDevice({.applicationName = "Non-bindless DLSS compile contract",
+            .enableValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = false,
+            .backendExtensions = vulkan::VulkanDeviceExtensions{.enableStreamline = true}})
+            .transform([&](auto value) { device = std::move(value); });
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Streamline device unavailable"); }
+        if (!created) { return realtimeFailure("Non-bindless Streamline device creation failed"); }
+        if (!vulkan::deviceCapabilities(*device).streamlineDlssRr || !vulkan::deviceCapabilities(*device).streamlineDlssSr) {
+            return RHITestResult::skip("DLSS-RR/SR SDK feature unavailable");
+        }
+        if (device->capabilities().bindlessDescriptorHeap) { return realtimeFailure("Non-bindless test device unexpectedly enabled the heap"); }
+        const RenderGraphCompileContext compileContext{.device = device.get(),
+            .graphicsQueue = device->getQueue(QueueType::Graphics), .width = 321, .height = 217};
+        for (const auto& [type, mode] : std::array{
+                std::pair{"StreamlineDLSSRRPass", "Balanced"}, std::pair{"StreamlineDLSSRRPass", "Off"},
+                std::pair{"StreamlineDLSSSRPass", "Off"}, std::pair{"StreamlineDLSSSRPass", "Balanced"}}) {
+            auto pass = createRenderGraphPass(type);
+            if (!pass) { return realtimeFailure("Cannot create non-bindless DLSS pass"); }
+            pass->setProperties({{"mode", mode}});
+            std::string log;
+            auto prepared = pass->prepare(compileContext, log);
+            if (!prepared) { return realtimeFailure(std::string(type) + " prepare failed: " + log); }
+            auto compiled = pass->compile(compileContext, log);
+            const bool requiresHeap = std::string_view(type) == "StreamlineDLSSSRPass" && std::string_view(mode) != "Off";
+            if (requiresHeap ? !hasError(compiled, Error::Unsupported) : !compiled) {
+                return realtimeFailure(std::string(type) + "/" + mode + " changed its original bindless requirement: " + log);
+            }
+        }
+        return RHITestResult::pass("Non-bindless RR beauty and RR/SR Off compile; SR beauty retains its existing heap requirement");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(WorkingColorDLSSNonBindlessCompileTest);
+
+class WorkingColorHDRReadbackPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        render::RenderPassReflection reflection;
+        auto& source = reflection.addTextureInput("source").transferRead();
+        source.format = render::Format::RGBA16Sfloat;
+        source.matchOutputExtent = false;
+        reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 8).transferWrite();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        const auto source = context.inputTexture("source");
+        const auto width = source.desc().width, height = source.desc().height;
+        return context.outputBuffer("pixels").buffer()->slice().and_then([&](const auto& slice) {
+            return context.commandBuffer().copyTextureToBuffer({.texture = source.texture(), .buffer = slice,
+                .bufferRowPitch = width * 8, .bufferSlicePitch = width * height * 8, .width = width, .height = height});
+        });
+    }
+};
+
+class WorkingColorDLSSDebugBypassTest : public RHITest {
+public:
+    explicit WorkingColorDLSSDebugBypassTest(bool rayReconstruction = false) : rayReconstruction_(rayReconstruction)
+    {
+        type = RHITestType::Rendering;
+        name = rayReconstruction ? "working_color_dlss_rr_debug_bypass" : "working_color_dlss_sr_debug_bypass";
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto& capabilities = vulkan::deviceCapabilities(context.device);
+        if (rayReconstruction_ ? !capabilities.streamlineDlssRr : !capabilities.streamlineDlssSr) {
+            return RHITestResult::skip("Requires --rhi-streamline and the selected DLSS feature");
+        }
+        try {
+            const auto require = [](bool condition, const std::string& message) {
+                if (!condition) { throw std::runtime_error(message); }
+            };
+            RenderSampleLoadResult sample;
+            std::string log;
+            require(loadBuiltInRenderSample(rayReconstruction_ ? "pathtracing-sample-dlss-rr" : "pathtracing-sample-dlss-sr", sample, log), log);
+            scene::SceneDocument document;
+            require(document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath), document.lastLoadResult().error);
+            const std::string sdkName = rayReconstruction_ ? "DLSSRR" : "DLSSSR";
+            const auto pathTraceId = sample.graph.findNode("PathTrace")->id;
+            sample.graph.setViewProperties({{"camera", sample.graph.findNode("PathTrace")->properties.at("camera")}});
+            sample.graph.findNode("PathTrace")->properties.erase("camera");
+            sample.graph.findNode(sdkName)->properties.erase("camera");
+            RenderWorld world;
+            world.setScene(&document);
+            if (sample.desc.environment) {
+                world.setEnvironment({.path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
+            }
+            registerRenderGraphPassType("WorkingColorHDRReadbackPass", "SDK debug raw readback",
+                [] { return std::make_unique<WorkingColorHDRReadbackPass>(); });
+            sample.graph.addNode("WorkingColorHDRReadbackPass", "InputReadback");
+            sample.graph.addNode("WorkingColorHDRReadbackPass", "OutputReadback");
+            sample.graph.addEdge("PathTrace.color", "InputReadback.source");
+            sample.graph.addEdge(sdkName + ".color", "OutputReadback.source");
+            sample.graph.markOutput("InputReadback.pixels");
+            sample.graph.markOutput("OutputReadback.pixels");
+            RenderGraphExecutor executor;
+            executor.bindRenderWorld(&world);
+            constexpr uint32_t outputWidth = 321, outputHeight = 217;
+            require(bool(executor.compile(context.device, sample.graph, outputWidth, outputHeight, log)), log);
+            executor.setExecutionCaptureEnabled(true);
+            const auto sourceWidth = executor.outputResource("PathTrace.color")->desc.width;
+            const auto sourceHeight = executor.outputResource("PathTrace.color")->desc.height;
+            require(sourceWidth != outputWidth || sourceHeight != outputHeight, "Debug regression must exercise DLSS input/output resize");
+            const auto readPixels = [&](const char* resource, uint32_t width, uint32_t height) {
+                auto* buffer = executor.outputResource(resource)->buffer;
+                buffer->invalidate();
+                const auto* raw = static_cast<const uint16_t*>(buffer->map());
+                require(raw != nullptr, "Debug raw readback failed");
+                std::vector<std::array<float, 4>> pixels(size_t(width) * height);
+                for (size_t i = 0; i < pixels.size(); ++i) { for (size_t c = 0; c < 4; ++c) {
+                    const uint16_t bits = raw[i * 4 + c];
+                    const uint32_t exponent = (bits >> 10) & 31, mantissa = bits & 1023;
+                    const float value = exponent == 0 ? std::ldexp(float(mantissa), -24) :
+                        (exponent == 31 ? INFINITY : std::ldexp(float(mantissa + 1024), int(exponent) - 25));
+                    pixels[i][c] = (bits & 0x8000) ? -value : value;
+                }}
+                buffer->unmap();
+                return pixels;
+            };
+            for (const char* debug : {"baseColor", "shadowTransmittance", "geometryNormal", "frontFace", "material", "final"}) {
+                require(sample.graph.setNodeRuntimeProperty(pathTraceId, "debugView", debug), "Cannot set production debug mode");
+                require(executor.syncRuntimeProperties(sample.graph), "Cannot sync production debug mode");
+                require(bool(executor.execute({.graphicsQueue = &context.graphicsQueue})) && bool(executor.waitForSubmittedWork()),
+                    "Production DLSS debug frame failed");
+                const bool sceneColor = std::string_view(debug) == "final";
+                const auto encoding = sceneColor ? DisplayColorEncoding::SceneLinear :
+                    (std::string_view(debug) == "baseColor" || std::string_view(debug) == "shadowTransmittance"
+                        ? DisplayColorEncoding::DisplayLinearRec709 : DisplayColorEncoding::sRGB);
+                require(executor.outputResource("PathTrace.color")->colorEncoding == encoding &&
+                    executor.outputResource(sdkName + ".color")->colorEncoding == encoding,
+                    "DLSS debug input/output encoding changed");
+                require(executor.outputResource("AutoExposure.color")->colorEncoding ==
+                    (sceneColor ? DisplayColorEncoding::ExposedLinear : encoding), "AutoExposure lost DLSS debug encoding");
+                const auto snapshot = executor.executionSnapshot();
+                require(snapshot && snapshot->success, "Missing debug execution capture");
+                const auto pass = std::find_if(snapshot->passes.begin(), snapshot->passes.end(),
+                    [&](const auto& value) { return value.name == sdkName; });
+                require(pass != snapshot->passes.end(), "Missing DLSS execution capture");
+                const bool bypass = std::any_of(pass->stages.begin(), pass->stages.end(),
+                    [](const auto& stage) { return stage.name == "DLSS display/data bypass"; });
+                const bool sdk = std::any_of(pass->stages.begin(), pass->stages.end(),
+                    [](const auto& stage) { return stage.name == "DLSS ray reconstruction" || stage.name == "DLSS super resolution"; });
+                require(sceneColor ? sdk && !bypass : bypass && !sdk, "Display/debug pixels entered DLSS HDR SDK or scene path stayed bypassed");
+                if (sceneColor) { continue; }
+                const auto input = readPixels("InputReadback.pixels", sourceWidth, sourceHeight);
+                const auto output = readPixels("OutputReadback.pixels", outputWidth, outputHeight);
+                const auto load = [&](int x, int y, size_t channel) {
+                    return input[size_t(std::clamp(y, 0, int(sourceHeight) - 1)) * sourceWidth + std::clamp(x, 0, int(sourceWidth) - 1)][channel];
+                };
+                for (uint32_t y = 0; y < outputHeight; ++y) { for (uint32_t x = 0; x < outputWidth; ++x) {
+                    const float px = (float(x) + 0.5f) * sourceWidth / outputWidth - 0.5f;
+                    const float py = (float(y) + 0.5f) * sourceHeight / outputHeight - 0.5f;
+                    const int ix = int(std::floor(px)), iy = int(std::floor(py));
+                    const float fx = px - ix, fy = py - iy;
+                    for (size_t c = 0; c < 3; ++c) {
+                        const float top = std::lerp(load(ix, iy, c), load(ix + 1, iy, c), fx);
+                        const float bottom = std::lerp(load(ix, iy + 1, c), load(ix + 1, iy + 1, c), fx);
+                        const float expected = std::lerp(top, bottom, fy);
+                        const float actual = output[size_t(y) * outputWidth + x][c];
+                        require(std::isfinite(actual) && std::abs(actual - expected) < 0.0012f,
+                            std::string("DLSS debug resize changed color: ") + debug);
+                    }
+                }}
+            }
+            return RHITestResult::pass("Production DLSS graph: five display/data debug modes bypass SDK, preserve raw resized pixels/encoding, then resume scene HDR");
+        } catch (const std::exception& error) { return realtimeFailure(error.what()); }
+    }
+private:
+    bool rayReconstruction_;
+};
+class WorkingColorDLSSRRDebugBypassTest final : public WorkingColorDLSSDebugBypassTest {
+public:
+    WorkingColorDLSSRRDebugBypassTest() : WorkingColorDLSSDebugBypassTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(WorkingColorDLSSDebugBypassTest);
+METALLIC_REGISTER_RHI_TEST(WorkingColorDLSSRRDebugBypassTest);
 
 class GPUDrivenSponzaRealtimePipelineTest final : public RealtimePipelineTest {
 public:

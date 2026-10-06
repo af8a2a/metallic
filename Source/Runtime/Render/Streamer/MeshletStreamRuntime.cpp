@@ -2,6 +2,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
@@ -262,7 +263,7 @@ Result<> createSlangShaderModule(
     std::string& log)
 {
     ShaderCompileResult compileResult;
-    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+    Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPoint,
             .searchPath = kMeshletStreamShaderSearchPath,
@@ -283,7 +284,7 @@ Result<> createSlangShaderModule(
     }
 
     const std::string shaderDebugName = std::string(moduleName) + "." + entryPoint;
-    result = device.createShaderModule(ShaderModuleDesc{
+    result = ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
         .spirv = compileResult.spirv,
         .debugName = shaderDebugName.c_str(),
     }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
@@ -318,7 +319,7 @@ public:
         device_ = &device;
         registry_ = &registry;
         auto initializeKernel = [&](const char* entry, ComputeKernel& kernel) -> Result<> {
-            auto shader = compileSlangShaderToSpirv({
+            auto shader = ShaderRegistry::instance().getShader({
                 .moduleName = kMeshletStreamShaderModuleName,
                 .entryPointName = entry,
                 .searchPath = kMeshletStreamShaderSearchPath,
@@ -465,7 +466,7 @@ public:
             return result;
         }
 
-        result = device.createComputePipeline(ComputePipelineDesc{
+        result = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
             .computeShader = {traversalShader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
@@ -534,7 +535,7 @@ public:
         }
 
         phase.next("streamInit.activePipeline");
-        result = device.createComputePipeline(ComputePipelineDesc{
+        result = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
             .computeShader = {activeBuildShader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
@@ -550,7 +551,7 @@ public:
             kMeshletStreamCooperativeBuildEntryPoint, cooperativeShader_, log);
         if (!result) { return result; }
         phase.next("streamInit.cooperativePipeline");
-        result = device.createComputePipeline({
+        result = ShaderRegistry::instance().getComputePipeline(device, {
             .computeShader = {cooperativeShader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
@@ -563,7 +564,7 @@ public:
         result = createSlangShaderModule(device, kMeshletStreamShaderModuleName,
             kMeshletStreamDemandEntryPoint, demandShader_, log);
         if (!result) { return result; }
-        result = device.createComputePipeline({
+        result = ShaderRegistry::instance().getComputePipeline(device, {
             .computeShader = {demandShader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
@@ -659,7 +660,7 @@ public:
             return result;
         }
 
-        result = device.createComputePipeline(ComputePipelineDesc{
+        result = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
             .computeShader = {blasInputShader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
@@ -748,7 +749,7 @@ public:
         if (!result) {
             return result;
         }
-        result = device.createComputePipeline(ComputePipelineDesc{
+        result = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
             .computeShader = {tlasInputShader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),

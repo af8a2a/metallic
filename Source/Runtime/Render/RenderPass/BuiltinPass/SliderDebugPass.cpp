@@ -45,6 +45,13 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        if (const auto* source = context.input("sourceA")) {
+            if (auto* color = context.output("color")) { color->colorEncoding = source->colorEncoding; }
+        }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
@@ -61,7 +68,7 @@ public:
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
+        Result<> result = ShaderRegistry::instance().getShader({.moduleName = "Features/Debug/SliderDebug",
             .entryPointName = "sliderDebugMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
         return program_.initialize(*context.device, {
@@ -79,6 +86,11 @@ public:
         if (!isComparisonSource(sourceA, context.width(), context.height()) ||
             !isComparisonSource(sourceB, context.width(), context.height()) ||
             !color.valid() || color.view() == nullptr) {
+            return makeError(Error::InvalidArgument);
+        }
+        const auto* inputA = context.input("sourceA");
+        const auto* inputB = context.input("sourceB");
+        if (!inputA || !inputB || inputA->colorEncoding != inputB->colorEncoding) {
             return makeError(Error::InvalidArgument);
         }
         const auto& properties = context.properties();

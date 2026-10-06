@@ -59,17 +59,41 @@ that catalog to the tool. Macro, capability and search-path order remain part of
 cache identity. Scene requests include the runtime `METALLIC_CUSTOM_MATERIALS=0`
 default so prewarmed OpenPBR and path-tracing binaries are reused.
 
-The catalog deduplicates complete requests after generation. Deferred continuation
-is omitted from classes 0-3 and streamed configurations without ray queries, where
-the shader's continuation branch is unreachable. This reduces the current
-conventional-texture Deferred catalog from 66 to 44 requests, and the RTXCR-enabled
-catalog from 210 to 188. SDK-specific NTC/NRD permutations, generated custom material
-programs and non-default pass settings still compile on demand. Debug mode and
+The catalog deduplicates complete requests after generation. Conventional scene
+variants cover resident/streamed materials, supported position-fetch settings,
+Deferred global/local views, FP16/FP32, guides and material classes. Editor display
+requests share a factory with runtime and include SDR/scRGB/HDR10 paths at the
+standard 80/203-nit reference whites.
+
+Installed Painter and WhiteStudio catalogs are also read before initialization.
+Their scene sidecars and material assets are lowered through the runtime CPU
+material compiler to generate the same content-keyed include, then their declared
+graph shader requests are appended, including custom Surface/Closure programs.
+This preparation loads no geometry or textures and requires no GPU. Optional
+catalogs that do not exist add no requests. Changing generated material source
+after warmup, a new external scene, SDK-specific NTC/NRD permutations or arbitrary
+display reference whites can still require compilation on demand. Debug mode and
 mapped/native descriptor mode remain separate cache identities.
 
 Build and run `MetallicShaderRequestsTests` in an existing tests-enabled tree to
 verify catalog coverage, warmup-to-runtime cache reuse, and compiled SPIR-V
 equivalence for folded material classes. These checks do not require a GPU.
+
+Scene path tracing also persists Vulkan PSOs in `.cache/pso/ScenePathTracePass.pso`.
+Base/OpenPBR, SHaRC/NRC update/query and SHaRC clear/resolve/NRC tonemap use the
+same device-owned [ShaderRegistry](ShaderRegistry.md) cache. Realtime lighting and Deferred use separate
+`RealtimeLightingPass.pso` and `VisibilityBufferDeferredPass.pso` files.
+Shader bytes, pipeline state and device/backend compatibility still control
+cache reuse; a new shader can require driver compilation even after SPIR-V warmup.
+All runtime shader and pipeline acquisition uses ShaderRegistry; default pipeline
+requests automatically load/persist PSOs without pass-owned cache plumbing.
+Linked vertex/fragment Shader Objects also persist driver binaries in
+`.cache/shader-objects/`; compatible entries are loaded with Vulkan's BINARY
+creation path, and invalid/rejected entries rebuild from SPIR-V automatically.
+Cache `hits` in Registry logs describe the application's PSO hash table, not Vulkan
+creation feedback. The cross-process `MetallicLookDevPathTracePipelineCacheSmoke`
+test disables the driver internal cache to verify application cache coverage.
+`MetallicShaderRegistryUsageAudit` rejects new acquisition paths bypassing the registry.
 
 ## NVIDIA Neural Radiance Cache
 

@@ -143,6 +143,7 @@ uint32_t previewReadbackTexelByteSize(Format format)
     case Format::RGBA16Sfloat:
         return 8;
     case Format::RGBA32Sfloat:
+    case Format::RGBA32Uint:
         return 16;
     default:
         return 0;
@@ -200,6 +201,16 @@ bool convertPreviewReadback(
         std::fill(destination.begin(), destination.end(), 0u);
         std::memcpy(destination.data(), source, pixelCount * texelByteSize);
         return true;
+    }
+    if (format == Format::RGBA32Uint) {
+        const auto* sourceBytes = static_cast<const std::byte*>(source);
+        auto* destinationBytes = reinterpret_cast<uint8_t*>(destination.data());
+        for (size_t i = 0; i < pixelCount * 4; ++i) {
+            uint32_t value;
+            std::memcpy(&value, sourceBytes + i * sizeof(uint32_t), sizeof(value));
+            destinationBytes[i] = uint8_t(std::min(value,255u));
+        }
+        return true; // Raw readback retains full integer IDs; preview is diagnostic only.
     }
     if (format == Format::RGBA32Sfloat) {
         const auto* sourceBytes = static_cast<const std::byte*>(source);
@@ -2369,20 +2380,6 @@ struct RenderGraphExecutor::Impl {
             executionProperties["camera"] = frameCameraProperties;
             executionProperties["temporalJitter"] = frameView.frame[2] != 0;
         }
-        if (snapshots) {
-            snapshots->reserve(bindings.size());
-            std::unordered_map<RenderGraphResource*, RenderGraphResource*> copies;
-            for (auto& binding : bindings) {
-                if (!binding.resource) { continue; }
-                if (binding.resource->type == RenderGraphResourceType::AccelerationStructure) { continue; }
-                auto [entry, inserted] = copies.try_emplace(binding.resource);
-                if (inserted) {
-                    snapshots->push_back(*binding.resource);
-                    entry->second = &snapshots->back();
-                }
-                binding.resource = entry->second;
-            }
-        }
         prepared.reset(new RenderGraphExecutionContext(
             commandBuffer,
             frameIndex,
@@ -2410,6 +2407,21 @@ struct RenderGraphExecutor::Impl {
         context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
         context.debugPassId_ = node.id;
+        node.pass->prepareResourceMetadata(context);
+        if (snapshots) {
+            snapshots->reserve(context.bindings_.size());
+            std::unordered_map<RenderGraphResource*, RenderGraphResource*> copies;
+            for (auto& binding : context.bindings_) {
+                if (!binding.resource) { continue; }
+                if (binding.resource->type == RenderGraphResourceType::AccelerationStructure) { continue; }
+                auto [entry, inserted] = copies.try_emplace(binding.resource);
+                if (inserted) {
+                    snapshots->push_back(*binding.resource);
+                    entry->second = &snapshots->back();
+                }
+                binding.resource = entry->second;
+            }
+        }
         return {};
     }
 
@@ -2732,8 +2744,20 @@ Result<> RenderGraphExecutor::compile(
         return makeError(Error::InvalidArgument);
     }
 
+    std::unordered_map<std::string, std::unique_ptr<RenderGraphPass>> schedulingPasses;
+    const auto schedulingTraits = [&](const RenderGraphNode& node) {
+        auto pass = createRenderGraphPass(node.type);
+        ActiveGraphSchedulingTraits traits;
+        if (pass) {
+            pass->setProperties(mergeRenderGraphProperties(node.properties, node.runtimeProperties));
+            traits.opaque = !pass->supportsAsyncQueue();
+            traits.queue = traits.opaque ? QueueType::Graphics : pass->queueType();
+        }
+        schedulingPasses.emplace(node.name, std::move(pass));
+        return traits;
+    };
     ActiveGraph activeGraph;
-    if (!buildActiveGraph(graph, options.extraOutputs, activeGraph, log)) {
+    if (!buildActiveGraph(graph, options.extraOutputs, activeGraph, log, schedulingTraits)) {
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
     }
@@ -2840,7 +2864,7 @@ Result<> RenderGraphExecutor::compile(
         if (node == nullptr) {
             continue;
         }
-        std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(node->type);
+        const auto& pass = schedulingPasses.at(passName);
         if (pass == nullptr) {
             log = validationPrefix(std::string("unknown pass type '") + node->type + "'");
             impl_->isCompiled = false;
@@ -2953,7 +2977,7 @@ Result<> RenderGraphExecutor::compile(
             return makeError(Error::InvalidArgument);
         }
 
-        std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(node->type);
+        std::unique_ptr<RenderGraphPass> pass = std::move(schedulingPasses.at(passName));
         if (pass == nullptr) {
             log = validationPrefix(std::string("unknown pass type '") + node->type + "'");
             return makeError(Error::InvalidArgument);

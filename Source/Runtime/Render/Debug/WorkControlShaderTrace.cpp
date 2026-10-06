@@ -2,6 +2,7 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "WorkControlShaderTrace.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -96,12 +97,12 @@ void WorkControlShaderTrace::qualify(Device& device, Queue& queue, const std::fi
     require(output_ == std::filesystem::absolute(output) / "shader-trace","Shader trace output changed");
     require(slangShaderDebugMode() == SlangShaderDebugMode::Disabled,"P2 requires normal optimization/debug mode");
     ShaderCompileResult code;
-    const auto compiled = compileSlangShaderToSpirv({.moduleName="Features/Debug/ShaderTraceBackend",.entryPointName="echoMain",
+    const auto compiled = ShaderRegistry::instance().getShader({.moduleName="Features/Debug/ShaderTraceBackend",.entryPointName="echoMain",
         .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, {.enableDiskCache=false}, code.diagnostics).transform([&](auto value) { code = std::move(value); });
     require(bool(compiled),code.diagnostics.c_str());
-    auto shader = device.createShaderModule({.spirv = code.spirv});
+    auto shader = ShaderRegistry::instance().getShaderModule(device, {.spirv = code.spirv});
     require(bool(shader),"Backend echo shader creation failed");
-    auto pipeline = device.createComputePipeline({.computeShader = {shader->get(), "main"}});
+    auto pipeline = ShaderRegistry::instance().getComputePipeline(device, {.computeShader = {shader->get(), "main"}});
     require(bool(pipeline),"Backend echo pipeline creation failed");
     auto pool = device.createCommandPool(queue); require(bool(pool),"Echo command pool failed");
     auto commands = (*pool)->createCommandBuffer(); require(bool(commands),"Echo commands failed");
@@ -222,7 +223,7 @@ void WorkControlShaderTrace::prepare(Device& device, const DebugValue& specifica
     std::vector<SlangMacroDefine> macros;
     for (const auto& [name,value] : defines) { macros.push_back({name.c_str(),value.c_str()}); }
     ShaderCompileResult code;
-    const auto compiled = compileSlangShaderToSpirv({
+    const auto compiled = ShaderRegistry::instance().getShader({
         .moduleName = "Features/GPUDriven/GPUDrivenStreamWorkRaster",
         .entryPointName = "streamClusterRasterWorkControlMain",
         .searchPath = PROJECT_SOURCE_DIR "/Shaders",
@@ -236,9 +237,9 @@ void WorkControlShaderTrace::prepare(Device& device, const DebugValue& specifica
         {"profile","spirv_1_6"},{"shaderDebugMode","Disabled"},{"diskCache",false},{"slang",evidence_.at("slang")}};
     validateSources(site.at("sourceHashes")); runtime_.compiledVariant(variant); evidence_["variant"]=variant;
     lease_ = std::make_shared<Lease>();
-    require(bool(device.createShaderModule({.spirv = code.spirv}).transform(
+    require(bool(ShaderRegistry::instance().getShaderModule(device, {.spirv = code.spirv}).transform(
         [&](auto value){lease_->shader=std::move(value);})),"Diagnostic shader creation failed");
-    require(bool(device.createComputePipeline({
+    require(bool(ShaderRegistry::instance().getComputePipeline(device, {
         .computeShader = {lease_->shader.get(), "main"},
         .usesBindlessHeap = true,
         .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),

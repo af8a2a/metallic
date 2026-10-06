@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ResourceState.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -172,7 +173,7 @@ struct NRDRuntime::Impl {
             defines.push_back({define.name, define.value});
         const char* searchPaths[] = {PROJECT_SOURCE_DIR "/External/MathLib"};
         ShaderCompileResult compiled;
-        Result<> result = compileSlangShaderToSpirv({
+        Result<> result = ShaderRegistry::instance().getShader({
             .moduleName = recipe.shaderName.c_str(),
             .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders/Interop/Denoising/NRD",

@@ -4,11 +4,13 @@
 #include "Editor/EditorProfiler.h"
 #include "Editor/EditorRenderGraphViewer.h"
 #include "Editor/EditorDisplayRenderer.h"
+#include "Editor/EditorMaterialGraph.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/WorkControlShaderTrace.h"
 #include "Editor/NVMLMonitor.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -44,7 +46,8 @@ public:
         bool enableNsightShaderDebug = false,
         bool enableDebugControl = false,
         bool gpuDrivenScenesOnly = false,
-        bool skipShaderWarmup = false);
+        bool skipShaderWarmup = false,
+        render::LookDevRenderPath lookDevRenderPath = render::LookDevRenderPath::Comparison);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -64,6 +67,10 @@ private:
     bool runNsightCaptureSmokeTest();
     bool runVisibilityPreviewSmokeTest();
     bool runMaterialInspectorSmokeTest();
+    bool runMaterialGraphSmokeTest();
+    void drawMaterialGraphEditor();
+    bool applyMaterialGraph(int32_t materialIndex, const material::CompiledMaterialFrontend& compiled);
+    EditorMaterialGraph materialGraphEditor_;
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
@@ -153,6 +160,8 @@ private:
     void drawRenderGraphNode(const render::RenderGraphNode& node);
     void setupDefaultDockLayout();
     void loadBuiltInSample(const char* sampleId);
+    void initializeLookDevRenderPath();
+    void setLookDevRenderPath(render::LookDevRenderPath path);
     void resetDefaultRenderGraph();
     void saveRenderGraph();
     void loadRenderGraph();
@@ -287,6 +296,8 @@ private:
     NVMLMonitor nvmlMonitor_;
     render::profiling::NsightGraphicsCapture nsightGraphicsCapture_;
     render::RenderGraph renderGraph_;
+    std::optional<render::RenderGraph> lookDevComparisonGraph_;
+    render::LookDevRenderPath lookDevRenderPath_ = render::LookDevRenderPath::Comparison;
     scene::SceneDocument scene_;
     scene::SceneLoader sceneLoader_;
     scene::SceneLoadHandle pendingSceneLoad_;
@@ -379,7 +390,7 @@ private:
     float clearColor_[4] = {0.07f, 0.08f, 0.10f, 1.0f};
     int selectedGraphNodeId_ = -1;
     int selectedGraphLinkId_ = -1;
-    char graphFilePath_[260] = "Pipelines/Samples/pathtracing_abeautiful_game_openpbr.metallic_graph.json";
+    char graphFilePath_[260] = "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json";
     char sceneFilePath_[260] = "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf";
     char graphNodeNameBuffer_[128] = {};
     char renderPassSearch_[128] = {};

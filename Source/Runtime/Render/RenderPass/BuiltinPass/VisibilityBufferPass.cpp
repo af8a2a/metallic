@@ -86,17 +86,6 @@ void logGPUDrivenCompileStage(
         elapsedMilliseconds);
 }
 
-const char* pipelineCacheLoadStatusName(PipelineCacheLoadStatus status)
-{
-    switch (status) {
-    case PipelineCacheLoadStatus::NotFound: return "not-found";
-    case PipelineCacheLoadStatus::Loaded: return "loaded";
-    case PipelineCacheLoadStatus::Invalid: return "invalid";
-    case PipelineCacheLoadStatus::Incompatible: return "incompatible";
-    }
-    return "unknown";
-}
-
 constexpr uint32_t kVisibilityModeTriangle = 3;
 constexpr uint32_t kVisibilityModeDepth = 4;
 constexpr uint32_t kVisibilityModeCoverage = 5;
@@ -104,8 +93,6 @@ constexpr uint32_t kVisibilityModeNone = 6;
 constexpr uint32_t kVisibilityModeTessellatedTriangle = 7;
 constexpr uint32_t kGPUDrivenInvalidBindlessIndex =
     std::numeric_limits<uint32_t>::max();
-constexpr const char* kGPUDrivenPipelineCachePath =
-    PROJECT_SOURCE_DIR "/.cache/pso/VisibilityBufferPass.pso";
 
 struct GPUDrivenPreviewMeshletRange {
     uint32_t offset = 0;
@@ -473,14 +460,6 @@ public:
             return {};
         }
 
-        // Internal streaming/LOD pipelines are created before createPipelines().
-        // Keep one cache for the entire compile and save all entries together.
-        Result<> cacheResult = context.device->createPipelineCache(PipelineCacheDesc{.filePath = kGPUDrivenPipelineCachePath}).transform([&](auto rhiValue) { pipelineCache_ = std::move(rhiValue); });
-        if (!cacheResult || pipelineCache_ == nullptr) {
-            log += resultMessage("createPipelineCache(VisibilityBufferPass)", cacheResult);
-            return cacheResult ? makeError(Error::Failure) : cacheResult;
-        }
-
         std::vector<GPUDrivenPreviewGPUVertex> vertices;
         std::vector<GPUDrivenPreviewGPUMeshlet> meshlets;
         std::vector<GPUDrivenPreviewGPUMeshletDraw> meshletDraws;
@@ -665,22 +644,21 @@ public:
                     .depthCompareOp = depthCompareOp(kDefaultReversedZ),
                 },
                 .usesBindlessHeap = true,
-                .pipelineCache = pipelineCache_.get(),
             };
-            result = context.device->createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { visibilityPipelines_[bucketIndex] = std::move(rhiValue); });
+            result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { visibilityPipelines_[bucketIndex] = std::move(rhiValue); });
             if (result) {
                 pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(false);
-                result = context.device->createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { standardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
+                result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { standardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
             }
             // Frozen HZB raster needs only visibility/depth. Use a matching
             // single-target PSO so it cannot overwrite viewport domain/colors.
             if (result && tessellationEnabled()) {
                 pipelineDesc.fragmentShader.module = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
                 pipelineDesc.colorAttachmentCount = 1;
-                result = context.device->createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { frozenStandardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
+                result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { frozenStandardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
                 if (result) {
                     pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(true);
-                    result = context.device->createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { frozenVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
+                    result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { frozenVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
                 }
             }
             if (!result || visibilityPipelines_[bucketIndex] == nullptr) {
@@ -691,13 +669,12 @@ public:
                 return result ? makeError(Error::Failure) : result;
             }
         }
-        result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
+        result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, GraphicsPipelineDesc{
             .vertexShader = {compositeVertexShader_.get()},
             .fragmentShader = {compositeFragmentShader_.get()},
             .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
             .topology = PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
-            .pipelineCache = pipelineCache_.get(),
         }).transform([&](auto rhiValue) { compositePipeline_ = std::move(rhiValue); });
         if (!result || compositePipeline_ == nullptr) {
             log += resultMessage("createGraphicsPipeline(VisibilityBufferPass composite)", result);
@@ -705,20 +682,6 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
         logGPUDrivenCompileStage("graphics pipelines", compileStageBegin);
-        if (pipelineCache_ != nullptr) {
-            const Result<> saveResult = pipelineCache_->save();
-            const PipelineCacheStats stats = pipelineCache_->stats();
-            spdlog::info(
-                "[VisibilityBufferPass] PSO cache status={} hits={} misses={} stored={} bytes={}",
-                pipelineCacheLoadStatusName(stats.loadStatus),
-                stats.hitCount,
-                stats.missCount,
-                stats.storedPsoCount,
-                stats.backendDataSize);
-            if (!saveResult) {
-                log += "Warning: VisibilityBufferPass failed to save PSO cache\n";
-            }
-        }
 
         compiledTessellationKey_ = tessellationKey();
         compiledTextureMaxDimension_ = properties().value("materialTextureMaxDimension", 512);
@@ -1444,7 +1407,7 @@ private:
             "spvMeshShadingEXT",
             "spvGroupNonUniformBallot",
         };
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPoint,
             .searchPath = kTriangleShaderSearchPath,
@@ -1472,7 +1435,7 @@ private:
         const auto* bytes = reinterpret_cast<const uint8_t*>(compileResult.spirv.data());
         for (size_t i = 0; i < compileResult.spirv.size() * sizeof(uint32_t); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
         shaderHashes_[shaderDebugName] = std::to_string(hash);
-        result = device.createShaderModule(ShaderModuleDesc{
+        result = ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
             .spirv = compileResult.spirv,
             .debugName = shaderDebugName.c_str(),
         }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
@@ -1588,11 +1551,10 @@ private:
 
         auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
             const auto pipelineBegin = GPUDrivenCompileClock::now();
-            Result<> result = device.createComputePipeline(ComputePipelineDesc{
+            Result<> result = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
                 .computeShader = {&shader, "main"},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(GPUDrivenPreviewUserPush),
-                .pipelineCache = pipelineCache_.get(),
             }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
             if (!result || pipeline == nullptr) {
                 log += resultMessage(std::string("createComputePipeline(VisibilityBufferPass ") + label + ")", result);
@@ -1641,11 +1603,10 @@ private:
         auto createStreamCompute = [&](ShaderModule& shader,
                                        std::unique_ptr<ComputePipeline>& pipeline,
                                        const char* label) -> Result<> {
-            Result<> streamResult = device.createComputePipeline(ComputePipelineDesc{
+            Result<> streamResult = ShaderRegistry::instance().getComputePipeline(device, ComputePipelineDesc{
                 .computeShader = {&shader, "main"},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                .pipelineCache = pipelineCache_.get(),
             }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
             if (!streamResult || pipeline == nullptr) {
                 log += resultMessage(
@@ -1729,12 +1690,11 @@ private:
                 .depthCompareOp = depthCompareOp(kDefaultReversedZ),
             },
             .usesBindlessHeap = true,
-            .pipelineCache = pipelineCache_.get(),
         };
-        result = device.createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { streamVisibilityPipeline_ = std::move(rhiValue); });
+        result = ShaderRegistry::instance().getGraphicsPipeline(device, pipelineDesc).transform([&](auto rhiValue) { streamVisibilityPipeline_ = std::move(rhiValue); });
         if (result) {
             pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(false);
-            result = device.createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { standardZStreamVisibilityPipeline_ = std::move(rhiValue); });
+            result = ShaderRegistry::instance().getGraphicsPipeline(device, pipelineDesc).transform([&](auto rhiValue) { standardZStreamVisibilityPipeline_ = std::move(rhiValue); });
         }
         if (!result || streamVisibilityPipeline_ == nullptr) {
             log += resultMessage(
@@ -4565,7 +4525,6 @@ private:
     std::unique_ptr<ShaderModule> streamFragmentShader_;
     std::unique_ptr<ShaderModule> streamCullResetShader_;
     std::unique_ptr<ShaderModule> streamInstanceCullShader_;
-    std::unique_ptr<PipelineCache> pipelineCache_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> visibilityPipelines_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> standardZVisibilityPipelines_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenVisibilityPipelines_;

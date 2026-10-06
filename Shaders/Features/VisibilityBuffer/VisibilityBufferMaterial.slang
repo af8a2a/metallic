@@ -89,6 +89,7 @@ void visibilityBufferMaterialMain(uint3 thread : SV_DispatchThreadID)
             float specular = pow(saturate(dot(n, halfway)), lerp(128.0, 2.0, roughness * roughness));
             color = base * diffuse * (1 - 0.6 * metallic) + lerp(float3(0.04), base, metallic) * specular + material.emissive.rgb;
         }
+        if (push.mode == 0 || push.mode == 1) { color = Metallic.WorkingColor::toLinearRec709(color); }
         color = pow(saturate(color), float3(1.0 / 2.2));
     }
     gOutput[thread.xy] = float4(color, 1);

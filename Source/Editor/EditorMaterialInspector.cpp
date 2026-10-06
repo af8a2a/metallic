@@ -117,6 +117,15 @@ void EditorApplication::drawMaterialInspector(int32_t materialIndex)
     // before focus leaves also preserves transaction order between materials.
     ImGui::PushItemFlag(ImGuiItemFlags_LiveEditOnInputScalar, true);
     ImGui::PushItemWidth(std::max(100.0f, ImGui::GetContentRegionAvail().x * 0.55f));
+    ImGui::TextDisabled("Authored colors: linear Rec.709 (converted on upload)");
+    if (!edited.valueProgram.empty() && ImGui::CollapsingHeader("Material program parameters", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("Graph outputs override their corresponding legacy factors. Edit instance slots below; texture nodes read assigned resources.");
+        for (int slot = 0; slot < 4; ++slot) {
+            const auto label = "Parameter " + std::to_string(slot);
+            changed = ImGui::DragFloat4(label.c_str(), edited.valueParameters.data() + slot * 4, .005f) || changed;
+            trackEdit();
+        }
+    }
     float base[4]{edited.baseColorFactor.x, edited.baseColorFactor.y, edited.baseColorFactor.z, edited.baseColorFactor.w};
     if (ImGui::ColorEdit4("Base color", base, ImGuiColorEditFlags_Float)) {
         edited.baseColorFactor = float4(base[0], base[1], base[2], base[3]);

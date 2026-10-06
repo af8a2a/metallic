@@ -34,12 +34,14 @@ struct MaterialSchema
 };
 
 // Authoring definition. Its schema describes semantic values, never GPU offsets.
-// The implementation name selects an existing render::MaterialProgram.
+// The implementation selects a Surface backend or the independent Fiber domain.
 struct MaterialDefinition
 {
     uint32_t version = 1;
     uint32_t definitionVersion = 1;
     std::string implementation = "OpenPBRComposite.Legacy";
+    std::string surfaceProgram; // Validated Value/Closure IR authoring source, never generated Slang.
+    nlohmann::json valueParameters = nlohmann::json::object(); // Sparse float4 slots 0..3.
     MaterialSchema schema;
     MaterialFeaturePolicies featurePolicies;
 };
@@ -54,6 +56,7 @@ struct MaterialInstance
     nlohmann::json resources = nlohmann::json::object();
     nlohmann::json features = nlohmann::json::object();
     nlohmann::json featurePolicies = nlohmann::json::object();
+    nlohmann::json valueParameters = nlohmann::json::object();
 };
 
 struct ResolvedMaterialInstance
@@ -63,12 +66,14 @@ struct ResolvedMaterialInstance
     nlohmann::json parameters;
     nlohmann::json resources;
     nlohmann::json features;
+    nlohmann::json valueParameters;
     MaterialFeaturePolicies featurePolicies;
     MaterialFeatureResolution featureResolution;
     std::vector<std::string> dependencies;
 };
 
 MaterialDefinition defaultOpenPBRDefinition();
+MaterialDefinition defaultRTXCRChiangDefinition();
 bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& output, std::string& error);
 std::string serializeMaterialDefinition(const MaterialDefinition& definition);
 bool deserializeMaterialInstance(std::string_view text, MaterialInstance& output, std::string& error);
@@ -96,8 +101,8 @@ private:
 using MaterialResourceResolver = std::function<int32_t(std::string_view uri)>;
 using MaterialResourceEncoder = std::function<std::string(std::string_view slot, int32_t sourceTexture)>;
 
-// Imported names, inactive Fiber fields and existing M2 code stay in the caller's
-// RenderMaterial. Only the OpenPBR semantic fields are lowered, through the old upload path.
+// Imported names and inactive fields stay in the caller's RenderMaterial.
+// Each definition lowers only its domain's semantic parameters.
 bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const MaterialResourceResolver& resolver,
     scene::RenderMaterial& output, std::string& error);
 bool createMaterialInstance(const scene::RenderMaterial& source, std::string definitionUri,

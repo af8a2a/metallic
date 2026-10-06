@@ -10,6 +10,9 @@
 
 namespace metallic::render {
 
+// RR also performs super resolution; the default graph uses its Quality mode.
+inline constexpr const char* kDefaultPathTracingSampleId = "pathtracing-sample-dlss-rr";
+
 // The standalone GPUDriven executable defaults to streamed MiniZorah with realtime lighting.
 inline constexpr const char* kDefaultGPUDrivenSampleId = "gpu-driven-sample";
 inline constexpr const char* kGPUDrivenZorahFullSampleId = "gpu-driven-zorah-full";
@@ -46,6 +49,15 @@ struct RenderSampleLoadResult {
     RenderGraph graph;
     std::filesystem::path graphFilePath;
 };
+
+enum class LookDevRenderPath { Comparison, PathTraceOnly, DeferredOnly };
+
+// Accepts the Reference/VBuffer/Deferred LookDev comparison topology only.
+bool supportsLookDevRenderPaths(const RenderGraph& graph);
+// Derive a standalone graph, preserving camera, material and display settings.
+// The source and destination may alias. Failure leaves the destination unchanged.
+bool makeLookDevRenderGraph(const RenderGraph& comparison, LookDevRenderPath path,
+    RenderGraph& result, std::string& message);
 
 class RenderSample {
 public:

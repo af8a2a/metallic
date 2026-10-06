@@ -67,6 +67,7 @@ struct AutoExposurePush {
     float speedUp, speedDown, transitionDistance, deltaSeconds;
     PostUInt automatic;
     float sourceExposure, artisticExposure;
+    PostUInt bypass;
 };
 
 struct AutoExposureParams {
@@ -100,11 +101,11 @@ struct ColorGradingLUTParams {
 #ifdef __cplusplus
 inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000002ull;
 inline constexpr uint64_t kSliderDebugABI = 0x534c494445000002ull;
-inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000002ull;
+inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000003ull;
 inline constexpr uint64_t kColorGradingLUTABI = 0x4752414445000002ull;
 static_assert(sizeof(FinalBlitParams) == 56 && offsetof(FinalBlitParams, display) == 16);
 static_assert(sizeof(SliderDebugParams) == 28 && offsetof(SliderDebugParams, display) == 12);
-static_assert(sizeof(AutoExposureParams) == 124 && offsetof(AutoExposureParams, display) == 44);
+static_assert(sizeof(AutoExposureParams) == 128 && offsetof(AutoExposureParams, display) == 44);
 static_assert(alignof(ColorGradingLUTParams) == 16);
 static_assert(sizeof(ColorGradingLUTParams) == 192 && offsetof(ColorGradingLUTParams, display) == 48);
 static_assert(offsetof(ColorGradingLUTParams, sampler) == 32 && offsetof(GradingPush, grade) == 16);

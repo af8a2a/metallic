@@ -125,6 +125,9 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
     float3 authoredNormal = hit.normal;
     SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+#if defined(MATERIAL_PROGRAM_ID)
+    program.specializedProgramId = MATERIAL_PROGRAM_ID;
+#endif
     program.fixedMetalness = fixedMetalness;
     program.opaquePrimary = opaquePrimary;
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, ray.direction),
@@ -150,13 +153,19 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
 #endif
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(1);
-    sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
-    sampling.exteriorIor = OpenPBR_VacuumIor;
+    sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
+    sampling.exteriorIor = OpenPBRVacuumIor;
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     let prepared = shaded.prepared;
     float3 radiance = shaded.radiance;
 #if METALLIC_REALTIME_DEFERRED
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
+#if METALLIC_CUSTOM_MATERIALS
+        if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
+            surface.inputs.specular_roughness_anisotropy > 0.0) {
+            return radiance + sceneSurfaceEnvironment(prepared, push) * surface.occlusion;
+        }
+#endif
         float3 normal = hit.normal;
         float roughness = saturate(surface.inputs.specular_roughness);
         float metalness = saturate(surface.inputs.base_metalness);
@@ -198,6 +207,9 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
         }
         radiance += environment * surface.occlusion / float(count);
     } else if (!sampledEnvironment) {
+#if METALLIC_CUSTOM_MATERIALS
+        if (surface.family != 0u) { return radiance + sceneSurfaceEnvironment(prepared, push); }
+#endif
         float3 normal = dot(hit.normal, viewDirection) >= 0.0 ? hit.normal : -hit.normal;
         float diffuseWeight = surface.inputs.base_weight * (1.0 - surface.inputs.base_metalness) *
             (1.0 - surface.inputs.transmission_weight);

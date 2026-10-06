@@ -1,0 +1,23 @@
+{
+    "sourceReference": "Reference.json",
+    "sourceColorSpace": "lin_rec709",
+    "sceneWorkingColorSpace": "acescg",
+    "displayTransform": "aces2",
+    "scene": "OpenPbrDefault.gltf",
+    "environmentSourceColorSpace": "lin_rec709",
+    "linearCapture": {
+        "test": "RHIRendering.working_color_lookdev_linear_capture",
+        "output": "PathTrace.color",
+        "format": "RGBA32F little-endian",
+        "width": 384,
+        "height": 384,
+        "frames": 64,
+        "samplesPerPixel": 256,
+        "exposureApplied": false,
+        "displayTransformApplied": false
+    },
+    "displayCaptureTest": "RHIRendering.color_grading_lookdev_capture",
+    "rasterParityTest": "RHIRendering.visibility_buffer_deferred_openpbr",
+    "captureLocation": "Test output directory selected with --output-dir; generated captures are not checked in",
+    "painterValidation": "Not performed; no Painter ACEScg authoring capture is claimed"
+}

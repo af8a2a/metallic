@@ -52,6 +52,92 @@ protected:
     }
 };
 
+TEST_F(MaterialAssets, FiberAssetRoundTripInheritanceAndDomainValidation)
+{
+    auto fiber = defaultRTXCRChiangDefinition();
+    write("Fiber.materialdef", serializeMaterialDefinition(fiber));
+    MaterialDefinition decoded;
+    ASSERT_TRUE(deserializeMaterialDefinition(serializeMaterialDefinition(fiber), decoded, error)) << error;
+    EXPECT_EQ(decoded.implementation, "RTXCRChiang.DOTS");
+    EXPECT_TRUE(decoded.schema.resources.empty());
+    MaterialAssetLibrary library(root);
+    scene::RenderMaterial source;
+    source.rtxcrHair = true;
+    source.rtxcrHairMelanin = 0.3f;
+    source.rtxcrHairLongitudinalRoughness = 0.17f;
+    source.rtxcrHairCuticleAngleDegrees = -2;
+    source.doubleSided = true;
+    MaterialInstance parent;
+    ASSERT_TRUE(createMaterialInstance(source, "asset://Fiber.materialdef", fiber, {}, parent, error)) << error;
+    ASSERT_TRUE(library.save("asset://Parent.material", parent, error)) << error;
+    MaterialInstance child;
+    child.definition = parent.definition;
+    child.parent = "asset://Parent.material";
+    child.parameters["azimuthalRoughness"] = 0.4;
+    ASSERT_TRUE(library.save("asset://Child.material", child, error)) << error;
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve("asset://Child.material", resolved, error)) << error;
+    scene::RenderMaterial result;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, {}, result, error)) << error;
+    EXPECT_TRUE(result.rtxcrHair);
+    EXPECT_TRUE(result.doubleSided);
+    EXPECT_FLOAT_EQ(result.rtxcrHairMelanin, source.rtxcrHairMelanin);
+    EXPECT_FLOAT_EQ(result.rtxcrHairLongitudinalRoughness, source.rtxcrHairLongitudinalRoughness);
+    EXPECT_FLOAT_EQ(result.rtxcrHairAzimuthalRoughness, 0.4f);
+    EXPECT_FLOAT_EQ(result.rtxcrHairCuticleAngleDegrees, -2);
+    child.parameters["roughness"] = 0.2;
+    EXPECT_FALSE(library.resolve(child, resolved, error));
+    child.parameters.erase("roughness");
+    child.parameters["longitudinalRoughness"] = 0;
+    EXPECT_FALSE(library.save("asset://Child.material", child, error));
+    child.parameters.erase("longitudinalRoughness");
+    child.valueParameters["0"] = {1, 0, 0, 0};
+    EXPECT_FALSE(library.resolve(child, resolved, error));
+    child.valueParameters.clear();
+    child.featurePolicies["metalness"] = "specialization";
+    EXPECT_FALSE(library.resolve(child, resolved, error));
+    auto document = Json::parse(serializeMaterialDefinition(fiber));
+    document["surfaceProgram"] = Json::object();
+    EXPECT_FALSE(deserializeMaterialDefinition(document.dump(), decoded, error));
+    auto surface = instance();
+    surface.parameters["melanin"] = 0.5;
+    EXPECT_FALSE(library.resolve(surface, resolved, error));
+}
+
+TEST_F(MaterialAssets, FiberSceneEditsPersistReloadAndValidateTransactionally)
+{
+    const auto fiber = defaultRTXCRChiangDefinition();
+    write("Fiber.materialdef", serializeMaterialDefinition(fiber));
+    MaterialInstance asset;
+    asset.definition = "asset://Fiber.materialdef";
+    asset.parameters["melanin"] = 0.2;
+    MaterialAssetLibrary library(root);
+    ASSERT_TRUE(library.save("asset://Fiber.material", asset, error)) << error;
+    scene::SceneDocument document;
+    loadScene(document);
+    ASSERT_TRUE(document.setMaterialAsset(0, "asset://Fiber.material", root, error)) << error;
+    EXPECT_TRUE(document.materials()[0].rtxcrHair);
+    auto edited = document.materials()[0];
+    edited.rtxcrHairCuticleAngleDegrees = 5;
+    const auto revision = document.materialRevision();
+    ASSERT_TRUE(document.setMaterialProperties(0, edited));
+    EXPECT_GT(document.materialRevision(), revision);
+    edited.rtxcrHairIor = 0;
+    EXPECT_FALSE(document.setMaterialProperties(0, edited));
+    asset.parameters["melanin"] = 0.7;
+    ASSERT_TRUE(library.save("asset://Fiber.material", asset, error)) << error;
+    ASSERT_TRUE(document.reloadMaterialAsset(0, error)) << error;
+    EXPECT_FLOAT_EQ(document.materials()[0].rtxcrHairMelanin, 0.7f);
+    EXPECT_FLOAT_EQ(document.materials()[0].rtxcrHairCuticleAngleDegrees, 5);
+    ASSERT_TRUE(document.save(error)) << error;
+    scene::SceneDocument reloaded;
+    ASSERT_TRUE(reloaded.load(document.documentPath())) << reloaded.documentWarning();
+    EXPECT_TRUE(reloaded.documentWarning().empty()) << reloaded.documentWarning();
+    EXPECT_TRUE(reloaded.materials()[0].rtxcrHair);
+    EXPECT_FLOAT_EQ(reloaded.materials()[0].rtxcrHairMelanin, 0.7f);
+    EXPECT_FLOAT_EQ(reloaded.materials()[0].rtxcrHairCuticleAngleDegrees, 5);
+}
+
 TEST_F(MaterialAssets, FeatureSignaturesSeparateProgramVisibilityAndPipeline)
 {
     scene::RenderMaterial value;
@@ -302,6 +388,53 @@ TEST_F(MaterialAssets, AllOpenPBRFieldsAndTextureTransformsRoundTrip)
     }
 }
 
+TEST_F(MaterialAssets, ColorTextureTagsSurviveExportAndRejectDataUsage)
+{
+    scene::RenderMaterial source;
+    source.baseColorTexture.textureIndex = 7;
+    source.baseColorTexture.colorMetadata.source = render::kACEScg;
+    source.normalTexture.textureIndex = 8;
+    MaterialInstance asset;
+    ASSERT_TRUE(createMaterialInstance(source, "asset://OpenPBR.materialdef", definition,
+        [](auto, auto) { return "asset://Textures/Tagged.hdr"; }, asset, error)) << error;
+    EXPECT_EQ(asset.resources["baseColorTexture"]["colorSpace"], "acescg");
+    EXPECT_FALSE(asset.resources["normalTexture"].contains("colorSpace"));
+    MaterialInstance parsed;
+    ASSERT_TRUE(deserializeMaterialInstance(serializeMaterialInstance(asset), parsed, error)) << error;
+    MaterialAssetLibrary library(root);
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(parsed, resolved, error)) << error;
+    scene::RenderMaterial output;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error)) << error;
+    EXPECT_EQ(output.baseColorTexture.colorMetadata.source, render::kACEScg);
+    EXPECT_EQ(output.normalTexture.colorMetadata.semantic, render::TextureSemantic::Data);
+    resolved.resources["normalTexture"]["colorSpace"] = "acescg";
+    EXPECT_FALSE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error));
+    EXPECT_NE(error.find("Data textures"), std::string::npos);
+}
+
+TEST_F(MaterialAssets, TextureSemanticsComeFromTheSlotRatherThanExistingMetadata)
+{
+    auto asset = instance();
+    asset.resources["baseColorTexture"] = {{"uri", "asset://Textures/Tagged.png"}, {"colorSpace", "acescg"}};
+    asset.resources["emissiveTexture"] = {{"uri", "asset://Textures/Emission.png"}};
+    asset.resources["normalTexture"] = {{"uri", "asset://Textures/Normal.png"}};
+    MaterialAssetLibrary library(root);
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(asset, resolved, error)) << error;
+    scene::RenderMaterial output;
+    output.baseColorTexture = {};
+    output.emissiveTexture = {};
+    output.normalTexture.colorMetadata = render::ksRGBColorTexture;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error)) << error;
+    EXPECT_EQ(output.baseColorTexture.colorMetadata, (render::TextureColorMetadata{render::TextureSemantic::Color, render::kACEScg}));
+    EXPECT_EQ(output.emissiveTexture.colorMetadata, render::ksRGBColorTexture);
+    EXPECT_EQ(output.normalTexture.colorMetadata, render::TextureColorMetadata{});
+    resolved.resources["normalTexture"]["colorSpace"] = "acescg";
+    EXPECT_FALSE(lowerMaterialInstance(resolved, [](auto) { return 7; }, output, error));
+    EXPECT_NE(error.find("Data textures"), std::string::npos);
+}
+
 TEST_F(MaterialAssets, RejectsCyclesMissingParentsAndDefinitionMismatch)
 {
     MaterialAssetLibrary library(root);
@@ -434,6 +567,56 @@ TEST_F(MaterialAssets, SceneOwnedValueProgramSurvivesAssetBindingAndReload)
     ASSERT_TRUE(reloaded.load(document.documentPath())) << reloaded.documentWarning();
     EXPECT_EQ(reloaded.materials()[0].valueProgram, edited.valueProgram);
     EXPECT_EQ(reloaded.materials()[0].valueParameters, edited.valueParameters);
+}
+
+TEST_F(MaterialAssets, SlabDefinitionOwnsValueClosureProgramAndInheritedInputs)
+{
+    definition.implementation = "Slab.Surface";
+    definition.surfaceProgram = R"({"version":3,"nodes":{},"outputs":{},"closure":{"op":"slab","reflectance":{"op":"parameter","index":0}}})";
+    definition.valueParameters = {{"0", {0.2, 0.4, 0.6, 0}}, {"1", {1, 2, 3, 0}}};
+    write("Slab.materialdef", serializeMaterialDefinition(definition));
+    MaterialAssetLibrary library(root);
+    auto parent = instance(); parent.definition = "asset://Slab.materialdef";
+    parent.valueParameters = {{"1", {4, 5, 6, 0}}};
+    ASSERT_TRUE(library.save("asset://Parent.material", parent, error)) << error;
+    auto child = parent; child.parent = "asset://Parent.material"; child.valueParameters = Json::object();
+    ASSERT_TRUE(library.save("asset://Slab.material", child, error)) << error;
+    scene::SceneDocument document;
+    loadScene(document);
+    ASSERT_TRUE(document.setMaterialAsset(0, "asset://Slab.material", root, error)) << error;
+    EXPECT_EQ(Json::parse(document.materials()[0].valueProgram), Json::parse(definition.surfaceProgram));
+    EXPECT_FLOAT_EQ(document.materials()[0].valueParameters[4], 4);
+    ASSERT_TRUE(document.save(error)) << error;
+    definition.valueParameters["0"][0] = 0.7;
+    write("Slab.materialdef", serializeMaterialDefinition(definition));
+    scene::SceneDocument reloaded;
+    ASSERT_TRUE(reloaded.load(document.documentPath())) << reloaded.documentWarning();
+    EXPECT_TRUE(reloaded.documentWarning().empty()) << reloaded.documentWarning();
+    EXPECT_FLOAT_EQ(reloaded.materials()[0].valueParameters[0], 0.7f);
+    EXPECT_FLOAT_EQ(reloaded.materials()[0].valueParameters[4], 4);
+    auto local = reloaded.materials()[0]; local.valueParameters[0] = 0.9f;
+    ASSERT_TRUE(reloaded.setMaterialProperties(0, local));
+    ASSERT_TRUE(reloaded.reloadMaterialAsset(0, error)) << error;
+    EXPECT_FLOAT_EQ(reloaded.materials()[0].valueParameters[0], 0.9f);
+    MaterialInstance exported;
+    ASSERT_TRUE(createMaterialInstance(reloaded.materials()[0], "asset://Slab.materialdef", definition, {}, exported, error)) << error;
+    ASSERT_TRUE(library.save("asset://Exported.material", exported, error)) << error;
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve("asset://Exported.material", resolved, error)) << error;
+    scene::RenderMaterial roundtrip;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, {}, roundtrip, error)) << error;
+    EXPECT_EQ(roundtrip.valueParameters, reloaded.materials()[0].valueParameters);
+    EXPECT_EQ(roundtrip.valueProgram, reloaded.materials()[0].valueProgram);
+    EXPECT_FALSE(createMaterialInstance(scene::RenderMaterial{}, "asset://Slab.materialdef", definition, {}, exported, error));
+    const auto revision = reloaded.materialRevision();
+    write("Slab.materialdef", "invalid");
+    EXPECT_FALSE(reloaded.reloadMaterialAsset(0, error));
+    EXPECT_EQ(reloaded.materialRevision(), revision);
+    EXPECT_EQ(reloaded.materials()[0].valueProgram, local.valueProgram);
+    ASSERT_TRUE(library.save("asset://Legacy.material", instance(), error)) << error;
+    ASSERT_TRUE(reloaded.setMaterialAsset(0, "asset://Legacy.material", root, error)) << error;
+    EXPECT_TRUE(reloaded.materials()[0].valueProgram.empty());
+    EXPECT_EQ(reloaded.materials()[0].valueParameters, (std::array<float, 16>{}));
 }
 
 TEST_F(MaterialAssets, TexturePublicationAndMissingResourceAreTransactional)

@@ -519,11 +519,11 @@ private:
         std::string& log,
         std::string_view label)
     {
-        auto vertexModule = device.createShaderModule({.spirv = vertexCompile.spirv});
+        auto vertexModule = ShaderRegistry::instance().getShaderModule(device, {.spirv = vertexCompile.spirv});
         if (!vertexModule) { return makeError(vertexModule.error()); }
-        auto fragmentModule = device.createShaderModule({.spirv = fragmentCompile.spirv});
+        auto fragmentModule = ShaderRegistry::instance().getShaderModule(device, {.spirv = fragmentCompile.spirv});
         if (!fragmentModule) { return makeError(fragmentModule.error()); }
-        Result<> result = device.createGraphicsShaderObjectProgram(GraphicsShaderObjectProgramDesc{
+        Result<> result = ShaderRegistry::instance().getGraphicsShaderObjectProgram(device, GraphicsShaderObjectProgramDesc{
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,

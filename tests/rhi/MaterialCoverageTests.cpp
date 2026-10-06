@@ -52,6 +52,8 @@ public:
             if (MaterialValueProgramSet::create({&material, 1}, log) || log.empty()) { return RHITestResult::fail("Unsupported Coverage expression accepted"); }
         }
         material.valueProgram = R"({"version":1,"coverage":0})";
+        material.alphaMode = "BLEND";
+        if (MaterialValueProgramSet::create({&material, 1}, log)) { return RHITestResult::fail("Custom BLEND Coverage was not rejected"); }
         material.alphaMode = "OPAQUE";
         if (MaterialValueProgramSet::create({&material, 1}, log)) { return RHITestResult::fail("Opaque Coverage was not rejected"); }
         return RHITestResult::pass("Minimal independent slices, resource dependency elimination, shared inputs and validation");
@@ -117,10 +119,11 @@ private:
     std::shared_ptr<uint32_t> micromapCount_;
 };
 
-class MaterialCoverageRenderingTest final : public RHITest
+class MaterialCoverageRenderingTest : public RHITest
 {
 public:
-    MaterialCoverageRenderingTest() { name = "material_coverage_winner_shadow_ray"; type = RHITestType::Rendering; }
+    explicit MaterialCoverageRenderingTest(bool slab = false) : slab_(slab)
+    { name = slab ? "material_coverage_slab_winner_shadow_ray" : "material_coverage_winner_shadow_ray"; type = RHITestType::Rendering; }
     RHITestResult run(RHITestContext& context) override
     {
         const auto root = std::filesystem::absolute(context.outputDirectory / "coverage-scene");
@@ -164,6 +167,9 @@ public:
         sample.graph.setNodeRuntimeProperty(raster, "meshletNormalConeCull", false);
         const auto deferred = sample.graph.findNode("Deferred")->id;
         sample.graph.setNodeRuntimeProperty(deferred, "debugView", "baseColor");
+        // The comparison pass requires equal encodings after the color-system
+        // migration: both inputs must be display-linear diagnostics.
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("Reference")->id, "debugView", "baseColor");
         sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);
         const auto micromapCount = std::make_shared<uint32_t>(0);
         registerRenderGraphPassType("CoverageRayProbe", "Coverage ray/shadow test", [micromapCount] { return std::make_unique<CoverageRayProbePass>(micromapCount); });
@@ -186,6 +192,13 @@ public:
                     edited.valueProgram = R"({"version":2,"nodes":{"shift":{"op":"add","args":[{"op":"swizzle","components":"xxxx","args":[{"op":"uv"}]},{"op":"parameter","index":0}]},"mask":{"op":"clamp","args":[{"ref":"shift"},-1000000,1000000]}},"outputs":{"baseColor":{"op":"parameter","index":1},"coverage":{"op":"mul","args":[{"op":"alpha"},{"ref":"mask"}]}}})";
                     edited.valueParameters[4] = step == 5 ? 1.0f : 0.0f;
                     edited.valueParameters[6] = step == 6 ? 1.0f : 0.0f;
+                    if (slab_) {
+                        auto graph = nlohmann::json::parse(edited.valueProgram);
+                        graph["version"] = 3;
+                        graph["closure"] = {{"op", "slab"}, {"reflectance", graph["outputs"]["baseColor"]}};
+                        graph["outputs"].erase("baseColor");
+                        edited.valueProgram = graph.dump();
+                    }
                 }
                 if (step == 7) { edited.valueProgram.clear(); }
                 if (!scene.setMaterialProperties(0, edited)) { return RHITestResult::fail("Coverage edit failed"); }
@@ -221,9 +234,38 @@ public:
             }
             report << "step=" << step << " frontWinners=" << winners << " checked=3844 opacityMicromaps=" << *micromapCount << '\n';
         }
-        return RHITestResult::pass("Layered VBuffer winner, production RT/shadow Coverage, texture alpha, shared parameters and legacy restoration agree for 30752 pixels");
+        // BLEND uses the shared legacy Coverage evaluator. Custom Coverage on
+        // BLEND remains rejected by the authoring contract (tested above).
+        sample.graph = RenderGraph{};
+        sample.graph.addNode("CoverageRayProbe", "CoverageProbe", {{"path",path.generic_string()}});
+        sample.graph.markOutput("CoverageProbe.color");
+        for (float opacity : {0.0f,0.25f,0.75f,1.0f}) {
+            auto edited=scene.materials()[0]; edited.alphaMode="BLEND";
+            edited.valueProgram.clear(); edited.baseColorFactor.w=opacity;
+            if (!scene.setMaterialProperties(0,edited)) { return RHITestResult::fail("BLEND Coverage edit failed"); }
+            if (!preview.render(sample.graph,64,64,"CoverageProbe.color")) { return RHITestResult::fail(preview.lastLog()); }
+            std::vector<float> rays(preview.readbackBytes().size()/4);
+            std::memcpy(rays.data(),preview.readbackBytes().data(),preview.readbackBytes().size());
+            for (uint32_t y=1;y<63;++y) {
+                for (uint32_t x=1;x<63;++x) {
+                    size_t i=(y*64+x)*4;
+                    if (std::abs(rays[i]-(opacity>0 ? 2.0f : 3.0f))>1e-5f || std::abs(rays[i+2]-opacity*192.0f/255.0f)>1e-5f) {
+                        return RHITestResult::fail("BLEND Coverage ignored instance/texture opacity");
+                    }
+                }
+            }
+        }
+        return RHITestResult::pass("30752 MASK raster/RT/shadow pixels agree; BLEND instance/texture alpha uses shared Coverage opacity");
     }
+private:
+    bool slab_;
 };
 METALLIC_REGISTER_RHI_TEST(MaterialCoverageRenderingTest);
+class MaterialCoverageSlabRenderingTest final : public MaterialCoverageRenderingTest
+{
+public:
+    MaterialCoverageSlabRenderingTest() : MaterialCoverageRenderingTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(MaterialCoverageSlabRenderingTest);
 } // namespace
 } // namespace metallic::tests

@@ -27,7 +27,7 @@ float4 materialValueBilinear(PathTraceTextureInfo info, uint ntcCount, float2 uv
 }
 
 float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 uv,
-    uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context)
+    uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context, bool linearColor)
 {
     PathTraceTextureInfo info = material.baseColorTexture;
     if (slot == 1u) { info = material.metallicRoughnessTexture; }
@@ -36,11 +36,13 @@ float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 
     else if (slot == 4u) { info = material.emissiveTexture; }
     else if (slot == 5u) { info = material.specularTexture; }
     uint2 dimensions; uint mipCount;
+    // The Graph sampler has semantic defaults. Preserve legacy raw-IR fallback.
+    float4 fallback = linearColor && slot == 2u ? float4(0.5, 0.5, 1.0, 1.0) : float4(1.0);
     bool neural = metallicHasNeuralTexture(info.ntcTextureSetIndex, context.ntcCount);
     if (neural) {
-        if (!metallicNeuralTextureDimensions(info.ntcTextureSetIndex, context.ntcCount, 0u, dimensions, mipCount)) { return 1.0; }
+        if (!metallicNeuralTextureDimensions(info.ntcTextureSetIndex, context.ntcCount, 0u, dimensions, mipCount)) { return fallback; }
     } else {
-        if (info.textureIndex >= context.textureCount || info.textureIndex == 0xffffffffu) { return 1.0; }
+        if (info.textureIndex >= context.textureCount || info.textureIndex == 0xffffffffu) { return fallback; }
         gMaterialTextures(info.textureIndex).GetDimensions(0u, dimensions.x, dimensions.y, mipCount);
     }
     float lod = dxLod.x;
@@ -55,7 +57,13 @@ float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 
     lod = clamp(lod, 0.0, float(max(mipCount, 1u) - 1u));
     const uint lo = uint(floor(lod)), hi = min(lo + 1u, max(mipCount, 1u) - 1u);
     float2 transformed = transformMaterialUv(info, uv);
-    return lerp(materialValueBilinear(info, context.ntcCount, transformed, lo),
+    float4 sample = lerp(materialValueBilinear(info, context.ntcCount, transformed, lo),
         materialValueBilinear(info, context.ntcCount, transformed, hi), frac(lod));
+    // IR v1 arithmetic retains its original untyped Rec.709 sample semantics.
+    // Explicitly tagged wide-gamut linear colors enter that authoring basis.
+    if ((uint(info.transform0.w) & 4u) == 0u && (linearColor || ((uint(info.transform0.w) >> 3u) & 3u) != 0u)) {
+        sample.rgb = Metallic.WorkingColor::toLinearRec709(materialTextureColor(sample.rgb, info.transform0.w));
+    }
+    return sample;
 }
 #endif

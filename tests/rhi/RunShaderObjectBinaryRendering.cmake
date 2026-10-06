@@ -1,0 +1,48 @@
+if(NOT DEFINED RHI_EXECUTABLE OR NOT DEFINED TEST_DIRECTORY)
+    message(FATAL_ERROR "RHI_EXECUTABLE and TEST_DIRECTORY are required")
+endif()
+
+string(RANDOM LENGTH 12 ALPHABET 0123456789abcdef run_id)
+set(directory "${TEST_DIRECTORY}/${run_id}")
+file(MAKE_DIRECTORY "${directory}")
+set(ENV{METALLIC_VK_INTERNAL_PIPELINE_CACHE} disabled)
+set(ENV{METALLIC_NSIGHT_GRAPHICS_CAPTURE} 0)
+set(ENV{METALLIC_NSIGHT_SHADER_DEBUG} 0)
+set(ENV{METALLIC_SHADER_CAPTURE_SYMBOLS} 0)
+execute_process(COMMAND "${RHI_EXECUTABLE}" --rhi-bindless --rhi-validation --gtest_color=no
+    "--gtest_filter=*.shader_object_binary_persistence_readback:*.shader_object_scene_binary_frames:*.shader_object_material_readback:*.graphics_pipeline_shader_object_aba_readback"
+    --output-dir "${directory}" WORKING_DIRECTORY "${directory}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 90)
+set(log "${output}\n${errors}")
+file(WRITE "${directory}/rendering.log" "${log}")
+if(log MATCHES "Internal pipeline cache diagnostic (requires|unsupported)")
+    message(STATUS "SKIP: driver lacks internal-cache control for this test")
+    return()
+endif()
+# Preserve raw loader warnings, exclude only missing optional layer manifests.
+string(REGEX REPLACE "[^\n]*Vulkan validation: loader_get_json: Failed to open JSON file[^\n]*" "" checked_log "${log}")
+if(NOT result STREQUAL "0" OR checked_log MATCHES "Vulkan validation:|\\[error\\]"
+    OR NOT log MATCHES "\\[  PASSED  \\] 4 tests"
+    OR NOT log MATCHES "Internal pipeline cache diagnostic: mode=disabled")
+    message(FATAL_ERROR "ShaderObject binary rendering failed (${result}); see ${directory}/rendering.log")
+endif()
+
+foreach(pass IN ITEMS SceneMaterialShaderObjectPass BunnyWireframePass)
+    string(FIND "${log}" "scene=${pass} lifetime=1 begin" begin)
+    string(FIND "${log}" "scene=${pass} lifetime=1 frames=8 complete" end)
+    if(begin LESS 0 OR end LESS begin)
+        message(FATAL_ERROR "Missing second Device lifetime for ${pass}; see ${directory}/rendering.log")
+    endif()
+    math(EXPR length "${end}-${begin}")
+    string(SUBSTRING "${log}" ${begin} ${length} lifetime_log)
+    string(REGEX MATCHALL "\\[ShaderRegistry\\] ShaderObject [^\n]*binaryHit=true" hits "${lifetime_log}")
+    list(LENGTH hits count)
+    set(minimum 1)
+    if(pass STREQUAL "SceneMaterialShaderObjectPass")
+        set(minimum 2)
+    endif()
+    if(count LESS minimum OR lifetime_log MATCHES "binaryHit=false")
+        message(FATAL_ERROR "${pass} second Device did not recreate its complete binary pair set; see ${directory}/rendering.log")
+    endif()
+endforeach()
+message(STATUS "ShaderObject binary rendering and validation passed; evidence ${directory}")

@@ -126,8 +126,8 @@ void surfaceLightingProbeMain(uint3 id : SV_DispatchThreadID)
         lights.context = context;
         SurfaceSamplingContext sampling;
         sampling.throughput = throughput;
-        sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
-        sampling.exteriorIor = OpenPBR_VacuumIor;
+        sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
+        sampling.exteriorIor = OpenPBRVacuumIor;
         countStage(3);
         let shaded = shadeSurface(program, context, instance, -direction, TransportMode.Radiance, sampling, lights);
         radiance += throughput * shaded.radiance;

@@ -38,6 +38,18 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        if (const auto* source = context.input("source")) {
+            if (auto* color = context.output("color")) {
+                const bool decodedSrgb = source->colorEncoding == DisplayColorEncoding::sRGB &&
+                    (source->desc.format == Format::RGBA8sRGB || source->desc.format == Format::BGRA8sRGB);
+                color->colorEncoding = decodedSrgb ? DisplayColorEncoding::DisplayLinearRec709 :
+                    (isDisplayEncoding(source->colorEncoding) ? source->colorEncoding : DisplayColorEncoding::ExposedLinear);
+            }
+        }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
@@ -55,15 +67,12 @@ public:
         const char* entries[] = {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"};
         for (size_t i = 0; i < programs_.size(); ++i) {
             if (programs_[i].valid()) { continue; }
-            ShaderCompileResult shader;
-            Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/AutoExposure",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-            if (!result) { log += shader.diagnostics; return result; }
-            result = programs_[i].initialize(*context.device, {
-                .spirv = shader.spirv,
+            auto result = ShaderRegistry::instance().getComputeKernel(*context.device,
+                {.moduleName = "Features/PostProcess/AutoExposure",
+                    .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, {
                 .parameters = parameterAbi<AutoExposureParams>(kAutoExposureABI, ParameterTransport::InlinePush),
                 .debugName = entries[i],
-            }, log);
+            }, programs_[i], log);
             if (!result) { return result; }
         }
         state_ = std::make_shared<State>();
@@ -82,7 +91,15 @@ public:
             source.desc().width != context.width() || source.desc().height != context.height()) {
             return makeError(Error::InvalidArgument);
         }
+        const auto* sourceResource = context.input("source");
+        const bool bypass = sourceResource && isDisplayEncoding(sourceResource->colorEncoding);
         switch (source.desc().format) {
+        case Format::RGBA8Unorm:
+        case Format::BGRA8Unorm:
+        case Format::RGBA8sRGB:
+        case Format::BGRA8sRGB:
+            if (!bypass) { return makeError(Error::InvalidArgument); }
+            break;
         case Format::RGBA16Sfloat:
         case Format::RGBA32Sfloat:
         case Format::RG32Sfloat:
@@ -114,6 +131,7 @@ public:
             settings.enabled ? 1u : 0u,
             finiteProperty(context.properties(), "sourceExposure", 1.0f, 0.000001f, 65536.0f),
             finiteProperty(context.properties(), "artisticExposure", 1.0f, 0.001f, 16.0f),
+            bypass ? 1u : 0u,
         };
         auto& commands = context.commandBuffer();
         if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(state_); }
@@ -163,7 +181,7 @@ public:
         const RenderGraphBufferImport imports[] = {{"history", *history, Access::BufferStorageReadWrite}};
         result = context.executeComputeStages(stages, imports);
         if (!result) { return result; }
-        state_->valid = true;
+        state_->valid = !bypass;
         width_ = context.width();
         height_ = context.height();
         sceneIdentity_ = identity;
@@ -174,6 +192,12 @@ public:
     }
 
 private:
+    static bool isDisplayEncoding(DisplayColorEncoding encoding)
+    {
+        return encoding == DisplayColorEncoding::sRGB || encoding == DisplayColorEncoding::scRGB ||
+            encoding == DisplayColorEncoding::DisplayLinearRec709;
+    }
+
     Device* device_ = nullptr;
     static float finiteProperty(const RenderGraphProperties& properties, const char* key,
         float fallback, float minimum, float maximum)

@@ -1,0 +1,11 @@
+{
+    "type": "Metallic.MaterialDefinition",
+    "version": 1,
+    "definitionVersion": 1,
+    "implementation": "RTXCRChiang.DOTS",
+    "defaults": {
+        "parameters": {},
+        "resources": {},
+        "features": {}
+    }
+}

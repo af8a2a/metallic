@@ -182,6 +182,7 @@ struct TextureBinding {
 };
 
 struct TextureSource {
+    render::ColorSpaceDesc colorSpace = render::ksRGB;
     std::string key;
     std::string name;
     RenderImage::ChannelSource image;
@@ -225,7 +226,7 @@ public:
     RenderTextureInfo directTexture(const TextureBinding& binding)
     {
         if (!validSource(binding.sourceIndex)) {
-            return {};
+            return {.colorMetadata = render::ksRGBColorTexture};
         }
         const auto found = directTextures_.find(binding.sourceIndex);
         if (found != directTextures_.end()) {
@@ -253,7 +254,7 @@ public:
         std::string_view materialName)
     {
         if (!color && !opacity) {
-            return {};
+            return {.colorMetadata = render::ksRGBColorTexture};
         }
         if (color && !opacity) {
             return directTexture(color);
@@ -458,6 +459,12 @@ private:
             shader.GetPrim(),
             "USD Texture " + std::to_string(sourceIndex));
         source.image = readImageSource(shader, source.name);
+        const TfToken colorSpace = shaderInputValue(shader, "sourceColorSpace", TfToken("auto"));
+        if (colorSpace == TfToken("raw")) { source.colorSpace = render::kLinearRec709; }
+        else if (colorSpace != TfToken("auto") && colorSpace != TfToken("sRGB") &&
+            !render::parseColorSpace(colorSpace.GetString(), source.colorSpace)) {
+            appendWarning(destination_.warning, "Unsupported USD texture sourceColorSpace: " + colorSpace.GetString());
+        }
         readUvMapping(shader, source);
         sources_.push_back(std::move(source));
         sourceIndices_.emplace(key, sourceIndex);
@@ -494,6 +501,7 @@ private:
             const TextureSource& source = sources_[static_cast<size_t>(sourceIndex)];
             result.texCoord = source.texCoord;
             result.uvTransform = source.uvTransform;
+            result.colorMetadata = {render::TextureSemantic::Color, source.colorSpace};
         }
         return result;
     }
@@ -658,6 +666,9 @@ void convertMaterials(
         material.normalTexture = textures.directTexture(normalTexture);
         material.occlusionTexture = textures.directTexture(occlusionTexture);
         material.emissiveTexture = textures.directTexture(emissiveTexture);
+        material.metallicRoughnessTexture.colorMetadata = {};
+        material.normalTexture.colorMetadata = {};
+        material.occlusionTexture.colorMetadata = {};
         destination.materials.push_back(std::move(material));
     }
 }

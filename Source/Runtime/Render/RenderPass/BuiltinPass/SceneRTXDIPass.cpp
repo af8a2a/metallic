@@ -89,6 +89,14 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        if (auto* color = context.output("color")) {
+            color->colorEncoding = visualizationModeFromProperties(context.properties()) == kRTXDIVisualizationShaded
+                ? DisplayColorEncoding::SceneLinear : DisplayColorEncoding::sRGB;
+        }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{
@@ -208,6 +216,10 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
+        if (hasSlabMaterials()) {
+            log = "Slab Closure programs require ScenePathTracePass or resident VBuffer lighting; RTXDI is not supported";
+            return makeError(Error::Unsupported);
+        }
         Result<> result;
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
@@ -237,7 +249,7 @@ public:
 #endif
         const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI, shaderOptions);
         const ShaderRequestView source(request);
-        result = compileSlangShaderToSpirv(source.desc(), computeCompile.diagnostics)
+        result = ShaderRegistry::instance().getShader(source.desc(), computeCompile.diagnostics)
             .transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(SceneRTXDI.sceneRtxdiMain) returned ";
@@ -341,6 +353,7 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        if (hasSlabMaterials()) { return makeError(Error::Unsupported); }
         std::string syncLog;
         if (sceneResources_.revision() != sceneResourceRevision_) {
             sceneResourceRevision_ = sceneResources_.revision();
@@ -647,6 +660,17 @@ public:
     }
 
 private:
+    bool hasSlabMaterials() const
+    {
+        const auto generation = sceneResources_.materialGeneration();
+        if (!generation) { return false; }
+        for (const auto& instance : generation->instances()) {
+            const auto id = instance.program->definition->id;
+            if (id == MaterialProgramId::SingleSlab || id == MaterialProgramId::DualSlab) { return true; }
+        }
+        return false;
+    }
+
     static std::vector<scene::PunctualLight> benchmarkLights(
         const RenderGraphProperties& properties, const scene::Bounds& bounds, uint32_t frameIndex)
     {

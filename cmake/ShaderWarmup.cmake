@@ -1,10 +1,22 @@
+add_library(MetallicMaterialValueCompiler STATIC
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Material/MaterialValueProgram.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Material/MaterialCoverageProgram.cpp")
+target_include_directories(MetallicMaterialValueCompiler PUBLIC "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicMaterialValueCompiler PUBLIC MetallicRuntimeScene)
+if(MSVC)
+    target_compile_options(MetallicMaterialValueCompiler PRIVATE /utf-8 /EHsc)
+    target_compile_definitions(MetallicMaterialValueCompiler PRIVATE NOMINMAX)
+endif()
+
 add_library(MetallicShaderWarmupCore STATIC EXCLUDE_FROM_ALL
     "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp"
+    "${CMAKE_SOURCE_DIR}/Tools/MaterialShaderWarmupRequests.cpp"
     "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/SlangCompiler.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/ShaderRegistryCompiler.cpp"
 )
 target_include_directories(MetallicShaderWarmupCore PUBLIC "${CMAKE_SOURCE_DIR}/Source")
 find_package(Threads REQUIRED)
-target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads)
+target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads MetallicMaterialValueCompiler)
 target_compile_definitions(MetallicShaderWarmupCore PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}"

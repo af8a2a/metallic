@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
 #include <algorithm>
+#include <fstream>
 #include <string>
 #include <utility>
 
@@ -777,9 +778,68 @@ const RenderSample& gpuDrivenTerrainP1UnifiedSample()
     return sample;
 }
 
+class LocalLookDevSample final : public RenderSample
+{
+public:
+    LocalLookDevSample(const nlohmann::json& value, std::string category) :
+        id_(value.at("id")), name_(value.at("name")), description_(value.at("description")),
+        scene_(value.at("scenePath")), graph_(value.at("graphPath")), environment_(value.at("environment")), category_(std::move(category)) {}
+    std::string_view id() const override { return id_; }
+    std::string_view name() const override { return name_; }
+    std::string_view category() const override { return category_; }
+    std::string_view description() const override { return description_; }
+    std::string scenePath() const override { return scene_; }
+    std::string graphPath() const override { return graph_; }
+    std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+    std::optional<RenderSampleEnvironmentDesc> environment() const override
+    {
+        // Studio sidecars own the explicit source color tag and lighting settings.
+        if (category_ == "Studio LookDev") { return std::nullopt; }
+        return RenderSampleEnvironmentDesc{.path = environment_};
+    }
+private:
+    std::string id_, name_, description_, scene_, graph_, environment_, category_;
+};
+
+class NativeStrandSample final : public RenderSample
+{
+public:
+    std::string_view id() const override { return "native-strands"; }
+    std::string_view name() const override { return "Native Strand Groom"; }
+    std::string_view category() const override { return "Material LookDev"; }
+    std::string_view description() const override { return "Layered native curves, Fiber materials, motion, density LOD and explicit overflow"; }
+    std::string scenePath() const override { return {}; }
+    bool loadSceneInEditor() const override { return false; }
+    std::string graphPath() const override { return "Pipelines/Samples/native_strands.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
+std::vector<LocalLookDevSample> loadLocalLookDevSamples(const char* path, const char* category, const char* prefix)
+{
+    std::vector<LocalLookDevSample> result;
+    std::ifstream file(projectPath(path));
+    if (!file) { return result; }
+    try {
+        const auto catalog = nlohmann::json::parse(file);
+        if (catalog.at("version") != 1 || !catalog.at("samples").is_array() || catalog.at("samples").size() > 64) { return result; }
+        for (const auto& entry : catalog.at("samples")) {
+            LocalLookDevSample sample(entry, category);
+            if (!sample.id().starts_with(prefix) ||
+                std::any_of(result.begin(), result.end(), [&](const auto& other) { return other.id() == sample.id(); }) ||
+                !std::filesystem::is_regular_file(sample.scenePath()) ||
+                !std::filesystem::is_regular_file(sample.graphPath())) { return {}; }
+            result.push_back(std::move(sample));
+        }
+    } catch (const std::exception&) { result.clear(); }
+    return result;
+}
+
 std::vector<const RenderSample*> builtInRenderSamples()
 {
     static const RealtimeLightingSample realtimeLighting;
+    static const NativeStrandSample nativeStrands;
     static const GPUDrivenTessellationSample gpuDrivenTessellation;
     static const LightGridDebugSample lightGridDebug;
     static const HDRCalibrationSample hdrCalibration;
@@ -792,8 +852,9 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const GPUDrivenZorahFullSample gpuDrivenZorahFull;
     static const GPUDrivenMiniZorahSample gpuDrivenMiniZorah;
     static const GPUDrivenMiniZorahVBufferSample gpuDrivenMiniZorahVBuffer;
-    return {
+    std::vector<const RenderSample*> samples{
         &realtimeLighting,
+        &nativeStrands,
         &gpuDrivenTessellation,
         &lightGridDebug,
         &hdrCalibration,
@@ -822,6 +883,12 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &gpuDrivenTerrainP1UnifiedSample(),
         &gpuDrivenRtasVisualizationSample(),
     };
+    // Optional local assets are read once, not on every ImGui frame.
+    static const auto painter = loadLocalLookDevSamples("build/MaterialValidation/PainterLookDev/Catalog.json", "Painter Validation", "painter-");
+    static const auto studio = loadLocalLookDevSamples("build/MaterialValidation/WhiteStudio02/Catalog.json", "Studio LookDev", "studio-white-");
+    for (const auto& sample : painter) { samples.push_back(&sample); }
+    for (const auto& sample : studio) { samples.push_back(&sample); }
+    return samples;
 }
 
 } // namespace
@@ -891,6 +958,68 @@ bool loadRenderSample(
         .graphFilePath = graphPath,
     };
     outMessage = "Loaded Sample";
+    return true;
+}
+
+bool supportsLookDevRenderPaths(const RenderGraph& graph)
+{
+    const auto hasType = [&](const char* name, const char* type) {
+        const auto* node = graph.findNode(name);
+        return node && node->type == type;
+    };
+    const auto hasEdge = [&](const char* source, const char* destination) {
+        return std::any_of(graph.edges().begin(), graph.edges().end(), [&](const auto& edge) {
+            return makeRenderGraphFieldName(edge.srcPass, edge.srcField) == source &&
+                makeRenderGraphFieldName(edge.dstPass, edge.dstField) == destination;
+        });
+    };
+    return hasType("Reference", "ScenePathTracePass") &&
+        hasType("VBuffer", "VisibilityBufferPass") &&
+        hasType("Deferred", "VisibilityBufferDeferredPass") &&
+        hasType("Slider", "SliderDebugPass") &&
+        hasEdge("Reference.color", "Slider.sourceA") &&
+        hasEdge("Deferred.color", "Slider.sourceB");
+}
+
+bool makeLookDevRenderGraph(const RenderGraph& comparison, LookDevRenderPath path,
+    RenderGraph& result, std::string& message)
+{
+    if (!supportsLookDevRenderPaths(comparison)) {
+        message = "Render paths require a LookDev Reference/VBuffer/Deferred comparison graph";
+        return false;
+    }
+    RenderGraph graph = comparison;
+    if (path != LookDevRenderPath::Comparison) {
+        const std::string source = path == LookDevRenderPath::PathTraceOnly ? "Reference.color" : "Deferred.color";
+        std::vector<std::string> destinations;
+        for (const auto& edge : graph.edges()) {
+            if (edge.srcPass == "Slider" && edge.srcField == "color") {
+                destinations.push_back(makeRenderGraphFieldName(edge.dstPass, edge.dstField));
+            }
+        }
+        const bool sliderOutput = std::any_of(graph.outputs().begin(), graph.outputs().end(), [](const auto& output) {
+            return output.passName == "Slider" && output.fieldName == "color";
+        });
+        graph.removeNode(graph.findNode("Slider")->id);
+        if (path == LookDevRenderPath::PathTraceOnly) {
+            graph.removeNode(graph.findNode("Deferred")->id);
+            graph.removeNode(graph.findNode("VBuffer")->id);
+        } else {
+            graph.removeNode(graph.findNode("Reference")->id);
+        }
+        for (const auto& destination : destinations) {
+            if (!graph.addEdge(source, destination)) {
+                message = "Failed to reconnect LookDev display input: " + destination;
+                return false;
+            }
+        }
+        if (sliderOutput) { graph.markOutput(source); }
+        graph.setName(comparison.name() + (path == LookDevRenderPath::PathTraceOnly ?
+            " / Path Trace Only" : " / Deferred Only"));
+    }
+    if (!graph.validate(message)) { return false; }
+    result = std::move(graph);
+    message.clear();
     return true;
 }
 

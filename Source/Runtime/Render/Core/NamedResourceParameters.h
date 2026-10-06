@@ -83,6 +83,7 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_BUFFER ntcWeights;
     DR_PUBLIC DR_SPAN openPBRLut2D;
     DR_PUBLIC DR_SPAN openPBRLut3D;
+    DR_PUBLIC DR_SAMPLER openPBRLutSampler;
     DR_PUBLIC DR_STORAGE(2D<float4>) output;
     DR_PUBLIC DR_STORAGE(2D<float>) penumbra;
     DR_PUBLIC DR_STORAGE(2D<float4>) positionCurrent;
@@ -132,7 +133,7 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_SAMPLED(2D<float>) visibilityDepth;
 };
 #ifdef __cplusplus
-static_assert(sizeof(SceneResourceParameters) == 440);
+static_assert(sizeof(SceneResourceParameters) == 448);
 #endif
 
 DR_PUBLIC struct OutputImageResourceParameters

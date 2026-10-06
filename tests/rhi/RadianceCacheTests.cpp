@@ -146,6 +146,12 @@ public:
         if (!result) {
             return RHITestResult::skip("Ray-query preview is unavailable");
         }
+        // Compare cache lighting with identical exposure. Wall-clock adaptation
+        // makes the 64-frame result depend on shader/PSO compilation delays.
+        scene::LightingSettings lighting;
+        lighting.autoExposure.enabled = false;
+        lighting.exposureEV100 = 4.0f;
+        preview.setLighting(lighting);
         for (uint32_t maxDepth : {1u, 3u}) {
             const auto tested = runDepth(context, preview, maxDepth);
             if (!tested.passed) {

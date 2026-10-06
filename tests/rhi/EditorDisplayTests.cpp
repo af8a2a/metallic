@@ -1,5 +1,6 @@
 #include "RHITest.h"
 #include "Editor/EditorDisplayRenderer.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #include <imgui.h>
@@ -50,10 +51,26 @@ public:
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
         ui.initialized = EditorDisplayRenderer::loadBackendFunctions(native) && ImGui_ImplVulkan_Init(&init);
-        if (!ui.initialized || !ui.display.initialize(native, format, true, 203.0f,
+        if (!ui.initialized || !ui.display.initialize(device, format, true, 203.0f,
                 VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
             return RHITestResult::fail("HDR ImGui initialization failed");
         }
+        ui.display.shutdown();
+        if (!ui.display.initialize(device, format, true, 203.0f, VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
+            return RHITestResult::fail("HDR ImGui cached initialization failed");
+        }
+        if (!render::ShaderRegistry::instance().flushPipelineCaches(device)) {
+            return RHITestResult::fail("HDR ImGui cache flush failed");
+        }
+        auto cacheStats = render::ShaderRegistry::instance().pipelineCacheStats(device);
+        bool editorCacheHit = false;
+        if (cacheStats) {
+            for (const auto& group : *cacheStats) {
+                if (group.group.starts_with("ShaderRegistry-EditorDisplay-") && group.cache.hitCount >= 3 &&
+                    group.cache.backendDataSize > 0) { editorCacheHit = true; }
+            }
+        }
+        if (!editorCacheHit) { return RHITestResult::fail("HDR ImGui bypassed the Registry's persistent native cache"); }
         std::unique_ptr<render::Texture> output, source;
         std::unique_ptr<render::TextureView> outputView, sourceView;
         std::unique_ptr<render::Buffer> readback;

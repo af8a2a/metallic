@@ -1,6 +1,8 @@
 # Shader 模块
 
-Renderer 固定使用 scene-linear Rec.709/D65 HDR；显示变换、SDR/scRGB/HDR10 输出与
+See [Color Pipeline](../Documentation/ColorPipeline.md) for ACEScg working-space and source/display contracts.
+
+Renderer 默认使用 scene-linear ACEScg/AP1/D60 HDR；Rec.709/D65 保留为兼容模式。显示变换、SDR/scRGB/HDR10 输出与
 LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 
 Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import`，同一模块的实现
@@ -14,8 +16,13 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
 | `Modules/DebugLambert.slang`、`Modules/DebugMirror.slang`、`Modules/SurfaceLighting.slang` | 三阶段 Surface Programs、泛型 `shadeSurface` 与生产共用的直接光循环；见 [Phase 3](../Documentation/MaterialSystemPhase3.md)、[Phase 5](../Documentation/MaterialSystemPhase5.md) |
 | `Modules/SlabClosure.slang` | Single / Dual Slab canonical families、Mix / Layer 原型；见 [Phase 10](../Documentation/MaterialSystemPhase10.md) |
+| `Modules/OpenPBR.slang`、`Modules/OpenPBR/` | Adobe OpenPBR 1.1 原生 Slang 移植、静态泛型 LUT/Feature provider；见 [模块说明](Modules/OpenPBR/README.md) |
+| `Modules/FiberMaterial.slang`、`Modules/FiberLighting.slang`、`Modules/RTXCRFiber.slang` | 独立 Fiber 三阶段契约、projected lighting、RTXCR Chiang Program；见 [M6](../Documentation/MaterialSystemM6Fiber.md) |
+| `Features/Strands/NativeStrands.slang` | 原生曲线有限多层 visibility、Fiber 着色、motion/identity 与显式 overflow；见 [M7](../Documentation/MaterialSystemM7Strands.md) |
+| `Modules/RayMaterialExecution.slang`、`Features/PathTracing/RayMaterialQueue.slang` | 按命中点独立的 Surface/Fiber 求值与 prepare、有界 Program 分类；见 [M8](../Documentation/MaterialSystemM8RayExecution.md) |
+| `Modules/RTXCRHair.slang`、`Modules/RTXCRHair/` | RTXCR Chiang / Separate Chiang / Far Field 原生 Slang vendored 实现；见 [来源与接口](Modules/RTXCRHair/README.md) |
 | `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
-| `Features/PathTracing/OpenPBRSurface.slang`、`Interop/OpenPBRClosure.hlsli` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
+| `Features/PathTracing/OpenPBRSurface.slang`、`Modules/OpenPBRClosure.slang` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Features/VisibilityBuffer/VisibilityMaterialBinning.slang` | 8×4 Wave32 稀疏 Program 分箱、prefix allocation 和 indirect dispatch；见 [Phase 6](../Documentation/MaterialSystemPhase6.md) |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
@@ -28,8 +35,10 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Features/` | Shader programs：入口、pass 资源和流程相关代码；路径保持兼容现有 C++ 和管线资产 |
 | `Licenses/` | 第三方 shader 许可证 |
 
-测试探针放在 `tests/rhi/shaders/`。OpenPBR、RTXCR、RTXTF、NTC 等 SDK 继续使用
-`External/` 下的源码。ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
+测试探针放在 `tests/rhi/shaders/`。RTXCR Geometry / Subsurface、RTXTF、NTC 等 SDK 继续使用
+`External/` 下的源码。RTXCR Hair GPU 实现使用原生模块，上游快照保留为独立验收基线。
+OpenPBR GPU 实现使用原生模块，`External/openpbr-bsdf` 保留为独立验收基线和 CPU LUT 数据来源。
+ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
 来源记录、许可证和使用说明见 [ShaderToHuman](Modules/ShaderToHuman/README.md)。
 所有 vendor 文件与许可证保持原有内容。
 
@@ -67,6 +76,8 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 当前固定的 Slang 2026.18.2 下，模块公开结构体的成员仍显式标注 `public`。
 
 新 compute pass 使用 `ComputeKernel` + `ParameterWriter`，以具名 typed 参数承载资源。
+Shader 获取使用 [ShaderRegistry](../Documentation/ShaderRegistry.md) 的 `getComputeKernel` /
+`getComputeProgram`，或 `getShader` 后由统一管线入口创建；默认自动复用持久 PSO，Pass 不管理缓存文件。
 DR-first 的新接口使用 `ResourceHandle<T>` / `SamplerHandle`（32 位）和
 `BufferSpan<T>` / `RWBufferSpan<T>`（descriptor、字节偏移、元素数）。通过
 `resolveUniform` / `resolveNonUniform` 解析资源，通过 span 的 `load` / `store` 或

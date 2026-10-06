@@ -3,6 +3,7 @@
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -51,11 +52,21 @@ struct ActiveGraph {
     std::vector<std::string> executionOrder;
 };
 
+// Compile-time hints only; actual queues and resource barriers are resolved by
+// the executor after preparation. Unknown effects retain a stable opaque order.
+struct ActiveGraphSchedulingTraits {
+    QueueType queue = QueueType::Graphics;
+    bool opaque = true;
+};
+using ActiveGraphSchedulingTraitsResolver =
+    std::function<ActiveGraphSchedulingTraits(const RenderGraphNode&)>;
+
 bool buildActiveGraph(const RenderGraph& graph, ActiveGraph& activeGraph, std::string& log);
 bool buildActiveGraph(
     const RenderGraph& graph,
     const std::vector<std::string>& extraOutputs,
     ActiveGraph& activeGraph,
-    std::string& log);
+    std::string& log,
+    const ActiveGraphSchedulingTraitsResolver& schedulingTraits = {});
 
 } // namespace metallic::render::detail

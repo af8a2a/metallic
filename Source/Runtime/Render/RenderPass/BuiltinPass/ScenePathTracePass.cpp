@@ -21,7 +21,7 @@
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
-#include "openpbr_data_constants.h"
+#include "Runtime/Render/Material/OpenPBRLutData.h"
 
 #include <chrono>
 
@@ -48,7 +48,12 @@
 namespace metallic::render::builtin_pass {
 namespace {
 
-using OpenPBRLutScalar = uint16_t;
+using namespace openpbr;
+
+// Single-frame quadrature for closures that cannot use the split-sum IBL path.
+// This budget is independent of the path tracer's samples per frame.
+constexpr uint32_t kDefaultRealtimeEnvironmentSamples = 64;
+constexpr uint32_t kMaxRealtimeEnvironmentSamples = 1024;
 
 // Radiance-cache related constants (RTXGI SHaRC / NVIDIA NRC integrations).
 constexpr uint32_t kSharcDefaultEntriesLog2 = 22;
@@ -87,51 +92,9 @@ constexpr const char* toString(PathTracePermutation permutation)
     }
 }
 
-struct OpenPBRVec3 {
-    float x;
-    float y;
-    float z;
-};
-
-constexpr OpenPBRVec3 vec3(float x, float y, float z)
-{
-    return OpenPBRVec3{x, y, z};
-}
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_dielectric_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricAverageEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_dielectric_avg_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealDielectricReflectionRatio[] = {
-#include "impl/data/openpbr_ideal_dielectric_reflection_ratio_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBROpaqueDielectricEnergyComplement[] = {
-#include "impl/data/openpbr_opaque_dielectric_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBROpaqueDielectricAverageEnergyComplement[] = {
-#include "impl/data/openpbr_opaque_dielectric_avg_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealMetalEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_metal_energy_complement_data.h"
-};
-
-static constexpr OpenPBRLutScalar kOpenPBRIdealMetalAverageEnergyComplement[] = {
-#include "impl/data/openpbr_ideal_metal_avg_energy_complement_data.h"
-};
-
-static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
-#include "impl/data/openpbr_ltc_data.h"
-};
-
 constexpr uint32_t kOpenPBRLut2DBinding = 11;
 constexpr uint32_t kOpenPBRLut3DBinding = 12;
+constexpr uint32_t kOpenPBRLutSamplerBinding = 98;
 constexpr uint32_t kEnvironmentImportancePdfBinding = 13;
 constexpr uint32_t kDLSSRRAlbedoBinding = 14;
 constexpr uint32_t kDLSSRRSpecularAlbedoBinding = 15;
@@ -142,19 +105,6 @@ constexpr uint32_t kDLSSRRSpecularHitDistanceBinding = 19;
 constexpr uint32_t kDLSSDepthBinding = 20;
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
-constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
-constexpr uint32_t kOpenPBRLtcSize = OpenPBR_LTCTableSize;
-constexpr float kOpenPBRLutScalarScale = 1.0f / 65535.0f;
-
-static_assert(std::size(kOpenPBRIdealDielectricEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealDielectricAverageEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealDielectricReflectionRatio) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBROpaqueDielectricEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBROpaqueDielectricAverageEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealMetalEnergyComplement) == kOpenPBRLutSize * kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRIdealMetalAverageEnergyComplement) == kOpenPBRLutSize);
-static_assert(std::size(kOpenPBRLtc) == kOpenPBRLtcSize * kOpenPBRLtcSize);
-
 struct OpenPBRLutTexture {
     struct UploadState {
         ResourceState state = ResourceState::Undefined;
@@ -178,101 +128,16 @@ public:
         }
 
         clear();
-        Result<> result = createScalarLut(
-            device,
-            kOpenPBRIdealDielectricAverageEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR ideal dielectric average energy complement LUT",
-            lut2D_[0],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealDielectricReflectionRatio,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR ideal dielectric reflection ratio LUT",
-            lut2D_[1],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBROpaqueDielectricAverageEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR opaque dielectric average energy complement LUT",
-            lut2D_[2],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealMetalEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            1,
-            "OpenPBR ideal metal energy complement LUT",
-            lut2D_[3],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealMetalAverageEnergyComplement,
-            kOpenPBRLutSize,
-            1,
-            1,
-            "OpenPBR ideal metal average energy complement LUT",
-            lut2D_[4],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createLtcLut(device, lut2D_[5], log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBRIdealDielectricEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            "OpenPBR ideal dielectric energy complement LUT",
-            lut3D_[0],
-            log);
-        if (!result) {
-            clear();
-            return result;
-        }
-        result = createScalarLut(
-            device,
-            kOpenPBROpaqueDielectricEnergyComplement,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            kOpenPBRLutSize,
-            "OpenPBR opaque dielectric energy complement LUT",
-            lut3D_[1],
-            log);
-        if (!result) {
-            clear();
-            return result;
+        // Stable Adobe LUT IDs: the shader stores 2D and 3D views separately.
+        uint32_t next2D = 0, next3D = 0;
+        for (const auto& payload : kLutPayloads) {
+            auto& texture = payload.depth > 1 ? lut3D_[next3D++] : lut2D_[next2D++];
+            auto result = createLutTexture(device, payload.pixels, payload.byteSize, payload.format,
+                payload.width, payload.height, payload.depth, payload.label, texture, log);
+            if (!result) {
+                clear();
+                return result;
+            }
         }
 
         refreshViews();
@@ -345,57 +210,11 @@ private:
         }
     }
 
-    template <size_t ValueCount>
-    static Result<> createScalarLut(
+    static Result<> createLutTexture(
         Device& device,
-        const OpenPBRLutScalar (&values)[ValueCount],
-        uint32_t width,
-        uint32_t height,
-        uint32_t depth,
-        std::string_view label,
-        OpenPBRLutTexture& outTexture,
-        std::string& log)
-    {
-        const uint64_t texelCount =
-            static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * static_cast<uint64_t>(depth);
-        if (texelCount != ValueCount) {
-            log += "OpenPBR LUT dimensions do not match table data: ";
-            log += label;
-            log += '\n';
-            return makeError(Error::InvalidArgument);
-        }
-
-        std::vector<float> pixels(static_cast<size_t>(texelCount) * 4u, 0.0f);
-        for (size_t index = 0; index < static_cast<size_t>(texelCount); ++index) {
-            pixels[index * 4u] = static_cast<float>(values[index]) * kOpenPBRLutScalarScale;
-            pixels[index * 4u + 3u] = 1.0f;
-        }
-        return createRgbaLutTexture(device, pixels.data(), width, height, depth, label, outTexture, log);
-    }
-
-    static Result<> createLtcLut(Device& device, OpenPBRLutTexture& outTexture, std::string& log)
-    {
-        std::vector<float> pixels(std::size(kOpenPBRLtc) * 4u, 0.0f);
-        for (size_t index = 0; index < std::size(kOpenPBRLtc); ++index) {
-            pixels[index * 4u] = kOpenPBRLtc[index].x;
-            pixels[index * 4u + 1u] = kOpenPBRLtc[index].y;
-            pixels[index * 4u + 2u] = kOpenPBRLtc[index].z;
-            pixels[index * 4u + 3u] = 1.0f;
-        }
-        return createRgbaLutTexture(
-            device,
-            pixels.data(),
-            kOpenPBRLtcSize,
-            kOpenPBRLtcSize,
-            1,
-            "OpenPBR LTC LUT",
-            outTexture,
-            log);
-    }
-
-    static Result<> createRgbaLutTexture(
-        Device& device,
-        const float* pixels,
+        const void* pixels,
+        uint64_t byteSize,
+        Format format,
         uint32_t width,
         uint32_t height,
         uint32_t depth,
@@ -411,12 +230,6 @@ private:
         outTexture.width = width;
         outTexture.height = height;
         outTexture.depth = depth;
-        const uint64_t byteSize =
-            static_cast<uint64_t>(width) *
-            static_cast<uint64_t>(height) *
-            static_cast<uint64_t>(depth) *
-            4ull *
-            sizeof(float);
         Result<> result = device.createBuffer(BufferDesc{
                 .size = byteSize,
                 .usage = BufferUsageBits::TransferSource,
@@ -442,7 +255,7 @@ private:
         result = device.createTexture(TextureDesc{
                 .type = depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::RGBA32Sfloat,
+                .format = format,
                 .width = width,
                 .height = height,
                 .depth = depth,
@@ -458,7 +271,7 @@ private:
 
         result = device.createTextureView(*outTexture.texture,
             TextureViewDesc{
-                .format = Format::RGBA32Sfloat,
+                .format = format,
                 .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
         if (!result || outTexture.view == nullptr) {
@@ -649,12 +462,26 @@ public:
         return reflection;
     }
 
+    void prepareResourceMetadata(RenderGraphExecutionContext& context) const override
+    {
+        if (auto* color = context.output("color")) {
+            const auto debug = debugViewFromProperties(context.properties());
+            const bool displayDebug = useOpenPBRBsdf(context.properties()) &&
+                debug != kScenePathTraceDebugViewFinal;
+            color->colorEncoding = !displayDebug ? DisplayColorEncoding::SceneLinear :
+                (debug == kScenePathTraceDebugViewBaseColor || debug == kScenePathTraceDebugViewShadowTransmittance
+                    ? DisplayColorEncoding::DisplayLinearRec709 : DisplayColorEncoding::sRGB);
+        }
+    }
+
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         if (realtime_) {
             std::vector<RenderGraphRuntimeSetting> settings{
                 runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
                 runtimeBoolSetting("debugDisableShadows", "Disable Shadows", false, true),
+                runtimeIntSetting("samples", "Advanced IBL Samples", kDefaultRealtimeEnvironmentSamples,
+                    1, kMaxRealtimeEnvironmentSamples, true),
             };
             if (visibilityDeferred_) {
                 settings.erase(settings.begin()); // Deferred resolve always exports physical HDR.
@@ -795,6 +622,7 @@ public:
         // settings must rebuild their matching shader and descriptor variants.
         if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
             (compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true) ||
+                compiledProgramBinning_ != boolProperty(properties(), "programBinning", true) ||
                 compiledHalfPrecision_ != boolProperty(properties(), "halfPrecision", true) ||
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false))) {
             return compile(context, log);
@@ -923,7 +751,12 @@ public:
             log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
             return makeError(Error::Unsupported);
         }
-        const bool baseReady = programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+        const bool closureProgramsReady = !classified || std::all_of(valuePrograms->manifests().begin(), valuePrograms->manifests().end(),
+            [&](const MaterialValueManifest& manifest) {
+                return manifest.closureFamily == MaterialClosureFamily::OpenPBRCompositeClosure ||
+                    (manifest.programId < closurePrograms_.size() && closurePrograms_[manifest.programId].valid());
+            });
+        const bool baseReady = closureProgramsReady && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
                 [](const ComputeProgram& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
@@ -935,15 +768,9 @@ public:
                 programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() &&
                 tonemapProgram_.valid());
         if (baseReady && sharcReady && nrcReady) {
+            // Legacy fixed/sparse schedules can reuse identical shaders.
+            compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
             return {};
-        }
-
-        if (visibilityDeferred_ && deferredPipelineCache_ == nullptr) {
-            result = context.device->createPipelineCache(PipelineCacheDesc{.filePath = PROJECT_SOURCE_DIR "/.cache/pso/VisibilityBufferDeferredPass.pso"}).transform([&](auto rhiValue) { deferredPipelineCache_ = std::move(rhiValue); });
-            if (!result || deferredPipelineCache_ == nullptr) {
-                log += "createPipelineCache(VisibilityBufferDeferredPass) failed\n";
-                return result ? makeError(Error::Failure) : result;
-            }
         }
 
         SceneShaderOptions shaderOptions{
@@ -1056,6 +883,7 @@ public:
             }
         }
         if (useOpenPBR) {
+            baseBindings.push_back({.binding = kOpenPBRLutSamplerBinding, .kind = ComputeResourceBindingKind::Sampler});
             baseBindings.push_back(ComputeProgramBindingDesc{
                 .binding = kOpenPBRLut2DBinding,
                 .kind = ComputeResourceBindingKind::SampledImage,
@@ -1131,7 +959,7 @@ public:
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
-                ComputeProgram& outProgram) -> Result<> {
+                ComputeProgram& outProgram, MaterialProgramId definition = MaterialProgramId::OpenPBRComposite) -> Result<> {
             const auto request = makeSceneShaderRequest(shaderProgram, shaderOptions, extraDefines);
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
@@ -1140,10 +968,10 @@ public:
             auto compiled = compileMaterialExecutable(*context.device,
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
-                    .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get(),
+                    .debugName = debugName.c_str(),
                     .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
                 outProgram, artifact, diagnostics,
-                {.definitionHash = useOpenPBR ? findMaterialProgram(MaterialProgramId::OpenPBRComposite)->key.definitionHash : 0,
+                {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
@@ -1194,6 +1022,22 @@ public:
         }
 
         if (errorProgram_.valid()) { return {}; }
+        if (classified && closurePrograms_.empty()) {
+            // Resize once before retaining element addresses in executable keys.
+            closurePrograms_.resize(valuePrograms->programCount() + 1);
+        }
+        if (classified) {
+            for (const auto& manifest : valuePrograms->manifests()) {
+                if (manifest.closureFamily == MaterialClosureFamily::OpenPBRCompositeClosure) { continue; }
+                auto& program = closurePrograms_[manifest.programId];
+                if (program.valid()) { continue; }
+                const auto id = std::to_string(manifest.programId);
+                const SlangMacroDefine defines[] = {{"MATERIAL_CLASS", "4"}, {"MATERIAL_PROGRAM_ID", id.c_str()}};
+                result = compilePermutation(PathTracePermutation::Base, defines, baseBindings, program,
+                    manifest.closureFamily == MaterialClosureFamily::SingleSlabClosure ? MaterialProgramId::SingleSlab : MaterialProgramId::DualSlab);
+                if (!result || errorProgram_.valid()) { return result; }
+            }
+        }
         if (cacheMode_ == kScenePathTraceCacheModeSharc) {
             const std::vector<ComputeProgramBindingDesc> sharcBindings = [cacheBindings]() {
                 std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
@@ -1247,7 +1091,7 @@ public:
                 const ShaderRequestView source(request);
                 const char* entryPointName = request.entry.c_str();
                 ShaderCompileResult maintenanceCompile;
-                Result<> maintenanceResult = compileSlangShaderToSpirv(source.desc(), maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
+                Result<> maintenanceResult = ShaderRegistry::instance().getShader(source.desc(), maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
                 if (!maintenanceResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kSceneSharcMaintenanceShaderModuleName;
@@ -1360,7 +1204,7 @@ public:
                 const auto request = makeSceneShaderRequest(SceneShaderProgram::Tonemap, shaderOptions);
                 const ShaderRequestView source(request);
                 ShaderCompileResult tonemapCompile;
-                Result<> tonemapResult = compileSlangShaderToSpirv(source.desc(), tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
+                Result<> tonemapResult = ShaderRegistry::instance().getShader(source.desc(), tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
                 if (!tonemapResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kScenePathTraceTonemapShaderModuleName;
@@ -1401,19 +1245,10 @@ public:
         }
 #endif
 
-        if (deferredPipelineCache_ != nullptr) {
-            const Result<> saveResult = deferredPipelineCache_->save();
-            const PipelineCacheStats stats = deferredPipelineCache_->stats();
-            spdlog::info("[VisibilityBufferDeferredPass] PSO cache hits={} misses={}",
-                stats.hitCount, stats.missCount);
-            if (!saveResult) {
-                spdlog::warn("[VisibilityBufferDeferredPass] Could not persist PSO cache: {}",
-                    resultToString(saveResult));
-            }
-        }
         compiledShaderKey_ = shaderKey;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
+        compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
         return {};
     }
@@ -1586,6 +1421,10 @@ public:
             environment.settings,
             environment.mapAvailable,
             push);
+        if (realtime_) {
+            push.samples = uintProperty(context.properties(), "samples", kDefaultRealtimeEnvironmentSamples,
+                1, kMaxRealtimeEnvironmentSamples);
+        }
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
@@ -1668,7 +1507,6 @@ public:
             // Jitter is metadata, not part of the unjittered camera history.
             push.eye[3] = 0.0f;
             push.center[3] = 0.0f;
-            push.samples = 1;
             push.deferredSettings = 0;
             visibilityView = visibility.view();
             visibilityDepthView = visibilityDepth.view();
@@ -1907,6 +1745,7 @@ public:
             }
         }
         if (useOpenPBR) {
+            bindings.push_back({.binding = kOpenPBRLutSamplerBinding, .sampler = &openPBRLutSampler_});
             const auto& lut2DViews = openPBRLuts_.lut2DViews();
             const auto& lut3DViews = openPBRLuts_.lut3DViews();
             bindings.push_back(ComputeDispatchBinding{
@@ -2237,6 +2076,7 @@ private:
         errorProgram_.clear();
         materialArtifacts_.clear();
         for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
+        closurePrograms_.clear();
         for (ComputeProgram& program : programs_) {
             program.clear();
         }
@@ -2856,9 +2696,10 @@ private:
 
     bool materialBinningEnabled(const RenderGraphProperties& settings) const
     {
-        // The existing five bins classify legacy factors. A Value program can
-        // change them per hit, so use the general kernel until sparse M2 bins land.
-        return !hasValuePrograms() && boolProperty(settings, "materialBinning", true);
+        // Custom per-hit values cannot use legacy factor-only bins. Sparse bins
+        // dispatch the actual compiled program (including Slab specialization).
+        return boolProperty(settings, "materialBinning", true) &&
+            (!hasValuePrograms() || boolProperty(settings, "programBinning", true));
     }
 
     void updateMaterialProgramBins()
@@ -2881,12 +2722,19 @@ private:
             const auto permutation = static_cast<uint32_t>(features.surfaceProgram);
             auto* program = permutation < classifiedPrograms_.size() ? &classifiedPrograms_[permutation]
                 : &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+            auto family = MaterialClosureFamily::OpenPBRCompositeClosure;
+            const auto& values = sceneResources_.materialBinding()->values();
+            const auto valueId = values->instances()[index].programId;
+            if (valueId != 0) {
+                family = values->manifests()[valueId - 1].closureFamily;
+                if (family != MaterialClosureFamily::OpenPBRCompositeClosure) { program = &closurePrograms_[valueId]; }
+            }
             const auto key = executableKey(program);
             auto found = std::find_if(materialProgramBins_.begin() + 1, materialProgramBins_.end(),
                 [&](const auto& bin) { return bin.key == key; });
             if (found == materialProgramBins_.end()) {
                 materialInstanceProgramBins_[index] = uint32_t(materialProgramBins_.size());
-                materialProgramBins_.push_back({key, program, MaterialClosureFamily::OpenPBRCompositeClosure});
+                materialProgramBins_.push_back({key, program, family});
             } else { materialInstanceProgramBins_[index] = uint32_t(found - materialProgramBins_.begin()); }
         }
         std::vector<std::optional<MaterialClosureFamily>> families;
@@ -2906,8 +2754,7 @@ private:
         const auto generation = sceneResources_.materialGeneration();
         if (!generation) { log = "Missing material generation"; return false; }
         const auto target = visibilityDeferred_ ? MaterialEvaluationTarget::VisibilityBuffer :
-            (!useOpenPBRBsdf(properties()) && METALLIC_HAS_RTXCR
-                ? MaterialEvaluationTarget::RayHitWithFiber : MaterialEvaluationTarget::SurfaceRayHit);
+            MaterialEvaluationTarget::RayHitWithFiber;
         return generation->supports(target, log);
     }
 
@@ -3176,7 +3023,6 @@ private:
     std::vector<std::shared_ptr<const MaterialExecutableArtifact>> materialArtifacts_;
     bool realtime_ = false;
     bool visibilityDeferred_ = false;
-    std::unique_ptr<PipelineCache> deferredPipelineCache_;
     MaterialBinning materialBinning_;
     struct ActiveMaterialProgramBin
     {
@@ -3191,7 +3037,9 @@ private:
     uint64_t materialProgramBinGeneration_ = 0;
     std::unique_ptr<Buffer> unshadowedParameters_;
     std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
+    std::vector<ComputeProgram> closurePrograms_;
     bool compiledMaterialBinning_ = true;
+    bool compiledProgramBinning_ = true;
     bool compiledHalfPrecision_ = true;
     bool compiledExportUpscalerGuides_ = false;
     SceneLightResources lights_;
@@ -3207,6 +3055,14 @@ private:
     bool streamMaterials_ = false;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
+    SamplerDesc openPBRLutSampler_{
+        .minFilter = SamplerFilter::Linear,
+        .magFilter = SamplerFilter::Linear,
+        .mipFilter = SamplerFilter::Nearest,
+        .addressU = SamplerAddressMode::ClampToEdge,
+        .addressV = SamplerAddressMode::ClampToEdge,
+        .addressW = SamplerAddressMode::ClampToEdge,
+    };
     OpenPBRLutResources openPBRLuts_;
     std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel sharcClearProgram_;

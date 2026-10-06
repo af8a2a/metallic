@@ -20,7 +20,7 @@ static const float PI = 3.14159265358979323846;
 float square(float x) { return x * x; }
 
 // The shaper resolves black exactly and covers the finite FP16 radiance domain.
-// Grading receives exposed scene-linear Rec.709/D65; display exposure is applied
+// Grading receives exposed scene-linear working RGB; display exposure is applied
 // by the consumer before this shaper, not burned into the cube.
 public float3 gradingLutEncode(float3 linear)
 {

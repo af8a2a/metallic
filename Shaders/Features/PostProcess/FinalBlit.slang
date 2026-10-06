@@ -9,6 +9,10 @@ using Metallic.ColorGrading;
 
 float3 displayOutput(float3 color, DisplayOutputPush push)
 {
+    if (push.inputEncoding == 4u) {
+        return push.hdr != 0u ? color * (push.paperWhiteNits / 80.0)
+            : displayLinearToSrgb(saturate(color));
+    }
 #if FINAL_USE_LUT
     if ((push.inputEncoding == 1u || push.inputEncoding == 3u) && push.hasLut != 0u) {
         color = float3(isfinite(color.x) ? max(color.x, 0.0) : 0.0,
@@ -21,11 +25,11 @@ float3 displayOutput(float3 color, DisplayOutputPush push)
         if (push.inputEncoding == 0u) {
             return (push.sampledSrgb != 0u ? color : displaySrgbToLinear(color)) * (push.paperWhiteNits / 80.0);
         }
-        return displayMapToScRgb(color * push.exposure, push.paperWhiteNits, push.peakNits);
+        return displayMapToScRgb(Metallic.WorkingColor::toLinearRec709(color) * push.exposure, push.paperWhiteNits, push.peakNits);
     }
     if (push.inputEncoding == 2u) { return displayLinearToSrgb(saturate(color * (80.0 / push.paperWhiteNits))); }
     if (push.inputEncoding == 1u || push.inputEncoding == 3u) {
-        color = max(color * push.exposure, 0.0);
+        color = max(Metallic.WorkingColor::toLinearRec709(color) * push.exposure, 0.0);
         color = push.toneCurve == 2u ? saturate(color) :
             (push.toneCurve == 1u ? 1.0 - exp(-color) : color / (color + 1.0));
         return displayLinearToSrgb(color);

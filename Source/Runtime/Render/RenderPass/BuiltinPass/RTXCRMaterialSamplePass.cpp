@@ -143,7 +143,7 @@ public:
 
         const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = kRTXCRMaterialSampleShaderModuleName,
             .entryPointName = kRTXCRMaterialSampleEntryPoint,
             .searchPath = kTriangleShaderSearchPath,

@@ -1,0 +1,176 @@
+{
+  "status": "verified_authoring_mapping_12_1_4_not_renderer_equivalence",
+  "verifiedPainterVersion": "12.1.4",
+  "ocioConfig": null,
+  "acescgColorSpace": "ACEScg",
+  "templates": {
+    "default": null
+  },
+  "bindings": {
+    "base_color": {
+      "channel": "BaseColor",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "base_metalness": {
+      "channel": "BaseMetalness",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "base_weight": {
+      "channel": "BaseWeight",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "coat_ior": {
+      "shaderParameter": "coatIoR",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 installed OpenPBR GLSL/MDL parameter and saved project readback"
+    },
+    "coat_roughness": {
+      "channel": "CoatRoughness",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "coat_weight": {
+      "channel": "CoatWeight",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "diagnostic_normal": {
+      "channel": "Normal",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "diagnostic_tangent": {
+      "channel": "Tangent",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "emission_color": {
+      "channel": "EmissionColor",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "emission_luminance": {
+      "shaderParameter": "emissionLuminance",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 installed OpenPBR GLSL/MDL parameter and saved project readback"
+    },
+    "fuzz_color": {
+      "channel": "FuzzColor",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "fuzz_roughness": {
+      "channel": "FuzzRoughness",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "fuzz_weight": {
+      "channel": "FuzzWeight",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "geometry_opacity": {
+      "channel": "Opacity",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "geometry_thin_walled": {
+      "shaderParameter": "geometryThinWalled",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 installed OpenPBR GLSL/MDL parameter and saved project readback"
+    },
+    "specular_ior": {
+      "shaderParameter": "specularIoR",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 installed OpenPBR GLSL/MDL parameter and saved project readback"
+    },
+    "specular_roughness": {
+      "channel": "SpecularRoughness",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "specular_roughness_anisotropy": {
+      "channel": "SpecularRoughnessAnisotropy",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "specular_weight": {
+      "channel": "SpecularWeight",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "subsurface_weight": {
+      "channel": "SubsurfaceWeight",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "thin_film_weight": {
+      "channel": "ThinFilmWeight",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "transmission_color": {
+      "channel": "TransmissionColor",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "transmission_depth": {
+      "shaderParameter": "transmissionDepth",
+      "scale": 100.0,
+      "evidence": "Requested metres multiplied by 100 for centimetres. Iray normalizes mesh scene bounds separately; absolute absorption distance is NOT calibrated."
+    },
+    "transmission_weight": {
+      "channel": "TransmissionWeight",
+      "scale": 1.0,
+      "evidence": "Painter 12.1.4 textureset.ChannelType and open-pbr.glsl channel samplers"
+    },
+    "diagnostic_coat_normal": {
+      "channel": "CoatNormal",
+      "evidence": "open-pbr.glsl channel_coat_normal; raw OpenGL +Y encoded normal"
+    },
+    "coat_color": {
+      "channel": "CoatColor",
+      "evidence": "open-pbr.glsl channel_coat_color; ACEScg"
+    }
+  },
+  "coverageEvidence": "open-pbr.glsl alphaKill + lib-alpha-test; alpha_test_threshold=0.5, dither=false, doubleSided=true",
+  "exportPreset": "export-preset-generator://doc-channel-normal-no-alpha",
+  "exportColorEvidence": "Numerical probe verified: RGB=0.18 exports ACEScg 0.18; roughness=0.05 exports raw 0.050000012 in 32f EXR. ACES2 OCIO floating export role=ACEScg.",
+  "bindingExample": {
+    "channel": "exact ChannelType member from inventory",
+    "scale": 1.0,
+    "evidence": "installed OpenPBR shader/template source and parameter semantics"
+  },
+  "shaderDefaults": {
+    "nbSamples": 64,
+    "ao_intensity": 0.0,
+    "horizonFade": 1.0,
+    "diffuseRoughnessEnabled": false,
+    "anisotropyEnabled": false,
+    "specularEdgeColorEnabled": false,
+    "specularIoR": 1.5,
+    "transmissiveEnabled": false,
+    "absorptionEnabled": false,
+    "sssEnabled": false,
+    "coatEnabled": false,
+    "coatAnisotropyEnabled": false,
+    "coatIoR": 1.5,
+    "coatDarkening": 1.0,
+    "sheenEnabled": false,
+    "emissionLuminance": 0.0,
+    "thinFilmEnabled": false,
+    "alphaBlendEnabled": false,
+    "alpha_test_enabled": false,
+    "alpha_test_threshold": 0.5,
+    "alpha_test_dither": false,
+    "doubleSided": false,
+    "usePOM": false,
+    "use_bent_normal": false,
+    "geometryThinWalled": false,
+    "transmissionDepth": 0.0
+  },
+  "environment": null
+}

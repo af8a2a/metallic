@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/Core/ColorGrading.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 
 #include <array>
 #include <atomic>
@@ -105,13 +106,15 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").format = render::Format::RGBA32Sfloat;
+        auto& color = reflection.addTextureOutput("color");
+        color.format = render::Format::RGBA32Sfloat;
+        color.colorEncoding = render::DisplayColorEncoding::SceneLinear;
         return reflection;
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const float level = context.properties().value("level", 1.0f);
-        const auto rgb = context.properties().value("rgb", std::array<float, 3>{level, level, level});
+        const auto rgb = render::color::fromLinearRec709(context.properties().value("rgb", std::array<float, 3>{level, level, level}));
         const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
             .layout = render::TextureLayout::ColorAttachment, .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store, .clearColor = {rgb[0], rgb[1], rgb[2], 1.0f}};
@@ -121,6 +124,144 @@ public:
         }); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
+    }
+};
+
+class DynamicDisplaySourcePass final : public render::RasterPass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    render::CPURecordingPolicy cpuRecordingPolicy() const override { return render::CPURecordingPolicy::ParallelJoined; }
+    std::vector<render::RenderGraphRuntimeSetting> runtimeSettings() const override
+    {
+        return {{.key = "encoding", .label = "Encoding", .type = render::RenderGraphRuntimeSettingType::Enum,
+            .defaultValue = "srgb", .options = {{"sRGB", "srgb"}, {"Display linear", "linear"}, {"Scene", "scene"}}}};
+    }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureOutput("color").format = properties().value("byteStorage", false)
+            ? render::Format::RGBA8Unorm : render::Format::RGBA32Sfloat;
+        return reflection;
+    }
+    void prepareResourceMetadata(render::RenderGraphExecutionContext& context) const override
+    {
+        const auto encoding = context.properties().value("encoding", "srgb");
+        context.output("color")->colorEncoding = encoding == "linear" ? render::DisplayColorEncoding::DisplayLinearRec709 :
+            (encoding == "scene" ? render::DisplayColorEncoding::SceneLinear : render::DisplayColorEncoding::sRGB);
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        std::array<float, 3> rgb{0.2f, 0.4f, 0.6f};
+        if (context.properties().value("encoding", "srgb") == "scene") { rgb = render::color::fromLinearRec709(rgb); }
+        const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
+            .layout = render::TextureLayout::ColorAttachment, .loadOp = render::LoadOp::Clear,
+            .storeOp = render::StoreOp::Store, .clearColor = {rgb[0], rgb[1], rgb[2], 1.0f}};
+        auto result = context.commandBuffer().beginRendering({.renderArea = {0, 0, context.width(), context.height()},
+            .colorAttachments = {&attachment, 1}});
+        if (!result) { return result; }
+        context.commandBuffer().endRendering();
+        return {};
+    }
+};
+
+class DynamicDisplayEncodingTest final : public RHITest {
+public:
+    DynamicDisplayEncodingTest() { type = RHITestType::Rendering; name = "display_encoding_runtime_parallel_propagation"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        std::unique_ptr<Device> device;
+        auto created = createDevice({.applicationName = "Dynamic display encoding regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); });
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Bindless device unavailable"); }
+        if (!created) { return RHITestResult::fail(toString(created)); }
+        registerRenderGraphPassType("DynamicDisplaySource", "Dynamic encoding fixture", [] { return std::make_unique<DynamicDisplaySourcePass>(); });
+        registerRenderGraphPassType("DisplayReadback", "Display readback", [] { return std::make_unique<DisplayReadbackPass>(); });
+        for (const bool copyChain : {true, false}) {
+            RenderGraph graph;
+            const auto source = graph.addNode("DynamicDisplaySource", "Source", {{"byteStorage", copyChain}})->id;
+            if (copyChain) {
+                graph.addNode("CopyColorPass", "Copy1");
+                graph.addNode("CopyColorPass", "Copy2");
+            }
+            graph.addNode("AutoExposurePass", "Exposure");
+            graph.addNode("ColorGradingLUTPass", "Grading", {{"toneCurve", "aces2"}});
+            graph.addNode("FinalBlitPass", "Display");
+            graph.addNode("DisplayReadback", "Readback");
+            if (copyChain) {
+                graph.addEdge("Source.color", "Copy1.source");
+                graph.addEdge("Copy1.color", "Copy2.source");
+                graph.addEdge("Copy2.color", "Exposure.source");
+            } else { graph.addEdge("Source.color", "Exposure.source"); }
+            graph.addEdge("Exposure.color", "Display.source");
+            graph.addEdge("Grading.lut", "Display.lut");
+            graph.addEdge("Display.color", "Readback.color");
+            graph.markOutput("Readback.pixels");
+            RenderWorld world;
+            scene::LightingSettings lighting;
+            lighting.autoExposure.enabled = true;
+            lighting.exposureEV100 = 4.0f;
+            world.setLighting(lighting);
+            RenderGraphExecutor executor;
+            executor.bindRenderWorld(&world);
+            RenderGraphCompileOptions options;
+            options.displayOutput.exposureEV = 2.0f;
+            std::string log;
+            if (!executor.compile(*device, graph, 4, 4, options, log)) { return RHITestResult::fail(log); }
+            graph.clearDirty();
+            const char* lastSource = copyChain ? "Copy2.color" : "Source.color";
+            const auto* original = executor.outputResource(lastSource)->texture;
+            const std::vector<const char*> encodings = copyChain
+                ? std::vector<const char*>{"srgb", "linear", "srgb", "linear"}
+                : std::vector<const char*>{"scene", "linear", "srgb", "scene", "linear", "scene"};
+            const std::vector<const char*> encodingOutputs = copyChain
+                ? std::vector<const char*>{"Source.color", "Copy1.color", "Copy2.color"}
+                : std::vector<const char*>{"Source.color"};
+            for (const uint32_t workers : {1u, 4u}) {
+                for (const auto mode : {FrameSubmissionMode::Joined, FrameSubmissionMode::Pipelined}) {
+                    for (const char* encoding : encodings) {
+                        graph.setNodeRuntimeProperty(source, "encoding", encoding);
+                        executor.syncRuntimeProperties(graph);
+                        if (graph.dirty()) { return RHITestResult::fail("Encoding switch unexpectedly requires graph compilation"); }
+                        if (!executor.execute({.graphicsQueue = device->getQueue(QueueType::Graphics),
+                                .recordingWorkerLimit = workers, .recordingBatchWorkload = 1, .submissionMode = mode}) ||
+                            !executor.waitForSubmittedWork()) { return RHITestResult::fail("Encoding execution failed: " + log); }
+                        const auto expectedEncoding = std::string_view(encoding) == "linear" ? DisplayColorEncoding::DisplayLinearRec709 :
+                            (std::string_view(encoding) == "scene" ? DisplayColorEncoding::SceneLinear : DisplayColorEncoding::sRGB);
+                        for (const char* output : encodingOutputs) {
+                            if (executor.outputResource(output)->colorEncoding != expectedEncoding) {
+                                return RHITestResult::fail(std::string(output) + " lost this frame's encoding");
+                            }
+                        }
+                        const auto exposureEncoding = expectedEncoding == DisplayColorEncoding::SceneLinear ? DisplayColorEncoding::ExposedLinear : expectedEncoding;
+                        if (executor.outputResource("Exposure.color")->colorEncoding != exposureEncoding ||
+                            executor.outputResource(lastSource)->texture != original) {
+                            return RHITestResult::fail("Exposure propagation or allocation changed during runtime switching");
+                        }
+                        if (expectedEncoding == DisplayColorEncoding::SceneLinear) { continue; }
+                        auto* buffer = executor.outputResource("Readback.pixels")->buffer;
+                        buffer->invalidate();
+                        const auto* pixels = static_cast<const uint8_t*>(buffer->map());
+                        if (!pixels) { return RHITestResult::fail("Display readback mapping failed"); }
+                        bool matches = true;
+                        for (uint32_t pixel = 0; pixel < 16; ++pixel) {
+                            for (uint32_t channel = 0; channel < 3; ++channel) {
+                                const float linear = float((channel + 1) * 51) / 255.0f;
+                                const float encoded = linear <= 0.0031308f ? 12.92f * linear : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+                                const int expected = expectedEncoding == DisplayColorEncoding::sRGB ? int((channel + 1) * 51) : int(std::round(encoded * 255));
+                                matches &= std::abs(int(pixels[pixel * 4 + channel]) - expected) <= 1;
+                            }
+                            matches &= pixels[pixel * 4 + 3] == 255;
+                        }
+                        buffer->unmap();
+                        if (!matches) { return RHITestResult::fail("Display/data color was exposed, graded or interpreted in the scene basis"); }
+                    }
+                }
+            }
+        }
+        return RHITestResult::pass("Per-frame encoding propagation before serial/parallel snapshots; debug bypasses exposure and ACES LUT");
     }
 };
 
@@ -401,6 +542,7 @@ public:
     }
 };
 
+METALLIC_REGISTER_RHI_TEST(DynamicDisplayEncodingTest);
 METALLIC_REGISTER_RHI_TEST(DisplaySurfaceFormatTest);
 METALLIC_REGISTER_RHI_TEST(DisplayOutputGPUTest);
 METALLIC_REGISTER_RHI_TEST(ColorGradingGPUTest);

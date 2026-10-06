@@ -27,7 +27,8 @@ public struct SurfaceSamplingContext
 };
 
 // Per-wo temporary state. Implementations must not load material parameters,
-// sample material textures, or retain a MaterialProgram/resource provider here.
+// sample material textures, or retain a MaterialProgram/material resource provider
+// here. Immutable BSDF LUT contexts are allowed; they are not material evaluation.
 public interface IPreparedSurfaceClosure
 {
     public BSDFEval eval(float3 wiWS);

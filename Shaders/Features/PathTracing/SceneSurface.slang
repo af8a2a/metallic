@@ -30,17 +30,11 @@ using Metallic.Lighting;
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
 
-#ifndef METALLIC_HAS_RTXCR
-#define METALLIC_HAS_RTXCR 0
-#endif
-
 #ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
 #define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
 #endif
 
-#if METALLIC_HAS_RTXCR
-#include <rtxcr/HairChiangBSDF.hlsli>
-#endif
+import RTXCRHair;
 
 
 #define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
@@ -218,14 +212,7 @@ float rand(inout uint state)
     return float(state & 0x00ffffffu) / 16777216.0;
 }
 
-bool isRtxcrHairMaterial(PathTraceMaterial material)
-{
-    return materialProgramId(material) == kMaterialProgramRTXCRChiang;
-}
-
-#if METALLIC_HAS_RTXCR
 #include "../../Interop/RTXCRMaterialAdapter.hlsli"
-#endif
 
 float4 rand4(inout uint state)
 {
@@ -476,7 +463,7 @@ float3 environmentKeyLightRadiance(ScenePathTracePush push)
     if (push.environmentMode == kEnvironmentModeDisabled) {
         return float3(0.0, 0.0, 0.0);
     }
-    return kEnvironmentKeyLightRadiance * max(push.environmentIntensity, 0.0);
+    return Metallic.WorkingColor::fromLinearRec709(kEnvironmentKeyLightRadiance) * max(push.environmentIntensity, 0.0);
 }
 
 float3 environmentLocalDirectionFromUv(float2 uv)
@@ -779,6 +766,18 @@ SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone ra
     context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
     context.footprint.flags = kTextureFootprintIsotropic0;
     return context;
+}
+
+import RayMaterialExecution;
+RayMaterialWork sceneRayMaterialWork(HitInfo hit, RayCone cone, float3 direction, uint seed, uint bounce)
+{
+    RayMaterialWork work = (RayMaterialWork)0;
+    work.surface = sceneSurfaceMaterialContextForRay(hit, cone, direction);
+    work.woWS = safeNormalize(-direction, hit.normal);
+    work.instance = legacyMaterialInstanceRef(hit.materialIndex);
+    work.seed = seed;
+    work.bounce = bounce;
+    return work;
 }
 
 STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed)

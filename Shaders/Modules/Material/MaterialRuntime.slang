@@ -8,6 +8,8 @@ namespace Metallic.Material
 // Stable built-in IDs shared with MaterialRuntime.h. Zero denotes a legacy upload.
 public static const uint kMaterialProgramOpenPBRComposite = 1u;
 public static const uint kMaterialProgramRTXCRChiang = 2u;
+public static const uint kMaterialProgramSingleSlab = 3u;
+public static const uint kMaterialProgramDualSlab = 4u;
 
 // Compatibility storage program. The existing upload embeds resources in the
 // same 720-byte record, so both offsets must reference that same record. This
@@ -31,6 +33,8 @@ public struct LegacyMaterialProgram
 
 public uint materialProgramId(PathTraceMaterial parameters)
 {
+    if (parameters.textureParams.z == float(kMaterialProgramSingleSlab)) { return kMaterialProgramSingleSlab; }
+    if (parameters.textureParams.z == float(kMaterialProgramDualSlab)) { return kMaterialProgramDualSlab; }
     if (parameters.textureParams.z == float(kMaterialProgramOpenPBRComposite)) {
         return kMaterialProgramOpenPBRComposite;
     }
@@ -42,14 +46,13 @@ public uint materialProgramId(PathTraceMaterial parameters)
         ? kMaterialProgramRTXCRChiang : kMaterialProgramOpenPBRComposite;
 }
 
-// Minimal DOTS interaction. Authored normal/tangent stay independent of the ray;
-// outgoingDirection is the only view-dependent field. No invented curve radius,
-// strand ID or cross-sectional coordinate is inferred from a triangle hit.
-public struct FiberInteraction
+public static const uint kMaterialDomainSurface = 0u;
+public static const uint kMaterialDomainFiber = 1u;
+
+// Model registration belongs to the material runtime, never the integrator.
+public uint materialDomain(PathTraceMaterial parameters)
 {
-    public float3 authoredNormal;
-    public float3 tangent;
-    public float3 outgoingDirection;
-};
+    return materialProgramId(parameters) == kMaterialProgramRTXCRChiang ? kMaterialDomainFiber : kMaterialDomainSurface;
+}
 
 } // namespace Metallic.Material

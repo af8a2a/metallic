@@ -4367,6 +4367,10 @@ bool Scene::loadInternal(
                 "diffuseReflectionTint",
                 material.rtxcrHairDiffuseReflectionTint);
         }
+        for (auto* colorTexture : {&material.baseColorTexture, &material.emissiveTexture,
+                &material.specularColorTexture, &material.diffuseTransmissionColorTexture}) {
+            colorTexture->colorMetadata = render::ksRGBColorTexture;
+        }
         materials_.push_back(material);
     }
     logSceneLoadStep("asset metadata, images, textures, and materials", metadataBegin);
@@ -4991,7 +4995,10 @@ bool materialPropertiesEqual(const RenderMaterial& lhs, const RenderMaterial& rh
     const auto sameColor = [](const float3& a, const float3& b) {
         return a.x == b.x && a.y == b.y && a.z == b.z;
     };
-    return lhs.featurePolicies == rhs.featurePolicies &&
+    const bool sameFiber = lhs.rtxcrHair == rhs.rtxcrHair &&
+        std::all_of(material::detail::kFiberScalars.begin(), material::detail::kFiberScalars.end(),
+            [&](const auto& field) { return lhs.*field.member == rhs.*field.member; });
+    return sameFiber && lhs.featurePolicies == rhs.featurePolicies &&
         lhs.valueProgram == rhs.valueProgram && lhs.valueParameters == rhs.valueParameters &&
         lhs.baseColorFactor.x == rhs.baseColorFactor.x && lhs.baseColorFactor.y == rhs.baseColorFactor.y &&
         lhs.baseColorFactor.z == rhs.baseColorFactor.z && lhs.baseColorFactor.w == rhs.baseColorFactor.w &&
@@ -5014,6 +5021,11 @@ bool validMaterialProperties(const RenderMaterial& properties)
     const auto unit = [](float value) { return std::isfinite(value) && value >= 0.0f && value <= 1.0f; };
     const auto positive = [](float value) { return std::isfinite(value) && value >= 0.0f; };
     const auto color = [&](const float3& value) { return unit(value.x) && unit(value.y) && unit(value.z); };
+    if (properties.rtxcrHair && (!properties.valueProgram.empty() ||
+        !std::all_of(material::detail::kFiberScalars.begin(), material::detail::kFiberScalars.end(), [&](const auto& field) {
+            const auto value = properties.*field.member;
+            return std::isfinite(value) && value >= field.minimum && value <= field.maximum;
+        }))) { return false; }
     return material::validFeaturePolicies(properties.featurePolicies) && properties.valueProgram.size() <= 16384 &&
         std::all_of(properties.valueParameters.begin(), properties.valueParameters.end(),
             [](float v) { return std::isfinite(v) && std::abs(v) <= 1e6f; }) &&
@@ -5038,6 +5050,8 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
         !validMaterialProperties(properties)) { return false; }
     RenderMaterial& current = materials_[static_cast<size_t>(materialIndex)];
     if (materialPropertiesEqual(current, properties)) { return false; }
+    current.rtxcrHair = properties.rtxcrHair;
+    for (const auto& field : material::detail::kFiberScalars) { current.*field.member = properties.*field.member; }
     current.valueProgram = properties.valueProgram;
     current.featurePolicies = properties.featurePolicies;
     current.valueParameters = properties.valueParameters;
@@ -5068,7 +5082,8 @@ bool Scene::setMaterialProperties(int32_t materialIndex, const RenderMaterial& p
 }
 
 bool Scene::applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
-    const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error)
+    const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error,
+    bool replaceOwnedValueProgram)
 {
     error.clear();
     if (!valid() || materialIndex < 0 || size_t(materialIndex) >= materials_.size()) {
@@ -5076,6 +5091,7 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
         return false;
     }
     auto candidate = materials_[materialIndex];
+    if (replaceOwnedValueProgram) { candidate.valueProgram.clear(); candidate.valueParameters = {}; }
     std::vector<RenderImage> newImages;
     std::vector<RenderTexture> newTextures;
     const auto resolver = [&](std::string_view uri) -> int32_t {
@@ -5131,7 +5147,7 @@ bool Scene::applyMaterialInstance(int32_t materialIndex, const material::Resolve
     for (const auto& [name, member] : material::detail::kTextures) {
         const auto& a = materials_[materialIndex].*member;
         const auto& b = candidate.*member;
-        changed |= a.textureIndex != b.textureIndex || a.texCoord != b.texCoord || a.uvTransform != b.uvTransform;
+        changed |= a.textureIndex != b.textureIndex || a.texCoord != b.texCoord || a.uvTransform != b.uvTransform || a.colorMetadata != b.colorMetadata;
     }
     if (changed) {
         materials_[materialIndex] = std::move(candidate);

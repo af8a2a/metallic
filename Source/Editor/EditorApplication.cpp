@@ -71,7 +71,7 @@ constexpr float kMinViewportCameraSpeed = 0.01f;
 constexpr float kMaxViewportCameraSpeed = 100.0f;
 constexpr float kViewportCameraWheelSpeedStep = 1.25f;
 constexpr float kMaxDollyDisplacement = 0.99f;
-constexpr const char* kDefaultRenderSampleId = "pathtracing-sample";
+constexpr const char* kDefaultRenderSampleId = render::kDefaultPathTracingSampleId;
 
 bool environmentFlagEnabled(const char* name, bool defaultValue = false)
 {
@@ -2059,8 +2059,10 @@ int EditorApplication::run(
     bool enableNsightShaderDebug,
     bool enableDebugControl,
     bool gpuDrivenScenesOnly,
-    bool skipShaderWarmup)
+    bool skipShaderWarmup,
+    render::LookDevRenderPath lookDevRenderPath)
 {
+    lookDevRenderPath_ = lookDevRenderPath;
     gpuDrivenScenesOnly_ = gpuDrivenScenesOnly;
     if (gpuDrivenScenesOnly_) {
         if (!startupSampleId) { startupSampleId = render::kDefaultGPUDrivenSampleId; }
@@ -2212,7 +2214,15 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
-        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_MATERIAL_GRAPH")) {
+            const bool passed = runMaterialGraphSmokeTest();
+            shutdown();
+            return passed ? 0 : 1;
+        }
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_LOOKDEV_PATHS") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_STUDIO_SWITCH") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH")) {
             const bool passed = runSceneSwitchSmokeTest();
@@ -2858,7 +2868,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             pipelineInfo.PipelineRenderingCreateInfo = renderingInfo;
             ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
         }
-        if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_), colorFormat,
+        if (!displayRenderer_.initialize(*device_, colorFormat,
                 render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED)) {
             return false;
@@ -2935,7 +2945,7 @@ bool EditorApplication::initializeImGuiBackends()
         spdlog::error("ImGui Vulkan renderer backend initialization failed");
         return false;
     }
-    return displayRenderer_.initialize(nativeDevice, colorFormat,
+    return displayRenderer_.initialize(*device_, colorFormat,
         render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
                 pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED);
 }
@@ -3005,6 +3015,7 @@ void EditorApplication::shutdown()
     }
 
     if (imnodesContextCreated_) {
+        materialGraphEditor_.shutdown();
         ImNodes::DestroyContext();
         imnodesContextCreated_ = false;
     }
@@ -3455,7 +3466,7 @@ void EditorApplication::drawDockspace()
                 }
             }
             ImGui::Text("Active: %s", render::displayOutputName(displayOutput_.mode));
-            ImGui::TextDisabled("Renderer: scene-linear Rec.709 / D65; Windows HDR default: scRGB");
+            ImGui::TextDisabled("Renderer: scene-linear working RGB (ACEScg default); Windows HDR default: scRGB");
             if (!displayHdrEnabled_) { ImGui::TextDisabled("Enable HDR in Windows display settings to use HDR output"); }
             else if (requestedOutput_ != displayOutput_.mode) {
                 ImGui::TextDisabled("Requested surface profile unavailable; using SDR fallback");
@@ -3509,6 +3520,7 @@ void EditorApplication::drawDockspace()
         }
 
         if (ImGui::BeginMenu("Window")) {
+            ImGui::MenuItem("Material Graph", nullptr, &materialGraphEditor_.open);
             if (ImGui::MenuItem("Open Render Graph Editor")) {
                 renderGraphEditorOpen_ = true;
             }
@@ -3546,6 +3558,7 @@ void EditorApplication::drawDockspace()
         if (ImGui::Button("Open Render Graph Editor")) {
             renderGraphEditorOpen_ = true;
         }
+        if (ImGui::Button("Material Graph")) { materialGraphEditor_.open = true; }
 
         ImGui::EndMenuBar();
     }
@@ -3557,6 +3570,7 @@ void EditorApplication::drawDockspace()
 
 void EditorApplication::drawPanels()
 {
+    drawMaterialGraphEditor();
     {
         auto profileScope = profiler_.scope("Streamline Debug Panel");
         drawStreamlineDebugPanel();
@@ -4823,7 +4837,7 @@ void EditorApplication::drawLightingControls()
             }
             changed |= ImGui::Checkbox("Enabled", &light.enabled);
             float color[] = {p.color.x, p.color.y, p.color.z};
-            if (ImGui::ColorEdit3("Linear color", color, ImGuiColorEditFlags_Float)) {
+            if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
                 p.color = float3(color[0], color[1], color[2]);
                 changed = true;
             }
@@ -7349,7 +7363,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         spdlog::warn("[Startup] Built-in sample load failed: {}", message);
         return;
     }
-    if (!startupScenePath_.empty() &&
+    if (!sample.desc.id.starts_with("painter-") && !sample.desc.id.starts_with("studio-white-") && !startupScenePath_.empty() &&
         !render::setRenderSampleScenePath(sample, startupScenePath_, message)) {
         renderGraphStatus_ = message;
         spdlog::warn("[Startup] Built-in sample scene override failed: {}", message);
@@ -7388,6 +7402,10 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         sample.desc.scenePath,
         sample.desc.previewOutput);
 
+    if (sample.desc.category == "Studio LookDev") {
+        environmentUserEdited_ = false;
+        environmentFromSample_ = false;
+    }
     if (!environmentUserEdited_) {
         if (sample.desc.environment.has_value()) {
             const render::RenderSampleEnvironmentDesc& sourceEnvironment =
@@ -7411,6 +7429,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
 
     renderGraph_ = std::move(sample.graph);
+    initializeLookDevRenderPath();
     viewportCompileFailed_ = false;
     initializeViewportView();
     graphEditorPositionsInitialized_ = false;
@@ -7439,6 +7458,58 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     spdlog::info(
         "[Startup] Skipped editor scene and static RTAS loading for sample '{}'",
         sample.desc.name);
+}
+
+void EditorApplication::initializeLookDevRenderPath()
+{
+    lookDevComparisonGraph_.reset();
+    if (!render::supportsLookDevRenderPaths(renderGraph_)) { return; }
+    lookDevComparisonGraph_ = renderGraph_;
+    std::string message;
+    if (!render::makeLookDevRenderGraph(*lookDevComparisonGraph_, lookDevRenderPath_, renderGraph_, message)) {
+        lookDevRenderPath_ = render::LookDevRenderPath::Comparison;
+        spdlog::warn("LookDev render path: {}", message);
+    }
+}
+
+void EditorApplication::setLookDevRenderPath(render::LookDevRenderPath path)
+{
+    if (!lookDevComparisonGraph_ || path == lookDevRenderPath_) { return; }
+    auto comparison = *lookDevComparisonGraph_;
+    if (lookDevRenderPath_ == render::LookDevRenderPath::Comparison) {
+        comparison = renderGraph_;
+    } else {
+        // Retain edits to active pass settings while keeping the inactive branch available.
+        for (const auto& node : renderGraph_.nodes()) {
+            if (auto* original = comparison.findNode(node.name); original && original->type == node.type) {
+                original->properties = node.properties;
+                original->runtimeProperties = node.runtimeProperties;
+                original->uiX = node.uiX;
+                original->uiY = node.uiY;
+            }
+        }
+    }
+    comparison.setViewProperties({{"camera", viewportView_.cameraProperties()},
+        {"temporalJitter", viewportView_.temporalJitter()}});
+    std::string message;
+    if (!render::makeLookDevRenderGraph(comparison, path, renderGraph_, message)) {
+        renderGraphStatus_ = message;
+        return;
+    }
+    lookDevComparisonGraph_ = std::move(comparison);
+    lookDevRenderPath_ = path;
+    pendingVisibilityPreviewNodeId_ = 0;
+    visibilityPreviewOutput_.clear();
+    visibilityPreviewReturnOutput_.clear();
+    viewportCompileFailed_ = false;
+    viewportPreviewValid_ = false;
+    graphEditorPositionsInitialized_ = false;
+    selectedGraphNodeId_ = -1;
+    selectedGraphLinkId_ = -1;
+    historyResources_.invalidateAll();
+    copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    setActivePreviewOutput(renderGraph_.presentationOutputName());
+    renderGraphStatus_ = "LookDev render path changed; inactive passes removed from the graph.";
 }
 
 void EditorApplication::resetDefaultRenderGraph()
@@ -7495,6 +7566,7 @@ void EditorApplication::loadRenderGraph()
         }
     }
     renderGraph_ = std::move(loadedGraph);
+    initializeLookDevRenderPath();
     viewportCompileFailed_ = false;
     initializeViewportView();
     graphEditorPositionsInitialized_ = false;
@@ -7599,6 +7671,13 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
     StartupLogScope scope("Synchronize loaded scene path into RenderGraph");
 
     const std::string graphScenePath = displayPathForProperty(path);
+    if (lookDevComparisonGraph_) {
+        for (const auto& source : lookDevComparisonGraph_->nodes()) {
+            if (isSceneAwareRenderPass(source)) {
+                lookDevComparisonGraph_->setNodeRuntimeProperty(source.id, "path", graphScenePath);
+            }
+        }
+    }
     bool changed = scene_.hasStreamGeometry() &&
         editor::applyStreamSceneOpen(renderGraph_, path, pendingSceneStreamAssetPath_);
 
@@ -8571,6 +8650,48 @@ void EditorApplication::drawRenderGraphSettingsPanel()
             }
         }
         ImGui::EndCombo();
+    }
+    if (!gpuDrivenScenesOnly_) {
+        const auto samples = render::listBuiltInRenderSamples();
+        const auto studio = std::find_if(samples.begin(), samples.end(), [&](const auto& sample) {
+            return sample.category == "Studio LookDev" && sample.graphPath == graphFilePath_;
+        });
+        if (ImGui::BeginCombo("Studio LookDev Scene", studio != samples.end() ? studio->name.c_str() : "Select studio scene...")) {
+            for (const auto& sample : samples) {
+                if (sample.category != "Studio LookDev") { continue; }
+                if (ImGui::Selectable(sample.name.c_str(), studio != samples.end() && sample.id == studio->id)) {
+                    loadBuiltInSample(sample.id.c_str());
+                }
+                if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", sample.description.c_str()); }
+            }
+            ImGui::EndCombo();
+        }
+        const auto current = std::find_if(samples.begin(), samples.end(), [&](const auto& sample) {
+            return sample.category == "Painter Validation" && sample.graphPath == graphFilePath_;
+        });
+        if (ImGui::BeginCombo("Painter Material Scene", current != samples.end() ? current->name.c_str() : "Select scene...")) {
+            bool available = false;
+            for (const auto& sample : samples) {
+                if (sample.category != "Painter Validation") { continue; }
+                available = true;
+                if (ImGui::Selectable(sample.name.c_str(), current != samples.end() && sample.id == current->id)) {
+                    loadBuiltInSample(sample.id.c_str());
+                }
+                if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", sample.description.c_str()); }
+            }
+            if (!available) { ImGui::TextDisabled("No imported Painter scenes. Run BuildLookDevScenes.py and restart."); }
+            ImGui::EndCombo();
+        }
+    }
+    if (lookDevComparisonGraph_) {
+        int selectedPath = static_cast<int>(lookDevRenderPath_);
+        if (ImGui::Combo("LookDev Render Path", &selectedPath,
+                "Comparison\0Path Trace Only\0Deferred Only\0")) {
+            setLookDevRenderPath(static_cast<render::LookDevRenderPath>(selectedPath));
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Only modes remove the inactive passes. Scene, camera and display settings are retained.");
+        }
     }
     ImGui::Separator();
     const std::string presentationOutput = renderGraph_.presentationOutputName();

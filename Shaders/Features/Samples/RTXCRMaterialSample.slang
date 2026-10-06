@@ -2,8 +2,9 @@ import Core;
 using Metallic;
 
 // This software contains source code that calls interfaces provided by NVIDIA Corporation.
-#include <rtxcr/HairChiangBSDF.hlsli>
-#include <rtxcr/HairFarFieldBCSDF.hlsli>
+import RTXCRHair;
+using Metallic.RTXCR;
+
 #include <rtxcr/SubsurfaceScattering.hlsli>
 
 struct RTXCRMaterialSamplePush
@@ -77,16 +78,16 @@ float3 sphereFiberTangent(float3 normal)
     return normalize(tangent);
 }
 
-RTXCR_HairMaterialData makeHairMaterial(RTXCRMaterialSamplePush push)
+HairMaterialData makeHairMaterial(RTXCRMaterialSamplePush push)
 {
-    RTXCR_HairMaterialData material;
+    HairMaterialData material;
     material.baseColor = float3(0.12, 0.035, 0.012);
     material.longitudinalRoughness = push.hairLongitudinalRoughness;
     material.azimuthalRoughness = push.hairAzimuthalRoughness;
     material.ior = push.hairIor;
     material.eta = 1.0 / push.hairIor;
     material.fresnelApproximation = 1u;
-    material.absorptionModel = RTXCR_HairAbsorptionModel_Normalized;
+    material.absorptionModel = kHairAbsorptionModelNormalized;
     material.melanin = push.hairMelanin;
     material.melaninRedness = push.hairMelaninRedness;
     material.cuticleAngleInDegrees = push.hairCuticleAngleDegrees;
@@ -97,7 +98,7 @@ void makeHairFrame(
     float3 normal,
     float3 viewDirection,
     float3 lightDirection,
-    out RTXCR_HairInteractionSurface surface,
+    out HairInteractionSurface surface,
     out float3 wi,
     out float3 wo)
 {
@@ -117,14 +118,14 @@ float3 shadeChiangHair(
     float3 lightDirection,
     RTXCRMaterialSamplePush push)
 {
-    RTXCR_HairInteractionSurface surface;
+    HairInteractionSurface surface;
     float3 wi;
     float3 wo;
     makeHairFrame(normal, viewDirection, lightDirection, surface, wi, wo);
-    RTXCR_HairMaterialData material = makeHairMaterial(push);
-    RTXCR_HairMaterialInteraction interaction =
-        RTXCR_CreateHairMaterialInteraction(material, surface);
-    float3 bcsdf = RTXCR_HairChiangBsdfEval(interaction, wi, wo);
+    HairMaterialData material = makeHairMaterial(push);
+    HairMaterialInteraction interaction =
+        createHairMaterialInteraction(material, surface);
+    float3 bcsdf = hairChiangBSDFEval(interaction, wi, wo);
     float grazing = pow(1.0 - saturate(dot(normal, viewDirection)), 3.0);
     return min(bcsdf * 3.0, 32.0) + float3(0.018, 0.006, 0.003) * (1.0 + grazing);
 }
@@ -135,13 +136,13 @@ float3 shadeFarFieldHair(
     float3 lightDirection,
     RTXCRMaterialSamplePush push)
 {
-    RTXCR_HairInteractionSurface surface;
+    HairInteractionSurface surface;
     float3 wi;
     float3 wo;
     makeHairFrame(normal, viewDirection, lightDirection, surface, wi, wo);
-    RTXCR_HairMaterialData material = makeHairMaterial(push);
-    RTXCR_HairMaterialInteractionBcsdf interaction =
-        RTXCR_CreateHairMaterialInteractionBcsdf(
+    HairMaterialData material = makeHairMaterial(push);
+    HairMaterialInteractionBCSDF interaction =
+        createHairMaterialInteractionBCSDF(
             material,
             float3(0.11, 0.025, 0.008),
             0.08,
@@ -149,7 +150,7 @@ float3 shadeFarFieldHair(
     float3 bcsdf;
     float3 diffuse;
     float pdf;
-    RTXCR_HairFarFieldBcsdfEval(surface, interaction, wi, wo, bcsdf, diffuse, pdf);
+    hairFarFieldBCSDFEval(surface, interaction, wi, wo, bcsdf, diffuse, pdf);
     float grazing = pow(1.0 - saturate(dot(normal, viewDirection)), 2.0);
     return min((bcsdf + diffuse) * 4.0, 32.0) +
         float3(0.014, 0.004, 0.002) * (1.0 + grazing);

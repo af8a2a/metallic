@@ -18,9 +18,9 @@ namespace metallic::render {
 using MaterialBufferAllocator = Result<std::unique_ptr<Buffer>> (*)(Device&, const BufferDesc&);
 
 enum class MaterialDomain : uint32_t { Surface, Fiber };
-enum class MaterialEvaluationTarget : uint32_t { SurfaceRayHit, RayHitWithFiber, VisibilityBuffer };
+enum class MaterialEvaluationTarget : uint32_t { SurfaceRayHit, RayHitWithFiber, VisibilityBuffer, StrandVisibility };
 // Stable shader ABI; zero remains reserved for old uploads/test fixtures.
-enum class MaterialProgramId : uint32_t { OpenPBRComposite = 1, RTXCRChiang = 2 };
+enum class MaterialProgramId : uint32_t { OpenPBRComposite = 1, RTXCRChiang = 2, SingleSlab = 3, DualSlab = 4 };
 enum class MaterialParameterType : uint32_t { Float4, Texture, Float, UInt };
 
 struct MaterialParameterSchema

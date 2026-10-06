@@ -2,6 +2,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/ResidentMeshletLOD.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include <algorithm>
 
 namespace metallic::render {
@@ -40,15 +41,15 @@ Result<> ResidentMeshletLOD::initialize(Device& device, uint32_t capacity, std::
     const char* entries[] = {"residentLodResetMain", "residentLodSelectMain", "residentLodArgumentsMain", "residentLodScatterMain"};
     for (size_t i = 0; i < shaders_.size(); ++i) {
         ShaderCompileResult shader;
-        result = compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/ResidentMeshletLOD",
+        result = ShaderRegistry::instance().getShader({.moduleName = "Features/GPUDriven/ResidentMeshletLOD",
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = device.createShaderModule({
+        result = ShaderRegistry::instance().getShaderModule(device, {
             .spirv = shader.spirv,
             .debugName = entries[i],
         }).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
         if (result) {
-            result = device.createComputePipeline({
+            result = ShaderRegistry::instance().getComputePipeline(device, {
                 .computeShader = {shaders_[i].get()},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(LODPush),

@@ -29,12 +29,12 @@ float openPbrMaterialIor(PathTraceMaterial material)
 
 float openPbrInteriorStackTopIor(OpenPBRInteriorStack stack)
 {
-    return stack.count > 0u ? stack.entries[stack.count - 1u].ior : OpenPBR_VacuumIor;
+    return stack.count > 0u ? stack.entries[stack.count - 1u].ior : OpenPBRVacuumIor;
 }
 
 float openPbrInteriorStackNextIor(OpenPBRInteriorStack stack)
 {
-    return stack.count > 1u ? stack.entries[stack.count - 2u].ior : OpenPBR_VacuumIor;
+    return stack.count > 1u ? stack.entries[stack.count - 2u].ior : OpenPBRVacuumIor;
 }
 
 float openPbrExteriorIorForHit(OpenPBRInteriorStack stack, HitInfo hit)
@@ -156,8 +156,7 @@ float3 openPbrShadowTransmittance(
         }
         PathTraceMaterial shadowMaterial = loadSceneMaterial(shadowHit.materialIndex);
         if (shadowMaterial.textureParams.w > 1.5) {
-            float alpha = saturate(shadowMaterial.baseColor.a * loadMaterialAlphaCoverage(
-                shadowMaterial.baseColorTexture, shadowHit.texcoord, push));
+            float alpha = evaluateSceneCoverage(shadowHit.materialIndex, shadowMaterial, shadowHit.texcoord, push).opacity;
             transmittance *= 1.0 - alpha;
             remainingDistance -= shadowHit.t;
             ray.origin = offsetRay(shadowHit.position, openPbrRayOffsetNormal(ray.direction, shadowHit.geometryNormal));
@@ -198,7 +197,7 @@ float3 openPbrShadowTransmittance(
             baseColorSample = float4(1.0, 1.0, 1.0, 1.0);
         }
         float3 baseColor = saturate(
-            shadowMaterial.baseColor.rgb * materialTextureColor(baseColorSample.rgb, shadowMaterial.baseColorTexture.transform0.w));
+            materialTextureModulate(shadowMaterial.baseColor.rgb, baseColorSample.rgb, shadowMaterial.baseColorTexture.transform0.w));
         transmittance *= surfaceTransmission * powColor(baseColor, 0.5);
         if (luminanceMax(transmittance) <= 0.0001) {
             return float3(0.0, 0.0, 0.0);
@@ -287,6 +286,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             found = traceClosest(ray, push, hit);
         }
         if (!found) {
+            // Diagnostic colors carry display/data encoding, not scene radiance.
+            if (push.debugView != kOpenPBRDebugViewFinal) { return float3(0.0); }
             if (captureSpecularHitDistance) {
                 specularHitDistance = 65504.0;
                 captureSpecularHitDistance = false;
@@ -311,9 +312,15 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         }
 
         PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
+        if (materialDomain(material) == kMaterialDomainFiber) {
+            const float3 stableNormal = hit.normal;
+            if (dot(hit.normal, ray.direction) > 0) { hit.normal = -hit.normal; }
+            if (!shadeSceneFiber(material, hit, stableNormal, push, depth,
+                    ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta)) { break; }
+            continue;
+        }
         if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
-            float alpha = saturate(material.baseColor.a * loadMaterialAlphaCoverage(
-                material.baseColorTexture, hit.texcoord, push));
+            float alpha = evaluateSceneCoverage(hit.materialIndex, material, hit.texcoord, push).opacity;
             if (rand(seed) >= alpha) {
                 if (++alphaLayers >= 16u) { break; }
                 ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
@@ -323,10 +330,14 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             }
         }
         float3 shadingNormal = hit.normal;
+        RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
         SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, false, true);
-        let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, rayCone, ray.direction),
-            legacyMaterialInstanceRef(hit.materialIndex));
+        // Always dispatch from this hit's instance. Raster specialization and
+        // primary PreparedClosure are never inherited by a secondary hit.
+        let evaluated = evaluateRaySurface(program, work);
         let materialEval = evaluated.closure;
+        // Value inputs (including textured volume absorption) belong to this hit.
+        material = program.material;
         hit = program.hit;
         seed = program.seed;
         float4 normalSample = program.normalSample;
@@ -342,11 +353,11 @@ float3 pathTraceOpenPBRWithPrimaryHit(
                 ray.direction);
         }
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
-        OpenPBRSamplingContext sampling;
+        SurfaceSamplingContext sampling;
         sampling.throughput = throughput;
-        sampling.wavelengths = OpenPBR_BaseRgbWavelengths_nm;
+        sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
         sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
-        let prepared = materialEval.prepare(viewDirection, TransportMode.Radiance, sampling);
+        let prepared = prepareRaySurface(materialEval, work, sampling);
 
         radiance += throughput * max(prepared.emission(), float3(0.0, 0.0, 0.0));
         if (material.emissive.w != 0.0) { break; }
@@ -504,8 +515,9 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     color /= float(samples);
 
     if (debugViewEnabled) {
-        color = saturate(color);
+        color = openPbrDisplayDebugColor(push, color);
     } else if (push.outputLinear == 0u) {
+        color = Metallic.WorkingColor::toLinearRec709(color);
         color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);

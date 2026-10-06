@@ -1,6 +1,8 @@
 # M1–M4 实现审查与重新验收（2026-10-04）
 
-结论：**M1–M3 在已声明的实现范围内通过本次重新验收；M4 的 Value IR 与 Slab 原型通过各自测试，但尚未形成场景材质闭环，不能按完整里程碑关闭。建议先补齐该闭环，再推进 MaterialGraph。**
+补充：P1 的作者资产 → Value IR → Closure IR → 生产场景闭环现已接通，新增实现、能力边界和验收证据见 [M4 场景 Closure 补充](MaterialSystemM4SceneClosure.md)。下面保留补齐前的审查结论与原始测试记录，不能将历史限制视为当前状态。
+
+首次审查结论：**M1–M3 在已声明的实现范围内通过重新验收；当时 M4 的 Value IR 与 Slab 原型仅各自通过测试，缺少场景材质闭环。**
 
 本文采用用户提供的 `D:/Metallic_Material_System_Roadmap.md` 编号：M1=Phase 0–1，M2=Phase 2–5，M3=Phase 6–8，M4=Phase 9–11。仓库早期 [MaterialSystemRoadmap](MaterialSystemRoadmap.md) 中的 M 编号不同，不能混用。审查基于提交 `a475da53949b58ee0f718f6b4a7f1105785b7d67` 加本次修复；未实施 MaterialGraph，也未更改 Slab 模型预算或默认 fused 调度。
 
@@ -17,7 +19,7 @@
 
 ## 发现与处理
 
-### P1：M4 缺少 Value IR → Closure IR → 场景执行的闭环（未实现）
+### P1：M4 缺少 Value IR → Closure IR → 场景执行的闭环（已补齐，以下为原始发现）
 
 [MaterialClosureIR](../Source/Runtime/Material/MaterialClosureIR.h) 接收已解析的 `MaterialSlabRecord` 数值，尚无 Value IR 输出引用或统一 material lowering 入口。在 `Source/` 中，`lowerMaterialClosure` 只有定义；执行示例来自 `tests/rhi/MaterialSlabTests.cpp` 等独立 probe。
 

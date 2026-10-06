@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -120,7 +121,7 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
     Result<> initialize(Device& device, std::string& log)
     {
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
                 .moduleName = "Features/Environment/EnvironmentLightingPrecompute",
                 .entryPointName = "environmentLightingPrecomputeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders",
@@ -278,7 +279,9 @@ void EnvironmentLightingSubsystem::requestEnvironment(
         return;
     }
     if (requestInitialized_ &&
-        resolvedEnvironmentPath(requestedSettings_.path) == resolvedEnvironmentPath(settings.path)) {
+        resolvedEnvironmentPath(requestedSettings_.path) == resolvedEnvironmentPath(settings.path) &&
+        requestedSettings_.sourceColorSpace == settings.sourceColorSpace &&
+        requestedSettings_.hasExplicitSourceColorSpace() == settings.hasExplicitSourceColorSpace()) {
         requestedSettings_ = settings;
         requestedSettingsRevision_ = settingsRevision;
         refreshSnapshot();
@@ -330,13 +333,24 @@ void EnvironmentLightingSubsystem::startDecodeJob(
     pendingDecodePath_.clear();
     pendingDecodeGeneration_ = 0;
     DecodeJob job;
-    job.future = std::async(std::launch::async, [pathToDecode, generation]() {
+    const auto sourceColorSpace = requestedSettings_.sourceColorSpace;
+    const bool explicitSourceColorSpace = requestedSettings_.hasExplicitSourceColorSpace();
+    job.future = std::async(std::launch::async, [pathToDecode, generation, sourceColorSpace, explicitSourceColorSpace]() {
         DecodedEnvironment decoded;
         decoded.generation = generation;
         int width = 0;
         int height = 0;
         int channels = 0;
-        float* pixels = stbi_loadf(pathToDecode.string().c_str(), &width, &height, &channels, 4);
+        const auto fileName = pathToDecode.string();
+        const bool encodedLDR = explicitSourceColorSpace && !stbi_is_hdr(fileName.c_str());
+        const bool highBitDepth = encodedLDR && stbi_is_16_bit(fileName.c_str());
+        // loadf applies an implicit gamma 2.2 to LDR. Keep that only for
+        // untagged legacy environments; tagged samples decode exactly once below.
+        void* pixels = !encodedLDR
+            ? static_cast<void*>(stbi_loadf(fileName.c_str(), &width, &height, &channels, 4))
+            : highBitDepth
+                ? static_cast<void*>(stbi_load_16(fileName.c_str(), &width, &height, &channels, 4))
+                : static_cast<void*>(stbi_load(fileName.c_str(), &width, &height, &channels, 4));
         if (pixels == nullptr || width <= 0 || height <= 0) {
             decoded.error = "Failed to decode environment map '" + pathToDecode.string() + "'";
             if (const char* reason = stbi_failure_reason()) {
@@ -356,8 +370,22 @@ void EnvironmentLightingSubsystem::startDecodeJob(
         }
         decoded.width = static_cast<uint32_t>(width);
         decoded.height = static_cast<uint32_t>(height);
-        decoded.pixels.assign(pixels, pixels + static_cast<size_t>(componentCount));
+        if (encodedLDR) {
+            decoded.pixels.resize(static_cast<size_t>(componentCount));
+            for (size_t index = 0; index < decoded.pixels.size(); ++index) {
+                decoded.pixels[index] = highBitDepth
+                    ? static_cast<const stbi_us*>(pixels)[index] / 65535.0f
+                    : static_cast<const stbi_uc*>(pixels)[index] / 255.0f;
+            }
+        } else {
+            const auto* floatPixels = static_cast<const float*>(pixels);
+            decoded.pixels.assign(floatPixels, floatPixels + static_cast<size_t>(componentCount));
+        }
         stbi_image_free(pixels);
+        for (size_t index = 0; index < decoded.pixels.size(); index += 4) {
+            const auto rgb = color::fromSource({decoded.pixels[index], decoded.pixels[index + 1], decoded.pixels[index + 2]}, sourceColorSpace);
+            std::copy(rgb.begin(), rgb.end(), decoded.pixels.begin() + index);
+        }
         decoded.buildMipChain();
         decoded.mapAvailable = true;
         return decoded;

@@ -36,8 +36,8 @@ void autoExposureHistogramMain(uint3 pixel : SV_DispatchThreadID, uint index : S
     AutoExposurePush push = gParams.display;
     if (index < kHistogramBins) { sharedHistogram[index] = 0u; }
     GroupMemoryBarrierWithGroupSync();
-    if (pixel.x < push.width && pixel.y < push.height) {
-        float luminance = dot(physicalColor(pixel.xy, push), float3(0.2126, 0.7152, 0.0722));
+    if (push.bypass == 0u && pixel.x < push.width && pixel.y < push.height) {
+        float luminance = Metallic.WorkingColor::luminance(physicalColor(pixel.xy, push));
         // Like UE's default black-bucket influence of zero: an unlit/hidden sky
         // must not dominate the meter and blow out the visible subject.
         if (luminance > exp2(push.histogramMin)) {
@@ -88,6 +88,11 @@ void autoExposureReduceMain(uint index : SV_GroupIndex)
     reducedHistogram[index] = count;
     GroupMemoryBarrierWithGroupSync();
     if (index != 0u) { return; }
+    if (push.bypass != 0u) {
+        gHistory.store(0, float4(1.0, 0.0, 0.0, 0.0));
+        gExposure.store(0, float4(1.0, 0.0, 0.0, 0.0));
+        return;
+    }
     float total = 0.0;
     for (uint bin = 0u; bin < kHistogramBins; ++bin) { total += reducedHistogram[bin]; }
     float low = total * push.lowPercent;
@@ -127,6 +132,10 @@ void autoExposureApplyMain(uint3 pixel : SV_DispatchThreadID)
 {
     AutoExposurePush push = gParams.display;
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
+    if (push.bypass != 0u) {
+        gOutput[pixel.xy] = float4(gSource.Load(int3(pixel.xy, 0)).rgb, 1.0);
+        return;
+    }
     float3 color = physicalColor(pixel.xy, push) * gExposure.load(0).x * push.artisticExposure;
     color = min(color, float3(1e30));
     // Display mapping belongs exclusively to FinalBlit.

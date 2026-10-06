@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/SceneLightResources.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/ImportanceSampling.h"
 
@@ -119,9 +120,10 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         light.directionType[2] = normalized.z;
         light.directionType[3] = properties.type == "directional" ? 0.0f :
             (properties.type == "point" ? 1.0f : 2.0f);
-        light.colorIntensity[0] = properties.color.x;
-        light.colorIntensity[1] = properties.color.y;
-        light.colorIntensity[2] = properties.color.z;
+        const auto color = color::fromLinearRec709({properties.color.x, properties.color.y, properties.color.z});
+        light.colorIntensity[0] = color[0];
+        light.colorIntensity[1] = color[1];
+        light.colorIntensity[2] = color[2];
         light.colorIntensity[3] = static_cast<float>(intensity);
         light.spot[0] = static_cast<float>(std::cos(properties.innerConeAngle));
         light.spot[1] = static_cast<float>(std::cos(properties.outerConeAngle));

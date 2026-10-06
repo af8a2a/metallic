@@ -1,5 +1,6 @@
 #include "Runtime/Material/MaterialAsset.h"
 #include "Runtime/Material/MaterialAssetFields.h"
+#include "Runtime/Material/MaterialValueIR.h"
 
 #include <algorithm>
 #include <cmath>
@@ -73,7 +74,12 @@ Json texture(Json value)
 {
     if (value.is_null()) { return value; }
     if (value.is_string()) { value = Json{{"uri", value}}; }
-    keys(value, {"uri", "texCoord", "transform"});
+    keys(value, {"uri", "texCoord", "transform", "colorSpace"});
+    if (value.contains("colorSpace")) {
+        render::ColorSpaceDesc source;
+        require(value["colorSpace"].is_string() && render::parseColorSpace(value["colorSpace"].get<std::string>(), source),
+            "Unsupported texture source colorSpace");
+    }
     require(value.contains("uri") && value["uri"].is_string() && resourceUri(value["uri"].get<std::string>()),
         "Texture requires asset:// or imported:// URI; runtime indices are not assets");
     if (!value.contains("texCoord")) { value["texCoord"] = 0; }
@@ -132,8 +138,19 @@ void apply(const MaterialInstance& instance, ResolvedMaterialInstance& result)
     overlay(result.definition.schema.parameters, instance.parameters, result.parameters);
     overlay(result.definition.schema.resources, instance.resources, result.resources);
     overlay(result.definition.schema.features, instance.features, result.features);
+    for (const auto& [slot, value] : instance.valueParameters.items()) { result.valueParameters[slot] = value; }
     std::string error;
     if (!overlayFeaturePolicies(instance.featurePolicies, result.featurePolicies, error)) { throw std::runtime_error(error); }
+}
+
+void validateValueParameters(const Json& parameters)
+{
+    require(parameters.is_object(), "valueParameters must be a sparse object of float4 slots");
+    for (const auto& [slot, value] : parameters.items()) {
+        require(slot.size() == 1 && slot[0] >= '0' && slot[0] <= '3' && value.is_array() && value.size() == 4,
+            "Value parameter requires slot 0..3 and four components");
+        for (const auto& component : value) { number(component, -1e6, 1e6); }
+    }
 }
 
 void validateStructure(const MaterialInstance& instance)
@@ -142,7 +159,12 @@ void validateStructure(const MaterialInstance& instance)
     require(instance.definition.starts_with("asset://") && instance.definition.ends_with(".materialdef"), "Invalid material definition URI");
     require(!instance.parent || (instance.parent->starts_with("asset://") && instance.parent->ends_with(".material")), "Invalid material parent URI");
     require(instance.parameters.is_object() && instance.resources.is_object() && instance.features.is_object(), "Material overrides must be objects");
-    const auto schema = defaultOpenPBRDefinition().schema;
+    validateValueParameters(instance.valueParameters);
+    auto schema = defaultOpenPBRDefinition().schema;
+    // The definition URI is resolved later. Structural parsing accepts known
+    // fields from both domains; apply() enforces the resolved definition schema.
+    const auto fiber = defaultRTXCRChiangDefinition();
+    schema.parameters.insert(schema.parameters.end(), fiber.schema.parameters.begin(), fiber.schema.parameters.end());
     Json scratch = Json::object();
     overlay(schema.parameters, instance.parameters, scratch);
     overlay(schema.resources, instance.resources, scratch);
@@ -154,7 +176,7 @@ void validateStructure(const MaterialInstance& instance)
 
 MaterialInstance instanceFromJson(Json document)
 {
-    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources", "features", "featurePolicies"});
+    keys(document, {"type", "version", "definitionVersion", "definition", "parent", "parameters", "resources", "features", "featurePolicies", "valueParameters"});
     require(document.at("type") == "Metallic.MaterialInstance", "Wrong material asset type");
     require(document.at("version").is_number_unsigned() || document.at("version").is_number_integer(), "Invalid instance version");
     const auto version = document.at("version").get<int64_t>();
@@ -176,6 +198,7 @@ MaterialInstance instanceFromJson(Json document)
     result.resources = document.value("resources", Json::object());
     result.features = document.value("features", Json::object());
     result.featurePolicies = document.value("featurePolicies", Json::object());
+    result.valueParameters = document.value("valueParameters", Json::object());
     validateStructure(result);
     return result;
 }
@@ -206,26 +229,50 @@ MaterialDefinition defaultOpenPBRDefinition()
     return result;
 }
 
+MaterialDefinition defaultRTXCRChiangDefinition()
+{
+    MaterialDefinition result;
+    result.implementation = "RTXCRChiang.DOTS";
+    const scene::RenderMaterial source;
+    for (const auto& field : detail::kFiberScalars) {
+        result.schema.parameters.push_back({field.name, MaterialValueType::Scalar, source.*field.member, field.minimum, field.maximum});
+    }
+    result.schema.features = {{"doubleSided", MaterialValueType::Boolean, false}};
+    return result;
+}
+
 bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& output, std::string& error)
 {
     return attempt(error, [&] {
         const auto document = parse(text);
-        keys(document, {"type", "version", "definitionVersion", "implementation", "defaults"});
+        keys(document, {"type", "version", "definitionVersion", "implementation", "defaults", "surfaceProgram"});
         require(document.at("type") == "Metallic.MaterialDefinition" && document.at("version").is_number_integer() && document.at("version") == 1,
             "Unsupported material definition format");
-        MaterialDefinition candidate = defaultOpenPBRDefinition();
+        const bool fiber = document.at("implementation") == "RTXCRChiang.DOTS";
+        MaterialDefinition candidate = fiber ? defaultRTXCRChiangDefinition() : defaultOpenPBRDefinition();
         candidate.implementation = document.at("implementation").get<std::string>();
-        require(candidate.implementation == "OpenPBRComposite.Legacy", "Phase 1 only registers the existing OpenPBR implementation");
+        require(candidate.implementation == "OpenPBRComposite.Legacy" || candidate.implementation == "Slab.Surface" ||
+            candidate.implementation == "OpenPBR.Value" || fiber, "Unsupported material implementation");
+        if (!fiber && candidate.implementation != "OpenPBRComposite.Legacy") {
+            require(document.contains("surfaceProgram") && document["surfaceProgram"].is_object(), "Program definition requires surfaceProgram");
+            candidate.surfaceProgram = document["surfaceProgram"].dump();
+            require(render::MaterialValueIR::parse(candidate.surfaceProgram).closure().has_value() == (candidate.implementation == "Slab.Surface"),
+                "Definition implementation does not match Closure IR");
+        } else { require(!document.contains("surfaceProgram"), "This definition does not own a Surface program"); }
         require(document.at("definitionVersion").is_number_integer(), "Invalid definition version");
         const auto version = document.at("definitionVersion").get<int64_t>();
         require(version > 0 && version <= UINT32_MAX, "Invalid definition version");
         candidate.definitionVersion = static_cast<uint32_t>(version);
         const auto values = document.value("defaults", Json::object());
-        keys(values, {"parameters", "resources", "features", "featurePolicies"});
+        keys(values, {"parameters", "resources", "features", "featurePolicies", "valueParameters"});
+        candidate.valueParameters = values.value("valueParameters", Json::object());
+        validateValueParameters(candidate.valueParameters);
         std::string policyError;
         if (!overlayFeaturePolicies(values.value("featurePolicies", Json::object()), candidate.featurePolicies, policyError)) {
             throw std::runtime_error(policyError);
         }
+        require(!fiber || (candidate.valueParameters.empty() && candidate.featurePolicies == MaterialFeaturePolicies{}),
+            "Fiber does not support Surface Value IR or Surface feature policies");
         const auto update = [&](auto& schema, const char* group) {
             auto resolved = defaults(schema);
             overlay(schema, values.value(group, Json::object()), resolved);
@@ -241,10 +288,16 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
 std::string serializeMaterialDefinition(const MaterialDefinition& definition)
 {
     require(validFeaturePolicies(definition.featurePolicies), "Invalid definition feature policies");
-    return Json{{"type", "Metallic.MaterialDefinition"}, {"version", definition.version},
+    Json document{{"type", "Metallic.MaterialDefinition"}, {"version", definition.version},
         {"definitionVersion", definition.definitionVersion}, {"implementation", definition.implementation},
         {"defaults", {{"parameters", defaults(definition.schema.parameters)}, {"resources", defaults(definition.schema.resources)},
-            {"features", defaults(definition.schema.features)}, {"featurePolicies", serializeFeaturePolicies(definition.featurePolicies)}}}}.dump(4) + '\n';
+            {"features", defaults(definition.schema.features)}, {"featurePolicies", serializeFeaturePolicies(definition.featurePolicies)},
+            {"valueParameters", definition.valueParameters}}}};
+    if (!definition.surfaceProgram.empty()) { document["surfaceProgram"] = Json::parse(definition.surfaceProgram); }
+    MaterialDefinition checked;
+    std::string error;
+    if (!deserializeMaterialDefinition(document.dump(), checked, error)) { throw std::runtime_error(error); }
+    return document.dump(4) + '\n';
 }
 
 bool deserializeMaterialInstance(std::string_view text, MaterialInstance& output, std::string& error)
@@ -258,7 +311,8 @@ std::string serializeMaterialInstance(const MaterialInstance& instance)
     return Json{{"type", "Metallic.MaterialInstance"}, {"version", instance.version},
         {"definitionVersion", instance.definitionVersion}, {"definition", instance.definition},
         {"parent", instance.parent ? Json(*instance.parent) : Json(nullptr)}, {"parameters", instance.parameters},
-        {"resources", instance.resources}, {"features", instance.features}, {"featurePolicies", instance.featurePolicies}}.dump(4) + '\n';
+        {"resources", instance.resources}, {"features", instance.features}, {"featurePolicies", instance.featurePolicies},
+        {"valueParameters", instance.valueParameters}}.dump(4) + '\n';
 }
 
 bool upgradeMaterial(Json& document, uint32_t versionFrom, uint32_t versionTo, std::string& error)
@@ -344,6 +398,7 @@ bool MaterialAssetLibrary::resolve(const MaterialInstance& instance, ResolvedMat
         candidate.parameters = defaults(candidate.definition.schema.parameters);
         candidate.resources = defaults(candidate.definition.schema.resources);
         candidate.features = defaults(candidate.definition.schema.features);
+        candidate.valueParameters = candidate.definition.valueParameters;
         candidate.featurePolicies = candidate.definition.featurePolicies;
         for (auto it = chain.rbegin(); it != chain.rend(); ++it) { apply(*it, candidate); }
         // Analyze resource presence without loading textures or assigning GPU handles.
@@ -397,9 +452,40 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
     scene::RenderMaterial& output, std::string& error)
 {
     return attempt(error, [&] {
-        require(instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
+        if (instance.definition.implementation == "RTXCRChiang.DOTS") {
+            require(instance.definition.surfaceProgram.empty() && instance.valueParameters.empty() && output.valueProgram.empty(),
+                "Fiber does not support Surface Value/Closure IR");
+            require(instance.resources.empty() && instance.featurePolicies == MaterialFeaturePolicies{},
+                "Fiber does not support Surface resources or feature policies");
+            auto candidate = output;
+            candidate.rtxcrHair = true;
+            candidate.alphaMode = "OPAQUE";
+            candidate.unlit = false;
+            candidate.featurePolicies = instance.featurePolicies;
+            candidate.doubleSided = instance.features.at("doubleSided").get<bool>();
+            for (const auto& field : detail::kFiberScalars) {
+                const auto& value = instance.parameters.at(field.name);
+                number(value, field.minimum, field.maximum);
+                candidate.*field.member = value.get<float>();
+            }
+            require(scene::validMaterialProperties(candidate), "Resolved Fiber material is invalid");
+            output = std::move(candidate);
+            return;
+        }
+        const bool slab = instance.definition.implementation == "Slab.Surface";
+        const bool value = instance.definition.implementation == "OpenPBR.Value";
+        require(slab || value || instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
         require(!output.rtxcrHair, "OpenPBR asset cannot replace a Fiber material");
         auto candidate = output;
+        if (slab || value) {
+            require(render::MaterialValueIR::parse(instance.definition.surfaceProgram).closure().has_value() == slab, "Definition Closure IR mismatch");
+            candidate.valueProgram = instance.definition.surfaceProgram;
+            candidate.valueParameters = {};
+            validateValueParameters(instance.valueParameters);
+            for (const auto& [slot, values] : instance.valueParameters.items()) {
+                for (uint32_t c = 0; c < 4; ++c) { candidate.valueParameters[(slot[0] - '0') * 4 + c] = values[c].get<float>(); }
+            }
+        }
         candidate.featurePolicies = instance.featurePolicies;
         const auto& p = instance.parameters;
         candidate.baseColorFactor = float4(p.at("baseColor")[0].get<float>(), p.at("baseColor")[1].get<float>(),
@@ -414,9 +500,18 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         candidate.alphaMode = mode == "opaque" ? "OPAQUE" : mode == "mask" ? "MASK" : "BLEND";
         candidate.doubleSided = instance.features.at("doubleSided").get<bool>();
         candidate.unlit = instance.features.at("unlit").get<bool>();
+        if (slab || value) {
+            const auto ir = render::MaterialValueIR::parse(candidate.valueProgram);
+            require(!candidate.unlit && candidate.alphaMode != "BLEND" &&
+                (candidate.transmissionFactor == 0 || (!slab && ir.outputs().contains("attenuationColor"))) &&
+                candidate.diffuseTransmissionFactor == 0, "IR assets require lit opaque/MASK Surface; transmission requires explicit OpenPBR attenuationColor");
+            require(!ir.outputs().contains("coverage") || candidate.alphaMode == "MASK", "Coverage assets require alphaMode mask");
+        }
+        const scene::RenderMaterial textureDefaults;
         for (const auto& [name, member] : detail::kTextures) {
             auto& info = candidate.*member;
             info = {};
+            info.colorMetadata = (textureDefaults.*member).colorMetadata;
             const auto value = texture(instance.resources.at(name));
             if (value.is_null()) { continue; }
             require(bool(resolver), "Material texture resolver is missing");
@@ -424,6 +519,10 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
             require(info.textureIndex >= 0, "Unresolved texture: " + value.at("uri").get<std::string>());
             info.texCoord = value.at("texCoord").get<int32_t>();
             info.uvTransform = value.at("transform").get<std::array<float, 6>>();
+            if (value.contains("colorSpace")) {
+                require(info.colorMetadata.semantic == render::TextureSemantic::Color, "Data textures cannot declare colorSpace");
+                require(render::parseColorSpace(value["colorSpace"].get<std::string>(), info.colorMetadata.source), "Unsupported colorSpace");
+            }
         }
         require(scene::validMaterialProperties(candidate), "Resolved material is invalid");
         output = std::move(candidate);
@@ -435,11 +534,42 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
     MaterialInstance& output, std::string& error)
 {
     return attempt(error, [&] {
+        if (definition.implementation == "RTXCRChiang.DOTS") {
+            require(source.rtxcrHair && scene::validMaterialProperties(source), "Invalid Fiber source material");
+            require(source.valueProgram.empty() && definition.surfaceProgram.empty() &&
+                source.featurePolicies == MaterialFeaturePolicies{} && source.alphaMode == "OPAQUE" && !source.unlit,
+                "Fiber source has unsupported Surface behavior");
+            MaterialInstance candidate;
+            candidate.definition = std::move(definitionUri);
+            candidate.definitionVersion = definition.definitionVersion;
+            const auto baseline = defaults(definition.schema.parameters);
+            for (const auto& field : detail::kFiberScalars) {
+                const float value = source.*field.member;
+                number(value, field.minimum, field.maximum);
+                if (Json(value) != baseline.at(field.name)) { candidate.parameters[field.name] = value; }
+            }
+            if (Json(source.doubleSided) != defaults(definition.schema.features).at("doubleSided")) {
+                candidate.features["doubleSided"] = source.doubleSided;
+            }
+            validateStructure(candidate);
+            output = std::move(candidate);
+            return;
+        }
         require(!source.rtxcrHair && scene::validMaterialProperties(source), "Invalid OpenPBR source material");
-        require(source.valueProgram.empty(), "Custom Value Program code belongs to its definition; Phase 1 export does not serialize shader code in an instance");
+        require(definition.surfaceProgram.empty() ? source.valueProgram.empty() : (!source.valueProgram.empty() &&
+            render::MaterialValueIR::parse(source.valueProgram).canonical() == render::MaterialValueIR::parse(definition.surfaceProgram).canonical()),
+            "Custom Value Program code must belong to the material definition");
         MaterialInstance candidate;
         candidate.definition = std::move(definitionUri);
         candidate.definitionVersion = definition.definitionVersion;
+        if (!definition.surfaceProgram.empty()) {
+            for (uint32_t slot = 0; slot < 4; ++slot) {
+                const auto key = std::to_string(slot);
+                Json values = Json::array();
+                for (uint32_t c = 0; c < 4; ++c) { values.push_back(source.valueParameters[slot * 4 + c]); }
+                if (values != definition.valueParameters.value(key, Json::array({0, 0, 0, 0}))) { candidate.valueParameters[key] = values; }
+            }
+        }
         Json parameters = {{"baseColor", {source.baseColorFactor.x, source.baseColorFactor.y, source.baseColorFactor.z}},
             {"opacity", source.baseColorFactor.w}};
         for (const auto& field : detail::kScalars) { parameters[field.name] = source.*field.member; }
@@ -455,6 +585,9 @@ bool createMaterialInstance(const scene::RenderMaterial& source, std::string def
             require(bool(encoder), "Material resource encoder is missing");
             resources[name] = texture({{"uri", encoder(name, info.textureIndex)},
                 {"texCoord", info.texCoord}, {"transform", info.uvTransform}});
+            if (info.colorMetadata.semantic == render::TextureSemantic::Color) {
+                resources[name]["colorSpace"] = render::colorSpaceName(info.colorMetadata.source);
+            }
         }
         const Json features = {{"alphaMode", source.alphaMode == "OPAQUE" ? "opaque" : source.alphaMode == "MASK" ? "mask" : "blend"},
             {"doubleSided", source.doubleSided}, {"unlit", source.unlit}};

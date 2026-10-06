@@ -147,18 +147,14 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     const uint64_t structural = scene ? scene->sceneGraph().structuralRevision() : 0;
     if (!prepared->state || prepared->state->desc != desc || prepared->state->sceneIdentity != identity ||
         prepared->state->structuralRevision != structural || prepared->state->debugReadback != debugReadback || prepared->streamSourceId != source.sourceId) {
-        std::unique_ptr<PipelineCache> cache;
-        auto result = device_->createPipelineCache({.filePath = PROJECT_SOURCE_DIR "/.cache/pso/SceneStreaming.pso"}).transform([&](auto rhiValue) { cache = std::move(rhiValue); });
-        if (!result) { return result; }
         std::shared_ptr<MeshletStreamRuntime> stream;
-        result = acquireStream(desc, debugReadback, log, cache.get()).transform([&](auto value) { stream = std::move(value); });
+        auto result = acquireStream(desc, debugReadback, log).transform([&](auto value) { stream = std::move(value); });
         if (!result) { return result; }
         prepared->geometry = std::move(stream);
         prepared->state = std::make_shared<SceneStreamingState>(SceneStreamingState{desc, requirements.geometry, identity, structural, debugReadback});
         prepared->streamSourceId = source.sourceId;
         prepared->streamSourcePath = source.sourcePath;
         prepared->streamAssetPath = desc.streamAssetPath;
-        if (cache) { (void)cache->save(); }
     }
     return {};
 }

@@ -190,7 +190,7 @@ Result<> createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShad
 {
     ShaderCompileResult meshCompile;
     const char* capabilities[] = {"spvMeshShadingEXT"};
-    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+    Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
         .moduleName = kMeshletStreamShaderModuleName,
         .entryPointName = kMeshletStreamMeshEntryPoint,
         .searchPath = kMeshletStreamShaderSearchPath,
@@ -207,7 +207,7 @@ Result<> createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShad
         return result;
     }
 
-    result = device.createShaderModule(ShaderModuleDesc{
+    result = ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
         .spirv = meshCompile.spirv,
         .debugName = "GPUDrivenStreamAsset.mesh",
     }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
@@ -236,7 +236,7 @@ Result<> createStreamShader(
     }
     const std::string shaderDebugName =
         std::string(kMeshletStreamShaderModuleName) + "." + entryPoint;
-    result = device.createShaderModule(ShaderModuleDesc{
+    result = ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
         .spirv = compileResult.spirv,
         .debugName = shaderDebugName.c_str(),
     }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
@@ -463,12 +463,7 @@ public:
 
         compiled_ = false;
         rayQueryProgram_.clear();
-        Result<> result = context.device->createPipelineCache(PipelineCacheDesc{
-            .filePath = PROJECT_SOURCE_DIR "/.cache/pso/GPUDrivenStreamAssetPass.pso"}).transform([&](auto rhiValue) { pipelineCache_ = std::move(rhiValue); });
-        if (!result || pipelineCache_ == nullptr) {
-            log += resultMessage("createPipelineCache(GPUDrivenStreamAssetPass)", result);
-            return result ? makeError(Error::Failure) : result;
-        }
+        Result<> result;
         releaseRasterHandles();
         streamRuntime_ = preparedStream;
         rtasVisualization_ = rtasVisualization;
@@ -536,7 +531,7 @@ public:
         }
 
         for (uint32_t reversedZ = 0; reversedZ < visibilityPipelines_.size(); ++reversedZ) {
-            result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
+            result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, GraphicsPipelineDesc{
                 .meshShader = {meshShader_.get()},
                 .fragmentShader = {fragmentShader_.get()},
                 .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
@@ -555,7 +550,7 @@ public:
             }
         }
 
-        result = context.device->createComputePipeline(ComputePipelineDesc{
+        result = ShaderRegistry::instance().getComputePipeline(*context.device, ComputePipelineDesc{
             .computeShader = {deferredShader_.get(), "main"},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
@@ -565,7 +560,7 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
+        result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, GraphicsPipelineDesc{
             .vertexShader = {compositeVertexShader_.get()},
             .fragmentShader = {compositeFragmentShader_.get()},
             .colorFormats = {context.defaultFormat}, .colorAttachmentCount = 1,
@@ -580,7 +575,7 @@ public:
         auto createComputePipeline = [&](ShaderModule& shader,
                                          std::unique_ptr<ComputePipeline>& pipeline,
                                          const char* label) -> Result<> {
-            Result<> pipelineResult = context.device->createComputePipeline(ComputePipelineDesc{
+            Result<> pipelineResult = ShaderRegistry::instance().getComputePipeline(*context.device, ComputePipelineDesc{
                 .computeShader = {&shader, "main"},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
@@ -718,11 +713,6 @@ public:
         compiledStreamAssetOnly_ = streamAssetOnly;
         compiledDebugReadback_ = context.debugReadback;
         compiledColorFormat_ = context.defaultFormat;
-        const Result<> saveResult = pipelineCache_->save();
-        const PipelineCacheStats cacheStats = pipelineCache_->stats();
-        spdlog::info("[GPUDrivenStreamAssetPass] PSO cache hits={} misses={} stored={} bytes={}",
-            cacheStats.hitCount, cacheStats.missCount, cacheStats.storedPsoCount, cacheStats.backendDataSize);
-        if (!saveResult) { log += "Warning: GPUDrivenStreamAssetPass failed to save PSO cache\n"; }
         compiled_ = true;
         return {};
     }
@@ -1286,7 +1276,7 @@ private:
             },
         };
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = kSceneRayQueryVisualizationShaderModuleName,
             .entryPointName = kSceneRayQueryVisualizationEntryPoint,
             .searchPath = kTriangleShaderSearchPath,
@@ -1550,7 +1540,6 @@ private:
         });
     }
 
-    std::unique_ptr<PipelineCache> pipelineCache_;
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::unique_ptr<ShaderModule> meshShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;

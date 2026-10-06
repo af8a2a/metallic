@@ -1,5 +1,7 @@
 # Physical lighting and auto exposure
 
+See [Color Pipeline](ColorPipeline.md) for ACEScg working-space and source/display contracts.
+
 Metallic meters physical HDR radiance before tone mapping. The implementation follows the extended EV100 convention and histogram eye adaptation in the local Unreal source:
 
 - `E:/UnrealEngine/Engine/Source/Runtime/Renderer/Private/PostProcess/PostProcessEyeAdaptation.cpp`: lens attenuation, 18% middle gray, EV100 limits, directional adaptation speeds.

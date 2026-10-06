@@ -54,6 +54,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/ColorGrading.cpp
     Runtime/Render/Core/ACESTables.cpp
     Runtime/Render/Core/ComputeKernel.cpp
+    Runtime/Render/Core/ShaderRegistry.cpp
+    Runtime/Render/Core/DeferredShaderCacheWriter.cpp
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
     Runtime/Render/MeshletLOD.cpp
@@ -86,6 +88,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
     Runtime/Render/RayTracing/OpacityMicromapBake.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
+    Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/Streamer/UploadStreamer.cpp
     Runtime/Render/RenderSample.cpp
@@ -122,6 +125,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/RTXDIConfidencePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RTXDICompositePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RTXCRMaterialSamplePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/StrandPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRTXDIPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneAccelerationStructurePass.cpp
@@ -130,8 +134,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/Streamer/ScenePathTraceResources.cpp
     Runtime/Render/Material/MaterialRuntime.cpp
-    Runtime/Render/Material/MaterialCoverageProgram.cpp
-    Runtime/Render/Material/MaterialValueProgram.cpp
+    Runtime/Render/Material/RayMaterialQueue.cpp
     Runtime/Render/Material/MaterialExecutable.cpp
     Runtime/Render/Streamer/Ktx2Texture.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
@@ -278,6 +281,8 @@ endif()
 
 add_library(MetallicRuntimeScene STATIC
     Runtime/Material/MaterialAsset.cpp
+    Runtime/Material/MaterialGraph.cpp
+    Runtime/Material/MaterialSlangFrontend.cpp
     Runtime/Material/MaterialFeatures.cpp
     Runtime/Material/MaterialValueIR.cpp
     Runtime/Material/MaterialClosureIR.cpp
@@ -290,6 +295,7 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/MeshletBuildParallel.cpp
     Runtime/Scene/Scene.cpp
     Runtime/Scene/SceneDocument.cpp
+    Runtime/Scene/StrandAsset.cpp
     Runtime/Scene/SceneGraph.cpp
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
@@ -379,6 +385,11 @@ metallic_copy_openusd_runtime(MetallicResidentMeshletCook)
 metallic_copy_spdlog_runtime(MetallicResidentMeshletCook)
 
 # Keep shader symbols independent of opt-in Nsight capture injection.
+add_executable(MetallicMaterialCompile EXCLUDE_FROM_ALL Tools/MaterialCompileMain.cpp)
+target_link_libraries(MetallicMaterialCompile PRIVATE MetallicRuntimeScene)
+metallic_copy_openusd_runtime(MetallicMaterialCompile)
+metallic_copy_spdlog_runtime(MetallicMaterialCompile)
+
 set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     METALLIC_DEFAULT_SHADER_CAPTURE_SYMBOLS=$<CONFIG:RelWithDebInfo>
 )
@@ -391,6 +402,8 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorRasterComparison.cpp
     Editor/EditorMaterialInspector.cpp
     Editor/EditorMaterialInspectorSmoke.cpp
+    Editor/EditorMaterialGraph.cpp
+    Editor/EditorMaterialGraphSmoke.cpp
     Editor/EditorSliderDebug.cpp
     Editor/EditorStreamlineDebug.cpp
     Editor/EditorProfiler.cpp

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <functional>
 #include <queue>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -544,8 +545,10 @@ bool buildActiveGraph(
     const RenderGraph& graph,
     const std::vector<std::string>& extraOutputs,
     ActiveGraph& activeGraph,
-    std::string& log)
+    std::string& log,
+    const ActiveGraphSchedulingTraitsResolver& schedulingTraits)
 {
+    activeGraph = {};
     std::unordered_map<std::string, std::vector<std::string>> incoming;
     for (const RenderGraphEdge& edge : graph.edges()) {
         incoming[edge.dstPass].push_back(edge.srcPass);
@@ -594,31 +597,74 @@ bool buildActiveGraph(
         ++indegree[edge.dstPass];
     }
 
-    std::queue<std::string> ready;
-    for (const auto& [name, degree] : indegree) {
-        if (degree == 0) {
-            ready.push(name);
-        }
+    std::unordered_map<std::string, const RenderGraphNode*> nodes;
+    std::unordered_map<std::string, ActiveGraphSchedulingTraits> traits;
+    for (const auto& node : graph.nodes()) {
+        if (!activeGraph.activePasses.contains(node.name)) { continue; }
+        nodes.emplace(node.name, &node);
+        traits.emplace(node.name, schedulingTraits ? schedulingTraits(node) : ActiveGraphSchedulingTraits{});
     }
-
-    while (!ready.empty()) {
-        std::string current = ready.front();
-        ready.pop();
-        activeGraph.executionOrder.push_back(current);
-
-        for (const std::string& next : outgoing[current]) {
-            auto iter = indegree.find(next);
-            if (iter == indegree.end()) {
-                continue;
+    if (nodes.size() != activeGraph.activePasses.size()) {
+        log = validationPrefix("active pass is missing");
+        return false;
+    }
+    const auto stableLess = [&](const std::string& left, const std::string& right) {
+        const uint32_t leftId = nodes.at(left)->id;
+        const uint32_t rightId = nodes.at(right)->id;
+        return leftId != rightId ? leftId < rightId : left < right;
+    };
+    const auto schedule = [&](const std::vector<std::string>* opaqueOrder) {
+        auto remaining = indegree;
+        std::set<std::string, decltype(stableLess)> ready(stableLess);
+        for (const auto& [name, degree] : remaining) {
+            if (degree == 0) { ready.insert(name); }
+        }
+        std::vector<std::string> order;
+        order.reserve(nodes.size());
+        QueueType currentQueue = QueueType::Graphics;
+        size_t nextOpaque = 0;
+        while (!ready.empty()) {
+            const auto allowed = [&](const std::string& name) {
+                return opaqueOrder == nullptr || !traits.at(name).opaque ||
+                    (nextOpaque < opaqueOrder->size() && name == (*opaqueOrder)[nextOpaque]);
+            };
+            auto next = ready.end();
+            if (opaqueOrder != nullptr) {
+                next = std::find_if(ready.begin(), ready.end(), [&](const std::string& name) {
+                    return allowed(name) && traits.at(name).queue == currentQueue;
+                });
             }
-            if (--iter->second == 0) {
-                ready.push(next);
+            if (next == ready.end()) { next = std::find_if(ready.begin(), ready.end(), allowed); }
+            if (next == ready.end()) { break; }
+            const std::string current = *next;
+            ready.erase(next);
+            order.push_back(current);
+            if (opaqueOrder != nullptr) {
+                currentQueue = traits.at(current).queue;
+                if (traits.at(current).opaque) { ++nextOpaque; }
+            }
+            for (const std::string& successor : outgoing[current]) {
+                if (--remaining.at(successor) == 0) { ready.insert(successor); }
             }
         }
-    }
-
-    if (activeGraph.executionOrder.size() != activeGraph.activePasses.size()) {
+        return order;
+    };
+    // A legal, stable topology defines opaque relative order. Sorting opaque
+    // nodes directly by ID could conflict with a reversed authored dependency.
+    const auto baseline = schedule(nullptr);
+    if (baseline.size() != nodes.size()) {
         log = validationPrefix("cycle detected in active graph");
+        return false;
+    }
+    std::vector<std::string> opaqueOrder;
+    for (const auto& name : baseline) {
+        if (traits.at(name).opaque) { opaqueOrder.push_back(name); }
+    }
+    // Newly ready work competes immediately with independent roots. Prefer the
+    // current logical queue, while every data edge and opaque order stays valid.
+    activeGraph.executionOrder = schedule(&opaqueOrder);
+    if (activeGraph.executionOrder.size() != nodes.size()) {
+        log = validationPrefix("unable to preserve active graph ordering");
         return false;
     }
     return true;

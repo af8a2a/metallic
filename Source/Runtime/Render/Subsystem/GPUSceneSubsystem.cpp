@@ -2,6 +2,7 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Core/SceneColorConversion.h"
 
 #include <algorithm>
 #include <array>
@@ -244,7 +245,7 @@ GPUSceneGPUMaterialTextureInfo buildGpuMaterialTextureInfo(
         source.uvTransform[0],
         source.uvTransform[1],
         source.uvTransform[2],
-        0.0f,
+        float(textureColorFlags(source.colorMetadata)),
     };
     texture.transform1 = {
         source.uvTransform[3],
@@ -407,7 +408,7 @@ GPUSceneCPUUploadData buildGpuUploadData(
     }
 
     for (const GPUSceneMaterialRecord& material : gpuScene.materials()) {
-        const scene::RenderMaterial& source = material.material;
+        const auto source = resolveWorkingMaterial(material.material);
         GPUSceneGPUMaterialRecord gpu;
         gpu.baseColor = {
             source.baseColorFactor.x,

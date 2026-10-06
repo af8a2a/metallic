@@ -1,6 +1,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/RHISmokeTests.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -42,7 +43,7 @@ Result<> createSlangShaderModule(
     std::unique_ptr<ShaderModule>& outShaderModule)
 {
     ShaderCompileResult compileResult;
-    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
+    Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
@@ -59,7 +60,7 @@ Result<> createSlangShaderModule(
     }
 
     const std::string shaderDebugName = std::string(moduleName) + "." + entryPointName;
-    return device.createShaderModule(ShaderModuleDesc{
+    return ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
         .spirv = compileResult.spirv,
         .debugName = shaderDebugName.c_str(),
     }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
@@ -138,7 +139,7 @@ Result<> TrianglePreviewRendererImpl::initialize(bool enableValidation)
         return result;
     }
 
-    return device->createGraphicsPipeline(GraphicsPipelineDesc{
+    return ShaderRegistry::instance().getGraphicsPipeline(*device, GraphicsPipelineDesc{
         .vertexShader = {vertexShader.get()},
         .fragmentShader = {fragmentShader.get()},
         .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,
@@ -584,7 +585,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createGraphicsPipeline(GraphicsPipelineDesc{
+                    result = ShaderRegistry::instance().getGraphicsPipeline(*device, GraphicsPipelineDesc{
                         .vertexShader = {vertexShader.get()},
                         .fragmentShader = {fragmentShader.get()},
                         .colorFormats = {Format::RGBA8Unorm}, .colorAttachmentCount = 1,

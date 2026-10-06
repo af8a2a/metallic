@@ -18,7 +18,7 @@ static const float kPi = 3.14159265358979323846;
 
 float luminance(float3 color)
 {
-    return dot(color, float3(0.2126, 0.7152, 0.0722));
+    return Metallic.WorkingColor::luminance(color);
 }
 
 uint2 linearIndexToZCurve(uint index)

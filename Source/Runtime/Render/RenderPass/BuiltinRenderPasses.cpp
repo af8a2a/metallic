@@ -10,6 +10,10 @@ void registerBuiltInRenderGraphPasses()
         return;
     }
     registered = true;
+    registerRenderGraphPassType("StrandVisibilityPass", "Native variable-radius strands with bounded layered coverage and overflow diagnostics",
+        []() { return builtin_pass::createStrandVisibilityPass(); });
+    registerRenderGraphPassType("StrandLightingPass", "Fiber material evaluation and front-to-back strand compositing",
+        []() { return builtin_pass::createStrandLightingPass(); });
 
     registerRenderGraphPassType(
         "LightGridDebugPass",

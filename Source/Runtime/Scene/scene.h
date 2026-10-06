@@ -13,6 +13,7 @@
 #include "Runtime/Scene/SceneGraph.h"
 #include "Runtime/Scene/SceneLighting.h"
 #include "Runtime/Material/MaterialFeatures.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 
 namespace metallic::material { struct ResolvedMaterialInstance; class MaterialAssetLibrary; }
 
@@ -207,6 +208,7 @@ struct RenderTextureInfo {
     int32_t textureIndex = kInvalidSceneIndex;
     int32_t texCoord = 0;
     std::array<float, 6> uvTransform{1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    render::TextureColorMetadata colorMetadata{};
 };
 
 struct RenderNode {
@@ -257,18 +259,18 @@ struct RenderMaterial {
     float rtxcrHairCuticleAngleDegrees = 3.0f;
     float rtxcrHairDiffuseReflectionWeight = 0.0f;
     float3 rtxcrHairDiffuseReflectionTint{0.0f, 0.0f, 0.0f};
-    RenderTextureInfo baseColorTexture;
+    RenderTextureInfo baseColorTexture{.colorMetadata = render::ksRGBColorTexture};
     RenderTextureInfo metallicRoughnessTexture;
     RenderTextureInfo normalTexture;
     RenderTextureInfo displacementTexture;
     RenderTextureInfo occlusionTexture;
-    RenderTextureInfo emissiveTexture;
+    RenderTextureInfo emissiveTexture{.colorMetadata = render::ksRGBColorTexture};
     RenderTextureInfo transmissionTexture;
     RenderTextureInfo thicknessTexture;
     RenderTextureInfo diffuseTransmissionTexture;
-    RenderTextureInfo diffuseTransmissionColorTexture;
+    RenderTextureInfo diffuseTransmissionColorTexture{.colorMetadata = render::ksRGBColorTexture};
     RenderTextureInfo specularTexture;
-    RenderTextureInfo specularColorTexture;
+    RenderTextureInfo specularColorTexture{.colorMetadata = render::ksRGBColorTexture};
 };
 
 bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
@@ -421,7 +423,8 @@ public:
     // Resolve semantic resources transactionally. New texture bindings invalidate
     // scene resource identity; factor-only changes retain the old upload fast path.
     bool applyMaterialInstance(int32_t materialIndex, const material::ResolvedMaterialInstance& instance,
-        const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error);
+        const material::MaterialAssetLibrary& library, const RenderMaterial& imported, std::string& error,
+        bool replaceOwnedValueProgram = false);
     // SceneDocument import transfers emission ownership while preserving source
     // nodes, transform inheritance and editable LightComponent metadata.
     bool virtualizeImportedLight(SceneEntity object);

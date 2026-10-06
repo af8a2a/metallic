@@ -1,5 +1,7 @@
 # Physical lighting
 
+See [Color Pipeline](ColorPipeline.md) for ACEScg working-space and source/display contracts.
+
 Select **Real-time / Physical Lighting** in Samples, then use the **Physical Lighting** panel to add, disable, edit or remove directional, point and spot lights. Imported glTF lights appear in the same panel as native virtual lights. World lights and manual exposure are saved in `world.lighting` in the scene document; they survive reload and Discard restores the saved state. Changing units preserves the physical intensity (zero cannot be converted to a finite EV).
 
 ## Imported glTF lights

@@ -1,5 +1,6 @@
 #language slang 2026
 module NRDEncoding;
+import WorkingColor;
 
 // Canonical owner of NRD's frontend headers. Denoiser passes have their own
 // program-local macro permutations and never import this encoding module.
@@ -17,7 +18,7 @@ public float4 packNrdNormalRoughness(float3 normal, float roughness, float mater
 
 public float4 packNrdRadianceHitDistance(float3 radiance, float hitDistance, bool sanitize)
 {
-    return RELAX_FrontEnd_PackRadianceAndHitDist(radiance, hitDistance, sanitize);
+    return RELAX_FrontEnd_PackRadianceAndHitDist(Metallic.WorkingColor::toLinearRec709(radiance), hitDistance, sanitize);
 }
 
 public float packNrdPenumbra(float hitDistance, float tanAngularRadius)

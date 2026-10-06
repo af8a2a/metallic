@@ -1,9 +1,14 @@
 #include "Runtime/Render/Core/BuiltinShaderRequests.h"
+#include "Tools/MaterialShaderWarmupRequests.h"
+#include "Runtime/Render/Material/MaterialValueProgram.h"
+#include "Runtime/Scene/scene.h"
 
 #include <gtest/gtest.h>
+#include <json.hpp>
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 
 using namespace metallic::render;
 
@@ -98,12 +103,13 @@ TEST(ShaderRequests, DeferredDoesNotRequestRayTracingCapabilities)
 TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequests)
 {
     const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    EXPECT_TRUE(contains(catalog, makeColorResizeShaderRequest()));
     size_t deferredCount = 0;
     for (size_t i = 0; i < catalog.size(); ++i) {
         EXPECT_EQ(std::count(catalog.begin(), catalog.end(), catalog[i]), 1);
         if (catalog[i].module == "Features/VisibilityBuffer/VisibilityBufferDeferred") { ++deferredCount; }
     }
-    EXPECT_EQ(deferredCount, 24u);
+    EXPECT_EQ(deferredCount, 96u);
     for (bool fetch : {false, true}) {
         auto options = standardSceneOptions(); options.positionFetch = fetch;
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
@@ -219,8 +225,89 @@ TEST_F(ShaderRequestCompileTest, DeferredSPIRVIsRasterOnlyWithNativeFloat16)
         }
         const bool background = std::find(request.defines.begin(), request.defines.end(),
             std::pair<std::string, std::string>{"MATERIAL_CLASS", "0"}) != request.defines.end();
-        if (!background) { EXPECT_TRUE(float16); }
+        const bool half = std::find(request.defines.begin(), request.defines.end(),
+            std::pair<std::string, std::string>{"METALLIC_DEFERRED_FP16", "1"}) != request.defines.end();
+        if (!background && half) { EXPECT_TRUE(float16); }
     }
+}
+
+TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTheInclude)
+{
+    const auto root = std::filesystem::path(TEST_BINARY_DIR) / "local-material-warmup" /
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto write = [&](const std::filesystem::path& path, const nlohmann::json& value) {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream file(path);
+        file << value.dump();
+        ASSERT_TRUE(file);
+    };
+    const std::string valueProgram = R"({"version":1,"roughness":{"op":"parameter","index":0}})";
+    write(root / "Sample/Scene.gltf", nlohmann::json::object());
+    write(root / "Sample/Scene.metallic_scene.json",
+        {{"materials", {{{"properties", {{"valueProgram", valueProgram}}}}}}});
+    write(root / "Sample/Graph.json", {{"nodes", {
+        {{"type", "ScenePathTracePass"}, {"properties", {{"bsdf", "openpbr"}}}},
+        {{"type", "VisibilityBufferDeferredPass"}, {"properties", {{"materialBinning", false}}}}
+    }}});
+    const nlohmann::json sample{{"id", "painter-test"}, {"name", "Test"}, {"description", ""}, {"environment", ""},
+        {"scenePath", "Sample/Scene.gltf"}, {"graphPath", "Sample/Graph.json"}};
+    // Duplicate catalogs must not cause duplicate compilation.
+    write(root / "build/MaterialValidation/PainterLookDev/Catalog.json", {{"version", 1}, {"samples", {sample}}});
+    auto studio = sample;
+    studio["id"] = "studio-white-test";
+    write(root / "build/MaterialValidation/WhiteStudio02/Catalog.json", {{"version", 1}, {"samples", {studio}}});
+    const auto requests = metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    ASSERT_EQ(requests.size(), 4u);
+    metallic::scene::RenderMaterial material;
+    material.valueProgram = valueProgram;
+    std::string diagnostics;
+    const auto runtimePrograms = MaterialValueProgramSet::create({&material, 1}, diagnostics);
+    ASSERT_TRUE(runtimePrograms) << diagnostics;
+    std::filesystem::path directory;
+    ASSERT_TRUE(runtimePrograms->writeInclude(root / ".cache/materials", directory, diagnostics)) << diagnostics;
+    const std::string cacheDirectory = (root / "spirv").string();
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = cacheDirectory.c_str(), .outCacheHit = &hit};
+    for (const auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::Deferred}) {
+        auto options = standardSceneOptions();
+        options.customMaterials = true;
+        options.materialInclude = directory.string();
+        options.globalView = program == SceneShaderProgram::Deferred;
+        const auto runtime = makeSceneShaderRequest(program, options);
+        const auto warmed = std::find(requests.begin(), requests.end(), runtime);
+        ASSERT_NE(warmed, requests.end());
+        const ShaderRequestView warmupSource(*warmed);
+        const auto compiled = compileSlangShaderToSpirv(warmupSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_FALSE(hit);
+        const ShaderRequestView runtimeSource(runtime);
+        const auto reused = compileSlangShaderToSpirv(runtimeSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_EQ(compiled->spirv, reused->spirv);
+    }
+    std::filesystem::remove(root / "Sample/Scene.gltf");
+    EXPECT_TRUE(metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR).empty());
+}
+
+TEST(ShaderRequests, CoversStreamPrecisionViewAndDisplaySettings)
+{
+    const auto requests = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    auto scene = standardSceneOptions();
+    scene.streamMaterials = true;
+    scene.positionFetch = false;
+    EXPECT_TRUE(contains(requests, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, scene)));
+    for (bool view : {false, true}) {
+        for (bool half : {false, true}) {
+            scene.globalView = view;
+            scene.deferredFloat16 = half;
+            EXPECT_TRUE(contains(requests, makeSceneShaderRequest(SceneShaderProgram::Deferred, scene)));
+        }
+    }
+    EXPECT_TRUE(contains(requests, makeEditorDisplayShaderRequest("editorDisplayFragment", false,
+        true, true, std::to_string(203.0f))));
+    EXPECT_TRUE(contains(requests, makeEditorDisplayShaderRequest("editorOutputPQFragment", true,
+        false, false, std::to_string(80.0f))));
 }
 
 } // namespace

@@ -1,5 +1,6 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
+#include "Runtime/Material/MaterialAssetFields.h"
 
 #include <algorithm>
 #include <cctype>
@@ -243,6 +244,10 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
         {"featurePolicies", material::serializeFeaturePolicies(properties.featurePolicies)},
     };
     for (const auto& [name, member] : kMaterialScalarFields) { value[name] = properties.*member; }
+    value["rtxcrHair"] = properties.rtxcrHair;
+    if (properties.rtxcrHair) {
+        for (const auto& field : material::detail::kFiberScalars) { value[field.name] = properties.*field.member; }
+    }
     if (!properties.valueProgram.empty()) {
         value["valueProgram"] = properties.valueProgram;
         value["valueParameters"] = properties.valueParameters;
@@ -257,6 +262,15 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
 bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& properties, std::string& reason)
 {
     if (!value.is_object()) { reason = "properties must be an object"; return false; }
+    if (value.contains("rtxcrHair")) {
+        if (!value["rtxcrHair"].is_boolean()) { reason = "rtxcrHair must be a boolean"; return false; }
+        properties.rtxcrHair = value["rtxcrHair"].get<bool>();
+    }
+    for (const auto& field : material::detail::kFiberScalars) {
+        double number = properties.*field.member;
+        if (!readOptionalFiniteNumber(value, field.name, number, reason)) { return false; }
+        properties.*field.member = static_cast<float>(number);
+    }
     if (value.contains("featurePolicies") &&
         !material::overlayFeaturePolicies(value["featurePolicies"], properties.featurePolicies, reason)) { return false; }
     if (value.contains("valueProgram")) {
@@ -864,9 +878,11 @@ bool SceneDocument::setMaterialAsset(int32_t materialIndex, std::string_view uri
     }
     material::MaterialAssetLibrary library(assetRoot);
     material::ResolvedMaterialInstance instance;
+    const auto previous = materialAssets_.find(materialIndex);
+    const bool replaceOwned = previous != materialAssets_.end() && previous->second.ownsValueProgram;
     if (!library.resolve(uri, instance, error) ||
-        !applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error)) { return false; }
-    materialAssets_[materialIndex] = {std::string(uri), library.root(), materials()[materialIndex]};
+        !applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error, replaceOwned)) { return false; }
+    materialAssets_[materialIndex] = {std::string(uri), library.root(), materials()[materialIndex], !instance.definition.surfaceProgram.empty()};
     dirty_ = true;
     return true;
 }
@@ -879,8 +895,8 @@ bool SceneDocument::reloadMaterialAsset(int32_t materialIndex, std::string& erro
     auto overrides = serializeMaterialProperties(materials()[materialIndex]);
     const auto previous = serializeMaterialProperties(old.resolved);
     for (const auto& [name, value] : previous.items()) {
-        // M2 code is scene-owned, never inherited from a .material asset.
-        if (name == "valueProgram" || name == "valueParameters") { continue; }
+        // Legacy Value programs remain scene-owned; Slab definitions own their code/default inputs.
+        if (!old.ownsValueProgram && (name == "valueProgram" || name == "valueParameters")) { continue; }
         if (name == "featurePolicies" && overrides.contains(name)) {
             for (const auto& [feature, policy] : value.items()) {
                 if (overrides[name].contains(feature) && overrides[name][feature] == policy) { overrides[name].erase(feature); }
@@ -895,8 +911,8 @@ bool SceneDocument::reloadMaterialAsset(int32_t materialIndex, std::string& erro
     if (!library.resolve(old.uri, instance, error)) { return false; }
     RenderMaterial check = materials()[materialIndex];
     if (!parseMaterialProperties(overrides, check, error)) { return false; }
-    if (!applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error)) { return false; }
-    materialAssets_[materialIndex] = {old.uri, old.root, materials()[materialIndex]};
+    if (!applyMaterialInstance(materialIndex, instance, library, importedMaterials_[materialIndex], error, old.ownsValueProgram)) { return false; }
+    materialAssets_[materialIndex] = {old.uri, old.root, materials()[materialIndex], !instance.definition.surfaceProgram.empty()};
     auto edited = materials()[materialIndex];
     if (!parseMaterialProperties(overrides, edited, error)) { return false; }
     (void)Scene::setMaterialProperties(materialIndex, edited);
@@ -1299,6 +1315,12 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                             "Scene document world.environment fields have invalid types.";
                         return false;
                     }
+                    if (environment.contains("colorSpace") &&
+                        (!environment["colorSpace"].is_string() || !render::parseColorSpace(environment["colorSpace"].get<std::string>(), environment_.sourceColorSpace))) {
+                        documentWarning_ = "Unsupported world.environment.colorSpace";
+                        return false;
+                    }
+                    environment_.sourceColorSpaceExplicit = environment.contains("colorSpace");
                     hasEnvironmentSettings_ = true;
                     environment_.enabled = environment.value("enabled", true);
                     environment_.visible = environment.value("visible", true);
@@ -1698,7 +1720,7 @@ bool SceneDocument::save(std::string& message)
             auto& saved = materialOverrides.back();
             const auto baseline = serializeMaterialProperties(binding->second.resolved);
             for (const auto& [name, value] : baseline.items()) {
-                if (name == "valueProgram" || name == "valueParameters") { continue; }
+                if (!binding->second.ownsValueProgram && (name == "valueProgram" || name == "valueParameters")) { continue; }
                 if (name == "featurePolicies" && saved["properties"].contains(name)) {
                     auto& policies = saved["properties"][name];
                     for (const auto& [feature, policy] : value.items()) {
@@ -1753,6 +1775,9 @@ bool SceneDocument::save(std::string& message)
             {"visible", environment_.visible},
         }},
     };
+    if (environment_.hasExplicitSourceColorSpace()) {
+        document["world"]["environment"]["colorSpace"] = render::colorSpaceName(environment_.sourceColorSpace);
+    }
     if (!writeAtomically(documentPath_, document.dump(2) + '\n', message)) {
         return false;
     }
