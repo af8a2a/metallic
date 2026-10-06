@@ -29,7 +29,11 @@ def read(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def asset_paths():
+def asset_paths(case_path=None):
+    if case_path is not None:
+        config = read(case_path)
+        return sorted({case_path, *[Path(p) for p in config["assetFiles"]],
+                       *[case_path.parent / c["graph"] for c in config["cases"]]})
     files = set(FIXTURES.rglob("*.json"))
     for directory in [ROOT / "Asset/LookDev/OpenPBRDefault"]:
         files.update(p for p in directory.rglob("*") if p.is_file() and not p.name.endswith(".meshlets.bin"))
@@ -47,7 +51,7 @@ def asset_paths():
     return sorted(files)
 
 
-def identity(exe):
+def identity(exe, case_path=None):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=ROOT, text=True, encoding="utf-8").strip()
     sources = list((ROOT / "Shaders").rglob("*.slang")) + list((ROOT / "Shaders").rglob("*.hlsli"))
@@ -57,7 +61,8 @@ def identity(exe):
             "submodules": git("ls-files", "--stage", "External"), "platform": platform.platform(),
             "python": sys.version, "exe": str(exe),
             "binaries": {str(p): digest(p) for p in [exe, *sorted(exe.parent.glob("*.dll"))]},
-            "workload": {str(p.relative_to(ROOT)).replace("\\", "/"): digest(p) for p in asset_paths()},
+            "workload": {(str(p) if case_path else str(p.relative_to(ROOT)).replace("\\", "/")): digest(p)
+                         for p in asset_paths(case_path)},
             "sources": {str(p.relative_to(ROOT)).replace("\\", "/"): digest(p) for p in sorted(set(sources))}}
 
 
@@ -66,12 +71,14 @@ def seal(output):
          for p in sorted(output.rglob("*")) if p.is_file() and p.name != "Manifest.json"})
 
 
-def images(output):
+def images(output, excluded=()):
     import numpy as np
     result = {}
     for report_path in sorted(output.glob("run-*/MaterialBaseline.json")):
         report = read(report_path)
         for case in report["cases"]:
+            if case["id"] in excluded or not case.get("validHDR", True):
+                continue
             dtype = "<f2" if case["format"] == "RGBA16F" else "<f4"
             pixels = np.fromfile(report_path.parent / case["image"], dtype=dtype).astype(np.float32)
             pixels = pixels.reshape(case["height"], case["width"], 4)
@@ -90,46 +97,75 @@ def verify(output):
     reports = sorted(output.glob("run-*/MaterialBaseline.json"))
     if len(reports) != 3 or read(output / "Process.json")["exitCodes"] != [0, 0, 0]:
         raise ValueError("Three successful independent processes required")
-    specifications = read(output / "fixtures/Cases.json")["cases"]
+    config = read(output / "fixtures/Cases.json")
+    specifications = config["cases"]
     expected = {c["id"] for c in specifications}
-    if len(expected) != 3:
-        raise ValueError("Three distinct material cases required")
+    if not expected or len(expected) != len(specifications):
+        raise ValueError("Distinct material cases required")
+    invalid_hdr = {}
+    first_cases = {c["id"]: c for c in read(reports[0])["cases"]}
     for path in reports:
         report = read(path)
-        if report["validation"] or len(report["cases"]) != 3 or {c["id"] for c in report["cases"]} != expected:
+        if report["validation"] or len(report["cases"]) != len(expected) or {c["id"] for c in report["cases"]} != expected:
             raise ValueError("Invalid case set or diagnostic timings")
         for case in report["cases"]:
             spec = next(c for c in specifications if c["id"] == case["id"])
             if any(case.get(key) != value for key, value in spec.items()):
                 raise ValueError("Captured case differs from fixed fixture")
+            if config.get("version", 1) >= 2:
+                first = first_cases[case["id"]]
+                if case["resolvedGraph"] != first["resolvedGraph"]:
+                    raise ValueError("Resolved graph changed between processes")
+                if spec.get("requireEnvironment", True) and not case["environmentTransitions"]:
+                    raise ValueError("Missing HDR environment evidence")
             if case["format"] not in ("RGBA16F", "RGBA32F") or Path(case["image"]).name != case["image"]:
                 raise ValueError("Invalid HDR format or image path")
+            if config.get("version", 1) >= 2:
+                import numpy as np
+                pixels = np.fromfile(path.parent / case["image"], dtype="<f2" if case["format"] == "RGBA16F" else "<f4")
+                count_nonfinite = int(np.count_nonzero(~np.isfinite(pixels)))
+                if (pixels.size != case["width"] * case["height"] * 4 or
+                    count_nonfinite != case["nonfiniteComponents"] or case["validHDR"] != (count_nonfinite == 0)):
+                    raise ValueError("HDR quality metadata mismatch")
+                if count_nonfinite:
+                    invalid_hdr.setdefault(case["id"], {})[path.parent.name] = count_nonfinite
             frames = case["frames"]
-            if [f["frame"] for f in frames] != list(range(32, 96)):
+            warmup, count = config.get("warmupFrames", 32), config.get("timingFrames", 64)
+            if [f["frame"] for f in frames] != list(range(warmup, warmup + count)):
                 raise ValueError("Missing or reordered timing frames")
-            if len({f["executionId"] for f in frames}) != 64:
+            if len({f["executionId"] for f in frames}) != count:
                 raise ValueError("Repeated GPU execution IDs")
             if any(not math.isfinite(f["graphMs"]) or f["graphMs"] <= 0 for f in frames):
                 raise ValueError("Invalid GPU times")
-            required = {"OpenPBRPathTrace": ("Reference", "Path trace shading"),
+            required = spec.get("requiredTiming") or {"OpenPBRPathTrace": ("Reference", "Path trace shading"),
                         "OpenPBRDeferred": ("Deferred", "Material classification"),
                         "RTXCRChiang": ("PathTrace", "Path trace shading")}[case["id"]]
             for frame in frames:
+                if config.get("version", 1) >= 2:
+                    # The registered VBuffer graph forks early/late raster work,
+                    # then joins before Deferred. Its graphics envelope includes
+                    # those waits; it is not the sum of concurrent queue times.
+                    expected_branches = spec.get("expectedAsyncComputeBranches", 2 if spec.get("backend") == "Deferred" else 0)
+                    if frame["asyncComputeBranches"] != expected_branches or any(n["queue"] != 0 for n in frame["nodes"]):
+                        raise ValueError("Unexpected asynchronous timing scope")
                 node = next((n for n in frame["nodes"] if n["name"] == required[0]), None)
                 if node is None or node["gpuMs"] is None:
                     raise ValueError("Missing material pass timing")
                 section = next((s for s in node["sections"] if s["name"] == required[1]), None)
-                if section is None or section["gpuMs"] is None:
+                if required[1] and (section is None or section["gpuMs"] is None):
                     raise ValueError("Missing required GPU scope")
+                if not math.isfinite(node["gpuMs"]) or node["gpuMs"] <= 0:
+                    raise ValueError("Invalid material pass time")
     import numpy as np
     aa = {}
-    for name, runs in images(output).items():
+    for name, runs in images(output, invalid_hdr).items():
         if len(runs) != 3:
             raise ValueError("Missing image repeat")
         aa[name] = {"maxAbsoluteDifference": float(max(np.max(np.abs(x - runs[0])) for x in runs[1:])),
                     "rgbRMSE": [float(np.sqrt(np.mean((x[:, :, :3] - runs[0][:, :, :3]) ** 2))) for x in runs[1:]],
                     "exact": all(np.array_equal(x, runs[0]) for x in runs[1:])}
-    return {"verified": True, "meaning": "Evidence integrity; image repeatability is reported separately, not assumed.", "imageAA": aa}
+    return {"verified": True, "meaning": "Evidence integrity only; invalidHDR cases are NOT qualified performance baselines.",
+            "invalidHDR": invalid_hdr, "imageAA": aa}
 
 
 def run(args):
@@ -147,9 +183,10 @@ def run(args):
         stream.write(str(os.getpid()))
     try:
         output.mkdir(parents=True)
-        before = identity(exe)
+        case_path = args.cases.resolve() if args.cases else None
+        before = identity(exe, case_path)
         save(output / "Identity.json", before)
-        shutil.copytree(FIXTURES, output / "fixtures")
+        shutil.copytree(case_path.parent if case_path else FIXTURES, output / "fixtures")
         shutil.copy2(cache, output / "CMakeCache.txt")
         shutil.copy2(__file__, output / "MaterialBaseline.py")
         shutil.copy2(ROOT / "tests/rhi/MaterialBaselineTests.cpp", output / "MaterialBaselineTests.cpp")
@@ -157,8 +194,13 @@ def run(args):
             subprocess.run(["git", "diff", "--binary", "HEAD"], cwd=ROOT, stdout=stream, check=True)
         gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=name,uuid,driver_version,pstate,temperature.gpu", "--format=csv"], text=True)
         (output / "GPU.csv").write_text(gpu)
+        (output / "GPUProcesses.txt").write_text(subprocess.check_output(["nvidia-smi"], text=True))
         env = {k: v for k, v in os.environ.items() if not k.startswith("METALLIC_")}
         env.update(METALLIC_NSIGHT_GRAPHICS_CAPTURE="0", METALLIC_SHADER_CAPTURE_SYMBOLS="0")
+        if env.get("VK_INSTANCE_LAYERS"):
+            raise ValueError("Remove injected VK_INSTANCE_LAYERS for normal timing")
+        if case_path:
+            env["METALLIC_MATERIAL_BASELINE_CASES"] = str(case_path)
         save(output / "Environment.json", {k: v for k, v in env.items() if k.startswith("METALLIC_")})
         processes = {"exitCodes": [], "commands": [], "timeoutSeconds": args.timeout,
                      "cache": "Existing disk caches retained; frames 0-31 excluded; no GPU clock changes"}
@@ -170,13 +212,19 @@ def run(args):
             processes["commands"].append(command)
             print(f"Capturing process {index + 1}/3: {destination}", flush=True)
             with (destination / "stdout.log").open("wb") as stdout, (destination / "stderr.log").open("wb") as stderr:
-                completed = subprocess.run(command, cwd=ROOT, env=env, stdout=stdout, stderr=stderr, timeout=args.timeout)
+                with (destination / "Telemetry.csv").open("wb") as telemetry:
+                    monitor = subprocess.Popen(["nvidia-smi", "--query-gpu=timestamp,pstate,temperature.gpu,utilization.gpu,memory.used,clocks.sm,clocks.mem,power.draw", "--format=csv", "-l", "1"], stdout=telemetry, stderr=subprocess.DEVNULL)
+                    try:
+                        completed = subprocess.run(command, cwd=ROOT, env=env, stdout=stdout, stderr=stderr, timeout=args.timeout)
+                    finally:
+                        monitor.terminate()
+                        monitor.wait(timeout=10)
             processes["exitCodes"].append(completed.returncode)
             save(output / "Process.json", processes)
             tests = ET.parse(destination / "Tests.xml").getroot()
             if completed.returncode or tests.get("tests") != "1" or tests.get("failures") != "0" or tests.findall(".//skipped"):
                 raise ValueError(f"Baseline process failed or skipped: {destination}")
-        after = identity(exe)
+        after = identity(exe, case_path)
         if any(before[key] != after[key] for key in ("binaries", "workload", "sources", "commit", "submodules")):
             raise ValueError("Inputs changed during capture")
         seal(output)
@@ -189,13 +237,14 @@ def compare(baseline, candidate):
     import numpy as np
     baseline_verification = verify(baseline)
     candidate_verification = verify(candidate)
+    excluded = set(baseline_verification["invalidHDR"]) | set(candidate_verification["invalidHDR"])
     left, right = read(baseline / "Identity.json"), read(candidate / "Identity.json")
     if left["workload"] != right["workload"] or (baseline / "GPU.csv").read_text().splitlines()[0:1] != (candidate / "GPU.csv").read_text().splitlines()[0:1]:
         raise ValueError("Workload identity mismatch")
     # Temperature/pstate may change; GPU UUID and driver must remain identical.
     if (baseline / "GPU.csv").read_text().splitlines()[1].split(",")[:3] != (candidate / "GPU.csv").read_text().splitlines()[1].split(",")[:3]:
         raise ValueError("GPU or driver mismatch")
-    a, b = images(baseline), images(candidate)
+    a, b = images(baseline, excluded), images(candidate, excluded)
     result = {}
     for name in a:
         delta = b[name][0] - a[name][0]
@@ -207,7 +256,7 @@ def compare(baseline, candidate):
                 case = next(c for c in read(path)["cases"] if c["id"] == name)
                 medians.append(statistics.median(f["graphMs"] for f in case["frames"]))
             result[name][label + "GraphMediansMs"] = medians
-    return {"cases": result, "baselineAA": baseline_verification["imageAA"],
+    return {"cases": result, "excludedInvalidHDR": sorted(excluded), "baselineAA": baseline_verification["imageAA"],
             "candidateAA": candidate_verification["imageAA"],
             "performance": "Independent-process medians; these runs are not interleaved ABBA. No automatic speedup acceptance."}
 
@@ -219,6 +268,7 @@ def main():
     capture.add_argument("--exe", type=Path, required=True)
     capture.add_argument("--output", type=Path, required=True)
     capture.add_argument("--timeout", type=int, default=600)
+    capture.add_argument("--cases", type=Path, help="Explicit Cases.json; defaults to Phase 0 fixtures")
     check = sub.add_parser("verify")
     check.add_argument("output", type=Path)
     diff = sub.add_parser("compare")

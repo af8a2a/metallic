@@ -13,6 +13,36 @@ VBuffer.visibility / depth / rasterInfo / domain
           AutoExposure → FinalBlit ← ColorGrading.lut
 ```
 
+## LookDev 单路径观察
+
+在 Render Graph Editor 的 Settings 中，选择 `lookdev-vbuffer` 或任一 Painter / Studio
+PT/Deferred 对比场景，然后使用 **LookDev Render Path**：
+
+- **Comparison**：Reference + VBuffer + Deferred，通过 Slider 对比。
+- **Path Trace Only**：仅 Reference，直接连接原来的曝光与显示链路。
+- **Deferred Only**：仅 VBuffer + Deferred，直接连接原来的曝光与显示链路。
+
+Only 模式会从活动图中移除另一分支和 Slider；不是把分割线移到边缘。
+切换保留当前场景、未保存的材质编辑、视口相机和现有 pass 参数，重新编译活动图并重置累积历史。
+选择新的兼容材质场景时沿用模式。此选项只适用于 PT/Deferred 对比图；OpenPBR/Standard
+双 BSDF 对比图、Fiber 专用图不会被自动改写。
+
+```powershell
+.\build-scheduling-release\Source\LookDev.exe --render-path pathtrace
+.\build-scheduling-release\Source\LookDev.exe --render-path deferred
+.\build-scheduling-release\Source\LookDev.exe --sample studio-white-M05_Fuzz-textured --render-path deferred
+```
+
+显式指定 `--render-path` 且未指定 sample 时，默认采用 `lookdev-vbuffer`。
+可选值为 `comparison`、`pathtrace`、`deferred`；不指定参数保留原来的启动行为。
+Graph Save 保存的是当前活动图；需要保留原始对比资产时，请先更换保存路径。
+重新加载保存的单路径图可直接使用，但该文件不含已移除的分支；恢复对比应重新选择原始 sample。
+
+验证入口：RHI `lookdev_render_path_contract` / `lookdev_render_paths`，以及 LookDev
+`--smoke-test` 配合 `METALLIC_SMOKE_TEST_LOOKDEV_PATHS=1`。
+RHI 渲染测试默认采用 shaderball，可用 `METALLIC_LOOKDEV_PATH_SAMPLE` 指定本地 Painter / Studio sample；
+检查 32 帧执行记录、线性 HDR 有限性及与对比分支的逐字节一致性，输出独立图和显示 PNG。
+
 ## 光栅路径边界
 
 - Deferred shader 不执行 ray query，不使用 TLAS，也不包含路径积分器。

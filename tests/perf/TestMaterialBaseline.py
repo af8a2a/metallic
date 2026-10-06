@@ -80,6 +80,66 @@ class MaterialBaselineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Nonfinite"):
             baseline.verify(self.root)
 
+    def test_custom_case_count_and_window(self):
+        config = baseline.read(self.root / "fixtures/Cases.json")
+        config.update(warmupFrames=3, timingFrames=4)
+        config["cases"] = [dict(id="Custom", width=1, height=1, requiredTiming=["Reference", None])]
+        baseline.save(self.root / "fixtures/Cases.json", config)
+        for index in range(3):
+            path = self.root / f"run-{index}/MaterialBaseline.json"
+            report = baseline.read(path)
+            case = report["cases"][0]
+            case.update(id="Custom", requiredTiming=["Reference", None])
+            case["frames"] = case["frames"][:4]
+            for frame, data in enumerate(case["frames"], 3):
+                data["frame"] = frame
+            report["cases"] = [case]
+            baseline.save(path, report)
+        baseline.seal(self.root)
+        self.assertTrue(baseline.verify(self.root)["verified"])
+        self.mutate(lambda r: r["cases"][0]["frames"][0]["nodes"][0].update(gpuMs=-1))
+        with self.assertRaisesRegex(ValueError, "Invalid material pass time"):
+            baseline.verify(self.root)
+
+    def test_invalid_catalog_hdr_is_preserved_and_excluded(self):
+        config = baseline.read(self.root / "fixtures/Cases.json")
+        config["version"] = 2
+        for spec in config["cases"]:
+            spec["backend"] = "Deferred" if spec["id"] == "OpenPBRDeferred" else "PT"
+        baseline.save(self.root / "fixtures/Cases.json", config)
+        for index in range(3):
+            path = self.root / f"run-{index}/MaterialBaseline.json"
+            report = baseline.read(path)
+            for case in report["cases"]:
+                case.update(validHDR=True, nonfiniteComponents=0, resolvedGraph={},
+                            environmentTransitions=[dict(frame=0, mapAvailable=True)],
+                            backend="Deferred" if case["id"] == "OpenPBRDeferred" else "PT")
+                for frame in case["frames"]:
+                    frame["asyncComputeBranches"] = 2 if case["backend"] == "Deferred" else 0
+                    for node in frame["nodes"]:
+                        node["queue"] = 0
+            if index == 0:
+                report["cases"][0].update(validHDR=False, nonfiniteComponents=1)
+                (path.parent / report["cases"][0]["image"]).write_bytes(struct.pack("<4f", float("nan"), 0, 0, 1))
+            baseline.save(path, report)
+        baseline.seal(self.root)
+        result = baseline.verify(self.root)
+        self.assertEqual(result["invalidHDR"], {"OpenPBRPathTrace": {"run-0": 1}})
+        self.assertNotIn("OpenPBRPathTrace", result["imageAA"])
+        baseline.save(self.root / "Identity.json", {"workload": {}})
+        (self.root / "GPU.csv").write_text("name,uuid,driver\nGPU,42,1\n")
+        baseline.seal(self.root)
+        comparison = baseline.compare(self.root, self.root)
+        self.assertEqual(comparison["excludedInvalidHDR"], ["OpenPBRPathTrace"])
+        self.assertEqual(set(comparison["cases"]), {"OpenPBRDeferred", "RTXCRChiang"})
+        self.mutate(lambda r: r["cases"][0].update(validHDR=True))
+        with self.assertRaisesRegex(ValueError, "HDR quality metadata mismatch"):
+            baseline.verify(self.root)
+        self.mutate(lambda r: r["cases"][0].update(validHDR=False))
+        self.mutate(lambda r: r["cases"][1]["frames"][0].update(asyncComputeBranches=1))
+        with self.assertRaisesRegex(ValueError, "asynchronous timing scope"):
+            baseline.verify(self.root)
+
 
 if __name__ == "__main__":
     unittest.main()

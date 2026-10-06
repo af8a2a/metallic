@@ -961,6 +961,68 @@ bool loadRenderSample(
     return true;
 }
 
+bool supportsLookDevRenderPaths(const RenderGraph& graph)
+{
+    const auto hasType = [&](const char* name, const char* type) {
+        const auto* node = graph.findNode(name);
+        return node && node->type == type;
+    };
+    const auto hasEdge = [&](const char* source, const char* destination) {
+        return std::any_of(graph.edges().begin(), graph.edges().end(), [&](const auto& edge) {
+            return makeRenderGraphFieldName(edge.srcPass, edge.srcField) == source &&
+                makeRenderGraphFieldName(edge.dstPass, edge.dstField) == destination;
+        });
+    };
+    return hasType("Reference", "ScenePathTracePass") &&
+        hasType("VBuffer", "VisibilityBufferPass") &&
+        hasType("Deferred", "VisibilityBufferDeferredPass") &&
+        hasType("Slider", "SliderDebugPass") &&
+        hasEdge("Reference.color", "Slider.sourceA") &&
+        hasEdge("Deferred.color", "Slider.sourceB");
+}
+
+bool makeLookDevRenderGraph(const RenderGraph& comparison, LookDevRenderPath path,
+    RenderGraph& result, std::string& message)
+{
+    if (!supportsLookDevRenderPaths(comparison)) {
+        message = "Render paths require a LookDev Reference/VBuffer/Deferred comparison graph";
+        return false;
+    }
+    RenderGraph graph = comparison;
+    if (path != LookDevRenderPath::Comparison) {
+        const std::string source = path == LookDevRenderPath::PathTraceOnly ? "Reference.color" : "Deferred.color";
+        std::vector<std::string> destinations;
+        for (const auto& edge : graph.edges()) {
+            if (edge.srcPass == "Slider" && edge.srcField == "color") {
+                destinations.push_back(makeRenderGraphFieldName(edge.dstPass, edge.dstField));
+            }
+        }
+        const bool sliderOutput = std::any_of(graph.outputs().begin(), graph.outputs().end(), [](const auto& output) {
+            return output.passName == "Slider" && output.fieldName == "color";
+        });
+        graph.removeNode(graph.findNode("Slider")->id);
+        if (path == LookDevRenderPath::PathTraceOnly) {
+            graph.removeNode(graph.findNode("Deferred")->id);
+            graph.removeNode(graph.findNode("VBuffer")->id);
+        } else {
+            graph.removeNode(graph.findNode("Reference")->id);
+        }
+        for (const auto& destination : destinations) {
+            if (!graph.addEdge(source, destination)) {
+                message = "Failed to reconnect LookDev display input: " + destination;
+                return false;
+            }
+        }
+        if (sliderOutput) { graph.markOutput(source); }
+        graph.setName(comparison.name() + (path == LookDevRenderPath::PathTraceOnly ?
+            " / Path Trace Only" : " / Deferred Only"));
+    }
+    if (!graph.validate(message)) { return false; }
+    result = std::move(graph);
+    message.clear();
+    return true;
+}
+
 std::vector<RenderSampleDesc> listBuiltInRenderSamples()
 {
     std::vector<RenderSampleDesc> samples;

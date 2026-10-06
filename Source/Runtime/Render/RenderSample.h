@@ -47,6 +47,15 @@ struct RenderSampleLoadResult {
     std::filesystem::path graphFilePath;
 };
 
+enum class LookDevRenderPath { Comparison, PathTraceOnly, DeferredOnly };
+
+// Accepts the Reference/VBuffer/Deferred LookDev comparison topology only.
+bool supportsLookDevRenderPaths(const RenderGraph& graph);
+// Derive a standalone graph, preserving camera, material and display settings.
+// The source and destination may alias. Failure leaves the destination unchanged.
+bool makeLookDevRenderGraph(const RenderGraph& comparison, LookDevRenderPath path,
+    RenderGraph& result, std::string& message);
+
 class RenderSample {
 public:
     virtual ~RenderSample() = default;

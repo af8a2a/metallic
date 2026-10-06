@@ -2059,8 +2059,10 @@ int EditorApplication::run(
     bool enableNsightShaderDebug,
     bool enableDebugControl,
     bool gpuDrivenScenesOnly,
-    bool skipShaderWarmup)
+    bool skipShaderWarmup,
+    render::LookDevRenderPath lookDevRenderPath)
 {
+    lookDevRenderPath_ = lookDevRenderPath;
     gpuDrivenScenesOnly_ = gpuDrivenScenesOnly;
     if (gpuDrivenScenesOnly_) {
         if (!startupSampleId) { startupSampleId = render::kDefaultGPUDrivenSampleId; }
@@ -2217,7 +2219,8 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
-        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
+        if (environmentFlagEnabled("METALLIC_SMOKE_TEST_LOOKDEV_PATHS") ||
+            environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_STUDIO_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_SCENE_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") ||
@@ -7426,6 +7429,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     preserveSampleEnvironmentForNextSceneLoad_ = environmentFromSample_;
 
     renderGraph_ = std::move(sample.graph);
+    initializeLookDevRenderPath();
     viewportCompileFailed_ = false;
     initializeViewportView();
     graphEditorPositionsInitialized_ = false;
@@ -7454,6 +7458,58 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     spdlog::info(
         "[Startup] Skipped editor scene and static RTAS loading for sample '{}'",
         sample.desc.name);
+}
+
+void EditorApplication::initializeLookDevRenderPath()
+{
+    lookDevComparisonGraph_.reset();
+    if (!render::supportsLookDevRenderPaths(renderGraph_)) { return; }
+    lookDevComparisonGraph_ = renderGraph_;
+    std::string message;
+    if (!render::makeLookDevRenderGraph(*lookDevComparisonGraph_, lookDevRenderPath_, renderGraph_, message)) {
+        lookDevRenderPath_ = render::LookDevRenderPath::Comparison;
+        spdlog::warn("LookDev render path: {}", message);
+    }
+}
+
+void EditorApplication::setLookDevRenderPath(render::LookDevRenderPath path)
+{
+    if (!lookDevComparisonGraph_ || path == lookDevRenderPath_) { return; }
+    auto comparison = *lookDevComparisonGraph_;
+    if (lookDevRenderPath_ == render::LookDevRenderPath::Comparison) {
+        comparison = renderGraph_;
+    } else {
+        // Retain edits to active pass settings while keeping the inactive branch available.
+        for (const auto& node : renderGraph_.nodes()) {
+            if (auto* original = comparison.findNode(node.name); original && original->type == node.type) {
+                original->properties = node.properties;
+                original->runtimeProperties = node.runtimeProperties;
+                original->uiX = node.uiX;
+                original->uiY = node.uiY;
+            }
+        }
+    }
+    comparison.setViewProperties({{"camera", viewportView_.cameraProperties()},
+        {"temporalJitter", viewportView_.temporalJitter()}});
+    std::string message;
+    if (!render::makeLookDevRenderGraph(comparison, path, renderGraph_, message)) {
+        renderGraphStatus_ = message;
+        return;
+    }
+    lookDevComparisonGraph_ = std::move(comparison);
+    lookDevRenderPath_ = path;
+    pendingVisibilityPreviewNodeId_ = 0;
+    visibilityPreviewOutput_.clear();
+    visibilityPreviewReturnOutput_.clear();
+    viewportCompileFailed_ = false;
+    viewportPreviewValid_ = false;
+    graphEditorPositionsInitialized_ = false;
+    selectedGraphNodeId_ = -1;
+    selectedGraphLinkId_ = -1;
+    historyResources_.invalidateAll();
+    copyToBuffer(renderGraph_.firstOutputName(), graphOutputBuffer_, sizeof(graphOutputBuffer_));
+    setActivePreviewOutput(renderGraph_.presentationOutputName());
+    renderGraphStatus_ = "LookDev render path changed; inactive passes removed from the graph.";
 }
 
 void EditorApplication::resetDefaultRenderGraph()
@@ -7510,6 +7566,7 @@ void EditorApplication::loadRenderGraph()
         }
     }
     renderGraph_ = std::move(loadedGraph);
+    initializeLookDevRenderPath();
     viewportCompileFailed_ = false;
     initializeViewportView();
     graphEditorPositionsInitialized_ = false;
@@ -7614,6 +7671,13 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
     StartupLogScope scope("Synchronize loaded scene path into RenderGraph");
 
     const std::string graphScenePath = displayPathForProperty(path);
+    if (lookDevComparisonGraph_) {
+        for (const auto& source : lookDevComparisonGraph_->nodes()) {
+            if (isSceneAwareRenderPass(source)) {
+                lookDevComparisonGraph_->setNodeRuntimeProperty(source.id, "path", graphScenePath);
+            }
+        }
+    }
     bool changed = scene_.hasStreamGeometry() &&
         editor::applyStreamSceneOpen(renderGraph_, path, pendingSceneStreamAssetPath_);
 
@@ -8617,6 +8681,16 @@ void EditorApplication::drawRenderGraphSettingsPanel()
             }
             if (!available) { ImGui::TextDisabled("No imported Painter scenes. Run BuildLookDevScenes.py and restart."); }
             ImGui::EndCombo();
+        }
+    }
+    if (lookDevComparisonGraph_) {
+        int selectedPath = static_cast<int>(lookDevRenderPath_);
+        if (ImGui::Combo("LookDev Render Path", &selectedPath,
+                "Comparison\0Path Trace Only\0Deferred Only\0")) {
+            setLookDevRenderPath(static_cast<render::LookDevRenderPath>(selectedPath));
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Only modes remove the inactive passes. Scene, camera and display settings are retained.");
         }
     }
     ImGui::Separator();

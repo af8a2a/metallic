@@ -10,6 +10,7 @@
 #include "Editor/NVMLMonitor.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -45,7 +46,8 @@ public:
         bool enableNsightShaderDebug = false,
         bool enableDebugControl = false,
         bool gpuDrivenScenesOnly = false,
-        bool skipShaderWarmup = false);
+        bool skipShaderWarmup = false,
+        render::LookDevRenderPath lookDevRenderPath = render::LookDevRenderPath::Comparison);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -158,6 +160,8 @@ private:
     void drawRenderGraphNode(const render::RenderGraphNode& node);
     void setupDefaultDockLayout();
     void loadBuiltInSample(const char* sampleId);
+    void initializeLookDevRenderPath();
+    void setLookDevRenderPath(render::LookDevRenderPath path);
     void resetDefaultRenderGraph();
     void saveRenderGraph();
     void loadRenderGraph();
@@ -292,6 +296,8 @@ private:
     NVMLMonitor nvmlMonitor_;
     render::profiling::NsightGraphicsCapture nsightGraphicsCapture_;
     render::RenderGraph renderGraph_;
+    std::optional<render::RenderGraph> lookDevComparisonGraph_;
+    render::LookDevRenderPath lookDevRenderPath_ = render::LookDevRenderPath::Comparison;
     scene::SceneDocument scene_;
     scene::SceneLoader sceneLoader_;
     scene::SceneLoadHandle pendingSceneLoad_;
