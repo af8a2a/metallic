@@ -2744,8 +2744,20 @@ Result<> RenderGraphExecutor::compile(
         return makeError(Error::InvalidArgument);
     }
 
+    std::unordered_map<std::string, std::unique_ptr<RenderGraphPass>> schedulingPasses;
+    const auto schedulingTraits = [&](const RenderGraphNode& node) {
+        auto pass = createRenderGraphPass(node.type);
+        ActiveGraphSchedulingTraits traits;
+        if (pass) {
+            pass->setProperties(mergeRenderGraphProperties(node.properties, node.runtimeProperties));
+            traits.opaque = !pass->supportsAsyncQueue();
+            traits.queue = traits.opaque ? QueueType::Graphics : pass->queueType();
+        }
+        schedulingPasses.emplace(node.name, std::move(pass));
+        return traits;
+    };
     ActiveGraph activeGraph;
-    if (!buildActiveGraph(graph, options.extraOutputs, activeGraph, log)) {
+    if (!buildActiveGraph(graph, options.extraOutputs, activeGraph, log, schedulingTraits)) {
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
     }
@@ -2852,7 +2864,7 @@ Result<> RenderGraphExecutor::compile(
         if (node == nullptr) {
             continue;
         }
-        std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(node->type);
+        const auto& pass = schedulingPasses.at(passName);
         if (pass == nullptr) {
             log = validationPrefix(std::string("unknown pass type '") + node->type + "'");
             impl_->isCompiled = false;
@@ -2965,7 +2977,7 @@ Result<> RenderGraphExecutor::compile(
             return makeError(Error::InvalidArgument);
         }
 
-        std::unique_ptr<RenderGraphPass> pass = createRenderGraphPass(node->type);
+        std::unique_ptr<RenderGraphPass> pass = std::move(schedulingPasses.at(passName));
         if (pass == nullptr) {
             log = validationPrefix(std::string("unknown pass type '") + node->type + "'");
             return makeError(Error::InvalidArgument);

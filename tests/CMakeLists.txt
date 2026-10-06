@@ -459,6 +459,7 @@ add_executable(MetallicRHITests
     rhi/SphericalHarmonicsTests.cpp
     rhi/ReGIRVirtualLightTests.cpp
     rhi/RenderGraphTests.cpp
+    rhi/RenderGraphReadySetTests.cpp
     rhi/LookDevRenderPathTests.cpp
     rhi/RenderGraphAccessPlanTests.cpp
     rhi/RenderGraphTextureAliasPlanTests.cpp
