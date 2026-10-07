@@ -379,6 +379,7 @@ add_executable(MetallicRHITests
     rhi/NativeDescriptorHeapTests.cpp
     rhi/NativeDescriptorHeapSPIRVTests.cpp
     rhi/BindlessBufferTests.cpp
+    rhi/BindlessHeapConcurrencyTests.cpp
     rhi/DescriptorHeapCodePatternTests.cpp
     rhi/DLSSMotionVectorTests.cpp
     rhi/TextureFootprintTests.cpp

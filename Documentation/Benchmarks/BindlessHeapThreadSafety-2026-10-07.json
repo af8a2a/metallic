@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-07",
+  "timezone": "Asia/Shanghai",
+  "baseline_commit": "ded951bd27b459eadbba3482a6b2ae2ac9601821",
+  "baseline_vulkan_rhi_sha256": "1863598e2576df59a0c087ccf8a1050cfbe5485e273137650b850ef7d3eb8ad0",
+  "final_vulkan_rhi_sha256": "d09679c8dd75af117753e6c8e44efa509f72ef2d92f6248d5ea553bc73443e97",
+  "test_source_sha256": "438e2bd9c65720a766a1cf760bba69f4e2f8a86bd38a261545df189658325bba",
+  "executables": [
+    {
+      "Path": "E:\\metallic\\build-pass-stages-nrd\\tests\\MetallicBindlessBaseline.exe",
+      "Hash": "A05BA5544B17714732A221CE05B47A4DA97EA93B37BD582BB92424704EC31992"
+    },
+    {
+      "Path": "E:\\metallic\\build-pass-stages-nrd\\tests\\MetallicBindlessFinal.exe",
+      "Hash": "10770367281BEE261C3448B5C0356EDB66516C5E5E1172CAE8C6D42AF18A0075"
+    }
+  ],
+  "sample_rows": 728,
+  "process_order": [
+    [
+      "baseline",
+      "measured-control-a"
+    ],
+    [
+      "thread_safe",
+      "measured-padded-a"
+    ],
+    [
+      "thread_safe",
+      "measured-padded-b"
+    ],
+    [
+      "baseline",
+      "measured-control-b"
+    ]
+  ]
+}

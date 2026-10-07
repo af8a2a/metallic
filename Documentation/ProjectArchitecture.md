@@ -373,6 +373,10 @@ RHI 只发布队列接受/取消状态，GPU 完成由 Core 的 timeline 与 `GP
 
 运行时的 RenderGraph、内置 raster Pass、HybridRasterizer 与 DLSS 辅助 Pass 统一使用 `ResourceRegistry::forDevice()` 的设备级堆。登记返回的 `ResourceLease` 在录制时随 `bind(commands, leases)` 保留；资源替换登记新索引，不覆盖未完成提交使用的描述符。完整 storage buffer view 与 DR buffer span 复用描述符，局部 view 和 constant view 按范围及类型区分。独立堆仅用于底层测试/能力探针，以及需要保持生产索引并替换快照资源的 WorkControlReplay；不能把这些私有堆索引传给生产堆。
 
+`BindlessHeap` 支持多线程分配/释放不同 handle，以及更新不同槽位。sampler、image、buffer 三类槽位独立加锁；描述符写入另外按 sampler/resource 两个存储域加锁，覆盖完整的写入、dirty range、flush 操作。命令绑定只读取初始化后不变的布局与地址。同一槽位的更新/释放仍由调用方串行化，每个 handle 只能释放一次；覆盖或回收前必须等待 GPU 使用结束。移动/销毁 heap 需要独占访问，Device 和输入资源在调用期间必须保持存活且不被修改。`ResourceRegistry` 的锁继续保护登记、复用和回收等组合操作。
+
+并发测试、CPU 吞吐量基线及已知同步开销见 [BindlessHeap 线程安全报告](BindlessHeapThreadSafety.md)。
+
 ### 10.1 公共 RHI
 
 [`RHI.h`](../Source/Runtime/Render/GAPI/RHI.h) 提供 move-only RAII 对象：
