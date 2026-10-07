@@ -133,7 +133,11 @@ public:
         attachment.view = outputView.get();
         attachment.clearColor = {0, 0, 0, 1};
         if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), render::vulkan::nativeCommandBuffer(*commands), ui.display.mainPipeline());
+        {
+            render::vulkan::ExternalCommandScope scope(*commands);
+            if (!scope.imageView(*sourceView)) { return RHITestResult::fail("ImGui view retention failed"); }
+            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), scope.commandBuffer(), ui.display.mainPipeline());
+        }
         commands->endRendering();
         render::TextureBarrierDesc toReadback{
             .texture = output.get(),
@@ -190,7 +194,11 @@ public:
         if (!commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}})) {
             return RHITestResult::fail("PQ rendering failed");
         }
-        ui.display.encodeHDR10(render::vulkan::nativeCommandBuffer(*commands), outputDescriptor, 32, 32);
+        {
+            render::vulkan::ExternalCommandScope scope(*commands);
+            if (!scope.imageView(*outputView)) { return RHITestResult::fail("PQ view retention failed"); }
+            ui.display.encodeHDR10(scope.commandBuffer(), outputDescriptor, 32, 32);
+        }
         commands->endRendering();
         toReadback.texture = pq.get();
         if (!commands->synchronize({.textures = {&toReadback, 1}})) { return RHITestResult::fail("PQ readback barrier failed"); }

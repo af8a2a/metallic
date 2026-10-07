@@ -10437,7 +10437,7 @@ struct VulkanNativeAccess {
         return commands.impl_ ? commands.impl_->device->device : VK_NULL_HANDLE;
     }
 
-    static void notifyGeneratedCommandsExecution(CommandBuffer& commands)
+    static void invalidateExternalState(CommandBuffer& commands)
     {
         if (!commands.impl_) { return; }
         auto& state = *commands.impl_;
@@ -10459,12 +10459,6 @@ struct VulkanNativeAccess {
         return commandBuffer.impl_ != nullptr ? commandBuffer.impl_->commandBuffer : VK_NULL_HANDLE;
     }
 
-    static void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
-    {
-        // External SDK execution can overwrite pipelines, dynamic state and push
-        // data as well as descriptor sets. The next prepared bind re-establishes them.
-        notifyGeneratedCommandsExecution(commandBuffer);
-    }
 
     static VkFormat nativeSwapchainFormat(Swapchain& swapchain)
     {
@@ -10494,6 +10488,35 @@ struct VulkanNativeAccess {
 
 namespace vulkan {
 
+ExternalCommandScope::ExternalCommandScope(CommandBuffer& commands)
+    : commands_(commands.recording() ? &commands : nullptr)
+{
+}
+
+ExternalCommandScope::~ExternalCommandScope()
+{
+    if (commands_) { detail::VulkanNativeAccess::invalidateExternalState(*commands_); }
+}
+
+VkCommandBuffer ExternalCommandScope::commandBuffer() const
+{
+    return commands_ ? detail::VulkanNativeAccess::nativeCommandBuffer(*commands_) : VK_NULL_HANDLE;
+}
+
+const VolkDeviceTable& ExternalCommandScope::functions() const
+{
+    assert(commands_ != nullptr);
+    return detail::VulkanNativeAccess::nativeCommandBufferFunctions(*commands_);
+}
+
+Result<VkImageView> ExternalCommandScope::imageView(TextureView& view) const
+{
+    if (!commands_) { return makeError(Error::InvalidArgument); }
+    auto retained = commands_->useNativeTextureView(view);
+    if (!retained) { return makeError(retained.error()); }
+    return detail::VulkanNativeAccess::nativeImageView(view);
+}
+
 VulkanDeviceCapabilities deviceCapabilities(const Device& device)
 {
     return detail::VulkanNativeAccess::deviceCapabilities(device);
@@ -10517,16 +10540,6 @@ NativeBuffer nativeBuffer(Buffer& buffer)
 NativeTexture nativeTexture(Texture& texture)
 {
     return detail::VulkanNativeAccess::nativeTexture(texture);
-}
-
-VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer)
-{
-    return detail::VulkanNativeAccess::nativeCommandBuffer(commandBuffer);
-}
-
-void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
-{
-    detail::VulkanNativeAccess::notifyExternalDescriptorSetBinding(commandBuffer);
 }
 
 VkShaderModule nativeShaderModule(ShaderModule& shader)
@@ -10560,19 +10573,9 @@ NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program)
     return detail::VulkanNativeAccess::nativeShaders(program);
 }
 
-const VolkDeviceTable& nativeCommandBufferFunctions(CommandBuffer& commands)
-{
-    return detail::VulkanNativeAccess::nativeCommandBufferFunctions(commands);
-}
-
 VkDevice nativeCommandBufferDevice(CommandBuffer& commands)
 {
     return detail::VulkanNativeAccess::nativeCommandBufferDevice(commands);
-}
-
-void notifyGeneratedCommandsExecution(CommandBuffer& commands)
-{
-    detail::VulkanNativeAccess::notifyGeneratedCommandsExecution(commands);
 }
 
 VkFormat nativeSwapchainFormat(Swapchain& swapchain)

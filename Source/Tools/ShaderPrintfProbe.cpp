@@ -235,7 +235,8 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
             .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
         VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-        native.functions->vkCmdPipelineBarrier2(vk::nativeCommandBuffer(*commands), &dependency);
+        vk::ExternalCommandScope scope(*commands);
+        scope.functions().vkCmdPipelineBarrier2(scope.commandBuffer(), &dependency);
     }
     require(commands->end(), "endCommands");
     report["phase"] = "submit";

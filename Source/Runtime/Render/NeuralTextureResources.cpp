@@ -743,14 +743,12 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
     const bool hasCooperativeVector = impl_->stats.cooperativeVectorTextureSetCount > 0;
     vulkan::NativeBuffer nativeSource;
     vulkan::NativeBuffer nativeDestination;
-    VkCommandBuffer nativeCommandBuffer = VK_NULL_HANDLE;
     if (hasCooperativeVector) {
         nativeSource = vulkan::nativeBuffer(*impl_->weightsUpload);
         nativeDestination = vulkan::nativeBuffer(*impl_->weightsBuffer);
-        nativeCommandBuffer = vulkan::nativeCommandBuffer(commandBuffer);
         if (nativeSource.buffer == VK_NULL_HANDLE ||
             nativeDestination.buffer == VK_NULL_HANDLE ||
-            nativeCommandBuffer == VK_NULL_HANDLE ||
+            !commandBuffer.recording() ||
             nativeSource.address == 0 || nativeDestination.address == 0 ||
             (nativeSource.address & 63u) != 0 ||
             (nativeDestination.address & 63u) != 0) {
@@ -763,9 +761,10 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             if (set.metadata == nullptr || set.metadata->Get() == nullptr) {
                 return makeError(Error::InvalidArgument);
             }
+            vulkan::ExternalCommandScope scope(commandBuffer);
             const ntc::Status status = set.metadata->Get()->ConvertInferenceWeights(
                 set.weightType,
-                static_cast<void*>(nativeCommandBuffer),
+                static_cast<void*>(scope.commandBuffer()),
                 static_cast<void*>(nativeSource.buffer),
                 set.sourceWeightOffset,
                 static_cast<void*>(nativeDestination.buffer),
@@ -804,7 +803,8 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .memoryBarrierCount = 1,
             .pMemoryBarriers = &memoryBarrier,
         };
-        vulkan::nativeCommandBufferFunctions(commandBuffer).vkCmdPipelineBarrier2(nativeCommandBuffer, &dependencyInfo);
+        vulkan::ExternalCommandScope scope(commandBuffer);
+        scope.functions().vkCmdPipelineBarrier2(scope.commandBuffer(), &dependencyInfo);
 #else
         return makeError(Error::Unsupported);
 #endif

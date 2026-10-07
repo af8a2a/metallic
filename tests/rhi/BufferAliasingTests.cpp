@@ -22,7 +22,8 @@ BufferDesc aliasBufferDesc(uint64_t bytes, BufferUsageBits extra = BufferUsageBi
 Result<> fillAliasBuffer(CommandBuffer& commands, Buffer& buffer, uint32_t value)
 {
     if (auto retained = commands.retainResource(buffer.retainAllocation()); !retained) { return retained; }
-    vulkan::nativeCommandBufferFunctions(commands).vkCmdFillBuffer(vulkan::nativeCommandBuffer(commands), vulkan::nativeBuffer(buffer).buffer,
+    vulkan::ExternalCommandScope scope(commands);
+    scope.functions().vkCmdFillBuffer(scope.commandBuffer(), vulkan::nativeBuffer(buffer).buffer,
         0, buffer.desc().size, value);
     return {};
 }
@@ -153,7 +154,10 @@ public:
                     }
                     // Corrupt the destination bytes first: the full-buffer
                     // oracle must fail if the following copy is not executed.
-                    vulkan::nativeCommandBufferFunctions(*commands).vkCmdFillBuffer(vulkan::nativeCommandBuffer(*commands), secondNative.buffer, 512, 256, 0);
+                    {
+                        vulkan::ExternalCommandScope scope(*commands);
+                        scope.functions().vkCmdFillBuffer(scope.commandBuffer(), secondNative.buffer, 512, 256, 0);
+                    }
                     if (!commands->synchronize({.memory = {&physicalOrder, 1}}) ||
                         !commands->copyBuffer(*disjointSource, *disjointDestination) ||
                         !commands->synchronize({.memory = {&physicalOrder, 1}})) {

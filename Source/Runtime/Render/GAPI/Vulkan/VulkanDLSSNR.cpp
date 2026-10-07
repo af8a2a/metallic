@@ -225,12 +225,12 @@ void setSubrect(NVSDK_NGX_Parameter* parameters, const char* input, uint32_t wid
     parameters->Set((prefix + "Height").c_str(), static_cast<int>(height));
 }
 
-NVSDK_NGX_Resource_VK resourceFrom(DLSSNRTextureRef ref)
+NVSDK_NGX_Resource_VK resourceFrom(DLSSNRTextureRef ref, VkImageView view)
 {
     const auto native = nativeTexture(*ref.texture);
     NVSDK_NGX_Resource_VK resource{};
     resource.Resource.ImageViewInfo = {
-        nativeImageView(*ref.view), native.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        view, native.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
         native.format, native.width, native.height};
     resource.Type = NVSDK_NGX_RESOURCE_VK_TYPE_VK_IMAGEVIEW;
     resource.ReadWrite = true;
@@ -381,7 +381,8 @@ Result<> DLSSNRContext::evaluate(CommandBuffer& commandBuffer, const DLSSNRDesc&
         log = "DLSS-NR context is not initialized";
         return makeError(Error::Unsupported);
     }
-    const VkCommandBuffer command = nativeCommandBuffer(commandBuffer);
+    ExternalCommandScope scope(commandBuffer);
+    const VkCommandBuffer command = scope.commandBuffer();
     if (command == VK_NULL_HANDLE) { return makeError(Error::InvalidArgument); }
     auto& impl = *impl_;
     ScopedSnippetCaller caller(impl.runtime->module);
@@ -442,7 +443,6 @@ Result<> DLSSNRContext::evaluate(CommandBuffer& commandBuffer, const DLSSNRDesc&
         p->Set("DLSSNRComputeScalingRatioCallback", reinterpret_cast<void*>(&computeScalingRatio));
         auto result = ngxResult(impl.runtime->create(impl.runtime->native.device, command,
             kFeature, p, &impl.handle), "Vulkan CreateFeature1 (feature 18)", log);
-        notifyExternalDescriptorSetBinding(commandBuffer);
         if (!result || impl.handle == nullptr) {
             if (impl.handle != nullptr) { impl.retired.push_back(impl.handle); impl.handle = nullptr; }
             if (result) { log = "DLSS-NR create succeeded without a feature handle"; }
@@ -453,12 +453,13 @@ Result<> DLSSNRContext::evaluate(CommandBuffer& commandBuffer, const DLSSNRDesc&
         spdlog::info("[DLSS-NR] Created Vulkan feature 18: {}x{} -> {}x{}, preset {}",
             input.width, input.height, output.width, output.height, s.preset);
     }
+    std::array<NVSDK_NGX_Resource_VK, 4> resources;
+    uint32_t index = 0;
     for (const auto* ref : {&desc.inputColor, &desc.outputColor, &desc.motionVectors, &desc.depth}) {
-        auto retained = commandBuffer.useNativeTextureView(*ref->view);
-        if (!retained) { return retained; }
+        auto view = scope.imageView(*ref->view);
+        if (!view) { return makeError(view.error()); }
+        resources[index++] = resourceFrom(*ref, *view);
     }
-    std::array resources{resourceFrom(desc.inputColor), resourceFrom(desc.outputColor),
-        resourceFrom(desc.motionVectors), resourceFrom(desc.depth)};
     p->Set("DLSSNR.Color", static_cast<void*>(&resources[0]));
     p->Set("DLSSNR.Output", static_cast<void*>(&resources[1]));
     p->Set("DLSSNR.MVec", static_cast<void*>(&resources[2]));
@@ -473,7 +474,6 @@ Result<> DLSSNRContext::evaluate(CommandBuffer& commandBuffer, const DLSSNRDesc&
     p->Set("DLSSNR.Reset", static_cast<unsigned int>(s.reset || recreate));
     prepareStreamlineNgxCommandBuffer(commandBuffer);
     auto result = ngxResult(impl.runtime->evaluate(command, impl.handle, p, nullptr), "Vulkan EvaluateFeature", log);
-    notifyExternalDescriptorSetBinding(commandBuffer);
     return result;
 #else
     (void)commandBuffer;

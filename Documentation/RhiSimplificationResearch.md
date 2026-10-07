@@ -174,7 +174,7 @@ buffer 普通依赖可以合并为 global memory barrier，image 初始化、pre
 
 为 pass 提供一致的 compute/raster 执行入口，内部保留 Shader Object 与 PSO。创建、编译和兼容性检查在 prepare 阶段完成，录制时只绑定已准备对象和参数。raster state/attachment formats 进入需要它们的 execution key，不无条件污染 shader variant key。
 
-现有 `notifyGeneratedCommandsExecution()`、`notifyExternalDescriptorSetBinding()`、`recordIsolatedCompute()` 已承担状态失效/恢复职责。统一入口必须保留这些边界；对 push 重复上传的优化应分别检查 heap 切换、pipeline 切换和外部调用后重建，不能只增加一个“当前已绑定”的布尔值。
+外部状态失效已收敛到 `vulkan::ExternalCommandScope` 的析构；原 `notifyGeneratedCommandsExecution()`、`notifyExternalDescriptorSetBinding()` 已退役，`recordIsolatedCompute()` 继续负责内部状态恢复。统一入口必须保留这些边界；对 push 重复上传的优化应分别检查 heap 切换、pipeline 切换和外部调用后重建，不能只增加一个“当前已绑定”的布尔值。
 
 ## 实施顺序与停止条件
 

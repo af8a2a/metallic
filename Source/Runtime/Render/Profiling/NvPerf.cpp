@@ -421,8 +421,10 @@ NvPerfRange::NvPerfRange(CommandBuffer& commands, const char* name)
 #if METALLIC_HAS_NVPERF
     if (!nvPerfPassActive()) { return; }
     if (vulkan::nativeCommandBufferDevice(commands) != activeDevice) { rangeFailed = true; return; }
-    commands_ = vulkan::nativeCommandBuffer(commands);
-    if (!nv::perf::profiler::VulkanPushRange(commands_, name)) { rangeFailed = true; commands_ = VK_NULL_HANDLE; }
+    vulkan::ExternalCommandScope scope(commands);
+    if (!scope) { rangeFailed = true; return; }
+    commands_ = &commands;
+    if (!nv::perf::profiler::VulkanPushRange(scope.commandBuffer(), name)) { rangeFailed = true; commands_ = nullptr; }
     else { ++rangeCount; }
 #endif
 }
@@ -430,7 +432,10 @@ NvPerfRange::NvPerfRange(CommandBuffer& commands, const char* name)
 NvPerfRange::~NvPerfRange()
 {
 #if METALLIC_HAS_NVPERF
-    if (commands_ && !nv::perf::profiler::VulkanPopRange(commands_)) { rangeFailed = true; }
+    if (commands_) {
+        vulkan::ExternalCommandScope scope(*commands_);
+        if (!scope || !nv::perf::profiler::VulkanPopRange(scope.commandBuffer())) { rangeFailed = true; }
+    }
 #endif
 }
 } // namespace metallic::render::profiling

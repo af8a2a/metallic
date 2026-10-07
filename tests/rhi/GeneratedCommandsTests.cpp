@@ -211,41 +211,44 @@ public:
             DGC_RHI(device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
             struct Drain { render::Queue& queue; ~Drain() { (void)queue.waitIdle(); } } drain{context.graphicsQueue};
             DGC_RHI(commands->begin());
-            const auto cmd = rv::nativeCommandBuffer(*commands);
-            native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
-            native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
-            const rv::GeneratedCommandsArguments args{.commands = arguments.get(), .offset = 8, .sequenceCount = 3,
-                .countBuffer = arguments.get()};
-            if (useGenerated) {
-                auto invalid = args;
-                invalid.offset = 1;
-                if (!render::hasError(generated.execute(*commands, invalid, mode == 2), render::Error::InvalidArgument)) {
-                    return RHITestResult::fail("Misaligned indirect stream was accepted");
+            {
+                rv::ExternalCommandScope scope(*commands);
+                const auto cmd = scope.commandBuffer();
+                native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
+                native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
+                const rv::GeneratedCommandsArguments args{.commands = arguments.get(), .offset = 8, .sequenceCount = 3,
+                    .countBuffer = arguments.get()};
+                if (useGenerated) {
+                    auto invalid = args;
+                    invalid.offset = 1;
+                    if (!render::hasError(generated.execute(*commands, invalid, mode == 2), render::Error::InvalidArgument)) {
+                        return RHITestResult::fail("Misaligned indirect stream was accepted");
+                    }
+                    if (mode == 2) {
+                        DGC_RHI(generated.preprocess(*commands, args, *commands));
+                        DGC_RHI(generated.preprocessBarrier(*commands));
+                    }
+                    DGC_RHI(generated.execute(*commands, args, mode == 2));
+                } else {
+                    for (uint32_t index = 0; index < 2; ++index) {
+                        native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[mode && index ? 1 : 0]);
+                        const uint32_t pushValues[]{index, index ? 9u : 7u};
+                        native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushValues), pushValues);
+                        native.functions->vkCmdDispatch(cmd, 1, 1, 1);
+                    }
                 }
-                if (mode == 2) {
-                    DGC_RHI(generated.preprocess(*commands, args, *commands));
-                    DGC_RHI(generated.preprocessBarrier(*commands));
-                }
-                DGC_RHI(generated.execute(*commands, args, mode == 2));
-            } else {
-                for (uint32_t index = 0; index < 2; ++index) {
-                    native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[mode && index ? 1 : 0]);
-                    const uint32_t pushValues[]{index, index ? 9u : 7u};
-                    native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushValues), pushValues);
-                    native.functions->vkCmdDispatch(cmd, 1, 1, 1);
-                }
+                // Generated execution invalidates native binding state; explicitly establish all state again.
+                native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
+                native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
+                const uint32_t rebound[]{3, 777};
+                native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(rebound), rebound);
+                native.functions->vkCmdDispatch(cmd, 1, 1, 1);
+                const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+                const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+                native.functions->vkCmdPipelineBarrier2(cmd, &dependency);
             }
-            // Generated execution invalidates native binding state; explicitly establish all state again.
-            native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
-            native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
-            const uint32_t rebound[]{3, 777};
-            native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(rebound), rebound);
-            native.functions->vkCmdDispatch(cmd, 1, 1, 1);
-            const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
-            const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-            native.functions->vkCmdPipelineBarrier2(cmd, &dependency);
             DGC_RHI(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
             DGC_RHI(context.graphicsQueue.submit({.commandBuffers = {submitted, 1}, .signalFence = fence.get()}));

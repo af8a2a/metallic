@@ -510,13 +510,13 @@ Result<> initializeDescriptorHeapWorkaround(
 
 void prepareDescriptorStateForStreamline(
     StreamlineState& state,
-    CommandBuffer& commandBuffer)
+    ExternalCommandScope& scope)
 {
     if (!state.descriptorHeapWorkaroundEnabled) {
         return;
     }
 
-    const VkCommandBuffer commandBufferHandle = nativeCommandBuffer(commandBuffer);
+    const VkCommandBuffer commandBufferHandle = scope.commandBuffer();
     state.functions->vkCmdBindDescriptorSets(
         commandBufferHandle,
         VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -526,7 +526,6 @@ void prepareDescriptorStateForStreamline(
         &state.descriptorSet,
         0,
         nullptr);
-    notifyExternalDescriptorSetBinding(commandBuffer);
 }
 
 void streamlineLogCallback(sl::LogType type, const char* message)
@@ -832,7 +831,7 @@ bool textureRefMatchesExtent(
 }
 
 bool appendResourceTag(
-    CommandBuffer& commands,
+    ExternalCommandScope& scope,
     const StreamlineDLSSRRTextureRef& ref,
     sl::BufferType type,
     const sl::Extent& extent,
@@ -844,10 +843,9 @@ bool appendResourceTag(
         return false;
     }
 
-    if (!commands.useNativeTextureView(*ref.view)) { return false; }
     const NativeTexture texture = nativeTexture(*ref.texture);
-    const VkImageView imageView = nativeImageView(*ref.view);
-    if (texture.image == VK_NULL_HANDLE || imageView == VK_NULL_HANDLE) {
+    const auto imageView = scope.imageView(*ref.view);
+    if (texture.image == VK_NULL_HANDLE || !imageView) {
         return false;
     }
 
@@ -855,7 +853,7 @@ bool appendResourceTag(
         sl::ResourceType::eTex2d,
         nativeHandleToVoid(texture.image),
         nullptr,
-        nativeHandleToVoid(imageView),
+        nativeHandleToVoid(*imageView),
         static_cast<uint32_t>(VK_IMAGE_LAYOUT_GENERAL)));
     sl::Resource& resource = resources.back();
     resource.width = texture.width;
@@ -881,9 +879,9 @@ bool appendResourceTag(
     return true;
 }
 
-sl::CommandBuffer* slCommandBuffer(CommandBuffer& commandBuffer)
+sl::CommandBuffer* slCommandBuffer(const ExternalCommandScope& scope)
 {
-    return static_cast<sl::CommandBuffer*>(nativeHandleToVoid(nativeCommandBuffer(commandBuffer)));
+    return static_cast<sl::CommandBuffer*>(nativeHandleToVoid(scope.commandBuffer()));
 }
 
 #endif
@@ -1526,7 +1524,9 @@ void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer)
 {
 #if METALLIC_HAS_STREAMLINE
     std::lock_guard lock(streamlineMutex());
-    prepareDescriptorStateForStreamline(streamlineState(), commandBuffer);
+    ExternalCommandScope scope(commandBuffer);
+    if (!scope) { return; }
+    prepareDescriptorStateForStreamline(streamlineState(), scope);
 #else
     (void)commandBuffer;
 #endif
@@ -1608,7 +1608,8 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
         return makeError(Error::InvalidArgument);
     }
 
-    sl::CommandBuffer* nativeCommandBuffer = slCommandBuffer(commandBuffer);
+    ExternalCommandScope scope(commandBuffer);
+    sl::CommandBuffer* nativeCommandBuffer = slCommandBuffer(scope);
     if (nativeCommandBuffer == nullptr) {
         log = "DLSS-SR evaluate received an invalid command buffer";
         return makeError(Error::InvalidArgument);
@@ -1655,10 +1656,10 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
     subresourceRanges.reserve(4);
     tags.reserve(4);
     const bool validResources =
-        appendResourceTag(commandBuffer, desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.depth, sl::kBufferTypeDepth, renderExtent, resources, subresourceRanges, tags);
+        appendResourceTag(scope, desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.depth, sl::kBufferTypeDepth, renderExtent, resources, subresourceRanges, tags);
     if (!validResources) {
         log = "DLSS-SR evaluate received invalid texture resources";
         return makeError(Error::InvalidArgument);
@@ -1672,7 +1673,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
         return result;
     }
 
-    prepareDescriptorStateForStreamline(state, commandBuffer);
+    prepareDescriptorStateForStreamline(state, scope);
     const sl::BaseStructure* inputs[] = {&state.viewport};
     result = evaluationResultFromSl(
         slEvaluateFeature(
@@ -1683,7 +1684,6 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
             nativeCommandBuffer),
         "slEvaluateFeature(kFeatureDLSS)",
         log);
-    notifyExternalDescriptorSetBinding(commandBuffer);
     debug.status.succeeded = static_cast<bool>(result);
     return result;
 #endif
@@ -1769,7 +1769,8 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
         return makeError(Error::InvalidArgument);
     }
 
-    sl::CommandBuffer* nativeCommandBuffer = slCommandBuffer(commandBuffer);
+    ExternalCommandScope scope(commandBuffer);
+    sl::CommandBuffer* nativeCommandBuffer = slCommandBuffer(scope);
     if (nativeCommandBuffer == nullptr) {
         log = "DLSS-RR evaluate received an invalid command buffer";
         return makeError(Error::InvalidArgument);
@@ -1816,14 +1817,14 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
     subresourceRanges.reserve(8);
     tags.reserve(8);
     const bool validResources =
-        appendResourceTag(commandBuffer, desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.albedo, sl::kBufferTypeAlbedo, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.specularAlbedo, sl::kBufferTypeSpecularAlbedo, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.normalRoughness, sl::kBufferTypeNormalRoughness, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.linearDepth, sl::kBufferTypeLinearDepth, renderExtent, resources, subresourceRanges, tags) &&
-        appendResourceTag(commandBuffer, desc.specularHitDistance, sl::kBufferTypeSpecularHitDistance, renderExtent, resources, subresourceRanges, tags);
+        appendResourceTag(scope, desc.inputColor, sl::kBufferTypeScalingInputColor, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.outputColor, sl::kBufferTypeScalingOutputColor, outputExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.albedo, sl::kBufferTypeAlbedo, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.specularAlbedo, sl::kBufferTypeSpecularAlbedo, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.normalRoughness, sl::kBufferTypeNormalRoughness, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.motionVectors, sl::kBufferTypeMotionVectors, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.linearDepth, sl::kBufferTypeLinearDepth, renderExtent, resources, subresourceRanges, tags) &&
+        appendResourceTag(scope, desc.specularHitDistance, sl::kBufferTypeSpecularHitDistance, renderExtent, resources, subresourceRanges, tags);
     if (!validResources) {
         log = "DLSS-RR evaluate received invalid texture resources";
         return makeError(Error::InvalidArgument);
@@ -1837,7 +1838,7 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
         return result;
     }
 
-    prepareDescriptorStateForStreamline(state, commandBuffer);
+    prepareDescriptorStateForStreamline(state, scope);
     const sl::BaseStructure* inputs[] = {&state.viewport};
     result = evaluationResultFromSl(
         slEvaluateFeature(
@@ -1848,7 +1849,6 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
             nativeCommandBuffer),
         "slEvaluateFeature(kFeatureDLSS_RR)",
         log);
-    notifyExternalDescriptorSetBinding(commandBuffer);
     debug.status.succeeded = static_cast<bool>(result);
     return result;
 #endif

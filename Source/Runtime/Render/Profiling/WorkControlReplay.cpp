@@ -20,15 +20,10 @@ void require(bool condition, const char* reason)
 }
 void barrier(CommandBuffer& commands)
 {
-    // Buffer-only copies; no image layouts or owner-side tracked states change.
-    VkMemoryBarrier2 memory{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
-    VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1, .pMemoryBarriers = &memory};
-    vulkan::nativeCommandBufferFunctions(commands).vkCmdPipelineBarrier2(vulkan::nativeCommandBuffer(commands), &dependency);
+    const MemoryBarrierDesc memory{
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+    require(bool(commands.synchronize({.memory = {&memory, 1}})), "replay_barrier_failed");
 }
 void copy(CommandBuffer& commands, Buffer& source, Buffer& destination)
 {
@@ -383,10 +378,10 @@ Json WorkControlReplay::run(Queue& queue, const Json& frozenIdentity)
                 require(restored == resource.expected, "replay_restore_failed");
             }
             s.submit(queue, "isolated-dispatch", [&](auto& commands) {
-                require(bool(commands.bindBindlessHeap(*s.heap)), "replay_heap_bind_failed");
-                require(bool(commands.bindExecution(s.execution, s.push.data(), uint32_t(s.push.size()))), "replay_pipeline_bind_failed");
                 const std::string rangeName = "WorkControl/isolated/" + s.phase;
                 NvPerfRange range(commands, rangeName.c_str());
+                require(bool(commands.bindBindlessHeap(*s.heap)), "replay_heap_bind_failed");
+                require(bool(commands.bindExecution(s.execution, s.push.data(), uint32_t(s.push.size()))), "replay_pipeline_bind_failed");
                 require(bool((*s.resources[s.arguments].working).slice({48, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); })), "replay_dispatch_record_failed");
             });
             s.submit(queue, "compare-output", [&](auto& commands) {

@@ -47,6 +47,6 @@ public:
     NvPerfRange(const NvPerfRange&) = delete;
     NvPerfRange& operator=(const NvPerfRange&) = delete;
 private:
-    VkCommandBuffer commands_ = VK_NULL_HANDLE;
+    CommandBuffer* commands_ = nullptr;
 };
 } // namespace metallic::render::profiling

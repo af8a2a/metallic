@@ -177,7 +177,7 @@ Vulkan 后端把 buffer 和相同 layout 的 image 普通依赖合并为 `VkMemo
 
 `createTextureView()` 校验并保存格式、swizzle、mip/layer 范围及 image allocation，不调用 `vkCreateImageView`。descriptor heap 从同一份规范化的 `VkImageViewCreateInfo` 编码资源，shader-only view 不创建原生对象。
 
-只有 attachment 或 SDK 原生导出才触发后端 `detail::TextureViewImpl::materialize()`；同一个 view 以 mutex 保护首次创建，随后复用。通用 `TextureView` 不公开物化或查询入口；Vulkan 契约测试通过 `vulkan::hasNativeImageView()` 观察这一边界，该查询不会创建原生 view。`beginRendering()` 现在返回 Result，生产光栅调用者传播首次创建失败。`CommandBuffer::useNativeTextureView()` 在 SDK 导出前准备并保留 view，attachment 录制也保留 view 本身，因此 view 与 image 都能活到提交完成；取消走已有录制回收机制。单独调用 `nativeImageView()` 只负责按需导出，不自行建立提交期保留，原生调用者应先使用 `useNativeTextureView()` 或提供等价的外部 owner。
+只有 attachment 或 SDK 原生导出才触发后端 `detail::TextureViewImpl::materialize()`；同一个 view 以 mutex 保护首次创建，随后复用。通用 `TextureView` 不公开物化或查询入口；Vulkan 契约测试通过 `vulkan::hasNativeImageView()` 观察这一边界，该查询不会创建原生 view。`beginRendering()` 现在返回 Result，生产光栅调用者传播首次创建失败。`ExternalCommandScope::imageView()` 通过 `CommandBuffer::useNativeTextureView()` 在 SDK 导出前准备并保留 view，attachment 录制也保留 view 本身，因此 view 与 image 都能活到提交完成；取消走已有录制回收机制。单独调用 `nativeImageView()` 只负责按需导出，不自行建立提交期保留，该入口仅用于有外部 owner 的主机端 descriptor 创建；录制期导出使用 `ExternalCommandScope::imageView()` 并检查返回的 Result。
 
 Streamline、DLSS-NR 与 NRC 已接入该准备/保留入口，编辑器 ImGui descriptor 使用后端导出的实际 layout。CPU 语义 view/registry identity 与原生对象没有合并成第三套 shader 句柄体系。
 
@@ -187,7 +187,7 @@ Streamline、DLSS-NR 与 NRC 已接入该准备/保留入口，编辑器 ImGui d
 
 Shader objects 使用明确的 `RasterExecutionState`（cull/front-face、depth 状态、color attachment 数量），绑定时恢复当前实现支持的固定 triangle/fill/single-sample/no-blend 状态；viewport/scissor 和 heap/参数仍由调用者提供。它没有把所有 Vulkan 动态状态包装成通用渲染状态系统。PSO 继续使用预编译的固定状态和原有缓存键，shader 编译与 PSO 生命周期也没有合并。
 
-快照及 command recording 共同持有原生 pipeline/shaders。热替换或释放源包装对象不会让已录制命令失效；Device 仍必须晚于所有执行快照、命令和 GPU 工作销毁。SDK/DGC 执行后显式失效 pipeline/shader、heap、push data、viewport/scissor 的跟踪缓存，后续调用重新建立状态。兼容名 `notifyExternalDescriptorSetBinding()` 现在失效完整执行缓存。
+快照及 command recording 共同持有原生 pipeline/shaders。热替换或释放源包装对象不会让已录制命令失效；Device 仍必须晚于所有执行快照、命令和 GPU 工作销毁。外部原生录制统一通过 `vulkan::ExternalCommandScope` 导出 command buffer 与函数表。作用域析构自动失效 pipeline/shader、heap、push data、viewport/scissor 的跟踪缓存，正常返回、失败提前返回和异常展开均遵循同一规则；后续 RHI 调用重新建立状态。原裸 command-buffer/function-table getter 与手动 notify 接口已删除。作用域内不交错 RHI 状态设置或 draw，导出的句柄不能逃逸；NvPerf push/pop 使用两个短作用域，push 后再绑定 RHI 执行状态。
 
 ### 第四批验证（2026-09-26）
 

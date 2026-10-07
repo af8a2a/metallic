@@ -2910,27 +2910,12 @@ private:
             // The fork semaphore supplies availability and visibility for the
             // producer's private cluster/argument and pixel resources.
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
-            if (auto commandResult = commands.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
             // Fixed wave32 devices use the validated 32-thread strided kernel.
             // WorkControl 128 and the other comparison kernels remain explicit references.
             const size_t rasterMode = softwareRasterMode();
             if (!streamClusterRasterPipelines_[rasterMode]) { return makeError(Error::Unsupported); }
-            if (auto commandResult = commands.bindExecution((streamClusterRasterPipelines_[rasterMode])->execution()); !commandResult) { return commandResult; }
 
-            if (context.debugEnabled()) {
-                auto identity = softwareRasterIdentity();
-                identity["phase"] = phase == GPUSceneCullPhase::Early ? "early" : "late";
-                identity["queue"] = async ? "compute" : "graphics";
-                identity["dispatch"] = "indirect";
-                identity["argumentOffsetBytes"] = VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t);
-                identity["scope"] = "production-dispatch";
-                // Metadata only: resources on the parallel branch must not be
-                // copied through the context's graphics command buffer.
-                context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "BeforeStreamEarlySoftware" : "BeforeStreamLateSoftware",
-                    {}, identity);
-            }
 
-            if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
             Result<> result;
             auto* replay = profiling::WorkControlReplay::selected(phase == GPUSceneCullPhase::Early ? "early" : "late");
             if (replay) {
@@ -2954,6 +2939,21 @@ private:
             }
             {
                 profiling::NvPerfRange range(commands, phase == GPUSceneCullPhase::Early ? "WorkControl/early" : "WorkControl/late");
+                if (auto commandResult = commands.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
+                if (auto commandResult = commands.bindExecution((streamClusterRasterPipelines_[rasterMode])->execution()); !commandResult) { return commandResult; }
+                if (context.debugEnabled()) {
+                    auto identity = softwareRasterIdentity();
+                    identity["phase"] = phase == GPUSceneCullPhase::Early ? "early" : "late";
+                    identity["queue"] = async ? "compute" : "graphics";
+                    identity["dispatch"] = "indirect";
+                    identity["argumentOffsetBytes"] = VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t);
+                    identity["scope"] = "production-dispatch";
+                    // Metadata only: resources on the parallel branch must not be
+                    // copied through the context's graphics command buffer.
+                    context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "BeforeStreamEarlySoftware" : "BeforeStreamLateSoftware",
+                        {}, identity);
+                }
+                if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
                 result = (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             }
             if (replay && result) { replay->after(commands); }

@@ -286,8 +286,9 @@ Result<> NRCIntegration::beginFrame(CommandBuffer& commandBuffer, const nrc::Fra
     if (!valid()) {
         return makeError(Error::Failure);
     }
-    const nrc::Status status = context_->BeginFrame(nativeCommandBuffer(commandBuffer), frameSettings);
-    notifyExternalDescriptorSetBinding(commandBuffer);
+    ExternalCommandScope scope(commandBuffer);
+    if (!scope) { return makeError(Error::InvalidArgument); }
+    const nrc::Status status = context_->BeginFrame(scope.commandBuffer(), frameSettings);
     return resultFromNrc(status);
 }
 
@@ -307,8 +308,9 @@ Result<> NRCIntegration::queryAndTrain(CommandBuffer& commandBuffer, float* trai
     if (!valid()) {
         return makeError(Error::Failure);
     }
-    const nrc::Status status = context_->QueryAndTrain(nativeCommandBuffer(commandBuffer), trainingLoss);
-    notifyExternalDescriptorSetBinding(commandBuffer);
+    ExternalCommandScope scope(commandBuffer);
+    if (!scope) { return makeError(Error::InvalidArgument); }
+    const nrc::Status status = context_->QueryAndTrain(scope.commandBuffer(), trainingLoss);
     return resultFromNrc(status);
 }
 
@@ -317,10 +319,10 @@ Result<> NRCIntegration::resolve(CommandBuffer& commandBuffer, TextureView& outp
     if (!valid()) {
         return makeError(Error::Failure);
     }
-    auto retained = commandBuffer.useNativeTextureView(outputView);
-    if (!retained) { return retained; }
-    const nrc::Status status = context_->Resolve(nativeCommandBuffer(commandBuffer), nativeImageView(outputView));
-    notifyExternalDescriptorSetBinding(commandBuffer);
+    ExternalCommandScope scope(commandBuffer);
+    auto view = scope.imageView(outputView);
+    if (!view) { return makeError(view.error()); }
+    const nrc::Status status = context_->Resolve(scope.commandBuffer(), *view);
     return resultFromNrc(status);
 }
 

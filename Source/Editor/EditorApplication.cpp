@@ -7363,8 +7363,11 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
         auto* composition = pqOutput ? &displayCompositions_[imageIndex] : nullptr;
         if (composition && !composition->descriptor) {
+            render::vulkan::ExternalCommandScope scope(*frame.commandBuffer);
+            auto view = scope.imageView(*composition->view);
+            if (!view) { return false; }
             composition->descriptor = ImGui_ImplVulkan_AddTexture(
-                render::vulkan::nativeImageView(*composition->view),
+                *view,
                 render::vulkan::nativeImageLayout(*composition->view, render::TextureLayout::ShaderRead));
             if (!composition->descriptor) { return false; }
         }
@@ -7414,9 +7417,14 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
         {
             auto profileScope = profiler_.scope("Record ImGui Draw");
+            render::vulkan::ExternalCommandScope scope(*frame.commandBuffer);
+            if (viewportDescriptor_ && graphExecutor_) {
+                auto* output = graphExecutor_->outputResource(activePreviewOutput_);
+                if (!output || !output->view || !scope.imageView(*output->view)) { return false; }
+            }
             ImGui_ImplVulkan_RenderDrawData(
                 ImGui::GetDrawData(),
-                render::vulkan::nativeCommandBuffer(*frame.commandBuffer), displayRenderer_.mainPipeline());
+                scope.commandBuffer(), displayRenderer_.mainPipeline());
         }
 
         frame.commandBuffer->endRendering();
@@ -7440,8 +7448,12 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             colorAttachment.loadOp = render::LoadOp::DontCare;
             if (!frame.commandBuffer->beginRendering({.renderArea = renderArea,
                     .colorAttachments = {&colorAttachment, 1}})) { return false; }
-            displayRenderer_.encodeHDR10(render::vulkan::nativeCommandBuffer(*frame.commandBuffer),
-                composition->descriptor, swapchainWidth_, swapchainHeight_);
+            {
+                render::vulkan::ExternalCommandScope scope(*frame.commandBuffer);
+                if (!scope.imageView(*composition->view)) { return false; }
+                displayRenderer_.encodeHDR10(scope.commandBuffer(),
+                    composition->descriptor, swapchainWidth_, swapchainHeight_);
+            }
             frame.commandBuffer->endRendering();
         }
 

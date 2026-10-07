@@ -1554,10 +1554,25 @@ public:
                     .loadOp = render::LoadOp::Clear, .clearColor = {0, 0, 0, 1}};
                 REG_REQUIRE(command.beginRendering({.renderArea = {0, 0, extent, extent}, .colorAttachments = {&attachment, 1}}));
                 REG_CHECK(render::vulkan::hasNativeImageView(*view));
-                const auto native = render::vulkan::nativeImageView(*view);
-                REG_CHECK(native != VK_NULL_HANDLE && native == render::vulkan::nativeImageView(*view));
-                // Simulate the SDK/DGC boundary, then explicitly establish the new state.
-                if (i == 1) { render::vulkan::notifyExternalDescriptorSetBinding(command); }
+                REG_REQUIRE(command.bindExecution(executions[i]));
+                REG_REQUIRE(command.setViewport({0, 0, float(extent), float(extent), 0, 1}));
+                command.setScissor({0, 0, extent, extent});
+                // Prime the cache, overwrite Vulkan state, then request identical RHI state.
+                // Omitting scope invalidation leaves a 1x1 viewport/scissor and breaks readback.
+                auto externalRecord = [&]() -> render::Result<> {
+                    render::vulkan::ExternalCommandScope scope(command);
+                    const auto native = scope.imageView(*view);
+                    if (!native) { return render::makeError(native.error()); }
+                    const auto same = scope.imageView(*view);
+                    if (!same || *native != *same) { return render::makeError(render::Error::InvalidArgument); }
+                    const VkViewport tiny{0, 0, 1, 1, 0, 1};
+                    const VkRect2D tinyRect{{0, 0}, {1, 1}};
+                    scope.functions().vkCmdSetViewportWithCountEXT(scope.commandBuffer(), 1, &tiny);
+                    scope.functions().vkCmdSetScissorWithCountEXT(scope.commandBuffer(), 1, &tinyRect);
+                    return i == 1 ? render::makeError(render::Error::Failure) : render::Result<>{};
+                };
+                const auto externalResult = externalRecord();
+                REG_CHECK(i == 1 ? render::hasError(externalResult, render::Error::Failure) : bool(externalResult));
                 REG_REQUIRE(command.bindExecution(executions[i]));
                 REG_REQUIRE(command.setViewport({0, 0, float(extent), float(extent), 0, 1}));
                 command.setScissor({0, 0, extent, extent});
@@ -1601,7 +1616,9 @@ public:
                 auto view = device->createTextureView(**texture, {});
                 REG_CHECK(view);
                 cancelled = (*view)->retainTexture();
-                REG_REQUIRE(command.useNativeTextureView(**view));
+                render::vulkan::ExternalCommandScope scope(command);
+                auto native = scope.imageView(**view);
+                REG_CHECK(native && *native != VK_NULL_HANDLE);
             }
             REG_CHECK(!cancelled.expired());
             recording.frame.cancel();

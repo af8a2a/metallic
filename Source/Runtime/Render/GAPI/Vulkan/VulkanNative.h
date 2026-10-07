@@ -75,18 +75,32 @@ std::vector<uint8_t> nativeComputeSpirv(ComputePipeline& pipeline, bool deviceCo
 NativePipeline nativePipeline(GraphicsPipeline& pipeline);
 NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program);
 NativeTexture nativeTexture(Texture& texture);
-VkCommandBuffer nativeCommandBuffer(CommandBuffer& commandBuffer);
+// Lexically bound native recording. Do not retain exported handles/function tables
+// or interleave RHI state/draw commands before the scope ends. Commands must outlive
+// the scope. Every exit invalidates all cached RHI execution and dynamic state.
+class ExternalCommandScope final {
+public:
+    explicit ExternalCommandScope(CommandBuffer& commands);
+    ~ExternalCommandScope();
+    ExternalCommandScope(const ExternalCommandScope&) = delete;
+    ExternalCommandScope& operator=(const ExternalCommandScope&) = delete;
+    explicit operator bool() const { return commands_ != nullptr; }
+    VkCommandBuffer commandBuffer() const;
+    const VolkDeviceTable& functions() const;
+    // Materialize and retain both the view and image for this recording.
+    [[nodiscard]] Result<VkImageView> imageView(TextureView& view) const;
+private:
+    CommandBuffer* commands_ = nullptr;
+};
+
+// Read-only device identity, with no recording handle export.
 VkDevice nativeCommandBufferDevice(CommandBuffer& commandBuffer);
-// Requires a live command buffer. The owning Device must outlive the borrowed table.
-const VolkDeviceTable& nativeCommandBufferFunctions(CommandBuffer& commandBuffer);
-// DGC leaves affected state undefined. Rebind pipeline/shaders, heap and push data afterwards.
-void notifyGeneratedCommandsExecution(CommandBuffer& commandBuffer);
-// Compatibility name: invalidates all tracked execution state after external commands.
-void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 // Exporters use the backend policy, rather than hard-coding an optimal layout.
 VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout);
 // Backend diagnostic query; does not materialize a view.
 bool hasNativeImageView(const TextureView& view);
+// For host-side descriptor creation with an external lifetime owner only.
+// During recording, export through ExternalCommandScope::imageView instead.
 VkImageView nativeImageView(TextureView& view);
 } // namespace metallic::render::vulkan

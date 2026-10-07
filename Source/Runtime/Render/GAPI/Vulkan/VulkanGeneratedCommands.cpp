@@ -326,7 +326,9 @@ Result<> GeneratedCommands::preprocess(CommandBuffer& commands, const GeneratedC
     VkGeneratedCommandsInfoEXT info{};
     auto result = impl_->fillInfo(commands, args, info);
     if (!result) { return result; }
-    impl_->vk.vkCmdPreprocessGeneratedCommandsEXT(nativeCommandBuffer(commands), &info, nativeCommandBuffer(state));
+    ExternalCommandScope scope(commands), stateScope(state);
+    if (!scope || !stateScope) { return makeError(Error::InvalidArgument); }
+    impl_->vk.vkCmdPreprocessGeneratedCommandsEXT(scope.commandBuffer(), &info, stateScope.commandBuffer());
     return {};
 }
 
@@ -344,9 +346,11 @@ Result<> GeneratedCommands::preprocessBarrier(CommandBuffer& commands)
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-    impl_->vk.vkCmdPipelineBarrier2(nativeCommandBuffer(commands), &dependency);
+    ExternalCommandScope scope(commands);
+    if (!scope) { return makeError(Error::InvalidArgument); }
+    impl_->vk.vkCmdPipelineBarrier2(scope.commandBuffer(), &dependency);
     emitTrace({.kind = TraceKind::Barrier, .device = impl_->device.device,
-        .command = nativeCommandBuffer(commands), .dependency = &dependency});
+        .command = scope.commandBuffer(), .dependency = &dependency});
     return {};
 }
 
@@ -356,8 +360,9 @@ Result<> GeneratedCommands::execute(CommandBuffer& commands, const GeneratedComm
     VkGeneratedCommandsInfoEXT info{};
     auto result = impl_->fillInfo(commands, args, info);
     if (!result) { return result; }
-    impl_->vk.vkCmdExecuteGeneratedCommandsEXT(nativeCommandBuffer(commands), isPreprocessed, &info);
-    notifyGeneratedCommandsExecution(commands);
+    ExternalCommandScope scope(commands);
+    if (!scope) { return makeError(Error::InvalidArgument); }
+    impl_->vk.vkCmdExecuteGeneratedCommandsEXT(scope.commandBuffer(), isPreprocessed, &info);
     return {};
 }
 
