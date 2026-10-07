@@ -172,17 +172,26 @@ public:
         result = context.executeStages(stages, {}, imports);
         if (!result) { return result; }
         profile.next("Publish shadow parameters");
+        auto copyBatch = context.streamer()->beginCopyBatch();
+        if (!copyBatch) { return std::unexpected(copyBatch.error()); }
         mapped = shadow.parameters->map();
-        if (mapped == nullptr) { return makeError(Error::Failure); }
+        if (mapped == nullptr) {
+            (void)context.streamer()->cancelCopyBatch(*copyBatch);
+            return makeError(Error::Failure);
+        }
         const StreamDataChunk chunk{mapped, sizeof(ScreenSpaceShadowParameters)};
         const auto uploaded = context.streamer()->streamBufferData({
             .dataChunks = {&chunk, 1},
             .placementAlignment = 16,
             .dstBuffer = parameters.buffer(),
+            .copyBatch = *copyBatch,
         });
         shadow.parameters->unmap();
-        if (!uploaded.valid()) { return makeError(Error::OutOfMemory); }
-        if (auto commandResult = context.streamer()->copyStreamedData(commands); !commandResult) { return commandResult; }
+        if (!uploaded.valid()) {
+            (void)context.streamer()->cancelCopyBatch(*copyBatch);
+            return makeError(Error::OutOfMemory);
+        }
+        if (auto commandResult = context.streamer()->copyStreamedData(commands, *copyBatch); !commandResult) { return commandResult; }
         profile.next("Publish camera history");
         history_->view = view;
         history_->sceneIdentity = info.sceneIdentity;

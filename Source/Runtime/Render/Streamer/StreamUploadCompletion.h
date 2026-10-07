@@ -8,7 +8,7 @@
 
 namespace metallic::render {
 
-// A receipt for the next flush of a completion-tracked Streamer. The batch may
+// A receipt for one copy batch of a completion-tracked Streamer. The frame may
 // have accepted an earlier segment while the actual copy recording was cancelled,
 // so both copy submission and GPU completion are required before publication.
 class StreamUploadCompletion {

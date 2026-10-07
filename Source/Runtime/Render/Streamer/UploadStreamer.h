@@ -15,9 +15,16 @@ struct StreamDecompressionTile {
     bool compressed = false;
 };
 
-// Called at recording boundaries, under the Streamer lock. Profiling callbacks
-// must not reenter the Streamer. Existing callers may omit the callback.
+// Called at recording boundaries, outside the Streamer lock. Callbacks may query
+// or stage other batches, but must not change frame/command-buffer lifecycle.
 using StreamUploadPhaseCallback = std::function<void(const char*)>;
+
+// Opaque, single-use identity. Zero selects the compatibility/default batch in
+// upload/copy APIs; beginCopyBatch() always returns a nonzero identity.
+struct StreamerCopyBatch {
+    uint64_t id = 0;
+    bool valid() const { return id != 0; }
+};
 
 struct BufferOffset {
     class Buffer* buffer = nullptr;
@@ -84,6 +91,7 @@ struct StreamBufferDataDesc {
     uint32_t placementAlignment = 1;
     class Buffer* dstBuffer = nullptr;
     uint64_t dstOffset = 0;
+    StreamerCopyBatch copyBatch;
 };
 
 struct StreamTextureDataDesc {
@@ -100,8 +108,18 @@ struct StreamTextureDataDesc {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t depth = 1;
+    StreamerCopyBatch copyBatch;
 };
 
+// Shared staging and distinct copy batches are thread-safe. Populate a batch
+// before recording it, use a separate command pool/context per recording worker,
+// and externally order operations on the same batch. Default destination copies
+// belong to the coordinator; their flush never consumes explicit batches. Data-
+// only and constant uploads may run on workers. Destination resources
+// must survive recording, and callers still supply GPU barriers/queue ordering.
+// Join all users before beginFrame/endFrame, frame lifecycle, move or destruction.
+// beginFrame(frame) retains arenas until GPU completion. Without it, callers must
+// also prevent ring reuse/resource destruction while the GPU reads staged data.
 class Streamer {
     METALLIC_RHI_HANDLE(Streamer, unique_ptr,
         friend Result<std::unique_ptr<Streamer>> createStreamer(Device&, const StreamerDesc&);
@@ -109,17 +127,27 @@ class Streamer {
 
     const StreamerDesc& desc() const;
     StreamerStats stats() const;
+    // stats().pendingCopies aggregates all batches; this query covers only the
+    // selected batch. Invalid/consumed identities return empty counts.
+    StreamerPendingCopyStats pendingCopyStats(StreamerCopyBatch batch = {}) const;
     Buffer* constantBuffer() const;
     BufferOffset streamBufferData(const StreamBufferDataDesc& desc);
     bool streamDecompressedBufferData(std::span<const uint8_t> stored,
-        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset);
+        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset,
+        StreamerCopyBatch batch = {});
     BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
     uint64_t streamConstantData(const void* data, uint64_t byteSize);
     Result<> beginFrame(RenderFrameContext& frame);
-    // Covers copies currently queued for the next flush. Returns null without
+    [[nodiscard]] Result<StreamerCopyBatch> beginCopyBatch();
+    // Cancels only pending explicit batches; zero/consumed/foreign IDs fail.
+    [[nodiscard]] Result<> cancelCopyBatch(StreamerCopyBatch batch);
+    // Covers copies queued in this batch. Returns null without
     // beginFrame(frame), or when no copies are pending. See StreamUploadCompletion.h.
-    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion();
+    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion(StreamerCopyBatch batch = {});
     [[nodiscard]] Result<> copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
+    // Consumes the batch, including on failure. Pending stats then exclude it.
+    [[nodiscard]] Result<> copyStreamedData(CommandBuffer& commandBuffer, StreamerCopyBatch batch,
+        const StreamUploadPhaseCallback& phase = {});
     void endFrame();
 
 };
