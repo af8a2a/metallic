@@ -532,6 +532,7 @@ struct RenderGraphExecutor::Impl {
                     resource.buffer ? "buffer" : "texture"}, {"size", resource.bufferDesc.size}, {"stride", resource.bufferDesc.structureStride},
                 {"width", resource.desc.width}, {"height", resource.desc.height}, {"depth", resource.desc.depth},
                 {"textureType", static_cast<uint32_t>(resource.desc.type)}, {"format", static_cast<uint32_t>(resource.desc.format)}});
+            if (resource.buffer) { debugGraph["resources"].back()["layout"] = resource.debugLayout.empty() ? "raw" : resource.debugLayout; }
         }
         debugSceneIdentity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
         debugObserver->compiled(debugGraph);
@@ -1575,6 +1576,15 @@ struct RenderGraphExecutor::Impl {
                         .logicalResourceId = (uint64_t{1} << 63) | nextAccelerationStructureResourceId.fetch_add(1),
                     };
                 } else {
+                    if (!field.debugLayout.empty()) {
+                        static const auto layouts = renderDebugLayouts();
+                        const auto layout = layouts.find(field.debugLayout);
+                        if (layout == layouts.end() || !layout->second.stride ||
+                            layout->second.stride != field.structureStride || field.size % layout->second.stride != 0) {
+                            log = validationPrefix("buffer debug layout/stride mismatch for '" + fullName + "': " + field.debugLayout);
+                            return makeError(Error::InvalidArgument);
+                        }
+                    }
                     BufferUsageBits usage = bufferUsageForField(field);
                     if (usage == BufferUsageBits::None) {
                         usage = BufferUsageBits::Storage;
@@ -1637,6 +1647,7 @@ struct RenderGraphExecutor::Impl {
                         .bufferDesc = desc,
                         .bufferViewDesc = viewDesc,
                         .state = ResourceState::Undefined,
+                        .debugLayout = field.debugLayout,
                     };
                 }
 

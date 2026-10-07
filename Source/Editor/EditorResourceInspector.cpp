@@ -78,6 +78,10 @@ void EditorResourceInspector::select(std::string resource)
     capture_.reset();
     refresh_ = true;
     offset_ = 0;
+    count_ = 256;
+    bufferLayout_.clear();
+    rawBuffer_ = false;
+    fieldPage_ = 0;
     roi_ = {0, 0, 0, 0};
     status_.clear();
 }
@@ -91,6 +95,7 @@ debug::DebugValue EditorResourceInspector::diagnostics() const
         result["capture"] = capture_->artifacts[0].metadata;
         result["capture"]["byteCount"] = capture_->artifacts[0].bytes.size();
         result["capture"]["evidence"] = capture_->snapshot.evidence.value();
+        result["capture"]["schema"] = capture_->artifacts[0].layout.schema();
     }
     return result;
 }
@@ -107,13 +112,14 @@ void EditorResourceInspector::request(render::RenderDebugRuntime& runtime,
     nextRefresh_ = ImGui::GetTime() + 0.5;
     const auto layoutName = resource.value("layout", "");
     const bool texture = resource.value("kind", "") == "texture";
-    const std::string layout = layoutName == "raw" ? "u32" : layoutName;
+    const std::string layout = layoutName == "raw" ? (bufferLayout_.empty() ? "u32" : bufferLayout_) : layoutName;
     if (!runtime.layouts().contains(layout) || !resource.value("captureSupported", true)) {
         status_ = resource.value("reason", "This resource format cannot be captured.");
         live_ = false;
         return;
     }
-    DebugValue spec{{"id", selected_}, {"layout", layout}, {"allocation", resource.at("allocation")}};
+    DebugValue spec{{"id", selected_}, {"layout", layout}, {"allocation", resource.at("allocation")},
+        {"layoutHash", runtime.layouts().at(layout).layoutHash()}};
     const uint64_t stride = runtime.layouts().at(layout).stride;
     // Leave room for the snapshot metadata charged by the capture runtime.
     const uint64_t budget = std::min(runtime.core().limits().jobBytes, runtime.core().limits().frameBytes);
@@ -134,6 +140,7 @@ void EditorResourceInspector::request(render::RenderDebugRuntime& runtime,
         const uint64_t capacity = resource.value("size", uint64_t(0)) / stride;
         if (offset_ >= capacity || !availableBytes) { status_ = "Element offset is outside the buffer or capture budget."; live_ = false; return; }
         uint64_t count = std::min({uint64_t(std::clamp(count_, 1, 65536)), capacity - offset_, availableBytes / stride});
+        count_ = static_cast<int>(count);
         // The RHI requires four-byte aligned copies (all registered buffer layouts here satisfy this).
         spec["offset"] = offset_;
         spec["count"] = count;
@@ -200,6 +207,33 @@ void EditorResourceInspector::draw(render::RenderDebugRuntime& runtime, render::
         ImGui::TextDisabled("Width/height 0: remaining extent. Refresh applies the range.");
     } else {
         ImGui::Text("%llu bytes | declared stride: %u", static_cast<unsigned long long>(resource.value("size", uint64_t(0))), resource.value("structureStride", 0u));
+        if (resource.value("layout", "") == "raw") {
+            const auto current = bufferLayout_.empty() ? std::string("u32") : bufferLayout_;
+            ImGui::SetNextItemWidth(260 * scale);
+            if (ImGui::BeginCombo("Capture type", current.c_str())) {
+                std::vector<std::string> types;
+                const auto stride = resource.value("structureStride", 0u);
+                for (const auto& [name, type] : runtime.layouts()) {
+                    // Manual interpretation only. Offer whole-element layouts for a
+                    // structured allocation, plus raw 32-bit scalar views.
+                    if (type.stride && type.stride % 4 == 0 &&
+                        ((!stride || type.stride == stride) || name == "u32" || name == "i32" || name == "f32")) {
+                        types.push_back(name);
+                    }
+                }
+                std::sort(types.begin(), types.end());
+                for (const auto& name : types) {
+                    if (ImGui::Selectable(name.c_str(), current == name)) {
+                        cancel(core); bufferLayout_ = name; offset_ = 0; fieldPage_ = 0;
+                        capture_.reset(); refresh_ = true; rawBuffer_ = false;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::TextDisabled("Manual interpretation; matching stride does not prove the shader type.");
+        } else {
+            ImGui::TextDisabled("Type declared by the producer; ranges are measured in typed elements.");
+        }
         ImGui::SetNextItemWidth(160 * scale);
         ImGui::InputScalar("First element", ImGuiDataType_U64, &offset_);
         ImGui::SameLine(); ImGui::SetNextItemWidth(110 * scale); ImGui::InputInt("Count", &count_);
@@ -342,58 +376,109 @@ void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan
 void EditorResourceInspector::drawBuffer()
 {
     const auto& artifact = capture_->artifacts[0];
-    const bool raw = artifact.layout.name == "u32" || artifact.layout.name == "i32" || artifact.layout.name == "f32";
+    const bool scalar = artifact.layout.name == "u32" || artifact.layout.name == "i32" || artifact.layout.name == "f32";
+    if (!scalar) { ImGui::Checkbox("Raw 32-bit words", &rawBuffer_); }
+    const bool raw = scalar || rawBuffer_;
     if (raw) {
         ImGui::SetNextItemWidth(120); ImGui::Combo("Interpret as", &scalar_, "uint32\0int32\0float32\0");
         ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::SliderInt("Words / row", &columns_, 1, 16);
-        ImGui::TextDisabled("Raw 32-bit words; this does not infer the shader's struct layout.");
     }
     ImGui::Checkbox("Hex bytes", &hex_);
-    const int columns = raw ? columns_ : std::min(int(artifact.layout.fields.size()), 32);
-    const size_t elements = artifact.bytes.size() / artifact.layout.stride;
-    const int rows = int(raw ? (elements + columns - 1) / columns : elements);
-    if (!ImGui::BeginTable("BufferValues", columns + 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-            ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0, 0))) { return; }
-    ImGui::TableSetupScrollFreeze(1, 1);
-    ImGui::TableSetupColumn("Element / byte", ImGuiTableColumnFlags_WidthFixed, 140);
-    for (int c = 0; c < columns; ++c) {
-        const auto label = raw ? "+" + std::to_string(c) : artifact.layout.fields[c].name;
-        ImGui::TableSetupColumn(label.c_str(), ImGuiTableColumnFlags_WidthFixed, 130);
-    }
-    ImGui::TableHeadersRow();
-    ImGuiListClipper clipper; clipper.Begin(rows);
-    while (clipper.Step()) {
-        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
-            const size_t first = raw ? size_t(row) * columns : size_t(row);
-            const uint64_t absolute = artifact.metadata.value("elementOffset", uint64_t(0)) + first;
-            ImGui::TableNextRow(); ImGui::TableNextColumn();
-            ImGui::Text("%llu / 0x%llX", static_cast<unsigned long long>(absolute), static_cast<unsigned long long>(absolute * artifact.layout.stride));
-            DebugValue decoded;
-            if (!raw) {
-                auto result = debug::decodeBuffer(std::span(artifact.bytes).subspan(first * artifact.layout.stride, artifact.layout.stride), artifact.layout);
-                if (result) { decoded = result->at(0); }
+    struct Column {
+        const debug::DebugFieldDesc* field;
+        uint32_t component;
+        uint32_t size;
+        std::string label;
+    };
+    std::vector<Column> fields;
+    if (!raw) {
+        for (const auto& field : artifact.layout.fields) {
+            const uint32_t size = field.type == "u8" ? 1 : field.type == "f16" || field.type == "u16" ? 2 :
+                field.type == "u64" || field.type == "i64" || field.type == "f64" ? 8 : 4;
+            for (uint32_t i = 0; i < field.count; ++i) {
+                const auto suffix = field.count == 1 ? std::string{} : "[" + std::to_string(i) + "]";
+                fields.push_back({&field, i, size, field.name + suffix + " (" + field.type + ")"});
             }
-            for (int c = 0; c < columns; ++c) {
-                ImGui::TableNextColumn();
-                if (raw) {
-                    const size_t index = first + c;
-                    if (index >= elements) { continue; }
-                    const auto* p = artifact.bytes.data() + index * 4;
-                    if (hex_) { ImGui::Text("0x%08X", read<uint32_t>(p)); }
-                    else if (scalar_ == 0) { ImGui::Text("%u", read<uint32_t>(p)); }
-                    else if (scalar_ == 1) { ImGui::Text("%d", read<int32_t>(p)); }
-                    else { ImGui::Text("%.9g", read<float>(p)); }
-                } else {
-                    const auto& field = artifact.layout.fields[c];
-                    if (hex_) {
-                        const size_t size = field.type == "u8" ? 1 : field.type == "f16" || field.type == "u16" ? 2 : field.type == "u64" || field.type == "i64" || field.type == "f64" ? 8 : 4;
-                        ImGui::TextUnformatted(debug::hexEncode(std::span(artifact.bytes).subspan(first * artifact.layout.stride + field.offset, size * field.count)).c_str());
-                    } else if (decoded.contains(field.name)) { ImGui::TextUnformatted(displayValue(decoded.at(field.name)).c_str()); }
+        }
+        if (fields.empty()) { ImGui::TextUnformatted("This layout has no displayable fields."); return; }
+        const int pages = int((fields.size() + 31) / 32);
+        fieldPage_ = std::clamp(fieldPage_, 0, pages - 1);
+        if (pages > 1) {
+            ImGui::SetNextItemWidth(160); ImGui::SliderInt("Field page", &fieldPage_, 0, pages - 1);
+        }
+        ImGui::TextDisabled("%s | element stride: %u bytes | hover a column for its byte offset",
+            artifact.layout.name.c_str(), artifact.layout.stride);
+    }
+    const size_t fieldStart = size_t(fieldPage_) * 32;
+    const int columns = raw ? columns_ : int(std::min(size_t(32), fields.size() - fieldStart));
+    const size_t stride = raw ? 4 : artifact.layout.stride;
+    const size_t elements = artifact.bytes.size() / stride;
+    const int rows = int(raw ? (elements + columns - 1) / columns : elements);
+    // Distinct table IDs prevent persisted raw-column widths/order from masking typed fields.
+    ImGui::PushID(raw ? "raw" : artifact.layout.name.c_str());
+    ImGui::PushID(fieldPage_);
+    if (ImGui::BeginTable("BufferValues", columns + 1, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0, 0))) {
+        ImGui::TableSetupScrollFreeze(1, 1);
+        const char* indexLabel = raw ? "Word / byte" : "Element / byte";
+        ImGui::TableSetupColumn(indexLabel, ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize(indexLabel).x + 24);
+        for (int c = 0; c < columns; ++c) {
+            const auto label = raw ? "+" + std::to_string(c) : fields[fieldStart + c].label;
+            ImGui::TableSetupColumn(label.c_str(), ImGuiTableColumnFlags_WidthFixed,
+                std::max(130.f, ImGui::CalcTextSize(label.c_str()).x + 24));
+        }
+        ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+        for (int c = 0; c <= columns; ++c) {
+            ImGui::TableSetColumnIndex(c); ImGui::TableHeader(ImGui::TableGetColumnName(c));
+            if (!raw && c && ImGui::IsItemHovered()) {
+                const auto& column = fields[fieldStart + c - 1];
+                ImGui::SetTooltip("%s | byte offset: %u | scalar size: %u | bit offset/width: %u/%u",
+                    column.field->type.c_str(), column.field->offset + column.component * column.size,
+                    column.size, column.field->bitOffset, column.field->bitWidth);
+            }
+        }
+        ImGuiListClipper clipper; clipper.Begin(rows);
+        while (clipper.Step()) {
+            for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                const size_t first = raw ? size_t(row) * columns : size_t(row);
+                const uint64_t byteOffset = artifact.metadata.value("elementOffset", uint64_t(0)) * artifact.layout.stride + first * stride;
+                ImGui::TableNextRow(); ImGui::TableNextColumn();
+                ImGui::Text("%llu / 0x%llX", static_cast<unsigned long long>(byteOffset / stride), static_cast<unsigned long long>(byteOffset));
+                DebugValue decoded;
+                if (!raw) {
+                    auto result = debug::decodeBuffer(std::span(artifact.bytes).subspan(first * stride, stride), artifact.layout);
+                    if (result) { decoded = result->at(0); }
+                }
+                for (int c = 0; c < columns; ++c) {
+                    ImGui::TableNextColumn();
+                    if (raw) {
+                        const size_t index = first + c;
+                        if (index >= elements) { continue; }
+                        const auto* p = artifact.bytes.data() + index * 4;
+                        if (hex_) { ImGui::Text("0x%08X", read<uint32_t>(p)); }
+                        else if (scalar_ == 0) { ImGui::Text("%u", read<uint32_t>(p)); }
+                        else if (scalar_ == 1) { ImGui::Text("%d", read<int32_t>(p)); }
+                        else { ImGui::Text("%.9g", read<float>(p)); }
+                    } else {
+                        const auto& column = fields[fieldStart + c];
+                        const auto& field = *column.field;
+                        if (hex_) {
+                            ImGui::TextUnformatted(debug::hexEncode(std::span(artifact.bytes).subspan(
+                                first * stride + field.offset + column.component * column.size, column.size)).c_str());
+                        } else if (decoded.contains(field.name) || (artifact.layout.fields.size() == 1 && field.name == "value")) {
+                            const auto& value = decoded.contains(field.name) ? decoded.at(field.name) : decoded;
+                            const auto& component = field.count == 1 ? value : value.at(column.component);
+                            if (component.is_number_float() && (field.type == "f32" || field.type == "f16")) {
+                                ImGui::Text("%.9g", component.get<double>());
+                            } else { ImGui::TextUnformatted(displayValue(component).c_str()); }
+                        }
+                    }
                 }
             }
         }
+        ImGui::EndTable();
     }
-    ImGui::EndTable();
+    ImGui::PopID(); ImGui::PopID();
 }
 
 void EditorResourceInspector::shutdown(render::vulkan::VulkanImGuiBackend& backend)

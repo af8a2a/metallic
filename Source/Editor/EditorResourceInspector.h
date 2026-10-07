@@ -30,11 +30,14 @@ private:
 
     render::RenderDebugRuntime runtime_;
     std::string selected_, job_, status_, graph_;
+    std::string bufferLayout_;
     uint64_t generation_ = 0;
     char filter_[192] = {};
     bool live_ = false, refresh_ = true, imageDirty_ = false, fit_ = true, hex_ = false;
     double nextRefresh_ = 0;
     int channel_ = 0, scalar_ = 0, columns_ = 4;
+    bool rawBuffer_ = false;
+    int fieldPage_ = 0;
     float exposure_ = 0, rangeMin_ = 0, rangeMax_ = 1, zoom_ = 1;
     uint64_t offset_ = 0;
     int count_ = 256;

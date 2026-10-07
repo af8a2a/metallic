@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -10,12 +11,33 @@
 
 namespace metallic {
 namespace {
-class InspectorBufferPass final : public render::ComputePass {
+class InspectorHDRPass final : public render::RasterPass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addBufferOutput("values").buffer(1024, 16).transferWrite();
+        auto& color = reflection.addTextureOutput("color");
+        color.format = render::Format::RGBA16Sfloat;
+        color.colorEncoding = render::DisplayColorEncoding::SceneLinear;
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        return clear_->execute(context);
+    }
+private:
+    std::unique_ptr<render::RenderGraphPass> clear_ = render::builtin_pass::createClearColorPass();
+};
+
+class InspectorBufferPass final : public render::ComputePass {
+public:
+    explicit InspectorBufferPass(std::string layout = {}, uint32_t stride = 16)
+        : layout_(std::move(layout)), stride_(stride) {}
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addBufferOutput("values").buffer(1024, stride_).bufferLayout(layout_).transferWrite();
+        reflection.addBufferInput("exposure").buffer(16, 16).storageRead().setOptional();
         return reflection;
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string&) override
@@ -38,6 +60,8 @@ public:
         return context.commandBuffer().copyBuffer(*source, *destination);
     }
 private:
+    std::string layout_;
+    uint32_t stride_;
     std::unique_ptr<render::Buffer> upload_;
 };
 
@@ -139,10 +163,30 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
         return condition;
     };
     render::registerRenderGraphPassType("InspectorBufferFixture", "Inspector smoke fixture", [] { return std::make_unique<InspectorBufferPass>(); });
+    render::registerRenderGraphPassType("InspectorHDRFixture", "Inspector HDR fixture", [] { return std::make_unique<InspectorHDRPass>(); });
+    render::registerRenderGraphPassType("InspectorBadStride", "Invalid schema fixture", [] { return std::make_unique<InspectorBufferPass>("float4", 4); });
+    render::registerRenderGraphPassType("InspectorBadType", "Invalid schema fixture", [] { return std::make_unique<InspectorBufferPass>("UnregisteredType"); });
+    for (const char* type : {"InspectorBadStride", "InspectorBadType"}) {
+        render::RenderGraph invalid;
+        invalid.addNode(type, "Invalid"); invalid.markOutput("Invalid.values");
+        render::RenderGraphExecutor executor;
+        std::string log;
+        if (!expect(!executor.compile(*device_, invalid, 16, 16, log) && log.find("layout/stride mismatch") != std::string::npos,
+            "Reject an unknown schema or a schema/stride mismatch")) { return false; }
+    }
     destroyViewportTexture();
+    scene::LightingSettings lighting;
+    lighting.autoExposure.lowPercent = 0;
+    lighting.autoExposure.highPercent = 100;
+    scene_.setLighting(lighting);
+    renderWorld_.setLighting(lighting);
     renderGraph_ = render::RenderGraph{};
     renderGraph_.addNode("ClearColorPass", "Clear", {{"color", {0.25f, 0.5f, 0.75f, 1.f}}});
     renderGraph_.addNode("InspectorBufferFixture", "Data");
+    renderGraph_.addNode("InspectorHDRFixture", "HDR", {{"color", {0.5f, 0.5f, 0.5f, 1.f}}});
+    renderGraph_.addNode("AutoExposurePass", "AutoExposure", {{"adaptationDeltaSeconds", 0.1f}});
+    renderGraph_.addEdge("HDR.color", "AutoExposure.source");
+    renderGraph_.addEdge("AutoExposure.exposure", "Data.exposure");
     renderGraph_.markOutput("Clear.color");
     renderGraph_.markOutput("Data.values");
     setActivePreviewOutput("Clear.color");
@@ -233,6 +277,50 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
         inspector.capture_->artifacts[0].metadata.at("elementOffset") == 17, "Buffer range offset applied")) { return false; }
     inspector.offset_ = UINT64_MAX; inspector.refresh_ = true;
     if (!frames(2) || !expect(inspector.job_.empty() && inspector.status_.find("outside") != std::string::npos, "Out of bounds rejected before GPU work")) { return false; }
+    inspector.bufferLayout_ = "uint4"; inspector.offset_ = 2; inspector.count_ = 3;
+    inspector.capture_.reset(); inspector.refresh_ = true;
+    if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "uint4" &&
+        inspector.capture_->artifacts[0].bytes.size() == 48, "Manual uint4 capture uses typed element ranges")) { return false; }
+    const auto& vector = inspector.capture_->artifacts[0];
+    const auto vectors = debug::decodeBuffer(vector.bytes, vector.layout);
+    if (!expect(vectors && vectors->size() == 3 && vectors->at(0).at("x") == 139 && vectors->at(2).at("w") == 326,
+        "Typed vector components decode at the correct stride and offset") ||
+        !expect(exportCapture("typed-buffer") && exportUI("typed-buffer-ui"), "Export typed vector capture and UI")) { return false; }
+    inspector.rawBuffer_ = true; inspector.hex_ = true;
+    if (!frames(1) || !expect(exportUI("typed-buffer-raw-ui"), "Typed capture can show original raw bytes")) { return false; }
+    inspector.hex_ = false;
+    inspector.select("AutoExposure.exposure");
+    if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "AutoExposureState",
+        "Real AutoExposure defaults to its producer-declared type")) { return false; }
+    const auto exposureCapture = inspector.capture_;
+    const auto& exposure = exposureCapture->artifacts[0];
+    const auto decodedExposure = debug::decodeBuffer(exposure.bytes, exposure.layout);
+    if (decodedExposure) {
+        report.value["exposureValues"] = *decodedExposure;
+        spdlog::info("[Smoke Resource Inspector] AutoExposure typed values: {}", decodedExposure->dump());
+    }
+    if (!expect(decodedExposure && decodedExposure->size() == 1 &&
+        decodedExposure->at(0).at("multiplier").get<double>() > 0 &&
+        std::isfinite(decodedExposure->at(0).at("adaptedEV100").get<double>()) &&
+        std::isfinite(decodedExposure->at(0).at("targetEV100").get<double>()) &&
+        std::abs(decodedExposure->at(0).at("luminance").get<double>() - 0.5) < 0.01 &&
+        std::abs(decodedExposure->at(0).at("multiplier").get<double>() - 0.36) < 0.01 &&
+        std::abs(decodedExposure->at(0).at("targetEV100").get<double>() - std::log2(0.5 / 0.18)) < 0.02,
+        "GPU HDR exposure fields decode as floats with expected metered luminance") ||
+        !expect(exportCapture("exposure") && exportUI("exposure-ui"), "Export real exposure capture and typed UI")) { return false; }
+    inspector.select("Data.exposure");
+    if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "AutoExposureState" &&
+        inspector.capture_->artifacts[0].bytes == exposure.bytes, "Input aliases retain the producer schema and values")) { return false; }
+    inspector.select("AutoExposure.histogram"); inspector.count_ = 64;
+    if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "u32",
+        "Histogram declares uint32 elements")) { return false; }
+    const auto& histogram = inspector.capture_->artifacts[0];
+    uint64_t weight = 0;
+    for (size_t i = 0; i < histogram.bytes.size(); i += 4) {
+        uint32_t bin; std::memcpy(&bin, histogram.bytes.data() + i, 4); weight += bin;
+    }
+    if (!expect(weight == 16 * 16 * 256, "Typed histogram readback preserves the GPU tile weight")) { return false; }
+    inspector.select("Data.values");
     inspector.offset_ = 0; inspector.count_ = 256; inspector.refresh_ = true;
     if (!frames(4)) { return false; }
     const auto generation = inspector.generation_;

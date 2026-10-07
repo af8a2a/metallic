@@ -32,9 +32,10 @@ public:
         color.colorEncoding = DisplayColorEncoding::ExposedLinear;
         reflection.addBufferOutput("histogram", "64-bin luminance histogram per 16x16 tile")
             .buffer(uint64_t((context.width + 15) / 16) * ((context.height + 15) / 16) * 64 * 4, 4)
+            .bufferLayout("u32")
             .storageReadWrite();
         reflection.addBufferOutput("exposure", "float4: multiplier, adapted EV100, target EV100, luminance")
-            .buffer(16, 16).storageReadWrite();
+            .buffer(16, 16).bufferLayout("AutoExposureState").storageReadWrite();
         return reflection;
     }
 
