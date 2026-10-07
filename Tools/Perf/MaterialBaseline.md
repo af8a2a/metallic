@@ -43,6 +43,9 @@ their GPU utilization. Normal timing is not compatible with injected diagnostics
 
 Evidence contains source/binary/input hashes, actual graph JSON, raw HDR images,
 per-frame graph/node/nested-section GPU milliseconds, process logs and telemetry.
+Git status and the archived diff cover the superproject and do not inspect optional
+submodule worktrees; `Identity.json.statusScope` records this boundary. Staged
+external entries and the explicit source/binary/workload hashes remain recorded.
 Compilation/loading/CPU waits/readback and editor presentation are outside the
 reported GPU scopes. Assets are identified, not copied into a portable snapshot.
 Keep the generated configuration directory because material URIs reference it.

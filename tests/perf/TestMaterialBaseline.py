@@ -4,10 +4,35 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/Perf"))
 import MaterialBaseline as baseline
+
+
+class MaterialBaselineIdentityTests(unittest.TestCase):
+    def test_identity_does_not_require_access_to_optional_submodule_worktrees(self):
+        def git(command, **kwargs):
+            if command[1] == "status" and "--ignore-submodules=all" not in command:
+                raise baseline.subprocess.CalledProcessError(128, command, stderr="External/ImGuizmo: Permission denied")
+            return {"rev-parse": "commit", "status": " M Shaders/Glass.slang", "ls-files": "160000 gitlink 0\tExternal/ImGuizmo"}[command[1]]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("Shaders", "Source", "tests/rhi"):
+                (root / name).mkdir(parents=True)
+            with patch.object(baseline, "ROOT", root), patch.object(baseline, "__file__", str(root / "Tools/Perf/MaterialBaseline.py")), \
+                    patch.object(baseline, "asset_paths", return_value=[]), \
+                    patch.object(baseline, "digest", return_value="hash"), \
+                    patch.object(baseline.platform, "platform", return_value="test-platform"), \
+                    patch.object(baseline.subprocess, "check_output", side_effect=git):
+                result = baseline.identity(root / "tests/MetallicRHITests.exe")
+        self.assertEqual(result["status"], "M Shaders/Glass.slang")
+        self.assertIn("External/ImGuizmo", result["submodules"])
+        self.assertIn("not inspected", result["statusScope"])
+        self.assertTrue(result["binaries"])
+        self.assertTrue(result["sources"])
 
 
 @unittest.skipUnless(importlib.util.find_spec("numpy"), "Optional baseline tooling requires numpy")

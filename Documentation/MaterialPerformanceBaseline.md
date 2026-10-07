@@ -85,3 +85,11 @@ M06 uniform/textured PT 在三轮均有 3 个 NaN 分量，位置为 (x=375,y=24
 三次 RHI 采集进程均 exit 0；捕获完成不等于每项质量通过。当前 verifier 已核对完整帧窗口、后端队列约定、所有文件哈希、HDR 有限值计数与 A/A。工具单元测试 9/9 通过，所有报告图表与场景预览已人工查看。
 
 外层 runner 首次收尾校验曾因错误要求 `asyncComputeBranches == 0` 返回 1；三次 GPU 采集本身均 exit 0。核对实际 VBuffer fork/join 与 graphics timestamp 边界后，已修正后端约定检查，当前 verifier 对原始封存包复核通过；没有修改或重封存原始证据。见 [检查说明](../build/material-perf-20261006-report/ReviewNotes.md)。
+
+2026-10-07 对三项透射 PT 作了定向修复与复测。新的修复前采集在三个独立进程中均复现相同 NaN 坐标。临时 shader 记录第一处非有限值：M06 uniform/textured 的 `sampleFrame=10`、`depth=7`，BSDF PDF 为 `2.1279323521372127e19`；S05 的 `sampleFrame=65`、`depth=9`，PDF 为 `2.445145195090123e19`。两者都是有限 PDF，`SceneSurface.slang::misPowerHeuristic()` 直接平方后溢出为 Inf，环境 miss 的 MIS 权重成为 `Inf/Inf`，再污染累积 RGB。诊断 shader 的源文件已按字节恢复，诊断时间数据单独保留。
+
+共享 MIS helper 现在先对两个 PDF 乘以同一个正常浮点范围内的二次幂，再平方；该公因子在比值中抵消。GPU 回归覆盖 16 组普通、极大、极小、零、负数及实际捕获 PDF，使用独立 double 参考，并检查环境 NEE 与 delta/procedural bypass。有效绑定的回归在原实现上因 NaN 失败，修复后通过；Release RHI 构建、10 项 baseline 工具测试与 diff 检查也通过。
+
+复测沿用原资产、相机和 graph：512×512、4 spp/frame、深度 12，97 帧中 32 帧预热、64 帧计时，最后一帧读回 HDR，保留磁盘缓存。三项各三个独立进程，共九份 HDR 全部有限，三进程 A/A 逐像素一致，verifier 的 `invalidHDR` 为空。另一次开启 Vulkan validation 的三项采集均通过，没有 Vulkan validation 错误，HDR 与正常基线逐像素一致；场景预览已检查。对修复前有限 RGB 的比较排除每项原来的一枚 NaN 像素：M06 两项 max absolute difference 为 `0.00269848`、RMSE 为 `1.83331e-5`；S05 分别为 `2.38419e-7`、`1.39734e-9`。这些是输出差值观测，不是新增物理正确性容差。原 NaN 数据不用于优化比较，本次不宣称性能收益。
+
+[定向复测结果](../build/material-nan-20261007-report/Results.json) · [第一处非有限值记录](../build/material-nan-20261007-trace/FirstNonfinite.json) · [修复前证据](../build/material-nan-20261007-before-live/Manifest.json) · [修复后证据](../build/material-nan-20261007-after/Manifest.json) · [修复后预览](../build/material-nan-20261007-report/FixedPreviews.png)。上述 2026-10-06 全目录历史结果保留，本次复测范围为这三项。

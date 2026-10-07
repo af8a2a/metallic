@@ -57,7 +57,10 @@ def identity(exe, case_path=None):
     sources = list((ROOT / "Shaders").rglob("*.slang")) + list((ROOT / "Shaders").rglob("*.hlsli"))
     sources += list((ROOT / "Source").rglob("*.cpp")) + list((ROOT / "Source").rglob("*.h"))
     sources += [ROOT / "tests/rhi/MaterialBaselineTests.cpp", Path(__file__)]
-    return {"commit": git("rev-parse", "HEAD"), "status": git("status", "--short"),
+    # Inspect superproject metadata without requiring access to every optional
+    # submodule checkout. External index entries and workload hashes remain recorded.
+    return {"commit": git("rev-parse", "HEAD"), "status": git("status", "--short", "--ignore-submodules=all"),
+            "statusScope": "Superproject only; submodule worktrees are not inspected",
             "submodules": git("ls-files", "--stage", "External"), "platform": platform.platform(),
             "python": sys.version, "exe": str(exe),
             "binaries": {str(p): digest(p) for p in [exe, *sorted(exe.parent.glob("*.dll"))]},
@@ -191,7 +194,7 @@ def run(args):
         shutil.copy2(__file__, output / "MaterialBaseline.py")
         shutil.copy2(ROOT / "tests/rhi/MaterialBaselineTests.cpp", output / "MaterialBaselineTests.cpp")
         with (output / "WorkingTree.patch").open("wb") as stream:
-            subprocess.run(["git", "diff", "--binary", "HEAD"], cwd=ROOT, stdout=stream, check=True)
+            subprocess.run(["git", "diff", "--binary", "--ignore-submodules=all", "HEAD"], cwd=ROOT, stdout=stream, check=True)
         gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=name,uuid,driver_version,pstate,temperature.gpu", "--format=csv"], text=True)
         (output / "GPU.csv").write_text(gpu)
         (output / "GPUProcesses.txt").write_text(subprocess.check_output(["nvidia-smi"], text=True))

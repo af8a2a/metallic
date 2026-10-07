@@ -486,10 +486,19 @@ float misPowerHeuristic(float pdfA, float pdfB)
 {
     float a = max(pdfA, 0.0);
     float b = max(pdfB, 0.0);
+    // Smooth transmission can produce finite PDFs whose squares overflow.
+    // A common power-of-two multiplier cancels from the heuristic. Keep it
+    // normal: dividing by a near-FLT_MAX PDF can flush its reciprocal to zero
+    // on the GPU. The largest scaled normal PDF is in [1, 4).
+    float maxPdf = max(a, b);
+    if (maxPdf == 0.0) { return 1.0; }
+    uint exponent = (asuint(maxPdf) >> 23u) & 0xffu;
+    float scale = asfloat((254u - min(exponent, 253u)) << 23u);
+    a *= scale;
+    b *= scale;
     a *= a;
     b *= b;
-    float sum = a + b;
-    return sum > 0.0 ? a / sum : 1.0;
+    return a / (a + b);
 }
 
 struct EnvironmentLightSample
