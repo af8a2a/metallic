@@ -84,6 +84,61 @@ Local evidence is under `.tmp/spirv-removal-research/`: compiler/startup results
 baseline comparison in `StrideImplementationGPU/`. These are local validation
 artifacts, not source-controlled captures.
 
+### Driver 617.42 follow-up
+
+On 2026-10-07, the RTX 5070 Ti driver was updated from 616.92 to 617.42.
+The initial alpha-mask comparison and complete tessellation pixel matrices used
+the exact same SHA-256 RHI executable as the earlier 17:49 run and the same Slang
+2026.18.2 DLL. VVL-enabled checks used the same isolated official VVL 1.4.363 DLL.
+Existing SPIR-V caches were retained; incompatible driver pipeline caches rebuilt
+normally.
+The current source was also rebuilt in the compatible `build-pass-stages-nrd`
+Release tree, and its core GPU checks reproduced the baseline results.
+
+With VVL enabled, native nested layouts, final descriptor indices/heap switching,
+mixed 32/64-bit atomics, texture sampling and MixedProducer rendering pass.
+Standard TLAS, partitioned TLAS and position-fetch native ray-query tests also
+pass, including their readbacks. Native DebugPrintf completes with matching GPU
+readback and 1/1 matching echo records. The wrong-stride input is still rejected
+with the explicit 32/32 recompilation instruction. The two
+`DescriptorHeapShaderABI` cases are CPU SPIR-V checks, not GPU executions. No
+VUID occurs in the completed core or ray-query runs.
+
+Native alpha-mask coverage remains 12100, with 4284 dark pixels and zero
+unexpected colors, identical to the 616.92 result; mapped passes. Complete
+native displacement and recursive pixel matrices still differ in all 32 and 96
+resident combinations respectively, while their 32 and 96 stream combinations
+have no image mismatch. Mapped passes all 64/192 combinations and the subsequent
+edit checks. These full pixel matrices disable VVL on both paths; the initial
+VVL-enabled recursive attempt timed out at 300 seconds and is not a completed
+result. See [resident image investigation](NativeResidentImageInvestigation.md)
+for the image evidence and scope.
+
+The additional native `opacity_micromap_ray_query` and partitioned variant both
+stop at the OMM-disabled fallback: step 0 ray 0 has CPU bilinear alpha coverage
+0.260272, below cutoff 0.5, but the GPU reports a hit. Neither test reaches its
+OMM-enabled branch. Both mapped variants pass fallback/OMM visibility, edits,
+compaction and candidate reduction checks. The preserved 17:49 executable
+reproduces the native failure on 617.42 too. Earlier October 3 logs suggest a
+native pass, but used different compiler/cache policies; there is no controlled
+pre-upgrade run of this exact OMM input. Do not attribute this newly recorded
+fallback failure specifically to the driver update or to Slang issue #13438.
+
+All runs retain production pointer normalization, the typed uint64 exception,
+AS address resolver and OMM SPIR-V finalization. They do not establish that any
+of those policies can be removed. There is no performance comparison or full
+scene/temporal acceptance in this retest.
+
+Local evidence is under `.tmp/spirv-removal-research/Driver61742/`: initial
+unchanged-binary checks in `20261007-184136-876`, complete pixel matrices in
+`20261007-184901-959`, rebuilt core/readback/printf results in
+`20261007-190046-998`, mapped OMM controls in `20261007-190301-879`, and the
+unchanged-binary native OMM check in `20261007-190308-067`. Summaries record
+driver/compiler/layer identities and executable hashes. Some processes still
+exit nonzero after passing GPU assertions because sandbox access denies HTML
+report path canonicalization; use the retained GoogleTest XML and readbacks to
+distinguish assertion failures from report export errors.
+
 ## Conditions for removal
 
 Do not retire this policy solely because a newer SDK recognizes descriptor heap

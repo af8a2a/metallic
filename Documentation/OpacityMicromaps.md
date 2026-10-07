@@ -107,6 +107,12 @@ imported UV transform, alpha-factor, BLEND edits and TLAS refits.
 `opacity_micromap_ray_query_partitioned` additionally covers top-level backend
 switches.
 
+The 2026-10-07 RTX 5070 Ti / driver 617.42 retest passes both variants in mapped
+mode. Native stops at the OMM-disabled baseline's bilinear alpha assertion,
+before testing the OMM-enabled branch; this is not evidence of an OMM-specific
+execution failure. See the [native driver retest](NativeDescriptorHeapStrideWorkaround.md#driver-61742-follow-up)
+for the matched-toolchain comparisons and remaining validation limits.
+
 `opacity_micromap_build_plan_lifetime` releases CPU inputs before recording and
 the plan/vertex/scratch wrappers before submission, compacts the BLAS, destroys
 the source allocation and then checks six analytic hit/miss rays. Geometry is

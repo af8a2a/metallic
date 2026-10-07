@@ -25,6 +25,36 @@
 
 本机 imageDescriptorSize=32、imageDescriptorAlignment=32，sampled/storage image 的具体 descriptor size 均为 32。单纯 stride 数值或 NonUniform 装饰无法解释上述差异。源码层 NonUniformResourceIndex 的第一次试验没有在此 native 路径生成装饰，因此额外做了显式 SPIR-V 装饰试验。
 
+## 2026-10-07 驱动 617.42 复测
+
+RTX 5070 Ti 从 NVIDIA 616.92 更新到 617.42 后，使用与更新前 SHA-256
+完全相同的 17:49 RHI 测试程序及 Slang 2026.18.2 DLL 复测。保留生产
+native pointer normalization、typed uint64 策略和现有 shader cache；没有
+替换 cache 字节码或添加按 shader 入口切换 mapped 的特例。
+
+| 图像对比矩阵 | native | mapped |
+| --- | --- | --- |
+| 位移，64 个组合 | 32 个 resident 组合失败；32 个 stream 组合无图像差异 | 64 个组合全部通过 |
+| 递归位移，192 个组合 | 96 个 resident 组合失败；96 个 stream 组合无图像差异 | 192 个组合全部通过 |
+
+差异仍覆盖 resident 的 `baseColor` 和 `shadingNormal`。普通位移各有 16
+个失败组合，递归位移各有 48 个失败组合；包括不同投影、负 X 缩放镜像
+（同时关闭 `clusterPrebin`）、edgePixels、递归拆分深度和 legacy depth
+设置。native 测试在收集完矩阵差异后
+返回失败，未执行后续 live material edit 检查；mapped 完成了这些检查。
+这里的 64/192 是图像对比组合数，不是提交帧数。
+
+这四项完整像素矩阵在 native/mapped 两边都关闭 VVL；首次开启官方 VVL
+1.4.363 的 native 递归运行在 300 秒超时，不计作完成或通过。独立的
+descriptor 布局、采样和 MixedProducer 核心检查仍使用 VVL，见
+[literal stride 验证记录](NativeDescriptorHeapStrideWorkaround.md)。新驱动
+未消除这类 resident 图像差异；本轮没有重新运行跳过 normalization 的
+raw pointer 隔离变体，不能据此判断其兼容处理可否删除。
+
+完整 XML、失败图像、参考图像和环境/hash 记录位于本地
+`.tmp/spirv-removal-research/Driver61742/20261007-184901-959/`。初始 VVL
+超时记录位于 `20261007-184136-876/`；这些是本地验证输出，不纳入源码。
+
 ## 判断与边界
 
 差异与 native resident mesh 的图像 handle lowering 相关。仅改变该部分即可恢复图像，但也会改变 shader 代码生成；这还不是一个排除了其他代码生成影响的最小根因证明，不能直接断言为已确诊的驱动 image-load 缺陷。
