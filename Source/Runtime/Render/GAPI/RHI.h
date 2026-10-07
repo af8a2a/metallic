@@ -1192,36 +1192,6 @@ struct ShaderModuleDesc {
     const char* debugName = nullptr;
 };
 
-enum class ShaderBindingType : uint8_t {
-    Sampler,
-    SampledImage,
-    StorageImage,
-    ConstantBuffer,
-    StorageBuffer,
-    AccelerationStructure,
-};
-
-enum class ShaderBindingSource : uint8_t {
-    HeapConstantOffset,
-    HeapIndexFromPushData,
-    DeviceAddressFromPushData,
-};
-
-// Maps existing DescriptorSet/Binding decorations onto descriptor-heap data.
-// pushDataOffset is relative to the user payload passed to pushBindlessData().
-// heapIndexOffset is expressed in descriptors. It is an absolute heap index
-// for HeapConstantOffset and is added to the pushed heap index for
-// HeapIndexFromPushData, allowing several bindings to share one pushed base.
-struct ShaderBindingMappingDesc {
-    uint32_t descriptorSet = 0;
-    uint32_t firstBinding = 0;
-    uint32_t bindingCount = 1;
-    ShaderBindingType type = ShaderBindingType::SampledImage;
-    ShaderBindingSource source = ShaderBindingSource::HeapIndexFromPushData;
-    uint32_t pushDataOffset = 0;
-    uint32_t heapIndexOffset = 0;
-};
-
 enum class PipelineCacheLoadStatus : uint8_t {
     NotFound,
     Loaded,
@@ -1287,7 +1257,6 @@ struct ComputePipelineDesc {
     ShaderStageDesc computeShader;
     bool usesBindlessHeap = false;
     uint32_t bindlessUserPushDataSize = 0;
-    std::span<const ShaderBindingMappingDesc> bindingMappings;
     class PipelineCache* pipelineCache = nullptr;
     // Required for membership in a DGC indirect execution set.
     bool indirectBindable = false;
@@ -1413,6 +1382,7 @@ struct ComputePipelineImpl;
 struct GraphicsShaderObjectProgramImpl;
 struct BindlessHeapImpl;
 struct VulkanNativeAccess;
+struct ShaderBindingMappingDesc;
 } // namespace detail
 
 class Queue {
@@ -1973,6 +1943,8 @@ class Device {
 
 private:
     bool validShaderStage(const ShaderStageDesc& stage) const;
+    Result<std::unique_ptr<ComputePipeline>> createComputePipelineImpl(const ComputePipelineDesc& desc,
+        std::span<const detail::ShaderBindingMappingDesc> mappings);
     static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
 };
 

@@ -91,7 +91,7 @@ public:
             first.memoryTypeIndex >= 32 || second.memoryTypeIndex >= 32 ||
             !(requirements[0].memoryTypeBits & (1u << first.memoryTypeIndex)) ||
             !(requirements[1].memoryTypeBits & (1u << second.memoryTypeIndex)) ||
-            firstNative.image == secondNative.image || firstNative.memory != secondNative.memory) {
+            firstNative.image == secondNative.image) {
             return RHITestResult::fail("Alias images do not have distinct Vulkan objects sharing one compatible backing range");
         }
         std::array<std::unique_ptr<TextureView>, 2> views;

@@ -85,19 +85,8 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
     hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
     hash = hashValue(hash, hashBool(desc.indirectBindable));
     hash = hashValue(hash, desc.bindlessUserPushDataSize);
-    hash = hashValue(hash, static_cast<uint32_t>(desc.bindingMappings.size()));
-    if (!desc.bindingMappings.empty()) {
-        for (uint32_t index = 0; index < desc.bindingMappings.size(); ++index) {
-            const ShaderBindingMappingDesc& mapping = desc.bindingMappings[index];
-            hash = hashValue(hash, mapping.descriptorSet);
-            hash = hashValue(hash, mapping.firstBinding);
-            hash = hashValue(hash, mapping.bindingCount);
-            hash = hashValue(hash, static_cast<uint32_t>(mapping.type));
-            hash = hashValue(hash, static_cast<uint32_t>(mapping.source));
-            hash = hashValue(hash, mapping.pushDataOffset);
-            hash = hashValue(hash, mapping.heapIndexOffset);
-        }
-    }
+    // Preserve the existing default-pipeline cache identity (zero custom mappings).
+    hash = hashValue(hash, uint32_t{0});
     return hash;
 }
 

@@ -723,3 +723,9 @@ RHI 测试支持原有便捷参数 `--list`/`--filter`，并会转换到 GoogleT
 `ValidationMessage` 使用中立的单值 `ValidationSeverity` 和可组合的 `ValidationCategory`，类别通过 `hasFlag()` 检查；`ValidationObject::type` 使用 `ValidationObjectType`。Vulkan debug-utils 位与对象类型只在 `GAPI/Vulkan/VulkanValidation.h` 转换，未知类别位保留为 `Unknown` 标志，未映射的后端对象返回 `Unknown`，其不透明 handle/name 仍可用于关联诊断。
 
 测试 ValidationRecorder 快照与 RenderDebug validation 事件使用 `encoding: metallic-validation-v1`，`severity`、`type` 和对象 `type` 的数值对应 RHI 枚举，不再是 Vulkan 常量。旧报告缺少该 encoding，不能按新枚举解释。Vulkan ShaderPrintf 的原生采集记录是独立协议，不受此变更影响。
+
+### Shader 目标后处理与后端诊断边界
+
+`GAPI/ShaderTarget.h` 显式定义 Vulkan SPIR-V 的编译目标后处理契约。Core 编译器只依赖该契约：把目标 id/revision 纳入编译缓存键，成功后缓存设备无关的规范化结果；缓存命中不再运行后处理。算法实现位于 `GAPI/Vulkan/VulkanShaderTarget.cpp`，修改其输出策略必须增加 revision。模块创建时的 descriptor 尺寸特化、设备特性适配继续留在 Vulkan 后端，不能写回编译缓存。两阶段分别负责可跨设备复用的代码与实际设备二进制。
+
+`ComputePipelineDesc` 不再暴露 descriptor-set/binding 映射。原始映射实验只通过 `GAPI/Vulkan/VulkanPipelineDiagnostics.h` 的 detail 入口创建管线，单独参与后端管线缓存身份；普通管线的默认缓存身份保持不变。`NativeTexture` 仅导出 SDK 所需的 image/format/尺寸等信息，不再导出 VMA 所有的 `VkDeviceMemory`；内存诊断使用 `Texture::memoryInfo()` 的只读元数据。

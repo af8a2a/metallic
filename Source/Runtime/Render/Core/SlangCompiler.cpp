@@ -1,6 +1,6 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ColorSpace.h"
-#include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/ShaderTarget.h"
 
 #include <slang-com-ptr.h>
 #include <slang-tag-version.h>
@@ -46,7 +46,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 25;
+constexpr uint32_t kShaderCacheRequestVersion = 26;
 // The default SPIR-V optimization preset exhaustively inlines entry points.
 // With NonSemantic debug records this dominates large scene-shader compiles.
 // Keep functions and run only local/dead-code cleanup; the driver still lowers
@@ -477,10 +477,13 @@ bool nativeDescriptorHeapEnabled(const SlangShaderDesc& desc)
     return mode != nullptr && std::string_view(mode) == "native";
 }
 
-uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode)
+uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode,
+    const ShaderTargetPostprocess& target)
 {
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kShaderCacheRequestVersion);
+    hash = hashText(hash, target.id);
+    hash = hashValue(hash, target.revision);
     hash = hashValue(hash, static_cast<uint8_t>(sceneWorkingColorSpace()));
     hash = hashText(hash, SLANG_VERSION_NUMERIC);
     hash = hashValue(hash, static_cast<int32_t>(kSlangOptimizationLevel));
@@ -903,7 +906,8 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         }
     }
     const SlangShaderDebugMode debugMode = slangShaderDebugMode();
-    const uint64_t requestHash = shaderRequestHash(desc, debugMode);
+    const auto& target = vulkanSpirvTarget();
+    const uint64_t requestHash = shaderRequestHash(desc, debugMode, target);
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
     std::vector<ShaderDependencySnapshot> cachedDependencies;
     if (cacheOptions.enableDiskCache &&
@@ -1170,7 +1174,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     outResult.spirv.resize(byteSize / sizeof(uint32_t));
     std::memcpy(outResult.spirv.data(), shaderCode->getBufferPointer(), byteSize);
     std::string normalizationError;
-    if (!vulkan::normalizeNativeDescriptorHeapSpirv(outResult.spirv, outResult.spirv, normalizationError)) {
+    if (!target.finalizeSpirv(outResult.spirv, normalizationError)) {
         outResult.spirv.clear();
         log += normalizationError + "\n";
         return makeError(Error::Failure);

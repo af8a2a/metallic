@@ -1,3 +1,4 @@
+#include "Runtime/Render/GAPI/Vulkan/VulkanPipelineDiagnostics.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -145,18 +146,18 @@ public:
             if (output->shaderIndex != input->shaderIndex + 1) { return render::makeError(render::Error::Failure); }
             if (table == 0) { image_ = *image; input_ = *input; output_ = *output; }
         }
-        const render::ShaderBindingMappingDesc mappings[] = {
-            {.firstBinding = 0, .type = render::ShaderBindingType::SampledImage,
-                .source = render::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 32},
-            {.firstBinding = 1, .type = render::ShaderBindingType::StorageBuffer,
-                .source = render::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36},
-            {.firstBinding = 2, .type = render::ShaderBindingType::StorageBuffer,
-                .source = render::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36, .heapIndexOffset = 1}};
+        const render::detail::ShaderBindingMappingDesc mappings[] = {
+            {.firstBinding = 0, .type = render::detail::ShaderBindingType::SampledImage,
+                .source = render::detail::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 32},
+            {.firstBinding = 1, .type = render::detail::ShaderBindingType::StorageBuffer,
+                .source = render::detail::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36},
+            {.firstBinding = 2, .type = render::detail::ShaderBindingType::StorageBuffer,
+                .source = render::detail::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36, .heapIndexOffset = 1}};
         result = device.createShaderModule({.spirv = spirv})
             .transform([&](auto value) { shader_ = std::move(value); });
         if (!result) { return result; }
-        return device.createComputePipeline({.computeShader = {shader_.get(), "main"},
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = 40, .bindingMappings = mappings})
+        return render::detail::createMappedComputePipeline(device, {.computeShader = {shader_.get(), "main"},
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = 40}, mappings)
             .transform([&](auto value) { pipeline_ = std::move(value); });
     }
 

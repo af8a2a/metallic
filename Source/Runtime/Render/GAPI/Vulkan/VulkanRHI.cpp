@@ -3,6 +3,7 @@
 #include "VulkanSynchronization.h"
 #include "VulkanTrace.h"
 #include "VulkanResult.h"
+#include "VulkanPipelineDiagnostics.h"
 #include "VulkanValidation.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
@@ -8896,10 +8897,16 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
 
 Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const ComputePipelineDesc& desc)
 {
+    return createComputePipelineImpl(desc, {});
+}
+
+Result<std::unique_ptr<ComputePipeline>> Device::createComputePipelineImpl(const ComputePipelineDesc& desc,
+    std::span<const detail::ShaderBindingMappingDesc> mappings)
+{
     if (impl_ == nullptr ||
         !validShaderStage(desc.computeShader) ||
-        (desc.bindingMappings.size() > UINT32_MAX) ||
-        (!desc.usesBindlessHeap && desc.bindingMappings.size() > 0)) {
+        (mappings.size() > UINT32_MAX) ||
+        (!desc.usesBindlessHeap && mappings.size() > 0)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -8922,7 +8929,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
     auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
     if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
-    const uint64_t psoHash = detail::computePipelineStateHash(desc);
+    const uint64_t psoHash = detail::mappedComputePipelineStateHash(desc, mappings);
 
     const char* computeEntryPoint = desc.computeShader.entryPoint;
     VkPipelineShaderStageCreateInfo stage{
@@ -8937,13 +8944,13 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
     };
     if (desc.usesBindlessHeap && desc.computeShader.module->impl_->hasDescriptorBindings) {
-        if (desc.bindingMappings.size() == 0) {
+        if (mappings.size() == 0) {
             const auto defaults = defaultHeapMappings(impl_->descriptorHeapWriter);
             bindlessMappings.assign(defaults.begin(), defaults.end());
         } else {
-            bindlessMappings.reserve(desc.bindingMappings.size());
-            for (uint32_t index = 0; index < desc.bindingMappings.size(); ++index) {
-                const ShaderBindingMappingDesc& source = desc.bindingMappings[index];
+            bindlessMappings.reserve(mappings.size());
+            for (uint32_t index = 0; index < mappings.size(); ++index) {
+                const detail::ShaderBindingMappingDesc& source = mappings[index];
                 if (source.bindingCount == 0) {
                     return makeError(Error::InvalidArgument);
                 }
@@ -8951,46 +8958,46 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                 VkSpirvResourceTypeFlagsEXT resourceMask = 0;
                 uint32_t descriptorStride = 0;
                 switch (source.type) {
-                case ShaderBindingType::Sampler:
+                case detail::ShaderBindingType::Sampler:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize());
                     break;
-                case ShaderBindingType::SampledImage:
+                case detail::ShaderBindingType::SampledImage:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
-                case ShaderBindingType::StorageImage:
+                case detail::ShaderBindingType::StorageImage:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
                         VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
-                case ShaderBindingType::ConstantBuffer:
+                case detail::ShaderBindingType::ConstantBuffer:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
-                case ShaderBindingType::StorageBuffer:
+                case detail::ShaderBindingType::StorageBuffer:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
                         VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
-                case ShaderBindingType::AccelerationStructure:
+                case detail::ShaderBindingType::AccelerationStructure:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_ACCELERATION_STRUCTURE_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
                 }
 
-                const uint32_t valueSize = source.source == ShaderBindingSource::HeapConstantOffset
+                const uint32_t valueSize = source.source == detail::ShaderBindingSource::HeapConstantOffset
                     ? 0u
-                    : source.source == ShaderBindingSource::DeviceAddressFromPushData
+                    : source.source == detail::ShaderBindingSource::DeviceAddressFromPushData
                         ? static_cast<uint32_t>(sizeof(uint64_t))
                         : static_cast<uint32_t>(sizeof(uint32_t));
                 if ((valueSize != 0 &&
                      (source.pushDataOffset > desc.bindlessUserPushDataSize ||
                       valueSize > desc.bindlessUserPushDataSize - source.pushDataOffset)) ||
-                    (source.source == ShaderBindingSource::DeviceAddressFromPushData &&
-                     source.type != ShaderBindingType::ConstantBuffer &&
-                     source.type != ShaderBindingType::StorageBuffer &&
-                     source.type != ShaderBindingType::AccelerationStructure)) {
+                    (source.source == detail::ShaderBindingSource::DeviceAddressFromPushData &&
+                     source.type != detail::ShaderBindingType::ConstantBuffer &&
+                     source.type != detail::ShaderBindingType::StorageBuffer &&
+                     source.type != detail::ShaderBindingType::AccelerationStructure)) {
                     return makeError(Error::InvalidArgument);
                 }
 
@@ -9007,13 +9014,13 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                 if (heapOffset > UINT32_MAX) {
                     return makeError(Error::InvalidArgument);
                 }
-                if (source.source == ShaderBindingSource::DeviceAddressFromPushData) {
+                if (source.source == detail::ShaderBindingSource::DeviceAddressFromPushData) {
                     if (source.heapIndexOffset != 0) {
                         return makeError(Error::InvalidArgument);
                     }
                     mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_ADDRESS_EXT;
                     mapping.sourceData.pushAddressOffset = pushOffset;
-                } else if (source.source == ShaderBindingSource::HeapConstantOffset) {
+                } else if (source.source == detail::ShaderBindingSource::HeapConstantOffset) {
                     mapping.source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT;
                     mapping.sourceData.constantOffset.heapOffset = static_cast<uint32_t>(heapOffset);
                     mapping.sourceData.constantOffset.heapArrayStride = descriptorStride;
@@ -10269,6 +10276,12 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 namespace detail {
 
 struct VulkanNativeAccess {
+    static Result<std::unique_ptr<ComputePipeline>> createMappedComputePipeline(Device& device,
+        const ComputePipelineDesc& desc, std::span<const ShaderBindingMappingDesc> mappings)
+    {
+        return device.createComputePipelineImpl(desc, mappings);
+    }
+
     static QueueImpl* queue(Queue& queue) { return queue.impl_.get(); }
     static DeviceImpl* device(Device& device) { return device.impl_.get(); }
     static Result<std::unique_ptr<TextureView>> retainView(TextureView& view)
@@ -10363,7 +10376,6 @@ struct VulkanNativeAccess {
         const TextureDesc& desc = texture.impl_->desc;
         return vulkan::NativeTexture{
             .image = texture.impl_->image,
-            .memory = texture.impl_->memory,
             .format = toVkFormat(desc.format),
             .width = desc.width,
             .height = desc.height,
@@ -10481,6 +10493,12 @@ struct VulkanNativeAccess {
     }
 
 };
+
+Result<std::unique_ptr<ComputePipeline>> createMappedComputePipeline(Device& device,
+    const ComputePipelineDesc& desc, std::span<const ShaderBindingMappingDesc> mappings)
+{
+    return VulkanNativeAccess::createMappedComputePipeline(device, desc, mappings);
+}
 
 } // namespace detail
 

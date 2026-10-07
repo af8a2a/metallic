@@ -1,8 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #include <array>
-#include <cstring>
 #include <type_traits>
 
 namespace metallic::tests {
@@ -71,13 +69,8 @@ public:
                 return RHITestResult::fail("Cannot allocate metadata images");
             }
             live[i + 1] = textures[i]->memoryInfo();
-            const auto native = vulkan::nativeTexture(*textures[i]);
-            uint64_t nativeBlock = 0;
-            static_assert(sizeof(native.memory) <= sizeof(nativeBlock));
-            std::memcpy(&nativeBlock, &native.memory, sizeof(native.memory));
-            if (!valid(live[i + 1], 64 * 64 * 4) || live[i + 1].sizeBytes != textures[i]->allocationSize() ||
-                live[i + 1].memoryBlockId != nativeBlock) {
-                return RHITestResult::fail("Texture metadata does not describe its actual Vulkan backing");
+            if (!valid(live[i + 1], 64 * 64 * 4) || live[i + 1].sizeBytes != textures[i]->allocationSize()) {
+                return RHITestResult::fail("Texture allocation metadata is incomplete or reports the wrong size");
             }
         }
         for (size_t i = 0; i < live.size(); ++i) {

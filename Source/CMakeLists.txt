@@ -154,6 +154,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/Vulkan/VulkanAftermath.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNvPerf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNsightCapture.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanShaderTarget.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp
     Runtime/Render/GAPI/Vulkan/VulkanResult.cpp
     Runtime/Render/GAPI/Vulkan/VulkanDeviceProperties.cpp
