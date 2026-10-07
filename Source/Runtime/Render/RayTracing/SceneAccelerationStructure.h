@@ -22,7 +22,7 @@ struct SceneAccelerationStructureStats {
     uint64_t vertexCount = 0;
     uint64_t indexCount = 0;
     uint64_t geometryBytes = 0;
-    // Final resident BLAS, TLAS, and OMM bytes once the build is Ready.
+    // Final resident BLAS, TLAS, and backend coverage acceleration bytes once the build is Ready.
     uint64_t accelerationStructureBytes = 0;
     uint64_t scratchBytes = 0;
     // BLAS-only compaction accounting. During Phase A, compactedBlasBytes is
@@ -33,9 +33,9 @@ struct SceneAccelerationStructureStats {
     uint64_t compactionSavedBytes = 0;
     // Peak simultaneous AS bytes, excluding geometry, instances, and scratch.
     uint64_t peakAccelerationStructureBytes = 0;
-    uint32_t opacityMicromapCount = 0;
-    uint64_t opacityMicromapTriangleCount = 0;
-    uint64_t opacityMicromapBytes = 0;
+    uint32_t coverageAccelerationCount = 0;
+    uint64_t coverageAcceleratedTriangleCount = 0;
+    uint64_t coverageAccelerationBytes = 0;
     RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
     uint64_t topLevelBytes = 0;
     uint32_t partitionCount = 0;

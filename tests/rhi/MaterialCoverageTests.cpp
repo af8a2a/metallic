@@ -96,9 +96,9 @@ public:
     {
         const auto& geometry = *context.preparedScene()->snapshot->pathTraceResources;
         const auto inputs = geometry.materialBinding();
-        *micromapCount_ = geometry.accelerationStructure().stats().opacityMicromapCount;
+        *micromapCount_ = geometry.accelerationStructure().stats().coverageAccelerationCount;
         if (inputs->generation()->sourceRevision() != context.runtimeScene()->materialRevision()) { return makeError(Error::Failure); }
-        if (inputs->values()->coverageProgramCount() && geometry.accelerationStructure().stats().opacityMicromapCount) {
+        if (inputs->values()->coverageProgramCount() && geometry.accelerationStructure().stats().coverageAccelerationCount) {
             return makeError(Error::Failure); // The only MASK material now has dynamic Coverage.
         }
         if (auto* frame = RenderFrameContext::from(context.commandBuffer())) { frame->retain(inputs); }

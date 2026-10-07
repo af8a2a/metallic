@@ -1299,8 +1299,8 @@ std::vector<std::array<int32_t, 22>> materialResourceLayout(const scene::Scene& 
     std::vector<std::array<int32_t, 22>> layout;
     layout.reserve(loadedScene.materials().size());
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
-        // Opacity is baked into OMM. Changes to alpha, cutoff, and UV sampling
-        // require a BLAS/OMM rebuild; color/roughness still update only the buffer.
+        // Immutable geometry coverage changes invalidate prepared BLAS inputs.
+        // Color/roughness still update only the material buffer.
         layout.push_back({
             material.baseColorTexture.textureIndex,
             material.metallicRoughnessTexture.textureIndex,

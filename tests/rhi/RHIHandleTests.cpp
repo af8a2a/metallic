@@ -15,7 +15,7 @@ class RHIEmptyHandle : public testing::Test {};
 
 using PublicHandles = testing::Types<Queue, Fence, Semaphore, SwapchainSemaphore,
     Buffer, BufferView, TimestampQueryPool, RayTracingAccelerationStructureCompactionQueryPool,
-    RayTracingAccelerationStructure, Texture, TextureView, ShaderModule, PipelineCache,
+    RayTracingBottomLevelBuildPlan, RayTracingAccelerationStructure, Texture, TextureView, ShaderModule, PipelineCache,
     GraphicsPipeline, ComputePipeline, GraphicsShaderObjectProgram, BindlessHeap,
     CommandBuffer, CommandPool, Swapchain, Device, Streamer>;
 TYPED_TEST_SUITE(RHIEmptyHandle, PublicHandles);

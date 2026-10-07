@@ -89,7 +89,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/MeshletStreamRuntime.cpp
     Runtime/Render/NeuralTextureResources.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
-    Runtime/Render/RayTracing/OpacityMicromapBake.cpp
+    Runtime/Render/RayTracing/SceneCoverage.cpp
+    Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp

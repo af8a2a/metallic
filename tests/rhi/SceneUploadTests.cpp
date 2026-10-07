@@ -5,6 +5,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Scene/SceneLoader.h"
 #include "json.hpp"
 
@@ -294,7 +295,7 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         if (!context.device.capabilities().rayTracingAccelerationStructure ||
-            !context.device.capabilities().opacityMicromap) {
+            !render::vulkan::deviceCapabilities(context.device).opacityMicromap) {
             return RHITestResult::skip("Requires --rhi-realtime with OMM enabled");
         }
         const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf";
@@ -321,8 +322,8 @@ public:
             return RHITestResult::fail("Sponza GPU preparation timed out: " + log);
         }
         const auto& stats = resources.accelerationStructure().stats();
-        if (stats.blasCount != 103 || stats.opacityMicromapCount != 10 ||
-            stats.opacityMicromapTriangleCount != 34908 || stats.compactionSavedBytes == 0) {
+        if (stats.blasCount != 103 || stats.coverageAccelerationCount != 10 ||
+            stats.coverageAcceleratedTriangleCount != 34908 || stats.compactionSavedBytes == 0) {
             return RHITestResult::fail("Sponza did not exercise OMM and BLAS compaction");
         }
         return RHITestResult::pass("Sponza async upload, 10 OMMs, 103 BLASes, compaction and TLAS completed");

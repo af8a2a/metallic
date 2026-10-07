@@ -190,6 +190,16 @@ TEST_F(DeviceFeatures, MicromapRoutesAreExclusiveAndKHRRequiresAddressCommands)
         probe.deviceAddressCommandsFeatures.deviceAddressCommands = VK_TRUE;
         auto selected = select();
         ASSERT_TRUE(selected.opacityMicromap);
+        DeviceCapabilities caps;
+        VulkanDeviceCapabilities backendCaps;
+        selected.publish(caps, backendCaps);
+        EXPECT_TRUE(backendCaps.opacityMicromap);
+        options.enableOpacityMicromap = false;
+        const auto disabled = select();
+        EXPECT_FALSE(disabled.opacityMicromap);
+        disabled.publish(caps, backendCaps);
+        EXPECT_FALSE(backendCaps.opacityMicromap);
+        options.enableOpacityMicromap = true;
         EXPECT_EQ(selected.opacityMicromapExt, injection);
         probe.buildChain(extensions);
         auto types = chainTypes(probe.features.pNext);

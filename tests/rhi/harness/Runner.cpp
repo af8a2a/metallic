@@ -170,7 +170,7 @@ Json profileJson(const Profile& value)
         {"shaderObject", desc.enableShaderObject}, {"bindless", desc.enableBindlessDescriptorHeap},
         {"asyncCompute", desc.enableAsyncCompute}, {"unifiedLayouts", metallic::render::vulkan::deviceExtensions(desc).preferUnifiedImageLayouts},
         {"rayQuery", desc.enableRayQuery}, {"rayTracingAS", desc.enableRayTracingAccelerationStructure},
-        {"partitionedAS", desc.enablePartitionedAccelerationStructure}, {"clusterAS", desc.enableClusterAccelerationStructure}, {"opacityMicromap", desc.enableOpacityMicromap},
+        {"partitionedAS", desc.enablePartitionedAccelerationStructure}, {"clusterAS", desc.enableClusterAccelerationStructure}, {"opacityMicromap", metallic::render::vulkan::deviceExtensions(desc).enableOpacityMicromap},
         {"positionFetch", desc.enableRayTracingPositionFetch}, {"dgc", desc.enableDeviceGeneratedCommands},
         {"streamline", desc.enableStreamline}, {"aftermath", desc.enableAftermath}};
 }

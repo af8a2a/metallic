@@ -2,6 +2,7 @@
 #include "RayQueryFixture.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include <cstring>
 
 namespace metallic::tests::bench {
@@ -106,9 +107,11 @@ public:
     }
     RHITestResult run(RHITestContext& context) override
     {
-        auto created = createTestDevice(context, {.applicationName = "CLAS analytic probe", .enableValidation = context.enableValidation,
+        DeviceDesc desc{.applicationName = "CLAS analytic probe", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true, .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
-            .enableRayTracingPositionFetch = false, .enableOpacityMicromap = false, .enableClusterAccelerationStructure = true});
+            .enableRayTracingPositionFetch = false, .enableClusterAccelerationStructure = true};
+        vulkan::deviceExtensions(desc).enableOpacityMicromap = false;
+        auto created = createTestDevice(context, std::move(desc));
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("ray query/CLAS profile unavailable"); }
         auto device = checked(std::move(created));
         if (!device->capabilities().rayQuery || !device->capabilities().bindlessDescriptorHeap ||

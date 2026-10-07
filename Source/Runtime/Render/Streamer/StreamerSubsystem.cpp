@@ -166,7 +166,7 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         prepared.snapshot->pathTraceResources->textureUploadsReady();
     if (!prepared.ready) { return {}; }
     if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
-        // A TLAS retains addresses into BLAS/OMM owned by the scene snapshot.
+        // A TLAS retains addresses into BLAS and backend dependencies owned by the scene snapshot.
         // External recordings also need that ownership until commands retire.
         const auto result = context.commandBuffer().retainResource(prepared.snapshot->pathTraceResources);
         if (!result) { return result; }

@@ -477,8 +477,6 @@ struct DeviceDesc {
     // Optional optimization, enabled only when acceleration structures and the
     // device's position-fetch feature are available. False forces the fallback.
     bool enableRayTracingPositionFetch = true;
-    // Optional KHR OMM optimization. Unsupported devices keep shader alpha tests.
-    bool enableOpacityMicromap = true;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
     ValidationSink validationSink;
@@ -487,6 +485,8 @@ struct DeviceDesc {
     // Optional: unsupported devices keep ordinary command recording.
     bool enableDeviceGeneratedCommands = true;
     MemoryBudgetPolicy memoryBudget;
+    bool enableStreamline = false;
+    bool enableAftermath = false;
     // Optional backend-owned configuration value. Copies own independent options;
     // each backend validates the payload type before initialization. Empty uses defaults.
     std::any backendExtensions;
@@ -516,7 +516,6 @@ struct DeviceCapabilities {
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
     bool rayTracingPositionFetch = false;
-    bool opacityMicromap = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
     bool shaderBufferInt64Atomics = false;
@@ -814,7 +813,6 @@ struct ClusterAccelerationStructureMoveDesc {
 enum class RayTracingAccelerationStructureType : uint8_t {
     BottomLevel,
     TopLevel,
-    OpacityMicromap,
 };
 
 enum class RayTracingAccelerationStructureBuildMode : uint8_t {
@@ -896,35 +894,37 @@ struct RayTracingAccelerationStructureProperties {
     uint64_t scratchAlignment = 1;
     uint64_t instanceBufferAlignment = 16;
     uint64_t instanceRecordSize = 0;
-    uint32_t maxOpacity2StateSubdivisionLevel = 0;
-    uint32_t maxOpacity4StateSubdivisionLevel = 0;
-    uint64_t maxMicromapTriangles = 0;
 };
 
-enum class OpacityMicromapFormat : uint16_t {
-    TwoState = 1,
-    FourState = 2,
+enum class RayTracingCoverageMode : uint8_t {
+    Mask,
+    Blend,
 };
 
-// Packed device input; one record per original triangle, in BLAS triangle order.
-struct OpacityMicromapTriangle {
-    uint32_t dataOffset = 0;
-    uint16_t subdivisionLevel = 0;
-    OpacityMicromapFormat format = OpacityMicromapFormat::FourState;
-};
-static_assert(sizeof(OpacityMicromapTriangle) == 8);
-
-struct OpacityMicromapUsage {
-    uint32_t count = 0;
-    uint32_t subdivisionLevel = 0;
-    OpacityMicromapFormat format = OpacityMicromapFormat::FourState;
+// Already transformed UVs, in exactly the same triangle/vertex order as the BLAS.
+struct RayTracingCoverageTriangle {
+    std::array<std::array<float, 2>, 3> uv{};
 };
 
-struct OpacityMicromapBuildInput {
-    std::span<const OpacityMicromapUsage> usages;
-    BufferSlice dataBuffer;
-    BufferSlice triangleBuffer;
-    uint64_t triangleStride = sizeof(OpacityMicromapTriangle);
+// Static coverage matching four-tap bilinear/repeat sampling of the supplied
+// finest-resident RGBA8 image. Empty pixels denote constant texture alpha one.
+// MASK accepts alpha >= cutoff; BLEND leaves partial alpha to shader evaluation.
+// Prepare consumes these CPU spans synchronously. Dynamic or unavailable
+// coverage is represented by a null geometry.coverage and uses shader traversal.
+struct RayTracingCoverageDesc {
+    RayTracingCoverageMode mode = RayTracingCoverageMode::Mask;
+    float alphaFactor = 1.0f;
+    float alphaCutoff = 0.5f;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    std::span<const uint8_t> pixelsRGBA8;
+    std::span<const RayTracingCoverageTriangle> triangles;
+};
+
+struct RayTracingCoverageAccelerationStats {
+    uint32_t geometryCount = 0;
+    uint64_t triangleCount = 0;
+    uint64_t storageBytes = 0;
 };
 
 struct RayTracingTriangleGeometryDesc {
@@ -936,11 +936,9 @@ struct RayTracingTriangleGeometryDesc {
     RayTracingIndexType indexType = RayTracingIndexType::Uint32;
     uint32_t primitiveCount = 0;
     RayTracingGeometryFlags flags = RayTracingGeometryFlags::Opaque;
-    // One micromap triangle per geometry triangle. Keep alive with the BLAS.
-    class RayTracingAccelerationStructure* opacityMicromap = nullptr;
-    // Histogram for these geometry triangles; required by the EXT OMM backend.
-    // Only read during size queries and command recording.
-    std::span<const OpacityMicromapUsage> opacityMicromapUsages;
+    // Optional static acceleration of non-opaque traversal. Use a prepared
+    // bottom-level plan when supplying coverage; raw query/build excludes it.
+    const RayTracingCoverageDesc* coverage = nullptr;
 };
 
 struct RayTracingAccelerationStructureBuildInputs {
@@ -950,7 +948,6 @@ struct RayTracingAccelerationStructureBuildInputs {
         RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
     std::span<const RayTracingTriangleGeometryDesc> geometries;
     uint32_t instanceCount = 0;
-    const OpacityMicromapBuildInput* micromap = nullptr;
 };
 
 struct RayTracingAccelerationStructureBuildSizes {
@@ -973,7 +970,7 @@ struct RayTracingAccelerationStructureDesc {
     uint64_t size = 0;
     // Partitioned resources use the PartitionedAccelerationStructureDesc overload
     // of createRayTracingAccelerationStructure; this creation descriptor is Standard-only.
-    // BottomLevel and OpacityMicromap resources always use Standard.
+    // BottomLevel resources always use Standard.
     RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
 };
 
@@ -1017,7 +1014,9 @@ struct RayTracingAccelerationStructureBuildDesc {
     BufferSlice instanceBuffer;
     uint32_t instanceCount = 0;
     BufferSlice scratchBuffer;
-    const OpacityMicromapBuildInput* micromap = nullptr;
+    // Uses the immutable geometry, flags and sizes frozen by preparation.
+    // Mutually exclusive with geometries/instanceBuffer/source and Update mode.
+    const class RayTracingBottomLevelBuildPlan* plan = nullptr;
     // RenderGraph declares the AS write and synchronizes subsequent consumers.
     // Standalone builds retain the legacy post-build dependency by default.
     bool graphManagedSynchronization = false;
@@ -1373,6 +1372,7 @@ struct BufferImpl;
 struct BufferAddressCommandAccess;
 struct BufferViewImpl;
 struct RayTracingAccelerationStructureImpl;
+struct RayTracingBottomLevelBuildPlanImpl;
 struct TextureImpl;
 struct TextureViewImpl;
 struct ShaderModuleImpl;
@@ -1548,6 +1548,21 @@ class RayTracingAccelerationStructureCompactionQueryPool {
         std::span<uint64_t> outCompactedSizes) const;
 };
 
+// CPU preparation freezes sizes and backend resources without submitting GPU work.
+// A plan records one Build; repeated recording and Update are rejected.
+// Device must outlive the plan. Releasing it after recording is safe: commands
+// retain build inputs until completion and the BLAS owns resident dependencies.
+class RayTracingBottomLevelBuildPlan {
+    METALLIC_RHI_HANDLE(RayTracingBottomLevelBuildPlan, shared_ptr,
+        friend class Device;
+        friend class CommandBuffer;
+    )
+
+    bool valid() const;
+    const RayTracingAccelerationStructureBuildSizes& sizes() const;
+    RayTracingCoverageAccelerationStats coverageStats() const;
+};
+
 class RayTracingAccelerationStructure {
     METALLIC_RHI_HANDLE(RayTracingAccelerationStructure, shared_ptr,
         friend class Device;
@@ -1559,6 +1574,7 @@ class RayTracingAccelerationStructure {
 
     const RayTracingAccelerationStructureDesc& desc() const;
     ResourceMemoryInfo memoryInfo() const;
+    RayTracingCoverageAccelerationStats coverageStats() const;
     bool valid() const;
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
@@ -1915,6 +1931,10 @@ class Device {
     [[nodiscard]] Result<std::vector<std::unique_ptr<Buffer>>> createAliasedBuffers(std::span<const BufferDesc> descriptions);
     [[nodiscard]] Result<RayTracingAccelerationStructureProperties> queryRayTracingAccelerationStructureProperties() const;
     [[nodiscard]] Result<RayTracingAccelerationStructureBuildSizes> queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const;
+    [[nodiscard]] Result<std::unique_ptr<RayTracingBottomLevelBuildPlan>> prepareRayTracingBottomLevelBuild(
+        std::span<const RayTracingTriangleGeometryDesc> geometries,
+        RayTracingAccelerationStructureBuildFlags flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace);
+    [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingBottomLevelBuildPlan& plan);
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createRayTracingInstanceBuffer(std::span<const RayTracingInstanceDesc> instances);

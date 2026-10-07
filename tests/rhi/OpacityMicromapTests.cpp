@@ -2,13 +2,17 @@
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
+#include "harness/RayQueryFixture.h"
+#include "TestResourceLayouts.h"
 
-#include "Runtime/Render/RayTracing/OpacityMicromapBake.h"
+#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "Runtime/Render/RayTracing/SceneCoverage.h"
 
 #include <array>
 #include <algorithm>
@@ -23,8 +27,8 @@ namespace metallic::tests {
 namespace {
 
 #define OMM_REQUIRE(expression) do { \
-    const render::Result<> checked = (expression); \
-    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + toString(checked) + " " + log); } \
+    const auto& checked = (expression); \
+    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + render::resultToString(checked) + " " + log); } \
 } while (false)
 #define OMM_EXPECT(expression, message) do { if (!(expression)) { return RHITestResult::fail(message); } } while (false)
 
@@ -50,18 +54,16 @@ private:
     RHITestResult check(bench::Evidence* evidence)
     {
         bench::Json counts = bench::Json::array();
-        scene::RenderPrimitive primitive;
-        primitive.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
-        primitive.texcoords0 = {{0, 0}, {1, 0}, {0, 1}};
-        scene::RenderMaterial material;
-        material.alphaMode = "MASK";
-        scene::RenderImage::Mip image{.width = 8, .height = 8, .pixels = std::vector<uint8_t>(8 * 8 * 4, 255)};
+        render::RayTracingCoverageTriangle triangle;
+        triangle.uv = {{{0, 0}, {1, 0}, {0, 1}}};
+        std::vector<uint8_t> pixels(8 * 8 * 4, 255);
         for (size_t y = 0; y < 8; ++y) {
-            for (size_t x = 0; x < 4; ++x) { image.pixels[(y * 8 + x) * 4 + 3] = 0; }
+            for (size_t x = 0; x < 4; ++x) { pixels[(y * 8 + x) * 4 + 3] = 0; }
         }
-        render::BakedOpacityMicromap baked;
+        render::RayTracingCoverageDesc coverage{.width = 8, .height = 8, .pixelsRGBA8 = pixels, .triangles = {&triangle, 1}};
+        render::detail::BakedOpacityMicromap baked;
         for (uint32_t level = 0; level <= 5; ++level) {
-            OMM_EXPECT(render::OpacityMicromapBaker(material, &image).bake(primitive, level, baked), "bake failed");
+            OMM_EXPECT(render::detail::OpacityMicromapBaker(coverage).bake(level, baked), "bake failed");
             OMM_EXPECT(std::accumulate(baked.stateCounts.begin(), baked.stateCounts.end(), uint64_t(0)) == (1u << (2 * level)), "subdivision coverage mismatch");
             std::array<uint64_t, 4> packedCounts{};
             for (uint32_t i = 0; i < (1u << (2 * level)); ++i) {
@@ -74,25 +76,28 @@ private:
                 OMM_EXPECT(baked.stateCounts[0] && baked.stateCounts[1] && baked.stateCounts[3], "coverage lost transparent/opaque/boundary states");
             }
         }
-        scene::RenderImage::Mip edge{.width = 2, .height = 1, .pixels = {255,255,255,0, 255,255,255,255}};
-        material.alphaCutoff = 0.75f;
-        primitive.texcoords0 = {{0.51f,0.5f}, {0.52f,0.5f}, {0.51f,0.51f}};
-        OMM_EXPECT(render::OpacityMicromapBaker(material, &edge).bake(primitive, 0, baked) && baked.stateCounts[3] == 1,
+        const std::array<uint8_t, 8> edge{255,255,255,0, 255,255,255,255};
+        coverage.width = 2; coverage.height = 1; coverage.pixelsRGBA8 = edge;
+        coverage.alphaCutoff = 0.75f;
+        triangle.uv = {{{0.51f,0.5f}, {0.52f,0.5f}, {0.51f,0.51f}}};
+        OMM_EXPECT(render::detail::OpacityMicromapBaker(coverage).bake(0, baked) && baked.stateCounts[3] == 1,
             "bilinear half-texel footprint was incorrectly classified opaque");
-        primitive.texcoords0 = {{0.98f,0.5f}, {0.99f,0.5f}, {0.98f,0.51f}};
-        OMM_EXPECT(render::OpacityMicromapBaker(material, &edge).bake(primitive, 0, baked) && baked.stateCounts[3] == 1,
+        triangle.uv = {{{0.98f,0.5f}, {0.99f,0.5f}, {0.98f,0.51f}}};
+        OMM_EXPECT(render::detail::OpacityMicromapBaker(coverage).bake(0, baked) && baked.stateCounts[3] == 1,
             "bilinear repeat seam was incorrectly classified opaque");
-        primitive.texcoords0 = {{0,0}, {1,0}, {0,1}};
-        material.alphaCutoff = 0.5f;
-        material.baseColorFactor.w = 0;
-        OMM_EXPECT(render::OpacityMicromapBaker(material, &image).bake(primitive, 4, baked) && baked.stateCounts[0] == 1 && baked.data.size() == 1, "constant-transparent triangle was not collapsed");
-        material.alphaCutoff = 0;
-        OMM_EXPECT(render::OpacityMicromapBaker(material, &image).bake(primitive, 4, baked) && baked.stateCounts[1] == 1, "cutoff equality must accept alpha zero");
-        material.alphaMode = "BLEND";
-        material.baseColorFactor.w = 0.5f;
-        OMM_EXPECT(render::OpacityMicromapBaker(material, nullptr).bake(primitive, 4, baked) && baked.stateCounts[3] == 256, "partial BLEND alpha must stay unknown");
-        material.baseColorFactor.w = 1.0f;
-        OMM_EXPECT(render::OpacityMicromapBaker(material, nullptr).bake(primitive, 4, baked) && baked.stateCounts[1] == 1, "constant BLEND alpha one should be opaque");
+        triangle.uv = {{{0,0}, {1,0}, {0,1}}};
+        coverage.width = 8; coverage.height = 8; coverage.pixelsRGBA8 = pixels;
+        coverage.alphaCutoff = 0.5f;
+        coverage.alphaFactor = 0;
+        OMM_EXPECT(render::detail::OpacityMicromapBaker(coverage).bake(4, baked) && baked.stateCounts[0] == 1 && baked.data.size() == 1, "constant-transparent triangle was not collapsed");
+        coverage.alphaCutoff = 0;
+        OMM_EXPECT(render::detail::OpacityMicromapBaker(coverage).bake(4, baked) && baked.stateCounts[1] == 1, "cutoff equality must accept alpha zero");
+        coverage.mode = render::RayTracingCoverageMode::Blend;
+        coverage.pixelsRGBA8 = {};
+        coverage.alphaFactor = 0.5f;
+        OMM_EXPECT(render::detail::OpacityMicromapBaker(coverage).bake(4, baked) && baked.stateCounts[3] == 256, "partial BLEND alpha must stay unknown");
+        coverage.alphaFactor = 1.0f;
+        OMM_EXPECT(render::detail::OpacityMicromapBaker(coverage).bake(4, baked) && baked.stateCounts[1] == 1, "constant BLEND alpha one should be opaque");
         std::vector<uint32_t> invalid = {0x07230203, 0x10600, 0, 1, 0, 0};
         std::vector<uint32_t> patched;
         OMM_EXPECT(!render::vulkan::enableOpacityMicromapSpirv(invalid, patched), "invalid SPIR-V instruction accepted");
@@ -101,6 +106,81 @@ private:
     }
 };
 METALLIC_REGISTER_RHI_TEST(OpacityMicromapBakeTest);
+
+class SceneCoverageSnapshotTest final : public RHITest {
+public:
+    SceneCoverageSnapshotTest() { name = "opacity_micromap_scene_coverage_snapshot"; type = RHITestType::Resource; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        bench::Metadata result{.suite = "extensions", .layer = bench::Layer::Core,
+            .coverage = {"coverage.snapshot.canonicalUV.sourceIndependence"}};
+        result.requirements.requiresDevice = false;
+        result.requirements.validation = bench::Validation::Off;
+        result.requirements.queues.clear();
+        return result;
+    }
+    RHITestResult runCpu(bench::Evidence& evidence) override { return check(evidence.root()); }
+    RHITestResult run(RHITestContext& context) override { return check(context.outputDirectory / name); }
+private:
+    RHITestResult check(const std::filesystem::path& directory)
+    {
+        scene::RenderPrimitive primitive;
+        primitive.positions = {{0,0,2}, {1,0,2}, {0,1,2}};
+        primitive.texcoords0 = {{0,0}, {1,0}, {0,1}};
+        primitive.indices = {2,0,1};
+        scene::RenderMaterial material;
+        material.alphaMode = "MASK";
+        material.baseColorTexture.uvTransform = {2,3,4, 5,6,7};
+        render::SceneCoverageInput direct(material, nullptr, primitive);
+        const std::array<std::array<float, 2>, 3> expected{{{7,13}, {4,7}, {6,12}}};
+        OMM_EXPECT(direct.valid() && direct.desc().triangles.size() == 1 && direct.desc().triangles[0].uv == expected,
+            "coverage snapshot did not apply UV transform in original indexed triangle order");
+        primitive.texcoords0.assign(3, {100,100}); primitive.indices = {0,1,2};
+        material.baseColorTexture.uvTransform = {1,0,0, 0,1,0}; material.baseColorFactor.w = 0;
+        OMM_EXPECT(direct.desc().triangles[0].uv == expected && direct.desc().alphaFactor == 1.0f,
+            "coverage snapshot aliased editable geometry or material properties");
+
+        std::filesystem::create_directories(directory);
+        const auto path = directory / "snapshot.gltf";
+        {
+            const float attributes[] = {0,0,2, 1,0,2, 0,1,2, 0,0, 1,0, 0,1};
+            const uint32_t indices[] = {2,0,1};
+            std::ofstream binary(directory / "snapshot.bin", std::ios::binary);
+            binary.write(reinterpret_cast<const char*>(attributes), sizeof(attributes));
+            binary.write(reinterpret_cast<const char*>(indices), sizeof(indices));
+            std::ofstream gltf(path);
+            gltf << R"json({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":0}]}],
+                "buffers":[{"uri":"snapshot.bin","byteLength":72}],
+                "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":24},{"buffer":0,"byteOffset":60,"byteLength":12}],
+                "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,2],"max":[1,1,2]},
+                    {"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"},{"bufferView":2,"componentType":5125,"count":3,"type":"SCALAR"}],
+                "images":[{"uri":"snapshot.png"}],"textures":[{"source":0}],
+                "materials":[{"alphaMode":"MASK","pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}]})json";
+        }
+        scene::Scene loaded;
+        OMM_EXPECT(loaded.load(path), "snapshot fixture failed to load: " + loaded.lastLoadResult().error);
+        scene::RenderImage::Mip mip{.width = 2, .height = 1, .pixels = {255,255,255,0, 255,255,255,255}};
+        OMM_EXPECT(loaded.setImageDecodeResult(0, {mip}, {}), "could not install decoded image fixture");
+        auto snapshots = render::makeSceneCoverageInputs(loaded, render::scenePrimitiveCoverage(loaded));
+        OMM_EXPECT(snapshots.size() == 1 && snapshots[0] && snapshots[0]->valid(), "scene coverage snapshot missing");
+        const auto& snapshot = snapshots[0]->desc();
+        OMM_EXPECT(snapshot.pixelsRGBA8.data() != loaded.images()[0].decodedMips[0].pixels.data(),
+            "scene coverage snapshot shared mutable decoded image storage");
+        const auto savedUV = snapshot.triangles[0].uv;
+        mip.pixels.assign(8, 0);
+        OMM_EXPECT(loaded.setImageDecodeResult(0, {mip}, {}), "could not replace source decoded image");
+        auto changed = loaded.materials()[0]; changed.alphaCutoff = 0.9f;
+        OMM_EXPECT(loaded.setMaterialProperties(0, changed), "could not edit source material");
+        loaded = scene::Scene();
+        OMM_EXPECT(snapshot.width == 2 && snapshot.height == 1 && snapshot.pixelsRGBA8.size() == 8 &&
+            snapshot.pixelsRGBA8[3] == 0 && snapshot.pixelsRGBA8[7] == 255 &&
+            snapshot.alphaCutoff == 0.5f && snapshot.triangles[0].uv == savedUV,
+            "coverage snapshot changed or lost storage after source replacement/destruction");
+        return RHITestResult::pass("canonical indexed UVs and alpha snapshots survive source geometry, material, image and scene changes");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(SceneCoverageSnapshotTest);
 
 class OpacityMicromapRayQueryTest : public RHITest {
 public:
@@ -158,24 +238,40 @@ public:
         std::array<Probe, 9> baseline{};
         uint64_t fallbackCandidates = 0, ommCandidates = 0;
         bench::Json observations = bench::Json::array();
-        const auto variants = context.deviceDesc ? std::vector<bool>{context.deviceDesc->enableOpacityMicromap} : std::vector<bool>{false, true};
+        const auto variants = context.deviceDesc ? std::vector<bool>{render::vulkan::deviceExtensions(*context.deviceDesc).enableOpacityMicromap} : std::vector<bool>{false, true};
         for (bool enable : variants) {
             { std::ofstream restore(path); restore << originalGltf; }
             bench::TestDevice device;
-            const auto setup = bench::createTestDevice(context, {.applicationName = "Opacity Micromap Test",
+            render::DeviceDesc desc{.applicationName = "Opacity Micromap Test",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
-                .enableOpacityMicromap = enable, .enablePartitionedAccelerationStructure = partitioned_, .enableAsyncCompute = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
+                .enablePartitionedAccelerationStructure = partitioned_, .enableAsyncCompute = true};
+            render::vulkan::deviceExtensions(desc).enableOpacityMicromap = enable;
+            const auto setup = bench::createTestDevice(context, std::move(desc)).transform([&](auto rhiValue) { device = std::move(rhiValue); });
             if (render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("ray queries unavailable"); }
             OMM_REQUIRE(setup);
             if (partitioned_ && !device->capabilities().partitionedAccelerationStructure) {
                 return RHITestResult::skip("PTLAS unavailable");
             }
-            if (enable && !device->capabilities().opacityMicromap) { return RHITestResult::skip("fallback passed; OMM unavailable"); }
+            if (enable && !render::vulkan::deviceCapabilities(*device).opacityMicromap) { return RHITestResult::skip("fallback passed; OMM unavailable"); }
             if (!enable) {
-                render::RayTracingAccelerationStructureBuildSizes sizes;
-                const auto unavailable = device->queryRayTracingAccelerationStructureBuildSizes({.type = render::RayTracingAccelerationStructureType::OpacityMicromap}).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
-                OMM_EXPECT(render::hasError(unavailable, render::Error::Unsupported), "disabled OMM was accepted");
+                auto vertexResult = device->createBuffer({.size = sizeof(bench::kRayVertices),
+                    .usage = render::BufferUsageBits::AccelerationStructureBuildInput | render::BufferUsageBits::ShaderDeviceAddress,
+                    .memoryLocation = render::MemoryLocation::HostUpload});
+                OMM_REQUIRE(vertexResult);
+                auto& vertices = *vertexResult;
+                render::RayTracingCoverageTriangle triangle;
+                triangle.uv = {{{0,0}, {1,0}, {0,1}}};
+                const render::RayTracingCoverageDesc coverage{.triangles = {&triangle, 1}};
+                auto slice = vertices->slice();
+                OMM_REQUIRE(slice);
+                const render::RayTracingTriangleGeometryDesc geometry{.vertexBuffer = *slice, .vertexStride = 12,
+                    .vertexCount = 3, .indexType = render::RayTracingIndexType::None, .primitiveCount = 1,
+                    .flags = render::RayTracingGeometryFlags::None, .coverage = &coverage};
+                auto fallback = device->prepareRayTracingBottomLevelBuild({&geometry, 1});
+                OMM_REQUIRE(fallback);
+                OMM_EXPECT((*fallback)->valid() && (*fallback)->sizes().accelerationStructureSize != 0 &&
+                    (*fallback)->coverageStats().geometryCount == 0, "static coverage did not retain ordinary BLAS fallback");
             }
             auto& queue = *device->getQueue(render::QueueType::Graphics);
             scene::Scene loaded;
@@ -190,7 +286,7 @@ public:
                 if (!complete) { std::this_thread::yield(); }
             }
             OMM_EXPECT(complete && resources.valid(), "scene preparation timed out: " + log);
-            OMM_EXPECT(resources.accelerationStructure().stats().opacityMicromapCount == (enable ? 4u : 0u), "scene BLAS did not bake the expected OMMs");
+            OMM_EXPECT(resources.accelerationStructure().stats().coverageAccelerationCount == (enable ? 4u : 0u), "scene BLAS did not bake the expected OMMs");
             OMM_EXPECT(resources.accelerationStructure().stats().compactedBlasBytes != 0, "BLAS compaction was not exercised");
             const char* capabilities[] = {"spvRayQueryKHR"};
             render::ShaderCompileResult compiled;
@@ -267,7 +363,7 @@ public:
                     OMM_REQUIRE(resources.syncRuntimeScene(&loaded, log));
                     const auto after = resources.accelerationStructure().stats();
                     OMM_EXPECT(before.compactedBlasBytes == after.compactedBlasBytes &&
-                        before.opacityMicromapBytes == after.opacityMicromapBytes &&
+                        before.coverageAccelerationBytes == after.coverageAccelerationBytes &&
                         address == resources.accelerationStructure().accelerationStructure()->deviceAddress(),
                         "transform update replaced BLAS/OMM/top-level storage");
                 }
@@ -363,7 +459,7 @@ public:
             }
         }
         bench::comparisonEvidence(context, {{"gltf", originalGltf}, {"alpha", pixels}, {"steps", 7}}, observations,
-            context.deviceDesc && context.deviceDesc->enableOpacityMicromap);
+            context.deviceDesc && render::vulkan::deviceExtensions(*context.deviceDesc).enableOpacityMicromap);
         if (context.evidence) {
             context.evidence->json("alpha-candidates.json", {{"candidates", fallbackCandidates + ommCandidates}});
             return RHITestResult::pass("CPU bilinear alpha oracle passed for all material/transform steps");
@@ -382,6 +478,220 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(OpacityMicromapRayQueryTest);
 METALLIC_REGISTER_RHI_TEST(PartitionedOpacityMicromapRayQueryTest);
+
+class OpacityMicromapBuildPlanLifetimeTest final : public RHITest {
+public:
+    OpacityMicromapBuildPlanLifetimeTest()
+    {
+        name = "opacity_micromap_build_plan_lifetime";
+        type = RHITestType::Rendering;
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        auto result = bench::gpuMetadata({"coverage.plan.cpuInputRelease.commandRetention.compactionOwnership"},
+            bench::Layer::RHI, "ray-query-omm", "extensions", {"readback.bin", "lifetime.json"});
+        result.requirements.capabilities.insert(result.requirements.capabilities.end(),
+            {bench::Capability::RayQuery, bench::Capability::OpacityMicromap});
+        return result;
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::string log;
+        auto created = bench::createTestDevice(context, {.applicationName = "Coverage plan lifetime",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableRayTracingAccelerationStructure = true, .enableRayQuery = true});
+        if (render::hasError(created, render::Error::Unsupported)) { return RHITestResult::skip("ray queries unavailable"); }
+        OMM_REQUIRE(created);
+        auto device = std::move(*created);
+        if (!device->capabilities().rayQuery || !device->capabilities().bindlessDescriptorHeap ||
+            !render::vulkan::deviceCapabilities(*device).opacityMicromap) {
+            return RHITestResult::skip("ray-query, bindless descriptors and OMM required");
+        }
+        auto& queue = *device->getQueue(render::QueueType::Graphics);
+        const auto makeBuffer = [&](uint64_t size, render::MemoryLocation location = render::MemoryLocation::Device) {
+            return device->createBuffer({.size = size,
+                .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::ShaderDeviceAddress |
+                    render::BufferUsageBits::AccelerationStructureBuildInput | render::BufferUsageBits::AccelerationStructureStorage,
+                .memoryLocation = location});
+        };
+        auto verticesResult = makeBuffer(sizeof(bench::kRayVertices), render::MemoryLocation::HostUpload);
+        OMM_REQUIRE(verticesResult);
+        auto vertices = std::move(*verticesResult);
+        void* mapped = vertices->map();
+        OMM_EXPECT(mapped != nullptr, "vertex upload map failed");
+        std::memcpy(mapped, bench::kRayVertices.data(), sizeof(bench::kRayVertices));
+        vertices->flush(); vertices->unmap();
+        std::unique_ptr<render::RayTracingBottomLevelBuildPlan> plan;
+        constexpr auto flags = render::RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
+            render::RayTracingAccelerationStructureBuildFlags::AllowCompaction;
+        {
+            // These CPU arrays and descriptors deliberately die before recording.
+            std::vector<uint8_t> pixels(4 * 4 * 4, 255);
+            std::vector<render::RayTracingCoverageTriangle> triangles(1);
+            triangles[0].uv = {{{0,0}, {1,0}, {0,1}}};
+            const render::RayTracingCoverageDesc coverage{.width = 4, .height = 4,
+                .pixelsRGBA8 = pixels, .triangles = triangles};
+            auto slice = vertices->slice();
+            OMM_REQUIRE(slice);
+            const render::RayTracingTriangleGeometryDesc geometry{.vertexBuffer = *slice, .vertexStride = 12,
+                .vertexCount = 3, .indexType = render::RayTracingIndexType::None, .primitiveCount = 1,
+                .flags = render::RayTracingGeometryFlags::None, .coverage = &coverage};
+            auto updatePlan = device->prepareRayTracingBottomLevelBuild({&geometry, 1},
+                render::RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
+                    render::RayTracingAccelerationStructureBuildFlags::AllowUpdate);
+            OMM_REQUIRE(updatePlan);
+            OMM_EXPECT((*updatePlan)->valid() && (*updatePlan)->sizes().updateScratchSize != 0 &&
+                (*updatePlan)->coverageStats().geometryCount == 0, "updatable BLAS did not use mutable shader coverage fallback");
+            const render::RayTracingCoverageDesc partialBlend{.mode = render::RayTracingCoverageMode::Blend,
+                .alphaFactor = 0.5f, .triangles = triangles};
+            auto partialGeometry = geometry;
+            partialGeometry.coverage = &partialBlend;
+            auto partialPlan = device->prepareRayTracingBottomLevelBuild({&partialGeometry, 1});
+            OMM_REQUIRE(partialPlan);
+            OMM_EXPECT((*partialPlan)->valid() && (*partialPlan)->sizes().accelerationStructureSize != 0 &&
+                (*partialPlan)->coverageStats().geometryCount == 0, "constant partial BLEND allocated all-unknown coverage acceleration");
+            OMM_REQUIRE(device->prepareRayTracingBottomLevelBuild({&geometry, 1}, flags)
+                .transform([&](auto value) { plan = std::move(value); }));
+        }
+        OMM_EXPECT(plan && plan->valid() && plan->coverageStats().geometryCount == 1 &&
+            plan->coverageStats().triangleCount == 1, "fixture did not prepare accelerated coverage");
+        const auto coverageStats = plan->coverageStats();
+        const auto sizes = plan->sizes();
+        std::unique_ptr<render::RayTracingAccelerationStructure> source;
+        OMM_REQUIRE(device->createRayTracingAccelerationStructure(*plan).transform([&](auto value) { source = std::move(value); }));
+        auto properties = device->queryRayTracingAccelerationStructureProperties();
+        OMM_REQUIRE(properties);
+        auto scratchResult = makeBuffer(sizes.buildScratchSize + properties->scratchAlignment);
+        OMM_REQUIRE(scratchResult);
+        auto scratch = std::move(*scratchResult);
+        auto queries = device->createRayTracingAccelerationStructureCompactionQueryPool({.queryCount = 1});
+        OMM_REQUIRE(queries);
+        {
+            bench::GPUCommands build(queue);
+            OMM_REQUIRE(build.initialize(*device));
+            OMM_REQUIRE(build.commands->resetRayTracingAccelerationStructureCompactionQueries(**queries, 0, 1));
+            auto scratchSlice = scratch->slice();
+            OMM_REQUIRE(scratchSlice);
+            auto shortScratchSlice = scratch->slice({.size = 1});
+            OMM_REQUIRE(shortScratchSlice);
+            const auto shortScratch = build.commands->buildRayTracingAccelerationStructure({.destination = source.get(),
+                .scratchBuffer = *shortScratchSlice, .plan = plan.get()});
+            OMM_EXPECT(render::hasError(shortScratch, render::Error::InvalidArgument),
+                "undersized scratch was accepted for a prepared build plan");
+            OMM_REQUIRE(build.commands->buildRayTracingAccelerationStructure({.destination = source.get(),
+                .scratchBuffer = *scratchSlice, .plan = plan.get()}));
+            const auto repeated = build.commands->buildRayTracingAccelerationStructure({.destination = source.get(),
+                .scratchBuffer = *scratchSlice, .plan = plan.get()});
+            OMM_EXPECT(render::hasError(repeated, render::Error::InvalidArgument), "a prepared build plan was recorded twice");
+            plan.reset();
+            vertices.reset();
+            scratch.reset();
+            OMM_REQUIRE(build.commands->writeRayTracingAccelerationStructureCompactedSize(**queries, 0, *source));
+            OMM_REQUIRE(build.submitAndWait());
+        }
+        std::array<uint64_t, 1> compactedSizes{};
+        OMM_REQUIRE((*queries)->readResults(0, compactedSizes));
+        OMM_EXPECT(compactedSizes[0] > 0 && compactedSizes[0] <= sizes.accelerationStructureSize,
+            "invalid BLAS compacted size");
+        auto compactedResult = device->createRayTracingAccelerationStructure({.buildFlags = flags, .size = compactedSizes[0]});
+        OMM_REQUIRE(compactedResult);
+        auto compacted = std::move(*compactedResult);
+        {
+            bench::GPUCommands copy(queue);
+            OMM_REQUIRE(copy.initialize(*device));
+            OMM_REQUIRE(copy.commands->compactRayTracingAccelerationStructure(*source, *compacted));
+            const auto overwrite = copy.commands->compactRayTracingAccelerationStructure(*source, *compacted);
+            OMM_EXPECT(render::hasError(overwrite, render::Error::InvalidArgument),
+                "compaction overwrote a destination already owning coverage dependencies");
+            OMM_REQUIRE(copy.submitAndWait());
+        }
+        std::weak_ptr<void> sourceAllocation = source->retainAllocation();
+        source.reset();
+        OMM_EXPECT(sourceAllocation.expired(), "compacted BLAS retained the retired source allocation");
+        OMM_EXPECT(compacted->coverageStats().geometryCount == coverageStats.geometryCount &&
+            compacted->coverageStats().storageBytes == coverageStats.storageBytes,
+            "compaction did not preserve resident coverage dependencies");
+
+        render::RayTracingGPUInstance instance;
+        instance.customIndexAndMask = 37 | (1u << 24);
+        instance.shaderBindingTableRecordOffsetAndFlags = uint32_t(render::RayTracingInstanceFlags::TriangleFacingCullDisable) << 24;
+        instance.accelerationStructureReference = compacted->deviceAddress();
+        auto instancesResult = makeBuffer(sizeof(instance), render::MemoryLocation::HostUpload);
+        OMM_REQUIRE(instancesResult);
+        auto instances = std::move(*instancesResult);
+        mapped = instances->map();
+        OMM_EXPECT(mapped != nullptr, "instance upload map failed");
+        std::memcpy(mapped, &instance, sizeof(instance)); instances->flush(); instances->unmap();
+        auto tlasSizes = device->queryRayTracingAccelerationStructureBuildSizes({
+            .type = render::RayTracingAccelerationStructureType::TopLevel, .instanceCount = 1});
+        OMM_REQUIRE(tlasSizes);
+        auto tlasResult = device->createRayTracingAccelerationStructure({.type = render::RayTracingAccelerationStructureType::TopLevel,
+            .size = tlasSizes->accelerationStructureSize});
+        OMM_REQUIRE(tlasResult);
+        auto tlas = std::move(*tlasResult);
+        scratchResult = makeBuffer(tlasSizes->buildScratchSize + properties->scratchAlignment);
+        OMM_REQUIRE(scratchResult);
+        scratch = std::move(*scratchResult);
+        {
+            bench::GPUCommands build(queue);
+            OMM_REQUIRE(build.initialize(*device));
+            auto instanceSlice = instances->slice(), scratchSlice = scratch->slice();
+            OMM_REQUIRE(instanceSlice); OMM_REQUIRE(scratchSlice);
+            OMM_REQUIRE(build.commands->buildRayTracingAccelerationStructure({.destination = tlas.get(),
+                .instanceBuffer = *instanceSlice, .instanceCount = 1, .scratchBuffer = *scratchSlice}));
+            OMM_REQUIRE(build.submitAndWait());
+        }
+        const char* capabilities[] = {"spvRayQueryKHR"};
+        auto compiled = render::compileSlangShaderToSpirv({.moduleName = "CoverageBuildPlanProbe",
+            .entryPointName = "coverageBuildPlanMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+            .capabilities = capabilities, .descriptorHeapMode = render::SlangDescriptorHeapMode::Mapped}, log);
+        OMM_REQUIRE(compiled);
+        const render::ComputeProgramBindingDesc layout[] = {{0, render::ComputeResourceBindingKind::AccelerationStructure}, {1}};
+        render::ComputeProgram program;
+        OMM_REQUIRE(program.initialize(*device, {.spirv = compiled->spirv, .bindings = layout,
+            .resourceParameters = kUnifiedTopLevelProbeLayout}, log));
+        auto outputResult = makeBuffer(sizeof(bench::RayObservations), render::MemoryLocation::HostReadback);
+        OMM_REQUIRE(outputResult);
+        auto output = std::move(*outputResult);
+        auto poolResult = device->createCommandPool(queue);
+        OMM_REQUIRE(poolResult);
+        auto pool = std::move(*poolResult);
+        auto commandsResult = pool->createCommandBuffer();
+        OMM_REQUIRE(commandsResult);
+        auto commands = std::move(*commandsResult);
+        render::QueueSubmissionTracker tracker;
+        OMM_REQUIRE(tracker.initialize(*device, queue));
+        render::RenderFrameContext frame;
+        struct Drain {
+            render::RenderFrameContext& frame; render::CommandPool& pool;
+            ~Drain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
+        } drain{frame, *pool};
+        OMM_REQUIRE(frame.begin(0)); OMM_REQUIRE(commands->begin(frame.submissionContext()));
+        const render::ComputeDispatchBinding bindings[] = {
+            {.binding = 0, .accelerationStructure = tlas.get()}, {.binding = 1, .buffer = output.get()}};
+        OMM_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}));
+        OMM_REQUIRE(commands->end());
+        render::CommandBuffer* submitted[] = {commands.get()};
+        OMM_REQUIRE(tracker.submit({.commandBuffers = submitted}, frame));
+        OMM_REQUIRE(frame.wait(5'000'000'000ull));
+        bench::RayObservations actual{};
+        mapped = output->map();
+        OMM_EXPECT(mapped != nullptr, "probe readback map failed");
+        output->invalidate(); std::memcpy(actual.data(), mapped, sizeof(actual)); output->unmap();
+        try { (void)bench::rayOracle(actual); }
+        catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+        OMM_EXPECT(std::all_of(actual.begin(), actual.end(), [](const auto& ray) { return ray.padding == 0.0f; }),
+            "released coverage reached shader candidate traversal instead of the opaque micromap");
+        bench::readbackEvidence(context, "readback.bin", std::span<const bench::RayObservation>(actual));
+        if (context.evidence) {
+            context.evidence->json("lifetime.json", {{"cpuInputsReleasedBeforeRecording", true},
+                {"planReleasedBeforeSubmission", true}, {"compactionSourceRetired", sourceAllocation.expired()},
+                {"coverageStorageBytes", coverageStats.storageBytes}, {"analyticRays", actual.size()}});
+        }
+        return RHITestResult::pass("coverage survived CPU input/plan release and source BLAS retirement after compaction; six analytic rays passed");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(OpacityMicromapBuildPlanLifetimeTest);
 
 #undef OMM_REQUIRE
 #undef OMM_EXPECT

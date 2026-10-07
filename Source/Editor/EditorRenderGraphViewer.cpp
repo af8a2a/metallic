@@ -58,7 +58,6 @@ const char* accelerationStructureTypeName(RayTracingAccelerationStructureType ty
     switch (type) {
     case RayTracingAccelerationStructureType::BottomLevel: return "BLAS";
     case RayTracingAccelerationStructureType::TopLevel: return "TLAS";
-    case RayTracingAccelerationStructureType::OpacityMicromap: return "Opacity micromap";
     }
     return "Unknown";
 }

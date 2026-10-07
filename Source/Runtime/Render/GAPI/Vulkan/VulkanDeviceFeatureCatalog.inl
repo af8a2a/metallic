@@ -158,13 +158,13 @@ MT_VK_FEATURE(pushDescriptor, false, false,
     request.streamline && extensions.pushDescriptor, 1,
     , backendCaps.pushDescriptor = pushDescriptor;)
 
-MT_VK_FEATURE(opacityMicromap, desc.enableOpacityMicromap, false,
+MT_VK_FEATURE(opacityMicromap, vulkanOptions.enableOpacityMicromap, false,
     request.opacityMicromap &&
         result.rayTracingAccelerationStructure &&
         extensions.opacityMicromap &&
         (extensions.opacityMicromapExt ? probe.opacityMicromapExtFeatures.micromap == VK_TRUE : probe.opacityMicromapFeatures.micromap == VK_TRUE &&
         probe.deviceAddressCommandsFeatures.deviceAddressCommands == VK_TRUE), 0,
-    opacityMicromapFeatures.micromap = selection.opacityMicromap;, caps.opacityMicromap = opacityMicromap;)
+    opacityMicromapFeatures.micromap = selection.opacityMicromap;, backendCaps.opacityMicromap = opacityMicromap;)
 
 MT_VK_FEATURE(opacityMicromapExt, true, false,
     result.opacityMicromap && extensions.opacityMicromapExt, 0,
