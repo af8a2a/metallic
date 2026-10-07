@@ -10337,31 +10337,9 @@ struct VulkanNativeAccess {
             return {};
         }
 
-        VkDeviceAddress address = 0;
-        const BufferUsageBits usage = buffer.impl_->desc.usage;
-        const bool expectsAddress =
-            hasFlag(usage, BufferUsageBits::ShaderDeviceAddress) ||
-            hasFlag(usage, BufferUsageBits::AccelerationStructureBuildInput) ||
-            hasFlag(usage, BufferUsageBits::AccelerationStructureStorage) ||
-            (buffer.impl_->device != nullptr &&
-                buffer.impl_->device->bufferDeviceAddressEnabled &&
-                (hasFlag(usage, BufferUsageBits::Constant) || hasFlag(usage, BufferUsageBits::Storage) ||
-                 hasFlag(usage, BufferUsageBits::Indirect) || hasFlag(usage, BufferUsageBits::TransferSource) ||
-                 hasFlag(usage, BufferUsageBits::TransferDestination) || usage == BufferUsageBits::None));
-        if (expectsAddress &&
-            buffer.impl_->device != nullptr &&
-            buffer.impl_->buffer != VK_NULL_HANDLE) {
-
-            VkBufferDeviceAddressInfo addressInfo{
-                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-                .buffer = buffer.impl_->buffer,
-            };
-            address = buffer.impl_->device->functions.vkGetBufferDeviceAddress(buffer.impl_->device->device, &addressInfo);
-        }
-
         return vulkan::NativeBuffer{
             .buffer = buffer.impl_->buffer,
-            .address = address,
+            .address = buffer.impl_->address,
             .size = buffer.impl_->desc.size,
             .device = buffer.impl_->device->device,
         };
