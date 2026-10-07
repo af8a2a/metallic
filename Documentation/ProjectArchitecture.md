@@ -400,6 +400,15 @@ Buffer/Texture/Pipeline 等共享存储继续支持提交保活。`CommandBuffer
 
 需要隔离提交的上层操作使用 GAPI 的 `QueueSubmissionIsolation`：它排除其他线程的所有 RHI queue submit，允许持有线程提交及同线程嵌套。普通提交共享访问，不因启用 replay 配置而互相串行化；RHI 提交入口不读取 replay 环境变量，也不调用 profiling 层的锁。隔离只协调 CPU 提交，不等待 GPU 完成，调用方仍需自行 drain，且不能从提交/发布回调中升级为独占。WorkControlReplay 在回放期间持有此作用域。
 
+Vulkan 后端另外为每个原生 `VkQueue` 维护互斥；映射到相同原生 queue 的 Graphics/Compute 包装共享锁。RHI 和原生适配器的 submit、present、queue wait 都使用同一互斥，device wait 使用全局隔离。`QueueSubmissionAccess` 本身仍不是单个 queue 的互斥。
+
+Editor 的 ImGui Vulkan 初始化、显示 PSO、HDR10 编码和纹理注册由
+[`VulkanImGuiBackend`](../Source/Runtime/Render/GAPI/Vulkan/VulkanImGuiBackend.h) 持有，Editor 不保存 Vulkan 句柄。
+Core 的 `ImGuiDisplayShaders` 通过注入的服务提供 shader 编译及持久化 pipeline cache，GAPI 不反向包含 Core。
+纹理注册持有原生 view/image；每次录制通过 `ExternalCommandScope::imageView` 和 RHI 资源保活保留 view 及 descriptor。
+移除注册后，descriptor 在所有录制/帧释放引用后，由 ImGui context 线程回收。取消录制同样释放引用。
+ImGui 自身的字体上传和多视口 queue 函数通过独立函数表转接到 GAPI 原生队列入口，共享隔离、队列互斥、pacing、submit trace 和错误转换。
+Editor 仍在多视口录制提交之后封闭 frame completion，确保这些外部提交也包含在帧资源寿命内。
 
 纹理拷贝（含 buffer/texture 双向拷贝）、`clearColorTexture()`、`setViewport()` 和 `draw*()` 也返回 `[[nodiscard]] Result<>`。入口检查发现参数、资源归属或录制状态非法时返回 `InvalidArgument`，mesh draw 所需能力或设备入口不可用时返回 `Unsupported`，不会静默跳过命令。上层 pass、上传和读回辅助函数必须传播错误；成功表示命令已录制，不代表 GPU 已完成，也不替代 Vulkan validation 对完整命令合法性的检查。
 

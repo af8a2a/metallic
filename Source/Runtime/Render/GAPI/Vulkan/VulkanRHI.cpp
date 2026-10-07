@@ -4,6 +4,7 @@
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
+#include "VulkanInterop.h"
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/ShaderObjectCacheFile.h"
@@ -1846,6 +1847,7 @@ namespace detail {
 struct DeviceImpl;
 
 struct QueueImpl {
+    std::shared_ptr<std::mutex> nativeMutex;
     DeviceImpl* device = nullptr;
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t familyIndex = 0;
@@ -2838,6 +2840,10 @@ void DeviceImpl::addQueue(
     auto impl = std::make_unique<QueueImpl>();
     impl->device = this;
     impl->queue = queue;
+    for (const auto& existing : queues) {
+        if (existing->impl_->queue == queue) { impl->nativeMutex = existing->impl_->nativeMutex; break; }
+    }
+    if (!impl->nativeMutex) { impl->nativeMutex = std::make_shared<std::mutex>(); }
     impl->familyIndex = familyIndex;
     impl->queueFlags = queueFlags;
     impl->timestampValidBits = timestampValidBits;
@@ -3464,16 +3470,7 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
     for (const auto& [context, count] : retentionCounts) {
         context->reserveResources(count);
     }
-    profiling::pacingTrace("QueueSubmitBegin", UINT64_MAX, impl_->familyIndex);
-    const Result<> result = [&] {
-        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::nativeSubmitNs);
-        if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->nativeSubmits; }
-        const auto nativeResult = impl_->device->functions.vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence);
-        vulkan::emitTrace({.kind = vulkan::TraceKind::Submit, .device = impl_->device->device,
-            .queue = impl_->queue, .queueFamily = impl_->familyIndex, .submit = &submitInfo, .result = nativeResult});
-        return resultFromVk(nativeResult);
-    }();
-    profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl_->familyIndex);
+    const Result<> result = resultFromVk(vulkan::submitInterop(*this, {&submitInfo, 1}, fence));
     if (result) {
         // Mark the whole accepted batch before invoking any CPU publication hooks.
         for (uint32_t index = 0; index < desc.commandBuffers.size(); ++index) {
@@ -3500,7 +3497,7 @@ Result<> Queue::waitIdle()
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    return resultFromVk(impl_->device->functions.vkQueueWaitIdle(impl_->queue));
+    return resultFromVk(vulkan::waitInterop(*this));
 }
 
 QueueType Queue::type() const
@@ -6733,10 +6730,10 @@ Result<> Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphor
     };
 
     if (profiling::nvPerfPassActive()) {
-        const auto idle = impl_->device->functions.vkQueueWaitIdle(queue.impl_->queue);
+        const auto idle = vulkan::waitInterop(queue);
         if (idle != VK_SUCCESS) { return resultFromVk(idle); }
     }
-    const VkResult result = impl_->device->functions.vkQueuePresentKHR(queue.impl_->queue, &presentInfo);
+    const VkResult result = vulkan::presentInterop(queue, presentInfo);
     if (result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR) {
         return makeError(Error::OutOfDate);
     }
@@ -7533,7 +7530,7 @@ Result<> Device::waitIdle()
         return makeError(Error::InvalidArgument);
     }
 
-    return resultFromVk(impl_->functions.vkDeviceWaitIdle(impl_->device));
+    return resultFromVk(vulkan::waitInterop(*this));
 }
 
 Result<std::unique_ptr<Swapchain>> Device::createSwapchain(const SwapchainDesc& desc)
@@ -10282,6 +10279,17 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 namespace detail {
 
 struct VulkanNativeAccess {
+    static QueueImpl* queue(Queue& queue) { return queue.impl_.get(); }
+    static DeviceImpl* device(Device& device) { return device.impl_.get(); }
+    static Result<std::unique_ptr<TextureView>> retainView(TextureView& view)
+    {
+        if (!view.impl_) { return makeError(Error::InvalidArgument); }
+        auto result = view.impl_->materialize();
+        if (!result) { return std::unexpected(result.error()); }
+        auto retained = std::make_unique<TextureView>();
+        retained->impl_ = view.impl_;
+        return retained;
+    }
     static vulkan::VulkanDeviceCapabilities deviceCapabilities(const Device& device)
     {
         return device.impl_ ? device.impl_->vulkanCapabilities : vulkan::VulkanDeviceCapabilities{};
@@ -10487,6 +10495,67 @@ struct VulkanNativeAccess {
 } // namespace detail
 
 namespace vulkan {
+
+VkFormat nativeFormat(Format format)
+{
+    return toVkFormat(format);
+}
+
+Format resourceFormat(VkFormat format)
+{
+    return fromVkFormat(format);
+}
+
+Result<std::unique_ptr<TextureView>> retainInteropView(TextureView& view)
+{
+    return detail::VulkanNativeAccess::retainView(view);
+}
+
+VkResult submitInterop(Queue& queue, std::span<const VkSubmitInfo2> submits, VkFence fence)
+{
+    const detail::QueueSubmissionAccess access;
+    auto* impl = detail::VulkanNativeAccess::queue(queue);
+    if (!impl || submits.size() > UINT32_MAX) { return VK_ERROR_UNKNOWN; }
+    std::lock_guard lock(*impl->nativeMutex);
+    profiling::pacingTrace("QueueSubmitBegin", UINT64_MAX, impl->familyIndex);
+    VkResult result;
+    {
+        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::nativeSubmitNs);
+        if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->nativeSubmits; }
+        result = impl->device->functions.vkQueueSubmit2(impl->queue, uint32_t(submits.size()), submits.data(), fence);
+        for (const auto& submit : submits) {
+            emitTrace({.kind = TraceKind::Submit, .device = impl->device->device,
+                .queue = impl->queue, .queueFamily = impl->familyIndex, .submit = &submit, .result = result});
+        }
+    }
+    profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl->familyIndex);
+    return result;
+}
+
+VkResult presentInterop(Queue& queue, const VkPresentInfoKHR& present)
+{
+    const detail::QueueSubmissionAccess access;
+    auto* impl = detail::VulkanNativeAccess::queue(queue);
+    if (!impl) { return VK_ERROR_UNKNOWN; }
+    std::lock_guard lock(*impl->nativeMutex);
+    return impl->device->functions.vkQueuePresentKHR(impl->queue, &present);
+}
+
+VkResult waitInterop(Queue& queue)
+{
+    const detail::QueueSubmissionAccess access;
+    auto* impl = detail::VulkanNativeAccess::queue(queue);
+    if (!impl) { return VK_ERROR_UNKNOWN; }
+    std::lock_guard lock(*impl->nativeMutex);
+    return impl->device->functions.vkQueueWaitIdle(impl->queue);
+}
+
+VkResult waitInterop(Device& device)
+{
+    const QueueSubmissionIsolation isolation;
+    auto* impl = detail::VulkanNativeAccess::device(device);
+    return impl ? impl->functions.vkDeviceWaitIdle(impl->device) : VK_ERROR_UNKNOWN;
+}
 
 ExternalCommandScope::ExternalCommandScope(CommandBuffer& commands)
     : commands_(commands.recording() ? &commands : nullptr)

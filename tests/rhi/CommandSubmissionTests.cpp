@@ -1,5 +1,9 @@
 #include "RHITest.h"
 #include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanInterop.h"
+#include <barrier>
+#include <atomic>
+#include <thread>
 #include <future>
 #include <stdexcept>
 #include "harness/Evidence.h"
@@ -63,6 +67,74 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(QueueSubmissionIsolationTest);
+
+// Replace device entry points so overlapping CPU calls are detected independently
+// of driver timing. No simulated work is submitted to the GPU by this fixture.
+class NativeQueueSynchronizationTest final : public RHITest {
+    struct Capture {
+        inline static Capture* active = nullptr;
+        VolkDeviceTable& functions;
+        PFN_vkQueueSubmit2 submit;
+        PFN_vkQueuePresentKHR present;
+        PFN_vkQueueWaitIdle wait;
+        std::atomic_uint inside{0}, calls{0};
+        std::atomic_bool overlap{false};
+        explicit Capture(render::Device& device)
+            : functions(*const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)),
+              submit(functions.vkQueueSubmit2), present(functions.vkQueuePresentKHR), wait(functions.vkQueueWaitIdle)
+        {
+            active = this;
+            functions.vkQueueSubmit2 = [](VkQueue, uint32_t, const VkSubmitInfo2*, VkFence) -> VkResult { return enter(); };
+            functions.vkQueuePresentKHR = [](VkQueue, const VkPresentInfoKHR*) -> VkResult { return enter(); };
+            functions.vkQueueWaitIdle = [](VkQueue) -> VkResult { return enter(); };
+        }
+        ~Capture()
+        {
+            functions.vkQueueSubmit2 = submit;
+            functions.vkQueuePresentKHR = present;
+            functions.vkQueueWaitIdle = wait;
+            active = nullptr;
+        }
+        static VkResult enter()
+        {
+            if (active->inside.fetch_add(1)) { active->overlap = true; }
+            ++active->calls;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            --active->inside;
+            return VK_SUCCESS;
+        }
+    };
+public:
+    NativeQueueSynchronizationTest() { type = RHITestType::Command; name = "native_queue_submission_synchronization"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        if (!context.device.waitIdle()) { return RHITestResult::fail("Queue synchronization fixture drain failed"); }
+        auto& queue = context.graphicsQueue;
+        auto* alias = context.device.getQueue(render::QueueType::Compute);
+        if (!alias || !alias->sameQueue(queue)) { alias = &queue; }
+        Capture capture(context.device);
+        std::atomic_bool success{true};
+        for (int operation = 0; operation < 3; ++operation) {
+            std::barrier start(2);
+            auto native = std::async(std::launch::async, [&] {
+                start.arrive_and_wait();
+                for (int i = 0; i < 20; ++i) {
+                    const VkSubmitInfo2 submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+                    const VkPresentInfoKHR present{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+                    const auto result = operation == 0 ? render::vulkan::submitInterop(*alias, {&submit, 1}, VK_NULL_HANDLE) :
+                        operation == 1 ? render::vulkan::presentInterop(*alias, present) : render::vulkan::waitInterop(*alias);
+                    if (result != VK_SUCCESS) { success = false; }
+                }
+            });
+            start.arrive_and_wait();
+            for (int i = 0; i < 20; ++i) { if (!queue.submit({})) { success = false; } }
+            native.get();
+        }
+        return success && !capture.overlap && capture.calls == 120 ? RHITestResult::pass() :
+            RHITestResult::fail("RHI and native submit/present/wait overlapped on the same VkQueue");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(NativeQueueSynchronizationTest);
 
 class SubmitEmptyCommandBufferTest : public RHITest {
 public:

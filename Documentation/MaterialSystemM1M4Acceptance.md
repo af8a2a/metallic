@@ -51,7 +51,7 @@ Slab 原型的限制本身是明确、合理的：单面漫反射、共享 norma
 
 ### P2：Inspector 向 device loader 请求 instance 命令（已修复）
 
-实际 Roughness 拖动、分组 undo/redo、材质切换、dirty state、保存重载和比较渲染均能完成，但严格 CTest 因验证警告失败。[EditorDisplayRenderer](../Source/Editor/EditorDisplayRenderer.cpp) 原先对每个 ImGui 请求先调用 `vkGetDeviceProcAddr`，包含 `vkDestroySurfaceKHR` / `vkGetPhysicalDevice*` 等 instance 命令。改为使用能加载两类命令的实例 resolver，仍使用独立 ImGui 函数表。
+实际 Roughness 拖动、分组 undo/redo、材质切换、dirty state、保存重载和比较渲染均能完成，但严格 CTest 因验证警告失败。[VulkanImGuiBackend](../Source/Runtime/Render/GAPI/Vulkan/VulkanImGuiBackend.cpp) 原先对每个 ImGui 请求先调用 `vkGetDeviceProcAddr`，包含 `vkDestroySurfaceKHR` / `vkGetPhysicalDevice*` 等 instance 命令。改为使用能加载两类命令的实例 resolver，仍使用独立 ImGui 函数表。
 
 另外，本机注册了失效的 EOS overlay / `E:/Validation.json` 清单。本次只在测试进程中设置 SDK `VK_LAYER_PATH` 及空 `VK_IMPLICIT_LAYER_PATH`，没有修改系统注册表、关闭 validation 或放宽 CTest 的零警告门槛。隔离环境下严格 Inspector 验收通过。
 

@@ -27,7 +27,7 @@
 | Vulkan heap | image/buffer 分区，各自按 descriptor size 换算 `shaderIndex`；RTAS 使用 buffer 槽 | 当前并不是所有资源共用一种 stride 的索引空间 |
 | GPU-driven | 自己的 push ABI、局部 index + heap base、直接 `DescriptorHandle`；调用者传入 heap | 比 ComputeProgram 更接近目标，但也需要统一 handle/heap ABI |
 | NRD adapter | 独立 heap、资源索引数组、自己的 push header | 不经过 ComputeResources，但仍需纳入底层 native 编译与共享 heap 迁移 |
-| EditorDisplay | 存在明确的 `vk::binding`；由 `EditorDisplayRenderer` 编译并接入 ImGui | 这是实际使用的互操作路径，不能误认为所有自有 shader 都已无显式 binding |
+| EditorDisplay | 存在明确的 `vk::binding`；由 Core 的 `ImGuiDisplayShaders` 编译、`VulkanImGuiBackend` 接入 ImGui | 这是实际使用的互操作路径，不能误认为所有自有 shader 都已无显式 binding |
 
 当前扫描：38 个 `.slang` 文件包含 `getResource<` / `getResourceArray<`（包括 helper 本身）；22 个 C++ 调用文件使用 `ComputeProgramBindingDesc`（排除实现文件）。这不是全部受影响文件计数，GPU-driven、NRD、测试和 RHI 另计。
 
@@ -39,7 +39,7 @@
 - `VulkanRHI.cpp:2645`、`:2667`、`:9889`：heap 分区、索引换算、公共数组映射。
 - `GPUDrivenSceneCommon.slang:9`：另一个携带 base/index 的 shader ABI。
 - `NRDRuntime.cpp:294`、`Shaders/Interop/Denoising/NRD/Bindless.hlsli`：NRD 独立 heap/参数路径。
-- `Shaders/Features/PostProcess/EditorDisplay.slang:19`、`EditorDisplayRenderer.cpp:79`：ImGui 显示互操作。
+- `Shaders/Features/PostProcess/EditorDisplay.slang:19`、`GAPI/Vulkan/VulkanImGuiBackend.cpp`：ImGui 显示互操作。
 
 ## 编译器与后端前提
 

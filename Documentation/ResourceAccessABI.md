@@ -96,7 +96,7 @@ remain explicit and independent of descriptor resolution.
 ## Boundaries and remaining architecture work
 
 - ImGui's public Vulkan texture/descriptor-set ABI remains an external boundary
-  in `EditorDisplayRenderer` / `EditorDisplay.slang`, including detached windows
+  in `VulkanImGuiBackend` / `EditorDisplay.slang`, including detached windows
   and HDR UI composition. This renderer migration does not replace ImGui's
   Vulkan backend. Attachments, transfers, vertex/index and indirect API bindings
   are not shader resource descriptors.
@@ -158,7 +158,7 @@ counts. These categories describe different migration layers; they are not all
 evidence of non-DR resource access.
 
 - `Features/PostProcess/EditorDisplay.slang` is the only fixed image/sampler
-  binding found under `Shaders/`. Its two sets match `EditorDisplayRenderer`'s
+  binding found under `Shaders/`. Its two sets match `VulkanImGuiBackend`'s
   Vulkan layouts, ImGui draw callbacks and HDR10 output descriptor-set binding.
   Migrating it requires a coordinated editor/ImGui binding change, including
   detached windows; changing the shader declarations alone is insufficient.

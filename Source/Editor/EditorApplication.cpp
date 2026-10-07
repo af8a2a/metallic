@@ -8,7 +8,7 @@
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "Runtime/Render/GAPI/RHI.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/Core/ImGuiDisplayShaders.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -21,7 +21,6 @@
 #include "imnodes.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
-#include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include "ImGuizmo.h"
 
@@ -1935,13 +1934,6 @@ void setRenderGraphFieldTooltip(const render::RenderGraphField& field)
     ImGui::SetTooltip("%s", text.c_str());
 }
 
-void checkVkResult(VkResult result)
-{
-    if (result < 0) {
-        spdlog::error("Vulkan error: {}", static_cast<int>(result));
-    }
-}
-
 ImVec4 nvproColor(float r, float g, float b, float a)
 {
     return ImVec4(r, g, b, a);
@@ -2754,8 +2746,7 @@ bool EditorApplication::initializeRhi()
         }
     }
 
-    StartupLogScope scope("Viewport sampler creation");
-    return createViewportSampler();
+    return true;
 }
 
 bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
@@ -2773,7 +2764,6 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
 
     (void)device_->waitIdle();
     const auto previousOutput = displayOutput_;
-    const auto previousFormat = swapchain_ ? swapchain_->format() : render::Format::Unknown;
     const SDL_PropertiesID windowProperties = SDL_GetWindowProperties(window_);
     displayHdrEnabled_ = SDL_GetBooleanProperty(windowProperties, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
     if (followSystemPaperWhite_) {
@@ -2856,23 +2846,8 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
     }
     if (displayOutput_ != previousOutput) { renderGraph_.markDirty(); }
 
-    if (imguiRendererInitialized_) {
-        ImGui_ImplVulkan_SetMinImageCount(kMinSwapchainImageCount);
-        const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
-        const VkFormat colorFormat = pqOutput ? VK_FORMAT_R16G16B16A16_SFLOAT : render::vulkan::nativeSwapchainFormat(*swapchain_);
-        if (previousFormat != swapchain_->format()) {
-            VkPipelineRenderingCreateInfo renderingInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                .colorAttachmentCount = 1, .pColorAttachmentFormats = &colorFormat};
-            ImGui_ImplVulkan_PipelineInfo pipelineInfo{};
-            pipelineInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-            pipelineInfo.PipelineRenderingCreateInfo = renderingInfo;
-            ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
-        }
-        if (!displayRenderer_.initialize(*device_, colorFormat,
-                render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
-                pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED)) {
-            return false;
-        }
+    if (imguiRendererInitialized_ && !imguiBackend_.configure(*swapchain_, displayOutput_.paperWhiteNits)) {
+        return false;
     }
     return true;
 }
@@ -2881,7 +2856,7 @@ void EditorApplication::destroySwapchainResources()
 {
     for (auto& composition : displayCompositions_) {
         if (composition.descriptor && imguiRendererInitialized_) {
-            ImGui_ImplVulkan_RemoveTexture(composition.descriptor);
+            imguiBackend_.removeTexture(composition.descriptor);
         }
     }
     displayCompositions_.clear();
@@ -2903,79 +2878,9 @@ bool EditorApplication::initializeImGuiBackends()
         return false;
     }
 
-    const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
-    const render::vulkan::NativeQueue nativeQueue = render::vulkan::nativeQueue(*graphicsQueue_);
-    const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
-    const VkFormat colorFormat = pqOutput ? VK_FORMAT_R16G16B16A16_SFLOAT : render::vulkan::nativeSwapchainFormat(*swapchain_);
-    if (nativeDevice.instance == VK_NULL_HANDLE ||
-        nativeDevice.physicalDevice == VK_NULL_HANDLE ||
-        nativeDevice.device == VK_NULL_HANDLE ||
-        nativeQueue.queue == VK_NULL_HANDLE ||
-        colorFormat == VK_FORMAT_UNDEFINED) {
-        spdlog::error("Invalid Vulkan native handles for ImGui backend");
-        return false;
-    }
-
-    VkPipelineRenderingCreateInfo pipelineRenderingInfo{
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-        .colorAttachmentCount = 1,
-        .pColorAttachmentFormats = &colorFormat,
-    };
-
-    ImGui_ImplVulkan_InitInfo initInfo{};
-    initInfo.ApiVersion = nativeDevice.apiVersion;
-    initInfo.Instance = nativeDevice.instance;
-    initInfo.PhysicalDevice = nativeDevice.physicalDevice;
-    initInfo.Device = nativeDevice.device;
-    initInfo.QueueFamily = nativeQueue.familyIndex;
-    initInfo.Queue = nativeQueue.queue;
-    initInfo.DescriptorPoolSize = 128;
-    initInfo.MinImageCount = kMinSwapchainImageCount;
-    initInfo.ImageCount = swapchain_->imageCount();
-    initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-#ifdef IMGUI_IMPL_VULKAN_HAS_DYNAMIC_RENDERING
-    initInfo.UseDynamicRendering = true;
-    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = pipelineRenderingInfo;
-#endif
-    initInfo.CheckVkResultFn = checkVkResult;
-
-    imguiRendererInitialized_ = EditorDisplayRenderer::loadBackendFunctions(nativeDevice) &&
-        ImGui_ImplVulkan_Init(&initInfo);
-    if (!imguiRendererInitialized_) {
-        spdlog::error("ImGui Vulkan renderer backend initialization failed");
-        return false;
-    }
-    return displayRenderer_.initialize(*device_, colorFormat,
-        render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
-                pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED);
-}
-
-bool EditorApplication::createViewportSampler()
-{
-    if (device_ == nullptr) {
-        return false;
-    }
-    const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
-    if (nativeDevice.device == VK_NULL_HANDLE) {
-        return false;
-    }
-
-    VkSamplerCreateInfo samplerInfo{
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .maxLod = 1.0f,
-    };
-    const VkResult result = nativeDevice.functions->vkCreateSampler(nativeDevice.device, &samplerInfo, nullptr, &viewportSampler_);
-    if (result != VK_SUCCESS) {
-        spdlog::error("vkCreateSampler(viewport) failed with VkResult {}", static_cast<int>(result));
-        return false;
-    }
-    return true;
+    imguiRendererInitialized_ = bool(imguiBackend_.init(*device_, *graphicsQueue_, *swapchain_,
+        render::imGuiDisplayShaders(), displayOutput_.paperWhiteNits));
+    return imguiRendererInitialized_;
 }
 
 void EditorApplication::shutdown()
@@ -3002,12 +2907,9 @@ void EditorApplication::shutdown()
     destroyViewportTexture();
     historyResources_.reset();
     nvmlMonitor_.shutdown();
-    displayRenderer_.shutdown();
+    imguiBackend_.shutdown();
 
-    if (imguiRendererInitialized_) {
-        ImGui_ImplVulkan_Shutdown();
-        imguiRendererInitialized_ = false;
-    }
+    imguiRendererInitialized_ = false;
 
     if (imguiPlatformInitialized_) {
         ImGui_ImplSDL3_Shutdown();
@@ -3030,14 +2932,6 @@ void EditorApplication::shutdown()
     stage("streamer subsystems");
     subsystemHost_.shutdown();
     sceneAccelerationStructure_.reset();
-
-    if (viewportSampler_ != VK_NULL_HANDLE && device_ != nullptr) {
-        const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
-        if (nativeDevice.device != VK_NULL_HANDLE) {
-            nativeDevice.functions->vkDestroySampler(nativeDevice.device, viewportSampler_, nullptr);
-        }
-        viewportSampler_ = VK_NULL_HANDLE;
-    }
 
     for (FrameSlot& frame : frameSlots_) {
         frame.commandBuffer.reset();
@@ -3276,7 +3170,7 @@ bool EditorApplication::renderFrame()
 
     {
         auto profileScope = profiler_.scope("ImGui NewFrame");
-        ImGui_ImplVulkan_NewFrame();
+        if (!imguiBackend_.newFrame()) { running_ = false; return false; }
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
@@ -6845,10 +6739,10 @@ void EditorApplication::drawViewportPanel()
             ? renderGraph_.firstOutputName() : activePreviewOutput_);
         const bool scRgbImage = preview && preview->colorEncoding == render::DisplayColorEncoding::scRGB;
         if (scRgbImage) {
-            displayRenderer_.beginScRgbImage(*drawList, ImGui::GetWindowViewport());
+            imguiBackend_.beginScRgbImage(*drawList, ImGui::GetWindowViewport());
         }
         drawList->AddImage(
-            static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(viewportDescriptor_)),
+            static_cast<ImTextureID>(viewportDescriptor_),
             min,
             max,
             ImVec2(0.0f, 0.0f),
@@ -7069,7 +6963,7 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
 
 bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 {
-    if (device_ == nullptr || graphExecutor_ == nullptr || viewportSampler_ == VK_NULL_HANDLE) {
+    if (device_ == nullptr || graphExecutor_ == nullptr || !imguiRendererInitialized_) {
         return false;
     }
     if ((pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) &&
@@ -7108,7 +7002,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     viewportView_.setTemporalJitterSuppressed(rawVisibilityPreview);
 
     const bool textureSizeMatches =
-        viewportDescriptor_ != VK_NULL_HANDLE &&
+        viewportDescriptor_ != 0 &&
         viewportTextureWidth_ == width &&
         viewportTextureHeight_ == height;
     const bool previewResourceAvailable = graphExecutor_->compiled() &&
@@ -7128,7 +7022,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 
     const bool canReusePreviewDuringResize =
         viewportPreviewValid_ &&
-        viewportDescriptor_ != VK_NULL_HANDLE &&
+        viewportDescriptor_ != 0 &&
         previewResourceAvailable &&
         !textureSizeMatches &&
         !renderGraph_.dirty();
@@ -7198,16 +7092,16 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 }
 void EditorApplication::destroyViewportDescriptor()
 {
-    if (viewportDescriptor_ != VK_NULL_HANDLE && imguiRendererInitialized_) {
+    if (viewportDescriptor_ != 0 && imguiRendererInitialized_) {
         const render::Result<> result = frameSubmissions_.wait();
         if (!result) {
             spdlog::error("Viewport descriptor retirement failed: {}", render::resultToString(result));
             running_ = false;
             return;
         }
-        ImGui_ImplVulkan_RemoveTexture(viewportDescriptor_);
+        imguiBackend_.removeTexture(viewportDescriptor_);
     }
-    viewportDescriptor_ = VK_NULL_HANDLE;
+    viewportDescriptor_ = 0;
 }
 
 void EditorApplication::destroyViewportTexture()
@@ -7363,13 +7257,9 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
         auto* composition = pqOutput ? &displayCompositions_[imageIndex] : nullptr;
         if (composition && !composition->descriptor) {
-            render::vulkan::ExternalCommandScope scope(*frame.commandBuffer);
-            auto view = scope.imageView(*composition->view);
-            if (!view) { return false; }
-            composition->descriptor = ImGui_ImplVulkan_AddTexture(
-                *view,
-                render::vulkan::nativeImageLayout(*composition->view, render::TextureLayout::ShaderRead));
-            if (!composition->descriptor) { return false; }
+            auto texture = imguiBackend_.addTexture(*composition->view);
+            if (!texture) { return false; }
+            composition->descriptor = *texture;
         }
         render::TextureBarrierDesc toColor{
             .texture = composition ? composition->texture.get() : swapchainTexture,
@@ -7417,14 +7307,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
         {
             auto profileScope = profiler_.scope("Record ImGui Draw");
-            render::vulkan::ExternalCommandScope scope(*frame.commandBuffer);
-            if (viewportDescriptor_ && graphExecutor_) {
-                auto* output = graphExecutor_->outputResource(activePreviewOutput_);
-                if (!output || !output->view || !scope.imageView(*output->view)) { return false; }
-            }
-            ImGui_ImplVulkan_RenderDrawData(
-                ImGui::GetDrawData(),
-                scope.commandBuffer(), displayRenderer_.mainPipeline());
+            if (!imguiBackend_.render(*frame.commandBuffer)) { return false; }
         }
 
         frame.commandBuffer->endRendering();
@@ -7448,12 +7331,8 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             colorAttachment.loadOp = render::LoadOp::DontCare;
             if (!frame.commandBuffer->beginRendering({.renderArea = renderArea,
                     .colorAttachments = {&colorAttachment, 1}})) { return false; }
-            {
-                render::vulkan::ExternalCommandScope scope(*frame.commandBuffer);
-                if (!scope.imageView(*composition->view)) { return false; }
-                displayRenderer_.encodeHDR10(scope.commandBuffer(),
-                    composition->descriptor, swapchainWidth_, swapchainHeight_);
-            }
+            if (!imguiBackend_.encodeHDR10(*frame.commandBuffer, composition->descriptor,
+                    swapchainWidth_, swapchainHeight_)) { return false; }
             frame.commandBuffer->endRendering();
         }
 
@@ -7470,6 +7349,8 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         }); !commandResult) { return false; }
         swapchainImageStates_[imageIndex] = render::ResourceState::Present;
     }
+
+    if (!imguiBackend_.retainTextures(*frame.commandBuffer)) { return false; }
 
     endFrameLabel();
     {
@@ -7512,11 +7393,16 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
     }
     if (viewportsEnabled) {
         auto profileScope = profiler_.scope("Platform Windows");
-        ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
+        result = imguiBackend_.renderPlatformWindows();
+        if (!result) {
+            spdlog::error("Platform window rendering failed: {}", render::resultToString(result));
+            (void)device_->waitIdle();
+            frame.context.cancel();
+            return false;
+        }
         if (hasPlatformWindows) {
-            // The ImGui backend submits directly to our graphics queue. Seal the
-            // frame after those draws so preview resources outlive every window.
+            // Seal completion after the backend has submitted every platform window.
+            // Registered texture/descriptor leases cover this entire frame.
             result = frameSubmissions_.submitSegment({}, frame.context).transform([&](auto value) { segmentCompletion = std::move(value); });
             if (result) {
                 result = frame.context.finishSubmission();
@@ -8411,7 +8297,7 @@ void EditorApplication::setActivePreviewOutput(std::string outputName)
 
 bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
 {
-    if (graphExecutor_ == nullptr || viewportSampler_ == VK_NULL_HANDLE) {
+    if (graphExecutor_ == nullptr || !imguiRendererInitialized_) {
         return false;
     }
     if (!graphExecutor_->isExportedOutput(outputName)) {
@@ -8428,21 +8314,13 @@ bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
         return false;
     }
 
-    const VkImageView imageView = render::vulkan::nativeImageView(*output->view);
-    if (imageView == VK_NULL_HANDLE) {
-        renderGraphStatus_ = "RenderGraph preview output image view is not available";
+    auto descriptor = imguiBackend_.addTexture(*output->view);
+    if (!descriptor) {
+        renderGraphStatus_ = std::string("ImGui viewport texture registration failed: ") + render::resultToString(descriptor);
         return false;
     }
-
     destroyViewportDescriptor();
-    viewportDescriptor_ = ImGui_ImplVulkan_AddTexture(
-        viewportSampler_,
-        imageView,
-        render::vulkan::nativeImageLayout(*output->view, render::TextureLayout::ShaderRead));
-    if (viewportDescriptor_ == VK_NULL_HANDLE) {
-        renderGraphStatus_ = "ImGui failed to allocate viewport descriptor";
-        return false;
-    }
+    viewportDescriptor_ = *descriptor;
     return true;
 }
 int EditorApplication::graphInputAttributeId(const render::RenderGraphNode& node, uint32_t fieldIndex) const

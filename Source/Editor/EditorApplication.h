@@ -3,7 +3,7 @@
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Editor/EditorProfiler.h"
 #include "Editor/EditorRenderGraphViewer.h"
-#include "Editor/EditorDisplayRenderer.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanImGuiBackend.h"
 #include "Editor/EditorMaterialGraph.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/WorkControlShaderTrace.h"
@@ -27,7 +27,6 @@
 #include <variant>
 #include <vector>
 
-#include <volk.h>
 
 struct SDL_Window;
 struct ImVec2;
@@ -188,7 +187,6 @@ private:
     bool createOrResizeSwapchain(uint32_t width, uint32_t height);
     void destroySwapchainResources();
     bool initializeImGuiBackends();
-    bool createViewportSampler();
     void destroyViewportDescriptor();
     bool updateViewportPreview(uint32_t width, uint32_t height);
     void destroyViewportTexture();
@@ -256,7 +254,7 @@ private:
     std::unique_ptr<render::Device> device_;
     render::Queue* graphicsQueue_ = nullptr;
     std::unique_ptr<render::Swapchain> swapchain_;
-    EditorDisplayRenderer displayRenderer_;
+    render::vulkan::VulkanImGuiBackend imguiBackend_;
     render::DisplayOutputParameters displayOutput_;
     render::DisplayOutputMode requestedOutput_ = render::DisplayOutputMode::HDR_scRGB;
     bool followSystemPaperWhite_ = false;
@@ -266,7 +264,7 @@ private:
     struct DisplayComposition {
         std::unique_ptr<render::Texture> texture;
         std::unique_ptr<render::TextureView> view;
-        VkDescriptorSet descriptor = VK_NULL_HANDLE;
+        render::vulkan::ImGuiTexture descriptor = 0;
         render::ResourceState state = render::ResourceState::Undefined;
     };
     std::vector<DisplayComposition> displayCompositions_;
@@ -315,8 +313,7 @@ private:
     std::filesystem::path pendingSceneStreamAssetPath_;
     uint64_t sceneLoadGeneration_ = 0;
     scene::ScenePicker scenePicker_;
-    VkSampler viewportSampler_ = VK_NULL_HANDLE;
-    VkDescriptorSet viewportDescriptor_ = VK_NULL_HANDLE;
+    render::vulkan::ImGuiTexture viewportDescriptor_ = 0;
     uint32_t viewportTextureWidth_ = 0;
     uint32_t viewportTextureHeight_ = 0;
     uint32_t swapchainWidth_ = 0;

@@ -24,7 +24,8 @@ namespace detail {
 
 // Backend scope covering validation, native submission and ownership handoff.
 // Ordinary submissions share access; this does not synchronize a VkQueue's
-// own external-synchronization requirement.
+// own external-synchronization requirement; Vulkan queue entry points also
+// acquire the mutex shared by wrappers of the same native queue.
 class QueueSubmissionAccess {
 public:
     QueueSubmissionAccess();

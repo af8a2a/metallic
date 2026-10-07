@@ -45,6 +45,8 @@ if(WIN32)
 endif()
 
 add_library(MetallicRuntimeRender STATIC
+    Runtime/Render/GAPI/Vulkan/VulkanImGuiBackend.cpp
+    Runtime/Render/Core/ImGuiDisplayShaders.cpp
     Runtime/Render/Debug/RenderDebug.cpp
     Runtime/Render/Debug/ShaderTraceRuntime.cpp
     Runtime/Render/Debug/WorkControlShaderTrace.cpp
@@ -190,6 +192,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
 
 include("${CMAKE_SOURCE_DIR}/cmake/Zstd.cmake")
 target_link_libraries(MetallicRuntimeRender PRIVATE
+    imgui
     libzstd_static
     metallic::nsight_graphics_capture
     metallic::nvperf
@@ -398,7 +401,6 @@ set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINIT
 
 set(METALLIC_EDITOR_SOURCES
     Editor/EditorApplication.cpp
-    Editor/EditorDisplayRenderer.cpp
     Editor/EditorApplicationSmokeTests.cpp
     Editor/EditorFullRoamBenchmark.cpp
     Editor/EditorRasterComparison.cpp

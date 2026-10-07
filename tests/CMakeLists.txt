@@ -427,7 +427,6 @@ add_executable(MetallicRHITests
     rhi/DisplayOutputTests.cpp
     rhi/ColorSpaceTests.cpp
     rhi/EditorDisplayTests.cpp
-    ../Source/Editor/EditorDisplayRenderer.cpp
     rhi/GPUSceneSubsystemTests.cpp
     rhi/MeshletLODTests.cpp
     rhi/StreamMeshletLODTests.cpp

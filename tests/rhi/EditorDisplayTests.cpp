@@ -1,10 +1,13 @@
 #include "RHITest.h"
-#include "Editor/EditorDisplayRenderer.h"
+#include "Runtime/Render/Core/ImGuiDisplayShaders.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #include <imgui.h>
-#include <backends/imgui_impl_vulkan.h>
+#include <backends/imgui_impl_sdl3.h>
+#include <SDL3/SDL.h>
+#include <thread>
+#include <atomic>
 #include <cmath>
 
 namespace metallic::tests {
@@ -16,18 +19,14 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         auto& device = context.device;
-        const auto native = render::vulkan::nativeDevice(device);
-        const auto queue = render::vulkan::nativeQueue(context.graphicsQueue);
         ImGui::CreateContext();
         struct UIScope {
             render::Device& device;
-            EditorDisplayRenderer display;
-            bool initialized = false;
+            render::vulkan::VulkanImGuiBackend display;
             ~UIScope()
             {
                 (void)device.waitIdle();
                 display.shutdown();
-                if (initialized) { ImGui_ImplVulkan_Shutdown(); }
                 ImGui::DestroyContext();
             }
         } ui{device};
@@ -35,28 +34,14 @@ public:
         io.IniFilename = nullptr;
         io.DisplaySize = ImVec2(32, 32);
         io.DeltaTime = 1.0f / 60.0f;
-        const VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
-        ImGui_ImplVulkan_InitInfo init{};
-        init.ApiVersion = native.apiVersion;
-        init.Instance = native.instance;
-        init.PhysicalDevice = native.physicalDevice;
-        init.Device = native.device;
-        init.QueueFamily = queue.familyIndex;
-        init.Queue = queue.queue;
-        init.DescriptorPoolSize = 32;
-        init.MinImageCount = init.ImageCount = 2;
-        init.UseDynamicRendering = true;
-        init.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-        init.PipelineInfoMain.PipelineRenderingCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-            .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
-        ui.initialized = EditorDisplayRenderer::loadBackendFunctions(native) && ImGui_ImplVulkan_Init(&init);
-        if (!ui.initialized || !ui.display.initialize(device, format, true, 203.0f,
-                VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
+        const render::vulkan::ImGuiDisplayDesc displayDesc{
+            .colorFormat = render::Format::RGBA16Sfloat,
+            .pqOutputFormat = render::Format::A2B10G10R10UnormPack32};
+        if (!ui.display.init(device, context.graphicsQueue, displayDesc, render::imGuiDisplayShaders())) {
             return RHITestResult::fail("HDR ImGui initialization failed");
         }
         ui.display.shutdown();
-        if (!ui.display.initialize(device, format, true, 203.0f, VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
+        if (!ui.display.init(device, context.graphicsQueue, displayDesc, render::imGuiDisplayShaders())) {
             return RHITestResult::fail("HDR ImGui cached initialization failed");
         }
         if (!render::ShaderRegistry::instance().flushPipelineCaches(device)) {
@@ -117,13 +102,18 @@ public:
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
         if (auto commandResult = commands->synchronize({.textures = {&readable, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::TextureLayout::ShaderRead));
-        ImGui_ImplVulkan_NewFrame();
+        auto registered = ui.display.addTexture(*sourceView);
+        if (!registered) { return RHITestResult::fail("ImGui texture registration failed"); }
+        const auto descriptor = *registered;
+        // Registration owns the original native view and image, independent of Editor ownership.
+        sourceView.reset();
+        source.reset();
+        if (!ui.display.newFrame()) { return RHITestResult::fail("ImGui NewFrame failed"); }
         ImGui::NewFrame();
         auto* list = ImGui::GetBackgroundDrawList();
         list->AddRectFilled(ImVec2(0, 0), ImVec2(32, 16), IM_COL32_WHITE);
         ui.display.beginScRgbImage(*list, ImGui::GetMainViewport());
-        list->AddImage(reinterpret_cast<ImTextureID>(descriptor), ImVec2(0, 16), ImVec2(32, 32));
+        list->AddImage(static_cast<ImTextureID>(descriptor), ImVec2(0, 16), ImVec2(32, 32));
         list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
         // Verify reset restores UI transfer/brightness after the HDR viewport.
         list->AddRectFilled(ImVec2(24, 24), ImVec2(32, 32), IM_COL32(128, 128, 128, 255));
@@ -133,11 +123,9 @@ public:
         attachment.view = outputView.get();
         attachment.clearColor = {0, 0, 0, 1};
         if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-        {
-            render::vulkan::ExternalCommandScope scope(*commands);
-            if (!scope.imageView(*sourceView)) { return RHITestResult::fail("ImGui view retention failed"); }
-            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), scope.commandBuffer(), ui.display.mainPipeline());
-        }
+        if (!ui.display.render(*commands)) { return RHITestResult::fail("ImGui rendering failed"); }
+        // Removal cannot free a descriptor/view still referenced by the recording.
+        ui.display.removeTexture(descriptor);
         commands->endRendering();
         render::TextureBarrierDesc toReadback{
             .texture = output.get(),
@@ -166,7 +154,6 @@ public:
             near(channel(8, 24, 2), 1.0f) && near(channel(8, 24, 3), 1.0f) &&
             near(channel(28, 28, 0), std::pow((128.0f / 255.0f + 0.055f) / 1.055f, 2.4f) * 203.0f / 80.0f);
         readback->unmap();
-        ImGui_ImplVulkan_RemoveTexture(descriptor);
         if (!correct) { return RHITestResult::fail("ImGui clipped HDR, applied gamma twice, or failed to restore UI brightness"); }
 
         std::unique_ptr<render::Texture> pq;
@@ -178,8 +165,8 @@ public:
             !pool->reset() || !fence->reset() || !commands->begin()) {
             return RHITestResult::fail("PQ fixture allocation failed");
         }
-        const auto outputDescriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*outputView),
-            render::vulkan::nativeImageLayout(*outputView, render::TextureLayout::ShaderRead));
+        auto outputDescriptor = ui.display.addTexture(*outputView);
+        if (!outputDescriptor) { return RHITestResult::fail("PQ texture registration failed"); }
         const render::TextureBarrierDesc encodeBarriers[] = {
             {.texture = output.get(), .oldLayout = render::TextureLayout::TransferSource,
                 .newLayout = render::TextureLayout::ShaderRead,
@@ -194,10 +181,8 @@ public:
         if (!commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}})) {
             return RHITestResult::fail("PQ rendering failed");
         }
-        {
-            render::vulkan::ExternalCommandScope scope(*commands);
-            if (!scope.imageView(*outputView)) { return RHITestResult::fail("PQ view retention failed"); }
-            ui.display.encodeHDR10(scope.commandBuffer(), outputDescriptor, 32, 32);
+        if (!ui.display.encodeHDR10(*commands, *outputDescriptor, 32, 32)) {
+            return RHITestResult::fail("PQ encoding failed");
         }
         commands->endRendering();
         toReadback.texture = pq.get();
@@ -230,13 +215,76 @@ public:
             check(20, 28, 203 * alpha + 1000 * (1 - alpha), 203 * alpha + 400 * (1 - alpha),
                 203 * alpha + 80 * (1 - alpha));
         readback->unmap();
-        ImGui_ImplVulkan_RemoveTexture(outputDescriptor);
+        ui.display.removeTexture(*outputDescriptor);
         return pqCorrect ? RHITestResult::pass("FP16 UI composition, linear alpha blending, BT.2020/PQ and RGB10A2 pixels verified") :
             RHITestResult::fail("HDR10 conversion, absolute luminance or linear UI blending mismatch");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(EditorHDRCompositeTest);
+
+class ImGuiPlatformQueueTest final : public RHITest {
+public:
+    ImGuiPlatformQueueTest() { type = RHITestType::Rendering; name = "imgui_platform_windows_concurrent_submit"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto* window = SDL_CreateWindow("ImGui queue regression", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
+        if (!window) { return RHITestResult::fail(SDL_GetError()); }
+        ImGui::CreateContext();
+        struct Cleanup {
+            SDL_Window* window;
+            render::vulkan::VulkanImGuiBackend backend;
+            bool platform = false;
+            ~Cleanup()
+            {
+                backend.shutdown();
+                if (platform) { ImGui_ImplSDL3_Shutdown(); }
+                ImGui::DestroyContext();
+                SDL_DestroyWindow(window);
+            }
+        } cleanup{window};
+        auto& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        io.ConfigViewportsNoAutoMerge = true;
+        cleanup.platform = ImGui_ImplSDL3_InitForVulkan(window);
+        if (!cleanup.platform || !cleanup.backend.init(context.device, context.graphicsQueue,
+                {.colorFormat = render::Format::BGRA8Unorm, .hdr = false}, render::imGuiDisplayShaders())) {
+            return RHITestResult::fail("ImGui platform fixture initialization failed");
+        }
+        std::atomic_uint submits{0};
+        std::atomic_bool failed{false};
+        std::jthread worker([&](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                if (!context.graphicsQueue.submit({})) { failed = true; break; }
+                ++submits;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+        bool detached = false;
+        for (uint32_t frame = 0; frame < 3; ++frame) {
+            SDL_PumpEvents();
+            if (!cleanup.backend.newFrame()) { return RHITestResult::fail("ImGui platform NewFrame failed"); }
+            ImGui_ImplSDL3_NewFrame();
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(100, 100));
+            ImGui::SetNextWindowSize(ImVec2(128, 64));
+            ImGui::Begin("Detached queue regression", nullptr, ImGuiWindowFlags_NoSavedSettings);
+            ImGui::TextUnformatted("Concurrent RHI submission");
+            ImGui::End();
+            ImGui::Render();
+            if (!cleanup.backend.renderPlatformWindows()) { return RHITestResult::fail("ImGui platform submit/present failed"); }
+            detached |= ImGui::GetPlatformIO().Viewports.Size > 1;
+        }
+        worker.request_stop();
+        worker.join();
+        if (!context.graphicsQueue.waitIdle() || failed || !submits || !detached) {
+            return RHITestResult::fail("Detached viewport or concurrent RHI submissions were not exercised");
+        }
+        return RHITestResult::pass("Detached viewport submit/present/font upload with concurrent RHI queue submission");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(ImGuiPlatformQueueTest);
 
 } // namespace
 } // namespace metallic::tests
