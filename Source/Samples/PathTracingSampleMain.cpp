@@ -1,3 +1,4 @@
+#include "Runtime/Render/Profiling/RHIProfiling.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Editor/EditorApplication.h"
@@ -32,6 +33,7 @@ void printUsage()
 
 int main(int argc, char** argv)
 {
+    metallic::render::profiling::initializeRHIProfiling();
     metallic::NsightLaunchOptions nsightOptions;
     metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;

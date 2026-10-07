@@ -1,3 +1,4 @@
+#include "Runtime/Render/Profiling/RHIProfiling.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "harness/GTestHtmlReport.h"
 #include "harness/VulkanDiagnostics.h"
@@ -396,6 +397,7 @@ void registerRhiTests()
 
 int main(int argc, char** argv)
 {
+    metallic::render::profiling::initializeRHIProfiling();
     if (const auto result = metallic::tests::bench::runIfRequested(argc, argv)) { return *result; }
     Options options;
     std::vector<std::string> gtestArguments;

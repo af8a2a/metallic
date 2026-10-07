@@ -18,14 +18,8 @@
 #define METALLIC_NSIGHT_GRAPHICS_DEFAULT_INSTALLATION_ROOT ""
 #endif
 
+#include "Runtime/Render/GAPI/Vulkan/VulkanNsightCapture.h"
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
-#include <NGFX_GraphicsCapture_Vulkan.h>
-#include <NGFX_Vulkan.h>
-#if __has_include(<NGFX_GPUTrace_Vulkan.h>)
-#include <NGFX_GPUTrace_Vulkan.h>
-#define METALLIC_HAS_NSIGHT_GPU_TRACE 1
-#endif
 
 #include <cwchar>
 #endif
@@ -37,7 +31,6 @@
 namespace metallic::render::profiling {
 namespace {
 
-std::atomic_bool gVulkanCaptureInjected{false};
 #if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
 bool gExternalGpuTraceActive = false;
 #endif
@@ -202,13 +195,9 @@ bool beginExternalNsightGpuTrace(std::string& error)
         error = "GPU Trace cannot share a process with Graphics Capture";
         return false;
     }
-    NGFX_GPUTrace_InitializeActivity_Vulkan_Params initialize{};
-    initialize.version = NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER;
-    auto result = NGFX_GPUTrace_InitializeActivity_Vulkan(&initialize);
+    auto result = vulkan::initializeNsightTrace();
     if (result == NGFX_Result_Success) {
-        NGFX_GPUTrace_StartTrace_Vulkan_Params start{};
-        start.version = NGFX_GPUTrace_StartTrace_Vulkan_Params_VER;
-        result = NGFX_GPUTrace_StartTrace_Vulkan(&start);
+        result = vulkan::startNsightTrace();
     }
     if (result != NGFX_Result_Success) {
         error = ngfxError("Initialize/start externally injected GPU Trace", result);
@@ -230,10 +219,7 @@ bool endExternalNsightGpuTrace(std::string& error)
         error = "No external GPU Trace was started";
         return false;
     }
-    NGFX_GPUTrace_StopTrace_Vulkan_Params stop{};
-    stop.version = NGFX_GPUTrace_StopTrace_Vulkan_Params_VER;
-    // No queue is needed: the workload owner has drained all submissions.
-    const auto result = NGFX_GPUTrace_StopTrace_Vulkan(&stop);
+    const auto result = vulkan::stopNsightTrace(nullptr);
     if (result != NGFX_Result_Success) {
         error = ngfxError("Stop externally injected GPU Trace", result);
         return false;
@@ -362,14 +348,7 @@ bool NsightGraphicsCapture::compiledAvailable()
 
 bool NsightGraphicsCapture::vulkanInjectionActive()
 {
-    if (gVulkanCaptureInjected.load(std::memory_order_relaxed)) {
-        return true;
-    }
-#ifdef _WIN32
-    return GetModuleHandleW(L"ngfx-capture-interception.dll") != nullptr;
-#else
-    return false;
-#endif
+    return vulkan::nsightInjectionActive();
 }
 
 std::filesystem::path NsightGraphicsCapture::defaultInstallationRoot()
@@ -502,17 +481,11 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
         settings.gpuClockMode = NGFX_GPUTrace_GPUClockMode_Unaltered;
         settings.vsyncMode = NGFX_GPUTrace_VSyncMode_ApplicationControlled;
         settings.hudPosition = config.showHud ? NGFX_GPUTrace_HUDPosition_TopLeft : NGFX_GPUTrace_HUDPosition_Hidden;
-        NGFX_GPUTrace_Inject_Vulkan_Params inject{};
-        inject.version = NGFX_GPUTrace_Inject_Vulkan_Params_VER;
-        inject.installationPath = installationRoot_.c_str();
-        inject.settings = &settings;
-        result = NGFX_GPUTrace_Inject_Vulkan(&inject);
+        result = vulkan::injectNsightTrace(installationRoot_.c_str(), settings);
         if (result != NGFX_Result_Success) {
             return fail(ngfxError("NGFX_GPUTrace_Inject_Vulkan", result), &error);
         }
-        NGFX_GPUTrace_InitializeActivity_Vulkan_Params initialize{};
-        initialize.version = NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER;
-        result = NGFX_GPUTrace_InitializeActivity_Vulkan(&initialize);
+        result = vulkan::initializeNsightTrace();
         if (result != NGFX_Result_Success) {
             return fail(ngfxError("NGFX_GPUTrace_InitializeActivity_Vulkan", result), &error);
         }
@@ -533,20 +506,12 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
         settings.outputDir = outputDirectoryUtf8_.c_str();
     }
 
-    NGFX_GraphicsCapture_Inject_Vulkan_Params injectParams{};
-    injectParams.version = NGFX_GraphicsCapture_Inject_Vulkan_Params_VER;
-    injectParams.installationPath = installationRoot_.c_str();
-    injectParams.settings = &settings;
-    result = NGFX_GraphicsCapture_Inject_Vulkan(&injectParams);
+    result = vulkan::injectNsightCapture(installationRoot_.c_str(), settings);
     if (result != NGFX_Result_Success) {
         return fail(ngfxError("NGFX_GraphicsCapture_Inject_Vulkan", result), &error);
     }
-    // Injection remains active even if subsequent activity initialization fails.
-    gVulkanCaptureInjected.store(true, std::memory_order_relaxed);
 
-    NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params initializeParams{};
-    initializeParams.version = NGFX_GraphicsCapture_InitializeActivity_Vulkan_Params_VER;
-    result = NGFX_GraphicsCapture_InitializeActivity_Vulkan(&initializeParams);
+    result = vulkan::initializeNsightCapture();
     if (result != NGFX_Result_Success) {
         return fail(ngfxError("NGFX_GraphicsCapture_InitializeActivity_Vulkan", result), &error);
     }
@@ -597,10 +562,7 @@ bool NsightGraphicsCapture::prepareBeforeSubmission(Queue& queue, std::string& e
             }
         }
     });
-    NGFX_GPUTrace_ActivateTrace_Vulkan_Params activate{};
-    activate.version = NGFX_GPUTrace_ActivateTrace_Vulkan_Params_VER;
-    activate.queue = vulkan::nativeQueue(queue).queue;
-    const auto result = NGFX_GPUTrace_ActivateTrace_Vulkan(&activate);
+    const auto result = vulkan::activateNsightTrace(queue);
     watchdog.request_stop();
     watchdog.join();
     if (result != NGFX_Result_Success) {
@@ -671,13 +633,7 @@ bool NsightGraphicsCapture::requestCapture(
         return false;
     }
 
-    NGFX_GraphicsCapture_RequestCapture_Vulkan_Params captureParams{};
-    captureParams.version = NGFX_GraphicsCapture_RequestCapture_Vulkan_Params_VER;
-    captureParams.delimiter = request.explicitFrameBoundaries
-        ? NGFX_GraphicsCapture_Delimiter_FrameBoundary : NGFX_GraphicsCapture_Delimiter_Present;
-    captureParams.framesBeforeStart = request.framesBeforeStart;
-    captureParams.framesToCapture = request.framesToCapture;
-    result = NGFX_GraphicsCapture_RequestCapture_Vulkan(&captureParams);
+    result = vulkan::requestNsightCapture(request.explicitFrameBoundaries, request.framesBeforeStart, request.framesToCapture);
     if (result != NGFX_Result_Success) {
         lastError_ = ngfxError("NGFX_GraphicsCapture_RequestCapture_Vulkan", result);
         error = lastError_;
@@ -702,18 +658,7 @@ bool NsightGraphicsCapture::frameBoundary(Queue& queue, Texture* output, std::st
         error = "Nsight Graphics capture is not ready for a frame boundary";
         return false;
     }
-    NGFX_FrameBoundary_Vulkan_Params params{};
-    params.version = NGFX_FrameBoundary_Vulkan_Params_VER;
-    params.queue = vulkan::nativeQueue(queue).queue;
-    NGFX_ResourceDescription_Vulkan resource{};
-    if (output != nullptr) {
-        resource.version = NGFX_ResourceDescription_Vulkan_VER;
-        resource.type = NGFX_ResourceType_Vulkan_VkImage;
-        resource.image = vulkan::nativeTexture(*output).image;
-        params.outputResources = &resource;
-        params.numOutputResources = 1;
-    }
-    const NGFX_Result result = NGFX_FrameBoundary_Vulkan(&params);
+    const NGFX_Result result = vulkan::nsightFrameBoundary(queue, output);
     if (result != NGFX_Result_Success) {
         return fail(ngfxError("NGFX_FrameBoundary_Vulkan", result), &error);
     }
@@ -743,16 +688,11 @@ bool NsightGraphicsCapture::afterPresent(Queue& queue, std::string& error)
         if (status.status != NGFX_GPUTrace_Status_Active) {
             return fail("GPU Trace host is not ready; see " + traceHostLog_.string(), &error);
         }
-        NGFX_GPUTrace_StartTrace_Vulkan_Params start{};
-        start.version = NGFX_GPUTrace_StartTrace_Vulkan_Params_VER;
-        result = NGFX_GPUTrace_StartTrace_Vulkan(&start);
+        result = vulkan::startNsightTrace();
         if (result != NGFX_Result_Success) { return fail(ngfxError("GPU Trace start", result), &error); }
         traceStarted_ = true;
     } else if (--traceFramesRemaining_ == 0) {
-        NGFX_GPUTrace_StopTrace_Vulkan_Params stop{};
-        stop.version = NGFX_GPUTrace_StopTrace_Vulkan_Params_VER;
-        stop.queue = vulkan::nativeQueue(queue).queue;
-        const auto result = NGFX_GPUTrace_StopTrace_Vulkan(&stop);
+        const auto result = vulkan::stopNsightTrace(&queue);
         if (result != NGFX_Result_Success) { return fail(ngfxError("GPU Trace stop", result), &error); }
         traceStopped_ = true;
     }

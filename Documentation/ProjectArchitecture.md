@@ -596,6 +596,12 @@ category 使用 `NsightCategory` 枚举的固定数值（Frame=1、EditorUI=2、
 
 NsightEvents.h 在包含 `<nvtx3/nvToolsExt.h>` 时对 Windows 临时定义 `WIN32_LEAN_AND_MEAN`：NVTX 实现头会包含 `<windows.h>`，完整版会带入 `winspool.h`，其 ANSI/WIDE 别名宏 `#define DeviceCapabilities DeviceCapabilitiesA` 会破坏 RHI 同名类型。若翻译单元此前已完整包含 `windows.h`，封装头也会 `#undef DeviceCapabilities` 兜底。
 
+RHI 的工具集成分为两个单向边界：
+
+- `GAPI/RHIEvents.h` 只定义可选的 CPU 操作、命令录制与 trace 观察者。程序入口显式调用 `profiling::initializeRHIProfiling()` 安装进程生命周期的 NVTX/Tracy/pacing 适配器；RHI 不引用 Profiling 头文件。未安装时事件为空操作。回调不得抛异常、重新提交或修改 RHI 状态。
+- `SchedulingCapture` 在自身生命周期内安装并恢复线程局部命令观察者，保留嵌套、临时禁用和并行 worker 的独立统计；draw/dispatch 不读取上层采集对象。
+- `GAPI/Vulkan/VulkanTooling` 提供不可变的扩展贡献、设备丢失、shader 二进制和捕获兼容性钩子。`VulkanNvPerf`、`VulkanAftermath`、`VulkanNsightCapture` 持有 SDK/Vulkan 调用；`Profiling/` 保留中立会话入口和捕获/重放编排。`VulkanReplayEvidence` 只向重放层返回复制的 shader 字节与诊断标识，不暴露原生句柄访问器。
+
 ### 12.2 Nsight Graphics 捕获与 Shader 调试
 
 Profiler 支持通过 `--nsight-mode gputrace` 仅导出 `.ngfx-gputrace`，或通过

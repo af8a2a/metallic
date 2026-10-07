@@ -1,3 +1,4 @@
+#include "Runtime/Render/Profiling/RHIProfiling.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
@@ -348,6 +349,7 @@ int serve(const std::filesystem::path& directory, const std::string& mode, uint3
 
 int main(int argc, char** argv)
 {
+    metallic::render::profiling::initializeRHIProfiling();
     metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     std::string mode = "ordinary", fault = "none";
     bool service = false;

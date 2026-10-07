@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Render/GAPI/RHIEvents.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -50,17 +52,34 @@ public:
         return enabled;
     }
     explicit SchedulingCapture(SchedulingMetrics* output, Clock::time_point origin = {})
-        : metrics(output), previous_(active), origin_(origin)
+        : metrics(output), previous_(active), previousObserver_(rhiCommandObserver), origin_(origin)
     {
         if (metrics) {
             metrics->enabled = true;
             if (origin_ == Clock::time_point{}) { origin_ = Clock::now(); }
         }
         active = metrics ? this : nullptr;
+        rhiCommandObserver = metrics ? RHICommandObserver{this, [](void* context, RHICommandEvent event, const void* command) {
+            auto& capture = *static_cast<SchedulingCapture*>(context);
+            switch (event) {
+            case RHICommandEvent::BeginRendering: capture.beginRendering(command); break;
+            case RHICommandEvent::EndRendering: capture.endRendering(command); break;
+            case RHICommandEvent::Draw: capture.draw(command); break;
+            case RHICommandEvent::Dispatch: ++capture.metrics->dispatchCalls; break;
+            case RHICommandEvent::SubmitBegin:
+                ++capture.metrics->nativeSubmits;
+                capture.submitBegin_ = capture.elapsed();
+                break;
+            case RHICommandEvent::SubmitEnd:
+                capture.metrics->nativeSubmitNs += capture.elapsed() - capture.submitBegin_;
+                break;
+            }
+        }} : RHICommandObserver{};
     }
     ~SchedulingCapture()
     {
         if (metrics && renderingCommand_) { ++metrics->invalidScopes; }
+        rhiCommandObserver = previousObserver_;
         active = previous_;
     }
     SchedulingCapture(const SchedulingCapture&) = delete;
@@ -96,6 +115,8 @@ public:
     SchedulingMetrics* metrics;
 private:
     SchedulingCapture* previous_;
+    RHICommandObserver previousObserver_;
+    uint64_t submitBegin_ = 0;
     Clock::time_point origin_;
     const void* renderingCommand_ = nullptr;
     uint64_t renderingBegin_ = 0, scopeDraws_ = 0;

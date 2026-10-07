@@ -1,7 +1,7 @@
 #include "WorkControlReplay.h"
 #include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
 #include "NvPerf.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanReplayEvidence.h"
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
@@ -198,8 +198,8 @@ void WorkControlReplay::before(CommandBuffer& commands, ComputePipeline& pipelin
     require(s.device.capabilities().subgroupSize >= 32 &&
         s.device.capabilities().minSubgroupSize >= 32, "replay_low_subgroup_unsupported");
     s.execution = pipeline.execution();
-    const auto inputCode = vulkan::nativeComputeSpirv(pipeline, false);
-    const auto deviceCode = vulkan::nativeComputeSpirv(pipeline, true);
+    const auto inputCode = vulkan::replayComputeSpirv(pipeline, false);
+    const auto deviceCode = vulkan::replayComputeSpirv(pipeline, true);
     require(!inputCode.empty() && !deviceCode.empty(), "replay_missing_actual_spirv");
     write(s.output / "Input.spv", inputCode);
     write(s.output / "Device.spv", deviceCode);
@@ -212,7 +212,7 @@ void WorkControlReplay::before(CommandBuffer& commands, ComputePipeline& pipelin
     s.evidence["psoHash"] = std::to_string(pipeline.psoHash());
     s.evidence["subgroupSize"] = s.device.capabilities().subgroupSize;
     s.evidence["bindingGenerationEvidence"] = "allocation-id-and-frozen-graph-generation";
-    s.evidence["heapAbi"] = {{"nativeDescriptorHeap", vulkan::nativeDevice(s.device).descriptorHeapEnabled},
+    s.evidence["heapAbi"] = {{"nativeDescriptorHeap", vulkan::replayUsesNativeDescriptorHeap(s.device)},
         {"maxBuffers", productionHeap.desc().maxBuffers}, {"maxSamplers", productionHeap.desc().maxSamplers},
         {"maxSampledImages", productionHeap.desc().maxSampledImages}, {"maxStorageImages", productionHeap.desc().maxStorageImages}};
     // Intentional private heap: replay preserves production indices but binds snapshot allocations.
@@ -289,9 +289,9 @@ Json WorkControlReplay::run(Queue& queue, const Json& frozenIdentity)
     try {
         require(bool(s.device.waitIdle()), "replay_initial_device_drain_failed");
         s.evidence["submissionIsolation"] = "all-RHI-queues-owner-lease";
-        const auto nativeQueue = vulkan::nativeQueue(queue);
+        const auto nativeQueue = vulkan::replayQueueIdentity(queue);
         s.evidence["queueFamily"] = nativeQueue.familyIndex;
-        s.evidence["queueIdentity"] = std::to_string(reinterpret_cast<uintptr_t>(nativeQueue.queue));
+        s.evidence["queueIdentity"] = std::to_string(nativeQueue.identity);
         require(s.completedControl && active != this, "replay_control_not_captured");
         s.evidence["frozenIdentity"] = frozenIdentity;
         require(bool(s.device.createCommandPool(queue).transform([&](auto value) { s.pool = std::move(value); })) &&

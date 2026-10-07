@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
+#include <cstdint>
 
 namespace metallic::render {
 class Device;
@@ -10,7 +12,7 @@ class Queue;
 class CommandBuffer;
 }
 
-namespace metallic::render::profiling {
+namespace metallic::render::vulkan {
 
 bool nvPerfRequested();
 bool nvPerfPassActive();
@@ -25,23 +27,15 @@ public:
     bool begin(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error);
     bool finish(std::string& error);
     void cancel();
-private:
-    friend class WorkControlReplay;
+    // Backend entry points used by the neutral frontend.
     bool beginIsolated(Device& device, Queue& queue, const std::filesystem::path& output,
         std::string phase, std::string& error);
     bool complete() const;
+private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 
-// Explicit production dispatch annotation, independent of debug-label export.
-class NvPerfRange final {
-public:
-    NvPerfRange(CommandBuffer& commands, const char* name);
-    ~NvPerfRange();
-    NvPerfRange(const NvPerfRange&) = delete;
-    NvPerfRange& operator=(const NvPerfRange&) = delete;
-private:
-    CommandBuffer* commands_ = nullptr;
-};
-} // namespace metallic::render::profiling
+bool pushNvPerfRange(CommandBuffer& commands, const char* name);
+void popNvPerfRange(CommandBuffer& commands);
+} // namespace metallic::render::vulkan

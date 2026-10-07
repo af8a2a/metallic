@@ -1,3 +1,4 @@
+#include "Runtime/Render/Profiling/RHIProfiling.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/RHISmokeTests.h"
 #include "Editor/EditorApplication.h"
@@ -168,6 +169,7 @@ int buildMeshletStreamAssetOffline(
 
 int main(int argc, char** argv)
 {
+    metallic::render::profiling::initializeRHIProfiling();
     metallic::NsightLaunchOptions nsightOptions;
     metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;

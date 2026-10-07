@@ -142,12 +142,18 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/Ktx2Texture.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp
     Runtime/Render/Profiling/NsightGraphicsCapture.cpp
+    Runtime/Render/Profiling/RHIProfiling.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanTooling.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanReplayEvidence.cpp
     Runtime/Render/Profiling/PacingTrace.cpp
     Runtime/Render/Profiling/NvPerf.cpp
     Runtime/Render/Profiling/WorkControlReplay.cpp
     Runtime/Render/Profiling/TracyProfiler.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSynchronization.cpp
     Runtime/Render/GAPI/Vulkan/VulkanTrace.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanAftermath.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanNvPerf.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanNsightCapture.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp
     Runtime/Render/GAPI/Vulkan/VulkanResult.cpp
     Runtime/Render/GAPI/Vulkan/VulkanDeviceProperties.cpp

@@ -165,6 +165,14 @@ public:
                 true),
             runtimeActionCounterSetting("resetSerial", "Reset", true),
         };
+        if (variant_ == DLSSVariant::RayReconstruction) {
+            // makeDlssRrBaseOptions selects Preset F for every enabled RR mode.
+            for (auto& option : settings.front().options) {
+                if (option.value != "Off") {
+                    option.label += " (Preset F)";
+                }
+            }
+        }
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.2f, 2.5f},

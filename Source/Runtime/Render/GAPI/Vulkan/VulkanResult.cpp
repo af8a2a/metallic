@@ -1,11 +1,11 @@
 #include "VulkanResult.h"
-#include "Runtime/Render/Profiling/NsightAftermath.h"
+#include "VulkanTooling.h"
 
 namespace metallic::render::vulkan {
 
 Result<> resultFromVk(VkResult result)
 {
-    if (result == VK_ERROR_DEVICE_LOST) { profiling::handleNsightAftermathDeviceLost(); }
+    if (result == VK_ERROR_DEVICE_LOST) { toolingHooks().deviceLost(); }
     return mapVkResult(result);
 }
 

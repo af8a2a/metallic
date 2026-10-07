@@ -736,3 +736,9 @@ if(WIN32)
             LABELS "testbench" RESOURCE_LOCK MetallicGPU TIMEOUT 300)
     endif()
 endif()
+
+# CPU-only contracts for optional RHI instrumentation and nested captures.
+add_executable(MetallicRHIObserverTests rhi/RHIObserverTests.cpp)
+target_link_libraries(MetallicRHIObserverTests PRIVATE MetallicRuntimeRender GTest::gtest_main)
+add_test(NAME MetallicRHIObserverTests COMMAND MetallicRHIObserverTests)
+set_tests_properties(MetallicRHIObserverTests PROPERTIES LABELS "rhi;profiling;cpu")

@@ -1,7 +1,8 @@
+#include "VulkanTooling.h"
+#include "Runtime/Render/GAPI/RHIEvents.h"
 #include "VulkanSynchronization.h"
 #include "VulkanTrace.h"
 #include "VulkanResult.h"
-#include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
 #include "VulkanInterop.h"
@@ -20,13 +21,16 @@
 #include "Runtime/Render/GAPI/Vulkan/DescriptorHeapSPIRV.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
-#include "Runtime/Render/Profiling/PacingTrace.h"
-#include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
-#include "Runtime/Render/Profiling/NsightAftermath.h"
-#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
-#include "Runtime/Render/Profiling/NsightEvents.h"
-#include "Runtime/Render/Profiling/TracyProfiler.h"
 #include "Runtime/Render/GAPI/CommandSubmission.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+// winspool defines an ANSI/WIDE alias that collides with the RHI type.
+#undef DeviceCapabilities
+#endif
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_loadso.h>
@@ -1349,7 +1353,7 @@ using vulkan::negotiation::enabledDeviceExtensions;
 VulkanExtensionSet queryDeviceExtensions(VkPhysicalDevice physicalDevice)
 {
     return VulkanExtensionSet::from(enumerateDeviceExtensions(physicalDevice),
-        profiling::NsightGraphicsCapture::vulkanInjectionActive());
+        vulkan::toolingHooks().captureInjected());
 }
 
 void configureAftermathDiagnostics(VulkanEnabledFeatureChain& chain, const VulkanDeviceFeatureSelection& selection)
@@ -1359,7 +1363,7 @@ void configureAftermathDiagnostics(VulkanEnabledFeatureChain& chain, const Vulka
         shaderDebugInfo != nullptr && std::strcmp(shaderDebugInfo, "0") == 0) {
         chain.diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
     }
-    const bool nsightAftermath = selection.aftermath && profiling::NsightGraphicsCapture::vulkanInjectionActive();
+    const bool nsightAftermath = selection.aftermath && vulkan::toolingHooks().captureInjected();
     // TODO(Nsight Aftermath): Restore automatic checkpoints after an updated
     // capture runtime passes the injected Sponza OMM/BLAS compaction test.
     // Nsight 2026.3.1 + driver 616.64 faults with Error_DMA_PageFault here;
@@ -2530,7 +2534,7 @@ DeviceImpl::~DeviceImpl()
 
         const VkResult waitResult = functions.vkDeviceWaitIdle(device);
         if (waitResult == VK_ERROR_DEVICE_LOST) {
-            profiling::handleNsightAftermathDeviceLost();
+            vulkan::toolingHooks().deviceLost();
         }
 #if METALLIC_HAS_NRC
         vulkan::shutdownNrcLibrary(device);
@@ -3338,7 +3342,6 @@ Result<> Queue::submitTracked(const QueueSubmitDesc& desc)
 Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
 {
     const detail::QueueSubmissionAccess submissionAccess;
-    METALLIC_TRACY_CPU_SCOPE("Queue Submit");
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
@@ -3350,11 +3353,7 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
         return makeError(Error::InvalidArgument);
     }
 
-    const profiling::NsightProfileRange submitMarker(
-        profiling::NsightDomain::Render,
-        "Submit",
-        profiling::NsightCategory::QueueSubmit,
-        desc.commandBuffers.size());
+    const RHIOperationScope submitMarker(RHIOperation::Submit, desc.commandBuffers.size());
 
     const auto support = syncSupport(*impl_->device, impl_->queueFlags);
     std::vector<VkSemaphoreSubmitInfo> waitSemaphores;
@@ -3545,16 +3544,11 @@ METALLIC_RHI_HANDLE_DEFINITIONS(Fence)
 
 Result<> Fence::wait(uint64_t timeoutNanoseconds)
 {
-    METALLIC_TRACY_CPU_SCOPE("Fence Wait");
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
 
-    const profiling::NsightProfileRange waitMarker(
-        profiling::NsightDomain::Render,
-        "Fence Wait",
-        profiling::NsightCategory::FenceWait,
-        timeoutNanoseconds);
+    const RHIOperationScope waitMarker(RHIOperation::FenceWait, timeoutNanoseconds);
 
     const VkResult result = impl_->device->functions.vkWaitForFences(
         impl_->device->device,
@@ -3695,16 +3689,11 @@ METALLIC_RHI_HANDLE_DEFINITIONS(Semaphore)
 
 Result<> Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
 {
-    METALLIC_TRACY_CPU_SCOPE("Timeline Wait");
     if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
 
-    const profiling::NsightProfileRange waitMarker(
-        profiling::NsightDomain::Render,
-        "Semaphore Wait",
-        profiling::NsightCategory::FenceWait,
-        value);
+    const RHIOperationScope waitMarker(RHIOperation::TimelineWait, value);
 
     VkSemaphoreWaitInfo waitInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
@@ -5166,7 +5155,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
         .pDepthAttachment = depthAttachmentPtr,
     };
     impl_->device->functions.vkCmdBeginRendering(impl_->commandBuffer, &renderingInfo);
-    if (auto* capture = profiling::SchedulingCapture::active) { capture->beginRendering(this); }
+    observeRHICommand(RHICommandEvent::BeginRendering, this);
     return {};
 }
 
@@ -5200,7 +5189,7 @@ void CommandBuffer::endRendering()
 {
     if (impl_ != nullptr) {
         impl_->device->functions.vkCmdEndRendering(impl_->commandBuffer);
-        if (auto* capture = profiling::SchedulingCapture::active) { capture->endRendering(this); }
+        observeRHICommand(RHICommandEvent::EndRendering, this);
     }
 }
 
@@ -5598,7 +5587,7 @@ Result<> CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint3
         return makeError(Error::InvalidArgument);
     }
     impl_->device->functions.vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
-    if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+    observeRHICommand(RHICommandEvent::Draw, this);
     return {};
 }
 
@@ -5613,7 +5602,7 @@ Result<> CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY
         return makeError(Error::Unsupported);
     }
     impl_->device->functions.vkCmdDrawMeshTasksEXT(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
-    if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+    observeRHICommand(RHICommandEvent::Draw, this);
 #else
     return makeError(Error::Unsupported);
 #endif
@@ -5639,7 +5628,7 @@ Result<> CommandBuffer::drawMeshTasksIndirect(const BufferSlice& arguments)
         .drawCount = 1,
     };
     impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
-    if (auto* capture = profiling::SchedulingCapture::active) { capture->draw(this); }
+    observeRHICommand(RHICommandEvent::Draw, this);
 #else
     return makeError(Error::Unsupported);
 #endif
@@ -5653,7 +5642,7 @@ Result<> CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uin
     const auto& limits = impl_->device->physicalProperties.core.limits.maxComputeWorkGroupCount;
     if (groupCountX > limits[0] || groupCountY > limits[1] || groupCountZ > limits[2]) { return makeError(Error::InvalidArgument); }
     impl_->device->functions.vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
-    if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
+    observeRHICommand(RHICommandEvent::Dispatch, this);
     return {};
 }
 
@@ -5671,7 +5660,7 @@ Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
         .addressFlags = detail::BufferAddressCommandAccess::flags(arguments),
     };
     impl_->device->functions.vkCmdDispatchIndirect2KHR(impl_->commandBuffer, &info);
-    if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
+    observeRHICommand(RHICommandEvent::Dispatch, this);
     return {};
 }
 
@@ -6729,7 +6718,7 @@ Result<> Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphor
         .pImageIndices = &imageIndex,
     };
 
-    if (profiling::nvPerfPassActive()) {
+    if (vulkan::toolingHooks().requiresPresentDrain()) {
         const auto idle = vulkan::waitInterop(queue);
         if (idle != VK_SUCCESS) { return resultFromVk(idle); }
     }
@@ -7563,7 +7552,7 @@ Result<std::unique_ptr<CommandPool>> Device::createCommandPool(Queue& queue)
     poolImpl->device = impl_.get();
     poolImpl->queueFamilyIndex = queue.impl_->familyIndex;
     poolImpl->queueFlags = queue.impl_->queueFlags;
-    poolImpl->recycleForCapture = profiling::NsightGraphicsCapture::vulkanInjectionActive();
+    poolImpl->recycleForCapture = vulkan::toolingHooks().captureInjected();
     if (poolImpl->recycleForCapture) {
         std::lock_guard lock(impl_->captureCommandPoolMutex);
         auto& pools = impl_->captureCommandPools;
@@ -8491,7 +8480,7 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
-    profiling::registerNsightAftermathShaderBinary(deviceDesc.spirv.data(), deviceDesc.spirv.size_bytes());
+    vulkan::toolingHooks().shaderBinary(deviceDesc.spirv.data(), deviceDesc.spirv.size_bytes());
     if (desc.debugName != nullptr && desc.debugName[0] != '\0' &&
         impl_->setDebugUtilsObjectName != nullptr) {
         const VkDebugUtilsObjectNameInfoEXT nameInfo{
@@ -9388,8 +9377,8 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
             }
         }
     }
-    profiling::registerNsightAftermathShaderBinary(vertex.deviceSpirv.data(), vertex.deviceSpirv.size() * sizeof(uint32_t));
-    profiling::registerNsightAftermathShaderBinary(fragment.deviceSpirv.data(), fragment.deviceSpirv.size() * sizeof(uint32_t));
+    vulkan::toolingHooks().shaderBinary(vertex.deviceSpirv.data(), vertex.deviceSpirv.size() * sizeof(uint32_t));
+    vulkan::toolingHooks().shaderBinary(fragment.deviceSpirv.data(), fragment.deviceSpirv.size() * sizeof(uint32_t));
 
     auto programImpl = std::make_unique<detail::GraphicsShaderObjectProgramImpl>();
     programImpl->device = impl_.get();
@@ -9454,8 +9443,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     std::lock_guard initializationLock(volkInitializationMutex());
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
     deviceImpl->logPipelineKeys = logPipelineKeys;
-    if (vulkanOptions.enableAftermath && profiling::nsightAftermathSdkAvailable()) {
-        profiling::initializeNsightAftermath(desc.applicationName);
+    if (vulkanOptions.enableAftermath) {
+        vulkan::toolingHooks().initializeDiagnostics(desc.applicationName);
     }
 
     PFN_vkGetInstanceProcAddr streamlineVkGetInstanceProcAddr = nullptr;
@@ -9535,10 +9524,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         instanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
     }
 
-    std::string nvPerfError;
-    if ((profiling::nvPerfRequested() && (desc.enableValidation || desc.enableSynchronizationValidation || vulkanOptions.shaderPrintf != nullptr)) ||
-        !profiling::nvPerfInstanceExtensions(instanceExtensions, kVulkanAPIVersion, nvPerfError)) {
-        spdlog::error("[NvPerf] {}", nvPerfError.empty() ? "Validation incompatible with NvPerf" : nvPerfError);
+    std::string toolingError;
+    if (!vulkan::toolingHooks().instanceExtensions(instanceExtensions, kVulkanAPIVersion,
+            desc.enableValidation || desc.enableSynchronizationValidation || vulkanOptions.shaderPrintf != nullptr, toolingError)) {
+        spdlog::error("[Vulkan tooling] {}", toolingError);
         return makeError(Error::Unsupported);
     }
     std::vector<const char*> instanceLayers;
@@ -9666,9 +9655,9 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
-    const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc, vulkanOptions, profiling::nsightAftermathInitialized());
+    const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc, vulkanOptions, vulkan::toolingHooks().diagnosticsInitialized());
     bool validationSupportsOpacityMicromap = true;
-    if (deviceImpl->validationEnabled && !profiling::NsightGraphicsCapture::vulkanInjectionActive()) {
+    if (deviceImpl->validationEnabled && !vulkan::toolingHooks().captureInjected()) {
         for (const auto& layer : availableLayers) {
             if (std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0 &&
                 layer.specVersion < VK_MAKE_API_VERSION(0, 1, 4, 357)) {
@@ -10019,8 +10008,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         }
         spdlog::info("[PipelineStatistics] enabled={}", deviceImpl->pipelineExecutableStatistics);
     }
-    if (!profiling::nvPerfDeviceExtensions(deviceImpl->instance, deviceImpl->physicalDevice, deviceExtensions, nvPerfError)) {
-        spdlog::error("[NvPerf] {}", nvPerfError);
+    if (!vulkan::toolingHooks().deviceExtensions(deviceImpl->instance, deviceImpl->physicalDevice, deviceExtensions, toolingError)) {
+        spdlog::error("[Vulkan tooling] {}", toolingError);
         return makeError(Error::Unsupported);
     }
     VkDeviceCreateInfo deviceInfo{
@@ -10264,7 +10253,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         spdlog::warn("NVIDIA Streamline initialized, but the selected Vulkan device is missing required extensions.");
     }
     if (vulkanOptions.enableAftermath &&
-        profiling::nsightAftermathInitialized() &&
+        vulkan::toolingHooks().diagnosticsInitialized() &&
         !selectedFeatures.aftermath) {
         spdlog::warn(
             "NVIDIA Nsight Aftermath initialized, but the selected Vulkan device is missing required diagnostics support.");
@@ -10517,18 +10506,17 @@ VkResult submitInterop(Queue& queue, std::span<const VkSubmitInfo2> submits, VkF
     auto* impl = detail::VulkanNativeAccess::queue(queue);
     if (!impl || submits.size() > UINT32_MAX) { return VK_ERROR_UNKNOWN; }
     std::lock_guard lock(*impl->nativeMutex);
-    profiling::pacingTrace("QueueSubmitBegin", UINT64_MAX, impl->familyIndex);
+    const RHIOperationScope submitScope(RHIOperation::NativeSubmit, impl->familyIndex);
     VkResult result;
     {
-        profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::nativeSubmitNs);
-        if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->nativeSubmits; }
+        observeRHICommand(RHICommandEvent::SubmitBegin);
         result = impl->device->functions.vkQueueSubmit2(impl->queue, uint32_t(submits.size()), submits.data(), fence);
         for (const auto& submit : submits) {
             emitTrace({.kind = TraceKind::Submit, .device = impl->device->device,
                 .queue = impl->queue, .queueFamily = impl->familyIndex, .submit = &submit, .result = result});
         }
     }
-    profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl->familyIndex);
+    observeRHICommand(RHICommandEvent::SubmitEnd);
     return result;
 }
 
