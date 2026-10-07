@@ -3,8 +3,10 @@
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -60,6 +62,34 @@ GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::Environm
     source(environment.celestial[0], p.sunDirectionRadius, p.sunIrradianceEnabled);
     source(environment.celestial[1], p.moonDirectionRadius, p.moonIrradianceEnabled);
     p.settings = {a.maxAerialDistanceKm, environment.source == environment::EnvironmentSource::PhysicalAtmosphere ? 1.0f : 0.0f, 0.0f, 0.0f};
+    const auto& weather = environment.weather;
+    p.cloudLayer = {weather.cloudBaseAltitudeKm, weather.cloudTopAltitudeKm,
+        weather.cloudCoverage, weather.cloudDensity * (1.0f + 0.5f * weather.precipitation)};
+    p.cloudOptics = {weather.cloudExtinctionPerKm, 0.98f, 0.75f, weather.cloudEnabled ? 1.0f : 0.0f};
+    const auto wind = environment::normalizedWeatherWindDirection(weather);
+    // Every noise octave repeats at a divisor of 2048 km. Reduce in double
+    // before narrowing so continuous advection also works after long runs.
+    const bool movingClouds = weather.cloudEnabled && weather.cloudCoverage > 0.0f && weather.cloudDensity > 0.0f &&
+        weather.cloudExtinctionPerKm > 0.0f && weather.windSpeed > 0.0f;
+    const double cloudElapsed = movingClouds ? environment.elapsedSeconds : 0.0;
+    const double windKm = cloudElapsed * double(weather.windSpeed) * 0.001;
+    p.cloudAdvection = {static_cast<float>(std::remainder(windKm * wind.x, 2048.0)), 0.0f,
+        static_cast<float>(std::remainder(windKm * wind.y, 2048.0)), std::bit_cast<float>(weather.noiseSeed)};
+    const double observerRadius = std::sqrt(double(p.observerPlanetBottom[0]) * p.observerPlanetBottom[0] +
+        double(p.observerPlanetBottom[1]) * p.observerPlanetBottom[1] + double(p.observerPlanetBottom[2]) * p.observerPlanetBottom[2]);
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        p.cloudShadowCentre[axis] = static_cast<float>(p.observerPlanetBottom[axis] * (a.bottomRadiusKm + 0.002) / std::max(observerRadius, 1e-6));
+    }
+    p.cloudShadowCentre[3] = 32.0f;
+    const auto shadowPlan = buildCelestialShadowPlan(environment, observerWorldMetres);
+    p.cloudShadowBudget = {float(shadowPlan.sampleCounts[0]), float(shadowPlan.sampleCounts[1]),
+        float(shadowPlan.activeMask), shadowPlan.dominantIndex == 0xffffffffu ? -1.0f : float(shadowPlan.dominantIndex)};
+    p.weatherComposition = {weather.aerosolDensity, weather.humidity, weather.precipitation,
+        static_cast<float>(std::remainder(cloudElapsed, 1024.0))};
+    const auto& astronomy = environment.evaluatedAstronomy;
+    p.moonToSun = {astronomy.moonToSunDirection.x, astronomy.moonToSunDirection.y,
+        astronomy.moonToSunDirection.z, astronomy.automatic ? 1.0f : 0.0f};
+    p.moonPhase = {astronomy.moonPhaseAngleRadians, astronomy.moonIlluminatedFraction, astronomy.moonLambertPhase, 0.0f};
     return p;
 }
 
@@ -76,30 +106,35 @@ struct AtmosphereResourcesGPU::Impl {
         std::vector<std::unique_ptr<TextureView>> mips;
     };
     Device* device = nullptr;
-    std::array<ComputeKernel, 5> kernels;
-    Image transmittance, multiScattering, skyView, radiance;
+    std::array<ComputeKernel, 6> kernels;
+    std::shared_ptr<Image> transmittance = std::make_shared<Image>();
+    std::shared_ptr<Image> multiScattering = std::make_shared<Image>();
+    Image skyView, radiance, cloudShadow;
     std::unique_ptr<Buffer> aerial;
     std::unique_ptr<Buffer> parameterBuffer;
     GPUAtmosphereParameters parameters{};
     bool recorded = false;
+    bool sharedMedium = false;
+    GPUAtmosphereParameters mediumParameters{};
 
-    Result<> createImage(Image& image, uint32_t width, uint32_t height, uint32_t mipCount)
+    Result<> createImage(Image& image, uint32_t width, uint32_t height, uint32_t mipCount,
+        Format format = Format::RGBA16Sfloat)
     {
         auto result = device->createTexture(TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage | TextureUsageBits::TransferSource,
-            .format = Format::RGBA16Sfloat, .width = width, .height = height, .depth = 1,
+            .format = format, .width = width, .height = height, .depth = 1,
             .mipCount = mipCount, .layerCount = 1, .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
         }).transform([&](auto value) { image.texture = std::move(value); });
         if (!result) { return result; }
-        result = device->createTextureView(*image.texture, TextureViewDesc{.format = Format::RGBA16Sfloat,
+        result = device->createTextureView(*image.texture, TextureViewDesc{.format = format,
             .range = {.baseMip = 0, .mipCount = mipCount, .baseLayer = 0, .layerCount = 1}})
             .transform([&](auto value) { image.view = std::move(value); });
         if (!result) { return result; }
         image.mips.resize(mipCount);
         for (uint32_t mip = 0; mip < mipCount; ++mip) {
-            result = device->createTextureView(*image.texture, TextureViewDesc{.format = Format::RGBA16Sfloat,
+            result = device->createTextureView(*image.texture, TextureViewDesc{.format = format,
                 .range = {.baseMip = mip, .mipCount = 1, .baseLayer = 0, .layerCount = 1}})
                 .transform([&](auto value) { image.mips[mip] = std::move(value); });
             if (!result) { return result; }
@@ -121,12 +156,22 @@ struct AtmosphereResourcesGPU::Impl {
 AtmosphereResourcesGPU::AtmosphereResourcesGPU() : impl_(std::make_unique<Impl>()) {}
 AtmosphereResourcesGPU::~AtmosphereResourcesGPU() = default;
 
-Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log)
+Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium)
 {
     if (impl_->device != nullptr) { return makeError(Error::InvalidArgument); }
     impl_->device = &device;
-    constexpr std::array<const char*, 5> modules{"Transmittance", "MultiScattering", "SkyView", "EnvironmentCapture", "AerialPerspective"};
-    constexpr std::array<const char*, 5> entries{"transmittanceMain", "multiScatteringMain", "skyViewMain", "environmentCaptureMain", "aerialPerspectiveMain"};
+    if (sharedMedium != nullptr) {
+        if (sharedMedium->impl_->device != &device || !sharedMedium->impl_->recorded) {
+            log = "Shared atmosphere medium must be a recorded publication on the same device";
+            return makeError(Error::InvalidArgument);
+        }
+        impl_->transmittance = sharedMedium->impl_->transmittance;
+        impl_->multiScattering = sharedMedium->impl_->multiScattering;
+        impl_->mediumParameters = sharedMedium->impl_->parameters;
+        impl_->sharedMedium = true;
+    }
+    constexpr std::array<const char*, 6> modules{"Transmittance", "MultiScattering", "SkyView", "EnvironmentCapture", "AerialPerspective", "CloudShadow"};
+    constexpr std::array<const char*, 6> entries{"transmittanceMain", "multiScatteringMain", "skyViewMain", "environmentCaptureMain", "aerialPerspectiveMain", "cloudShadowMain"};
     for (uint32_t index = 0; index < modules.size(); ++index) {
         const std::string module = std::string("Features/Environment/") + modules[index];
         auto result = ShaderRegistry::instance().getComputeKernel(device,
@@ -137,10 +182,12 @@ Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log)
     }
     for (auto request : {std::array<uint32_t, 4>{0, kTransmittanceWidth, kTransmittanceHeight, 1},
         {1, kMultiScatteringSize, kMultiScatteringSize, 1}, {2, kSkyViewWidth, kSkyViewHeight, 1},
-        {3, kRadianceWidth, kRadianceHeight, kRadianceMipCount}}) {
-        auto* image = request[0] == 0 ? &impl_->transmittance : request[0] == 1 ? &impl_->multiScattering :
-            request[0] == 2 ? &impl_->skyView : &impl_->radiance;
-        if (auto result = impl_->createImage(*image, request[1], request[2], request[3]); !result) { return result; }
+        {3, kRadianceWidth, kRadianceHeight, kRadianceMipCount}, {4, kCloudShadowSize, kCloudShadowSize, 1}}) {
+        if (impl_->sharedMedium && request[0] < 2) { continue; }
+        auto* image = request[0] == 0 ? impl_->transmittance.get() : request[0] == 1 ? impl_->multiScattering.get() :
+            request[0] == 2 ? &impl_->skyView : request[0] == 3 ? &impl_->radiance : &impl_->cloudShadow;
+        const auto format = request[0] == 2 || request[0] == 3 ? Format::RGBA32Sfloat : Format::RGBA16Sfloat;
+        if (auto result = impl_->createImage(*image, request[1], request[2], request[3], format); !result) { return result; }
     }
     auto result = device.createBuffer(BufferDesc{.size = uint64_t(kAerialSize) * kAerialSize * kAerialSize * 2 * 16,
         .structureStride = 16, .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
@@ -159,11 +206,27 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
 {
     if (impl_->device == nullptr || impl_->recorded || !environment::validAtmosphereState(environment.atmosphere) ||
         !environment::validCelestialLight(environment.celestial[0]) || !environment::validCelestialLight(environment.celestial[1]) ||
+        !environment::validWeatherState(environment.weather) || !std::isfinite(environment.elapsedSeconds) ||
+        (environment.source == environment::EnvironmentSource::PhysicalAtmosphere && environment.weather.cloudEnabled &&
+            environment.weather.cloudCoverage > 0.0f && environment.weather.cloudDensity > 0.0f &&
+            environment.weather.cloudExtinctionPerKm > 0.0f && environment.weather.cloudTopAltitudeKm >
+                double(environment.atmosphere.topRadiusKm) - environment.atmosphere.bottomRadiusKm) ||
         !std::all_of(observerWorldMetres.begin(), observerWorldMetres.end(), [](double value) { return std::isfinite(value); })) {
         log = "Invalid or already recorded immutable atmosphere publication";
         return makeError(Error::InvalidArgument);
     }
     impl_->parameters = buildGPUAtmosphereParameters(environment, observerWorldMetres);
+    if (impl_->sharedMedium) {
+        const auto& p = impl_->parameters;
+        const auto& cached = impl_->mediumParameters;
+        if (p.observerPlanetBottom[3] != cached.observerPlanetBottom[3] || p.observerWorldTop[3] != cached.observerWorldTop[3] ||
+            p.rayleighScaleHeight != cached.rayleighScaleHeight || p.mieScatteringScaleHeight != cached.mieScatteringScaleHeight ||
+            p.mieExtinctionAnisotropy != cached.mieExtinctionAnisotropy || p.ozoneCenter != cached.ozoneCenter ||
+            p.groundOzoneWidth != cached.groundOzoneWidth) {
+            log = "Shared atmosphere medium parameters do not match this publication";
+            return makeError(Error::InvalidArgument);
+        }
+    }
     void* mapped = impl_->parameterBuffer->map();
     if (mapped == nullptr) { return makeError(Error::Failure); }
     std::memcpy(mapped, &impl_->parameters, sizeof(impl_->parameters));
@@ -187,10 +250,15 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
         if (auto result = dispatch(kernel, width, height); !result) { return result; }
         return impl_->imageBarrier(commands, image, mip, TextureLayout::General, TextureLayout::ShaderRead);
     };
-    if (auto result = imageDispatch(0, impl_->transmittance, kTransmittanceWidth, kTransmittanceHeight); !result) { return result; }
-    params.transmittance = writer.sampledImage(impl_->transmittance.view.get());
-    if (auto result = imageDispatch(1, impl_->multiScattering, kMultiScatteringSize, kMultiScatteringSize); !result) { return result; }
-    params.multiScattering = writer.sampledImage(impl_->multiScattering.view.get());
+    if (!impl_->sharedMedium) {
+        if (auto result = imageDispatch(0, *impl_->transmittance, kTransmittanceWidth, kTransmittanceHeight); !result) { return result; }
+    }
+    params.transmittance = writer.sampledImage(impl_->transmittance->view.get());
+    if (!impl_->sharedMedium) {
+        if (auto result = imageDispatch(1, *impl_->multiScattering, kMultiScatteringSize, kMultiScatteringSize); !result) { return result; }
+    }
+    params.multiScattering = writer.sampledImage(impl_->multiScattering->view.get());
+    if (auto result = imageDispatch(5, impl_->cloudShadow, kCloudShadowSize, kCloudShadowSize); !result) { return result; }
     if (auto result = imageDispatch(2, impl_->skyView, kSkyViewWidth, kSkyViewHeight); !result) { return result; }
     params.skyView = writer.sampledImage(impl_->skyView.view.get());
     if (auto result = imageDispatch(3, impl_->radiance, kRadianceWidth, kRadianceHeight); !result) { return result; }
@@ -212,9 +280,10 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
 }
 
 TextureView* AtmosphereResourcesGPU::radianceView() const { return impl_->radiance.view.get(); }
-TextureView* AtmosphereResourcesGPU::transmittanceView() const { return impl_->transmittance.view.get(); }
-TextureView* AtmosphereResourcesGPU::multiScatteringView() const { return impl_->multiScattering.view.get(); }
+TextureView* AtmosphereResourcesGPU::transmittanceView() const { return impl_->transmittance->view.get(); }
+TextureView* AtmosphereResourcesGPU::multiScatteringView() const { return impl_->multiScattering->view.get(); }
 TextureView* AtmosphereResourcesGPU::skyView() const { return impl_->skyView.view.get(); }
+TextureView* AtmosphereResourcesGPU::cloudShadowView() const { return impl_->cloudShadow.view.get(); }
 Buffer* AtmosphereResourcesGPU::aerialBuffer() const { return impl_->aerial.get(); }
 Buffer* AtmosphereResourcesGPU::parametersBuffer() const { return impl_->parameterBuffer.get(); }
 const GPUAtmosphereParameters& AtmosphereResourcesGPU::parameters() const { return impl_->parameters; }

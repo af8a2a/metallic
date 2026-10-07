@@ -29,18 +29,22 @@ public:
     static constexpr uint32_t kRadianceHeight = 256;
     static constexpr uint32_t kAerialSize = 32;
     static constexpr uint32_t kRadianceMipCount = 10;
+    static constexpr uint32_t kCloudShadowSize = 256;
 
     AtmosphereResourcesGPU();
     ~AtmosphereResourcesGPU();
     AtmosphereResourcesGPU(const AtmosphereResourcesGPU&) = delete;
     AtmosphereResourcesGPU& operator=(const AtmosphereResourcesGPU&) = delete;
-    Result<> initialize(Device& device, std::string& log);
+    // A submitted publication with identical static medium can supply the two
+    // medium LUTs. Their image owners remain retained independently of it.
+    Result<> initialize(Device& device, std::string& log, const AtmosphereResourcesGPU* sharedMedium = nullptr);
     Result<> record(CommandBuffer& commands, const environment::EnvironmentSnapshot& environment,
         const std::array<double, 3>& observerWorldMetres, std::string& log);
     TextureView* radianceView() const;
     TextureView* transmittanceView() const;
     TextureView* multiScatteringView() const;
     TextureView* skyView() const;
+    TextureView* cloudShadowView() const;
     Buffer* aerialBuffer() const;
     Buffer* parametersBuffer() const;
     const GPUAtmosphereParameters& parameters() const;

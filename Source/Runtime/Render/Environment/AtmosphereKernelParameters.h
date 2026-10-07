@@ -44,6 +44,14 @@ public struct GPUAtmosphereParameters {
     ATMOSPHERE_PUBLIC AtmosphereFloat4 moonDirectionRadius;
     ATMOSPHERE_PUBLIC AtmosphereFloat4 moonIrradianceEnabled;
     ATMOSPHERE_PUBLIC AtmosphereFloat4 settings;             // Maximum aerial distance km; physical enabled.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudLayer;           // Base/top km; coverage; density multiplier.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudOptics;          // Grey extinction/km; albedo; HG g; enabled.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudAdvection;       // Offset km; noise seed bit pattern.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudShadowCentre;    // Ground centre planet km; map half extent km.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 cloudShadowBudget;    // Sun/Moon samples; active mask; dominant slot.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 weatherComposition;   // Aerosol, humidity, precipitation, wrapped elapsed.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 moonToSun;            // ENU incident direction at Moon; automatic phase.
+    ATMOSPHERE_PUBLIC AtmosphereFloat4 moonPhase;            // Phase angle; illuminated fraction; Lambert flux.
 };
 
 #ifdef __cplusplus
@@ -64,7 +72,8 @@ public struct AtmospherePrecomputeParams {
 
 #ifdef __cplusplus
 inline constexpr uint64_t kAtmospherePrecomputeABI = 0x41544d4f53500001ull;
-static_assert(sizeof(GPUAtmosphereParameters) == 192 && alignof(GPUAtmosphereParameters) == 16);
+static_assert(sizeof(GPUAtmosphereParameters) == 320 && alignof(GPUAtmosphereParameters) == 16);
+static_assert(offsetof(GPUAtmosphereParameters, cloudLayer) == 192 && offsetof(GPUAtmosphereParameters, moonPhase) == 304);
 static_assert(sizeof(AtmospherePrecomputeParams) == 64 && offsetof(AtmospherePrecomputeParams, dimensions) == 48);
 #endif
 #undef ATMOSPHERE_PUBLIC

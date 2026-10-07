@@ -307,6 +307,10 @@ float3 pathTrace(
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
             float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
+            if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
+                missRadiance += physicalDeltaMissDisks(getResourceParameters<SceneResourceParameters>().environment,
+                    ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
+            }
             radiance += throughput * missRadiance;
 #if METALLIC_PT_SHARC
             SharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
@@ -535,11 +539,12 @@ float3 pathTrace(
 #endif
 
         EnvironmentLightSample lightSample;
-        // Sun and Moon are deterministic fixed sources, independent of local RIS.
+        // Sun and Moon remain fixed sources outside local RIS; physical mode
+        // samples each finite disk before its projected BSDF and visibility.
         for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
             let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
                 getResourceParameters<SceneResourceParameters>().environment.celestialLights);
-            PunctualLightSample light = sampleCelestialLightAtPosition(celestial, celestialSlot, hit.position);
+            PunctualLightSample light = samplePathCelestialLightAtPosition(celestial, celestialSlot, hit.position, seed);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
             if (luminanceMax(bsdf * light.illuminance) > 0.0) {

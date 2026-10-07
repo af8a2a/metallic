@@ -20,6 +20,7 @@ EnvironmentResourceParameters atmosphereProbeEnvironment()
     environment.multiScattering = gProbe.resources.multiScattering;
     environment.skyView = gProbe.resources.skyView;
     environment.aerialPerspective = gProbe.inputAerial.resource;
+    environment.cloudShadow.index = 0xffffffffu;
     return environment;
 }
 

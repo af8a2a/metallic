@@ -238,6 +238,25 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class DynamicWorldLookDevSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "dynamic-world-lookdev"; }
+    std::string_view name() const override { return "Dynamic World / OpenPBR LookDev"; }
+    std::string_view category() const override { return "Environment"; }
+    std::string_view description() const override
+    {
+        return "Day/night astronomy, lunar phase and weather-driven atmosphere/clouds on the OpenPBR shaderball, "
+            "with linked raster/path-traced views and authoring controls for clock, location and weather.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/lookdev_vbuffer.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -867,6 +886,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
     static const LookDevABeautifulGameSample lookDevABeautifulGame;
     static const PhysicalAtmosphereLookDevSample physicalAtmosphereLookDev;
+    static const DynamicWorldLookDevSample dynamicWorldLookDev;
     static const PathTracingDLSSNRSample pathTracingDlssNr;
     static const GPUDrivenVisibilitySample gpuDrivenVisibility;
     static const GPUDrivenZorahFullSample gpuDrivenZorahFull;
@@ -883,6 +903,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &lookDevVisibilityBuffer,
         &lookDevABeautifulGame,
         &physicalAtmosphereLookDev,
+        &dynamicWorldLookDev,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),

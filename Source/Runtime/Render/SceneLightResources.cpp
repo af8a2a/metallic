@@ -138,6 +138,47 @@ GPUCelestialLightRecords buildCelestialLightRecords(const environment::Environme
     return records;
 }
 
+CelestialShadowPlan buildCelestialShadowPlan(const environment::EnvironmentSnapshot& snapshot,
+    const std::array<double, 3>& observerWorldMetres)
+{
+    CelestialShadowPlan plan;
+    std::array<double, 3> up{};
+    double radiusSquared = 0.0;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        up[axis] = observerWorldMetres[axis] - snapshot.atmosphere.planetCenter[axis];
+        radiusSquared += up[axis] * up[axis];
+    }
+    if (!std::isfinite(radiusSquared) || radiusSquared < 1e-12) { return plan; }
+    const double radius = std::sqrt(radiusSquared);
+    for (auto& axis : up) { axis /= radius; }
+    float dominantImportance = 0.0f;
+    for (uint32_t slot = 0; slot < environment::kCelestialLightCount; ++slot) {
+        const auto& light = snapshot.celestial[slot];
+        if (!light.enabled || !environment::validCelestialLight(light)) { continue; }
+        const double directionLength = std::sqrt(double(light.direction.x) * light.direction.x +
+            double(light.direction.y) * light.direction.y + double(light.direction.z) * light.direction.z);
+        const double elevation = -(up[0] * light.direction.x + up[1] * light.direction.y +
+            up[2] * light.direction.z) / directionLength;
+        const auto& s = light.topOfAtmosphereIrradiance;
+        const double illuminance = snapshot.source == environment::EnvironmentSource::PhysicalAtmosphere
+            ? 683.0 * (18.3286150698 * s.x + 76.9932864076 * s.y + 11.6242660516 * s.z)
+            : light.illuminance;
+        plan.importance[slot] = static_cast<float>(illuminance * std::max(elevation, 0.0));
+        if (plan.importance[slot] > dominantImportance) {
+            dominantImportance = plan.importance[slot];
+            plan.dominantIndex = slot;
+        }
+    }
+    if (dominantImportance <= 0.0f) { return plan; }
+    for (uint32_t slot = 0; slot < environment::kCelestialLightCount; ++slot) {
+        if (plan.importance[slot] >= dominantImportance * 0.0001f) {
+            plan.activeMask |= 1u << slot;
+            plan.sampleCounts[slot] = slot == plan.dominantIndex ? 48u : 12u;
+        }
+    }
+    return plan;
+}
+
 std::vector<SceneLightRecord> buildSceneLightRecords(
     std::span<const scene::RenderLight> renderLights,
     std::span<const scene::PunctualLight> virtualLights)

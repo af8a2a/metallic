@@ -55,6 +55,7 @@ std::vector<ScreenSpaceShadowLightRecord> buildScreenSpaceShadowLightRecords(
     for (size_t i = 0; i < celestial.size(); ++i) {
         lights[i] = {.celestial = celestial[i], .sourceIndex = static_cast<uint32_t>(i),
             .isCelestial = true, .enabled = (celestial[i].flags & kGPUCelestialLightEnabled) != 0};
+        lights[i].celestial.shadowImportance *= std::max(-celestial[i].direction[1], 0.0f);
     }
     for (size_t i = 0; i < sources.size(); ++i) {
         lights[celestial.size() + i] = {.local = sources[i].gpu,
@@ -72,12 +73,17 @@ uint32_t selectScreenSpaceShadowLight(std::span<const ScreenSpaceShadowLightReco
         return static_cast<uint32_t>(requestedIndex);
     }
     uint32_t selected = UINT32_MAX;
+    uint32_t selectedCelestial = UINT32_MAX;
+    float celestialImportance = 0.0f;
     for (size_t i = 0; i < lights.size(); ++i) {
         if (!enabled(i)) { continue; }
-        if (selected == UINT32_MAX) { selected = static_cast<uint32_t>(i); }
-        if (lights[i].isCelestial) { return static_cast<uint32_t>(i); }
+        if (!lights[i].isCelestial && selected == UINT32_MAX) { selected = static_cast<uint32_t>(i); }
+        if (lights[i].isCelestial && lights[i].celestial.shadowImportance > celestialImportance) {
+            celestialImportance = lights[i].celestial.shadowImportance;
+            selectedCelestial = static_cast<uint32_t>(i);
+        }
     }
-    return selected;
+    return selectedCelestial != UINT32_MAX ? selectedCelestial : selected;
 }
 
 struct ScreenSpaceShadows::State {

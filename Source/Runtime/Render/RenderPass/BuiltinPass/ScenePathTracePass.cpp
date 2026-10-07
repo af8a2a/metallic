@@ -798,6 +798,7 @@ public:
             ComputeProgramBindingDesc{.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             ComputeProgramBindingDesc{.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             ComputeProgramBindingDesc{.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            ComputeProgramBindingDesc{.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             ComputeProgramBindingDesc{
                 .binding = 0,
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
@@ -1633,6 +1634,7 @@ public:
         TextureView* const atmosphereTransmittanceViews[]{environment.transmittanceView};
         TextureView* const atmosphereMultiScatteringViews[]{environment.multiScatteringView};
         TextureView* const atmosphereSkyViews[]{environment.skyView};
+        TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
             ComputeDispatchBinding{.binding = 55, .buffer = celestial.buffer.get()},
@@ -1697,6 +1699,9 @@ public:
             bindings.push_back({.binding = 58, .textureViews = {atmosphereMultiScatteringViews, 1}});
             bindings.push_back({.binding = 59, .textureViews = {atmosphereSkyViews, 1}});
             bindings.push_back({.binding = 99, .buffer = environment.aerialPerspectiveBuffer});
+            if (environment.cloudShadowView != nullptr) {
+                bindings.push_back({.binding = 101, .textureViews = {atmosphereCloudShadowViews, 1}});
+            }
         }
         if (!visibilityDeferred_ && sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});

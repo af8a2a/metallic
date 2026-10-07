@@ -1,8 +1,10 @@
 #language slang 2026
 module Atmosphere;
 
-#include "../../Source/Runtime/Render/Environment/AtmosphereKernelParameters.h"
+__exported import AtmosphereTypes;
+import ShaderCore;
 import WorkingColor;
+import Clouds;
 
 namespace Metallic.Atmosphere
 {
@@ -46,6 +48,9 @@ public GPUAtmosphereParameters loadParameters(RWBufferSpan<float4> data)
     p.groundOzoneWidth = data[6]; p.sunDirectionRadius = data[7];
     p.sunIrradianceEnabled = data[8]; p.moonDirectionRadius = data[9];
     p.moonIrradianceEnabled = data[10]; p.settings = data[11];
+    p.cloudLayer = data[12]; p.cloudOptics = data[13]; p.cloudAdvection = data[14];
+    p.cloudShadowCentre = data[15]; p.cloudShadowBudget = data[16]; p.weatherComposition = data[17];
+    p.moonToSun = data[18]; p.moonPhase = data[19];
     return p;
 }
 public float3 worldToAtmosphereKm(GPUAtmosphereParameters p, float3 worldPosition)
@@ -195,25 +200,55 @@ public SpectralSegment integrateSpectral(GPUAtmosphereParameters p, Texture2D<fl
     if (!atmosphereInterval(p, position, direction, distance, begin, end, ground)) { return result; }
     float rayPhase = isotropic ? 1.0 / (4.0 * kPi) : rayleighPhase(dot(direction, sourceDirection));
     float aerosolPhase = isotropic ? 1.0 / (4.0 * kPi) : miePhase(dot(direction, sourceDirection), p.mieExtinctionAnisotropy.w);
-    for (uint step = 0; step < 32; ++step) {
-        float u0 = float(step) / 32.0, u1 = float(step + 1u) / 32.0;
-        float t0 = lerp(begin, end, u0 * u0), t1 = lerp(begin, end, u1 * u1);
-        float3 point = position + direction * (0.5 * (t0 + t1));
-        Medium medium = sampleMedium(p, point);
-        float3 integral = scatteringIntegral(medium.extinction, t1 - t0);
-        float3 scattered = medium.rayleigh + medium.mie;
-        float3 source = transmittanceToSource(p, transmittance, point, sourceDirection) *
-            (medium.rayleigh * rayPhase + medium.mie * aerosolPhase);
-        if (useMultiple) { source += sampleMulti(p, multiScattering, point, sourceDirection) * scattered; }
-        result.radiance += result.transmittance * integral * source * sourceIrradiance;
-        result.scatteringResponse += result.transmittance * integral * scattered;
-        result.transmittance *= exp(-min(medium.extinction * (t1 - t0), float3(80.0)));
+    // The static isotropic LUT deliberately excludes dynamic cloud fields.
+    bool cloud = !isotropic && useMultiple && Metallic.Clouds::enabled(p);
+    float4 cloudRanges = cloud ? Metallic.Clouds::intervals(p, position, direction, end) : float4(-1.0);
+    float boundaries[6] = {begin, end, end, end, end, end};
+    uint regions = 1u;
+    if (cloudRanges.x >= begin && cloudRanges.y > cloudRanges.x) {
+        boundaries[1] = cloudRanges.x; boundaries[2] = cloudRanges.y;
+        regions = 3u;
+        if (cloudRanges.z >= cloudRanges.y && cloudRanges.w > cloudRanges.z) {
+            boundaries[3] = cloudRanges.z; boundaries[4] = cloudRanges.w; boundaries[5] = end;
+            regions = 5u;
+        } else { boundaries[3] = end; }
+    }
+    for (uint region = 0u; region < regions; ++region) {
+        float regionBegin = boundaries[region], regionEnd = boundaries[region + 1u];
+        if (regionEnd <= regionBegin) { continue; }
+        bool cloudRegion = regions > 1u && (region & 1u) != 0u;
+        uint steps = cloudRegion ? 24u : 32u;
+        for (uint step = 0; step < steps; ++step) {
+            float u0 = float(step) / float(steps), u1 = float(step + 1u) / float(steps);
+            float t0 = lerp(regionBegin, regionEnd, cloudRegion ? u0 : u0 * u0);
+            float t1 = lerp(regionBegin, regionEnd, cloudRegion ? u1 : u1 * u1);
+            float3 point = position + direction * (0.5 * (t0 + t1));
+            Medium medium = sampleMedium(p, point);
+            float cloudExtinction = cloud ? Metallic.Clouds::density(p, point) * p.cloudOptics.x : 0.0;
+            float cloudScattering = cloudExtinction * p.cloudOptics.y;
+            medium.extinction += cloudExtinction;
+            float3 integral = scatteringIntegral(medium.extinction, t1 - t0);
+            float3 scattered = medium.rayleigh + medium.mie;
+            float cloudLightT = cloud && any(sourceIrradiance > 0.0) ?
+                Metallic.Clouds::transmittance(p, point, sourceDirection, 1e9, 8u) : 1.0;
+            float3 source = transmittanceToSource(p, transmittance, point, sourceDirection) *
+                cloudLightT * (medium.rayleigh * rayPhase + medium.mie * aerosolPhase);
+            if (cloudScattering > 0.0) {
+                source += transmittanceToSource(p, transmittance, point, sourceDirection) * cloudScattering *
+                    Metallic.Clouds::scatteringPhase(dot(direction, sourceDirection), p.cloudOptics.z, p.cloudOptics.y, cloudLightT);
+            }
+            if (useMultiple) { source += sampleMulti(p, multiScattering, point, sourceDirection) * scattered * cloudLightT; }
+            result.radiance += result.transmittance * integral * source * sourceIrradiance;
+            result.scatteringResponse += result.transmittance * integral * (scattered + cloudScattering);
+            result.transmittance *= exp(-min(medium.extinction * (t1 - t0), float3(80.0)));
+        }
     }
     if (ground && groundBounce) {
         float3 point = position + direction * end;
         float3 normal = normalize(point);
         float3 incident = transmittanceToSource(p, transmittance, point + normal * 0.002, sourceDirection) *
             max(dot(normal, sourceDirection), 0.0);
+        if (cloud) { incident *= Metallic.Clouds::transmittance(p, point + normal * 0.002, sourceDirection); }
         result.radiance += result.transmittance * incident * p.groundOzoneWidth.xyz * sourceIrradiance / kPi;
         result.scatteringResponse += result.transmittance * p.groundOzoneWidth.xyz;
     }
@@ -224,6 +259,7 @@ public SpectralSegment integrateEnvironment(GPUAtmosphereParameters p, Texture2D
 {
     SpectralSegment sun = integrateSpectral(p, transmittance, multiScattering, position, direction, distance,
         p.sunDirectionRadius.xyz, p.sunIrradianceEnabled.xyz * p.sunIrradianceEnabled.w, false, true, groundBounce);
+    if (p.moonIrradianceEnabled.w <= 0.0 || all(p.moonIrradianceEnabled.xyz <= 0.0)) { return sun; }
     SpectralSegment moon = integrateSpectral(p, transmittance, multiScattering, position, direction, distance,
         p.moonDirectionRadius.xyz, p.moonIrradianceEnabled.xyz * p.moonIrradianceEnabled.w, false, true, groundBounce);
     sun.radiance += moon.radiance;
@@ -240,11 +276,43 @@ public AtmosphereSegment segmentIntegration(GPUAtmosphereParameters p, Texture2D
     return result;
 }
 public float3 solarIrradiance(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
-    float3 positionKm, uint slot)
+    float3 positionKm, uint slot, float cloudTransmittance)
 {
     float4 source = slot == 0 ? p.sunIrradianceEnabled : p.moonIrradianceEnabled;
     float3 direction = slot == 0 ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz;
-    return spectralToWorking(source.xyz * source.w * transmittanceToSource(p, transmittance, positionKm, direction));
+    return spectralToWorking(source.xyz * source.w * transmittanceToSource(p, transmittance, positionKm, direction)) *
+        cloudTransmittance;
+}
+public float3 solarIrradiance(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    float3 positionKm, uint slot)
+{
+    float3 direction = slot == 0 ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz;
+    return solarIrradiance(p, transmittance, positionKm, slot, Metallic.Clouds::transmittance(p, positionKm, direction));
+}
+public float cloudShadowTransmittance(GPUAtmosphereParameters p, Texture2D<float4> shadow,
+    float3 positionKm, uint slot)
+{
+    if (!Metallic.Clouds::enabled(p)) { return 1.0; }
+    float3 up, east, north; radialBasis(p, up, east, north);
+    float3 sourceDirection = slot == 0u ? p.sunDirectionRadius.xyz : p.moonDirectionRadius.xyz;
+    float radius = length(positionKm), altitude = radius - p.observerPlanetBottom.w;
+    // Continue the receiver's source ray backwards onto the spherical ground.
+    // Reusing its cloud column preserves shadow parallax on elevated terrain.
+    float2 groundRoots = sphereRoots(positionKm, -sourceDirection, p.observerPlanetBottom.w + 0.002);
+    float3 footprint = positionKm - sourceDirection * max(groundRoots.x, 0.0);
+    float projectedHeight = dot(footprint, up);
+    float2 tangentOffset = float2(dot(footprint, east), dot(footprint, north)) *
+        (p.observerPlanetBottom.w + 0.002) / max(projectedHeight, 1e-6);
+    float2 uv = tangentOffset / (2.0 * p.cloudShadowCentre.w) + 0.5;
+    // The projected ground map is invalid for cloud-interior/aerial receivers.
+    if (all(uv >= 0.0) && all(uv <= 1.0) && projectedHeight > 0.0 && groundRoots.y >= 0.0 &&
+        altitude >= 0.0 && altitude < min(p.cloudLayer.x, 0.5)) {
+        float4 sampled = sampleLinear(shadow, uv);
+        if ((slot == 0u ? sampled.z : sampled.w) > 0.99) {
+            return saturate(slot == 0u ? sampled.x : sampled.y);
+        }
+    }
+    return Metallic.Clouds::transmittance(p, positionKm, sourceDirection);
 }
 public float3 latLongDirection(float2 uv)
 {
@@ -303,22 +371,60 @@ public float3 sampleSkyView(GPUAtmosphereParameters p, Texture2D<float4> skyView
 {
     return sampleLinear(skyView, skyDirectionUV(p, direction), true).xyz;
 }
+public float3 sourceDiskIrradianceSample(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    uint slot, float3 positionKm, float3 worldDirection, bool assumeInDisk = false)
+{
+    float4 direction = slot == 0 ? p.sunDirectionRadius : p.moonDirectionRadius;
+    direction.xyz = normalize(direction.xyz);
+    worldDirection = normalize(worldDirection);
+    float3 chord = worldDirection - direction.xyz;
+    float sineHalf = sin(0.5 * direction.w);
+    if (direction.w > 0.0 && (assumeInDisk || dot(chord, chord) <= 4.0 * sineHalf * sineHalf)) {
+        // The finite disk crosses the planet limb per visible ray from
+        // the actual primary origin, including orthographic ray offsets.
+        float4 source = slot == 0 ? p.sunIrradianceEnabled : p.moonIrradianceEnabled;
+        float3 disk = spectralToWorking(source.xyz * source.w *
+            transmittanceToSource(p, transmittance, positionKm, worldDirection)) *
+            Metallic.Clouds::transmittance(p, positionKm, worldDirection);
+        if (slot == 1u && p.moonToSun.w > 0.5) {
+            // The CPU TOA already includes integrated Lambert phase.
+            // Normalize the resolved spherical disk by its projected-area
+            // average, 2/3 times the Lambert phase function, preserving
+            // that flux while exposing the terminator and limb shading.
+            float3 view = -direction.xyz;
+            float3 reference = abs(view.y) < 0.9 ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+            float3 right = normalize(cross(reference, view)), top = cross(view, right);
+            float2 diskCoordinate = float2(dot(worldDirection, right), dot(worldDirection, top)) / max(sin(direction.w), 1e-30);
+            float3 normal = right * diskCoordinate.x + top * diskCoordinate.y +
+                view * sqrt(max(1.0 - dot(diskCoordinate, diskCoordinate), 0.0));
+            float average = (2.0 / 3.0) * p.moonPhase.z;
+            disk *= average > 1e-30 ? max(dot(normal, p.moonToSun.xyz), 0.0) / average : 0.0;
+        }
+        return disk;
+    }
+    return float3(0.0);
+}
+public float3 sourceDiskRadiance(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    uint slot, float3 positionKm, float3 worldDirection)
+{
+    float radius = slot == 0u ? p.sunDirectionRadius.w : p.moonDirectionRadius.w;
+    return sourceDiskIrradianceSample(p, transmittance, slot, positionKm, worldDirection) /
+        max(kPi * sin(radius) * sin(radius), 1e-30);
+}
+public float3 sourceDiskSolidAngleEstimate(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
+    uint slot, float3 positionKm, float3 worldDirection)
+{
+    float radius = slot == 0u ? p.sunDirectionRadius.w : p.moonDirectionRadius.w;
+    // L / pdf = L * solid angle. Cancel the small squared radius before
+    // division so every positive finite angular radius preserves source flux.
+    return sourceDiskIrradianceSample(p, transmittance, slot, positionKm, worldDirection, true) *
+        (2.0 / max(1.0 + cos(radius), 1e-8));
+}
 public float3 visibleSourceDisks(GPUAtmosphereParameters p, Texture2D<float4> transmittance,
     float3 positionKm, float3 worldDirection)
 {
-    float3 radiance = float3(0.0);
-    for (uint slot = 0; slot < 2; ++slot) {
-        float4 direction = slot == 0 ? p.sunDirectionRadius : p.moonDirectionRadius;
-        if (direction.w > 0.0 && dot(worldDirection, direction.xyz) >= cos(direction.w)) {
-            // The finite disk crosses the planet limb per visible ray from
-            // the actual primary origin, including orthographic ray offsets.
-            float4 source = slot == 0 ? p.sunIrradianceEnabled : p.moonIrradianceEnabled;
-            float3 disk = spectralToWorking(source.xyz * source.w *
-                transmittanceToSource(p, transmittance, positionKm, worldDirection));
-            radiance += disk / max(kPi * sin(direction.w) * sin(direction.w), 1e-8);
-        }
-    }
-    return radiance;
+    return sourceDiskRadiance(p, transmittance, 0u, positionKm, worldDirection) +
+        sourceDiskRadiance(p, transmittance, 1u, positionKm, worldDirection);
 }
 public float3 visibleSky(GPUAtmosphereParameters p, Texture2D<float4> skyView,
     Texture2D<float4> transmittance, float3 worldDirection, bool includeDisks)

@@ -281,6 +281,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 add_library(MetallicRuntimeScene STATIC
+    Runtime/Environment/Astronomy.cpp
     Runtime/Material/MaterialAsset.cpp
     Runtime/Material/MaterialGraph.cpp
     Runtime/Material/MaterialSlangFrontend.cpp

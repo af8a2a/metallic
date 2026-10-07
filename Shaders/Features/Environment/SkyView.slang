@@ -14,5 +14,5 @@ void skyViewMain(uint3 id : SV_DispatchThreadID)
         resolveUniform(gParams.multiScattering), p.observerPlanetBottom.xyz, direction, 1e9, true);
     float3 radiance = spectralToWorking(integrated.radiance);
     // No source disks: sky capture, SH, PDF and GGX own scattering only.
-    resolveUniform(gParams.output)[id.xy] = float4(clamp(radiance, 0.0, 65504.0), 1.0);
+    resolveUniform(gParams.output)[id.xy] = float4(max(radiance, 0.0), 1.0);
 }

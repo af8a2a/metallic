@@ -844,7 +844,20 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
             contentHash = (contentHash ^ std::to_integer<uint8_t>(byte)) * 1099511628211ull;
         }
         publication->revision = contentHash | (1ull << 63);
-        auto result = publication->atmosphere.initialize(device, log);
+        const auto sameMedium = [&](const auto& cached) {
+            const auto& previous = cached->parameters;
+            return !cached->cancelled &&
+                previous.observerPlanetBottom[3] == parameters.observerPlanetBottom[3] &&
+                previous.observerWorldTop[3] == parameters.observerWorldTop[3] &&
+                previous.rayleighScaleHeight == parameters.rayleighScaleHeight &&
+                previous.mieScatteringScaleHeight == parameters.mieScatteringScaleHeight &&
+                previous.mieExtinctionAnisotropy == parameters.mieExtinctionAnisotropy &&
+                previous.ozoneCenter == parameters.ozoneCenter &&
+                previous.groundOzoneWidth == parameters.groundOzoneWidth;
+        };
+        const auto medium = std::find_if(physicalPublications_.rbegin(), physicalPublications_.rend(), sameMedium);
+        const auto* sharedMedium = medium != physicalPublications_.rend() ? &(*medium)->atmosphere : nullptr;
+        auto result = publication->atmosphere.initialize(device, log, sharedMedium);
         if (!result) { return makeError(result.error()); }
         // Retain before recording; partial recordings also reference these
         // allocations and must survive until cancellation/submission resolves.
@@ -916,6 +929,7 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
     resolved.multiScatteringView = publication->atmosphere.multiScatteringView();
     resolved.skyView = publication->atmosphere.skyView();
     resolved.aerialPerspectiveBuffer = publication->atmosphere.aerialBuffer();
+    resolved.cloudShadowView = publication->atmosphere.cloudShadowView();
     resolved.width = AtmosphereResourcesGPU::kRadianceWidth;
     resolved.height = AtmosphereResourcesGPU::kRadianceHeight;
     resolved.resourceRevision = publication->revision;

@@ -38,6 +38,7 @@ struct EnvironmentLightingSnapshot {
     TextureView* multiScatteringView = nullptr;
     TextureView* skyView = nullptr;
     Buffer* aerialPerspectiveBuffer = nullptr;
+    TextureView* cloudShadowView = nullptr;
     environment::EnvironmentSource source = environment::EnvironmentSource::HDRI;
     // A resolved provider snapshot owns its immutable publication, independently
     // of later source switches and cache eviction.

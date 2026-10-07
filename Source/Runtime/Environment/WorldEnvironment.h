@@ -1,11 +1,13 @@
 #pragma once
 
-#include "ml.h"
-#include "Runtime/Environment/Atmosphere.h"
-
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
+
+#include "Runtime/Environment/Astronomy.h"
+#include "Runtime/Environment/Atmosphere.h"
+#include "Runtime/Environment/Weather.h"
 
 namespace metallic::environment {
 
@@ -24,7 +26,7 @@ struct CelestialLight {
     // the emitted direction. Color conversion occurs at the renderer boundary.
     float3 color{1.0f, 1.0f, 1.0f};
     float illuminance = 0.0f;
-    float angularRadius = 0.00465f; // Radians. Delta-light approximation for now.
+    float angularRadius = 0.00465f; // Radians; physical PT disk, realtime directional approximation.
     bool enabled = false;
     // Spectral irradiance at the top of the atmosphere, sampled at 680, 550
     // and 440 nm, in W/m^2/nm. Used by the physical provider; HDRI keeps lux.
@@ -64,39 +66,61 @@ inline bool validCelestialLight(const CelestialLight& light)
 // cannot change a snapshot already submitted to rendering.
 struct EnvironmentSnapshot {
     std::array<CelestialLight, kCelestialLightCount> celestial;
+    std::array<CelestialLight, kCelestialLightCount> authoredCelestial;
     EnvironmentSource source = EnvironmentSource::HDRI;
     AtmosphereState atmosphere;
+    AtmosphereState authoredAtmosphere;
+    EnvironmentTimeState time;
+    AstronomyState astronomy;
+    WeatherState weather;
+    AstronomyEvaluation evaluatedAstronomy;
+    double elapsedSeconds = 0.0;
     uint64_t celestialRevision = 1;
     uint64_t atmosphereRevision = 0;
     uint64_t weatherRevision = 0;
+    uint64_t astronomyRevision = 0;
     uint64_t lightingRevision = 1;
 };
 
 struct WorldEnvironment {
     // A disabled default preserves scenes that previously had no distant light.
     CelestialLight sun;
-    // Manual full-Moon-scale TOA preset; lunar phase/reflectance belongs to
-    // the later astronomy checkpoint. It remains disabled until authored.
+    // Manual full-Moon-scale TOA preset. Automatic modes derive the evaluated
+    // lunar spectrum from the Sun, lunar albedo and phase without changing it.
     CelestialLight moon{.topOfAtmosphereIrradiance = float3(2.948e-6f, 3.7008e-6f, 3.82396e-6f)};
     EnvironmentSource source = EnvironmentSource::HDRI;
     AtmosphereState atmosphere;
+    EnvironmentTimeState time;
+    AstronomyState astronomy;
+    WeatherState weather;
 
     bool operator==(const WorldEnvironment&) const = default;
 
     EnvironmentSnapshot snapshot(uint64_t celestialRevision = 1, uint64_t lightingRevision = 1,
-        uint64_t atmosphereRevision = 0) const
+        uint64_t atmosphereRevision = 0, uint64_t weatherRevision = 0, uint64_t astronomyRevision = 0,
+        double elapsedSeconds = 0.0, std::optional<double> runtimeJulianDateUTC = std::nullopt) const
     {
-        return {.celestial = {sun, moon}, .source = source, .atmosphere = atmosphere,
-            .celestialRevision = celestialRevision, .atmosphereRevision = atmosphereRevision,
-            .lightingRevision = lightingRevision};
+        auto result = evaluateWorldEnvironment(*this, elapsedSeconds, runtimeJulianDateUTC);
+        result.celestialRevision = celestialRevision;
+        result.atmosphereRevision = atmosphereRevision;
+        result.weatherRevision = weatherRevision;
+        result.astronomyRevision = astronomyRevision;
+        result.lightingRevision = lightingRevision;
+        return result;
     }
 };
 
 inline bool validWorldEnvironment(const WorldEnvironment& world)
 {
+    const bool activePhysicalClouds = world.source == EnvironmentSource::PhysicalAtmosphere &&
+        world.weather.cloudEnabled && world.weather.cloudCoverage > 0.0f &&
+        world.weather.cloudDensity > 0.0f && world.weather.cloudExtinctionPerKm > 0.0f;
+    const double atmosphereHeightKm = double(world.atmosphere.topRadiusKm) - world.atmosphere.bottomRadiusKm;
     return validCelestialLight(world.sun) && validCelestialLight(world.moon) &&
         (world.source == EnvironmentSource::HDRI || world.source == EnvironmentSource::PhysicalAtmosphere) &&
-        validAtmosphereState(world.atmosphere);
+        validAtmosphereState(world.atmosphere) && validEnvironmentTimeState(world.time) &&
+        validAstronomyState(world.astronomy) && validWeatherState(world.weather) &&
+        (!activePhysicalClouds || double(world.weather.cloudTopAltitudeKm) <= atmosphereHeightKm);
 }
 
 } // namespace metallic::environment

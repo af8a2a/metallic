@@ -59,9 +59,17 @@ public:
     bool setWorldEnvironment(environment::WorldEnvironment environment);
     bool hasWorldEnvironmentOverride() const { return worldEnvironmentOverride_; }
     const environment::WorldEnvironment& worldEnvironment() const { return worldEnvironment_; }
+    // Runtime time never writes back to the authored document. The host advances
+    // it once per frame, before consumers acquire this immutable evaluation.
+    void advanceWorldEnvironment(double deltaSeconds);
+    bool setEnvironmentElapsedSeconds(double elapsedSeconds);
+    double environmentElapsedSeconds() const { return environmentElapsedSeconds_; }
+    double environmentJulianDateUTC() const { return environmentJulianDateUTC_; }
     environment::EnvironmentSnapshot environmentSnapshot() const
     {
-        return worldEnvironment_.snapshot(celestialRevision_, lightingRevision_, atmosphereRevision_);
+        auto snapshot = evaluatedEnvironment_;
+        snapshot.lightingRevision = lightingRevision_;
+        return snapshot;
     }
     bool setLighting(scene::LightingSettings lighting);
     const scene::LightingSettings& lighting() const { return lighting_; }
@@ -74,13 +82,21 @@ public:
     RenderChangeBits consumeChanges();
 
 private:
+    void updateEvaluatedEnvironment(bool authoredChange = false);
     const scene::Scene* scene_ = nullptr;
+    uint64_t sceneResourceIdentity_ = 0;
+    uint64_t sceneGraphLifetimeRevision_ = 0;
     EnvironmentSettings environment_;
     scene::LightingSettings lighting_;
     environment::WorldEnvironment worldEnvironment_;
+    environment::EnvironmentSnapshot evaluatedEnvironment_ = worldEnvironment_.snapshot();
+    double environmentElapsedSeconds_ = 0.0;
+    double environmentJulianDateUTC_ = worldEnvironment_.time.julianDateUTC;
     bool worldEnvironmentOverride_ = false;
     uint64_t celestialRevision_ = 1;
     uint64_t atmosphereRevision_ = 0;
+    uint64_t weatherRevision_ = 0;
+    uint64_t astronomyRevision_ = 0;
     uint64_t lightingRevision_ = 1;
     uint64_t sceneRevision_ = 1;
     uint64_t sceneContentRevision_ = 1;

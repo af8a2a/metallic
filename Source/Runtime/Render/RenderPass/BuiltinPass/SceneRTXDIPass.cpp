@@ -300,6 +300,7 @@ public:
             {.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             {.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             {.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            {.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             {.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 53, .kind = ComputeResourceBindingKind::SampledImage},
         };
@@ -546,6 +547,7 @@ public:
         TextureView* const atmosphereTransmittanceViews[]{environment.transmittanceView};
         TextureView* const atmosphereMultiScatteringViews[]{environment.multiScatteringView};
         TextureView* const atmosphereSkyViews[]{environment.skyView};
+        TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         TextureView* const localLightPdfViews[] = {lights_.lightPdfView()};
         TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
         std::vector<ComputeDispatchBinding> bindings{
@@ -603,6 +605,9 @@ public:
             bindings.push_back({.binding = 58, .textureViews = {atmosphereMultiScatteringViews, 1}});
             bindings.push_back({.binding = 59, .textureViews = {atmosphereSkyViews, 1}});
             bindings.push_back({.binding = 99, .buffer = environment.aerialPerspectiveBuffer});
+            if (environment.cloudShadowView != nullptr) {
+                bindings.push_back({.binding = 101, .textureViews = {atmosphereCloudShadowViews, 1}});
+            }
         }
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
         if (sceneResources_.fallbackPositionBuffer() != nullptr) {

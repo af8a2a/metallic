@@ -8,4 +8,5 @@ __include "Lighting/PhotometricLighting.slang";
 __include "Lighting/EnvironmentTransport.slang";
 __include "Lighting/ProceduralEnvironment.slang";
 __include "Lighting/PunctualLightSampling.slang";
+__include "Lighting/FiniteCelestialSampling.slang";
 __include "Lighting/ScreenSpaceShadowCommon.slang";

@@ -5765,6 +5765,232 @@ TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalReject
     EXPECT_EQ(restored.worldEnvironment().sun.illuminance, world.sun.illuminance);
 }
 
+TEST(WorldEnvironment, DynamicAuthoringSnapshotsAndRevisionDomains)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    SceneDocument document;
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    world.sun.enabled = true;
+    world.moon.enabled = true;
+    world.time.julianDateUTC = 2460483.0;
+    world.astronomy.mode = AstronomyMode::Astronomical;
+    world.astronomy.latitudeDegrees = 35.0;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto astronomical = document.environmentSnapshot();
+    EXPECT_TRUE(astronomical.evaluatedAstronomy.automatic);
+    EXPECT_EQ(astronomical.authoredCelestial[0], world.sun);
+    EXPECT_EQ(astronomical.authoredCelestial[1], world.moon);
+    EXPECT_EQ(astronomical.time, world.time);
+    EXPECT_EQ(astronomical.astronomy, world.astronomy);
+    EXPECT_EQ(document.worldEnvironment(), world);
+    EXPECT_GE(astronomical.evaluatedAstronomy.moonIlluminatedFraction, 0.0f);
+    EXPECT_LE(astronomical.evaluatedAstronomy.moonIlluminatedFraction, 1.0f);
+
+    world.weather.cloudEnabled = true;
+    world.weather.cloudCoverage = 0.6f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto cloudy = document.environmentSnapshot();
+    EXPECT_GT(cloudy.weatherRevision, astronomical.weatherRevision);
+    EXPECT_EQ(cloudy.celestialRevision, astronomical.celestialRevision);
+    EXPECT_EQ(cloudy.astronomyRevision, astronomical.astronomyRevision);
+    EXPECT_EQ(cloudy.atmosphereRevision, astronomical.atmosphereRevision);
+    EXPECT_EQ(cloudy.celestial, astronomical.celestial);
+    EXPECT_FLOAT_EQ(astronomical.weather.cloudCoverage, 0.0f);
+
+    world.weather.humidity = 0.5f;
+    world.weather.aerosolDensity = 2.0f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto humid = document.environmentSnapshot();
+    EXPECT_GT(humid.weatherRevision, cloudy.weatherRevision);
+    EXPECT_GT(humid.atmosphereRevision, cloudy.atmosphereRevision);
+    EXPECT_EQ(humid.celestialRevision, cloudy.celestialRevision);
+    EXPECT_EQ(humid.authoredAtmosphere, world.atmosphere);
+    EXPECT_NEAR(humid.atmosphere.mieScattering.x, world.atmosphere.mieScattering.x * 3.5f, 1e-7f);
+    EXPECT_EQ(humid.celestial, cloudy.celestial);
+    world.time.julianDateUTC += 0.25;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto evening = document.environmentSnapshot();
+    EXPECT_GT(evening.astronomyRevision, humid.astronomyRevision);
+    EXPECT_GT(evening.celestialRevision, humid.celestialRevision);
+    EXPECT_EQ(evening.weatherRevision, humid.weatherRevision);
+    EXPECT_EQ(evening.atmosphereRevision, humid.atmosphereRevision);
+    EXPECT_FALSE(document.setWorldEnvironment(world));
+
+    const auto revisions = document.environmentSnapshot();
+    for (int invalidCase = 0; invalidCase < 19; ++invalidCase) {
+        auto invalid = world;
+        if (invalidCase == 0) { invalid.time.julianDateUTC = std::numeric_limits<double>::quiet_NaN(); }
+        if (invalidCase == 1) { invalid.time.timeScale = std::numeric_limits<double>::infinity(); }
+        if (invalidCase == 2) { invalid.astronomy.mode = static_cast<AstronomyMode>(99); }
+        if (invalidCase == 3) { invalid.astronomy.latitudeDegrees = 90.1; }
+        if (invalidCase == 4) { invalid.astronomy.longitudeDegrees = -180.1; }
+        if (invalidCase == 5) { invalid.astronomy.moonAlbedo = -0.1f; }
+        if (invalidCase == 6) { invalid.weather.cloudCoverage = 1.01f; }
+        if (invalidCase == 7) { invalid.weather.cloudDensity = -0.1f; }
+        if (invalidCase == 8) { invalid.weather.cloudTopAltitudeKm = invalid.weather.cloudBaseAltitudeKm; }
+        if (invalidCase == 9) { invalid.weather.cloudExtinctionPerKm = std::numeric_limits<float>::infinity(); }
+        if (invalidCase == 10) { invalid.weather.aerosolDensity = -0.1f; }
+        if (invalidCase == 11) { invalid.weather.humidity = 1.1f; }
+        if (invalidCase == 12) { invalid.weather.precipitation = -0.1f; }
+        if (invalidCase == 13) { invalid.weather.windSpeed = -1.0f; }
+        if (invalidCase == 14) { invalid.weather.windDirection = float2(0.0f); }
+        if (invalidCase == 15) { invalid.time.julianDateUTC = kMaximumJulianDateUTC + 1.0; }
+        if (invalidCase == 16) { invalid.weather.cloudBaseAltitudeKm = -1.0f; }
+        if (invalidCase == 17) { invalid.weather.cloudTopAltitudeKm = 101.0f; }
+        if (invalidCase == 18) { invalid.atmosphere.topRadiusKm = invalid.atmosphere.bottomRadiusKm + 2.0f; }
+        EXPECT_FALSE(document.setWorldEnvironment(invalid)) << invalidCase;
+        EXPECT_EQ(document.worldEnvironment(), world);
+        EXPECT_EQ(document.environmentSnapshot().weatherRevision, revisions.weatherRevision);
+        EXPECT_EQ(document.environmentSnapshot().astronomyRevision, revisions.astronomyRevision);
+    }
+    auto boundary = world;
+    boundary.weather.cloudTopAltitudeKm = boundary.atmosphere.topRadiusKm - boundary.atmosphere.bottomRadiusKm;
+    ASSERT_TRUE(document.setWorldEnvironment(boundary));
+    auto outside = boundary;
+    outside.weather.cloudTopAltitudeKm = std::nextafter(boundary.weather.cloudTopAltitudeKm,
+        std::numeric_limits<float>::infinity());
+    EXPECT_FALSE(document.setWorldEnvironment(outside));
+    EXPECT_EQ(document.worldEnvironment(), boundary);
+    for (int inactiveCase = 0; inactiveCase < 5; ++inactiveCase) {
+        auto inactive = outside;
+        if (inactiveCase == 0) { inactive.source = EnvironmentSource::HDRI; }
+        if (inactiveCase == 1) { inactive.weather.cloudEnabled = false; }
+        if (inactiveCase == 2) { inactive.weather.cloudCoverage = 0.0f; }
+        if (inactiveCase == 3) { inactive.weather.cloudDensity = 0.0f; }
+        if (inactiveCase == 4) { inactive.weather.cloudExtinctionPerKm = 0.0f; }
+        EXPECT_TRUE(document.setWorldEnvironment(inactive)) << inactiveCase;
+        EXPECT_EQ(document.worldEnvironment(), inactive);
+    }
+}
+
+TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLegacy)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    const auto directory = prepareOutputDirectory() / "dynamic_world_document";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(source));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    world.sun.enabled = world.moon.enabled = true;
+    world.time = {.julianDateUTC = 2460483.123456789, .timeScale = -120.25, .paused = false};
+    world.astronomy = {.mode = AstronomyMode::SimplifiedDayCycle, .latitudeDegrees = 35.678901234,
+        .longitudeDegrees = -122.345678901, .moonAlbedo = 0.18f};
+    world.weather = {.cloudEnabled = true, .cloudCoverage = 0.75f, .cloudDensity = 2.5f,
+        .cloudBaseAltitudeKm = 2.0f, .cloudTopAltitudeKm = 6.0f, .cloudExtinctionPerKm = 12.0f,
+        .aerosolDensity = 3.0f, .humidity = 0.8f, .precipitation = 0.6f, .windSpeed = 15.5f,
+        .windDirection = float2(-2.0f, 1.0f), .noiseSeed = UINT32_MAX};
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    EXPECT_FALSE(document.dirty());
+    nlohmann::json saved;
+    { std::ifstream stream(document.documentPath()); stream >> saved; }
+    EXPECT_EQ(saved["world"]["environment"]["astronomy"]["mode"], "simplifiedDayCycle");
+    EXPECT_DOUBLE_EQ(saved["world"]["environment"]["time"]["julianDateUTC"].get<double>(), world.time.julianDateUTC);
+    EXPECT_EQ(saved["world"]["environment"]["weather"]["noiseSeed"].get<uint32_t>(), UINT32_MAX);
+    EXPECT_FALSE(saved["world"]["environment"].contains("evaluatedAstronomy"));
+    EXPECT_FALSE(saved["world"]["environment"].contains("elapsedSeconds"));
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_EQ(restored.environmentSnapshot().authoredAtmosphere, world.atmosphere);
+    const auto evaluation = world.snapshot(1, 1, 0, 0, 0, 7200.0);
+    EXPECT_NE(evaluation.evaluatedAstronomy.julianDateUTC, world.time.julianDateUTC);
+    EXPECT_EQ(document.worldEnvironment(), world);
+    EXPECT_FALSE(document.dirty());
+    const auto identity = restored.resourceIdentity();
+    const std::array<nlohmann::json, 16> invalidSettings{
+        nlohmann::json{{"time", false}}, nlohmann::json{{"time", {{"julianDateUTC", 0.0}}}},
+        nlohmann::json{{"time", {{"paused", "false"}}}}, nlohmann::json{{"time", {{"timeScale", 1e10}}}},
+        nlohmann::json{{"astronomy", {{"mode", "ephemeris"}}}}, nlohmann::json{{"astronomy", {{"mode", 2}}}},
+        nlohmann::json{{"astronomy", {{"latitudeDegrees", 91.0}}}},
+        nlohmann::json{{"astronomy", {{"moonAlbedo", 1.1}}}},
+        nlohmann::json{{"weather", {{"cloudEnabled", 1}}}},
+        nlohmann::json{{"weather", {{"cloudBaseAltitudeKm", 10.0}, {"cloudTopAltitudeKm", 2.0}}}},
+        nlohmann::json{{"weather", {{"windDirection", {0.0, 0.0}}}}},
+        nlohmann::json{{"weather", {{"windDirection", {1.0, 2.0, 3.0}}}}},
+        nlohmann::json{{"weather", {{"noiseSeed", -1}}}},
+        nlohmann::json{{"weather", {{"noiseSeed", 4294967296.0}}}},
+        nlohmann::json{{"weather", {{"cloudTopAltitudeKm", 101.0}}}},
+        nlohmann::json{{"atmosphere", {{"topRadiusKm", 6364.0}}}},
+    };
+    for (const auto& invalid : invalidSettings) {
+        auto rejected = saved;
+        auto& rejectedEnvironment = rejected["world"]["environment"];
+        for (auto setting = invalid.begin(); setting != invalid.end(); ++setting) {
+            if (setting.value().is_object() && rejectedEnvironment[setting.key()].is_object()) {
+                rejectedEnvironment[setting.key()].update(setting.value());
+            } else {
+                rejectedEnvironment[setting.key()] = setting.value();
+            }
+        }
+        writeTextFile(document.documentPath(), rejected.dump(2));
+        EXPECT_FALSE(restored.load(document.documentPath())) << invalid.dump();
+        EXPECT_EQ(restored.worldEnvironment(), world);
+        EXPECT_EQ(restored.resourceIdentity(), identity);
+    }
+    auto boundaryDocument = saved;
+    boundaryDocument["world"]["environment"]["weather"]["cloudTopAltitudeKm"] = 100.0;
+    writeTextFile(document.documentPath(), boundaryDocument.dump(2));
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudTopAltitudeKm, 100.0f);
+    EXPECT_EQ(restored.worldEnvironment().source, EnvironmentSource::PhysicalAtmosphere);
+    const auto boundaryIdentity = restored.resourceIdentity();
+    auto outsideDocument = boundaryDocument;
+    outsideDocument["world"]["environment"]["weather"]["cloudTopAltitudeKm"] =
+        std::nextafter(100.0f, std::numeric_limits<float>::infinity());
+    writeTextFile(document.documentPath(), outsideDocument.dump(2));
+    EXPECT_FALSE(restored.load(document.documentPath()));
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudTopAltitudeKm, 100.0f);
+    EXPECT_EQ(restored.resourceIdentity(), boundaryIdentity);
+    for (int inactiveCase = 0; inactiveCase < 5; ++inactiveCase) {
+        auto inactive = saved;
+        auto& settings = inactive["world"]["environment"];
+        settings["weather"]["cloudTopAltitudeKm"] = 1000.0;
+        if (inactiveCase == 0) { settings["source"] = "hdri"; }
+        if (inactiveCase == 1) { settings["weather"]["cloudEnabled"] = false; }
+        if (inactiveCase == 2) { settings["weather"]["cloudCoverage"] = 0.0; }
+        if (inactiveCase == 3) { settings["weather"]["cloudDensity"] = 0.0; }
+        if (inactiveCase == 4) { settings["weather"]["cloudExtinctionPerKm"] = 0.0; }
+        writeTextFile(document.documentPath(), inactive.dump(2));
+        ASSERT_TRUE(restored.load(document.documentPath())) << inactiveCase << ": " << restored.documentWarning();
+        EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudTopAltitudeKm, 1000.0f);
+    }
+    auto legacy = saved;
+    for (const auto* name : {"time", "astronomy", "weather"}) { legacy["world"]["environment"].erase(name); }
+    writeTextFile(document.documentPath(), legacy.dump(2));
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment().time, EnvironmentTimeState{});
+    EXPECT_EQ(restored.worldEnvironment().astronomy, AstronomyState{});
+    EXPECT_EQ(restored.worldEnvironment().weather, WeatherState{});
+    EXPECT_EQ(restored.environmentSnapshot().celestial[0], world.sun);
+    EXPECT_EQ(restored.environmentSnapshot().celestial[1], world.moon);
+    EXPECT_EQ(restored.environmentSnapshot().atmosphere, world.atmosphere);
+}
+
+TEST(WorldEnvironment, DynamicWorldSampleLoadsAuthoredState)
+{
+    using namespace metallic::environment;
+    metallic::scene::SceneDocument document;
+    ASSERT_TRUE(document.load(std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json")) << document.documentWarning();
+    const auto& authored = document.worldEnvironment();
+    EXPECT_EQ(authored.source, EnvironmentSource::PhysicalAtmosphere);
+    EXPECT_EQ(authored.astronomy.mode, AstronomyMode::Astronomical);
+    EXPECT_FALSE(authored.time.paused);
+    EXPECT_TRUE(authored.sun.enabled && authored.moon.enabled);
+    EXPECT_TRUE(authored.weather.cloudEnabled);
+    EXPECT_GT(authored.weather.windSpeed, 0.0f);
+    EXPECT_TRUE(document.environmentSnapshot().evaluatedAstronomy.automatic);
+    EXPECT_FALSE(document.dirty());
+}
+
 TEST(WorldEnvironment, LegacyDirectionalMigratesToSunAndPersistsCelestialOnly)
 {
     using namespace metallic::scene;

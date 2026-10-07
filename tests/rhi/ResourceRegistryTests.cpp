@@ -2320,6 +2320,7 @@ public:
             {.binding = 59, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 100, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 101, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 63, .kind = ComputeResourceBindingKind::StorageBuffer}};
         ComputeProgram program;
         std::string log;
@@ -2335,8 +2336,8 @@ public:
         REG_REQUIRE(create(parameters, sizeof(GPUAtmosphereParameters), sizeof(GPUAtmosphereParameters)));
         REG_REQUIRE(create(aerial, 32, 16));
         REG_REQUIRE(create(primary, 32, 16));
-        REG_REQUIRE(create(output, 19 * 16, 16));
-        std::array<float, 48> expectedParameters;
+        REG_REQUIRE(create(output, 28 * 16, 16));
+        std::array<float, 80> expectedParameters;
         for (size_t i = 0; i < expectedParameters.size(); ++i) { expectedParameters[i] = float(i + 1); }
         const std::array<float, 8> expectedAerial{1, 2, 3, 4, 5, 6, 7, 8};
         const std::array<float, 8> expectedPrimary{9, 10, 11, 12, 13, 14, 15, 16};
@@ -2350,9 +2351,9 @@ public:
         REG_CHECK(upload(*parameters, expectedParameters));
         REG_CHECK(upload(*aerial, expectedAerial));
         REG_CHECK(upload(*primary, expectedPrimary));
-        std::array<std::unique_ptr<Texture>, 3> images;
-        std::array<std::unique_ptr<TextureView>, 3> views;
-        std::array<TextureBarrierDesc, 3> barriers;
+        std::array<std::unique_ptr<Texture>, 4> images;
+        std::array<std::unique_ptr<TextureView>, 4> views;
+        std::array<TextureBarrierDesc, 4> barriers;
         for (uint32_t i = 0; i < images.size(); ++i) {
             REG_REQUIRE(device.createTexture({.usage = TextureUsageBits::Sampled,
                 .format = Format::RGBA32Sfloat, .width = i * 2 + 2, .height = i * 2 + 3})
@@ -2376,6 +2377,7 @@ public:
             {.binding = 56, .buffer = parameters.get()}, {.binding = 57, .textureView = views[0].get()},
             {.binding = 58, .textureView = views[1].get()}, {.binding = 59, .textureView = views[2].get()},
             {.binding = 99, .buffer = aerial.get()}, {.binding = 100, .buffer = primary.get()},
+            {.binding = 101, .textureView = views[3].get()},
             {.binding = 63, .buffer = output.get()}};
         REG_REQUIRE(program.dispatch({.commandBuffer = recording.commands.get(), .bindings = resources}));
         REG_REQUIRE(recording.submit(tracker, *gate));
@@ -2383,20 +2385,20 @@ public:
         output->invalidate();
         const auto* values = static_cast<const float*>(output->map());
         REG_CHECK(values != nullptr);
-        std::array<float, 76> actual;
+        std::array<float, 112> actual;
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
         for (size_t i = 0; i < expectedParameters.size(); ++i) { REG_CHECK(actual[i] == expectedParameters[i]); }
-        for (size_t i = 0; i < 3; ++i) {
-            REG_CHECK(actual[48 + i * 4] == float(i * 2 + 2));
-            REG_CHECK(actual[49 + i * 4] == float(i * 2 + 3));
+        for (size_t i = 0; i < 4; ++i) {
+            REG_CHECK(actual[80 + i * 4] == float(i * 2 + 2));
+            REG_CHECK(actual[81 + i * 4] == float(i * 2 + 3));
         }
         for (size_t i = 0; i < 8; ++i) {
-            REG_CHECK(actual[60 + i] == expectedAerial[i]);
-            REG_CHECK(actual[68 + i] == expectedPrimary[i]);
+            REG_CHECK(actual[96 + i] == expectedAerial[i]);
+            REG_CHECK(actual[104 + i] == expectedPrimary[i]);
         }
         bench::readbackEvidence(context, "atmosphere-resources.bin", std::span<const float>(actual));
-        return RHITestResult::pass("192-byte atmosphere state, sampled LUT identities, aerial and NRC camera-segment bindings");
+        return RHITestResult::pass("320-byte atmosphere state including cloud/phase tail, LUT/cloud-shadow binding 101, aerial and primary camera-segment bindings");
     }
 };
 METALLIC_REGISTER_RHI_TEST(AtmosphereResourceParametersTest);

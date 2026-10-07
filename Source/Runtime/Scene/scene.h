@@ -472,7 +472,8 @@ public:
     const environment::WorldEnvironment& worldEnvironment() const { return worldEnvironment_; }
     environment::EnvironmentSnapshot environmentSnapshot() const
     {
-        return worldEnvironment_.snapshot(celestialRevision_, environmentLightingRevision_, atmosphereRevision_);
+        return worldEnvironment_.snapshot(celestialRevision_, environmentLightingRevision_, atmosphereRevision_,
+            weatherRevision_, astronomyRevision_);
     }
     uint64_t transformRevision() const { return sceneGraph_.transformRevision(); }
     // Only mesh-instance world transforms contribute. Track resource identity
@@ -488,6 +489,8 @@ protected:
     environment::WorldEnvironment worldEnvironment_;
     uint64_t celestialRevision_ = 1;
     uint64_t atmosphereRevision_ = 0;
+    uint64_t weatherRevision_ = 0;
+    uint64_t astronomyRevision_ = 0;
     uint64_t environmentLightingRevision_ = 1;
 
 private:

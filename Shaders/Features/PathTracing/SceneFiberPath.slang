@@ -16,7 +16,7 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
         let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
             getResourceParameters<SceneResourceParameters>().environment.celestialLights);
-        PunctualLightSample light = sampleCelestialLightAtPosition(celestial, celestialSlot, hit.position);
+        PunctualLightSample light = samplePathCelestialLightAtPosition(celestial, celestialSlot, hit.position, seed);
         if (!any(light.illuminance > 0.0)) { continue; }
         float3 scattering = max(prepared.evalProjected(light.direction), 0.0);
         if (luminanceMax(scattering * light.illuminance) > 0.0) {

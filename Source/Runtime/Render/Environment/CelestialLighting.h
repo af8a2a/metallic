@@ -33,6 +33,16 @@ static_assert(std::is_trivially_copyable_v<GPUCelestialLight>);
 
 using GPUCelestialLightRecords = std::array<GPUCelestialLight, environment::kCelestialLightCount>;
 
+struct CelestialShadowPlan {
+    uint32_t dominantIndex = 0xffffffffu;
+    uint32_t activeMask = 0;
+    std::array<uint32_t, environment::kCelestialLightCount> sampleCounts{};
+    std::array<float, environment::kCelestialLightCount> importance{};
+};
+
+CelestialShadowPlan buildCelestialShadowPlan(const environment::EnvironmentSnapshot& snapshot,
+    const std::array<double, 3>& observerWorldMetres);
+
 GPUCelestialLightRecords buildCelestialLightRecords(const environment::EnvironmentSnapshot& snapshot);
 
 // An override scene owns its Sun/Moon. Same-scene world edits and an explicit

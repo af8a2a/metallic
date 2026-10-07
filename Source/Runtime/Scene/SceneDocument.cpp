@@ -460,6 +460,110 @@ bool parseAtmosphere(const nlohmann::json& value, environment::AtmosphereState& 
     return true;
 }
 
+nlohmann::json serializeEnvironmentTime(const environment::EnvironmentTimeState& time)
+{
+    return {{"julianDateUTC", time.julianDateUTC}, {"timeScale", time.timeScale}, {"paused", time.paused}};
+}
+
+bool parseEnvironmentTime(const nlohmann::json& value, environment::EnvironmentTimeState& time, std::string& reason)
+{
+    if (!value.is_object() || (value.contains("paused") && !value["paused"].is_boolean())) {
+        reason = "time must be an object with a boolean paused field";
+        return false;
+    }
+    if (!readOptionalFiniteNumber(value, "julianDateUTC", time.julianDateUTC, reason) ||
+        !readOptionalFiniteNumber(value, "timeScale", time.timeScale, reason)) { return false; }
+    time.paused = value.value("paused", time.paused);
+    if (!environment::validEnvironmentTimeState(time)) {
+        reason = "invalid UTC Julian date (1900-2100) or signed playback scale";
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json serializeAstronomy(const environment::AstronomyState& astronomy)
+{
+    const char* mode = astronomy.mode == environment::AstronomyMode::Astronomical ? "astronomical" :
+        astronomy.mode == environment::AstronomyMode::SimplifiedDayCycle ? "simplifiedDayCycle" : "manual";
+    return {{"mode", mode}, {"latitudeDegrees", astronomy.latitudeDegrees},
+        {"longitudeDegrees", astronomy.longitudeDegrees}, {"moonAlbedo", astronomy.moonAlbedo}};
+}
+
+bool parseAstronomy(const nlohmann::json& value, environment::AstronomyState& astronomy, std::string& reason)
+{
+    if (!value.is_object()) { reason = "astronomy must be an object"; return false; }
+    if (value.contains("mode")) {
+        if (!value["mode"].is_string()) { reason = "astronomy.mode must be a string"; return false; }
+        const auto mode = value["mode"].get<std::string>();
+        if (mode == "manual") { astronomy.mode = environment::AstronomyMode::Manual; }
+        else if (mode == "simplifiedDayCycle") { astronomy.mode = environment::AstronomyMode::SimplifiedDayCycle; }
+        else if (mode == "astronomical") { astronomy.mode = environment::AstronomyMode::Astronomical; }
+        else { reason = "astronomy.mode must be manual, simplifiedDayCycle or astronomical"; return false; }
+    }
+    double albedo = astronomy.moonAlbedo;
+    if (!readOptionalFiniteNumber(value, "latitudeDegrees", astronomy.latitudeDegrees, reason) ||
+        !readOptionalFiniteNumber(value, "longitudeDegrees", astronomy.longitudeDegrees, reason) ||
+        !readOptionalFiniteNumber(value, "moonAlbedo", albedo, reason)) { return false; }
+    astronomy.moonAlbedo = static_cast<float>(albedo);
+    if (!environment::validAstronomyState(astronomy)) {
+        reason = "invalid astronomy mode, observer latitude/longitude or lunar albedo";
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json serializeWeather(const environment::WeatherState& weather)
+{
+    return {{"cloudEnabled", weather.cloudEnabled}, {"cloudCoverage", weather.cloudCoverage},
+        {"cloudDensity", weather.cloudDensity}, {"cloudBaseAltitudeKm", weather.cloudBaseAltitudeKm},
+        {"cloudTopAltitudeKm", weather.cloudTopAltitudeKm}, {"cloudExtinctionPerKm", weather.cloudExtinctionPerKm},
+        {"aerosolDensity", weather.aerosolDensity}, {"humidity", weather.humidity},
+        {"precipitation", weather.precipitation}, {"windSpeed", weather.windSpeed},
+        {"windDirection", {weather.windDirection.x, weather.windDirection.y}}, {"noiseSeed", weather.noiseSeed}};
+}
+
+bool parseWeather(const nlohmann::json& value, environment::WeatherState& weather, std::string& reason)
+{
+    if (!value.is_object() || (value.contains("cloudEnabled") && !value["cloudEnabled"].is_boolean())) {
+        reason = "weather must be an object with a boolean cloudEnabled field";
+        return false;
+    }
+    weather.cloudEnabled = value.value("cloudEnabled", weather.cloudEnabled);
+    const std::pair<const char*, float*> scalars[] = {
+        {"cloudCoverage", &weather.cloudCoverage}, {"cloudDensity", &weather.cloudDensity},
+        {"cloudBaseAltitudeKm", &weather.cloudBaseAltitudeKm}, {"cloudTopAltitudeKm", &weather.cloudTopAltitudeKm},
+        {"cloudExtinctionPerKm", &weather.cloudExtinctionPerKm}, {"aerosolDensity", &weather.aerosolDensity},
+        {"humidity", &weather.humidity}, {"precipitation", &weather.precipitation}, {"windSpeed", &weather.windSpeed},
+    };
+    for (const auto& [name, destination] : scalars) {
+        double number = *destination;
+        if (!readOptionalFiniteNumber(value, name, number, reason)) { return false; }
+        *destination = static_cast<float>(number);
+    }
+    if (value.contains("windDirection")) {
+        const auto& wind = value["windDirection"];
+        if (!wind.is_array() || wind.size() != 2 || !wind[0].is_number() || !wind[1].is_number()) {
+            reason = "windDirection must be a finite two-number array in horizontal ENU X/Z";
+            return false;
+        }
+        weather.windDirection = float2(wind[0].get<float>(), wind[1].get<float>());
+    }
+    if (value.contains("noiseSeed")) {
+        const auto& seed = value["noiseSeed"];
+        if (!seed.is_number_integer() || seed.get<double>() < 0.0 ||
+            seed.get<double>() > double(std::numeric_limits<uint32_t>::max())) {
+            reason = "noiseSeed must be an unsigned 32-bit integer";
+            return false;
+        }
+        weather.noiseSeed = seed.get<uint32_t>();
+    }
+    if (!environment::validWeatherState(weather)) {
+        reason = "invalid cloud layer, coverage/density, aerosol/humidity, precipitation or wind";
+        return false;
+    }
+    return true;
+}
+
 bool isSceneDocumentPath(const std::filesystem::path& path)
 {
     const std::string filename = path.filename().string();
@@ -1104,12 +1208,20 @@ bool SceneDocument::setWorldEnvironment(environment::WorldEnvironment environmen
     if (!environment::validWorldEnvironment(environment) || worldEnvironment_ == environment) {
         return false;
     }
-    if (!(worldEnvironment_.sun == environment.sun) || !(worldEnvironment_.moon == environment.moon)) {
+    const auto previous = worldEnvironment_.snapshot();
+    const auto next = environment.snapshot();
+    if (!(worldEnvironment_.sun == environment.sun) || !(worldEnvironment_.moon == environment.moon) ||
+        previous.celestial != next.celestial) {
         ++celestialRevision_;
     }
-    if (worldEnvironment_.source != environment.source || !(worldEnvironment_.atmosphere == environment.atmosphere)) {
+    if (worldEnvironment_.source != environment.source || !(worldEnvironment_.atmosphere == environment.atmosphere) ||
+        !(previous.atmosphere == next.atmosphere)) {
         ++atmosphereRevision_;
     }
+    if (!(worldEnvironment_.time == environment.time) || !(worldEnvironment_.astronomy == environment.astronomy)) {
+        ++astronomyRevision_;
+    }
+    if (!(worldEnvironment_.weather == environment.weather)) { ++weatherRevision_; }
     worldEnvironment_ = std::move(environment);
     ++environmentLightingRevision_;
     dirty_ = true;
@@ -1468,6 +1580,27 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                             return false;
                         }
                     }
+                    if (environment.contains("time")) {
+                        std::string reason;
+                        if (!parseEnvironmentTime(environment["time"], worldEnvironment_.time, reason)) {
+                            documentWarning_ = "Invalid world.environment.time: " + reason;
+                            return false;
+                        }
+                    }
+                    if (environment.contains("astronomy")) {
+                        std::string reason;
+                        if (!parseAstronomy(environment["astronomy"], worldEnvironment_.astronomy, reason)) {
+                            documentWarning_ = "Invalid world.environment.astronomy: " + reason;
+                            return false;
+                        }
+                    }
+                    if (environment.contains("weather")) {
+                        std::string reason;
+                        if (!parseWeather(environment["weather"], worldEnvironment_.weather, reason)) {
+                            documentWarning_ = "Invalid world.environment.weather: " + reason;
+                            return false;
+                        }
+                    }
                     for (const auto& [name, destination] : {
                             std::pair{"sun", &worldEnvironment_.sun}, std::pair{"moon", &worldEnvironment_.moon}}) {
                         if (!environment.contains(name)) { continue; }
@@ -1779,6 +1912,10 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
         appendWarning(documentWarning_, "Migrated legacy directional light '" + legacySun->name +
             "' to world.environment.sun; save the document to persist this migration.");
     }
+    if (!environment::validWorldEnvironment(worldEnvironment_)) {
+        documentWarning_ = "Invalid world.environment: active physical clouds must fit inside the atmosphere shell.";
+        return false;
+    }
     sidecarLoaded_ = true;
     return true;
 }
@@ -1976,6 +2113,9 @@ bool SceneDocument::save(std::string& message)
             {"source", worldEnvironment_.source == environment::EnvironmentSource::PhysicalAtmosphere
                 ? "physicalAtmosphere" : "hdri"},
             {"atmosphere", serializeAtmosphere(worldEnvironment_.atmosphere)},
+            {"time", serializeEnvironmentTime(worldEnvironment_.time)},
+            {"astronomy", serializeAstronomy(worldEnvironment_.astronomy)},
+            {"weather", serializeWeather(worldEnvironment_.weather)},
             {"sun", serializeCelestialLight(worldEnvironment_.sun)},
             {"moon", serializeCelestialLight(worldEnvironment_.moon)},
             {"enabled", environment_.enabled},

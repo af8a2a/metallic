@@ -3,6 +3,8 @@ implementing Lighting;
 
 import Core;
 import Atmosphere;
+import AtmosphereTypes;
+import Clouds;
 using Metallic;
 
 namespace Metallic.Lighting
@@ -26,9 +28,13 @@ public PunctualLightSample sampleCelestialLightAtPosition(StructuredBuffer<GPUCe
     GPUAtmosphereParameters atmosphere;
     let resources = getResourceParameters<SceneResourceParameters>().environment;
     if (resources.transmittance.index != 0xffffffffu && loadPhysicalAtmosphere(resources, atmosphere)) {
+        float3 positionKm = Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, worldPosition);
+        float cloudT = resources.cloudShadow.index != 0xffffffffu ?
+            Metallic.Atmosphere::cloudShadowTransmittance(atmosphere, resolveUniform(resources.cloudShadow), positionKm, slot) :
+            Metallic.Clouds::transmittance(atmosphere, positionKm,
+                slot == 0u ? atmosphere.sunDirectionRadius.xyz : atmosphere.moonDirectionRadius.xyz);
         result.illuminance = Metallic.Atmosphere::solarIrradiance(atmosphere,
-            resolveUniform(resources.transmittance),
-            Metallic.Atmosphere::worldToAtmosphereKm(atmosphere, worldPosition), slot);
+            resolveUniform(resources.transmittance), positionKm, slot, cloudT);
     }
     return result;
 }

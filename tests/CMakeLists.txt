@@ -301,6 +301,7 @@ add_executable(MetallicSceneTests
     scene/MeshletBuildParallelTests.cpp
     scene/MeshletReferenceSceneBuildTests.cpp
     scene/Main.cpp
+    scene/AstronomyTests.cpp
     scene/SceneGraphTests.cpp
 )
 
@@ -445,6 +446,10 @@ add_executable(MetallicRHITests
     rhi/AtmosphereTests.cpp
     rhi/PhysicalEnvironmentRenderingTests.cpp
     rhi/PhysicalEnvironmentProviderTests.cpp
+    rhi/DynamicWorldRenderingTests.cpp
+    rhi/DynamicWorldStateTests.cpp
+    rhi/CloudsTests.cpp
+    rhi/FiniteCelestialTests.cpp
     rhi/RealtimePipelineTests.cpp
     rhi/EnvironmentPrefilterTests.cpp
     rhi/HybridRasterTests.cpp

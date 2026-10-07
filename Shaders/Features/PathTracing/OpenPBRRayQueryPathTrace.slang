@@ -233,8 +233,8 @@ struct PathSurfaceLights : ISurfaceLightProvider
     {
         SurfaceLightSample result = (SurfaceLightSample)0;
         if (index < kCelestialLightCount) {
-            PunctualLightSample light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, hit.position);
+            PunctualLightSample light = samplePathCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, hit.position, seed);
             result.direction = light.direction;
             result.illuminance = light.illuminance;
             result.distance = light.distance;
@@ -312,7 +312,12 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             float misWeight = depth == 0u
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
-            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
+            float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
+            if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
+                missRadiance += physicalDeltaMissDisks(getResourceParameters<SceneResourceParameters>().environment,
+                    ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
+            }
+            radiance += throughput * missRadiance;
             break;
         }
         if (captureSpecularHitDistance) {
@@ -388,8 +393,9 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         lights.interiorStack = interiorStack;
         lights.viewDirection = viewDirection;
         lights.seed = seed;
-        // Delta light sources use MIS weight one. The shared kernel retains
-        // the original throughput-first multiplication and selection PDF.
+        // The environment proposal and ordinary secondary BSDF miss exclude
+        // celestial disks, so their separate finite NEE estimator has weight one.
+        // Local delta sources retain their source-selection PDF.
         radiance = integrateDirectLighting(prepared, lights, radiance, throughput);
         seed = lights.seed;
 

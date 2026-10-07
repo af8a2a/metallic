@@ -26,5 +26,5 @@ void environmentCaptureMain(uint3 id : SV_DispatchThreadID)
         }
         radiance /= max(total, 1e-8);
     }
-    resolveUniform(gParams.output)[id.xy] = float4(clamp(radiance, 0.0, 65504.0), 1.0);
+    resolveUniform(gParams.output)[id.xy] = float4(max(radiance, 0.0), 1.0);
 }
