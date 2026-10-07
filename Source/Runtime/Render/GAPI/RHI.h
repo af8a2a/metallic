@@ -1806,6 +1806,10 @@ class CommandBuffer {
     // Record compute-only instrumentation, restoring the compute pipeline,
     // descriptor heap and shared push data before returning. No rendering scope.
     Result<> recordIsolatedCompute(const std::function<Result<>()>& record);
+    // Direct draw/dispatch calls require active recording and a compatible queue first.
+    // A zero vertex/instance count or group dimension then succeeds without recording work,
+    // even when the optional mesh feature is unavailable. Non-empty unsupported work returns Unsupported.
+    // This no-op rule does not apply to zero-sized copy regions or AS build descriptions.
     [[nodiscard]] Result<> draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
     // Direct mesh dispatch for CPU-known counts; distinct from GPU-generated indirect draws.
     [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);

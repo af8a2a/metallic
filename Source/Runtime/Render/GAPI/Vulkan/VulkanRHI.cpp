@@ -4426,6 +4426,18 @@ QueueAccessBits CommandBuffer::queueCapabilities() const
     return result;
 }
 
+namespace {
+
+// Recording state and queue compatibility are argument errors, independent of optional device features.
+bool validCommandRecording(const detail::CommandBufferImpl* commandBuffer, bool recording,
+    VkQueueFlags supportedQueues = 0)
+{
+    return commandBuffer && recording &&
+        (!supportedQueues || (commandBuffer->queueFlags & supportedQueues));
+}
+
+} // namespace
+
 Result<> CommandBuffer::begin(std::shared_ptr<CommandSubmissionContext> context)
 {
     if (impl_ == nullptr || (context && !context->recording()) ||
@@ -4469,7 +4481,7 @@ Result<> CommandBuffer::begin(std::shared_ptr<CommandSubmissionContext> context)
 
 Result<> CommandBuffer::end()
 {
-    if (impl_ == nullptr || !recording_ || !submission_) {
+    if (!validCommandRecording(impl_.get(), recording_) || !submission_) {
         return makeError(Error::InvalidArgument);
     }
     Result<> result = resultFromVk(impl_->device->functions.vkEndCommandBuffer(impl_->commandBuffer));
@@ -4482,7 +4494,7 @@ Result<> CommandBuffer::end()
 
 void CommandBuffer::beginDebugLabel(const DebugLabelDesc& desc)
 {
-    if (impl_ == nullptr ||
+    if (!validCommandRecording(impl_.get(), recording_) ||
         impl_->device == nullptr ||
         impl_->device->cmdBeginDebugUtilsLabel == nullptr ||
         desc.name == nullptr ||
@@ -4505,7 +4517,7 @@ void CommandBuffer::beginDebugLabel(const DebugLabelDesc& desc)
 
 void CommandBuffer::endDebugLabel()
 {
-    if (impl_ == nullptr ||
+    if (!validCommandRecording(impl_.get(), recording_) ||
         impl_->device == nullptr ||
         impl_->device->cmdEndDebugUtilsLabel == nullptr) {
         return;
@@ -4519,10 +4531,9 @@ Result<> CommandBuffer::resetTimestampQueries(
     uint32_t firstQuery,
     uint32_t queryCount)
 {
-    if (impl_ == nullptr ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) ||
         queryPool.impl_ == nullptr ||
         impl_->device != queryPool.impl_->device ||
-        (impl_->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0 ||
         queryCount == 0 ||
         firstQuery >= queryPool.impl_->desc.queryCount ||
         queryCount > queryPool.impl_->desc.queryCount - firstQuery) {
@@ -4542,7 +4553,7 @@ Result<> CommandBuffer::writeTimestamp(
     uint32_t queryIndex,
     PipelineStageBits stage)
 {
-    if (impl_ == nullptr ||
+    if (!validCommandRecording(impl_.get(), recording_) ||
         queryPool.impl_ == nullptr ||
         impl_->device != queryPool.impl_->device ||
         queryPool.impl_->queueFamilyIndex != impl_->queueFamilyIndex ||
@@ -4568,8 +4579,7 @@ Result<> CommandBuffer::resetRayTracingAccelerationStructureCompactionQueries(
     uint32_t firstQuery,
     uint32_t queryCount)
 {
-    if (impl_ == nullptr ||
-        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
         queryPool.impl_ == nullptr ||
         impl_->device != queryPool.impl_->device ||
         queryCount == 0 ||
@@ -4595,8 +4605,7 @@ Result<> CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
     uint32_t queryIndex,
     RayTracingAccelerationStructure& accelerationStructure)
 {
-    if (impl_ == nullptr ||
-        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
         queryPool.impl_ == nullptr ||
         impl_->device != queryPool.impl_->device ||
         queryIndex >= queryPool.impl_->desc.queryCount ||
@@ -4647,7 +4656,7 @@ SynchronizationStats CommandBuffer::synchronizationStats() const
 
 Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
 {
-    if (!impl_ || !recording_ || (desc.textures.size() > UINT32_MAX) ||
+    if (!validCommandRecording(impl_.get(), recording_) || (desc.textures.size() > UINT32_MAX) ||
         (desc.buffers.size() > UINT32_MAX) || (desc.memory.size() > UINT32_MAX) ||
         (desc.accelerationStructures.size() > UINT32_MAX)) {
         return makeError(Error::InvalidArgument);
@@ -4749,7 +4758,7 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
 
 Result<> CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice& destination)
 {
-    if (!impl_ || !recording_ || !(impl_->queueFlags & (VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) ||
         !source.validate(deviceIdentity(), BufferUsageBits::TransferSource) ||
         !destination.validate(deviceIdentity(), BufferUsageBits::TransferDestination) || source.size() != destination.size()) {
         return makeError(Error::InvalidArgument);
@@ -4844,8 +4853,10 @@ Result<> uploadBufferSlice(const BufferSlice& slice, const void* data, uint64_t 
 Result<std::vector<VkDecompressMemoryRegionEXT>> prepareDecompressionRegions(
     const detail::CommandBufferImpl* commands, bool recording, std::span<const BufferDecompressionDesc> regions)
 {
-    if (!commands || !recording || !commands->device->capabilities.memoryDecompression ||
-        !(commands->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
+    if (!validCommandRecording(commands, recording, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!commands->device->capabilities.memoryDecompression) {
         return makeError(Error::Unsupported);
     }
     if (regions.empty()) { return std::vector<VkDecompressMemoryRegionEXT>{}; }
@@ -4908,7 +4919,7 @@ Result<> CommandBuffer::validateDecompressionBuffers(std::span<const BufferDecom
 
 Result<> CommandBuffer::copyTexture(const TextureCopyDesc& desc)
 {
-    if (impl_ == nullptr || !recording_ ||
+    if (!validCommandRecording(impl_.get(), recording_) ||
         desc.source == nullptr ||
         desc.source->impl_ == nullptr ||
         desc.destination == nullptr ||
@@ -4979,7 +4990,7 @@ Result<> CommandBuffer::copyBufferToTexture(const BufferTextureRegion& region)
 
 Result<> CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, BufferTextureCopyDirection direction)
 {
-    if (impl_ == nullptr || !recording_ ||
+    if (!validCommandRecording(impl_.get(), recording_) ||
         desc.texture == nullptr ||
         desc.texture->impl_ == nullptr ||
         desc.width == 0 ||
@@ -5034,7 +5045,7 @@ Result<> CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, Buffe
 
 void CommandBuffer::hostWriteBarrier()
 {
-    if (impl_ == nullptr) {
+    if (!validCommandRecording(impl_.get(), recording_)) {
         return;
     }
     const VkMemoryBarrier2 barrier{
@@ -5055,7 +5066,7 @@ void CommandBuffer::hostWriteBarrier()
 
 Result<> CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color)
 {
-    if (impl_ == nullptr || !recording_ || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE ||
+    if (!validCommandRecording(impl_.get(), recording_) || texture.impl_ == nullptr || texture.impl_->image == VK_NULL_HANDLE ||
         texture.impl_->device != impl_->device ||
         (layout != TextureLayout::TransferDestination && layout != TextureLayout::General)) {
         return makeError(Error::InvalidArgument);
@@ -5085,14 +5096,14 @@ Result<> CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout
 
 Result<> CommandBuffer::useNativeTextureView(TextureView& view)
 {
-    if (!impl_ || !recording_ || view.deviceIdentity() != deviceIdentity()) { return makeError(Error::InvalidArgument); }
+    if (!validCommandRecording(impl_.get(), recording_) || view.deviceIdentity() != deviceIdentity()) { return makeError(Error::InvalidArgument); }
     auto result = view.impl_->materialize();
     return result ? retainResource(view.impl_) : result;
 }
 
 Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
 {
-    if (impl_ == nullptr || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return makeError(Error::InvalidArgument);
     }
     if ((desc.colorAttachments.size() > UINT32_MAX) ||
@@ -5163,7 +5174,7 @@ Result<> CommandBuffer::beginRendering(const RenderingDesc& desc)
 
 void CommandBuffer::clearColorAttachment(uint32_t attachmentIndex, const ColorValue& color, const Rect& rect)
 {
-    if (impl_ == nullptr) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return;
     }
 
@@ -5189,7 +5200,7 @@ void CommandBuffer::clearColorAttachment(uint32_t attachmentIndex, const ColorVa
 
 void CommandBuffer::endRendering()
 {
-    if (impl_ != nullptr) {
+    if (validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         impl_->device->functions.vkCmdEndRendering(impl_->commandBuffer);
         observeRHICommand(RHICommandEvent::EndRendering, this);
     }
@@ -5197,7 +5208,7 @@ void CommandBuffer::endRendering()
 
 Result<> CommandBuffer::setViewport(const Viewport& viewport)
 {
-    if (impl_ == nullptr || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -5227,7 +5238,7 @@ Result<> CommandBuffer::setViewport(const Viewport& viewport)
 
 void CommandBuffer::setScissor(const Rect& scissor)
 {
-    if (impl_ == nullptr) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return;
     }
 
@@ -5245,7 +5256,7 @@ void CommandBuffer::setScissor(const Rect& scissor)
 
 void CommandBuffer::setDepthStencilState(const DepthStencilState& state)
 {
-    if (impl_ == nullptr) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return;
     }
 
@@ -5308,12 +5319,6 @@ void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
 
 // Descriptor indices in the payload are already relative to the bound heap.
 // Push the exact caller ABI from byte zero; no backend header is prepended.
-bool validCommandRecording(const detail::CommandBufferImpl* commandBuffer, bool recording,
-    VkQueueFlags supportedQueues)
-{
-    return commandBuffer && recording && (commandBuffer->queueFlags & supportedQueues);
-}
-
 bool validPushData(const detail::CommandBufferImpl& commandBuffer, const void* data, uint32_t byteSize)
 {
     return (!byteSize || data) && !(byteSize & 3u) &&
@@ -5556,8 +5561,8 @@ Result<> CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
 
 Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& record)
 {
-    if (!impl_ || !recording_ || !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-        return makeError(Error::Unsupported);
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) || !record) {
+        return makeError(Error::InvalidArgument);
     }
     const auto pipeline = impl_->currentComputePipeline;
     const auto layout = impl_->currentComputePipelineLayout;
@@ -5585,9 +5590,10 @@ Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& r
 
 Result<> CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 {
-    if (!impl_ || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return makeError(Error::InvalidArgument);
     }
+    if (!vertexCount || !instanceCount) { return {}; }
     impl_->device->functions.vkCmdDraw(impl_->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
     observeRHICommand(RHICommandEvent::Draw, this);
     return {};
@@ -5595,10 +5601,10 @@ Result<> CommandBuffer::draw(uint32_t vertexCount, uint32_t instanceCount, uint3
 
 Result<> CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 {
-    if (impl_ == nullptr || !recording_ || groupCountX == 0 || groupCountY == 0 || groupCountZ == 0 ||
-        !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT)) {
         return makeError(Error::InvalidArgument);
     }
+    if (!groupCountX || !groupCountY || !groupCountZ) { return {}; }
 #ifdef VK_EXT_mesh_shader
     if (!impl_->device->capabilities.meshShader || impl_->device->functions.vkCmdDrawMeshTasksEXT == nullptr) {
         return makeError(Error::Unsupported);
@@ -5613,7 +5619,7 @@ Result<> CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY
 
 Result<> CommandBuffer::drawMeshTasksIndirect(const BufferSlice& arguments)
 {
-    if (!impl_ || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT) ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_GRAPHICS_BIT) ||
         !arguments.validate(deviceIdentity(), BufferUsageBits::Indirect, 4, sizeof(VkDrawMeshTasksIndirectCommandEXT))) {
         return makeError(Error::InvalidArgument);
     }
@@ -5669,8 +5675,7 @@ Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
 Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     const RayTracingAccelerationStructureBuildDesc& desc)
 {
-    if (impl_ == nullptr || !recording_ ||
-        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
         desc.destination == nullptr ||
         desc.destination->impl_ == nullptr || !desc.destination->valid() ||
         desc.destination->impl_->device != impl_->device ||
@@ -5973,8 +5978,7 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
     RayTracingAccelerationStructure& source,
     RayTracingAccelerationStructure& destination)
 {
-    if (impl_ == nullptr ||
-        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
         source.impl_ == nullptr || destination.impl_ == nullptr ||
         source.impl_.get() == destination.impl_.get() ||
         source.impl_->device != impl_->device || destination.impl_->device != impl_->device ||
@@ -6036,18 +6040,18 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
 Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
     const ClusterAccelerationStructureTriangleBuildDesc& desc)
 {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT)) {
+        return makeError(Error::InvalidArgument);
+    }
 #ifndef VK_NV_cluster_acceleration_structure
     (void)desc;
     return makeError(Error::Unsupported);
 #else
-    if (impl_ == nullptr ||
-        impl_->device == nullptr ||
-        !impl_->device->capabilities.clusterAccelerationStructure ||
+    if (!impl_->device->capabilities.clusterAccelerationStructure ||
         impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
-    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
-        desc.clusters.empty() || desc.clusters.size() > UINT32_MAX ||
+    if (desc.clusters.empty() || desc.clusters.size() > UINT32_MAX ||
         !desc.maxClusterTriangleCount || !desc.maxClusterVertexCount ||
         !desc.maxClusterUniqueGeometryCount || desc.vertexFormat == Format::Unknown) {
         return makeError(Error::InvalidArgument);
@@ -6254,15 +6258,17 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 
 Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc)
 {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT)) {
+        return makeError(Error::InvalidArgument);
+    }
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
 #else
-    if (!impl_ || !impl_->device || !impl_->device->capabilities.clusterAccelerationStructure) {
+    if (!impl_->device->capabilities.clusterAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
     const uint64_t arrayBytes = uint64_t(desc.objects.size()) * sizeof(uint64_t);
-    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
-        desc.objects.empty() || desc.objects.size() > UINT32_MAX ||
+    if (desc.objects.empty() || desc.objects.size() > UINT32_MAX ||
         !validCommandSlice(*impl_, desc.sourceAddressBuffer, BufferUsageBits::AccelerationStructureBuildInput, arrayBytes, 8) ||
         !validCommandSlice(*impl_, desc.destinationAddressBuffer, BufferUsageBits::AccelerationStructureStorage, arrayBytes, 8) ||
         detail::BufferAddressCommandAccess::overlap(desc.sourceAddressBuffer, desc.destinationAddressBuffer)) {
@@ -6355,17 +6361,18 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
 Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
     const ClusterAccelerationStructureBottomLevelBuildDesc& desc)
 {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT)) {
+        return makeError(Error::InvalidArgument);
+    }
 #ifndef VK_NV_cluster_acceleration_structure
     (void)desc;
     return makeError(Error::Unsupported);
 #else
-    if (impl_ == nullptr || impl_->device == nullptr ||
-        !impl_->device->capabilities.clusterAccelerationStructure ||
+    if (!impl_->device->capabilities.clusterAccelerationStructure ||
         impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
-    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
-        !desc.maxClusterCountPerAccelerationStructure || !desc.maxTotalClusterCount || !desc.maxAccelerationStructureCount ||
+    if (!desc.maxClusterCountPerAccelerationStructure || !desc.maxTotalClusterCount || !desc.maxAccelerationStructureCount ||
         desc.buildInfoStride > UINT64_MAX / desc.maxAccelerationStructureCount ||
         desc.destinationAddressStride > UINT64_MAX / desc.maxAccelerationStructureCount ||
         desc.destinationSizeStride > UINT64_MAX / desc.maxAccelerationStructureCount ||
@@ -6465,17 +6472,18 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
 Result<> CommandBuffer::buildPartitionedAccelerationStructure(
     const PartitionedAccelerationStructureBuildDesc& desc)
 {
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT)) {
+        return makeError(Error::InvalidArgument);
+    }
 #ifndef VK_NV_partitioned_acceleration_structure
     (void)desc;
     return makeError(Error::Unsupported);
 #else
-    if (impl_ == nullptr || impl_->device == nullptr ||
-        !impl_->device->capabilities.partitionedAccelerationStructure ||
+    if (!impl_->device->capabilities.partitionedAccelerationStructure ||
         impl_->device->functions.vkCmdBuildPartitionedAccelerationStructuresNV == nullptr) {
         return makeError(Error::Unsupported);
     }
-    if (!recording_ || (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
-        desc.destination == nullptr || desc.destination->impl_ == nullptr ||
+    if (desc.destination == nullptr || desc.destination->impl_ == nullptr ||
         !desc.destination->valid() ||
         desc.destination->desc().topLevelBackend != RayTracingTopLevelBackend::Partitioned ||
         !desc.destination->impl_->partitioned ||

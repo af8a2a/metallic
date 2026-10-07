@@ -1,6 +1,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
+#include "Runtime/Render/GAPI/RHIEvents.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
@@ -534,6 +535,22 @@ public:
         Texture emptyTexture;
         Buffer emptyBuffer;
         const Viewport viewport{0, 0, 16, 16, 0, 1};
+        const auto invalidRecording = [&](CommandBuffer& command) {
+            bool called = false;
+            const auto isolated = command.recordIsolatedCompute([&]() -> Result<> { called = true; return {}; });
+            return !called && hasError(isolated, Error::InvalidArgument) &&
+                hasError(command.draw(0), Error::InvalidArgument) &&
+                hasError(command.draw(1, 0), Error::InvalidArgument) &&
+                hasError(command.drawMeshTasks(0), Error::InvalidArgument) &&
+                hasError(command.dispatch(0), Error::InvalidArgument) &&
+                hasError(command.decompressBuffers({}), Error::InvalidArgument) &&
+                hasError(command.buildClusterAccelerationStructureTriangles({}), Error::InvalidArgument) &&
+                hasError(command.moveClusterAccelerationStructures({}), Error::InvalidArgument) &&
+                hasError(command.buildClusterAccelerationStructureBottomLevels({}), Error::InvalidArgument) &&
+                hasError(command.buildPartitionedAccelerationStructure({}), Error::InvalidArgument);
+        };
+        if (!invalidRecording(empty)) { return RHITestResult::fail("empty recording preconditions differ"); }
+
         if (!hasError(empty.copyTexture({}), Error::InvalidArgument) ||
             !hasError(empty.copyTextureToBuffer({}), Error::InvalidArgument) ||
             !hasError(empty.copyBufferToTexture({}), Error::InvalidArgument) ||
@@ -556,6 +573,13 @@ public:
             .usage = BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination | BufferUsageBits::Indirect});
         if (!commands || !texture || !buffer) { return RHITestResult::fail("command test resource setup failed"); }
         auto& command = **commands;
+        auto queries = (*device)->createTimestampQueryPool(*(*device)->getQueue(QueueType::Graphics), {.queryCount = 2});
+        if (!queries) { return RHITestResult::fail(resultToString(queries)); }
+        const auto invalidQueries = [&] {
+            return hasError(command.resetTimestampQueries(**queries, 0, 2), Error::InvalidArgument) &&
+                hasError(command.writeTimestamp(**queries, 0, PipelineStageBits::AllCommands), Error::InvalidArgument);
+        };
+        if (!invalidQueries()) { return RHITestResult::fail("timestamp commands accepted unbegun recording"); }
         auto full = (*buffer)->slice();
         auto emptyRange = (*buffer)->slice({1024, 0});
         auto shortRange = (*buffer)->slice({0, 1020});
@@ -570,7 +594,33 @@ public:
             !hasError(command.draw(3), Error::InvalidArgument)) {
             return RHITestResult::fail("commands outside recording did not report InvalidArgument");
         }
+        if (!invalidRecording(command)) { return RHITestResult::fail("unbegun recording preconditions differ"); }
         if (!command.begin()) { return RHITestResult::fail("begin failed"); }
+        // No pipeline or rendering scope is bound: accidentally emitting native work also fails validation.
+        uint32_t events = 0;
+        struct ObserverScope {
+            RHICommandObserver previous = rhiCommandObserver;
+            ~ObserverScope() { rhiCommandObserver = previous; }
+        };
+        {
+            ObserverScope observer;
+            rhiCommandObserver = {&events, [](void* count, RHICommandEvent, const void*) {
+                ++*static_cast<uint32_t*>(count);
+            }};
+            if (!command.draw(0) || !command.draw(1, 0) ||
+                !command.drawMeshTasks(0, 1, 1) || !command.drawMeshTasks(1, 0, 1) ||
+                !command.drawMeshTasks(1, 1, 0) || !command.dispatch(0, 1, 1) ||
+                !command.dispatch(1, 0, 1) || !command.dispatch(1, 1, 0) || events != 0) {
+                return RHITestResult::fail("empty work did not succeed without native commands or observer events");
+            }
+        }
+        bool called = false;
+        if (!hasError(command.recordIsolatedCompute({}), Error::InvalidArgument) ||
+            !hasError(command.recordIsolatedCompute([&]() -> Result<> {
+                called = true; return makeError(Error::OutOfMemory);
+            }), Error::OutOfMemory) || !called) {
+            return RHITestResult::fail("isolated compute callback validation or error propagation failed");
+        }
         auto zeroExtent = valid; zeroExtent.width = 0;
         auto badOffset = valid; badOffset.buffer = *emptyRange;
         auto badPitch = valid; badPitch.bufferRowPitch = 1;
@@ -593,8 +643,7 @@ public:
                 return RHITestResult::fail("invalid viewport did not report InvalidArgument");
             }
         }
-        if (!hasError(command.drawMeshTasks(0), Error::InvalidArgument) ||
-            !hasError(command.drawMeshTasks(1), Error::Unsupported) ||
+        if (!hasError(command.drawMeshTasks(1), Error::Unsupported) ||
             !hasError(command.drawMeshTasksIndirect(*unaligned), Error::InvalidArgument) ||
             !hasError(command.drawMeshTasksIndirect(*shortIndirect), Error::InvalidArgument) ||
             !hasError(command.drawMeshTasksIndirect(*full), Error::Unsupported)) {
@@ -616,6 +665,26 @@ public:
             !hasError(command.setViewport(viewport), Error::InvalidArgument) ||
             !hasError(command.draw(3), Error::InvalidArgument)) {
             return RHITestResult::fail("valid viewport or completed recording contract failed");
+        }
+        if (!invalidRecording(command) || !invalidQueries()) {
+            return RHITestResult::fail("ended recording preconditions differ");
+        }
+        if (auto* copyQueue = (*device)->getQueue(QueueType::Copy)) {
+            auto copyPool = (*device)->createCommandPool(*copyQueue);
+            if (!copyPool) { return RHITestResult::fail(resultToString(copyPool)); }
+            auto copyCommands = (*copyPool)->createCommandBuffer();
+            if (!copyCommands || !(**copyCommands).begin()) { return RHITestResult::fail("copy recording setup failed"); }
+            auto& copy = **copyCommands;
+            const auto capabilities = copy.queueCapabilities();
+            if ((!hasFlag(capabilities, QueueAccessBits::Graphics) &&
+                    (!hasError(copy.draw(0), Error::InvalidArgument) ||
+                     !hasError(copy.drawMeshTasks(0), Error::InvalidArgument))) ||
+                (!hasFlag(capabilities, QueueAccessBits::Compute) &&
+                    (!hasError(copy.dispatch(0), Error::InvalidArgument) ||
+                     !hasError(copy.recordIsolatedCompute([]() -> Result<> { return {}; }), Error::InvalidArgument))) ||
+                !copy.end()) {
+                return RHITestResult::fail("empty work bypassed queue compatibility validation");
+            }
         }
         return RHITestResult::pass();
     }
