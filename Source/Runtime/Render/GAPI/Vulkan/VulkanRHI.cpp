@@ -8662,6 +8662,9 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
     std::vector<uint32_t> opacityCode;
     ShaderModuleDesc deviceDesc = desc;
     if (impl_->vulkanCapabilities.opacityMicromap) {
+        // TO-REMOVE(Slang#13438): KHR injection awaits native Slang ray-query OMM
+        // opt-in plus raw-output/GPU verification. EXT capture policy is separate.
+        // https://github.com/shader-slang/slang/issues/13438
         if (!vulkan::enableOpacityMicromapSpirv(
                 deviceDesc.spirv, opacityCode, impl_->opacityMicromapExt)) {
             return makeError(Error::InvalidArgument);

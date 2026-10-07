@@ -38,6 +38,9 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   Remove this policy and its device-specific cache inputs when upstream payload
   validation correctly accepts native opaque-size/unified-stride expressions.
   This workaround does not alter native buffer-pointer normalization or OMM.
+  OMM compiler support tracks [Slang #13438](https://github.com/shader-slang/slang/issues/13438);
+  its KHR injection and EXT backend removal criteria are documented in
+  [Dynamic resource upgrade status](DynamicResourceUpgradeStatus.md).
   See [Native descriptor heap literal strides](NativeDescriptorHeapStrideWorkaround.md)
   for the verified cause and the regression criteria required for removal.
 - Scene renderer image/buffer accesses use DR: postprocessing, lighting, scene and

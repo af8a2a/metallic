@@ -39,6 +39,32 @@ normalizer、AS resolver、OMM 与其他 SDK workaround 沿用当前行为。
 `.tmp/spirv-removal-research/vvl/`；生产 GPU 回归结果另行记录，不能以
 create-only A/B 或 `spirv-val` 代替真实读回和图像验证。
 
+### OMM SPIR-V 临时方案（2026-10-07）
+
+**TO-REMOVE(Slang#13438)：** 跟踪 Slang 官方
+[issue #13438](https://github.com/shader-slang/slang/issues/13438)。本次核对时 issue
+仍为 Open，标记 reproduced；报告 v2026.19 仍缺少原生 Slang ray-query OMM
+opt-in，不能请求 KHR 的 `OpacityMicromapIdKHR` execution mode。这是上游报告的
+版本结果，本机仍使用 Slang 2026.18.2。
+
+`OpacityMicromapSPIRV.h::enableOpacityMicromapSpirv` 当前在 compiler/cache lookup
+之后补充设备所需声明。KHR 分支添加 `SPV_KHR_opacity_micromap`、
+`RayTracingOpacityMicromapExecutionModeKHR`，并为未配置的 entry point 写入启用的
+`OpExecutionModeId ... OpacityMicromapIdKHR`。EXT 分支只添加旧 EXT extension 和
+capability。最终设备字节码继续用于 shader/pipeline 身份与注册。
+
+移除 KHR 注入前，须确认所使用的 Slang 版本提供官方 opt-in，未经此补丁的原始
+输出为实际 ray-query entry point 生成正确声明与启用值，并在 KHR OMM 开启及
+关闭的配置下通过 GPU visibility、alpha candidate、编辑/重建和 compaction 回归。
+issue 关闭、pipeline 创建成功或无 validation error 都不足以证明实际 OMM 遍历正确。
+若改为编译期变体，OMM 模式及相关编译选项必须进入 request/cache/warmup 身份，
+关闭 OMM 的输出不能携带需要 KHR feature 的模式。
+
+Nsight 的 EXT 后端选择仍按
+[独立的 capture/replay 移除条件](NsightKhrOpacityMicromapInvestigation.md) 跟踪。
+删除整个 helper/调用前，还需确认所有保留后端均有正确原生输出，或已独立完成 EXT
+后端的移除验证；届时将现有 patch 测试替换为原始编译输出测试，保留 GPU 回归。
+
 ## DeviceLost 修复
 
 环境：NVIDIA GB203-A，驱动 616.92，Slang 2026.18.2。以下是本机对照证据；后续独立 AS 调查已将数值读取故障缩小到驱动的 native heap load 路径，详见下文。

@@ -49,6 +49,13 @@ execution-mode patch. The two patches run after compiler/cache lookup, so cache
 keys and driver registration use the actual device-specific binary. See the
 [SPIR-V capability requirements](https://docs.vulkan.org/spec/latest/appendices/spirvenv.html).
 
+**TO-REMOVE(Slang#13438):** The KHR shader execution-mode injection tracks
+[Slang's native ray-query OMM opt-in issue](https://github.com/shader-slang/slang/issues/13438).
+Verify raw compiler output and actual OMM/fallback traversal before retiring that
+injection; see [the compiler workaround removal criteria](DynamicResourceUpgradeStatus.md).
+The Nsight EXT backend continues to require the independent KHR capture/replay
+verification described above.
+
 BLAS compaction remains enabled. Compaction of the separate EXT micromap object
 is not exposed through the RHI's AS-only query pool; requesting that optional
 flag returns `Unsupported`. Scene micromaps do not request it. EXT handles have

@@ -13,7 +13,12 @@
 namespace metallic::render::vulkan {
 
 // Declare the device's OMM shader support: the legacy EXT capability, or the
-// KHR execution mode (revision 4) that older Slang releases cannot emit.
+// KHR execution mode (revision 4).
+// TO-REMOVE(Slang#13438): track native Slang ray-query OMM opt-in at
+// https://github.com/shader-slang/slang/issues/13438
+// Retire KHR injection after raw compiler output and GPU OMM/fallback regressions
+// pass. EXT emission and the Nsight EXT backend have separate removal criteria;
+// see Documentation/DynamicResourceUpgradeStatus.md.
 // Patch after compiler/cache lookup and hash/register the final device binary.
 inline bool enableOpacityMicromapSpirv(
     std::span<const uint32_t> code, std::vector<uint32_t>& output, bool useExt = false)
