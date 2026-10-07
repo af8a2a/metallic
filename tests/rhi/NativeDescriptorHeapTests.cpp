@@ -1,7 +1,7 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -69,7 +69,7 @@ public:
                 (mode == render::SlangDescriptorHeapMode::Native ? "native.spv" : "mapped.spv"), std::ios::binary);
             binary.write(reinterpret_cast<const char*>(shader.spirv.data()), shader.spirv.size() * sizeof(uint32_t));
             render::ComputeProgram program;
-            const render::ComputeProgramBindingDesc layout[] = {{0}, {1}};
+            const render::ComputeResourceBindingDesc layout[] = {{0}, {1}};
             const auto initialized = program.initialize(*device, {
                 .spirv = shader.spirv,
                 .bindings = {layout, 2},

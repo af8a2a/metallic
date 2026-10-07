@@ -110,6 +110,7 @@ void ScreenSpaceShadows::clear()
 {
     state_.reset();
     for (auto& trace : traces_) { trace.clear(); }
+    for (auto& encoder : traceEncoders_) { encoder.clear(); }
 }
 
 Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
@@ -159,8 +160,9 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     const auto traceIndex = streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0);
     const uint32_t textureCount = streamed && !streamTlas ? 0 : geometry->materialTextureCount();
     if (trace.valid() && traceTextureCounts_[traceIndex] != textureCount) {
-        if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ComputeProgram>(std::move(trace))); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ComputeKernel>(std::move(trace))); }
         else { (void)device.waitIdle(); trace.clear(); }
+        traceEncoders_[traceIndex].clear();
     }
     traceTextureCounts_[traceIndex] = textureCount;
     if (!trace.valid()) {
@@ -176,7 +178,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         auto result = ShaderRegistry::instance().getShader(source.desc(), shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
-        std::vector<ComputeProgramBindingDesc> layout = {
+        std::vector<ComputeResourceBindingDesc> layout = {
             {.binding = kShadowBinding}, {.binding = kShadowBinding + 1, .kind = ComputeResourceBindingKind::SampledImage},
         };
         for (uint32_t i = 2; i < 7; ++i) {
@@ -204,14 +206,14 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             layout.push_back({.binding = kNeuralTextureSetInfoBinding});
             layout.push_back({.binding = kNeuralTextureSamplerBinding, .kind = ComputeResourceBindingKind::Sampler});
         }
-        result = trace.initialize(device, {
+        result = initializeResourceKernel(device, {
             .spirv = shader.spirv,
             .pushConstantSize = 8u,
             .bindings = layout,
             .debugName = "Ray-traced shadows",
             .requiresRayQuery = true,
             .resourceParameters = kShadowResourceLayout,
-        }, log);
+        }, trace, traceEncoders_[traceIndex], log);
         if (!result) { return makeError(result.error()); }
     }
     profile.next("Prepare shadow images");
@@ -384,7 +386,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     result = enterStage(1);
     if (!result) { return makeError(result.error()); }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
-    result = trace.dispatch({
+    result = dispatchResources(trace, traceEncoders_[traceIndex], {
         .commandBuffer = &commands,
         .bindings = bindings,
         .pushData = geometryPush,

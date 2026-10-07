@@ -1,5 +1,5 @@
 #pragma once
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeResourceEncoder.h"
 #include "Runtime/Render/Core/NamedResourceParameters.h"
 #include <cstddef>
 

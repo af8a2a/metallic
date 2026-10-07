@@ -2,7 +2,7 @@
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -414,8 +414,8 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths = paths}, log)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const std::array bindings{ComputeProgramBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        const std::array bindings{ComputeResourceBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer}};
         const ComputeResourceField fields[] = {
             {0, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, probeOutput)},
             {kMaterialValueBinding, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, materialValues)}};

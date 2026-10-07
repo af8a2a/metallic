@@ -1,11 +1,13 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
+
+constexpr uint64_t kNamedComputeABI = 0x4e43500000000002ull;
 
 class SceneRayQueryVisualizationPass final : public ComputePass {
 public:
@@ -153,24 +155,12 @@ public:
             return result;
         }
 
-        const ComputeProgramBindingDesc bindings[] = {
-            ComputeProgramBindingDesc{
-                .binding = 0,
-                .kind = ComputeResourceBindingKind::AccelerationStructure,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 1,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            },
-        };
         result = rayQueryProgram_.initialize(
             *context.device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = computeCompile.spirv,
-                .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
-                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+                .parameters = parameterAbi<NamedComputeParameters>(kNamedComputeABI),
                 .debugName = "SceneRayQueryVisualizationPass",
-                .resourceParameters = kSceneVisualizationResourceLayout,
             },
             log);
         if (!result) {
@@ -203,29 +193,20 @@ public:
             return makeError(Error::Unsupported);
         }
 
-        const ComputeDispatchBinding bindings[] = {
-            ComputeDispatchBinding{
-                .binding = 0,
-                .accelerationStructure = useClusterId
+        auto registry = ResourceRegistry::forDevice(*device_);
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, RenderFrameContext::from(context.commandBuffer()));
+        SceneResourceParameters resources{};
+        resources.scene = writer.accelerationStructure(useClusterId
                     ? clusterAccelerationStructure_->accelerationStructure()
                     : context.inputAccelerationStructure("accelerationStructure")
                         ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure(),
-            },
-            ComputeDispatchBinding{
-                .binding = 1,
-                .textureView = color.view(),
-            },
-        };
-        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-            .groupCountZ = 1,
-        });
+                        : sceneResources_.accelerationStructure().accelerationStructure()).value;
+        resources.output = writer.storageImageHandle(color.view());
+        auto encoded = encodeNamedParameters(writer, resources, push, kNamedComputeABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        return rayQueryProgram_.dispatch(context.commandBuffer(), *encoded,
+            (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
     }
 
 private:
@@ -402,7 +383,7 @@ private:
 
     ScenePathTraceResources sceneResources_;
     std::shared_ptr<SceneClusterAccelerationStructureBuilder> clusterAccelerationStructure_;
-    ComputeProgram rayQueryProgram_;
+    ComputeKernel rayQueryProgram_;
     scene::Bounds drawBounds_;
     uint64_t resourceIdentity_ = 0;
     uint64_t structuralRevision_ = 0;

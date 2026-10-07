@@ -17,7 +17,7 @@
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -826,7 +826,7 @@ public:
             .moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = kShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc binding{.binding = 0};
+        const render::ComputeResourceBindingDesc binding{.binding = 0};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
             .requiresRayQuery = false, .resourceParameters = render::kTextureFeedbackResourceLayout}, log);

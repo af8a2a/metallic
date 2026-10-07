@@ -1,7 +1,7 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -136,7 +136,7 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         TLAS_REQUIRE(compiled);
-        const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
+        const ComputeResourceBindingDesc layout[] = {{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
         ComputeProgram program;
         const auto initialized = program.initialize(device, {
             .spirv = shader.spirv,

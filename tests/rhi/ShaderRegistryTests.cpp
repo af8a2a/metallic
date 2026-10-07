@@ -1,7 +1,7 @@
 #include "RHITest.h"
 #include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 
 #include <algorithm>
@@ -85,13 +85,21 @@ public:
             return RHITestResult::fail("failed pipeline creation replaced the published kernel");
         }
         ComputeProgram program;
-        const ComputeProgramBindingDesc binding{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
+        const ComputeResourceBindingDesc binding{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
         const ComputeResourceField field{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
-        const ComputeProgramDesc programLayout{.bindings = {&binding, 1}, .requiresRayQuery = false,
+        const ResourceComputeKernelDesc programLayout{.bindings = {&binding, 1}, .requiresRayQuery = false,
             .resourceParameters = {.size = 4, .fields = {&field, 1}}};
-        if (!registry.getComputeProgram(context.device, source, programLayout, program, log) || !program.valid() ||
-            registry.getComputeProgram(context.device, badSource, programLayout, program, log) || !program.valid() ||
-            registry.getComputeProgram(context.device, source, {}, program, log) || !program.valid()) {
+        const auto acquire = [&](Device& device, const SlangShaderDesc& request,
+            const ResourceComputeKernelDesc& layout, ComputeProgram& output, std::string& diagnostics) -> Result<> {
+            auto shader = registry.getShader(request, diagnostics);
+            if (!shader) { return makeError(shader.error()); }
+            auto desc = layout;
+            desc.spirv = shader->spirv;
+            return initializeResourceKernel(device, desc, output.kernel, output.encoder, diagnostics);
+        };
+        if (!acquire(context.device, source, programLayout, program, log) || !program.valid() ||
+            acquire(context.device, badSource, programLayout, program, log) || !program.valid() ||
+            acquire(context.device, source, {}, program, log) || !program.valid()) {
             return RHITestResult::fail("source-to-program acquisition or failed generation publication violated its contract: " + log);
         }
         const ComputePipelineDesc typedDesc{.computeShader = {shader->get()},

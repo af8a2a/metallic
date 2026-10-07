@@ -1,6 +1,6 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -34,7 +34,7 @@ public:
             .capabilities = {capabilities, 1},
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc binding{
+        const render::ComputeResourceBindingDesc binding{
             .binding = 63, .kind = render::ComputeResourceBindingKind::StorageBuffer};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,

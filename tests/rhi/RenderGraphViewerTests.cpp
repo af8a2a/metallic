@@ -3,7 +3,7 @@
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "Editor/EditorRenderGraphViewer.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -36,7 +36,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "AutoExposureFixture",
             .entryPointName = "autoExposureFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc binding{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage};
+        const render::ComputeResourceBindingDesc binding{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .pushConstantSize = 16,

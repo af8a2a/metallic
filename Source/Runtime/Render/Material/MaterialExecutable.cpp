@@ -57,7 +57,7 @@ MaterialProgramCacheStats materialProgramCacheStats()
 }
 
 Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,
-    const ComputeProgramDesc& layout, ComputeProgram& program,
+    const ResourceComputeKernelDesc& layout, ComputeKernel& program,
     std::shared_ptr<const MaterialExecutableArtifact>& artifact, std::string& log,
     MaterialProgramCompileOptions options)
 {
@@ -121,7 +121,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
             cached->resourceParameterSize != candidate->resourceParameterSize || cached->requiresRayQuery != candidate->requiresRayQuery) {
             continue;
         }
-        program = cached->executable.share();
+        program = cached->executable;
         artifact = cached;
         ++cacheHits;
         return {};
@@ -129,25 +129,27 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     auto description = layout;
     description.spirv = candidate->shader.spirv;
     description.bindings = candidate->resources;
-    auto result = candidate->executable.initialize(device, description, log);
+    auto result = initializeResourceKernel(device, description, candidate->executable, candidate->encoder, log);
     if (!result) { return result; }
     candidate->generation = nextProgramGeneration++;
     ++pipelineBuilds;
-    program = candidate->executable.share();
+    program = candidate->executable;
     artifact = candidate;
     programCache.push_back({device.identity(), candidate->programKey, candidate});
     return {};
 }
 
-Result<> initializeMaterialErrorProgram(Device& device, ComputeProgram& program, std::string& log)
+Result<> initializeMaterialErrorProgram(Device& device, ComputeKernel& program, ComputeResourceEncoder& encoder, std::string& log)
 {
-    const ComputeProgramBindingDesc output{.binding = 0, .kind = ComputeResourceBindingKind::StorageImage};
+    const ComputeResourceBindingDesc output{.binding = 0, .kind = ComputeResourceBindingKind::StorageImage};
     std::shared_ptr<const MaterialExecutableArtifact> artifact;
-    return compileMaterialExecutable(device,
+    auto result = compileMaterialExecutable(device,
         {.moduleName = "Features/Material/MaterialError", .entryPointName = "materialErrorMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
         {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false, .resourceParameters = kOutputImageResourceLayout},
         program, artifact, log);
+    if (result) { encoder = artifact->encoder; }
+    return result;
 }
 
 } // namespace metallic::render

@@ -358,13 +358,13 @@ GPUScene 同步/扩容、view 发布、image descriptor 注册仍由 coordinator
 
 ### PreparedComputeDispatch
 
-`ComputeProgram::prepareDispatch(frame, desc)` 和 `prepareIndirectBatch(frame, desc, items)` 不访问 command buffer，要求 `desc.commandBuffer == nullptr`。完成前调用者保持 program、输入 wrapper、frame generation 和各自 profiler/stats 输出稳定；多个任务可共享同一个只读 program 和 registry，但各写自己的结果。
+`ComputeKernel::prepareDispatch(encoded, x, y, z)` 和 `prepareIndirectBatch(items)` 只消费不可变参数包，不访问 command buffer。typed 调用方先用 `ParameterWriter` 编码；动态清单路径通过 `ComputeResourceEncoder::encode` 生成同类参数，或用 `prepareResourceDispatch(kernel, encoder, frame, desc, items)` 完成组合。组合入口要求 `desc.commandBuffer == nullptr`。准备完成前调用者保持 kernel、encoder、输入 wrapper、frame generation 和各自 profiler/stats 输出稳定。
 
-返回的不可变包持有 executable、按值复制的 constants、descriptor lease、普通数据 DR buffer lease、sampled-image snapshot owner，以及带范围的 indirect argument slice。输入 wrapper、pushData 和 program 可以在准备后销毁；indirect batch 的兼容 permutation 也被保留。批次间需要的 barrier 由 `record(commands, betweenDispatches)` 的调用者在录制期传入，包不保存指向临时 barrier 数组的指针。
+返回的不可变包持有 executable、按值复制的 constants、descriptor lease、普通数据 DR buffer lease、sampled-image snapshot owner，以及带范围的 indirect argument slice。输入 wrapper、pushData、kernel 和 encoder 可以在准备后销毁；indirect batch 的兼容 permutation 也被保留。批次间需要的 barrier 由 `record(commands, betweenDispatches)` 的调用者在录制期传入，包不保存指向临时 barrier 数组的指针。
 
-`record()` 先验证 device、recording 与 frame generation，再把包保留到本地 command，绑定 registry/execution 并派发。它不查询或改写 program 的 descriptor cache，也不依赖原始资源 wrapper。帧内包拒绝旧帧、已取消帧和错误目标；准备失败返回错误，不发布参数包。`ComputeKernel` 的 typed 参数与 `ComputeProgram` 的资源表输入都生成同一种 `PreparedComputeDispatch`，只有一处录制实现。无 frame 调用由独立 `ParameterWriter` 保存不可变数据，同样经过参数包；旧描述符映射诊断已移入测试，不再作为公共模式。
+`record()` 先验证 device、recording 与 frame generation，再把包保留到本地 command，绑定 registry/execution 并派发。它不查询或改写 encoder 状态，也不依赖原始资源 wrapper。帧内包拒绝旧帧、已取消帧和错误目标；准备失败返回错误，不发布参数包。typed 参数和资源清单输入共用一处录制实现。无 frame 调用由独立 `ParameterWriter` 保存不可变数据。
 
-VisibilityBufferMaterialPass 已拆为准备期捕获/验证 scene、rasterInfo、GPUScene 与 stream 输入，生成 prepared dispatch，execute 只录制包。外部无 frame 的旧调用继续即时适配。该 pass 尚未启用跨 pass 的并行录制，因为它仍需要串行 scene/subsystem 协调。sampled-image 写入/命中统计改为登记操作返回本次是否写入，避免并行时用全局计数差误归因。
+VisibilityBufferMaterialPass 直接填写 `VisibilityMaterialResourceParameters`，准备期捕获/验证 scene、rasterInfo、GPUScene 与 stream 输入，生成 prepared dispatch；execute 只录制包。外部无 frame 的调用使用同一 typed 编码路径。该 pass 尚未启用跨 pass 的并行录制，因为它仍需要串行 scene/subsystem 协调。sampled-image 写入/命中统计由登记操作返回，避免并行时用全局计数差误归因。
 
 ### 验证与边界
 

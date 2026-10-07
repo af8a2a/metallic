@@ -1,6 +1,6 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderSample.h"
@@ -38,7 +38,7 @@ public:
             .entryPointName = readback_ ? "sliderReadbackMain" : "sliderFixtureMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
+        const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},

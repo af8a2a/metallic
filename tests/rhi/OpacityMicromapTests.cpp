@@ -7,7 +7,7 @@
 
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
@@ -303,7 +303,7 @@ public:
                 render::vulkan::enableOpacityMicromapSpirv(patched, twice) && patched == twice, "RayQuery OMM mode missing or not idempotent");
             OMM_EXPECT(render::vulkan::enableOpacityMicromapSpirv(compiled.spirv, patched, true) && patched != compiled.spirv &&
                 render::vulkan::enableOpacityMicromapSpirv(patched, twice, true) && patched == twice, "RayQuery EXT OMM capability missing or not idempotent");
-            const render::ComputeProgramBindingDesc layout[] = {
+            const render::ComputeResourceBindingDesc layout[] = {
                 {0, render::ComputeResourceBindingKind::AccelerationStructure}, {2}, {3}, {4}, {5}, {6},
                 {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()}, {63}};
             render::ComputeProgram program;
@@ -646,7 +646,7 @@ public:
             .entryPointName = "coverageBuildPlanMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .capabilities = capabilities, .descriptorHeapMode = render::SlangDescriptorHeapMode::Mapped}, log);
         OMM_REQUIRE(compiled);
-        const render::ComputeProgramBindingDesc layout[] = {{0, render::ComputeResourceBindingKind::AccelerationStructure}, {1}};
+        const render::ComputeResourceBindingDesc layout[] = {{0, render::ComputeResourceBindingKind::AccelerationStructure}, {1}};
         render::ComputeProgram program;
         OMM_REQUIRE(program.initialize(*device, {.spirv = compiled->spirv, .bindings = layout,
             .resourceParameters = kUnifiedTopLevelProbeLayout}, log));

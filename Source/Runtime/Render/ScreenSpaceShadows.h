@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeResourceEncoder.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
@@ -79,7 +79,8 @@ public:
 private:
     struct State;
     std::shared_ptr<State> state_;
-    std::array<ComputeProgram, 5> traces_; // conventional, NTC, NTC cooperative, streamed TLAS, stream pending
+    std::array<ComputeResourceEncoder, 5> traceEncoders_;
+    std::array<ComputeKernel, 5> traces_; // conventional, NTC, NTC cooperative, streamed TLAS, stream pending
     std::array<uint32_t, 5> traceTextureCounts_{};
 };
 

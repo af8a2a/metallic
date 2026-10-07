@@ -43,6 +43,7 @@ public:
     Result<> initialize(Device& device, const ComputeKernelDesc& desc, std::string& log);
     bool valid() const { return impl_ != nullptr; }
     void clear() { impl_.reset(); }
+    ParameterABI parameterABI() const;
     [[nodiscard]] Result<PreparedComputeDispatch> prepareDispatch(const EncodedParameters& params,
         uint32_t x, uint32_t y = 1, uint32_t z = 1) const;
     [[nodiscard]] Result<PreparedComputeDispatch> prepareIndirectBatch(

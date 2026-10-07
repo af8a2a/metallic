@@ -3,7 +3,7 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -74,7 +74,7 @@ public:
             }
             return {};
         }
-        const render::ComputeProgramBindingDesc layout[] = {
+        const render::ComputeResourceBindingDesc layout[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
             {.binding = 1}, {.binding = 2}, {.binding = 3},
             {.binding = 4}, {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
@@ -184,13 +184,13 @@ public:
         };
         dispatch.indirectArguments = bins.arguments;
         // Reject an incompatible permutation before descriptor writes or GPU work.
-        const render::ComputeIndirectDispatch incompatible[] = {{.pushData = push, .program = &incompatibleProgram_}};
+        const render::TestComputeIndirectDispatch incompatible[] = {{.pushData = push, .program = &incompatibleProgram_}};
         if (!render::hasError(programs_[1].dispatchIndirectBatch(dispatch, incompatible), render::Error::InvalidArgument)) {
             return render::makeError(render::Error::Failure);
         }
         if ((context.frameIndex() & 1u) != 0) {
             std::vector<std::array<uint32_t, 4>> pushes(bins.binCount);
-            std::vector<render::ComputeIndirectDispatch> items(bins.binCount);
+            std::vector<render::TestComputeIndirectDispatch> items(bins.binCount);
             for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
                 pushes[bin] = {push[0], push[1], push[2], bin};
                 items[bin] = {.pushData = pushes[bin].data(), .argumentOffset = uint64_t(bin) * 12,
@@ -424,8 +424,8 @@ public:
         using namespace render;
         device_ = context.device;
         if (executables_->reset.valid()) { return {}; }
-        const ComputeProgramBindingDesc bindings[] = {{.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
-        const ComputeProgramDesc layout{.pushConstantSize = 16, .bindings = bindings, .requiresRayQuery = false,
+        const ComputeResourceBindingDesc bindings[] = {{.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
+        const ResourceComputeKernelDesc layout{.pushConstantSize = 16, .bindings = bindings, .requiresRayQuery = false,
             .resourceParameters = kMaterialBinningProbeLayout};
         executables_->programs.resize(count_);
         for (uint32_t program = 0; program <= count_; ++program) {
@@ -498,7 +498,7 @@ public:
         result = commands.synchronize({.buffers = {&outputBarrier, 1}});
         if (!result) { return result; }
         std::vector<std::array<uint32_t, 4>> constants(count_);
-        std::vector<ComputeIndirectDispatch> dispatches(count_);
+        std::vector<TestComputeIndirectDispatch> dispatches(count_);
         for (uint32_t bin = 0; bin < count_; ++bin) {
             constants[bin] = {push[0], push[1], count_, bin};
             dispatches[bin] = {.pushData = constants[bin].data(), .argumentOffset = uint64_t(bin) * 12,

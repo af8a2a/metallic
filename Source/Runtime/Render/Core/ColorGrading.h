@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 
 #include <array>

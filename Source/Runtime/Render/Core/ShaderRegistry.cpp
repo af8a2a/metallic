@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
 
 #include <map>
@@ -85,21 +85,6 @@ Result<> ShaderRegistry::getComputeKernel(Device& device, const SlangShaderDesc&
     auto result = candidate.initialize(device, desc, creationLog);
     log += creationLog;
     if (result) { kernel = std::move(candidate); }
-    return result;
-}
-
-Result<> ShaderRegistry::getComputeProgram(Device& device, const SlangShaderDesc& source,
-    const ComputeProgramDesc& layout, ComputeProgram& program, std::string& log)
-{
-    auto shader = getShader(source, log);
-    if (!shader) { return makeError(shader.error()); }
-    auto desc = layout;
-    desc.spirv = shader->spirv;
-    ComputeProgram candidate;
-    std::string creationLog;
-    auto result = candidate.initialize(device, desc, creationLog);
-    log += creationLog;
-    if (result) { program = std::move(candidate); }
     return result;
 }
 

@@ -7,7 +7,7 @@
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "json.hpp"
 #include <zstd.h>
 #include <fstream>
@@ -152,7 +152,7 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                        .entryPointName = "main",
                                        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),
             shader.diagnostics);
-    const ComputeProgramBindingDesc layout[] = {
+    const ComputeResourceBindingDesc layout[] = {
         {.binding = 0,
          .kind = ComputeResourceBindingKind::SampledImage,
          .descriptorCount = resources.materialTextureCount()},
@@ -581,7 +581,7 @@ public:
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
         ComputeProgram program;
-        const ComputeProgramBindingDesc binding{.binding=0};
+        const ComputeResourceBindingDesc binding{.binding=0};
         require(program.initialize(context.device,{
             .spirv = shader.spirv,
             .pushConstantSize = 16,
@@ -720,7 +720,7 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
         ComputeProgram program;
-        const ComputeProgramBindingDesc layout{.binding = 0};
+        const ComputeResourceBindingDesc layout{.binding = 0};
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
             .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameters = kTextureFeedbackResourceLayout}, log), log);
         std::unique_ptr<CommandPool> pool;
@@ -846,7 +846,7 @@ public:
         require(compileSlangShaderToSpirv({.moduleName = "TextureStreamingProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
-        const ComputeProgramBindingDesc layout[] = {
+        const ComputeResourceBindingDesc layout[] = {
             {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
             {.binding = 1}, {.binding = 2}, {.binding = 3, .kind = ComputeResourceBindingKind::Sampler}};
         ComputeProgram program;

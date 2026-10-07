@@ -52,7 +52,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/WorkControlShaderTrace.cpp
     Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/Debug/GPUDebugProbe.cpp
-    Runtime/Render/Core/ComputeProgram.cpp
+    Runtime/Render/Core/ComputeResourceEncoder.cpp
     Runtime/Render/Core/ColorGrading.cpp
     Runtime/Render/Core/ACESTables.cpp
     Runtime/Render/Core/ComputeKernel.cpp

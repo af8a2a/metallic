@@ -2,7 +2,7 @@
 #include "Runtime/Render/Material/MaterialCoverageProgram.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -86,7 +86,7 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities}, log)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const ComputeProgramBindingDesc bindings[] = {
+        const ComputeResourceBindingDesc bindings[] = {
             {0, ComputeResourceBindingKind::AccelerationStructure}, {1, ComputeResourceBindingKind::StorageImage}, {2}, {3}, {4}, {5}, {6},
             {9, ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {97}};
         return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = 8, .bindings = bindings,

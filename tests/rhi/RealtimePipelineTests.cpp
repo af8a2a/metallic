@@ -3,7 +3,7 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
@@ -161,7 +161,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
             .entryPointName = "environmentPrefilterProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 2}, {.binding = 3}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 2}, {.binding = 3}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
@@ -250,7 +250,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
             .entryPointName = "realtimeGuideProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
+        const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};

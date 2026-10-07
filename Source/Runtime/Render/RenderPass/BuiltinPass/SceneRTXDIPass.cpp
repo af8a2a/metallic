@@ -239,6 +239,7 @@ public:
             return {};
         }
         rayQueryProgram_.clear();
+        rayQueryProgramEncoder_.clear();
 
         ShaderCompileResult computeCompile;
         SceneRayQueryOptions shaderOptions{
@@ -260,11 +261,12 @@ public:
             }
             log += '\n';
             rayQueryProgram_.clear();
+            rayQueryProgramEncoder_.clear();
             return result;
         }
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
-        std::vector<ComputeProgramBindingDesc> bindings{
+        std::vector<ComputeResourceBindingDesc> bindings{
             {.binding = 0, .kind = ComputeResourceBindingKind::AccelerationStructure},
             {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
             {.binding = 2, .kind = ComputeResourceBindingKind::StorageBuffer},
@@ -331,15 +333,15 @@ public:
             });
         }
         std::string programLog;
-        result = rayQueryProgram_.initialize(
+        result = initializeResourceKernel(
             *context.device,
-            ComputeProgramDesc{
+            ResourceComputeKernelDesc{
                 .spirv = computeCompile.spirv,
                 .pushConstantSize = sizeof(SceneRTXDIPush),
                 .bindings = bindings,
                 .debugName = "SceneRTXDIPass",
                 .resourceParameters = kRTXDIResourceLayout,
-            },
+            }, rayQueryProgram_, rayQueryProgramEncoder_,
             programLog);
         if (!programLog.empty()) {
             if (!log.empty() && log.back() != '\n') {
@@ -349,6 +351,7 @@ public:
         }
         if (!result) {
             rayQueryProgram_.clear();
+            rayQueryProgramEncoder_.clear();
         } else {
             compiledNtcActive_ = ntcActive;
             compiledTextureCount_ = sceneResources_.materialTextureCount();
@@ -667,7 +670,7 @@ public:
         };
         const RenderGraphStage stages[] = {
             {"ReSTIR", uses, [&](CommandBuffer& commands) {
-                return rayQueryProgram_.dispatch(ComputeDispatchDesc{
+                return dispatchResources(rayQueryProgram_, rayQueryProgramEncoder_, ComputeDispatchDesc{
                     .commandBuffer = &commands,
                     .bindings = bindings,
                     .pushData = &push,
@@ -1061,7 +1064,8 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
-    ComputeProgram rayQueryProgram_;
+    ComputeKernel rayQueryProgram_;
+    ComputeResourceEncoder rayQueryProgramEncoder_;
     bool compiledNtcActive_ = false;
     uint32_t compiledTextureCount_ = 0;
     bool compiledPositionFetch_ = false;

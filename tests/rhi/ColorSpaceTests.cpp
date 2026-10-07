@@ -2,7 +2,7 @@
 #include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SceneColorConversion.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include <gtest/gtest.h>
 #include <array>
@@ -69,7 +69,7 @@ public:
         const SlangMacroDefine adapterDefine{"METALLIC_TEST_NRD_ADAPTER", "1"};
         if (!compileSlangShaderToSpirv({.moduleName = "WorkingColorProbe", .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = {&adapterDefine, 1}}, log).transform([&](auto value) { shader = std::move(value); })) { return fail("compile"); }
-        const ComputeProgramBindingDesc layout{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
+        const ComputeResourceBindingDesc layout{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
         ComputeProgram program;
         if (!program.initialize(gpuDevice, {.spirv = shader.spirv, .bindings = {&layout, 1},
                 .requiresRayQuery = false, .resourceParameters = kBatchBarrierProbeLayout}, log)) { return fail("program"); }

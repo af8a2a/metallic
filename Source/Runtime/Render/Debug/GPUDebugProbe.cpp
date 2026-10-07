@@ -1,4 +1,4 @@
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/GPUDebugProbe.h"
@@ -11,6 +11,8 @@
 namespace metallic::render {
 using debug::DebugValue;
 namespace {
+
+constexpr uint64_t kNamedComputeABI = 0x4e43500000000006ull;
 [[noreturn]] void reject(std::string code, std::string message)
 {
     throw debug::DebugError{std::move(code), std::move(message)};
@@ -119,25 +121,21 @@ debug::DebugResult<std::vector<PreparedDebugProbe>> prepareDebugProbes(
     catch (const std::exception& error) { return std::unexpected(debug::DebugError{"InvalidArgument", error.what()}); }
 }
 
-Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::string& log)
+Result<> initializeDebugProbe(Device& device, ComputeKernel& program, std::string& log)
 {
     if (program.valid()) { return {}; }
     ShaderCompileResult shader;
     auto result = ShaderRegistry::instance().getShader({.moduleName = "Features/Debug/GPUProbe", .entryPointName = "probe",
         .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
-    const ComputeProgramBindingDesc bindings[] = {{0}, {1}};
     return program.initialize(device, {
         .spirv = shader.spirv,
-        .pushConstantSize = sizeof(DebugProbePush),
-        .bindings = {bindings, 2},
+        .parameters = parameterAbi<NamedComputeParameters>(kNamedComputeABI),
         .debugName = "DebugGPUProbe",
-        .requiresRayQuery = false,
-        .resourceParameters = kGPUProbeResourceLayout,
     }, log);
 }
 
-Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
+Result<> recordDebugProbe(Device& device, CommandBuffer& commands, ComputeKernel& program,
     const PreparedDebugProbe& probe, Buffer& output, Buffer& readback)
 {
     BufferBarrierDesc source{
@@ -149,14 +147,13 @@ Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
     BufferBarrierDesc destination{.buffer = &output, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
     if (auto commandResult = commands.synchronize({.buffers = {&source, 1}}); !commandResult) { return commandResult; }
     if (auto commandResult = commands.synchronize({.buffers = {&destination, 1}}); !commandResult) { return commandResult; }
-    const ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = probe.source->buffer}, {.binding = 1, .buffer = &output}};
-    const auto result = program.dispatch({
-        .commandBuffer = &commands,
-        .bindings = {bindings, 2},
-        .pushData = &probe.push,
-        .pushDataSize = sizeof(probe.push),
-        .groupCountX = probe.push.groupCount,
-    });
+    auto registry = ResourceRegistry::forDevice(device);
+    if (!registry) { return makeError(registry.error()); }
+    ParameterWriter writer(device, **registry, RenderFrameContext::from(commands));
+    const GPUProbeResourceParameters resources{writer.buffer(probe.source->buffer), writer.buffer(&output)};
+    auto encoded = encodeNamedParameters(writer, resources, probe.push, kNamedComputeABI);
+    if (!encoded) { return makeError(encoded.error()); }
+    const auto result = program.dispatch(commands, *encoded, probe.push.groupCount);
     std::swap(source.before, source.after);
     if (auto commandResult = commands.synchronize({.buffers = {&source, 1}}); !commandResult) { return commandResult; }
     if (!result) { return result; }

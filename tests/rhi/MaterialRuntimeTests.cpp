@@ -4,7 +4,7 @@
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SceneColorConversion.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -196,8 +196,8 @@ public:
             log).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
         const std::array bindings{
-            ComputeProgramBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+            ComputeResourceBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv,
             .bindings = bindings, .requiresRayQuery = false, .resourceParameters = metallic::tests::kMaterialRuntimeProbeLayout}, log);
     }
@@ -411,7 +411,7 @@ public:
         std::weak_ptr<MaterialBindingGeneration> oldBinding = published;
         ComputeProgram program;
         std::shared_ptr<const MaterialExecutableArtifact> artifact;
-        const ComputeProgramBindingDesc layout[] = {{.binding = 0}, {.binding = 1}};
+        const ComputeResourceBindingDesc layout[] = {{.binding = 0}, {.binding = 1}};
         SlangShaderDesc source{.moduleName = "MaterialRuntimeProbe", .entryPointName = "materialRuntimeProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"};
         scene::RenderMaterial semantic;
@@ -420,7 +420,7 @@ public:
         const auto classification = std::to_string(static_cast<uint32_t>(features.surfaceProgram));
         const SlangMacroDefine featureDefine{"MATERIAL_CLASS", classification.c_str()};
         source.macroDefines = {&featureDefine, 1};
-        const ComputeProgramDesc description{.bindings = layout, .requiresRayQuery = false,
+        const ResourceComputeKernelDesc description{.bindings = layout, .requiresRayQuery = false,
             .resourceParameters = kMaterialRuntimeProbeLayout};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log)) {
             return RHITestResult::fail(log);
@@ -471,7 +471,7 @@ public:
             return RHITestResult::fail("Compile failure replaced last successful executable");
         }
         source.entryPointName = "materialRuntimeProbeMain";
-        const ComputeProgramBindingDesc invalidManifest[] = {{.binding = 0}, {.binding = 0}};
+        const ComputeResourceBindingDesc invalidManifest[] = {{.binding = 0}, {.binding = 0}};
         if (compileMaterialExecutable(*device, source,
                 {.bindings = invalidManifest, .requiresRayQuery = false,
                  .resourceParameters = kMaterialRuntimeProbeLayout}, program, artifact, log) ||

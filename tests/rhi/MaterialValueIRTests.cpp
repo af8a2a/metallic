@@ -4,7 +4,7 @@
 #include "Runtime/Render/Material/MaterialCoverageProgram.h"
 #include "Runtime/Scene/Scene.h"
 #include "harness/Fixtures.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedResourceParameters.h"
@@ -211,7 +211,7 @@ public:
                 {0, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, probeOutput), ComputeResourceFieldFormat::Handle},
                 {9, ComputeResourceBindingKind::SampledImage, offsetof(SceneResourceParameters, materialTextures), ComputeResourceFieldFormat::IndexSpan},
                 {97, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, materialValues), ComputeResourceFieldFormat::Handle}};
-            const ComputeProgramBindingDesc bindings[] = {{0}, {9, ComputeResourceBindingKind::SampledImage, 1}, {97}};
+            const ComputeResourceBindingDesc bindings[] = {{0}, {9, ComputeResourceBindingKind::SampledImage, 1}, {97}};
             ComputeProgram program;
             const auto initialized = program.initialize(*device, {.spirv = shader->spirv, .bindings = bindings, .requiresRayQuery = false,
                 .resourceParameters = {sizeof(SceneResourceParameters), fields}}, log);

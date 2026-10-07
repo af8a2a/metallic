@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeResourceEncoder.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"

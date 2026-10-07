@@ -105,6 +105,7 @@ public:
             return {};
         }
         rayQueryProgram_.clear();
+        rayQueryProgramEncoder_.clear();
 
         ShaderCompileResult computeCompile;
         SceneRayQueryOptions shaderOptions{
@@ -130,40 +131,41 @@ public:
             }
             log += '\n';
             rayQueryProgram_.clear();
+            rayQueryProgramEncoder_.clear();
             return result;
         }
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
-        std::vector<ComputeProgramBindingDesc> bindings{
-            ComputeProgramBindingDesc{
+        std::vector<ComputeResourceBindingDesc> bindings{
+            ComputeResourceBindingDesc{
                 .binding = 0,
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 1,
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 2,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 3,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 4,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 5,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 6,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 7,
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = sceneResources_.materialTextureCount(),
@@ -174,38 +176,38 @@ public:
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
         }
         if (ntcActive) {
-            bindings.push_back(ComputeProgramBindingDesc{
+            bindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureLatentsBinding,
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kMaxNeuralTextureSets,
             });
-            bindings.push_back(ComputeProgramBindingDesc{
+            bindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureConstantsBinding,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
-            bindings.push_back(ComputeProgramBindingDesc{
+            bindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureWeightsBinding,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
-            bindings.push_back(ComputeProgramBindingDesc{
+            bindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureSetInfoBinding,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
-            bindings.push_back(ComputeProgramBindingDesc{
+            bindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureSamplerBinding,
                 .kind = ComputeResourceBindingKind::Sampler,
             });
         }
         std::string programLog;
-        result = rayQueryProgram_.initialize(
+        result = initializeResourceKernel(
             *context.device,
-            ComputeProgramDesc{
+            ResourceComputeKernelDesc{
                 .spirv = computeCompile.spirv,
                 .pushConstantSize = sizeof(SceneMaterialVisualizationPush),
                 .bindings = bindings,
                 .debugName = "SceneMaterialVisualizationPass",
                 .resourceParameters = kSceneVisualizationResourceLayout,
-            },
+            }, rayQueryProgram_, rayQueryProgramEncoder_,
             programLog);
         if (!programLog.empty()) {
             if (!log.empty() && log.back() != '\n') {
@@ -215,6 +217,7 @@ public:
         }
         if (!result) {
             rayQueryProgram_.clear();
+            rayQueryProgramEncoder_.clear();
             return result;
         }
         compiledNtcActive_ = ntcActive;
@@ -310,7 +313,7 @@ public:
                 .sampler = &neuralTextures.latentSampler(),
             });
         }
-        result = rayQueryProgram_.dispatch(ComputeDispatchDesc{
+        result = dispatchResources(rayQueryProgram_, rayQueryProgramEncoder_, ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
             .pushData = &push,
@@ -510,7 +513,8 @@ private:
     ScenePathTraceResources sceneResources_;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
-    ComputeProgram rayQueryProgram_;
+    ComputeKernel rayQueryProgram_;
+    ComputeResourceEncoder rayQueryProgramEncoder_;
     bool compiledNtcActive_ = false;
     uint32_t compiledTextureCount_ = 0;
     bool compiledPositionFetch_ = false;

@@ -1,6 +1,6 @@
 #include "RHITest.h"
 #include "TestResourceLayouts.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "harness/Fixtures.h"
 
@@ -79,7 +79,7 @@ public:
             .entryPointName = "misPowerHeuristicProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
         if (!shader) { return RHITestResult::fail("MIS probe shader compile failed: " + log); }
-        const ComputeProgramBindingDesc layout[] = {
+        const ComputeResourceBindingDesc layout[] = {
             {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer},
         };

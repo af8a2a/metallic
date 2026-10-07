@@ -14,8 +14,6 @@ struct ShaderRegistryCacheStats {
 
 class ComputeKernel;
 struct ComputeKernelDesc;
-class ComputeProgram;
-struct ComputeProgramDesc;
 
 // The process singleton owns source identities only. Native cache state belongs
 // to Device::sharedState and is released before that device's native teardown.
@@ -35,8 +33,6 @@ public:
     // layout.spirv is replaced by the requested source's code.
     [[nodiscard]] Result<> getComputeKernel(Device& device, const SlangShaderDesc& source,
         const ComputeKernelDesc& layout, ComputeKernel& kernel, std::string& log);
-    [[nodiscard]] Result<> getComputeProgram(Device& device, const SlangShaderDesc& source,
-        const ComputeProgramDesc& layout, ComputeProgram& program, std::string& log);
     // A null desc.pipelineCache automatically uses a device-owned persistent
     // cache selected from shader identity. Explicit RHI caches remain supported
     // for callers testing/controlling their own cache; those callers own saving.

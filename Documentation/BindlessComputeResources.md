@@ -8,36 +8,22 @@ post processing and debug passes. NRD already uses its own native bindless ABI.
 
 ## Shader and runtime contract
 
-`ComputeKernel` owns executable code and its `ParameterABI`. Direct dispatch,
-indirect dispatch and immutable prepared batches all record through
-`PreparedComputeDispatch`. `ComputeProgram` is a resource-table input encoder for
-existing Core shaders; it has no private heap, descriptor-table pool or separate
-command-recording implementation.
+The current resource representation and compute migration are specified in
+[ResourceAccessABI](ResourceAccessABI.md#compute-execution-layers). The root is a
+12-byte descriptor-relative span; named-resource shaders load a 24-byte pair of
+resource and constant spans. Numeric slot tables and ordinary-data BDA access
+are retired.
 
-- The application push data is one 64-bit `ParameterRoot` address for both typed
-  kernels and Core resource tables. The RHI adds its heap header where required.
-- Core loads `ComputeResourceParameters {resources, constants}` from that root.
-  Existing `getResource<T>()`, `getResourceArray<T>()`, `getData<T>()` and
-  `getConstants<T>()` accessors continue to work. CPU parameter layouts remain
-  explicit; all affected shaders must be recompiled for the new root ABI.
-- `ComputeProgramBindingDesc::binding` selects an application slot in `[0, 255]`,
-  independent of Vulkan descriptor binding or layout declaration order.
-  A slot is 16 bytes: a canonical handle and a payload. Image-array payloads point
-  to immutable lists of handles, without requiring contiguous descriptor indices.
-  DataBuffer slots hold a device address plus element count and stride.
-- Acceleration structures retain the full 64-bit device address. Ordinary and
-  partitioned top-level structures use the same resource type and resolver.
-- `ParameterWriter` owns resource leases and immutable uploads. Frame writers use
-  a submission arena and packets reject other frame generations. Standalone
-  writers own their storage; command buffers retain recorded packets, pipelines
-  and indirect allocations. Commands/pools must not be reset before GPU completion.
-- Every indirect item has its own encoded constants and argument slice. The
-  entire batch's device, parameter ABI and frame scope are checked before its
-  first dispatch. Resource barriers remain a RenderGraph/caller responsibility.
-- `usesResourceTable`, `resourceTableCount` and `resourceTableIndex` are removed.
-  Legacy descriptor/push mapping experiments use a test-local raw RHI fixture.
-  Mapped/native descriptor lowering is selected by `SlangDescriptorHeapMode`,
-  independently of the common compute parameter ABI.
+`ComputeKernel` is the sole application compute executable. Typed parameters and
+the non-executable `ComputeResourceEncoder` migration adapter both produce
+`EncodedParameters`, then `PreparedComputeDispatch`. New passes use typed
+parameters directly. Production `ComputeProgram` no longer exists.
+
+`ParameterWriter` retains resource leases and immutable uploads. Frame packets
+reject other frame generations; standalone packets own their storage. Prepared
+packets retain the kernel and indirect allocation slices. The full batch's device,
+ABI and frame scope are checked before recording its first dispatch. Resource
+barriers remain a RenderGraph/caller responsibility.
 
 The editor's ImGui backend and closed Streamline SDK retain their external
 descriptor-set interoperability. Those are separate from the application shader

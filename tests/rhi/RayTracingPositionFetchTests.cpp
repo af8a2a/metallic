@@ -3,7 +3,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -162,7 +162,7 @@ public:
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             log = shader.diagnostics;
             FETCH_REQUIRE(compiled);
-            std::vector<render::ComputeProgramBindingDesc> layout = {
+            std::vector<render::ComputeResourceBindingDesc> layout = {
                 {0, render::ComputeResourceBindingKind::AccelerationStructure},
                 {2}, {3}, {4}, {5}, {6},
                 {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()},
@@ -359,7 +359,7 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         FETCH_REQUIRE(compiled);
-        const render::ComputeProgramBindingDesc layout[] = {{2}, {63}};
+        const render::ComputeResourceBindingDesc layout[] = {{2}, {63}};
         render::ComputeProgram program;
         FETCH_REQUIRE(program.initialize(*device, {
             .spirv = shader.spirv,

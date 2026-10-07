@@ -1,6 +1,6 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -28,7 +28,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "GPUDrivenConeProbe",
             .entryPointName = "gpuDrivenConeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 0}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 1},
@@ -101,7 +101,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "TwoPassOcclusionProbe",
             .entryPointName = "twoPassOcclusionProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}, {.binding = 2}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}, {.binding = 2}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 3},

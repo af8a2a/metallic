@@ -1,4 +1,4 @@
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -17,6 +17,8 @@
 
 namespace metallic::render::builtin_pass {
 namespace {
+
+constexpr uint64_t kNamedComputeABI = 0x4e43500000000001ull;
 
 constexpr const char* kRTXCRMaterialSampleShaderModuleName = "Features/Samples/RTXCRMaterialSample";
 constexpr const char* kRTXCRMaterialSampleEntryPoint = "rtxcrMaterialSampleMain";
@@ -159,21 +161,14 @@ public:
             return result;
         }
 
-        const ComputeProgramBindingDesc bindings[] = {
-            ComputeProgramBindingDesc{
-                .binding = 0,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            },
-        };
+        device_ = context.device;
         std::string programLog;
         result = program_.initialize(
             *context.device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = compileResult.spirv,
-                .pushConstantSize = sizeof(RTXCRMaterialSamplePush),
-                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+                .parameters = parameterAbi<NamedComputeParameters>(kNamedComputeABI),
                 .debugName = "RTXCRMaterialSamplePass",
-                .resourceParameters = kOutputImageResourceLayout,
             },
             programLog);
         if (!programLog.empty()) {
@@ -242,25 +237,20 @@ public:
             0.01f,
             0.5f);
 
-        const ComputeDispatchBinding bindings[] = {
-            ComputeDispatchBinding{
-                .binding = 0,
-                .textureView = color.view(),
-            },
-        };
-        return program_.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7u) / 8u,
-            .groupCountY = (context.height() + 7u) / 8u,
-            .groupCountZ = 1,
-        });
+        auto registry = ResourceRegistry::forDevice(*device_);
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, RenderFrameContext::from(context.commandBuffer()));
+        OutputImageResourceParameters resources{};
+        resources.output = writer.storageImageHandle(color.view());
+        auto encoded = encodeNamedParameters(writer, resources, push, kNamedComputeABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        return program_.dispatch(context.commandBuffer(), *encoded,
+            (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
     }
 
 private:
-    ComputeProgram program_;
+    Device* device_ = nullptr;
+    ComputeKernel program_;
 };
 
 } // namespace

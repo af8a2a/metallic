@@ -3,7 +3,7 @@
 #include "RHITest.h"
 
 #include "Runtime/Render/ClusterLightGrid.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -142,7 +142,7 @@ public:
                 .entryPointName = "clusterLightGridLookupProbeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!compiled) { return RHITestResult::fail("ClusterLightGrid lookup probe: " + shader.diagnostics); }
-            const std::array<render::ComputeProgramBindingDesc, 6> bindings{{
+            const std::array<render::ComputeResourceBindingDesc, 6> bindings{{
                 {.binding = 0}, {.binding = 1}, {.binding = 2},
                 {.binding = 3}, {.binding = 4}, {.binding = 5}}};
             GRID_CHECK(lookupProgram_.initialize(*device_, {

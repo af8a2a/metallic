@@ -1,6 +1,6 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/SceneLightResources.h"
@@ -38,7 +38,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "PhotometricProbe",
             .entryPointName = "photometricProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
+        const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 50, .kind = render::ComputeResourceBindingKind::StorageBuffer},

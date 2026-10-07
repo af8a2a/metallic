@@ -13,7 +13,7 @@ auto result = ShaderRegistry::instance().getComputeKernel(device,
     kernel, log);
 ```
 
-`getComputeKernel` / `getComputeProgram` 把源码请求、PSO 获取与成功发布合成一次调用；源码或创建失败时保留调用者上一代有效程序。需要编译产物/依赖清单的材质及其他多阶段适配器使用 `getShader`，随后由 `getShaderModule`、`getComputePipeline`、`getGraphicsPipeline` 或 `ComputeKernel::initialize` 取得执行对象。所有路径最终使用同一缓存策略。已有 GPU packet 的保留与 Device 生存期契约不变。
+`getComputeKernel` 把源码请求、PSO 获取与成功发布合成一次调用；源码或创建失败时保留调用者上一代有效程序。`getComputeProgram` 已移除。需要编译产物/依赖清单的材质及其他多阶段适配器使用 `getShader`，随后由 `getShaderModule`、`getComputePipeline`、`getGraphicsPipeline` 或 `ComputeKernel::initialize` 取得执行对象。动态资源清单在 Registry 外通过 `initializeResourceKernel` 成对发布 Kernel 和 `ComputeResourceEncoder`；编码器不持有 executable。所有路径最终使用同一缓存策略。已有 GPU packet 的保留与 Device 生存期契约不变。
 
 Registry 是进程单例，但全局仅保存源码字节标识与缓存分组。创建 module 时关联 RHI descriptor-heap/opacity-micromap 转换前后的字节标识，保持实际 GPU shader 的来源分组。GPU cache 通过 `Device::sharedState` 按设备创建一次，在 native Device 销毁前释放；不同 Device 不共享 native handles。每个返回的 PSO 是调用者拥有的 RHI 对象，持久缓存向驱动提供预编译数据；这是 `.pso` 复用，不是按日志 hash 直接返回任意执行对象。源码每次经过现有 Slang 依赖检查，不能从失效请求拿到旧字节码。
 

@@ -7,7 +7,7 @@
 #include <cstring>
 #include <bit>
 #include <limits>
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 namespace metallic::tests {
@@ -315,7 +315,7 @@ public:
         DEBUG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         ComputeProgram original;
-        const ComputeProgramBindingDesc programBindings[] = {{0}, {1}};
+        const ComputeResourceBindingDesc programBindings[] = {{0}, {1}};
         std::string log;
         DEBUG_REQUIRE(original.initialize(*device, {
             .spirv = shader.spirv,

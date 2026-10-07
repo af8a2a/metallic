@@ -69,7 +69,6 @@ private:
     std::shared_ptr<detail::ParameterPacket> packet_;
     friend class ParameterWriter;
     friend class ComputeKernel;
-    friend class ComputeProgram;
 };
 
 struct ResourceRegistryStats {

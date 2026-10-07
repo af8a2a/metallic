@@ -4,7 +4,7 @@
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "TestResourceLayouts.h"
 
@@ -33,8 +33,8 @@ public:
         const auto result = compileSlangShaderToSpirv({.moduleName = "MaterialAssetProbe", .entryPointName = "materialAssetCopyMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const std::array bindings{ComputeProgramBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        const std::array bindings{ComputeResourceBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv, .bindings = bindings,
             .requiresRayQuery = false, .resourceParameters = kMaterialRuntimeProbeLayout}, log);
     }

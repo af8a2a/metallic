@@ -6,6 +6,9 @@ set_tests_properties(MetallicWorkingColorAudit PROPERTIES LABELS "shader;color")
 add_test(NAME MetallicShaderRegistryUsageAudit COMMAND ${CMAKE_COMMAND}
     "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckShaderRegistry.cmake")
 set_tests_properties(MetallicShaderRegistryUsageAudit PROPERTIES LABELS "shader;architecture")
+add_test(NAME MetallicComputeKernelUsageAudit COMMAND ${CMAKE_COMMAND}
+    "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckComputeKernel.cmake")
+set_tests_properties(MetallicComputeKernelUsageAudit PROPERTIES LABELS "shader;architecture")
 
 find_package(Threads REQUIRED)
 add_executable(MetallicShaderWarmupStartupTests

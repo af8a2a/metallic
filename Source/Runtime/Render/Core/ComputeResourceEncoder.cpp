@@ -1,18 +1,18 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeResourceEncoder.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <mutex>
 #include <spdlog/spdlog.h>
 
 namespace metallic::render {
 namespace {
 
 constexpr uint32_t kMaxComputeResourceBindings = 256;
-constexpr uint64_t kComputeResourceABI = 0x434f4d5055544505ull;
 
 // ParameterRoot payload; matches Core.ComputeResourceParameters in Slang.
 struct ComputeResourceParameters {
@@ -36,7 +36,7 @@ const ComputeDispatchBinding* findDispatchBinding(
     return nullptr;
 }
 
-bool hasDuplicateBindings(std::span<const ComputeProgramBindingDesc> bindings)
+bool hasDuplicateBindings(std::span<const ComputeResourceBindingDesc> bindings)
 {
     for (uint32_t lhs = 0; lhs < bindings.size(); ++lhs) {
         for (uint32_t rhs = lhs + 1; rhs < bindings.size(); ++rhs) {
@@ -56,11 +56,11 @@ bool usesImageHeap(ComputeResourceBindingKind kind)
 
 } // namespace
 
-struct ComputeProgram::Impl {
+struct ComputeResourceEncoder::Impl {
+    uint64_t abiId = 0;
     Device* device = nullptr;
     std::shared_ptr<ResourceRegistry> registry;
-    ComputeKernel kernel;
-    std::vector<ComputeProgramBindingDesc> bindings;
+    std::vector<ComputeResourceBindingDesc> bindings;
     uint32_t pushConstantSize = 0;
     uint32_t resourceParameterSize = 0;
     uint32_t resourceParameterAlignment = 4;
@@ -74,36 +74,23 @@ struct ComputeProgram::Impl {
     }
 };
 
-ComputeProgram::ComputeProgram() = default;
-ComputeProgram::~ComputeProgram() = default;
-ComputeProgram::ComputeProgram(ComputeProgram&&) noexcept = default;
-ComputeProgram& ComputeProgram::operator=(ComputeProgram&&) noexcept = default;
-
-ComputeProgram ComputeProgram::share() const
-{
-    ComputeProgram shared;
-    shared.impl_ = impl_;
-    return shared;
-}
-
-Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& desc, std::string& log)
+Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComputeKernelDesc& desc, std::string& log)
 {
     clear();
     log.clear();
-    if (desc.spirv.size() < 5 || desc.spirv[0] != 0x07230203u ||
-        desc.bindings.size() > kMaxComputeResourceBindings || hasDuplicateBindings(desc.bindings)) {
-        log = "ComputeProgram requires valid SPIR-V and unique resource input IDs";
+    if (desc.bindings.size() > kMaxComputeResourceBindings || hasDuplicateBindings(desc.bindings)) {
+        log = "Resource encoder requires unique resource input IDs";
         return makeError(Error::InvalidArgument);
     }
     if ((desc.requiresRayQuery && (!device.capabilities().rayQuery || !device.capabilities().rayTracingAccelerationStructure)) ||
         !device.capabilities().bindlessDescriptorHeap) {
-        log = "ComputeProgram requires unavailable device capabilities";
+        log = "ComputeResourceEncoder requires unavailable device capabilities";
         return makeError(Error::Unsupported);
     }
     auto impl = std::make_shared<Impl>();
     impl->device = &device;
     impl->pushConstantSize = desc.pushConstantSize;
-    impl->debugName = desc.debugName ? desc.debugName : "ComputeProgram";
+    impl->debugName = desc.debugName ? desc.debugName : "ComputeResourceEncoder";
     for (const auto& binding : desc.bindings) {
         if (binding.descriptorCount == 0 ||
             binding.kind > ComputeResourceBindingKind::Sampler ||
@@ -111,17 +98,17 @@ Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& de
             (binding.kind == ComputeResourceBindingKind::DataBuffer &&
                 (!binding.dataStride || !std::has_single_bit(binding.dataAlignment) ||
                  binding.dataStride % binding.dataAlignment != 0 || binding.dataStride % 4 != 0))) {
-            log = "ComputeProgram has an invalid resource binding";
+            log = "ComputeResourceEncoder has an invalid resource binding";
             return makeError(Error::InvalidArgument);
         }
         impl->bindings.push_back(binding);
     }
     // CPU input IDs are independent of field offsets and descriptor allocation order.
-    std::ranges::sort(impl->bindings, {}, &ComputeProgramBindingDesc::binding);
+    std::ranges::sort(impl->bindings, {}, &ComputeResourceBindingDesc::binding);
     {
         const auto& layout = desc.resourceParameters;
         if (!layout.size || layout.size > 65536 || (layout.size & 3u) || layout.fields.empty()) {
-            log = "ComputeProgram requires an explicit named resource layout";
+            log = "ComputeResourceEncoder requires an explicit named resource layout";
             return makeError(Error::InvalidArgument);
         }
         impl->resourceParameterSize = layout.size;
@@ -161,43 +148,38 @@ Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& de
     auto registry = metallic::render::ResourceRegistry::forDevice(device);
     if (!registry) { return makeError(registry.error()); }
     impl->registry = std::move(*registry);
-    auto result = impl->kernel.initialize(device, {
-        .spirv = desc.spirv,
-        .parameters = parameterAbi<ComputeResourceParameters>(kComputeResourceABI),
-        .debugName = desc.debugName,
-        .pipelineCache = desc.pipelineCache,
-    }, log);
-    if (!result) { return result; }
+    // Intern exact live contracts, not just their hash. The ID is CPU-only and
+    // couples a kernel to its encoder even though their shader root has the same
+    // two-span shape. Weak entries never extend the Device's lifetime.
+    static std::mutex contractMutex;
+    static std::vector<std::weak_ptr<const Impl>> contracts;
+    static uint64_t nextABI = 0x4352455300000000ull;
+    std::lock_guard lock(contractMutex);
+    std::erase_if(contracts, [](const auto& entry) { return entry.expired(); });
+    for (const auto& entry : contracts) {
+        auto existing = entry.lock();
+        if (existing && impl->hasCompatibleBindings(*existing)) {
+            impl_ = std::move(existing);
+            return {};
+        }
+    }
+    impl->abiId = ++nextABI;
     impl_ = std::move(impl);
+    contracts.push_back(impl_);
     return {};
 }
 
-void ComputeProgram::clear()
+ParameterABI ComputeResourceEncoder::parameterABI() const
 {
-    impl_.reset();
+    return impl_ ? parameterAbi<ComputeResourceParameters>(impl_->abiId) : ParameterABI{};
 }
 
-bool ComputeProgram::valid() const
+bool ComputeResourceEncoder::compatible(const ComputeResourceEncoder& other) const
 {
-    return impl_ && impl_->kernel.valid();
+    return impl_ && other.impl_ && impl_->hasCompatibleBindings(*other.impl_);
 }
 
-Result<> ComputeProgram::dispatch(const ComputeDispatchDesc& desc)
-{
-    return dispatchImpl(desc, {}, {});
-}
-
-Result<> ComputeProgram::dispatchIndirectBatch(const ComputeDispatchDesc& desc,
-    std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
-{
-    if (!desc.indirectArguments || dispatches.empty()) { return makeError(Error::InvalidArgument); }
-    auto first = desc;
-    first.pushData = dispatches.front().pushData;
-    first.indirectOffset = dispatches.front().argumentOffset;
-    return dispatchImpl(first, dispatches, betweenDispatches);
-}
-
-Result<> ComputeProgram::validateDispatch(const ComputeDispatchDesc& desc,
+Result<> ComputeResourceEncoder::validate(const ComputeDispatchDesc& desc,
     std::span<const ComputeIndirectDispatch> dispatches) const
 {
     if (desc.stats) { *desc.stats = {}; }
@@ -207,7 +189,7 @@ Result<> ComputeProgram::validateDispatch(const ComputeDispatchDesc& desc,
         (impl_->pushConstantSize > 0 &&
          (desc.pushData == nullptr || desc.pushDataSize != impl_->pushConstantSize)) ||
         (impl_->pushConstantSize == 0 && desc.pushDataSize != 0)) {
-        spdlog::error("[ComputeProgram:{}] invalid dispatch description", impl_ ? impl_->debugName : "uninitialized");
+        spdlog::error("[ComputeResourceEncoder:{}] invalid dispatch description", impl_ ? impl_->debugName : "uninitialized");
         return makeError(Error::InvalidArgument);
     }
 
@@ -221,8 +203,9 @@ Result<> ComputeProgram::validateDispatch(const ComputeDispatchDesc& desc,
     }
     if (!dispatches.empty() && !desc.indirectArguments) { return makeError(Error::InvalidArgument); }
     for (const auto& item : dispatches) {
-        if (item.program != nullptr &&
-            (!item.program->valid() || !impl_->hasCompatibleBindings(*item.program->impl_))) {
+        if ((item.kernel == nullptr) != (item.encoder == nullptr) ||
+            (item.kernel && (!item.kernel->valid() || !compatible(*item.encoder) ||
+                item.kernel->parameterABI() != parameterABI()))) {
             return makeError(Error::InvalidArgument);
         }
         if ((impl_->pushConstantSize > 0 && item.pushData == nullptr) ||
@@ -234,48 +217,12 @@ Result<> ComputeProgram::validateDispatch(const ComputeDispatchDesc& desc,
     return {};
 }
 
-Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
-    std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
-{
-    if (!valid() || !desc.commandBuffer || !desc.commandBuffer->recording() ||
-        desc.commandBuffer->deviceIdentity() != impl_->device->identity()) {
-        return makeError(Error::InvalidArgument);
-    }
-    CPUProfileScope profile(desc.profiler, "Encode compute parameters");
-    auto prepared = prepare(metallic::render::RenderFrameContext::from(*desc.commandBuffer), desc, dispatches);
-    if (!prepared) { return makeError(prepared.error()); }
-    profile.next("Record dispatch commands");
-    return prepared->record(*desc.commandBuffer, betweenDispatches);
-}
-
-Result<PreparedComputeDispatch> ComputeProgram::prepareDispatch(
-    RenderFrameContext& frame,
-    const ComputeDispatchDesc& desc) const
-{
-    if (desc.commandBuffer || !frame.recording()) { return makeError(Error::InvalidArgument); }
-    return prepare(&frame, desc, {});
-}
-
-Result<PreparedComputeDispatch> ComputeProgram::prepareIndirectBatch(
-    RenderFrameContext& frame,
-    const ComputeDispatchDesc& desc,
-    std::span<const ComputeIndirectDispatch> dispatches) const
-{
-    if (desc.commandBuffer || !frame.recording() || !desc.indirectArguments || dispatches.empty()) {
-        return makeError(Error::InvalidArgument);
-    }
-    auto first = desc;
-    first.pushData = dispatches.front().pushData;
-    first.indirectOffset = dispatches.front().argumentOffset;
-    return prepare(&frame, first, dispatches);
-}
-
-Result<PreparedComputeDispatch> ComputeProgram::prepare(
+Result<std::vector<EncodedParameters>> ComputeResourceEncoder::encode(
     RenderFrameContext* frame,
     const ComputeDispatchDesc& desc,
     std::span<const ComputeIndirectDispatch> dispatches) const
 {
-    auto result = validateDispatch(desc, dispatches);
+    auto result = validate(desc, dispatches);
     if (!result) { return makeError(result.error()); }
     auto& registry = *impl_->registry;
     ParameterWriter writer(*impl_->device, registry, frame);
@@ -396,7 +343,7 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
         push.constants = upload(constants.data(), constants.size());
     }
     if (!result) { return makeError(result.error()); }
-    std::vector<ComputeIndirectParameters> items;
+    std::vector<EncodedParameters> items;
     items.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         auto parameters = push;
@@ -404,18 +351,74 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
             parameters.constants.byteOffset += static_cast<uint32_t>(stride * i);
             parameters.constants.count = impl_->pushConstantSize / 4;
         }
-        auto encoded = writer.encode(parameters, kComputeResourceABI);
+        auto encoded = writer.encode(parameters, impl_->abiId);
         if (!encoded) { return makeError(encoded.error()); }
-        if (!desc.indirectArguments) {
-            return impl_->kernel.prepareDispatch(*encoded, desc.groupCountX, desc.groupCountY, desc.groupCountZ);
-        }
-        auto arguments = desc.indirectArguments->slice({
-            dispatches.empty() ? desc.indirectOffset : dispatches[i].argumentOffset, 3 * sizeof(uint32_t)});
-        if (!arguments) { return makeError(arguments.error()); }
-        const auto& program = !dispatches.empty() && dispatches[i].program ? dispatches[i].program->impl_ : impl_;
-        items.push_back({std::move(*encoded), std::move(*arguments), &program->kernel});
+        items.push_back(std::move(*encoded));
     }
-    return impl_->kernel.prepareIndirectBatch(items);
+    return items;
+}
+
+Result<> initializeResourceKernel(Device& device, const ResourceComputeKernelDesc& desc,
+    ComputeKernel& kernel, ComputeResourceEncoder& encoder, std::string& log)
+{
+    ComputeResourceEncoder nextEncoder;
+    auto result = nextEncoder.initialize(device, desc, log);
+    if (!result) { return result; }
+    ComputeKernel nextKernel;
+    result = nextKernel.initialize(device, {.spirv = desc.spirv,
+        .parameters = nextEncoder.parameterABI(),
+        .debugName = desc.debugName, .pipelineCache = desc.pipelineCache}, log);
+    if (!result) { return result; }
+    kernel = std::move(nextKernel);
+    encoder = std::move(nextEncoder);
+    return {};
+}
+
+Result<PreparedComputeDispatch> prepareResourceDispatch(
+    const ComputeKernel& kernel, const ComputeResourceEncoder& encoder,
+    RenderFrameContext* frame, const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches)
+{
+    if (desc.commandBuffer || !kernel.valid() || kernel.parameterABI() != encoder.parameterABI() ||
+        (frame && !frame->recording())) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto first = desc;
+    if (!dispatches.empty()) {
+        if (!desc.indirectArguments) { return makeError(Error::InvalidArgument); }
+        first.pushData = dispatches.front().pushData;
+        first.indirectOffset = dispatches.front().argumentOffset;
+    }
+    auto encoded = encoder.encode(frame, first, dispatches);
+    if (!encoded) { return makeError(encoded.error()); }
+    if (!desc.indirectArguments) {
+        return kernel.prepareDispatch(encoded->front(), desc.groupCountX, desc.groupCountY, desc.groupCountZ);
+    }
+    std::vector<ComputeIndirectParameters> items;
+    items.reserve(encoded->size());
+    for (size_t i = 0; i < encoded->size(); ++i) {
+        auto arguments = desc.indirectArguments->slice({
+            dispatches.empty() ? desc.indirectOffset : dispatches[i].argumentOffset, 12});
+        if (!arguments) { return makeError(arguments.error()); }
+        items.push_back({std::move((*encoded)[i]), std::move(*arguments),
+            dispatches.empty() ? nullptr : dispatches[i].kernel});
+    }
+    return kernel.prepareIndirectBatch(items);
+}
+
+Result<> dispatchResources(const ComputeKernel& kernel, const ComputeResourceEncoder& encoder,
+    const ComputeDispatchDesc& desc, std::span<const ComputeIndirectDispatch> dispatches,
+    const BarrierDesc& betweenDispatches)
+{
+    if (!desc.commandBuffer || !desc.commandBuffer->recording()) { return makeError(Error::InvalidArgument); }
+    CPUProfileScope profile(desc.profiler, "Encode compute parameters");
+    auto inputs = desc;
+    inputs.commandBuffer = nullptr;
+    auto prepared = prepareResourceDispatch(kernel, encoder,
+        RenderFrameContext::from(*desc.commandBuffer), inputs, dispatches);
+    if (!prepared) { return makeError(prepared.error()); }
+    profile.next("Record dispatch commands");
+    return prepared->record(*desc.commandBuffer, betweenDispatches);
 }
 
 } // namespace metallic::render

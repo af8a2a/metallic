@@ -3,7 +3,7 @@
 #include "Runtime/Render/Core/ColorResizeParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -16,6 +16,8 @@
 
 namespace metallic::render::builtin_pass {
 namespace {
+
+constexpr uint64_t kNamedComputeABI = 0x4e43500000000005ull;
 
 struct DLSSRRCameraSnapshot {
     float eye[3] = {};
@@ -260,19 +262,10 @@ public:
             auto result = ShaderRegistry::instance().getShader({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
                 .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
-            const ComputeProgramBindingDesc bindings[] = {
-                {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
-                {.binding = 1, .kind = ComputeResourceBindingKind::SampledImage},
-                {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
-                {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
-            };
             result = guideResolve_.initialize(*context.device, {
                 .spirv = shader.spirv,
-                .pushConstantSize = 8,
-                .bindings = {bindings, 4},
+                .parameters = parameterAbi<NamedComputeParameters>(kNamedComputeABI),
                 .debugName = "UpscalerGuideResolve",
-                .requiresRayQuery = false,
-                .resourceParameters = kUpscalerGuideResourceLayout,
             }, log);
             if (!result) { return result; }
         }
@@ -612,20 +605,18 @@ private:
         auto& command = context.commandBuffer();
         auto* mv = motion.view();
         auto* z = depth.view();
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = {&mv, 1}},
-            {.binding = 1, .textureViews = {&z, 1}},
-            {.binding = 2, .textureView = context.outputTexture("motionVectors").view()},
-            {.binding = 3, .textureView = context.outputTexture("depth").view()},
-        };
-        return guideResolve_.dispatch({
-            .commandBuffer = &command,
-            .bindings = {bindings, 4},
-            .pushData = jitter.data(),
-            .pushDataSize = 8,
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-        });
+        auto registry = ResourceRegistry::forDevice(*device_);
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, RenderFrameContext::from(command));
+        UpscalerGuideResourceParameters resources{};
+        resources.inputMotion = writer.sampledImageHandle(mv);
+        resources.inputDepth = writer.sampledImageHandle(z);
+        resources.outputMotion = writer.storageImageHandle(context.outputTexture("motionVectors").view());
+        resources.outputDepth = writer.storageImageHandle(context.outputTexture("depth").view());
+        auto encoded = encodeNamedParameters(writer, resources, jitter, kNamedComputeABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        return guideResolve_.dispatch(command, *encoded,
+            (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 
     const char* passTypeName() const
@@ -1104,7 +1095,7 @@ private:
 
     Device* device_ = nullptr;
     ComputeKernel colorResize_;
-    ComputeProgram guideResolve_;
+    ComputeKernel guideResolve_;
     uint64_t lastFrame_ = 0;
     uint64_t lastHistoryRevision_ = 0;
     DLSSVariant variant_ = DLSSVariant::SuperResolution;

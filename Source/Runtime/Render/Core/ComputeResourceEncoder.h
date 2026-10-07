@@ -19,7 +19,7 @@ enum class ComputeResourceBindingKind : uint8_t {
     Sampler,
 };
 
-struct ComputeProgramBindingDesc {
+struct ComputeResourceBindingDesc {
     // CPU input ID mapped to an explicit named field; never sent to the shader.
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
@@ -30,7 +30,7 @@ struct ComputeProgramBindingDesc {
     // A missing dispatch input retains the invalid named-field sentinel.
     // Present inputs still require a valid allocation and matching resource kind.
     bool optional = false;
-    bool operator==(const ComputeProgramBindingDesc&) const = default;
+    bool operator==(const ComputeResourceBindingDesc&) const = default;
 };
 
 enum class ComputeResourceFieldFormat : uint8_t { Handle, IndexSpan, DataSpan };
@@ -48,10 +48,11 @@ struct ComputeResourceLayout {
     std::span<const ComputeResourceField> fields;
 };
 
-struct ComputeProgramDesc {
+// Creation description for the resource-input compatibility boundary. New passes use typed parameters.
+struct ResourceComputeKernelDesc {
     std::span<const uint32_t> spirv;
     uint32_t pushConstantSize = 0;
-    std::span<const ComputeProgramBindingDesc> bindings;
+    std::span<const ComputeResourceBindingDesc> bindings;
     const char* debugName = nullptr;
     bool requiresRayQuery = true;
     // Optional explicit cache borrowed during creation. Null uses ShaderRegistry.
@@ -107,63 +108,44 @@ struct ComputeDispatchDesc {
     ComputeDispatchStats* stats = nullptr;
 };
 
-class ComputeProgram;
-class RenderFrameContext;
+class ComputeResourceEncoder;
 
 struct ComputeIndirectDispatch {
     const void* pushData = nullptr;
     uint64_t argumentOffset = 0;
-    // Optional permutation with exactly the same descriptor and push-data layout.
-    const ComputeProgram* program = nullptr;
+    // A permutation must supply both its executable and its resource contract.
+    const ComputeKernel* kernel = nullptr;
+    const ComputeResourceEncoder* encoder = nullptr;
 };
 
-// CPU binding adapter for Core resource parameters. ComputeKernel owns execution.
-class ComputeProgram {
+// Immutable CPU input layout only. Owns no shader, pipeline or executable.
+// Retained for dynamic resource manifests; new passes encode typed parameters directly.
+class ComputeResourceEncoder {
 public:
-    ComputeProgram();
-    ~ComputeProgram();
-
-    ComputeProgram(ComputeProgram&&) noexcept;
-    ComputeProgram& operator=(ComputeProgram&&) noexcept;
-
-    ComputeProgram(const ComputeProgram&) = delete;
-    ComputeProgram& operator=(const ComputeProgram&) = delete;
-
-    Result<> initialize(Device& device, const ComputeProgramDesc& desc, std::string& log);
-    void clear();
-    bool valid() const;
-    // Share the immutable executable/layout generation. clear()/initialize()
-    // replace only this handle; already prepared dispatches retain the kernel.
-    ComputeProgram share() const;
-    Result<> dispatch(const ComputeDispatchDesc& desc);
-    // No command buffer access. Concurrent preparations require stable program,
-    // input wrappers and frame generation until all jobs join. A packet is returned
-    // only on success. Encoding delegates execution to ComputeKernel.
-    [[nodiscard]] Result<PreparedComputeDispatch> prepareDispatch(
-        RenderFrameContext& frame,
-        const ComputeDispatchDesc& desc) const;
-    [[nodiscard]] Result<PreparedComputeDispatch> prepareIndirectBatch(
-        RenderFrameContext& frame,
-        const ComputeDispatchDesc& desc,
-        std::span<const ComputeIndirectDispatch> dispatches) const;
-    // Bind one immutable descriptor table for the batch. Every item supplies
-    // pushDataSize bytes and an offset into desc.indirectArguments. Optional
-    // barriers separate dispatches sharing writable resources. Compatible per-item
-    // programs share this table; the entire batch is validated before recording.
-    Result<> dispatchIndirectBatch(const ComputeDispatchDesc& desc,
-        std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches = {});
-
+    Result<> initialize(Device& device, const ResourceComputeKernelDesc& desc, std::string& log);
+    bool valid() const { return impl_ != nullptr; }
+    void clear() { impl_.reset(); }
+    bool compatible(const ComputeResourceEncoder& other) const;
+    ParameterABI parameterABI() const;
+    [[nodiscard]] Result<std::vector<EncodedParameters>> encode(
+        RenderFrameContext* frame, const ComputeDispatchDesc& desc,
+        std::span<const ComputeIndirectDispatch> dispatches = {}) const;
 private:
-    Result<> validateDispatch(const ComputeDispatchDesc& desc,
+    Result<> validate(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches) const;
-    [[nodiscard]] Result<PreparedComputeDispatch> prepare(
-        RenderFrameContext* frame,
-        const ComputeDispatchDesc& desc,
-        std::span<const ComputeIndirectDispatch> dispatches) const;
-    Result<> dispatchImpl(const ComputeDispatchDesc& desc,
-        std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
     struct Impl;
-    std::shared_ptr<Impl> impl_;
+    std::shared_ptr<const Impl> impl_;
 };
+
+// Transactionally publish the executable and its input encoder together.
+Result<> initializeResourceKernel(Device& device, const ResourceComputeKernelDesc& desc,
+    ComputeKernel& kernel, ComputeResourceEncoder& encoder, std::string& log);
+[[nodiscard]] Result<PreparedComputeDispatch> prepareResourceDispatch(
+    const ComputeKernel& kernel, const ComputeResourceEncoder& encoder,
+    RenderFrameContext* frame, const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches = {});
+Result<> dispatchResources(const ComputeKernel& kernel, const ComputeResourceEncoder& encoder,
+    const ComputeDispatchDesc& desc, std::span<const ComputeIndirectDispatch> dispatches = {},
+    const BarrierDesc& betweenDispatches = {});
 
 } // namespace metallic::render

@@ -352,7 +352,7 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 ## 10. RHI 与 Vulkan 后端
 
 `Runtime/Render/Core` 收纳供 RenderGraph、Pass、编辑器和工具复用的图形基础封装：
-`ComputeKernel` / `ComputeProgram`、`ResourceRegistry` / `ResourceSynchronization`、
+`ComputeKernel` / `ComputeResourceEncoder`、`ResourceRegistry` / `ResourceSynchronization`、
 `SlangCompiler` / `NativeDescriptorHeapSPIRV`、`RenderFrameContext`、`HistoryResources`、
 `RenderView` 和 `DisplayOutput`。公共类型继续使用 `metallic::render` 命名空间，
 调用方直接包含 `Runtime/Render/Core/...`，旧路径不保留转发头。
@@ -440,7 +440,7 @@ RHI 上层同样用 `Result<T>` 返回一次操作产生的值：资源注册返
 
 buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，偏移和大小以字节计，`UINT64_MAX` 表示剩余范围。`BufferSlice` 在校验范围后保留底层分配；末端空切片可表示，但不能用于需要数据的 GPU 操作或视图。纹理视图和 barrier 共用 `TextureSubresourceRange`，默认一个 mip 和一个 layer，数量必须非零且范围不能越界。
 
-`ShaderModuleDesc` 与 `ComputeProgramDesc` 统一接收 `std::span<const uint32_t> spirv`，大小由 word span 确定。graphics/compute pipeline 与 shader object 使用同一个 `ShaderStageDesc { module, entryPoint }`；省略 entry point 时为 `main`，显式空指针或空字符串无效。模块复制输入并保留设备实际使用的 SPIR-V，OMM 转换只在模块创建时执行，shader object 复用同一份结果。阶段模块必须属于创建设备，创建完成后可释放输入 words 和模块包装对象。
+`ShaderModuleDesc`、`ComputeKernelDesc` 与 `ResourceComputeKernelDesc` 统一接收 `std::span<const uint32_t> spirv`，大小由 word span 确定。graphics/compute pipeline 与 shader object 使用同一个 `ShaderStageDesc { module, entryPoint }`；省略 entry point 时为 `main`，显式空指针或空字符串无效。模块复制输入并保留设备实际使用的 SPIR-V，OMM 转换只在模块创建时执行，shader object 复用同一份结果。阶段模块必须属于创建设备，创建完成后可释放输入 words 和模块包装对象。
 
 ### 10.2 Vulkan 实现
 
@@ -533,7 +533,7 @@ ShaderPrintf GPU 探针确认扩展配置成功、messenger 已连接、GPU 完�
 
 - `SceneAccelerationStructureBuilder`：共享的三角形 BLAS、OMM、压缩和异步提交，顶层选择 Standard TLAS 或 Partitioned TLAS；
 - `SceneClusterAccelerationStructureBuilder`：cluster acceleration structure、cluster BLAS + TLAS；
-- `ComputeProgram`：SPIR-V、descriptor binding 和 compute dispatch 封装；
+- `ComputeKernel`：唯一的应用 compute executable，持有代码与参数 ABI；typed 参数由 `ParameterWriter` 编码，动态资源清单暂由不持有 executable 的 `ComputeResourceEncoder` 适配；
 - `MeshletStreamCLASPool`：面向驻留 page 的 CLAS 分配和更新。
 
 这些能力均必须先检查扩展/设备能力。普通场景路径与 StreamAsset 路径分别维护加速结构，避免强迫所有场景进入同一种驻留模型。

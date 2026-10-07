@@ -1,9 +1,9 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"
@@ -27,6 +27,8 @@
 
 namespace metallic::render::builtin_pass {
 namespace {
+
+constexpr uint64_t kNamedComputeABI = 0x4e43500000000003ull;
 
 std::filesystem::path pathFromProperties(
     const RenderGraphProperties& props,
@@ -1292,24 +1294,12 @@ private:
             return result;
         }
 
-        const ComputeProgramBindingDesc bindings[] = {
-            ComputeProgramBindingDesc{
-                .binding = 0,
-                .kind = ComputeResourceBindingKind::AccelerationStructure,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 1,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            },
-        };
         return rayQueryProgram_.initialize(
             device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = compileResult.spirv,
-                .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
-                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+                .parameters = parameterAbi<NamedComputeParameters>(kNamedComputeABI),
                 .debugName = "GPUDrivenStreamAssetPass RTAS visualization",
-                .resourceParameters = kSceneVisualizationResourceLayout,
             },
             log);
     }
@@ -1514,25 +1504,16 @@ private:
         push.width = context.width();
         push.height = context.height();
 
-        const ComputeDispatchBinding bindings[] = {
-            ComputeDispatchBinding{
-                .binding = 0,
-                .accelerationStructure = streamRuntime_->accelerationStructure(),
-            },
-            ComputeDispatchBinding{
-                .binding = 1,
-                .textureView = color.view(),
-            },
-        };
-        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7u) / 8u,
-            .groupCountY = (context.height() + 7u) / 8u,
-            .groupCountZ = 1,
-        });
+        auto registry = ResourceRegistry::forDevice(*device_);
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, RenderFrameContext::from(context.commandBuffer()));
+        SceneResourceParameters resources{};
+        resources.scene = writer.accelerationStructure(streamRuntime_->accelerationStructure()).value;
+        resources.output = writer.storageImageHandle(color.view());
+        auto encoded = encodeNamedParameters(writer, resources, push, kNamedComputeABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        return rayQueryProgram_.dispatch(context.commandBuffer(), *encoded,
+            (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
     }
 
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
@@ -1573,7 +1554,7 @@ private:
     const scene::Scene* gpuSceneSource_ = nullptr;
     GPUSceneSourceOverrideToken gpuSceneSourceToken_;
     bool hzbValid_ = false;
-    ComputeProgram rayQueryProgram_;
+    ComputeKernel rayQueryProgram_;
     bool rtasVisualization_ = false;
     uint64_t compiledSourceIdentity_ = 0;
     uint64_t compiledSourceContentRevision_ = 0;

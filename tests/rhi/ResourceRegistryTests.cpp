@@ -9,9 +9,10 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/Environment/AtmosphereKernelParameters.h"
 
@@ -1096,7 +1097,7 @@ public:
         REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
             .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         render::ComputeProgram adapter;
-        const render::ComputeProgramBindingDesc layout{.binding = 0,
+        const render::ComputeResourceBindingDesc layout{.binding = 0,
             .kind = render::ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4};
         REG_REQUIRE(adapter.initialize(*device, {
             .spirv = shader.spirv,
@@ -1762,7 +1763,7 @@ public:
             REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             render::ComputeProgram programs[2];
-            render::ComputeProgramBindingDesc layout[] = {
+            render::ComputeResourceBindingDesc layout[] = {
                 {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
                 {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
             std::string log;
@@ -1805,7 +1806,7 @@ public:
                 }).transform([&](auto value) { packets[0] = std::move(value); });
             });
             std::jthread second([&] {
-                const render::ComputeIndirectDispatch items[] = {
+                const render::TestComputeIndirectDispatch items[] = {
                     {.pushData = &indices[1]}, {.pushData = &indices[2], .argumentOffset = 12, .program = &programs[1]}};
                 outcomes[1] = programs[0].prepareIndirectBatch(frame, {
                     .bindings = {bindings, 2},
@@ -2007,7 +2008,7 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                 .descriptorHeapMode = path == 1 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
-            const render::ComputeProgramBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
+            const render::ComputeResourceBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
             render::ComputeProgram program;
             std::string log;
             REG_REQUIRE(program.initialize(*device, {
@@ -2031,7 +2032,7 @@ public:
             REG_REQUIRE(device->createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
             Drain drain{queue, *gate};
             const render::ComputeDispatchBinding binding{.binding = 0, .buffer = output.get()};
-            const render::ComputeIndirectDispatch items[] = {{.argumentOffset = 0}, {.argumentOffset = 12}};
+            const render::TestComputeIndirectDispatch items[] = {{.argumentOffset = 0}, {.argumentOffset = 12}};
             render::MemoryBarrierDesc memory{
                 .before = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
                 .after = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderRead | render::AccessBits::ShaderWrite}};
@@ -2077,7 +2078,7 @@ public:
         REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "NamedResourceProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); }));
-        const ComputeProgramBindingDesc bindings[] = {
+        const ComputeResourceBindingDesc bindings[] = {
             {.binding = 65537, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4},
             {.binding = 7, .kind = ComputeResourceBindingKind::StorageBuffer}};
         ComputeResourceField fields[] = {
@@ -2085,7 +2086,7 @@ public:
             {7, ComputeResourceBindingKind::StorageBuffer, 0}};
         ComputeProgram program;
         std::string log;
-        ComputeProgramDesc description{.spirv = shader.spirv, .pushConstantSize = 4,
+        ResourceComputeKernelDesc description{.spirv = shader.spirv, .pushConstantSize = 4,
             .bindings = bindings, .requiresRayQuery = false, .resourceParameters = {16, fields}};
         auto missingLayout = description;
         missingLayout.resourceParameters = {};
@@ -2145,6 +2146,80 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(NamedResourceParametersTest);
 
+class TypedNamedKernelTest final : public RHITest {
+public:
+    TypedNamedKernelTest() { type = RHITestType::Resource; name = "typed_named_kernel_parameters_and_lifetime"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"compute.typed.named.lifetime"}, bench::Layer::Core, "binding", "binding",
+            {"typed-named-readback.bin"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice fixture;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Typed named kernel",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { fixture = std::move(value); }));
+        auto& device = *fixture;
+        auto& queue = *device.getQueue(QueueType::Graphics);
+        constexpr uint64_t kABI = 0x544e414d45445001ull;
+        struct Resources { ShaderBuffer output; GPUBufferSpan input; };
+        static_assert(sizeof(Resources) == 16 && offsetof(Resources, input) == 4);
+        std::vector<uint32_t> evidence;
+        for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
+            ShaderCompileResult shader;
+            REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "NamedResourceProbe", .entryPointName = "main",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics)
+                .transform([&](auto value) { shader = std::move(value); }));
+            ComputeKernel kernel;
+            std::string log;
+            REG_REQUIRE(kernel.initialize(device, {.spirv = shader.spirv,
+                .parameters = parameterAbi<NamedComputeParameters>(kABI)}, log));
+            std::unique_ptr<Buffer> input, output;
+            REG_REQUIRE(makeBuffer(device, input, 40));
+            REG_REQUIRE(makeBuffer(device, output));
+            Commands recording;
+            REG_REQUIRE(recording.initialize(device, queue));
+            REG_REQUIRE(recording.begin(0));
+            PreparedComputeDispatch prepared;
+            {
+                auto registry = ResourceRegistry::forDevice(device);
+                REG_CHECK(registry);
+                ParameterWriter writer(device, **registry, &recording.frame);
+                auto slice = input->slice({0, 4});
+                REG_CHECK(slice);
+                const Resources resources{writer.buffer(output.get()), writer.bufferSpan<uint32_t>(*slice)};
+                const uint32_t add = 2;
+                auto wrong = encodeNamedParameters(writer, resources, add, kABI + 1);
+                REG_CHECK(wrong && hasError(kernel.prepareDispatch(*wrong, 1), Error::InvalidArgument));
+                auto encoded = encodeNamedParameters(writer, resources, add, kABI);
+                REG_CHECK(encoded);
+                REG_REQUIRE(kernel.prepareDispatch(*encoded, 1).transform([&](auto value) { prepared = std::move(value); }));
+            }
+            input.reset();
+            kernel.clear();
+            REG_REQUIRE(prepared.record(*recording.commands));
+            QueueSubmissionTracker tracker;
+            REG_REQUIRE(tracker.initialize(device, queue));
+            std::unique_ptr<Semaphore> gate;
+            REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+            Drain drain{queue, *gate};
+            REG_REQUIRE(recording.submit(tracker, *gate));
+            REG_REQUIRE(recording.frame.wait());
+            output->invalidate();
+            const auto* values = static_cast<const uint32_t*>(output->map());
+            REG_CHECK(values);
+            evidence.insert(evidence.end(), values, values + 2);
+            output->unmap();
+            REG_CHECK(evidence[evidence.size() - 2] == 42 && evidence.back() == 0);
+        }
+        bench::readbackEvidence(context, "typed-named-readback.bin", std::span<const uint32_t>(evidence));
+        return RHITestResult::pass("Mapped/native typed named packets preserve shader ABI, bounds and allocation/executable lifetime");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(TypedNamedKernelTest);
+
 class OptionalNamedResourceParametersTest final : public RHITest {
 public:
     OptionalNamedResourceParametersTest()
@@ -2167,10 +2242,10 @@ public:
         auto& device = *fixture;
         auto* queue = device.getQueue(QueueType::Graphics);
         REG_CHECK(queue != nullptr);
-        const ComputeProgramBindingDesc bindings[] = {
+        const ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true}};
-        const ComputeProgramBindingDesc requiredBindings[] = {
+        const ComputeResourceBindingDesc requiredBindings[] = {
             {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
         const ComputeResourceField fields[] = {
@@ -2199,17 +2274,35 @@ public:
                 .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
             REG_REQUIRE(required.initialize(device, {.spirv = shader.spirv, .bindings = requiredBindings,
                 .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
+            REG_CHECK(program.kernel.parameterABI() != required.kernel.parameterABI());
+            ComputeResourceEncoder equivalent;
+            REG_REQUIRE(equivalent.initialize(device, {.bindings = bindings,
+                .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
+            REG_CHECK(equivalent.parameterABI() == program.kernel.parameterABI());
+            const auto previousABI = program.kernel.parameterABI();
+            REG_CHECK(hasError(initializeResourceKernel(device, {.bindings = bindings,
+                .requiresRayQuery = false, .resourceParameters = {8, fields}},
+                program.kernel, program.encoder, log), Error::InvalidArgument));
+            REG_CHECK(program.valid() && program.kernel.parameterABI() == previousABI &&
+                program.encoder.parameterABI() == previousABI);
             // Reuse one program first with the optional input, then without it:
             // omission must clear the previous handle rather than reuse a packet tail.
             for (uint32_t present = 1; present <= 2; ++present) {
                 REG_REQUIRE(recording.begin(frame++));
                 const ComputeDispatchBinding outputOnly{.binding = 0, .buffer = output.get()};
                 const ComputeDispatchBinding inputOnly{.binding = 1, .buffer = input.get()};
+                // A compatible-looking two-span root cannot pair a kernel with
+                // another encoder's required/optional resource contract.
+                REG_CHECK(hasError(prepareResourceDispatch(required.kernel, program.encoder, &recording.frame,
+                    {.bindings = {&outputOnly, 1}}), Error::InvalidArgument));
+                const ComputeIndirectDispatch mismatchedPair{.kernel = &required.kernel, .encoder = &program.encoder};
+                REG_CHECK(hasError(prepareResourceDispatch(program.kernel, program.encoder, &recording.frame,
+                    {.bindings = {&outputOnly, 1}, .indirectArguments = input.get()}, {&mismatchedPair, 1}), Error::InvalidArgument));
                 REG_CHECK(hasError(program.prepareDispatch(recording.frame, {.bindings = {&inputOnly, 1}}), Error::InvalidArgument));
                 REG_CHECK(hasError(required.prepareDispatch(recording.frame, {.bindings = {&outputOnly, 1}}), Error::InvalidArgument));
                 // Batch substitution must retain the optional/required policy,
                 // even when the two programs share the same wire field layout.
-                const ComputeIndirectDispatch incompatible{.program = &required};
+                const TestComputeIndirectDispatch incompatible{.program = &required};
                 REG_CHECK(hasError(program.prepareIndirectBatch(recording.frame,
                     {.bindings = {&outputOnly, 1}, .indirectArguments = input.get()}, {&incompatible, 1}), Error::InvalidArgument));
                 const ComputeDispatchBinding invalidOptional[] = {outputOnly, {.binding = 1}};
@@ -2268,7 +2361,7 @@ public:
         REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "CelestialLightingProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); }));
-        const ComputeProgramBindingDesc bindings[] = {
+        const ComputeResourceBindingDesc bindings[] = {
             {.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 63, .kind = ComputeResourceBindingKind::StorageBuffer}};
         ComputeProgram program;
@@ -2367,7 +2460,7 @@ public:
         REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "AtmosphereNamedResourceProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); }));
-        const ComputeProgramBindingDesc bindings[] = {
+        const ComputeResourceBindingDesc bindings[] = {
             {.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 57, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 58, .kind = ComputeResourceBindingKind::SampledImage},

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "TestResourceParameters.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include <cstddef>
 
 namespace metallic::tests {

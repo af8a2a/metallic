@@ -7,7 +7,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "harness/GraphEvidence.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -433,7 +433,7 @@ public:
 METALLIC_REGISTER_RHI_TEST(FrameUploadGrowthBurstTest);
 
 render::Result<> createProbe(render::Device& device, const char* entry,
-    std::span<const render::ComputeProgramBindingDesc> bindings, render::ComputeProgram& program, std::string& log)
+    std::span<const render::ComputeResourceBindingDesc> bindings, render::ComputeProgram& program, std::string& log)
 {
     render::ShaderCompileResult shader;
     render::Result<> result = render::compileSlangShaderToSpirv({
@@ -483,7 +483,7 @@ public:
         }
         FRAME_REQUIRE(device->createBuffer({.size = 12, .structureStride = 4,
             .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
-        const render::ComputeProgramBindingDesc bindings[] = {
+        const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
@@ -559,7 +559,7 @@ public:
             images, {images->views[0], images->views[1]}});
         auto b = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
             images, {images->views[0], images->views[2]}});
-        const render::ComputeProgramBindingDesc bindings[] = {
+        const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage, .descriptorCount = 2},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
@@ -676,7 +676,7 @@ public:
         textureDesc.height = 1;
         textureDesc.format = render::Format::RGBA32Sfloat;
         FRAME_REQUIRE(history.ensureTexture("history", textureDesc));
-        const render::ComputeProgramBindingDesc bindings[] = {
+        const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageImage},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},
@@ -1778,7 +1778,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "FrameEnvironmentProbe",
             .entryPointName = "readEnvironment", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
+        const render::ComputeResourceBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {

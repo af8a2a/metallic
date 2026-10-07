@@ -1,0 +1,17 @@
+if(NOT DEFINED SOURCE_DIRECTORY)
+    message(FATAL_ERROR "SOURCE_DIRECTORY is required")
+endif()
+file(GLOB_RECURSE compute_clients
+    "${SOURCE_DIRECTORY}/Source/*.cpp" "${SOURCE_DIRECTORY}/Source/*.h")
+foreach(path IN LISTS compute_clients)
+    file(RELATIVE_PATH relative "${SOURCE_DIRECTORY}" "${path}")
+    file(READ "${path}" source)
+    if(source MATCHES "ComputeProgram|getComputeProgram|TestComputeProgram")
+        message(FATAL_ERROR "${relative} reintroduces the retired compute executable facade")
+    endif()
+    if(relative MATCHES "/Core/ComputeKernel\\.(h|cpp)$" AND
+       source MATCHES "ComputeResourceEncoder|ComputeDispatchBinding|ComputeResourceLayout")
+        message(FATAL_ERROR "${relative} depends on the resource-input migration adapter")
+    endif()
+endforeach()
+message(STATUS "ComputeKernel ownership and dependency audit passed")

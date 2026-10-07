@@ -36,9 +36,9 @@ Phase 5 将 Surface 直接光累积收敛到一个 Slang generic，实现 CPU �
 - domain、quality 和目标 capability 要求分别进入 key，缓存还按实际 Device identity 隔离。
 - 实例编号、实例参数值和纹理句柄不进入 key；资源布局中的 descriptor capacity 等静态要求会进入 key。
 
-编译先经过现有 Slang 磁盘缓存及依赖校验，再查设备内 executable cache。相同 key 且完整 SPIR-V/布局一致时，共享 `ComputeProgram` 的同一个 immutable implementation，不创建第二条 Vulkan pipeline。缓存 lookup/build/publication 受锁保护，失败的编译或布局校验不会替换调用者现有 Program/Artifact。`ScenePathTracePass` 的现有编译路径接入该缓存。
+编译先经过现有 Slang 磁盘缓存及依赖校验，再查设备内 executable cache。相同 key 且完整 SPIR-V/布局一致时，共享 `ComputeKernel` 的同一个 immutable implementation，不创建第二条 Vulkan pipeline。Artifact 另外持有不可变 `ComputeResourceEncoder`，资源契约校验与 executable 分离。缓存 lookup/build/publication 受锁保护，失败的编译或布局校验不会替换调用者现有 Kernel/Artifact。`ScenePathTracePass` 的现有编译路径接入该缓存。
 
-成功的新 executable 分配新的 generation。缓存使用 weak ownership；pass/artifact 持有当前程序，已记录 dispatch 持有自己的 kernel 和参数附件，旧 generation 可在 GPU 工作完成后退役。`ComputeProgram::share()` 复制共享句柄，clear/reinitialize 仅替换该句柄，不修改其他持有者的 implementation。缓存不是永久驻留策略：所有 artifact owner 释放后，后续请求允许重新创建 executable。
+成功的新 executable 分配新的 generation。缓存使用 weak ownership；pass/artifact 持有当前程序，已记录 dispatch 持有自己的 kernel 和参数附件，旧 generation 可在 GPU 工作完成后退役。`ComputeKernel` 的普通复制共享 executable；clear/reinitialize 仅替换该句柄，不修改其他持有者的 implementation。缓存不是永久驻留策略：所有 artifact owner 释放后，后续请求允许重新创建 executable。
 
 三模型的 CPU 类型特化目前由共享诊断场景验证，生产场景继续使用既有 OpenPBR 入口。把场景 MaterialInstance 映射到异构 Program bins 并调度，是 Phase 6 的范围。
 

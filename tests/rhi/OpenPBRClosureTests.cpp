@@ -1,3 +1,4 @@
+#include "TestComputeProgram.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -84,9 +85,9 @@ RHITestResult runSurfaceLighting(RHITestContext& context, Device& device,
             .entry = "surfaceLightingProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, model);
         const std::string label = request.defines.back().second;
         ShaderRequestView source(request);
-        const ComputeProgramBindingDesc counterBinding{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
+        const ComputeResourceBindingDesc counterBinding{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
         const ComputeResourceField counterField{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer, .offset = 0};
-        const ComputeProgramDesc layout{.pushConstantSize = sizeof(OpenPBRProbeParams), .bindings = {&counterBinding, 1},
+        const ResourceComputeKernelDesc layout{.pushConstantSize = sizeof(OpenPBRProbeParams), .bindings = {&counterBinding, 1},
             .requiresRayQuery = false, .resourceParameters = {.size = 4, .fields = {&counterField, 1}}};
         ComputeProgram program, alias;
         std::shared_ptr<const MaterialExecutableArtifact> artifact, cached;

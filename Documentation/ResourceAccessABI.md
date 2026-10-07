@@ -37,20 +37,20 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   payload is a 12-byte `GPUBufferSpan` (index, byte offset, word count).
   `ParameterRoot.getParameters<T>()` performs a raw descriptor load; neither large
   parameter blocks nor resource/constant/texture-index tables use BDA.
-- All `ComputeProgram` shaders read named resource structs through
+- Named-resource shaders read named resource structs through
   `getResourceParameters<T>()`, then resolve their explicit handles/spans. The
   shared `NamedResourceParameters.h` declares the CPU/Slang wire fields.
   `NamedResourceLayouts.h` maps CPU input IDs to field offsets; those IDs never
   reach the GPU packet. The scene block is 440 bytes, replacing the
   sparse 24-byte-per-slot table. Scalar images no longer allocate index arrays.
-- `ComputeProgramDesc.resourceParameters` validates field type, bounds, alignment,
+- `ResourceComputeKernelDesc.resourceParameters` validates field type, bounds, alignment,
   overlap and array representation before pipeline creation. The encoder copies
   layout metadata and preserves immutable prepared dispatch/submission leases.
   Its 24-byte root still carries resource and constant DR spans. Image arrays
   contain 32-bit indices; named data spans count words and `typedBufferSpan<T>`
   validates divisibility before exposing typed elements. AS fields remain 64-bit.
 - The numeric-slot adapter and `ComputeResourceSlot` wire table are removed.
-  `ComputeProgram` requires an explicit nonempty named layout and writes directly
+  `ComputeResourceEncoder` requires an explicit nonempty named layout and writes directly
   to field offsets, without a sparse CPU slot array. CPU IDs are not limited to
   the old 0..255 slot range; only the number of bindings remains bounded at 256.
   `getResource`, `getResourceArray` and `getData` no longer exist in Core or its
@@ -118,12 +118,62 @@ remain explicit and independent of descriptor resolution.
 
 - `Device::createComputePipeline` is the RHI backend factory. Keep it available
   for backend/compiler probes and code that explicitly manages execution state.
-- `ComputeKernel` owns the executable and a declared parameter ABI. Prefer it
-  for new compute passes; both inline push and descriptor-backed parameters use
-  the same prepared-dispatch execution and submission lifetime handling.
-- `ComputeProgram` is a CPU binding adapter over `ComputeKernel`, not a separate
-  executor. It maps input IDs to named fields and bundles resource leases. It has
-  no numeric-slot shader mode or implicit resource layout.
+- `ComputeKernel` is the sole application compute executable. Both inline push
+  and descriptor-backed parameters use the same prepared-dispatch execution and
+  submission lifetime handling. Copying a kernel shares its immutable generation;
+  clear/reinitialize replaces only that handle.
+- New passes fill typed parameters with `ParameterWriter`. Existing shaders with
+  separate named resource and constant blocks can use `NamedComputeParameters.h`
+  to encode those typed blocks without binding IDs or changing the Slang ABI.
+  GPU probes, ray-query visualization, RTXCR sample, VisibilityBufferMaterial and
+  DLSS output guides use this path.
+- `ComputeResourceEncoder` is an immutable, non-executable migration adapter for
+  dynamic resource manifests in PT/materials, RTXDI, material visualization and
+  shadows. It owns no shader or pipeline; `encode()` produces `EncodedParameters`.
+  `initializeResourceKernel()` transactionally publishes a kernel and encoder,
+  and `prepareResourceDispatch()` composes them into the common prepared packet.
+  Equivalent live contracts are interned by full equality with CPU-only ABI IDs;
+  mismatched kernel/encoder pairs and incompatible indirect permutations reject
+  before recording. Required/optional fields and descriptor counts remain part
+  of that contract. These IDs are not serialized or shader cache keys.
+- Production `ComputeProgram` and `ShaderRegistry::getComputeProgram` are removed.
+  `tests/rhi/TestComputeProgram.h` is only a fixture facade over the separated APIs.
+  Further migration of dynamic manifests to domain-specific typed encoders can
+  proceed independently of executable ownership and command recording.
+
+### ComputeKernel migration verification (2026-10-07)
+
+- Built the editor and RHI tests in `build-scheduling-release`, plus the RHI
+  tests in the existing NRD-enabled `build-pass-stages-nrd` configuration.
+  ShaderRegistry and ComputeKernel dependency audits pass.
+- Editor smoke exits successfully after recording, submitting and presenting a
+  preview frame. Startup warmup completes 378 requests with 100 existing cache
+  hits and zero failures (`editor-smoke.log`). This startup check ran outside
+  the sandbox after its path canonicalization restrictions blocked warmup.
+- The final RHI selection has 16 passing cases and one NRC teardown failure.
+  Passing coverage includes typed named parameters in mapped/native modes,
+  exact encoder/ABI compatibility, optional inputs, retained allocations,
+  prepared parallel recording, indirect permutations, material cache/reload,
+  and visibility preparation (16 configurations, 96 serial/parallel frames).
+- The rendering selection has 10 passing cases and two optional skips (NRC,
+  RTXDI). A separate NRD-enabled RTXDI/RELAX run passes. Material-normal,
+  OpenPBR, RTXCR and RTXDI preview outputs were inspected. Initial sandboxed
+  runs passed their assertions but failed HTML report path canonicalization;
+  the final selection and NRD run exported reports outside that restriction.
+- The opt-in NRC run passes its rendering/history/cancel/retry checks, but
+  device destruction reports 62 leaked objects (`VUID-vkDestroyDevice-device-05137`).
+  An isolated probe using the unchanged NRC integration reproduces the same
+  VUID with 26 leaked objects after context initialize/clear and device teardown,
+  without creating compute kernels, encoders, shaders or frames. Its device-only
+  control has zero validation errors. NRC lifecycle validation remains failed;
+  the SDK/integration teardown issue is outside this executable migration.
+- Local logs, XML and image reports are under
+  `.cache/compute-kernel-migration/`, including `final-tests.*`, `render-tests.log`,
+  `nrd-tests.*`, `nrc-isolated.log` and `nrc-device-only.log`. The standalone
+  probe source and build instructions are retained there for reproduction.
+
+These checks do not establish a performance improvement, long-running temporal
+stability, NTC runtime correctness or live Streamline DLSS reconstruction.
 
 `MeshletStreamRuntime::UpdatePass` now uses two `ComputeKernel` instances for page
 initialization and patch application. The 136-byte inline `MeshletStreamUserPush`,

@@ -1,7 +1,7 @@
 #include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -159,7 +159,7 @@ public:
         UPLOAD_REQUIRE(compileSlangShaderToSpirv({.moduleName = "SceneUploadProbe", .entryPointName = "sceneUploadProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         ComputeProgram program;
-        const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::SampledImage}, {1}};
+        const ComputeResourceBindingDesc layout[] = {{0, ComputeResourceBindingKind::SampledImage}, {1}};
         UPLOAD_REQUIRE(program.initialize(*device, {
             .spirv = shader.spirv,
             .pushConstantSize = 4,

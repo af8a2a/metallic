@@ -1,6 +1,6 @@
 #pragma once
 #include "Runtime/Render/Material/MaterialRuntime.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeResourceEncoder.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
 
@@ -12,7 +12,7 @@ enum class SurfaceMaterialImplementation { OpenPBR, DebugLambert, DebugMirror };
 ShaderRequest specializeSurfaceMaterialProgram(ShaderRequest request, SurfaceMaterialImplementation implementation);
 
 // Compiled built-in target. These resource declarations are consumed by the
-// checked ComputeProgram encoder, not merely advisory compiler metadata.
+// checked resource encoder, not merely advisory compiler metadata.
 struct MaterialExecutableArtifact
 {
     uint64_t key = 0;
@@ -20,11 +20,12 @@ struct MaterialExecutableArtifact
     uint64_t generation = 0;
     uint64_t parameterABI = kLegacyMaterialABI;
     uint32_t constantsSize = 0;
-    std::vector<ComputeProgramBindingDesc> resources;
+    std::vector<ComputeResourceBindingDesc> resources;
     ShaderCompileResult shader;
     // Immutable once published through shared_ptr<const ...>. This handle and
     // every pass share a single underlying kernel, never one per instance.
-    ComputeProgram executable;
+    ComputeKernel executable;
+    ComputeResourceEncoder encoder;
     std::vector<ComputeResourceField> resourceFields;
     uint32_t resourceParameterSize = 0;
     bool requiresRayQuery = false;
@@ -49,9 +50,9 @@ MaterialProgramCacheStats materialProgramCacheStats();
 // Compilation and pipeline creation are transactional. Prepared dispatches
 // retain old executables/parameters through the existing frame completion.
 Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,
-    const ComputeProgramDesc& layout, ComputeProgram& program,
+    const ResourceComputeKernelDesc& layout, ComputeKernel& program,
     std::shared_ptr<const MaterialExecutableArtifact>& artifact, std::string& log,
     MaterialProgramCompileOptions options = {});
-Result<> initializeMaterialErrorProgram(Device& device, ComputeProgram& program, std::string& log);
+Result<> initializeMaterialErrorProgram(Device& device, ComputeKernel& program, ComputeResourceEncoder& encoder, std::string& log);
 
 } // namespace metallic::render

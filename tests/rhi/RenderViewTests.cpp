@@ -1,6 +1,6 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/RenderView.h"
@@ -27,7 +27,7 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "ViewConstantsProbe",
             .entryPointName = "viewConstantsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 2},

@@ -759,7 +759,7 @@ public:
             });
         const bool baseReady = closureProgramsReady && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
-                [](const ComputeProgram& program) { return program.valid(); }));
+                [](const ComputeKernel& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
             (programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() &&
                 programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() &&
@@ -790,61 +790,61 @@ public:
         };
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
-        std::vector<ComputeProgramBindingDesc> baseBindings{
-            ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
-            ComputeProgramBindingDesc{.binding = 57, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            ComputeProgramBindingDesc{.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            ComputeProgramBindingDesc{.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            ComputeProgramBindingDesc{.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
-            ComputeProgramBindingDesc{.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            ComputeProgramBindingDesc{
+        std::vector<ComputeResourceBindingDesc> baseBindings{
+            ComputeResourceBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            ComputeResourceBindingDesc{.binding = 57, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            ComputeResourceBindingDesc{.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{
                 .binding = 0,
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 1,
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 2,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 3,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 4,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 5,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 6,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 7,
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 8,
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 9,
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = sceneResources_.materialTextureCount(),
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = 10,
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
-            ComputeProgramBindingDesc{
+            ComputeResourceBindingDesc{
                 .binding = kEnvironmentImportancePdfBinding,
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
@@ -853,7 +853,7 @@ public:
             baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
         }
         if (realtime_) {
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
             });
         }
@@ -892,66 +892,66 @@ public:
         }
         if (useOpenPBR) {
             baseBindings.push_back({.binding = kOpenPBRLutSamplerBinding, .kind = ComputeResourceBindingKind::Sampler});
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kOpenPBRLut2DBinding,
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut2DCount,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kOpenPBRLut3DBinding,
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut3DCount,
             });
         }
         if (exportGuides) {
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kDLSSRRAlbedoBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kDLSSRRSpecularAlbedoBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kDLSSRRNormalRoughnessBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kDLSSRRMotionVectorsBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kDLSSRRLinearDepthBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kDLSSRRSpecularHitDistanceBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kDLSSDepthBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
         }
         if (ntcActive) {
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureLatentsBinding,
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kMaxNeuralTextureSets,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureConstantsBinding,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureWeightsBinding,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureSetInfoBinding,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
-            baseBindings.push_back(ComputeProgramBindingDesc{
+            baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = kNeuralTextureSamplerBinding,
                 .kind = ComputeResourceBindingKind::Sampler,
             });
@@ -966,8 +966,8 @@ public:
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
-                const std::vector<ComputeProgramBindingDesc>& permutationBindings,
-                ComputeProgram& outProgram, MaterialProgramId definition = MaterialProgramId::OpenPBRComposite) -> Result<> {
+                const std::vector<ComputeResourceBindingDesc>& permutationBindings,
+                ComputeKernel& outProgram, MaterialProgramId definition = MaterialProgramId::OpenPBRComposite) -> Result<> {
             const auto request = makeSceneShaderRequest(shaderProgram, shaderOptions, extraDefines);
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
@@ -988,7 +988,7 @@ public:
                 if (context.shaderReload || outProgram.valid()) { return compiled; }
                 log += "Initial material compilation failed; displaying the error material.\n";
                 std::string errorLog;
-                auto fallback = initializeMaterialErrorProgram(*context.device, errorProgram_, errorLog);
+                auto fallback = initializeMaterialErrorProgram(*context.device, errorProgram_, errorEncoder_, errorLog);
                 if (!fallback) { log += errorLog; return fallback; }
                 return {};
             }
@@ -997,9 +997,9 @@ public:
             return {};
         };
 
-        const std::vector<ComputeProgramBindingDesc> cacheBindings = [baseBindings]() {
-            std::vector<ComputeProgramBindingDesc> bindings = baseBindings;
-            bindings.push_back(ComputeProgramBindingDesc{
+        const std::vector<ComputeResourceBindingDesc> cacheBindings = [baseBindings]() {
+            std::vector<ComputeResourceBindingDesc> bindings = baseBindings;
+            bindings.push_back(ComputeResourceBindingDesc{
                 .binding = kScenePathTraceCacheParamsBinding,
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
@@ -1047,17 +1047,17 @@ public:
             }
         }
         if (cacheMode_ == kScenePathTraceCacheModeSharc) {
-            const std::vector<ComputeProgramBindingDesc> sharcBindings = [cacheBindings]() {
-                std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
-                bindings.push_back(ComputeProgramBindingDesc{
+            const std::vector<ComputeResourceBindingDesc> sharcBindings = [cacheBindings]() {
+                std::vector<ComputeResourceBindingDesc> bindings = cacheBindings;
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceSharcHashEntriesBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(ComputeProgramBindingDesc{
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceSharcAccumulationBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(ComputeProgramBindingDesc{
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceSharcResolvedBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
@@ -1153,26 +1153,26 @@ public:
 
 #if METALLIC_HAS_NRC
         if (cacheMode_ == kScenePathTraceCacheModeNRC) {
-            const std::vector<ComputeProgramBindingDesc> nrcBindings = [cacheBindings]() {
-                std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
+            const std::vector<ComputeResourceBindingDesc> nrcBindings = [cacheBindings]() {
+                std::vector<ComputeResourceBindingDesc> bindings = cacheBindings;
                 bindings.push_back({.binding = 100, .kind = ComputeResourceBindingKind::StorageBuffer});
-                bindings.push_back(ComputeProgramBindingDesc{
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceNRCQueryPathInfoBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(ComputeProgramBindingDesc{
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceNRCTrainingPathInfoBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(ComputeProgramBindingDesc{
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceNRCTrainingPathVerticesBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(ComputeProgramBindingDesc{
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceNRCQueryRadianceParamsBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
-                bindings.push_back(ComputeProgramBindingDesc{
+                bindings.push_back(ComputeResourceBindingDesc{
                     .binding = kScenePathTraceNRCCountersBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
@@ -1271,7 +1271,7 @@ public:
                 if (!output.valid()) { continue; }
                 const uint32_t color = std::string_view(name) == "color";
                 const ComputeDispatchBinding binding{.binding = 0, .textureView = output.view()};
-                auto result = errorProgram_.dispatch({.commandBuffer = &context.commandBuffer(),
+                auto result = dispatchResources(errorProgram_, errorEncoder_, {.commandBuffer = &context.commandBuffer(),
                     .bindings = {&binding, 1}, .pushData = &color, .pushDataSize = sizeof(color),
                     .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
                 if (!result) { return result; }
@@ -1429,7 +1429,7 @@ public:
         TextureHandle depth = exportGuides ? context.outputTexture("depth") : TextureHandle{};
 
         uint32_t cacheMode = cacheMode_;
-        ComputeProgram* renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
+        ComputeKernel* renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
         if (cacheMode == kScenePathTraceCacheModeSharc) {
             if (!programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() ||
                 !programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() ||
@@ -1947,13 +1947,13 @@ public:
                             const uint32_t bin = sparsePrograms ? materialClosureClassification_.programOrder[slot] : slot;
                             binPushes[bin] = push;
                             binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
-                            ComputeProgram* executable = sparsePrograms
+                            ComputeKernel* executable = sparsePrograms
                                 ? materialProgramBins_[bin].program
                                 : bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram;
                             dispatches[slot] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
-                                .program = executable};
+                                .kernel = executable, .encoder = &encoderFor(*executable)};
                         }
-                        return renderProgram->dispatchIndirectBatch({
+                        return dispatchResources(*renderProgram, encoderFor(*renderProgram), {
                             .commandBuffer = &commands,
                             .bindings = bindings,
                             .pushDataSize = sizeof(push),
@@ -1961,7 +1961,7 @@ public:
                             .profiler = profiler,
                         }, dispatches);
                     }
-                    return renderProgram->dispatch({
+                    return dispatchResources(*renderProgram, encoderFor(*renderProgram), {
                         .commandBuffer = &commands,
                         .bindings = bindings,
                         .pushData = &push,
@@ -1993,6 +1993,16 @@ public:
     }
 
 private:
+    const ComputeResourceEncoder& encoderFor(const ComputeKernel& kernel) const
+    {
+        for (size_t i = 0; i < materialExecutableKeys_.size(); ++i) {
+            if (materialExecutableKeys_[i].first == &kernel) { return materialArtifacts_[i]->encoder; }
+        }
+        // An unregistered executable fails resource encoding without recording work.
+        static const ComputeResourceEncoder invalid;
+        return invalid;
+    }
+
     std::vector<std::shared_ptr<Buffer>> deferredFrameInfoPool_;
 
     struct StageResources {
@@ -2150,10 +2160,11 @@ private:
         materialClosureClassification_ = {};
         materialProgramBinGeneration_ = 0;
         errorProgram_.clear();
+        errorEncoder_.clear();
         materialArtifacts_.clear();
-        for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
+        for (ComputeKernel& program : classifiedPrograms_) { program.clear(); }
         closurePrograms_.clear();
-        for (ComputeProgram& program : programs_) {
+        for (ComputeKernel& program : programs_) {
             program.clear();
         }
         sharcClearProgram_.clear();
@@ -2261,8 +2272,8 @@ private:
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
         const std::vector<ComputeDispatchBinding>& baseBindings,
-        ComputeProgram& queryProgram,
-        ComputeProgram& updateProgram)
+        ComputeKernel& queryProgram,
+        ComputeKernel& updateProgram)
     {
         const uint32_t entriesLog2 = uintProperty(
             context.properties(),
@@ -2364,7 +2375,7 @@ private:
             }});
         }
         stages.push_back({"SHaRC update", resources.uses, [&](CommandBuffer& commands) {
-            return updateProgram.dispatch({
+            return dispatchResources(updateProgram, encoderFor(updateProgram), {
                 .commandBuffer = &commands,
                 .bindings = updateBindings,
                 .pushData = &push,
@@ -2378,7 +2389,7 @@ private:
             return dispatchSharcMaintenance(commands, sharcResolveProgram_, resolvePush, maintenanceGroups);
         }});
         stages.push_back({"SHaRC query", resources.uses, [&](CommandBuffer& commands) {
-            return queryProgram.dispatch({
+            return dispatchResources(queryProgram, encoderFor(queryProgram), {
                 .commandBuffer = &commands,
                 .bindings = queryBindings,
                 .pushData = &push,
@@ -2460,8 +2471,8 @@ private:
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
         const std::vector<ComputeDispatchBinding>& baseBindings,
-        ComputeProgram& updateProgram,
-        ComputeProgram& queryProgram,
+        ComputeKernel& updateProgram,
+        ComputeKernel& queryProgram,
         TextureView* historyCurrentView,
         TextureView* historyPreviousView)
     {
@@ -2684,7 +2695,7 @@ private:
                 return begun ? prepareParams() : begun;
             }, RenderGraphPassKind::Unsafe},
             RenderGraphStage{"NRC update", resources.uses, [&](CommandBuffer& commands) {
-                return updateProgram.dispatch({
+                return dispatchResources(updateProgram, encoderFor(updateProgram), {
                     .commandBuffer = &commands,
                     .bindings = traceBindings,
                     .pushData = &push,
@@ -2695,7 +2706,7 @@ private:
                 });
             }},
             RenderGraphStage{"NRC query", resources.uses, [&](CommandBuffer& commands) {
-                return queryProgram.dispatch({
+                return dispatchResources(queryProgram, encoderFor(queryProgram), {
                     .commandBuffer = &commands,
                     .bindings = traceBindings,
                     .pushData = &push,
@@ -2816,7 +2827,7 @@ private:
         // The current built-in compiler selects conservative OpenPBR variants.
         // Binning/dispatch use their complete compiled ProgramKey and handle,
         // not a BSDF class or a source instance number.
-        const auto executableKey = [&](ComputeProgram* program) {
+        const auto executableKey = [&](ComputeKernel* program) {
             return std::find_if(materialExecutableKeys_.begin(), materialExecutableKeys_.end(),
                 [program](const auto& entry) { return entry.first == program; })->second;
         };
@@ -3126,7 +3137,8 @@ private:
         }
     }
 
-    ComputeProgram errorProgram_;
+    ComputeKernel errorProgram_;
+    ComputeResourceEncoder errorEncoder_;
     std::vector<std::shared_ptr<const MaterialExecutableArtifact>> materialArtifacts_;
     bool realtime_ = false;
     bool visibilityDeferred_ = false;
@@ -3134,17 +3146,17 @@ private:
     struct ActiveMaterialProgramBin
     {
         MaterialProgramKey key;
-        ComputeProgram* program;
+        ComputeKernel* program;
         std::optional<MaterialClosureFamily> family;
     };
     MaterialClosureClassification materialClosureClassification_;
-    std::vector<std::pair<ComputeProgram*, MaterialProgramKey>> materialExecutableKeys_;
+    std::vector<std::pair<ComputeKernel*, MaterialProgramKey>> materialExecutableKeys_;
     std::vector<ActiveMaterialProgramBin> materialProgramBins_;
     std::vector<uint32_t> materialInstanceProgramBins_;
     uint64_t materialProgramBinGeneration_ = 0;
     std::unique_ptr<Buffer> unshadowedParameters_;
-    std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
-    std::vector<ComputeProgram> closurePrograms_;
+    std::array<ComputeKernel, kMaterialClassCount - 1> classifiedPrograms_;
+    std::vector<ComputeKernel> closurePrograms_;
     bool compiledMaterialBinning_ = true;
     bool compiledProgramBinning_ = true;
     bool compiledHalfPrecision_ = true;
@@ -3171,7 +3183,7 @@ private:
         .addressW = SamplerAddressMode::ClampToEdge,
     };
     OpenPBRLutResources openPBRLuts_;
-    std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
+    std::array<ComputeKernel, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel sharcClearProgram_;
     ComputeKernel sharcResolveProgram_;
     ComputeKernel tonemapProgram_;

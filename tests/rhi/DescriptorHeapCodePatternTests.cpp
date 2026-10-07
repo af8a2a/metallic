@@ -1,3 +1,4 @@
+#include "TestComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanPipelineDiagnostics.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeKernel.h"

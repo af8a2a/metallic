@@ -3,7 +3,7 @@
 #include "RHITest.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -94,7 +94,7 @@ public:
             .entryPointName = "reGIRVirtualLightProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!compiled) { return RHITestResult::fail(shader.diagnostics); }
-        const std::array<render::ComputeProgramBindingDesc, 4> bindings{{
+        const std::array<render::ComputeResourceBindingDesc, 4> bindings{{
             {.binding = 0}, {.binding = 50}, {.binding = 52},
             {.binding = 53, .kind = render::ComputeResourceBindingKind::SampledImage},
         }};

@@ -14,6 +14,11 @@ struct ComputeKernel::Impl {
     PreparedExecution execution;
 };
 
+ParameterABI ComputeKernel::parameterABI() const
+{
+    return impl_ ? impl_->parameters : ParameterABI{};
+}
+
 Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, std::string& log)
 {
     clear();

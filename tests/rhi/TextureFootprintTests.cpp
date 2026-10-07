@@ -1,6 +1,6 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
@@ -83,7 +83,7 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc binding{
+        const render::ComputeResourceBindingDesc binding{
             .binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,

@@ -1,7 +1,7 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -183,7 +183,7 @@ public:
             .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return makeError(shader.error()); }
-        const ComputeProgramBindingDesc bindings[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
+        const ComputeResourceBindingDesc bindings[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
         return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
