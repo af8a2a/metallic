@@ -91,7 +91,6 @@
           ],
           "fovDegrees": 45.0,
           "projection": "perspective",
-          "reversedZ": true,
           "up": [
             0.0,
             1.0,
@@ -129,7 +128,6 @@
           ],
           "fovDegrees": 45.0,
           "projection": "perspective",
-          "reversedZ": true,
           "up": [
             0.0,
             1.0,
@@ -177,7 +175,6 @@
         "preset": 0,
         "style": 0,
         "fallbackToInput": true,
-        "depthInverted": true,
         "resetSerial": 0
       }
     },

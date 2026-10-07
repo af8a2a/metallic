@@ -241,13 +241,12 @@ public:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
         };
-        constexpr bool kMaterialReversedZ = kDefaultReversedZ;
         RenderingAttachmentDesc depthAttachment{
             .view = depth.view(),
             .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(kMaterialReversedZ),
+            .clearDepth = depthClearValue(),
         };
         auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
@@ -261,7 +260,7 @@ public:
         }
         if (auto commandResult = registry_->bind(context.commandBuffer(), std::array{positionHandle_, materialIndexHandle_, materialHandle_, paramsHandle_, transformHandle_}); !commandResult) { return commandResult; }
         const RasterExecutionState rasterState{.depthStencil = {
-            .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(kMaterialReversedZ)}};
+            .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp()}};
         auto bound = context.commandBuffer().bindExecution(defaultProgram_->execution(rasterState));
         if (!bound) { context.commandBuffer().endRendering(); return bound; }
         if (auto commandResult = context.commandBuffer().setViewport(Viewport{
@@ -714,7 +713,7 @@ private:
         outParams.clipOrtho[0] = 0.001f;
         outParams.clipOrtho[1] = std::max(distance + radius * 3.0f, 1.0f);
         outParams.clipOrtho[2] = radius * 2.0f;
-        outParams.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
+        outParams.clipOrtho[3] = 1.0f;
     }
 
     Result<> updateParamsBuffer(uint32_t width, uint32_t height)

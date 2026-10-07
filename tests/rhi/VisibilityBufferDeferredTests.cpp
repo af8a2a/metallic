@@ -105,6 +105,13 @@ public:
         }
         lighting.lights.clear();
         preview.setLighting(lighting);
+        // Sun and Moon occupy independent world-environment slots.
+        auto darkEnvironment = scene.worldEnvironment();
+        darkEnvironment.sun.enabled = false;
+        darkEnvironment.moon.enabled = false;
+        if (!preview.setWorldEnvironment(darkEnvironment)) {
+            return RHITestResult::fail("Could not disable celestial lights for the dark-frame check");
+        }
         if (!preview.render(sample.graph, 193, 157)) { return RHITestResult::fail(preview.lastLog()); }
         for (uint32_t pixel : preview.pixels()) {
             if ((pixel & 0xffffffu) != 0u) { return RHITestResult::fail("Deferred output retained a removed light"); }
@@ -113,6 +120,9 @@ public:
         if (!render::loadBuiltInRenderSample("lookdev-vbuffer", sample, log)) { return RHITestResult::fail(log); }
         preview.setEnvironment(scene.environment());
         preview.setLighting(scene.lighting());
+        if (!preview.setWorldEnvironment(scene.worldEnvironment())) {
+            return RHITestResult::fail("Could not restore the production world environment");
+        }
         for (uint32_t frame = 0; frame < 256; ++frame) {
             if (!preview.render(sample.graph, 768, 768)) { return RHITestResult::fail(preview.lastLog()); }
         }

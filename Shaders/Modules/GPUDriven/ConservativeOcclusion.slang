@@ -43,23 +43,21 @@ public bool conservativeSphereScreenRect(float3 center, float radius, float2 siz
     return true;
 }
 
-public float conservativeProjectDepth(float viewZ, float zNear, float zFar, bool orthographic, bool reversedZ)
+public float conservativeProjectDepth(float viewZ, float zNear, float zFar, bool orthographic)
 {
     if (orthographic) {
-        return reversedZ ? (zFar - viewZ) / (zFar - zNear) : (viewZ - zNear) / (zFar - zNear);
+        return (zFar - viewZ) / (zFar - zNear);
     }
     float safeZ = abs(viewZ) > 0.000001 ? viewZ : (viewZ < 0.0 ? -0.000001 : 0.000001);
     // Avoid subtracting two nearly equal values for distant reversed-Z geometry.
-    return reversedZ ? (zNear / safeZ) * ((zFar - viewZ) / (zFar - zNear))
-        : (zFar / (zFar - zNear)) * (1.0 - zNear / safeZ);
+    return (zNear / safeZ) * ((zFar - viewZ) / (zFar - zNear));
 }
 
-public bool conservativeDepthOccluded(float nearestDepth, float4 depths, bool reversedZ)
+public bool conservativeDepthOccluded(float nearestDepth, float4 depths)
 {
     if (!isfinite(nearestDepth) || !all(isfinite(depths)) ||
         any(depths < 0.0) || any(depths > 1.0)) { return false; }
     float bias = max(1e-7, abs(nearestDepth) * 4e-7);
-    return reversedZ ? nearestDepth + bias < min(min(depths.x, depths.y), min(depths.z, depths.w))
-        : nearestDepth - bias > max(max(depths.x, depths.y), max(depths.z, depths.w));
+    return nearestDepth + bias < min(min(depths.x, depths.y), min(depths.z, depths.w));
 }
 } // namespace Metallic.GPUDriven

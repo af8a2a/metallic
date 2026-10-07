@@ -25,7 +25,7 @@ void scenePositionFetchProbeMain(uint3 id : SV_DispatchThreadID)
         ray.origin.y = 20.0;
     }
     ScenePathTracePush push = {};
-    push.clipOrtho = float4(0.001, 100.0, 0.0, 0.0);
+    push.clipOrtho = float4(0.001, 100.0, 0.0, 1.0);
     push.bitangentFlip = 1.0;
     HitInfo hit;
     bool found = traceClosest(ray, push, hit);

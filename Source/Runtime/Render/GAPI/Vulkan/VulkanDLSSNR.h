@@ -17,7 +17,6 @@ struct DLSSNRSettings {
     // Scale the supplied current-to-previous motion into input pixels.
     float motionVectorScaleX = 1.0f;
     float motionVectorScaleY = 1.0f;
-    bool depthInverted = true;
     bool useAutoMask = false;
     bool uiCorrection = false;
     bool upscaling = false;

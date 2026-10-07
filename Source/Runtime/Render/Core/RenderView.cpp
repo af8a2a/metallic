@@ -25,7 +25,7 @@ bool RenderView::setCamera(const ViewCamera& camera)
         camera.nearPlane <= 0.0f || camera.farPlane <= camera.nearPlane ||
         !std::isfinite(camera.orthoHeight) || camera.orthoHeight <= 0.0f) { return false; }
     if (camera_ != camera) {
-        if (camera_.orthographic != camera.orthographic || camera_.reversedZ != camera.reversedZ ||
+        if (camera_.orthographic != camera.orthographic ||
             camera_.nearPlane != camera.nearPlane || camera_.farPlane != camera.farPlane) { cameraCut(); }
         camera_ = camera;
         ++revision_;
@@ -48,7 +48,7 @@ bool RenderView::setCameraProperties(const nlohmann::json& properties)
         const auto projection = properties.value("projection", std::string(camera.orthographic ? "orthographic" : "perspective"));
         if (projection != "perspective" && projection != "orthographic") { return false; }
         camera.orthographic = projection == "orthographic";
-        camera.reversedZ = properties.value("reversedZ", camera.reversedZ);
+        // Legacy reversedZ properties are ignored: every Metallic view uses reversed Z.
         return setCamera(camera);
     } catch (const nlohmann::json::exception&) { return false; }
 }
@@ -57,8 +57,7 @@ nlohmann::json RenderView::cameraProperties() const
 {
     return {{"eye", camera_.eye}, {"center", camera_.center}, {"up", camera_.up},
         {"fovDegrees", camera_.fovDegrees}, {"znear", camera_.nearPlane}, {"zfar", camera_.farPlane},
-        {"orthoHeight", camera_.orthoHeight}, {"projection", camera_.orthographic ? "orthographic" : "perspective"},
-        {"reversedZ", camera_.reversedZ}};
+        {"orthoHeight", camera_.orthoHeight}, {"projection", camera_.orthographic ? "orthographic" : "perspective"}};
 }
 
 ViewConstants RenderView::constants(uint64_t frameIndex, uint32_t renderWidth, uint32_t renderHeight,
@@ -76,7 +75,7 @@ ViewConstants RenderView::constants(uint64_t frameIndex, uint32_t renderWidth, u
     view.current.clipOrtho[0] = camera_.nearPlane;
     view.current.clipOrtho[1] = camera_.farPlane;
     view.current.clipOrtho[2] = camera_.orthoHeight;
-    view.current.clipOrtho[3] = camera_.reversedZ ? 1.0f : 0.0f;
+    view.current.clipOrtho[3] = 1.0f;
     view.frame[0] = static_cast<uint32_t>(frameIndex);
     const bool jitterEnabled = temporalJitter_ && !temporalJitterSuppressed_;
     view.frame[2] = jitterEnabled ? 1u : 0u;

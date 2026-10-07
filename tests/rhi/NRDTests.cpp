@@ -997,7 +997,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
                 const float z = falseDepthBlocker && x < 20 ? 2.0f : 3.0f;
                 float d = pose.orthographic ? (z - pose.nearPlane) / (pose.farPlane - pose.nearPlane)
                     : pose.farPlane / (pose.farPlane - pose.nearPlane) * (1.0f - pose.nearPlane / z);
-                data[y * w + x] = pose.reversedZ ? 1.0f - d : d;
+                data[y * w + x] = 1.0f - d;
             }
         }
         upload->flush({0, uint64_t(w) * h * 4});
@@ -1053,27 +1053,24 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     };
     for (bool perspective : {false, true}) {
         pose.orthographic = !perspective;
-        for (bool reversed : {false, true}) {
-            pose.reversedZ = reversed;
-            ASSERT_TRUE(camera.setCamera(pose));
-            camera.cameraCut();
-            for (bool denoise : {false, true}) {
-                settings.denoise = denoise;
-                auto flat = renderShadow(false);
-                EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Flat surface self-shadowed";
-                auto falseOcclusion = renderShadow(false, false, true);
-                EXPECT_EQ(*std::min_element(falseOcclusion.begin(), falseOcclusion.end()), 255)
-                    << "A depth-only occluder affected full ray-traced shadows";
-                auto blocked = renderShadow(true);
-                size_t dark = 0;
-                for (uint32_t y = 5; y < h - 5; ++y) {
-                    for (uint32_t x = 21; x < w - 5; ++x) { dark += blocked[y * w + x] < 128; }
-                }
-                EXPECT_GT(dark, 30u) << "Offscreen geometry did not cast a shadow";
-                for (uint32_t i = 0; i < 3; ++i) { blocked = renderShadow(true); }
-                flat = renderShadow(false);
-                EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Removed blocker retained history";
+        ASSERT_TRUE(camera.setCamera(pose));
+        camera.cameraCut();
+        for (bool denoise : {false, true}) {
+            settings.denoise = denoise;
+            auto flat = renderShadow(false);
+            EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Flat surface self-shadowed";
+            auto falseOcclusion = renderShadow(false, false, true);
+            EXPECT_EQ(*std::min_element(falseOcclusion.begin(), falseOcclusion.end()), 255)
+                << "A depth-only occluder affected full ray-traced shadows";
+            auto blocked = renderShadow(true);
+            size_t dark = 0;
+            for (uint32_t y = 5; y < h - 5; ++y) {
+                for (uint32_t x = 21; x < w - 5; ++x) { dark += blocked[y * w + x] < 128; }
             }
+            EXPECT_GT(dark, 30u) << "Offscreen geometry did not cast a shadow";
+            for (uint32_t i = 0; i < 3; ++i) { blocked = renderShadow(true); }
+            flat = renderShadow(false);
+            EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Removed blocker retained history";
         }
     }
     // Moon keeps slot 1 and traces its own visibility when Sun is disabled.

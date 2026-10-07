@@ -2,7 +2,7 @@ import Core;
 using Metallic;
 #include "../TestResourceParameters.h"
 
-struct FixturePush { uint width; uint height; uint seed; uint reversedZ; };
+struct FixturePush { uint width; uint height; uint seed; };
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
@@ -15,7 +15,7 @@ void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
     uint tile = ((id.x / 64u) * 7u + (id.y / 64u) * 13u + push.seed * 17u) % 64u;
     float depth = float(tile * 1024u + hash + 1u) / 65537.0;
     if (id.x + 1u == push.width || id.y + 1u == push.height) {
-        depth = push.reversedZ != 0u ? 0.0 : 1.0;
+        depth = 0.0;
     }
     if (id.x == 0u && id.y == 0u) { depth = asfloat(0x7fc00000u); }
     resolveUniform(getResourceParameters<HZBSPDFixtureResources>().depth)[id.xy] = depth;

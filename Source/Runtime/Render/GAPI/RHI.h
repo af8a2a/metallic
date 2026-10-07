@@ -1135,7 +1135,7 @@ struct RenderingAttachmentDesc {
     LoadOp loadOp = LoadOp::Load;
     StoreOp storeOp = StoreOp::Store;
     ColorValue clearColor;
-    float clearDepth = 1.0f;
+    float clearDepth = 0.0f;
     uint32_t clearStencil = 0;
 };
 
@@ -1177,7 +1177,7 @@ struct Viewport {
 struct DepthStencilState {
     bool depthTestEnable = false;
     bool depthWriteEnable = false;
-    CompareOp depthCompareOp = CompareOp::LessEqual;
+    CompareOp depthCompareOp = CompareOp::GreaterEqual;
 };
 
 struct RasterizationState {

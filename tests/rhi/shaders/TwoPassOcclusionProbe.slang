@@ -12,15 +12,15 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
 {
     // Full ceil-divided 17x9 pyramid: 153 + 45 + 15 + 6 + 2 + 1.
     for (uint i = id.x; i < 222u; i += 32u) {
-        resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<TwoPassOcclusionProbeResources>().previousHzb)[i] = 0.25;
-        resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<TwoPassOcclusionProbeResources>().currentHzb)[i] = 1.0;
+        resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<TwoPassOcclusionProbeResources>().previousHzb)[i] = 0.75;
+        resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<TwoPassOcclusionProbeResources>().currentHzb)[i] = 0.0;
     }
     AllMemoryBarrierWithGroupSync();
     GPUDrivenPreviewParams params = {};
     params.center = params.previousCenter = float4(0, 0, 1, 0);
     params.upProjection = params.previousUpProjection = float4(0, 1, 0, 0);
     params.viewport = params.previousViewport = float4(17.0 / 9.0, 17, 9, 1.57079632679);
-    params.clipOrtho = params.previousClipOrtho = float4(0.1, 10.0, 12.0, 0);
+    params.clipOrtho = params.previousClipOrtho = float4(0.1, 10.0, 12.0, 1);
     params.width = 17;
     params.height = 9;
     params.hzbMipCount = 6;
@@ -43,7 +43,7 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
     case 5: params.cullingFlags = 0; break;                 // disabled
     case 6: center.z = 0.2; break;                          // near-plane crossing
     case 7: params.upProjection.w = params.previousUpProjection.w = 1; break;
-    case 8: params.clipOrtho.w = params.previousClipOrtho.w = 1; break;
+    case 8: params.clipOrtho.w = params.previousClipOrtho.w = 0; break; // legacy flag is ignored
     case 9: instanceState = 0; break;                       // frustum rejected
     case 10: instanceState = 2; break;                      // still instance occluded
     case 11: params.hzbValid = 0; instanceState = 3; break;  // late uses current HZB
@@ -84,13 +84,15 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
 
     uint depthErrors = 0;
     float nanValue = asfloat(0x7fc00000u);
-    for (uint reverse = 0; reverse < 2; ++reverse) {
-        bool reversedZ = reverse != 0;
-        depthErrors += conservativeDepthOccluded(0.5, float4(0.5), reversedZ) ? 1u : 0u;
-        depthErrors += conservativeDepthOccluded(0.5, float4(nanValue), reversedZ) ? 1u : 0u;
-        depthErrors += conservativeDepthOccluded(nanValue, float4(0.5), reversedZ) ? 1u : 0u;
-        depthErrors += conservativeDepthOccluded(0.5, float4(reversedZ ? 0.0 : 1.0), reversedZ) ? 1u : 0u;
-        depthErrors += !conservativeDepthOccluded(0.5, float4(reversedZ ? 0.75 : 0.25), reversedZ) ? 1u : 0u;
+    depthErrors += conservativeDepthOccluded(0.5, float4(0.5)) ? 1u : 0u;
+    depthErrors += conservativeDepthOccluded(0.5, float4(nanValue)) ? 1u : 0u;
+    depthErrors += conservativeDepthOccluded(nanValue, float4(0.5)) ? 1u : 0u;
+    depthErrors += conservativeDepthOccluded(0.5, float4(0.0)) ? 1u : 0u;
+    depthErrors += !conservativeDepthOccluded(0.5, float4(0.75)) ? 1u : 0u;
+    for (uint projection = 0; projection < 2; ++projection) {
+        bool orthographic = projection != 0u;
+        depthErrors += abs(conservativeProjectDepth(0.1, 0.1, 10.0, orthographic) - 1.0) > 1e-6 ? 1u : 0u;
+        depthErrors += abs(conservativeProjectDepth(10.0, 0.1, 10.0, orthographic)) > 1e-6 ? 1u : 0u;
     }
     SceneTransform transform = {};
     transform.world0 = float4(1, 0, 0, 0);

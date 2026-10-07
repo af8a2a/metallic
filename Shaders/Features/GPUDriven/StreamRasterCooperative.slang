@@ -152,7 +152,7 @@ float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
     float3 view = float3(dot(delta, right), dot(delta, up), dot(delta, forward));
     float nearZ = max(g_StreamSoftware.clipOrtho.x, 0.0001);
     float farZ = max(g_StreamSoftware.clipOrtho.y, nearZ + 0.0001);
-    float depth = conservativeProjectDepth(view.z, nearZ, farZ, g_StreamSoftware.upProjection.w > 0.5, g_StreamSoftware.clipOrtho.w > 0.5);
+    float depth = conservativeProjectDepth(view.z, nearZ, farZ, g_StreamSoftware.upProjection.w > 0.5);
     float aspect = max(g_StreamSoftware.viewport.x, 0.001);
     float4 clip;
     if (g_StreamSoftware.upProjection.w > 0.5) {
@@ -199,6 +199,6 @@ void rasterStreamClusterCooperative(uint3 group, uint lane, GPUDrivenStreamAsset
         uint3 tri = streamSoftwareTriangle(lane, push);
         hybridRasterTriangle(g_StreamSoftwareClip[tri.x], g_StreamSoftwareClip[tri.y], g_StreamSoftwareClip[tri.z],
             packVisibilityId(g_StreamSoftware.recordIndex, lane), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11]);
+            bins[6], bins[7], bins[10], bins[11]);
     }
 }

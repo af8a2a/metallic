@@ -169,7 +169,7 @@ def main():
 
     def camera(eye,center):
         return {'eye':eye,'center':center,'up':[0,1,0],'fovDegrees':40,'projection':'perspective',
-                'znear':.01,'zfar':100,'reversedZ':True}
+                'znear':.01,'zfar':100}
 
     mesh=Mesh(); overrides=[]
     spheres=[('18% gray',[.18]*3,0,.5,{}),('80% white',[.8]*3,0,.5,{}),('Mirror 90%',[.9]*3,1,.025,{}),

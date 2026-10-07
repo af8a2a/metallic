@@ -53,7 +53,7 @@ public:
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage}, {.binding = 1}};
         result = fixture_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .pushConstantSize = 16,
+            .pushConstantSize = 12,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
             .resourceParameters = metallic::tests::kHZBSPDFixtureLayout,
@@ -91,8 +91,7 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const uint32_t seed = uint32_t(context.frameIndex());
-        const uint32_t reversed = context.properties().value("reversedZ", true) ? 1u : 0u;
-        uint32_t constants[] = {context.width(), context.height(), seed, reversed};
+        uint32_t constants[] = {context.width(), context.height(), seed};
         const auto depth = context.outputTexture("depth");
         auto* data = context.outputBuffer("data").buffer();
         auto* counter = context.outputBuffer("counter").buffer();
@@ -128,7 +127,7 @@ public:
         hzbElements(context.width(), context.height(), mips);
         const render::HZBSPDUserPush push{.depthImage = depth_.shaderIndex, .hzbBuffer = data_.shaderIndex,
             .counterBuffer = counter_.shaderIndex, .width = context.width(), .height = context.height(),
-            .mipCount = mips, .reversedZ = reversed};
+            .mipCount = mips};
         if (auto commandResult = context.commandBuffer().bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
@@ -173,62 +172,60 @@ public:
                 spdlog::info("[SPD] wave variant unavailable; validated LDS fallback only");
                 continue;
             }
-            for (bool reversed : {false, true}) {
-                graph.setNodeProperties(node, {{"reversedZ", reversed}, {"waveOps", waveOps}});
-                for (auto size : sizes) {
-                    if (!executor.compile(*device, graph, size[0], size[1], log)) { return RHITestResult::fail(log); }
-                    // Repeated builds with different depth reveal stale tail/counter data.
-                    for (uint32_t frame = 0; frame < 3; ++frame) {
-                        if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
-                            !executor.waitForSubmittedWork()) { return RHITestResult::fail("SPD dispatch failed"); }
-                        auto* counter = executor.outputResource("Probe.counter")->buffer;
-                        counter->invalidate();
-                        const auto* count = static_cast<const uint32_t*>(counter->map());
-                        if (!count) { return RHITestResult::fail("SPD counter readback failed"); }
-                        bool valid = count[0] == 0;
-                        const uint32_t seed = count[1];
-                        counter->unmap();
-                        auto* buffer = executor.outputResource("Probe.data")->buffer;
-                        buffer->invalidate();
-                        const auto* data = static_cast<const float*>(buffer->map());
-                        if (!data) { return RHITestResult::fail("SPD readback failed"); }
-                        uint32_t width = size[0], height = size[1], offset = 0;
-                        for (uint32_t y = 0; y < height; ++y) {
-                            for (uint32_t x = 0; x < width; ++x) {
-                                const uint32_t tile = ((x / 64u) * 7u + (y / 64u) * 13u + seed * 17u) % 64u;
-                                float expected = float(tile * 1024u + (x * 73u + y * 137u + seed * 31u) % 1024u + 1u) / 65537.0f;
-                                if (x + 1 == width || y + 1 == height || (x == 0 && y == 0)) {
-                                    expected = reversed ? 0.0f : 1.0f;
-                                }
-                                valid = valid && std::abs(data[y * width + x] - expected) < 1e-7f;
+            graph.setNodeProperties(node, {{"waveOps", waveOps}});
+            for (auto size : sizes) {
+                if (!executor.compile(*device, graph, size[0], size[1], log)) { return RHITestResult::fail(log); }
+                // Repeated builds with different depth reveal stale tail/counter data.
+                for (uint32_t frame = 0; frame < 3; ++frame) {
+                    if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
+                        !executor.waitForSubmittedWork()) { return RHITestResult::fail("SPD dispatch failed"); }
+                    auto* counter = executor.outputResource("Probe.counter")->buffer;
+                    counter->invalidate();
+                    const auto* count = static_cast<const uint32_t*>(counter->map());
+                    if (!count) { return RHITestResult::fail("SPD counter readback failed"); }
+                    bool valid = count[0] == 0;
+                    const uint32_t seed = count[1];
+                    counter->unmap();
+                    auto* buffer = executor.outputResource("Probe.data")->buffer;
+                    buffer->invalidate();
+                    const auto* data = static_cast<const float*>(buffer->map());
+                    if (!data) { return RHITestResult::fail("SPD readback failed"); }
+                    uint32_t width = size[0], height = size[1], offset = 0;
+                    for (uint32_t y = 0; y < height; ++y) {
+                        for (uint32_t x = 0; x < width; ++x) {
+                            const uint32_t tile = ((x / 64u) * 7u + (y / 64u) * 13u + seed * 17u) % 64u;
+                            float expected = float(tile * 1024u + (x * 73u + y * 137u + seed * 31u) % 1024u + 1u) / 65537.0f;
+                            if (x + 1 == width || y + 1 == height || (x == 0 && y == 0)) {
+                                expected = 0.0f;
                             }
+                            valid = valid && std::abs(data[y * width + x] - expected) < 1e-7f;
                         }
-                        while (width > 1 || height > 1) {
-                            const uint32_t nextWidth = (width + 1) / 2, nextHeight = (height + 1) / 2;
-                            const uint32_t nextOffset = offset + width * height;
-                            for (uint32_t y = 0; y < nextHeight; ++y) {
-                                for (uint32_t x = 0; x < nextWidth; ++x) {
-                                    float expected = reversed ? 1.0f : 0.0f;
-                                    for (uint32_t dy = 0; dy < 2; ++dy) {
-                                        for (uint32_t dx = 0; dx < 2; ++dx) {
-                                            const float sample = data[offset + std::min(y * 2 + dy, height - 1) * width + std::min(x * 2 + dx, width - 1)];
-                                            expected = reversed ? std::min(expected, sample) : std::max(expected, sample);
-                                        }
-                                    }
-                                    valid = valid && data[nextOffset + y * nextWidth + x] == expected;
-                                }
-                            }
-                            offset = nextOffset; width = nextWidth; height = nextHeight;
-                        }
-                        buffer->unmap();
-                        if (!valid) { return RHITestResult::fail("SPD mip/counter mismatch at " + std::to_string(size[0]) + "x" + std::to_string(size[1]) + " waveOps=" + std::to_string(waveOps)); }
                     }
-                    spdlog::info("[SPD] {}x{} reversed={} waveOps={} every mip exact", size[0], size[1], reversed, waveOps);
+                    while (width > 1 || height > 1) {
+                        const uint32_t nextWidth = (width + 1) / 2, nextHeight = (height + 1) / 2;
+                        const uint32_t nextOffset = offset + width * height;
+                        for (uint32_t y = 0; y < nextHeight; ++y) {
+                            for (uint32_t x = 0; x < nextWidth; ++x) {
+                                float expected = 1.0f;
+                                for (uint32_t dy = 0; dy < 2; ++dy) {
+                                    for (uint32_t dx = 0; dx < 2; ++dx) {
+                                        const float sample = data[offset + std::min(y * 2 + dy, height - 1) * width + std::min(x * 2 + dx, width - 1)];
+                                        expected = std::min(expected, sample);
+                                    }
+                                }
+                                valid = valid && data[nextOffset + y * nextWidth + x] == expected;
+                            }
+                        }
+                        offset = nextOffset; width = nextWidth; height = nextHeight;
+                    }
+                    buffer->unmap();
+                    if (!valid) { return RHITestResult::fail("SPD mip/counter mismatch at " + std::to_string(size[0]) + "x" + std::to_string(size[1]) + " waveOps=" + std::to_string(waveOps)); }
                 }
+                spdlog::info("[SPD] {}x{} waveOps={} every reversed-Z mip exact", size[0], size[1], waveOps);
             }
-            pyramids += uint32_t(sizes.size()) * 2u * 3u;
+            pyramids += uint32_t(sizes.size()) * 3u;
         }
-        return RHITestResult::pass(std::to_string(pyramids) + " SPD wave/LDS pyramids exactly match CPU min/max, including odd edges, 1D, NaN and repeated tails");
+        return RHITestResult::pass(std::to_string(pyramids) + " reversed-Z SPD wave/LDS pyramids exactly match CPU minimum reduction, including odd edges, 1D, NaN and repeated tails");
     }
 };
 
@@ -250,7 +247,7 @@ public:
         const auto node = graph.addNode("VisibilityBufferPass", "VBuffer", {{"visualization", "triangle"}})->id;
         graph.setViewProperties({{"camera", {{"eye", {-3.325359, 9.545668, -0.429330}},
             {"center", {31.658249, -17.904564, -5.697884}}, {"fovDegrees", 45.0},
-            {"znear", 0.018548}, {"zfar", 1854.789185}, {"reversedZ", true}}}, {"temporalJitter", false}});
+            {"znear", 0.018548}, {"zfar", 1854.789185}}}, {"temporalJitter", false}});
         graph.markOutput("VBuffer.color");
         // Measure the complete VisibilityBuffer pass, including both HZB builds
         // and counter reset copies. These are diagnostic timings, not thresholds.

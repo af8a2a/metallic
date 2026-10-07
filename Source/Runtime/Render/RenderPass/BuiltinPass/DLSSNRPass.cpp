@@ -35,7 +35,7 @@ public:
             .texture2D(context.width, context.height).storageReadWrite();
         motion.format = Format::RG16Sfloat;
         motion.usage = motion.usage | TextureUsageBits::Sampled;
-        auto& depth = reflection.addTextureInput("depth", "Normalized hardware depth, R32F")
+        auto& depth = reflection.addTextureInput("depth", "Standard normalized depth for upscaler guides, R32F")
             .texture2D(context.width, context.height).storageReadWrite();
         depth.format = Format::R32Sfloat;
         depth.usage = depth.usage | TextureUsageBits::Sampled;
@@ -63,7 +63,6 @@ public:
             runtimeFloatSetting("localToneStrength", "Local Tone", 1.0f, 0.0f, 1.0f, true),
             runtimeFloatSetting("localStructureStrength", "Local Structure", 1.0f, 0.0f, 1.0f, true),
             runtimeFloatSetting("skinStructureStrength", "Skin Structure (-1 Auto)", -1.0f, -1.0f, 1.0f, true),
-            runtimeBoolSetting("depthInverted", "Reversed Z", true, true),
             runtimeBoolSetting("useAutoMask", "Auto Mask", false, true),
             runtimeBoolSetting("uiCorrection", "UI Correction", false, true),
             runtimeActionCounterSetting("resetSerial", "Reset NR History", true),
@@ -148,7 +147,6 @@ public:
             settings.localToneStrength = properties.value("localToneStrength", 1.0f);
             settings.localStructureStrength = properties.value("localStructureStrength", 1.0f);
             settings.skinStructureStrength = properties.value("skinStructureStrength", -1.0f);
-            settings.depthInverted = properties.value("depthInverted", true);
             settings.useAutoMask = properties.value("useAutoMask", false);
             settings.uiCorrection = properties.value("uiCorrection", false);
         } catch (const RenderGraphProperties::exception& error) {

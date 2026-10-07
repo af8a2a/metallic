@@ -2,7 +2,7 @@ import GPUDriven;
 using Metallic.GPUDriven;
 struct ProbePush {
     uint vertices; uint reference; uint prepared; uint width; uint height;
-    uint reversed; uint doubleSided; uint bits; uint incrementalDepth; uint triangleCount;
+    uint reserved; uint doubleSided; uint bits; uint incrementalDepth; uint triangleCount;
 };
 groupshared HybridScreenVertex screen[192];
 [shader("compute")]
@@ -19,9 +19,9 @@ void compareMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform Pr
     if (triangle >= p.triangleCount) { return; }
     float4 a=vertices[triangle*3u], b=vertices[triangle*3u+1u], c=vertices[triangle*3u+2u];
     if (!hybridTriangleFits(a,b,c,float2(p.width,p.height),32.0)) { return; }
-    hybridRasterTriangle(a,b,c,triangle+1u,p.doubleSided!=0,p.width,p.height,p.reversed,p.bits,p.reference);
+    hybridRasterTriangle(a,b,c,triangle+1u,p.doubleSided!=0,p.width,p.height,p.bits,p.reference);
     hybridRasterPreparedTriangle(screen[lane*3u],screen[lane*3u+1u],screen[lane*3u+2u],triangle+1u,p.doubleSided!=0,
-        p.width,p.height,p.reversed,p.bits,p.prepared,p.incrementalDepth!=0);
+        p.width,p.height,p.bits,p.prepared,p.incrementalDepth!=0);
 }
 
 #include "Features/GPUDriven/StreamRasterWorkBins.slang"
@@ -37,7 +37,7 @@ void compareWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, un
     if (triangle < p.triangleCount) {
         float4 a=vertices[triangle*3u], b=vertices[triangle*3u+1u], c=vertices[triangle*3u+2u];
         if (hybridTriangleFits(a,b,c,float2(p.width,p.height),32.0)) {
-            hybridRasterTriangle(a,b,c,triangle+1u,p.doubleSided!=0,p.width,p.height,p.reversed,p.bits,p.reference);
+            hybridRasterTriangle(a,b,c,triangle+1u,p.doubleSided!=0,p.width,p.height,p.bits,p.reference);
             bucket=streamRasterWorkBucket(a,b,c,p.doubleSided!=0,p.width,p.height,p.bits);
         }
     }
@@ -60,10 +60,10 @@ void compareWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, un
         hybridRasterPreparedTriangle(hybridPrepareVertex(vertices[triangle*3u],float2(p.width,p.height),p.bits),
             hybridPrepareVertex(vertices[triangle*3u+1u],float2(p.width,p.height),p.bits),
             hybridPrepareVertex(vertices[triangle*3u+2u],float2(p.width,p.height),p.bits),triangle+1u,
-            p.doubleSided!=0,p.width,p.height,p.reversed,p.bits,p.prepared,false);
+            p.doubleSided!=0,p.width,p.height,p.bits,p.prepared,false);
     } else {
         hybridRasterTriangle(vertices[triangle*3u],vertices[triangle*3u+1u],vertices[triangle*3u+2u],triangle+1u,
-            p.doubleSided!=0,p.width,p.height,p.reversed,p.bits,p.prepared);
+            p.doubleSided!=0,p.width,p.height,p.bits,p.prepared);
     }
 }
 
@@ -82,7 +82,7 @@ void verifyWorkloadMain(uint3 group : SV_GroupID, uniform ProbePush p)
     for (uint t = 0; t < p.triangleCount; ++t) {
         float4 a = vertices[t*3], b = vertices[t*3+1], c = vertices[t*3+2];
         if (!hybridTriangleFits(a,b,c,float2(p.width,p.height),32.0)) { continue; }
-        hybridRasterTriangle(a,b,c,t+1,p.doubleSided!=0,p.width,p.height,p.reversed,p.bits,p.reference);
+        hybridRasterTriangle(a,b,c,t+1,p.doubleSided!=0,p.width,p.height,p.bits,p.reference);
         DeviceMemoryBarrier();
         uint64_t reference = 0;
         for (uint i = 0; i < p.width*p.height; ++i) {

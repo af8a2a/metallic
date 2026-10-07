@@ -111,7 +111,7 @@ public float projectDepth(float viewZ, CameraData camera)
 {
     float zNear = max(camera.clipOrtho.x, 0.0001);
     float zFar = max(camera.clipOrtho.y, zNear + 0.0001);
-    return conservativeProjectDepth(viewZ, zNear, zFar, camera.upProjection.w > 0.5, camera.clipOrtho.w > 0.5);
+    return conservativeProjectDepth(viewZ, zNear, zFar, camera.upProjection.w > 0.5);
 }
 
 public float4 projectPosition(float3 worldPosition, CameraData camera)
@@ -241,7 +241,7 @@ public bool sphereOccluded(
     // separation to avoid toggling instances on quantized HZB boundaries.
     float depthBias = max(0.001, radius * 0.01);
     float nearestDepth = projectDepth(max(nearestZ - depthBias, zNear), camera);
-    return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11), camera.clipOrtho.w > 0.5);
+    return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11));
 }
 
 public bool meshletVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,

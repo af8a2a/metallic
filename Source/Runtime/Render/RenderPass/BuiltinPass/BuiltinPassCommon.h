@@ -237,7 +237,6 @@ inline constexpr uint32_t kNRDDenoiserModeReblur = 0;
 inline constexpr uint32_t kNRDDenoiserModeRelax = 1;
 inline constexpr uint32_t kNRDDenoiserModeReference = 2;
 inline constexpr const char* kScenePathTraceHistoryPrefix = "ScenePathTracePass.";
-inline constexpr bool kDefaultReversedZ = true;
 
 inline RenderGraphRuntimeSetting runtimeBoolSetting(
     std::string key,
@@ -914,19 +913,14 @@ inline bool boolProperty(const RenderGraphProperties* properties, const char* ke
     return iter != properties->end() && iter->is_boolean() ? iter->get<bool>() : fallback;
 }
 
-inline bool cameraUsesReversedZ(const RenderGraphProperties* camera)
+inline float depthClearValue()
 {
-    return boolProperty(camera, "reversedZ", kDefaultReversedZ);
+    return 0.0f;
 }
 
-inline float depthClearValue(bool reversedZ)
+inline CompareOp depthCompareOp()
 {
-    return reversedZ ? 0.0f : 1.0f;
-}
-
-inline CompareOp depthCompareOp(bool reversedZ)
-{
-    return reversedZ ? CompareOp::GreaterEqual : CompareOp::LessEqual;
+    return CompareOp::GreaterEqual;
 }
 
 inline Result<> createSlangShaderModule(

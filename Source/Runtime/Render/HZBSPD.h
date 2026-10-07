@@ -28,8 +28,7 @@ struct HZBSPDUserPush {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t mipCount = 0; // Includes full-resolution mip 0.
-    uint32_t reversedZ = 1;
 };
-static_assert(sizeof(HZBSPDUserPush) == 28);
+static_assert(sizeof(HZBSPDUserPush) == 24);
 
 } // namespace metallic::render

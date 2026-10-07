@@ -141,7 +141,7 @@ public:
             HYBRID_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
             bool submitted=false;
             size_t written=0;
-            for (uint32_t bits : {4u,8u}) for (uint32_t reversed : {0u,1u}) for (uint32_t sided : {0u,1u}) for (uint32_t plane : {0u,1u,2u,3u,4u}) for (uint32_t count : {0u,1u,127u,128u,129u,uint32_t(vertices.size()/3)}) {
+            for (uint32_t bits : {4u,8u}) for (uint32_t sided : {0u,1u}) for (uint32_t plane : {0u,1u,2u,3u,4u}) for (uint32_t count : {0u,1u,127u,128u,129u,uint32_t(vertices.size()/3)}) {
                 if ((plane < 2u || plane == 4u) && count != vertices.size()/3) { continue; }
                 if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
                 for (auto& output:pixels) {
@@ -150,7 +150,7 @@ public:
                 }
                 HYBRID_REQUIRE(commands->begin());
                 if (auto commandResult = commands->bindBindlessHeap(*compareHeap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                uint32_t push[]={vertexHandle.shaderIndex,handles[0].shaderIndex,handles[1].shaderIndex,width,height,reversed,sided,bits,plane,count};
+                uint32_t push[]={vertexHandle.shaderIndex,handles[0].shaderIndex,handles[1].shaderIndex,width,height,0u,sided,bits,plane,count};
                 if (auto commandResult = commands->pushBindlessData(push,sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
                 const uint32_t lanes=plane>=2u ? 128u : 64u;
                 if (auto commandResult = commands->dispatch(std::max(1u,(push[9]+lanes-1u)/lanes)); !commandResult) { return RHITestResult::fail(std::string("dispatch failed: ") + render::resultToString(commandResult)); }
@@ -170,7 +170,7 @@ public:
                 for (size_t i=0;i<pixelCount;++i) {
                     auto a=values[0][i],b=values[1][i]; written+=uint32_t(a)!=0;
                     if (plane!=1u && a!=b) { return RHITestResult::fail("Exact SW is not bit exact mode="+std::to_string(plane)+" count="+std::to_string(count)+" pixel="+std::to_string(i)+" bits="+std::to_string(bits)+" values="+std::to_string(a)+"/"+std::to_string(b)); }
-                    uint32_t za=uint32_t(a>>32),zb=uint32_t(b>>32); if (!reversed) { za=~za; zb=~zb; }
+                    uint32_t za=uint32_t(a>>32),zb=uint32_t(b>>32);
                     if (plane==1u && (uint32_t(a)!=uint32_t(b) || (uint32_t(a)!=0 && std::abs(std::bit_cast<float>(za)-std::bit_cast<float>(zb))>2e-6f))) {
                         return RHITestResult::fail("Incremental plane coverage/ID/depth tolerance mismatch at "+std::to_string(i));
                     }
@@ -217,148 +217,146 @@ public:
         HYBRID_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); HYBRID_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         bool submitted = false;
         size_t softwarePixels = 0, overflows = 0, cases = 0;
-        for (bool reversed : {false, true}) {
-            for (bool doubleSided : {false, true}) {
-                std::unique_ptr<GraphicsPipeline> pipeline;
-                HYBRID_REQUIRE(device->createGraphicsPipeline({
-                    .meshShader = {shaders[0].get()},
-                    .fragmentShader = {shaders[1].get()},
-                    .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
-                    .depthStencilFormat = Format::D32Sfloat,
-                    .rasterization = {.cullMode = doubleSided ? CullMode::None : CullMode::Back, .frontFace = FrontFace::CounterClockwise},
-                    .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
-                        .depthCompareOp = reversed ? CompareOp::GreaterEqual : CompareOp::LessEqual},
-                    .usesBindlessHeap = true,
-                }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
-                std::vector<uint32_t> referenceIds;
-                std::vector<float> referenceDepth;
-                for (uint32_t configuration = 0; configuration < 5; ++configuration) {
-                    VisibilityHybridRasterizer rasterizer;
-                    const uint32_t capacity = configuration == 4 ? 1u : 262144u;
-                    // Simulate output-size allocation followed by DLSS render-size selection.
-                    HYBRID_REQUIRE(rasterizer.initialize(*device, width * 2, height * 2, log, capacity));
-                    auto* pixelAllocation = &rasterizer.pixelBuffer();
-                    auto* clusters = &rasterizer.clusterBuffer();
-                    HYBRID_REQUIRE(rasterizer.setRenderExtent(width, height));
-                    HYBRID_REQUIRE(rasterizer.setRenderExtent(width * 2, height * 2));
-                    HYBRID_REQUIRE(rasterizer.setRenderExtent(width, height));
-                    if (rasterizer.setRenderExtent(0, height) || rasterizer.setRenderExtent(width * 3, height * 3) ||
-                        rasterizer.width() != width || rasterizer.height() != height ||
-                        &rasterizer.pixelBuffer() != pixelAllocation || &rasterizer.clusterBuffer() != clusters) {
-                        return RHITestResult::fail("Hybrid extent reuse changed resources or accepted an invalid extent");
-                    }
-                    HYBRID_REQUIRE((rasterizer.queueBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(queueHandle, bufferSlice); }));
-                    if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
-                    HYBRID_REQUIRE(commands->begin());
-                    const TextureBarrierDesc transitions[] = {
+        for (bool doubleSided : {false, true}) {
+            std::unique_ptr<GraphicsPipeline> pipeline;
+            HYBRID_REQUIRE(device->createGraphicsPipeline({
+                .meshShader = {shaders[0].get()},
+                .fragmentShader = {shaders[1].get()},
+                .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
+                .depthStencilFormat = Format::D32Sfloat,
+                .rasterization = {.cullMode = doubleSided ? CullMode::None : CullMode::Back, .frontFace = FrontFace::CounterClockwise},
+                .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
+                    .depthCompareOp = CompareOp::GreaterEqual},
+                .usesBindlessHeap = true,
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+            std::vector<uint32_t> referenceIds;
+            std::vector<float> referenceDepth;
+            for (uint32_t configuration = 0; configuration < 5; ++configuration) {
+                VisibilityHybridRasterizer rasterizer;
+                const uint32_t capacity = configuration == 4 ? 1u : 262144u;
+                // Simulate output-size allocation followed by DLSS render-size selection.
+                HYBRID_REQUIRE(rasterizer.initialize(*device, width * 2, height * 2, log, capacity));
+                auto* pixelAllocation = &rasterizer.pixelBuffer();
+                auto* clusters = &rasterizer.clusterBuffer();
+                HYBRID_REQUIRE(rasterizer.setRenderExtent(width, height));
+                HYBRID_REQUIRE(rasterizer.setRenderExtent(width * 2, height * 2));
+                HYBRID_REQUIRE(rasterizer.setRenderExtent(width, height));
+                if (rasterizer.setRenderExtent(0, height) || rasterizer.setRenderExtent(width * 3, height * 3) ||
+                    rasterizer.width() != width || rasterizer.height() != height ||
+                    &rasterizer.pixelBuffer() != pixelAllocation || &rasterizer.clusterBuffer() != clusters) {
+                    return RHITestResult::fail("Hybrid extent reuse changed resources or accepted an invalid extent");
+                }
+                HYBRID_REQUIRE((rasterizer.queueBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(queueHandle, bufferSlice); }));
+                if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
+                HYBRID_REQUIRE(commands->begin());
+                const TextureBarrierDesc transitions[] = {
+                    {
+                        .texture = textures[0].get(),
+                        .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
+                        .newLayout = TextureLayout::ColorAttachment,
+                        .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                        .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+                    },
+                    {
+                        .texture = textures[1].get(),
+                        .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
+                        .newLayout = TextureLayout::DepthStencilAttachment,
+                        .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                        .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
+                    }};
+                if (auto commandResult = commands->synchronize({.textures = {transitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                const bool hybrid = configuration != 0;
+                if (hybrid) { if (auto commandResult = rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f); !commandResult) { return RHITestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
+                const RenderingAttachmentDesc color{.view = views[0].get(), .layout = TextureLayout::ColorAttachment,
+                    .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
+                const RenderingAttachmentDesc depth{.view = views[1].get(), .layout = TextureLayout::DepthStencilAttachment,
+                    .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0.f};
+                if (auto commandResult = commands->beginRendering({
+                    .renderArea = {.width = width, .height = height},
+                    .colorAttachments = {&color, 1},
+                    .depthStencilAttachment = &depth,
+                }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f}); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
+                commands->setScissor({.width = width, .height = height});
+                if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
+                if (auto commandResult = commands->pushBindlessData(push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->drawMeshTasks(uint32_t(vertices.size() / 3)); !commandResult) { return RHITestResult::fail(std::string("drawMeshTasks failed: ") + render::resultToString(commandResult)); } commands->endRendering();
+                if (hybrid) {
+                    HYBRID_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
+                    const BufferBarrierDesc bufferTransitions[] = {
                         {
-                            .texture = textures[0].get(),
-                            .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
-                            .newLayout = TextureLayout::ColorAttachment,
-                            .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
-                            .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+                            .buffer = &rasterizer.queueBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                         },
                         {
-                            .texture = textures[1].get(),
-                            .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
-                            .newLayout = TextureLayout::DepthStencilAttachment,
-                            .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
-                            .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
-                        }};
-                    if (auto commandResult = commands->synchronize({.textures = {transitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    const bool hybrid = configuration != 0;
-                    if (hybrid) { if (auto commandResult = rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f, reversed); !commandResult) { return RHITestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
-                    const RenderingAttachmentDesc color{.view = views[0].get(), .layout = TextureLayout::ColorAttachment,
-                        .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
-                    const RenderingAttachmentDesc depth{.view = views[1].get(), .layout = TextureLayout::DepthStencilAttachment,
-                        .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = reversed ? 0.f : 1.f};
-                    if (auto commandResult = commands->beginRendering({
-                        .renderArea = {.width = width, .height = height},
-                        .colorAttachments = {&color, 1},
-                        .depthStencilAttachment = &depth,
-                    }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-                    if (auto commandResult = commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f}); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
-                    commands->setScissor({.width = width, .height = height});
-                    if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                    const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
-                    if (auto commandResult = commands->pushBindlessData(push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
-                    if (auto commandResult = commands->drawMeshTasks(uint32_t(vertices.size() / 3)); !commandResult) { return RHITestResult::fail(std::string("drawMeshTasks failed: ") + render::resultToString(commandResult)); } commands->endRendering();
-                    if (hybrid) {
-                        HYBRID_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
-                        const BufferBarrierDesc bufferTransitions[] = {
-                            {
-                                .buffer = &rasterizer.queueBuffer(),
-                                .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-                                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                            },
-                            {
-                                .buffer = &rasterizer.pixelBuffer(),
-                                .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-                                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                            }};
-                        if (auto commandResult = commands->synchronize({.buffers = {bufferTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                        {
-                            auto sourceSlice = (&rasterizer.queueBuffer())->slice({0, 32});
-                            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                            auto destinationSlice = queueReadback.get()->slice({0, 32});
-                            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
-                        }
-                        {
-                            auto sourceSlice = (&rasterizer.pixelBuffer())->slice({0, pixelCount * 8});
-                            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                            auto destinationSlice = pixelReadback.get()->slice({0, pixelCount * 8});
-                            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
-                        }
-                    }
-                    TextureBarrierDesc outputTransitions[2];
-                    for (size_t i = 0; i < 2; ++i) {
-                        outputTransitions[i] = {
-                            .texture = textures[i].get(),
-                            .oldLayout = transitions[i].newLayout,
-                            .newLayout = TextureLayout::TransferSource,
-                            .before = transitions[i].after,
+                            .buffer = &rasterizer.pixelBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
                             .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                        };
+                        }};
+                    if (auto commandResult = commands->synchronize({.buffers = {bufferTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    {
+                        auto sourceSlice = (&rasterizer.queueBuffer())->slice({0, 32});
+                        if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                        auto destinationSlice = queueReadback.get()->slice({0, 32});
+                        if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                        if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                     }
-                    if (auto commandResult = commands->synchronize({.textures = {outputTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    for (size_t i = 0; i < 2; ++i) {
-                        if (auto commandResult = (readback[i].get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = bufferSlice, .width = width, .height = height}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                    {
+                        auto sourceSlice = (&rasterizer.pixelBuffer())->slice({0, pixelCount * 8});
+                        if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                        auto destinationSlice = pixelReadback.get()->slice({0, pixelCount * 8});
+                        if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                        if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                     }
-                    HYBRID_REQUIRE(commands->end());
-                    CommandBuffer* list[] = {commands.get()};
-                    HYBRID_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
-                    HYBRID_REQUIRE(fence->wait()); submitted = true;
-                    std::vector<uint32_t> ids(pixelCount); std::vector<float> depths(pixelCount);
-                    for (size_t i = 0; i < 2; ++i) {
-                        readback[i]->invalidate(); const void* data = readback[i]->map();
-                        if (!data) { return RHITestResult::fail("Output readback failed"); }
-                        std::memcpy(i == 0 ? static_cast<void*>(ids.data()) : depths.data(), data, pixelCount * 4); readback[i]->unmap();
-                    }
-                    if (!hybrid) { referenceIds = ids; referenceDepth = depths; continue; }
-                    queueReadback->invalidate(); const auto* header = static_cast<const uint32_t*>(queueReadback->map());
-                    if (!header || header[0] == 0) { return RHITestResult::fail("GPU producer did not enqueue software triangles"); }
-                    overflows += header[0] > header[1]; queueReadback->unmap();
-                    pixelReadback->invalidate(); const auto* pixels = static_cast<const uint64_t*>(pixelReadback->map());
-                    if (!pixels) { return RHITestResult::fail("Software pixel readback failed"); }
-                    for (size_t i = 0; i < pixelCount; ++i) { softwarePixels += uint32_t(pixels[i]) != 0; }
-                    pixelReadback->unmap();
-                    for (size_t i = 0; i < pixelCount; ++i) {
-                        if (ids[i] != referenceIds[i] || !std::isfinite(depths[i]) || std::abs(depths[i] - referenceDepth[i]) > 2e-6f) {
-                            return RHITestResult::fail("HW/SW mismatch: reversed=" + std::to_string(reversed) + " doubleSided=" +
-                                std::to_string(doubleSided) + " config=" + std::to_string(configuration) + " pixel=" + std::to_string(i) +
-                                " id=" + std::to_string(ids[i]) + "/" + std::to_string(referenceIds[i]) +
-                                " depth=" + std::to_string(depths[i]) + "/" + std::to_string(referenceDepth[i]));
-                        }
-                    }
-                    ++cases;
                 }
+                TextureBarrierDesc outputTransitions[2];
+                for (size_t i = 0; i < 2; ++i) {
+                    outputTransitions[i] = {
+                        .texture = textures[i].get(),
+                        .oldLayout = transitions[i].newLayout,
+                        .newLayout = TextureLayout::TransferSource,
+                        .before = transitions[i].after,
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    };
+                }
+                if (auto commandResult = commands->synchronize({.textures = {outputTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                for (size_t i = 0; i < 2; ++i) {
+                    if (auto commandResult = (readback[i].get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = bufferSlice, .width = width, .height = height}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                }
+                HYBRID_REQUIRE(commands->end());
+                CommandBuffer* list[] = {commands.get()};
+                HYBRID_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
+                HYBRID_REQUIRE(fence->wait()); submitted = true;
+                std::vector<uint32_t> ids(pixelCount); std::vector<float> depths(pixelCount);
+                for (size_t i = 0; i < 2; ++i) {
+                    readback[i]->invalidate(); const void* data = readback[i]->map();
+                    if (!data) { return RHITestResult::fail("Output readback failed"); }
+                    std::memcpy(i == 0 ? static_cast<void*>(ids.data()) : depths.data(), data, pixelCount * 4); readback[i]->unmap();
+                }
+                if (!hybrid) { referenceIds = ids; referenceDepth = depths; continue; }
+                queueReadback->invalidate(); const auto* header = static_cast<const uint32_t*>(queueReadback->map());
+                if (!header || header[0] == 0) { return RHITestResult::fail("GPU producer did not enqueue software triangles"); }
+                overflows += header[0] > header[1]; queueReadback->unmap();
+                pixelReadback->invalidate(); const auto* pixels = static_cast<const uint64_t*>(pixelReadback->map());
+                if (!pixels) { return RHITestResult::fail("Software pixel readback failed"); }
+                for (size_t i = 0; i < pixelCount; ++i) { softwarePixels += uint32_t(pixels[i]) != 0; }
+                pixelReadback->unmap();
+                for (size_t i = 0; i < pixelCount; ++i) {
+                    if (ids[i] != referenceIds[i] || !std::isfinite(depths[i]) || std::abs(depths[i] - referenceDepth[i]) > 2e-6f) {
+                        return RHITestResult::fail("HW/SW mismatch: doubleSided=" +
+                            std::to_string(doubleSided) + " config=" + std::to_string(configuration) + " pixel=" + std::to_string(i) +
+                            " id=" + std::to_string(ids[i]) + "/" + std::to_string(referenceIds[i]) +
+                            " depth=" + std::to_string(depths[i]) + "/" + std::to_string(referenceDepth[i]));
+                    }
+                }
+                ++cases;
             }
         }
-        if (softwarePixels < 1000 || overflows != 4) { return RHITestResult::fail("Software writes or bounded-queue overflow were not exercised"); }
+        if (softwarePixels < 1000 || overflows != 2) { return RHITestResult::fail("Software writes or bounded-queue overflow were not exercised"); }
         return RHITestResult::pass(std::to_string(cases) + " HW/SW comparisons; software pixels=" + std::to_string(softwarePixels) +
-            "; clipping, shared edges, perspective depth, both windings/Z directions, thresholds and four forced overflows");
+            "; clipping, shared edges, perspective depth, both windings, reversed Z, thresholds and two forced overflows");
     }
 };
 METALLIC_REGISTER_RHI_TEST(HybridRasterDepthTest);
@@ -434,10 +432,10 @@ public:
             if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
             HYBRID_REQUIRE(commands->begin());
             // Capacity validation must reject oversized dispatches before recording GPU work.
-            if (!hasError(rasterizer.beginClusters(*commands, 8, true, 0, capacity + 1u, test.stream), Error::InvalidArgument)) {
+            if (!hasError(rasterizer.beginClusters(*commands, 8, 0, capacity + 1u, test.stream), Error::InvalidArgument)) {
                 return RHITestResult::fail("Oversized cluster input was accepted");
             }
-            HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, test.count, test.stream));
+            HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, 0, test.count, test.stream));
             if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             const uint32_t push[] = {inputHandle.shaderIndex, binHandle.shaderIndex, test.count};
             if (auto commandResult = commands->pushBindlessData(push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); }
@@ -515,9 +513,9 @@ public:
         const auto node = graph.findNode("VBuffer")->id;
         size_t cases = 0, roundingTies = 0;
         for (bool orthographic : {false, true}) {
-            for (bool reversed : {false, true}) {
+            for (bool legacyReversedZ : {false, true}) {
                 graph.setNodeRuntimeProperty(node, "camera.projection", orthographic ? "orthographic" : "perspective");
-                graph.setNodeRuntimeProperty(node, "camera.reversedZ", reversed);
+                graph.setNodeRuntimeProperty(node, "camera.reversedZ", legacyReversedZ);
                 graph.setNodeRuntimeProperty(node, "hybridRaster", false);
                 if (!preview.render(graph, 193, 157)) { return RHITestResult::fail(preview.lastLog()); }
                 const auto reference = preview.pixels();
@@ -552,7 +550,7 @@ public:
                                 if (reference[pixel] == 0 || actual[pixel] == 0 ||
                                     (reference[pixel] >> render::kVisibilityTriangleBits) != (actual[pixel] >> render::kVisibilityTriangleBits) || delta > 8u) {
                                     return RHITestResult::fail("HW/SW visibility mismatch at pixel " + std::to_string(pixel) +
-                                        "; ortho=" + std::to_string(orthographic) + ", reversed=" + std::to_string(reversed) +
+                                        "; ortho=" + std::to_string(orthographic) + ", legacyReversedZ=" + std::to_string(legacyReversedZ) +
                                         ", configuration=" + std::to_string(configuration) + ", frame=" + std::to_string(frame) +
                                         ", depth ULP=" + std::to_string(delta));
                                 }

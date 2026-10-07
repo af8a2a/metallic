@@ -752,6 +752,7 @@ sl::Constants makeConstants(const StreamlineDLSSRRCamera& camera, bool reset)
     constants.cameraFOV = currentCamera.fovRadians;
     constants.cameraAspectRatio = currentCamera.aspectRatio;
     constants.motionVectorsInvalidValue = 0.0f;
+    // Renderer depth is reversed Z; the supplied upscaler guides use standard Z.
     constants.depthInverted = sl::Boolean::eFalse;
     constants.cameraMotionIncluded = sl::Boolean::eTrue;
     constants.motionVectors3D = sl::Boolean::eFalse;

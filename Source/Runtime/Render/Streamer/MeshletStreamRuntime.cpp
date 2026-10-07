@@ -32,7 +32,6 @@
 namespace metallic::render {
 namespace {
 
-inline constexpr bool kDefaultReversedZ = true;
 inline constexpr uint64_t kImmutableMetadataUploadBatchBytes = 64ull * 1024ull * 1024ull;
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
@@ -3712,7 +3711,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.clipOrtho[0] = finiteOr(frame.camera.znear, 0.1f);
     params.clipOrtho[1] = finiteOr(frame.camera.zfar, 1000.0f);
     params.clipOrtho[2] = std::max(finiteOr(frame.camera.orthoHeight, 10.0f), 0.0001f);
-    params.clipOrtho[3] = frame.camera.reversedZ ? 1.0f : 0.0f;
+    params.clipOrtho[3] = 1.0f;
     params.clearColor[0] = 0.015f;
     params.clearColor[1] = 0.018f;
     params.clearColor[2] = 0.024f;
@@ -3785,7 +3784,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.renderClipOrtho[0] = finiteOr(renderCamera.znear, 0.1f);
     params.renderClipOrtho[1] = finiteOr(renderCamera.zfar, 1000.0f);
     params.renderClipOrtho[2] = std::max(finiteOr(renderCamera.orthoHeight, 10.0f), 0.0001f);
-    params.renderClipOrtho[3] = renderCamera.reversedZ ? 1.0f : 0.0f;
+    params.renderClipOrtho[3] = 1.0f;
     const MeshletStreamGPUParams& previous = previousFrameParamsValid_
         ? previousFrameParams_
         : params;

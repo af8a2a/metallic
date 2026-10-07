@@ -39,7 +39,7 @@ def make_route(cfg, distance, frames):
     if len(values) != 12:
         raise ValueError("Expected eye, center, up, FOV and clip planes")
     original = dict(eye=values[:3], center=values[3:6], up=values[6:9], fovDegrees=values[9],
-                    znear=values[10], zfar=values[11], reversedZ=True)
+                    znear=values[10], zfar=values[11])
     direction = [original['center'][i] - original['eye'][i] for i in (0, 2)]
     length = math.hypot(*direction)
     if length < 1e-6:

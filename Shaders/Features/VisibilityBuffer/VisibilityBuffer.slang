@@ -536,7 +536,7 @@ void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupI
         tri = residentRasterWinding(tri, instanceTransform(g_PrebinCluster.instance));
         hybridRasterTriangle(g_HybridClipPositions[tri.x], g_HybridClipPositions[tri.y], g_HybridClipPositions[tri.z],
             packVisibilityId(record, lane), (visibleClusterDrawBucket(g_PrebinCluster.record) & 1u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11]);
+            bins[6], bins[7], bins[10], bins[11]);
     }
 }
 

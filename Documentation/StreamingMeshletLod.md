@@ -59,7 +59,7 @@ build/tests/MetallicRHITests.exe --gtest_filter="*meshlet_lod*"
 build/tests/MetallicRHITests.exe --gtest_filter="*gpu_driven_mixed_producer_render*"
 ```
 
-合成参考测试检查原子几何覆盖、共享父组、跨层 terminal、缺页、PendingUpload、容量回退；GPU 差分测试对照选择、请求和间接参数。真实 Bunny 测试对照 CPU frontier 与 GPU group mask，并核对同帧 VBuffer 的每个有效 ID，同时切换透视/正交、标准/Reversed Z、误差、手动 LOD 和硬件/异步混合光栅。
+合成参考测试检查原子几何覆盖、共享父组、跨层 terminal、缺页、PendingUpload、容量回退；GPU 差分测试对照选择、请求和间接参数。真实 Bunny 测试对照 CPU frontier 与 GPU group mask，并核对同帧 VBuffer 的每个有效 ID，同时切换透视/正交、误差、手动 LOD 和硬件/异步混合光栅。两种投影均强制使用 reversed Z。
 
 ## 换层诊断与预测预取
 

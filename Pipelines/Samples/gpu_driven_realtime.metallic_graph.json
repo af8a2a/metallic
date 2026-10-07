@@ -117,7 +117,6 @@
             "properties": {
                 "enabled": false,
                 "fallbackToInput": true,
-                "depthInverted": false,
                 "intensity": 1.0,
                 "preset": 0,
                 "style": 0
@@ -258,8 +257,7 @@
             ],
             "fovDegrees": 60,
             "znear": 0.020000003,
-            "zfar": 29999.998,
-            "reversedZ": true
+            "zfar": 29999.998
         },
         "temporalJitter": true
     }

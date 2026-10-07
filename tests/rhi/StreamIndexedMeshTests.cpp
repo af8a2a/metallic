@@ -75,20 +75,18 @@ public:
             log = compiled.diagnostics; MESH_REQUIRE(result);
             MESH_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
         }
-        std::array<std::unique_ptr<GraphicsPipeline>, 4> pipelines;
-        for (uint32_t reversed = 0; reversed < 2; ++reversed) {
-            for (uint32_t indexed = 0; indexed < 2; ++indexed) {
-                MESH_REQUIRE(device->createGraphicsPipeline({
-                    .meshShader = {shaders[indexed * 2].get()},
-                    .fragmentShader = {shaders[indexed * 2 + 1].get()},
-                    .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
-                    .depthStencilFormat = Format::D32Sfloat,
-                    .rasterization = {.cullMode = CullMode::None, .frontFace = FrontFace::CounterClockwise},
-                    .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
-                        .depthCompareOp = reversed ? CompareOp::GreaterEqual : CompareOp::LessEqual},
-                    .usesBindlessHeap = true,
-                }).transform([&](auto rhiValue) { pipelines[reversed * 2 + indexed] = std::move(rhiValue); }));
-            }
+        std::array<std::unique_ptr<GraphicsPipeline>, 2> pipelines;
+        for (uint32_t indexed = 0; indexed < 2; ++indexed) {
+            MESH_REQUIRE(device->createGraphicsPipeline({
+                .meshShader = {shaders[indexed * 2].get()},
+                .fragmentShader = {shaders[indexed * 2 + 1].get()},
+                .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
+                .depthStencilFormat = Format::D32Sfloat,
+                .rasterization = {.cullMode = CullMode::None, .frontFace = FrontFace::CounterClockwise},
+                .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
+                    .depthCompareOp = CompareOp::GreaterEqual},
+                .usesBindlessHeap = true,
+            }).transform([&](auto rhiValue) { pipelines[indexed] = std::move(rhiValue); }));
         }
         std::array<std::unique_ptr<Texture>, 2> textures;
         std::array<std::unique_ptr<TextureView>, 2> views;
@@ -115,7 +113,7 @@ public:
         uint32_t softwareTriangles = 0, comparisons = 0;
         const uint32_t partialCounts[] = {0, 1, 63, 64, 65, 127, 128, 65};
         for (uint32_t test = 0; test < 8; ++test) {
-            const bool ortho = (test & 1) != 0, reversed = (test & 2) != 0, doubleSided = (test & 4) != 0;
+            const bool ortho = (test & 1) != 0, doubleSided = (test & 4) != 0;
             std::vector<uint8_t> page(pageBytes);
             scene::MeshletStreamPayloadHeader h;
             h.clusterCount = 2; h.vertexCount = 256; h.triangleIndexCount = 768;
@@ -157,7 +155,7 @@ public:
             MeshletStreamGPUParams params;
             params.center[2] = 1; params.upProjection[1] = 1; params.upProjection[3] = ortho ? 1.f : 0.f;
             params.viewport[0] = float(width) / height; params.viewport[1] = width; params.viewport[2] = height; params.viewport[3] = 1.57079632679f;
-            params.clipOrtho[0] = .1f; params.clipOrtho[1] = 10; params.clipOrtho[2] = 2.4f; params.clipOrtho[3] = reversed ? 1.f : 0.f;
+            params.clipOrtho[0] = .1f; params.clipOrtho[1] = 10; params.clipOrtho[2] = 2.4f; params.clipOrtho[3] = 1.f;
             params.pageBufferBytes = pageBytes; params.drawTaskCount = capacity * 2; params.scenePageCount = 1;
             if (test == 7) {
                 std::memcpy(params.renderCenter, params.center, 16); std::memcpy(params.renderUpProjection, params.upProjection, 16);
@@ -206,11 +204,11 @@ public:
                             .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
                         }};
                     if (auto commandResult = commands->synchronize({.textures = {transitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    if (hybridQueue) { if (auto commandResult = rasterizer.begin(*commands, 8, reversed); !commandResult) { return RHITestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
+                    if (hybridQueue) { if (auto commandResult = rasterizer.begin(*commands, 8); !commandResult) { return RHITestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
                     const RenderingAttachmentDesc color{.view = views[0].get(), .layout = TextureLayout::ColorAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
                     const RenderingAttachmentDesc depth{.view = views[1].get(), .layout = TextureLayout::DepthStencilAttachment,
-                        .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = reversed ? 0.f : 1.f};
+                        .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = 0.f};
                     if (auto commandResult = commands->beginRendering({
                         .renderArea = {.width = width, .height = height},
                         .colorAttachments = {&color, 1},
@@ -218,7 +216,7 @@ public:
                     }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                     if (auto commandResult = commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f}); !commandResult) { return RHITestResult::fail(std::string("setViewport failed: ") + render::resultToString(commandResult)); }
                     commands->setScissor({.width = width, .height = height});
-                    if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipelines[(reversed ? 2 : 0) + indexed])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipelines[indexed])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     MeshletStreamUserPush push{.pageBuffer = handles[Pages].shaderIndex, .activeGroupBuffer = handles[Groups].shaderIndex,
                         .pageTableBuffer = handles[PageTable].shaderIndex, .paramsBuffer = handles[Params].shaderIndex,
                         .activeHeaderBuffer = handles[Header].shaderIndex, .traversalPhase = test == 7 ? 1u : 0u,
@@ -293,7 +291,7 @@ public:
         }
         if (!sawSecondChunk || !sawHighId || softwareTriangles == 0) { return RHITestResult::fail("Missing primitive ID or queue coverage"); }
         return RHITestResult::pass(std::to_string(comparisons) +
-            " bit-exact HW/overflow/legacy-queue attachment comparisons: indexed vertices, 0/1/63/64/65/127/128 triangles, high IDs, clipping, equal depth, both windings/Z and render jitter");
+            " bit-exact HW/overflow/legacy-queue attachment comparisons: indexed vertices, 0/1/63/64/65/127/128 triangles, high IDs, clipping, equal depth, both windings, reversed Z and render jitter");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamIndexedMeshTest);

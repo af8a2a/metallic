@@ -350,11 +350,6 @@ public:
             }
             result = executor.compile(*device, sample.graph, width, height, log);
             if (!result) { return realtimeFailure(log); }
-            if (variant == 2) {
-                auto camera = executor.renderView()->camera();
-                camera.reversedZ = false;
-                executor.renderView()->setCamera(camera);
-            }
             for (uint32_t frame = 0; frame < 12; ++frame) {
                 const bool captureFrame = sponza_ && context.nsightCapture != nullptr && variant == 0 && frame == 4;
                 if (captureFrame) {
@@ -847,7 +842,7 @@ public:
         sample.graph.addEdge("Deferred.color", "AutoExposure.source");
         sample.graph.addEdge("AutoExposure.color", "FinalBlit.source");
         sample.graph.setViewProperties({{"camera", {{"eye", {0.0, 1.4, 3.65}}, {"center", {0.0, 0.8, 0.0}},
-            {"fovDegrees", 50.0}, {"znear", 0.05}, {"zfar", 100.0}, {"reversedZ", true}}}, {"temporalJitter", true}});
+            {"fovDegrees", 50.0}, {"znear", 0.05}, {"zfar", 100.0}}}, {"temporalJitter", true}});
         scene::SceneDocument scene;
         if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
             return realtimeFailure(scene.lastLoadResult().error);
@@ -1045,7 +1040,7 @@ public:
                 props["maxTraversalWorkers"] = 32; props["maxTraversalWorkItems"] = 2048;
                 props["autoLod"] = false; props["lodLevel"] = 0;
                 graph.setViewProperties({{"camera", {{"eye", {0, .2, 2.5}}, {"center", {0, 0, 0}},
-                    {"znear", .01}, {"zfar", 100}, {"fovDegrees", 50}, {"reversedZ", true}}}, {"temporalJitter", false}});
+                    {"znear", .01}, {"zfar", 100}, {"fovDegrees", 50}}}, {"temporalJitter", false}});
                 scene::Scene fixture;
                 require(fixture.loadStreamMetadata(source), fixture.lastLoadResult().error);
                 const auto center = fixture.bounds().center();

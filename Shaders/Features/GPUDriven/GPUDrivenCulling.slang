@@ -149,7 +149,5 @@ void gpuDrivenPreviewHzbMain(
     float depth1 = hzb[sourceOffset + source1.y * sourceWidth + source1.x];
     float depth2 = hzb[sourceOffset + source2.y * sourceWidth + source2.x];
     float depth3 = hzb[sourceOffset + source3.y * sourceWidth + source3.x];
-    hzb[destinationIndex] = params.clipOrtho.w > 0.5 ?
-        min(min(depth0, depth1), min(depth2, depth3)) :
-        max(max(depth0, depth1), max(depth2, depth3));
+    hzb[destinationIndex] = min(min(depth0, depth1), min(depth2, depth3));
 }

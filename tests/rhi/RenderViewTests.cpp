@@ -58,6 +58,14 @@ public:
         render::RenderView view;
         view.setTemporalJitter(true);
         auto first = view.constants(0, 320, 180, 640, 360);
+        const auto initialRevision = view.revision();
+        const auto initialCutSerial = view.cutSerial();
+        if (!view.setCameraProperties({{"reversedZ", false}}) || view.revision() != initialRevision ||
+            view.cutSerial() != initialCutSerial || view.cameraProperties().contains("reversedZ") ||
+            first.current.clipOrtho[3] != 1.0f || first.previous.clipOrtho[3] != 1.0f ||
+            !view.constants(1, 320, 180, 640, 360, &first).frame[1]) {
+            return RHITestResult::fail("Legacy standard-Z camera option must retain reversed Z and temporal history");
+        }
         auto camera = view.camera();
         camera.center[0] += 0.25f; // Pure rotation: eye is fixed.
         if (!view.setCamera(camera)) { return RHITestResult::fail("Accept camera rotation"); }
@@ -84,15 +92,14 @@ public:
             view.constants(2, 320, 180, 641, 360, &moved).frame[1]) {
             return RHITestResult::fail("Frame gap and render/output resize invalidate history");
         }
-        for (uint32_t change = 0; change < 4; ++change) {
+        for (uint32_t change = 0; change < 3; ++change) {
             auto before = view.constants(1, 320, 180, 640, 360);
             camera = view.camera();
             if (change == 0) { camera.orthographic = !camera.orthographic; }
-            if (change == 1) { camera.reversedZ = !camera.reversedZ; }
-            if (change == 2) { camera.nearPlane *= 2.0f; }
-            if (change == 3) { camera.farPlane *= 2.0f; }
+            if (change == 1) { camera.nearPlane *= 2.0f; }
+            if (change == 2) { camera.farPlane *= 2.0f; }
             if (!view.setCamera(camera) || view.constants(2, 320, 180, 640, 360, &before).frame[1]) {
-                return RHITestResult::fail("Projection/depth convention change invalidates history");
+                return RHITestResult::fail("Projection/clip-plane change invalidates history");
             }
         }
         view.cameraCut();
@@ -122,8 +129,15 @@ public:
         render::registerRenderGraphPassType("ViewProbePass", "Shared view probe", [] { return std::make_unique<ViewProbePass>(); });
         render::RenderGraph graph;
         graph.setViewProperties({{"camera", view.cameraProperties()}, {"temporalJitter", true}});
+        auto legacyView = graph.viewProperties();
+        legacyView["camera"]["reversedZ"] = false;
+        graph.clearDirty();
+        graph.setViewProperties(legacyView);
+        if (graph.dirty() || graph.viewProperties().at("camera").contains("reversedZ")) {
+            return RHITestResult::fail("Graph view ignores obsolete depth convention without rebuilding");
+        }
         // Deliberately conflicting legacy node cameras must never win over the view.
-        graph.addNode("ViewProbePass", "A", {{"camera", {{"eye", {99, 0, 0}}}}});
+        graph.addNode("ViewProbePass", "A", {{"camera", {{"eye", {99, 0, 0}}, {"reversedZ", false}}}});
         graph.addNode("ViewProbePass", "B", {{"camera", {{"eye", {-99, 0, 0}}}}});
         graph.addNode("ViewProbePass", "Asset", {{"sceneBinding", "asset"}, {"viewBinding", "global"},
             {"camera", {{"eye", {199, 0, 0}}}}});
@@ -132,8 +146,26 @@ public:
         graph.markOutput("Asset.view");
         std::string log;
         render::RenderGraph restored;
-        if (!render::deserializeRenderGraphFromString(render::serializeRenderGraphToString(graph), restored, log) ||
-            restored.viewProperties() != graph.viewProperties()) { return RHITestResult::fail("View serialization: " + log); }
+        const auto viewNodeId = graph.findNode("A")->id;
+        if (graph.findNode("A")->properties.at("camera").contains("reversedZ") ||
+            !graph.setNodeRuntimeProperty(viewNodeId, "camera.reversedZ", false) ||
+            graph.findNode("A")->runtimeProperties.at("camera").contains("reversedZ")) {
+            return RHITestResult::fail("Graph node setters omit obsolete depth convention");
+        }
+        // Direct mutation and saved legacy graphs are also normalized at the file boundary.
+        graph.findNode("A")->properties["camera"]["reversedZ"] = false;
+        const auto serialized = render::serializeRenderGraphToString(graph);
+        if (serialized.find("reversedZ") != std::string::npos) {
+            return RHITestResult::fail("Saved graph contains obsolete depth convention");
+        }
+        auto legacyGraph = nlohmann::json::parse(serialized);
+        legacyGraph["view"]["camera"]["reversedZ"] = false;
+        legacyGraph["nodes"][0]["properties"]["camera"]["reversedZ"] = false;
+        if (!render::deserializeRenderGraphFromString(legacyGraph.dump(), restored, log) ||
+            restored.viewProperties() != graph.viewProperties() ||
+            restored.findNode("A")->properties.at("camera").contains("reversedZ")) {
+            return RHITestResult::fail("Legacy view serialization: " + log);
+        }
         std::unique_ptr<render::Device> device;
         auto created = render::createDevice({.applicationName = "Shared RenderView test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
@@ -165,6 +197,7 @@ public:
         auto otherView = read(secondExecutor, "A.view");
         if (std::memcmp(&moved, &otherPass, sizeof(moved)) != 0 ||
             std::memcmp(&moved, &assetPass, sizeof(moved)) != 0 || !moved.frame[1] ||
+            moved.current.clipOrtho[3] != 1.0f || moved.previous.clipOrtho[3] != 1.0f ||
             moved.previous.center[0] != first.current.center[0] || moved.current.center[0] != camera.center[0] ||
             otherView.current.center[0] != first.current.center[0]) {
             return RHITestResult::fail("GPU ABI, shared pass data, previous frame or independent view isolation");

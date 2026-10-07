@@ -110,7 +110,7 @@ def main():
     scene = {"version": 3, "source": "OpenPbrDefault.gltf", "sceneIndex": 0, "nodes": [],
         "world": {"environment": environment, "lighting": lighting}}
     camera = {"eye": eye, "center": center, "up": [0.0, 1.0, 0.0], "fovDegrees": 60.0,
-        "projection": "perspective", "znear": 0.05, "zfar": 100.0, "reversedZ": True}
+        "projection": "perspective", "znear": 0.05, "zfar": 100.0}
     scene_path = "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf"
     graph = {"version": 1, "name": "OpenPBR Default LookDev", "nodes": [
         {"id": 1, "name": "PathTrace", "type": "ScenePathTracePass",

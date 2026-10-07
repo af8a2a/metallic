@@ -18,10 +18,10 @@ public:
     // Previously recorded commands already contain their own push-constant extent.
     bool supportsRenderExtent(uint32_t width, uint32_t height) const;
     Result<> setRenderExtent(uint32_t width, uint32_t height);
-    [[nodiscard]] Result<> begin(CommandBuffer& commands, float maxPixels, bool reversedZ);
+    [[nodiscard]] Result<> begin(CommandBuffer& commands, float maxPixels);
     Result<> resolve(CommandBuffer& commands, Texture& visibilityTexture, TextureView& visibility,
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);
-    Result<> beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
+    Result<> beginClusters(CommandBuffer& commands, float maxPixels,
         uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact = false, bool tessellation = false);
     // beginClusters and the producer heap/bindings must be ready first.
     Result<> prepareStreamClusterCandidates(CommandBuffer& commands, ComputePipeline& pipeline,
@@ -54,7 +54,7 @@ private:
         uint32_t height = 0;
         uint32_t capacity = 0;
         float maxPixels = 8.0f;
-        uint32_t reversedZ = 1;
+        uint32_t reserved = 0;
         uint32_t subpixelBits = 8;
         uint32_t clusterBuffer = 0;
         uint32_t clusterArgumentsBuffer = 0;
@@ -68,7 +68,7 @@ private:
     std::array<ResourceLease, 5> resources_;
     std::array<std::unique_ptr<ShaderModule>, 5> shaders_;
     std::array<std::unique_ptr<ComputePipeline>, 3> compute_;
-    std::array<std::unique_ptr<GraphicsPipeline>, 2> resolve_;
+    std::unique_ptr<GraphicsPipeline> resolve_;
     std::unique_ptr<Buffer> workloadBuffer_;
     std::unique_ptr<Buffer> clusterBuffer_;
     std::unique_ptr<Buffer> clusterArguments_;

@@ -9,7 +9,7 @@ public struct ViewCameraConstants
     public float4 center;
     public float4 upProjection;
     public float4 viewport;
-    public float4 clipOrtho;
+    public float4 clipOrtho; // near plane, far plane, orthographic height, fixed 1 for reversed Z.
 };
 
 public struct ViewConstants

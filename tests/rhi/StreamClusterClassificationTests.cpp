@@ -166,18 +166,18 @@ public:
         }
         bool sawFastSoftware = false, sawFastHardware = false;
         bool submitted = false, sawRetry = false, sawLate = false, sawSoftware = false, sawHardware = false, saw2D = false;
-        struct Case { uint32_t groups; float maxPixels; bool ortho; bool reversed; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; uint32_t payloadFault = 0; bool disableMetadata = false; };
-        const Case cases[] = {{2305, 8, true, true, 0, true}, {0, 8, true, true, 28},
-            {1, 1, false, true, 0}, {127, 8, false, false, 12}, {129, 32, true, false, 28},
-            {2305, 8, false, true, 28}, {129, 1, true, true, 28, false, true}, {1, 32, false, false, 0},
-            {129, 2, false, true, 0}, {129, 4, true, false, 0},
-            {2305, 0, true, true, 0, true}, {129, 0, false, true, 28}, {0, 0, true, false, 28}, {129, 8, true, true, 0, false, false, true},
-            {129, 8, false, true, 0, false, false, false, 1}, {129, 8, false, true, 0, false, false, false, 2},
-            {129, 8, false, true, 0, false, false, false, 3}, {129, 8, false, true, 0, false, false, false, 4},
-            {129, 8, false, true, 0, false, false, false, 5}, {129, 8, false, true, 0, false, false, false, 6},
-            {129, 8, false, true, 0, false, false, false, 7}, {129, 8, false, true, 0, false, true, false, 8},
-            {129, 8, true, true, 0, true, false, true},
-            {129, 8, false, true, 0, false, true, false, 0, true}};
+        struct Case { uint32_t groups; float maxPixels; bool ortho; uint32_t culling; bool dense = false; bool jitter = false; bool tessellation = false; uint32_t payloadFault = 0; bool disableMetadata = false; };
+        const Case cases[] = {{2305, 8, true, 0, true}, {0, 8, true, 28},
+            {1, 1, false, 0}, {127, 8, false, 12}, {129, 32, true, 28},
+            {2305, 8, false, 28}, {129, 1, true, 28, false, true}, {1, 32, false, 0},
+            {129, 2, false, 0}, {129, 4, true, 0},
+            {2305, 0, true, 0, true}, {129, 0, false, 28}, {0, 0, true, 28}, {129, 8, true, 0, false, false, true},
+            {129, 8, false, 0, false, false, false, 1}, {129, 8, false, 0, false, false, false, 2},
+            {129, 8, false, 0, false, false, false, 3}, {129, 8, false, 0, false, false, false, 4},
+            {129, 8, false, 0, false, false, false, 5}, {129, 8, false, 0, false, false, false, 6},
+            {129, 8, false, 0, false, false, false, 7}, {129, 8, false, 0, false, true, false, 8},
+            {129, 8, true, 0, true, false, true},
+            {129, 8, false, 0, false, true, false, 0, true}};
         size_t caseIndex = 0;
         for (const auto test : cases) {
             std::vector<uint8_t> page(pageBytes);
@@ -248,7 +248,7 @@ public:
             MeshletStreamGPUParams params;
             params.center[2] = 1; params.upProjection[1] = 1; params.upProjection[3] = test.ortho ? 1.f : 0.f;
             params.viewport[0] = 1; params.viewport[1] = params.viewport[2] = 128; params.viewport[3] = 1.57079632679f;
-            params.clipOrtho[0] = .01f; params.clipOrtho[1] = 10; params.clipOrtho[2] = 2; params.clipOrtho[3] = test.reversed ? 1.f : 0.f;
+            params.clipOrtho[0] = .01f; params.clipOrtho[1] = 10; params.clipOrtho[2] = 2; params.clipOrtho[3] = 1.f;
             std::memcpy(params.previousCenter, params.center, 16); std::memcpy(params.previousUpProjection, params.upProjection, 16);
             std::memcpy(params.previousViewport, params.viewport, 16); std::memcpy(params.previousClipOrtho, params.clipOrtho, 16);
             if (test.jitter) {
@@ -269,9 +269,9 @@ public:
                 visibility[i] = test.dense ? 1 : i % 4;
                 instances[i].identity[3] = i % 3 == 1 ? 6 : i % 3 == 2 ? 8 : 0;
             }
-            std::vector<float> hzb(hzbElements, test.reversed ? 0.f : 1.f);
+            std::vector<float> hzb(hzbElements, 0.f);
             CLASSIFY_REQUIRE(upload(HZB0, hzb.data(), hzb.size() * 4));
-            std::fill(hzb.begin(), hzb.end(), test.reversed ? 1.f : 0.f);
+            std::fill(hzb.begin(), hzb.end(), 1.f);
             CLASSIFY_REQUIRE(upload(HZB1, hzb.data(), hzb.size() * 4));
             if (test.payloadFault == 7) { params.pageBufferBytes = sizeof(pageHeader) - 4; }
             CLASSIFY_REQUIRE(upload(Header, &header, sizeof(header)));
@@ -296,7 +296,7 @@ public:
                     CLASSIFY_REQUIRE(upload(PageTable, pages.data(), sizeof(pages)));
                     if (submitted) { CLASSIFY_REQUIRE(fence->reset()); CLASSIFY_REQUIRE(pool->reset()); }
                     CLASSIFY_REQUIRE(commands->begin());
-                    CLASSIFY_REQUIRE(rasterizer.beginClusters(*commands, test.maxPixels, test.reversed, 0, capacity, true, true));
+                    CLASSIFY_REQUIRE(rasterizer.beginClusters(*commands, test.maxPixels, 0, capacity, true, true));
                     if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); }
                     MeshletStreamUserPush push{.pageBuffer = handles[Pages].shaderIndex, .activeGroupBuffer = handles[Groups].shaderIndex,
                         .pageTableBuffer = handles[PageTable].shaderIndex, .paramsBuffer = handles[Params].shaderIndex,

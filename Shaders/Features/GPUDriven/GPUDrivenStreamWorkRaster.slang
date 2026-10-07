@@ -93,7 +93,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
         HybridTriangleDecision decision;
         hybridRasterPreparedTriangleDecision(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11], false, decision);
+            bins[6], bins[7], bins[10], bins[11], false, decision);
         if (!reorder && workControlTraceSelected(group, lane)) {
             ++traceCounts.x;
             if (!TRACE_PREDICATE_ENABLED || triangle == TRACE_TRIANGLE_ID) {
@@ -114,7 +114,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
 #else
         hybridRasterPreparedTriangle(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11], false);
+            bins[6], bins[7], bins[10], bins[11], false);
 #endif
     }
 }

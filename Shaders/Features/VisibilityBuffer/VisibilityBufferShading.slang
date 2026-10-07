@@ -220,14 +220,7 @@ float projectDepth(float viewZ, GPUDrivenPreviewParams params)
 {
     float zNear = max(params.renderClipOrtho.x, 0.0001);
     float zFar = max(params.renderClipOrtho.y, zNear + 0.0001);
-    float depth;
-    if (params.renderUpProjection.w > 0.5) {
-        depth = (viewZ - zNear) / (zFar - zNear);
-    } else {
-        float safeViewZ = abs(viewZ) > 0.000001 ? viewZ : 0.000001;
-        depth = zFar / (zFar - zNear) - (zFar * zNear) / ((zFar - zNear) * safeViewZ);
-    }
-    return params.renderClipOrtho.w > 0.5 ? 1.0 - depth : depth;
+    return conservativeProjectDepth(viewZ, zNear, zFar, params.renderUpProjection.w > 0.5);
 }
 
 float4 projectPosition(float3 worldPosition, GPUDrivenPreviewParams params)
@@ -422,15 +415,7 @@ float4 projectStreamDeferredPosition(
         dot(cameraVector, forward));
     float zNear = max(params.clipOrtho.x, 0.0001);
     float zFar = max(params.clipOrtho.y, zNear + 0.0001);
-    float ndcZ = (viewPosition.z - zNear) / (zFar - zNear);
-    if (params.upProjection.w <= 0.5) {
-        float safeViewZ = abs(viewPosition.z) > 0.000001
-            ? viewPosition.z
-            : (viewPosition.z < 0.0 ? -0.000001 : 0.000001);
-        ndcZ = zFar / (zFar - zNear) -
-            (zFar * zNear) / ((zFar - zNear) * safeViewZ);
-    }
-    ndcZ = params.clipOrtho.w > 0.5 ? 1.0 - ndcZ : ndcZ;
+    float ndcZ = conservativeProjectDepth(viewPosition.z, zNear, zFar, params.upProjection.w > 0.5);
     float aspect = max(params.viewport.x, 0.001);
     float4 clip;
     if (params.upProjection.w > 0.5) {

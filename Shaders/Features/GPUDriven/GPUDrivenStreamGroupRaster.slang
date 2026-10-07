@@ -29,7 +29,7 @@ void rasterStreamClusterGroup(uint3 group, uint lane, GPUDrivenStreamAssetPush p
         c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);
         hybridRasterPreparedTriangle(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11], false);
+            bins[6], bins[7], bins[10], bins[11], false);
     }
 }
 

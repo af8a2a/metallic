@@ -67,9 +67,8 @@ float3 domainNormal(float packed)
 float rasterRayDistance(uint2 pixel, Ray ray, ScenePathTracePush push)
 {
     float depth = gVisibilityDepth.Load(int3(pixel, 0));
-    float standard = push.clipOrtho.w > 0.5 ? 1.0 - depth : depth;
-    float viewDepth = push.upProjection.w > 0.5 ? lerp(push.clipOrtho.x, push.clipOrtho.y, standard)
-        : push.clipOrtho.x * push.clipOrtho.y / max(push.clipOrtho.y - standard * (push.clipOrtho.y - push.clipOrtho.x), 1e-6);
+    float viewDepth = push.upProjection.w > 0.5 ? lerp(push.clipOrtho.y, push.clipOrtho.x, depth)
+        : push.clipOrtho.x * push.clipOrtho.y / max(push.clipOrtho.x + depth * (push.clipOrtho.y - push.clipOrtho.x), 1e-6);
     float3 forward = cameraForwardFrom(push.eye, push.center);
     return (viewDepth - dot(ray.origin - push.eye.xyz, forward)) / max(dot(ray.direction, forward), 1e-6);
 }
@@ -281,7 +280,8 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
     bool hasSurface = reconstructVisibilitySurface(pixel, ray, push, hit);
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
     float deviceDepth = gVisibilityDepth.Load(int3(pixel, 0));
-    gUpscalerDepth[pixel] = push.clipOrtho.w > 0.5 ? 1.0 - deviceDepth : deviceDepth;
+    // Upscaler guides retain the standard-depth contract.
+    gUpscalerDepth[pixel] = 1.0 - deviceDepth;
     gUpscalerMotion[pixel] = hasSurface ? motionVectorToPrevious(hit.position, samplePixel, push)
         : skyMotionVectorToPrevious(ray.direction, samplePixel, push);
 #endif

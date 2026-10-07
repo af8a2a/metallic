@@ -10,7 +10,7 @@ Stream producer 在分类前以 setup → block count → block prefix → scatt
 2. 分类线程组投影共享顶点，然后检查每个三角形的屏幕包围盒与裁剪范围。Stream 直接使用剔除阶段缓存的顶点地址、顶点/三角形数量和索引地址，避免重复页面校验；硬件需求先在 wave 内汇总，再更新组共享标记。整个 cluster 的三角形都满足软件尺寸阈值时进入软件箱；只要有一个三角形需要硬件处理，整个 cluster 就进入其材质对应的硬件箱。Masked cluster 直接进入硬件箱。
 3. 每个输入写入自己的原始候选分类槽，随后 GPU 分块统计、前缀求和、散射，生成四个硬件材质箱和一个软件箱。Stream 分类任务的执行顺序可以变化，最终分箱顺序仍由原始候选槽决定。压缩保留原始候选顺序和 visibility record ID，避免无序原子追加导致硬件等深图元在帧间改变覆盖顺序。全部计数和 indirect arguments 在 GPU 上生成。预分桶 Stream HW indirect 计数等于硬件 cluster 数；未预分桶的兼容路径仍保留每 cluster 两个 64 三角形槽位，`params.drawTaskCount` 与 record 容量换算不变。
 4. Resident 硬件箱由 AS 每组消费 32 个 cluster，再由 MS 绘制；Stream 硬件箱每 cluster 调度一个 64 线程 MS 工作组，最多输出 128 个唯一顶点及 128 个索引三角形；visibility ID 由逐图元 `SV_PrimitiveID` 输出，单双面标记继续由 cluster 内一致的顶点属性传递。软件箱直接 indirect dispatch compute，每组加载一个 cluster 的共享顶点，一线程光栅一个三角形；这些 cluster 不进入 Mesh Shader，也不写入投影三角形队列。
-5. 软件光栅使用子像素定点边函数、top-left 规则和基于舍入后顶点的屏幕线性深度。像素高 32 位保存深度排序键，低 32 位保存原始 visibility ID，以 `InterlockedMax(uint64_t)` 一次更新两者。普通 Z 对浮点深度位取反，Reversed-Z 直接使用浮点位。
+5. 软件光栅使用子像素定点边函数、top-left 规则和基于舍入后顶点的屏幕线性深度。像素高 32 位保存深度排序键，低 32 位保存原始 visibility ID，以 `InterlockedMax(uint64_t)` 一次更新两者。所有光栅路径强制使用 reversed Z（near = 1、far = 0），排序键直接使用浮点深度位。
 6. 开启异步时，分箱完成的 graphics 段通过 timeline semaphore 放行 compute 软件光栅；硬件光栅在 graphics 队列上仅依赖分箱，二者可以重叠。汇合 graphics 段等待软件和硬件分支完成后，再进行深度合并。
 7. 全屏合并输出 `SV_Depth` 与 ID，将软件最近交点合入原有硬件附件。每个 resident / stream 绘制阶段完成合并后才生成 HZB；冻结剔除相机的独立附件也执行同样流程。
 
@@ -27,7 +27,7 @@ Stream producer 在分类前以 setup → block count → block prefix → scatt
 - 分箱容量 `C` 覆盖 resident record capacity 与 stream candidate capacity 的较大者，每个箱都能容纳全部候选。分箱及暂存空间（含 retry mask）为 `64 + 36*C + 20*ceil(C/128)` 字节，五组 raster indirect arguments 共 60 字节；候选分类、分箱及候选构建三组 indirect arguments 共 36 字节。剔除后复用第一组三元组为存活项数量；第二组仍按原始候选数驱动稳定分箱。16 字节分类任务暂存在最终箱列表的前 `4*C` 个 uint 中，header[0] 暂存任务数；稳定分箱覆盖两者，不增加缓冲容量。输入超过容量会在记录 GPU 命令前返回错误，场景容量增长时重建绑定并延迟回收旧资源。
 - 软件深度/ID 占每像素 8 字节。为支持运行时对照，仍分配最多 262,144 个三角形的旧队列（16 MiB + 32 字节）及其 12 字节参数；仅关闭预分箱时才向该队列追加，队列溢出三角形保留硬件图元。Stream 兼容路径也复用当前分块的 cluster 顶点，并用组共享 clip 坐标为软件队列构建三角形；预分桶和纯硬件路径跳过这次共享坐标 barrier。
 - GPU 捕获包含 clear、stable cluster bins、software triangles、merge 区段。Debug checkpoint 将 Stream 的 `AfterStreamEarlyClusterCull` / `AfterStreamLateClusterCull` 与 `AfterStreamEarlyClassify` / `AfterStreamLateClassify` 分开计时；和旧版本比较时应合计剔除与分类。分箱检查点提供 `AfterResidentEarlyBins`、`AfterResidentLateBins`、`AfterStreamEarlyBins`、`AfterStreamLateBins`；资源 `hybrid.<pass>.clusters` 与 `hybrid.<pass>.arguments` 可读回计数和列表。
-- Cluster buffer 前 16 个 uint 为 header：0–4 为各箱计数，5 为容量，6–7 为尺寸，8 为阈值浮点位，9 为 Reversed-Z，10 为子像素精度，11 为软件像素描述符，12 为候选数，14 为溢出计数。Stream 使用 13 保存每 active group 的 record 槽数，15 保存本次实际 active group 数。箱 `b` 的有效 record ID 位于 `16 + b*C` 起的 `header[b]` 项。
+- Cluster buffer 前 16 个 uint 为 header：0–4 为各箱计数，5 为容量，6–7 为尺寸，8 为阈值浮点位，9 为保留槽位，10 为子像素精度，11 为软件像素描述符，12 为候选数，14 为溢出计数。Stream 使用 13 保存每 active group 的 record 槽数，15 保存本次实际 active group 数。箱 `b` 的有效 record ID 位于 `16 + b*C` 起的 `header[b]` 项。
 
 该实现使用 cluster 级 compute 预分箱，并保留硬件深度附件与软件合并步骤。开启异步时，软件通过独立 compute 队列与硬件并行，二者仍使用各自的深度存储并在汇合后合并。实际重叠程度和性能收益取决于 GPU 调度、场景中的软硬工作量及额外提交成本；需要在目标场景测量。
 
@@ -56,9 +56,9 @@ Compute:                       └── SW raster ─────────�
 build/tests/MetallicRHITests.exe --gtest_filter="*hybrid_*" --rhi-validation
 ```
 
-`hybrid_raster_depth_coverage_and_overflow`：真实 Mesh Shader 分流及 indirect compute，逐像素比较 HW/SW ID 和 D32 深度，覆盖共享边、裁剪、透视深度、正反面、两种 Z、三种阈值和容量为 1 的强制溢出。单独读回软件原子像素，证明实际执行了软光栅。
+`hybrid_raster_depth_coverage_and_overflow`：真实 Mesh Shader 分流及 indirect compute，逐像素比较 HW/SW ID 和 D32 深度，覆盖共享边、裁剪、透视深度、正反面、reversed Z、三种阈值和容量为 1 的强制溢出。单独读回软件原子像素，证明实际执行了软光栅。
 
-`hybrid_raster_scene_equivalence`：真实 Bunny 场景，对照纯硬件三角形 ID，检查 cluster/triangle 运行时切换、透视/正交、两种 Z、三种阈值，串行/异步开关，共 108 个连续 HZB 对照帧；输出 `HybridBunny.png`。
+`hybrid_raster_scene_equivalence`：真实 Bunny 场景，对照纯硬件三角形 ID，检查 cluster/triangle 运行时切换、透视/正交、旧 `camera.reversedZ` 两种输入均被忽略、三种阈值，串行/异步开关，共 108 个连续 HZB 对照帧；输出 `HybridBunny.png`。
 
 额外运行现有混合 producer、Alpha Mask、相机冻结、HZB 与延迟着色回归。独立旧版 `GPUDrivenStreamAssetPass` 的 `render_graph_gpu_driven_streamasset_pass_smoke` 在隐藏后恢复检查失败，使用 HEAD 原版流式 shader 亦可复现；它与统一 `VisibilityBufferPass` 的混合 producer 测试分别记录。
 

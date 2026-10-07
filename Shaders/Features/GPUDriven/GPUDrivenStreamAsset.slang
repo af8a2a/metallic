@@ -600,7 +600,7 @@ float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
     float zNear = max(params.clipOrtho.x, 0.0001);
     float zFar = max(params.clipOrtho.y, zNear + 0.0001);
     float ndcZ = conservativeProjectDepth(viewPosition.z, zNear, zFar,
-        params.upProjection.w > 0.5, params.clipOrtho.w > 0.5);
+        params.upProjection.w > 0.5);
     float aspect = max(params.viewport.x, 0.001);
 
     if (params.upProjection.w > 0.5) {
@@ -679,7 +679,7 @@ float streamProjectDepth(float viewZ, GPUDrivenStreamAssetCameraData camera)
     float zNear = max(camera.clipOrtho.x, 0.0001);
     float zFar = max(camera.clipOrtho.y, zNear + 0.0001);
     return conservativeProjectDepth(viewZ, zNear, zFar,
-        camera.upProjection.w > 0.5, camera.clipOrtho.w > 0.5);
+        camera.upProjection.w > 0.5);
 }
 
 bool streamSphereInsideFrustum(
@@ -849,8 +849,7 @@ bool streamSphereOccluded(
     float nearestZ = max(viewCenter.z - radius, zNear);
     float depthBias = max(0.001, radius * 0.01);
     float nearestDepth = streamProjectDepth(max(nearestZ - depthBias, zNear), camera);
-    return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11),
-        camera.clipOrtho.w > 0.5);
+    return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11));
 }
 
 bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
@@ -1024,9 +1023,7 @@ void gpuDrivenStreamAssetHzbMain(
     float depth1 = hzb[sourceOffset + source1.y * sourceWidth + source1.x];
     float depth2 = hzb[sourceOffset + source2.y * sourceWidth + source2.x];
     float depth3 = hzb[sourceOffset + source3.y * sourceWidth + source3.x];
-    hzb[destinationIndex] = params.clipOrtho.w > 0.5
-        ? min(min(depth0, depth1), min(depth2, depth3))
-        : max(max(depth0, depth1), max(depth2, depth3));
+    hzb[destinationIndex] = min(min(depth0, depth1), min(depth2, depth3));
 }
 
 float3 hashColor(uint seed)
@@ -4062,7 +4059,7 @@ struct StreamRasterProjection
     float3 eye; float3 forward; float3 right; float3 up;
     float nearZ; float farZ; float aspect; float halfHeight; float yScale;
     float2 jitter;
-    bool ortho; bool reversedZ; bool jitterEnabled;
+    bool ortho; bool jitterEnabled;
 };
 StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams p)
 {
@@ -4081,7 +4078,7 @@ StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams 
     r.nearZ=max(p.clipOrtho.x,0.0001); r.farZ=max(p.clipOrtho.y,r.nearZ+0.0001);
     r.aspect=max(p.viewport.x,0.001); r.halfHeight=max(p.clipOrtho.z*0.5,0.0001);
     r.yScale=1.0/tan(clamp(p.viewport.w,0.017453292,3.12413936)*0.5);
-    r.ortho=p.upProjection.w>0.5; r.reversedZ=p.clipOrtho.w>0.5;
+    r.ortho=p.upProjection.w>0.5;
     return r;
 }
 float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
@@ -4092,7 +4089,7 @@ float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStre
     float3 world=c.group.world0.xyz*local.x+c.group.world1.xyz*local.y+c.group.world2.xyz*local.z+c.group.world3.xyz;
     float3 delta=world-r.eye;
     float3 view=float3(dot(delta,r.right),dot(delta,r.up),dot(delta,r.forward));
-    float z=conservativeProjectDepth(view.z,r.nearZ,r.farZ,r.ortho,r.reversedZ);
+    float z=conservativeProjectDepth(view.z,r.nearZ,r.farZ,r.ortho);
     float4 clip=r.ortho ? float4(view.x/(r.halfHeight*r.aspect),view.y/r.halfHeight,z,1.0) :
         float4(view.x*r.yScale/r.aspect,view.y*r.yScale,z*view.z,view.z);
     if (r.jitterEnabled) { clip.xy-=r.jitter*clip.w; }
@@ -4498,10 +4495,10 @@ void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, 
             b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);
             c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);
             hybridRasterPreparedTriangle(a, b, c,
-                id, doubleSided, bins[6], bins[7], bins[9], bins[10], bins[11], incrementalDepth);
+                id, doubleSided, bins[6], bins[7], bins[10], bins[11], incrementalDepth);
         } else {
             hybridRasterTriangle(asfloat(g_StreamRasterWords[tri.x]), asfloat(g_StreamRasterWords[tri.y]), asfloat(g_StreamRasterWords[tri.z]),
-                id, doubleSided, bins[6], bins[7], bins[9], bins[10], bins[11]);
+                id, doubleSided, bins[6], bins[7], bins[10], bins[11]);
         }
     }
 }

@@ -149,7 +149,7 @@ public:
         if (data == nullptr) { return RHITestResult::fail("Occlusion probe readback failed"); }
         const std::array<std::array<float, 2>, 12> expected{{
             {1, 0}, {0, 1}, {0, 0}, {1, 0}, {0, 1}, {1, 0},
-            {1, 0}, {0, 1}, {0, 0}, {0, 0}, {0, 0}, {0, 1}}};
+            {1, 0}, {0, 1}, {0, 1}, {0, 0}, {0, 0}, {0, 1}}};
         bool valid = true;
         for (uint32_t index = 0; index < 32; ++index) {
             const auto& value = data[index];
@@ -195,7 +195,7 @@ public:
         for (uint32_t cameraIndex = 0; cameraIndex < cameras.size(); ++cameraIndex) {
             const auto& c = cameras[cameraIndex];
             graph.setViewProperties({{"camera", {{"eye", {c[0], c[1], c[2]}}, {"center", {c[3], c[4], c[5]}},
-                {"up", {0, 1, 0}}, {"fovDegrees", 45.0}, {"znear", 0.018548}, {"zfar", 1854.789185}, {"reversedZ", true}}},
+                {"up", {0, 1, 0}}, {"fovDegrees", 45.0}, {"znear", 0.018548}, {"zfar", 1854.789185}}},
                 {"temporalJitter", false}});
             std::vector<uint32_t> reference;
             // No culling is the oracle. Then exercise all culling and disable one
@@ -239,7 +239,7 @@ public:
         sample.graph.addEdge("AutoExposure.color", "FinalBlit.source");
         const auto& c = cameras[1];
         sample.graph.setViewProperties({{"camera", {{"eye", {c[0], c[1], c[2]}}, {"center", {c[3], c[4], c[5]}},
-            {"up", {0, 1, 0}}, {"fovDegrees", 45.0}, {"znear", 0.018548}, {"zfar", 1854.789185}, {"reversedZ", true}}},
+            {"up", {0, 1, 0}}, {"fovDegrees", 45.0}, {"znear", 0.018548}, {"zfar", 1854.789185}}},
             {"temporalJitter", false}});
         preview.setEnvironment({.enabled = true, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
         for (uint32_t frame = 0; frame < 32; ++frame) {
@@ -285,7 +285,6 @@ public:
                     {"eye", {-4.5 + motion * 2.0, 10.0 + motion * 1.5, -0.2 + motion}},
                     {"center", {30.0 - motion * 4.0, -17.0 + motion * 2.0, -5.5}},
                     {"up", {0, 1, 0}}, {"fovDegrees", 45.0}, {"znear", 0.018548}, {"zfar", 1854.789185},
-                    {"reversedZ", frame < 10 || frame >= 20},
                     {"projection", frame >= 20 ? "orthographic" : "perspective"}, {"orthoHeight", 25.0}})) {
                 return RHITestResult::fail("Temporal test camera is invalid");
             }
@@ -311,7 +310,7 @@ public:
                 return RHITestResult::fail("Temporal HZB changed visibility at frame " + std::to_string(frame));
             }
         }
-        return RHITestResult::pass("30 moving/jittered Sponza views match with occlusion on/off, including resize and both depth conventions");
+        return RHITestResult::pass("30 moving/jittered reversed-Z Sponza views match with occlusion on/off, including resize and perspective/orthographic projection");
     }
 };
 

@@ -470,7 +470,8 @@ Result<> DLSSNRContext::evaluate(CommandBuffer& commandBuffer, const DLSSNRDesc&
     setSubrect(p, "Output", output.width, output.height);
     p->Set("DLSSNR.MVecScaleX", s.motionVectorScaleX);
     p->Set("DLSSNR.MVecScaleY", s.motionVectorScaleY);
-    p->Set("DLSSNR.DepthInverted", static_cast<unsigned int>(s.depthInverted));
+    // Upscaler guides are exported as standard normalized depth.
+    p->Set("DLSSNR.DepthInverted", 0u);
     p->Set("DLSSNR.Reset", static_cast<unsigned int>(s.reset || recreate));
     prepareStreamlineNgxCommandBuffer(commandBuffer);
     auto result = ngxResult(impl.runtime->evaluate(command, impl.handle, p, nullptr), "Vulkan EvaluateFeature", log);

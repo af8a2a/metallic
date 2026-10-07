@@ -42,7 +42,7 @@ def main() -> None:
         "clusterFrustumCull": True, "clusterNormalConeCull": False,
         "camera": {"eye": [55.34291, 6.4527273, 0.32432523],
                    "center": [46.38051, 5.7994967, 0.5308178], "up": [0, 1, 0],
-                   "fovDegrees": 60, "znear": 0.020000003, "zfar": 29999.998, "reversedZ": True}}
+                   "fovDegrees": 60, "znear": 0.020000003, "zfar": 29999.998}}
     graph = {"name": "GPUDrivenMiniZorah", "version": 1,
              "nodes": [{"id": 1, "name": "GPUDriven", "type": "GPUDrivenStreamAssetPass",
                         "position": {"x": 320, "y": 280}, "properties": properties},

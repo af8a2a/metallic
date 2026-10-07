@@ -641,25 +641,17 @@ public:
                 .depthStencil = DepthStencilState{
                     .depthTestEnable = true,
                     .depthWriteEnable = true,
-                    .depthCompareOp = depthCompareOp(kDefaultReversedZ),
+                    .depthCompareOp = depthCompareOp(),
                 },
                 .usesBindlessHeap = true,
             };
             result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { visibilityPipelines_[bucketIndex] = std::move(rhiValue); });
-            if (result) {
-                pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(false);
-                result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { standardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
-            }
             // Frozen HZB raster needs only visibility/depth. Use a matching
             // single-target PSO so it cannot overwrite viewport domain/colors.
             if (result && tessellationEnabled()) {
                 pipelineDesc.fragmentShader.module = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
                 pipelineDesc.colorAttachmentCount = 1;
-                result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { frozenStandardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
-                if (result) {
-                    pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(true);
-                    result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { frozenVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
-                }
+                result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { frozenVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
             }
             if (!result || visibilityPipelines_[bucketIndex] == nullptr) {
                 log += resultMessage(
@@ -1182,9 +1174,9 @@ private:
         return value != properties().end() && value->is_number() ? value->get<float>() : 8.0f;
     }
 
-    Result<> beginHybridRaster(CommandBuffer& commandBuffer, bool reversedZ)
+    Result<> beginHybridRaster(CommandBuffer& commandBuffer)
     {
-        if (auto commandResult = hybridRasterizer_->begin(commandBuffer, softwareRasterMaxPixels(), reversedZ); !commandResult) { return commandResult; }
+        if (auto commandResult = hybridRasterizer_->begin(commandBuffer, softwareRasterMaxPixels()); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -1217,7 +1209,6 @@ private:
         streamCullResetShader_.reset();
         streamInstanceCullShader_.reset();
         streamVisibilityPipeline_.reset();
-        standardZStreamVisibilityPipeline_.reset();
         streamCullResetPipeline_.reset();
         streamInstanceCullPipeline_.reset();
         streamHybridQueueHandle_ = {};
@@ -1686,15 +1677,11 @@ private:
             .depthStencil = DepthStencilState{
                 .depthTestEnable = true,
                 .depthWriteEnable = true,
-                .depthCompareOp = depthCompareOp(kDefaultReversedZ),
+                .depthCompareOp = depthCompareOp(),
             },
             .usesBindlessHeap = true,
         };
         result = ShaderRegistry::instance().getGraphicsPipeline(device, pipelineDesc).transform([&](auto rhiValue) { streamVisibilityPipeline_ = std::move(rhiValue); });
-        if (result) {
-            pipelineDesc.depthStencil.depthCompareOp = depthCompareOp(false);
-            result = ShaderRegistry::instance().getGraphicsPipeline(device, pipelineDesc).transform([&](auto rhiValue) { standardZStreamVisibilityPipeline_ = std::move(rhiValue); });
-        }
         if (!result || streamVisibilityPipeline_ == nullptr) {
             log += resultMessage(
                 "createGraphicsPipeline(VisibilityBufferPass stream visibility)",
@@ -2143,7 +2130,6 @@ private:
             : projectWithCullingCamera ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late")
             : (passIndex == 0 ? "Resident early" : "Resident late"));
         CommandBuffer& commandBuffer = context.commandBuffer();
-        const bool reversedZ = (projectWithCullingCamera ? previousParams_.clipOrtho[3] : previousParams_.renderClipOrtho[3]) > 0.5f;
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -2169,7 +2155,7 @@ private:
             .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(reversedZ),
+            .clearDepth = depthClearValue(),
         };
         if (!hasResidentGeometry) {
             if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
@@ -2184,7 +2170,7 @@ private:
         if (prebin) {
             auto binProfile = context.profileScope("Soft/hard classification");
             Result<> result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.shaderIndex(), activeMeshletCount_, false, false, tessellationEnabled());
+                softwareRasterMaxPixels(), hybridPixelHandle_.shaderIndex(), activeMeshletCount_, false, false, tessellationEnabled());
             if (!result) { return result; }
             if (auto commandResult = commandBuffer.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
@@ -2210,7 +2196,7 @@ private:
                 debugClusterBins(context, passIndex == 0 ? "AfterResidentEarlyBins" : "AfterResidentLateBins");
             }
         } else if (hybridRasterEnabled()) {
-            if (auto commandResult = beginHybridRaster(commandBuffer, reversedZ); !commandResult) { return commandResult; }
+            if (auto commandResult = beginHybridRaster(commandBuffer); !commandResult) { return commandResult; }
         }
         const bool async = !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
             context.supportsParallelCompute();
@@ -2250,8 +2236,8 @@ private:
                  bucketIndex < kGPUDrivenPreviewDrawBucketCount;
                  ++bucketIndex) {
                 const auto& pipelines = tessellationEnabled() && projectWithCullingCamera
-                    ? (reversedZ ? frozenVisibilityPipelines_ : frozenStandardZVisibilityPipelines_)
-                    : (reversedZ ? visibilityPipelines_ : standardZVisibilityPipelines_);
+                    ? frozenVisibilityPipelines_
+                    : visibilityPipelines_;
                 if (auto commandResult = commands.bindExecution((pipelines[bucketIndex])->execution()); !commandResult) { return commandResult; }
                 const GPUDrivenPreviewUserPush push =
                     makePush(passIndex, bucketIndex, projectWithCullingCamera);
@@ -2288,8 +2274,7 @@ private:
                 .depthImage = freezeCullingCamera_ ? cullingDepthImageHandle_.shaderIndex() : depthImageHandle_.shaderIndex(),
                 .hzbBuffer = hzbHandles_[frameIndex_ & 1u].shaderIndex(),
                 .counterBuffer = hzbSpdCounterHandle_.shaderIndex(),
-                .width = frameWidth_, .height = frameHeight_, .mipCount = hzbMipCount_,
-                .reversedZ = previousParams_.clipOrtho[3] > 0.5f ? 1u : 0u};
+                .width = frameWidth_, .height = frameHeight_, .mipCount = hzbMipCount_};
             const GPUSceneComputeDispatchDesc dispatch{
                 .pushData = &push, .pushDataSize = sizeof(push),
                 .groupCountX = divideRoundUp(frameWidth_, kHZBSPDTileSize),
@@ -2715,7 +2700,6 @@ private:
                 .znear = camera.clipOrtho[0],
                 .zfar = camera.clipOrtho[1],
                 .orthographic = camera.upProjection[3] > 0.5f,
-                .reversedZ = camera.clipOrtho[3] > 0.5f,
                 .orthoHeight = camera.clipOrtho[2],
             },
         };
@@ -2727,7 +2711,6 @@ private:
             .znear = camera.renderClipOrtho[0],
             .zfar = camera.renderClipOrtho[1],
             .orthographic = camera.renderUpProjection[3] > 0.5f,
-            .reversedZ = camera.renderClipOrtho[3] > 0.5f,
             .orthoHeight = camera.renderClipOrtho[2],
         };
         frame.useSeparateRenderCamera = true;
@@ -2793,7 +2776,6 @@ private:
         if (!result) {
             return result;
         }
-        const bool reversedZ = previousParams_.renderClipOrtho[3] > 0.5f;
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -2819,7 +2801,7 @@ private:
             .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(reversedZ),
+            .clearDepth = depthClearValue(),
         };
         const bool prebin = clusterPrebinEnabled();
         MeshletStreamUserPush push = streamRuntime_->userPush();
@@ -2835,7 +2817,7 @@ private:
             auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_->visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
-                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.shaderIndex(), count, true, true, tessellationEnabled());
+                forceHardware ? 0.0f : softwareRasterMaxPixels(), streamHybridPixelHandle_.shaderIndex(), count, true, true, tessellationEnabled());
             if (!result) { return result; }
             if (auto commandResult = commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
@@ -2899,7 +2881,7 @@ private:
             }
 
         } else if (hybridRasterEnabled()) {
-            if (auto commandResult = beginHybridRaster(commandBuffer, reversedZ); !commandResult) { return commandResult; }
+            if (auto commandResult = beginHybridRaster(commandBuffer); !commandResult) { return commandResult; }
         }
         const bool async = !forceHardware && !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
             (phase == GPUSceneCullPhase::Early || boolProperty(&properties(), "asyncLateRaster", false)) &&
@@ -2978,7 +2960,7 @@ private:
             }); !commandResult) { return commandResult; }
             commands.setScissor(renderArea);
             if (auto commandResult = commands.bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
-            if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
+            if (auto commandResult = commands.bindExecution(streamVisibilityPipeline_->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
             if (prebin) {
                 if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
             } else {
@@ -4251,7 +4233,7 @@ private:
         outParams.clipOrtho[0] = zNear;
         outParams.clipOrtho[1] = zFar;
         outParams.clipOrtho[2] = orthoHeight;
-        outParams.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
+        outParams.clipOrtho[3] = 1.0f;
         copyCullingCameraToRender(outParams);
         outParams.clearColor[0] = 0.015f;
         outParams.clearColor[1] = 0.018f;
@@ -4525,9 +4507,7 @@ private:
     std::unique_ptr<ShaderModule> streamCullResetShader_;
     std::unique_ptr<ShaderModule> streamInstanceCullShader_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> visibilityPipelines_;
-    std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> standardZVisibilityPipelines_;
     std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenVisibilityPipelines_;
-    std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenStandardZVisibilityPipelines_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> resetPipeline_;
     std::unique_ptr<ComputePipeline> instanceCullPipeline_;
@@ -4535,7 +4515,6 @@ private:
     std::unique_ptr<ComputePipeline> hzbSpdPipeline_;
     std::unique_ptr<ComputePipeline> hzbSpdWavePipeline_;
     std::unique_ptr<GraphicsPipeline> streamVisibilityPipeline_;
-    std::unique_ptr<GraphicsPipeline> standardZStreamVisibilityPipeline_;
     std::unique_ptr<ComputePipeline> streamCullResetPipeline_;
     std::unique_ptr<ComputePipeline> streamInstanceCullPipeline_;
     scene::Bounds drawBounds_;

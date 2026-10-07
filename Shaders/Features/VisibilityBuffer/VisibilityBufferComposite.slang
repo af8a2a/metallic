@@ -115,9 +115,8 @@ float3 debugViewPosition(int2 pixel, float depth, GPUDrivenPreviewParams params)
     float nearZ = max(params.renderClipOrtho.x, 0.0001);
     float farZ = max(params.renderClipOrtho.y, nearZ + 0.0001);
     bool ortho = params.renderUpProjection.w > 0.5;
-    bool reversed = params.renderClipOrtho.w > 0.5;
-    float z = ortho ? (reversed ? farZ - depth * (farZ - nearZ) : nearZ + depth * (farZ - nearZ))
-        : nearZ * farZ / max(reversed ? nearZ + depth * (farZ - nearZ) : farZ - depth * (farZ - nearZ), 1e-8);
+    float z = ortho ? farZ - depth * (farZ - nearZ)
+        : nearZ * farZ / max(nearZ + depth * (farZ - nearZ), 1e-8);
     float2 uv = (float2(pixel) + 0.5 + float2(params.renderEye.w, params.renderCenter.w)) /
         float2(params.width, params.height);
     float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);

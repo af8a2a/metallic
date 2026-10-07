@@ -75,11 +75,9 @@ float shadowLinearDepth(int2 pixel, ViewCameraConstants camera)
 {
     float depth = gDepth.Load(int3(pixel, 0));
     float nearPlane = camera.clipOrtho.x, farPlane = camera.clipOrtho.y;
-    bool reversed = camera.clipOrtho.w > 0.5;
-    if (camera.upProjection.w > 0.5) { return reversed ? lerp(farPlane, nearPlane, depth) : lerp(nearPlane, farPlane, depth); }
+    if (camera.upProjection.w > 0.5) { return lerp(farPlane, nearPlane, depth); }
     // Keep reversed-Z precision when the near/far ratio is very small.
-    float denominator = reversed ? nearPlane + depth * (farPlane - nearPlane)
-        : farPlane - depth * (farPlane - nearPlane);
+    float denominator = nearPlane + depth * (farPlane - nearPlane);
     return nearPlane * farPlane / max(denominator, 1e-7);
 }
 

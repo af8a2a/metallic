@@ -243,10 +243,10 @@ public:
                             (std::string("Baked") + std::to_string(splitDepth) + "_" + (ortho ? "Ortho" : "Perspective") + std::to_string(int(edgePixels)) + ".gltf"));
                         if (!writeTessFixture(referencePath, true, pixels, edgePixels, ortho, splitDepth)) { return RHITestResult::fail("Could not write adaptive reference"); }
                         graph.setNodeRuntimeProperty(vbuffer, "tessellationEdgePixels", edgePixels);
-                        for (bool reversed : {false, true}) {
+                        for (bool legacyReversedZ : {false, true}) {
                             for (const char* debug : {"baseColor", "shadingNormal"}) {
                                 graph.setNodeRuntimeProperty(vbuffer, "camera.projection", ortho ? "orthographic" : "perspective");
-                                graph.setNodeRuntimeProperty(vbuffer, "camera.reversedZ", reversed);
+                                graph.setNodeRuntimeProperty(vbuffer, "camera.reversedZ", legacyReversedZ);
                                 graph.setNodeRuntimeProperty(deferred, "debugView", debug);
                                 const auto renderScene = [&](const std::filesystem::path& path, bool tess, bool streaming) {
                                     if (!document.load(path)) { log = document.lastLoadResult().error; return false; }
@@ -281,7 +281,7 @@ public:
                                         }
                                         outliers += maximum > 4;
                                     }
-                                    const auto name = std::to_string(splitDepth) + "_" + std::to_string(int(edgePixels)) + std::string(streaming ? "Stream" : "Resident") + (mirrored ? "MirroredUnbinned" : "") + (ortho ? "Ortho" : "Perspective") + (reversed ? "Reverse" : "Standard") + debug;
+                                    const auto name = std::to_string(splitDepth) + "_" + std::to_string(int(edgePixels)) + std::string(streaming ? "Stream" : "Resident") + (mirrored ? "MirroredUnbinned" : "") + (ortho ? "Ortho" : "Perspective") + (legacyReversedZ ? "LegacyReverseTrue" : "LegacyReverseFalse") + debug;
                                     saveRgba8Png(context.outputDirectory / (name + ".png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
                                     if (covered < 3000 || outliers > reference.size() / 100 || error / (reference.size() * 3) > 1.0) {
                                         saveRgba8Png(context.outputDirectory / (name + "Reference.png"), reinterpret_cast<const uint8_t*>(reference.data()), 193, 157, log);
@@ -422,7 +422,7 @@ public:
                 }
             }
         }
-        return RHITestResult::pass(std::to_string(cases) + " resident/stream displaced renders match baked geometry, UV and normals across projection/depth conventions");
+        return RHITestResult::pass(std::to_string(cases) + " resident/stream displaced renders match baked geometry, UV and normals across projections and ignored legacy depth settings");
     }
 };
 

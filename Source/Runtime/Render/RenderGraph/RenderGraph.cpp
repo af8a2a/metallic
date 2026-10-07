@@ -55,6 +55,21 @@ void normalizeSavedPassType(std::string& type)
     }
 }
 
+void normalizeCameraDepthProperties(RenderGraphProperties& properties)
+{
+    if (!properties.is_object()) { return; }
+    const auto camera = properties.find("camera");
+    if (camera != properties.end() && camera->is_object()) { camera->erase("reversedZ"); }
+}
+
+void normalizeNodeDepthProperties(std::string_view type, RenderGraphProperties& properties)
+{
+    normalizeCameraDepthProperties(properties);
+    if (properties.is_object() && (type == "DLSSNRPass" || type == "DlssNrPass")) {
+        properties.erase("depthInverted");
+    }
+}
+
 const RenderGraphProperties* findNestedProperty(
     const RenderGraphProperties& properties,
     std::string_view key)
@@ -1021,6 +1036,15 @@ void RenderGraph::setName(std::string name)
     }
 }
 
+void RenderGraph::setViewProperties(RenderGraphProperties properties)
+{
+    normalizeCameraDepthProperties(properties);
+    if (viewProperties_ != properties) {
+        viewProperties_ = std::move(properties);
+        markDirty();
+    }
+}
+
 const RenderGraphNode* RenderGraph::findNode(std::string_view name) const
 {
     return findNodeByName(nodes_, name);
@@ -1068,6 +1092,7 @@ RenderGraphNode* RenderGraph::addNode(
     if (type.empty() || name.empty() || nodeNameExists(nodes_, name)) {
         return nullptr;
     }
+    normalizeNodeDepthProperties(type, properties);
     nodes_.push_back(RenderGraphNode{
         .id = nextNodeId_++,
         .name = std::move(name),
@@ -1147,6 +1172,7 @@ bool RenderGraph::setNodeProperties(uint32_t id, RenderGraphProperties propertie
     if (node == nullptr) {
         return false;
     }
+    normalizeNodeDepthProperties(node->type, properties);
     node->properties = std::move(properties);
     markDirty();
     return true;
@@ -1158,6 +1184,7 @@ bool RenderGraph::setNodeRuntimeProperties(uint32_t id, RenderGraphProperties pr
     if (node == nullptr) {
         return false;
     }
+    normalizeNodeDepthProperties(node->type, properties);
     const bool rebuildGraph = runtimePropertiesRequireGraphRebuild(*node, properties);
     node->runtimeProperties = std::move(properties);
     if (rebuildGraph) {
@@ -1550,7 +1577,6 @@ RenderGraph RenderGraph::createDefaultBunnyGraph()
                 {"fovDegrees", 60.0f},
                 {"znear", 0.1f},
                 {"zfar", 10000.0f},
-                {"reversedZ", true},
                 {"eye", {-0.0168404f, 0.110154f, 0.22f}},
                 {"center", {-0.0168404f, 0.110154f, -0.00153695f}},
                 {"up", {0.0f, 1.0f, 0.0f}},
@@ -1593,17 +1619,22 @@ std::string serializeRenderGraphToString(const RenderGraph& graph)
     nlohmann::json root;
     root["version"] = 1;
     root["name"] = graph.name();
-    if (!graph.viewProperties().empty()) { root["view"] = graph.viewProperties(); }
+    if (!graph.viewProperties().empty()) {
+        root["view"] = graph.viewProperties();
+        normalizeCameraDepthProperties(root["view"]);
+    }
     root["nodes"] = nlohmann::json::array();
     root["edges"] = nlohmann::json::array();
     root["outputs"] = nlohmann::json::array();
 
     for (const RenderGraphNode& node : graph.nodes()) {
+        auto properties = node.properties;
+        normalizeNodeDepthProperties(node.type, properties);
         root["nodes"].push_back({
             {"id", node.id},
             {"name", node.name},
             {"type", node.type},
-            {"properties", node.properties},
+            {"properties", std::move(properties)},
             {"position", {{"x", node.uiX}, {"y", node.uiY}}},
         });
     }
@@ -1640,6 +1671,7 @@ bool deserializeRenderGraphFromString(
         graph.name_ = root.value("name", "RenderGraph");
         graph.viewProperties_ = root.value("view", RenderGraphProperties::object());
         if (!graph.viewProperties_.is_object()) { outMessage = "RenderGraph view must be an object"; return false; }
+        normalizeCameraDepthProperties(graph.viewProperties_);
         graph.nodes_.clear();
         graph.edges_.clear();
         graph.outputs_.clear();
@@ -1655,6 +1687,7 @@ bool deserializeRenderGraphFromString(
             // to the editor registry or changing node names and connections.
             normalizeSavedPassType(node.type);
             node.properties = nodeJson.value("properties", RenderGraphProperties::object());
+            normalizeNodeDepthProperties(node.type, node.properties);
             if (nodeJson.contains("position")) {
                 node.uiX = nodeJson["position"].value("x", 0.0f);
                 node.uiY = nodeJson["position"].value("y", 0.0f);

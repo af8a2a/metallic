@@ -29,7 +29,7 @@ float4 projectStreamClassifyPosition(float3 worldPosition, StreamClassifyDesc c)
     float zNear = max(c.clipOrtho.x, 0.0001);
     float zFar = max(c.clipOrtho.y, zNear + 0.0001);
     float ndcZ = conservativeProjectDepth(viewPosition.z, zNear, zFar,
-        c.upProjection.w > 0.5, c.clipOrtho.w > 0.5);
+        c.upProjection.w > 0.5);
     float aspect = max(c.viewport.x, 0.001);
 
     if (c.upProjection.w > 0.5) {

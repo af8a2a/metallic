@@ -103,19 +103,17 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
             if (!result) { return result; }
         }
     }
-    for (size_t i = 0; i < resolve_.size(); ++i) {
-        result = ShaderRegistry::instance().getGraphicsPipeline(device, {
-            .vertexShader = {shaders_[3].get()},
-            .fragmentShader = {shaders_[4].get()},
-            .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
-            .depthStencilFormat = Format::D32Sfloat,
-            .rasterization = {.cullMode = CullMode::None},
-            .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
-                .depthCompareOp = i == 0 ? CompareOp::LessEqual : CompareOp::GreaterEqual},
-            .usesBindlessHeap = true,
-        }).transform([&](auto rhiValue) { resolve_[i] = std::move(rhiValue); });
-        if (!result) { return result; }
-    }
+    result = ShaderRegistry::instance().getGraphicsPipeline(device, {
+        .vertexShader = {shaders_[3].get()},
+        .fragmentShader = {shaders_[4].get()},
+        .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
+        .depthStencilFormat = Format::D32Sfloat,
+        .rasterization = {.cullMode = CullMode::None},
+        .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
+            .depthCompareOp = CompareOp::GreaterEqual},
+        .usesBindlessHeap = true,
+    }).transform([&](auto rhiValue) { resolve_ = std::move(rhiValue); });
+    if (!result) { return result; }
     return {};
 }
 
@@ -133,11 +131,10 @@ Result<> VisibilityHybridRasterizer::setRenderExtent(uint32_t width, uint32_t he
     return {};
 }
 
-Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels, bool reversedZ)
+Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: clear queue and depth"});
     push_.maxPixels = std::clamp(std::isfinite(maxPixels) ? maxPixels : 8.0f, 1.0f, 32.0f);
-    push_.reversedZ = reversedZ ? 1u : 0u;
     const ResourceState finals[] = {ResourceState::ShaderRead, ResourceState::ShaderRead, ResourceState::IndirectArgument};
     BufferBarrierDesc barriers[3];
     for (size_t i = 0; i < buffers_.size(); ++i) {
@@ -224,7 +221,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
     }); !rendering) { return rendering; }
     if (auto commandResult = commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f}); !commandResult) { return commandResult; }
     commands.setScissor(area);
-    if (auto commandResult = commands.bindExecution((resolve_[push_.reversedZ])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.bindExecution(resolve_->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
     if (auto commandResult = commands.draw(3); !commandResult) { return commandResult; }
     commands.endRendering();
     commands.endDebugLabel();
@@ -232,7 +229,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
     return {};
 }
 
-Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
+Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels,
     uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact, bool tessellation)
 {
     // Compact stream preparation checks its actual candidate count on GPU and
@@ -242,9 +239,8 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
     // last resolved state so switching back to hybrid remains valid.
     if (stream && maxPixels == 0.0f) {
         push_.maxPixels = 0.0f;
-        push_.reversedZ = reversedZ ? 1u : 0u;
     } else {
-        if (auto result = begin(commands, maxPixels, reversedZ); !result) { return result; }
+        if (auto result = begin(commands, maxPixels); !result) { return result; }
     }
     if (auto commandResult = registry_->bind(commands, resources_); !commandResult) { return commandResult; }
     push_.producerPixelBuffer = producerPixelBuffer;

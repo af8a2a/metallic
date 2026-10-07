@@ -74,17 +74,17 @@ public:
         std::unique_ptr<Buffer> readback;
         GROUP_REQUIRE(device->createBuffer({.size = buffers[Pixels]->desc().size, .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto v) { readback = std::move(v); }));
-        struct Case { uint32_t vertices, triangles, selected; bool float3, reversed, reflected; uint32_t fault = 0; };
+        struct Case { uint32_t vertices, triangles, selected; bool float3, reflected; uint32_t fault = 0; };
         std::vector<Case> cases;
         for (uint32_t vertices : {3u,31u,32u,33u,63u,64u,65u,127u,128u}) {
             for (uint32_t triangles : {0u,1u,31u,32u,33u,63u,64u,65u,127u,128u}) {
-                cases.push_back({vertices, triangles, triangles ? triangles-1 : 0, false, true, false});
-                cases.push_back({vertices, triangles, triangles ? triangles-1 : 0, true, false, true});
+                cases.push_back({vertices, triangles, triangles ? triangles-1 : 0, false, false});
+                cases.push_back({vertices, triangles, triangles ? triangles-1 : 0, true, true});
             }
         }
         // Isolate every triangle ID, so atomic max cannot hide a missing middle iteration.
-        for (uint32_t triangle=0; triangle<128; ++triangle) { cases.push_back({128,128,triangle,true,true,false}); }
-        for (uint32_t fault=1; fault<=5; ++fault) { cases.push_back({128,128,127,false,true,false,fault}); }
+        for (uint32_t triangle=0; triangle<128; ++triangle) { cases.push_back({128,128,triangle,true,false}); }
+        for (uint32_t fault=1; fault<=5; ++fault) { cases.push_back({128,128,127,false,false,fault}); }
         bool submitted = false;
         uint32_t index = 0;
         for (const auto& test : cases) {
@@ -119,7 +119,7 @@ public:
             MeshletStreamGPUParams params;
             params.center[2]=1; params.upProjection[1]=1; params.upProjection[3]=1;
             params.viewport[0]=1; params.viewport[1]=params.viewport[2]=extent; params.viewport[3]=1.5707963f;
-            params.clipOrtho[0]=.01f; params.clipOrtho[1]=10; params.clipOrtho[2]=2; params.clipOrtho[3]=test.reversed ? 1.f : 0.f;
+            params.clipOrtho[0]=.01f; params.clipOrtho[1]=10; params.clipOrtho[2]=2; params.clipOrtho[3]=1.f;
             params.pageBufferBytes=pageBytes; params.drawTaskCount=2; params.scenePageCount=1;
             StreamPageTableEntry table;
             table.deviceOffsetAndState=packStreamPageTableEntry(0,test.fault == 4 ? MeshletStreamPageResidencyState::Unloaded : MeshletStreamPageResidencyState::Resident);
@@ -128,7 +128,7 @@ public:
             GPUSceneGPUInstanceRecord instance;
             instance.identity[3]=2; // two-sided; reflected winding must preserve coverage
             std::array<uint32_t,21> bins{};
-            bins[4]=bins[5]=1; bins[6]=bins[7]=extent; bins[9]=test.reversed ? 1 : 0;
+            bins[4]=bins[5]=1; bins[6]=bins[7]=extent; bins[9]=0; // reserved
             bins[10]=caps.subPixelPrecisionBits; bins[11]=handles[Pixels].shaderIndex;
             GROUP_REQUIRE(upload(Header,&active,sizeof(active))); GROUP_REQUIRE(upload(Groups,&group,sizeof(group)));
             GROUP_REQUIRE(upload(Params,&params,sizeof(params))); GROUP_REQUIRE(upload(Pages,page.data(),page.size()));
@@ -175,7 +175,7 @@ public:
             }
             ++index;
         }
-        return RHITestResult::pass(std::to_string(cases.size())+" cases x four production entrypoints: tail vertices/triangles, each triangle ID, float3/4, normal/reversed Z, reflected transforms, rejected pages and guard pixels; packed output byte-equal");
+        return RHITestResult::pass(std::to_string(cases.size())+" cases x four production entrypoints: tail vertices/triangles, each triangle ID, float3/4, reversed Z, reflected transforms, rejected pages and guard pixels; packed output byte-equal");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamGroupRasterTest);

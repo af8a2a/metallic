@@ -72,18 +72,19 @@ The native-resolution pass has these ports:
 | --- | --- | --- |
 | `inputColor` | RGBA8 UNORM | Tone-mapped sRGB display color, values in [0, 1] |
 | `motionVectors` | RG16F | Current-to-previous UV displacement, without jitter |
-| `depth` | R32F | Normalized hardware depth, not `linearDepth` |
+| `depth` | R32F | Standard normalized depth from upscaler guides, not `linearDepth` |
 | `color` | RGBA8 UNORM | Distinct writable output at the same resolution |
 
 All four textures must be distinct, single-mip, single-layer 2D storage
 textures. All three inputs also require **Sampled** usage, even though their
 layout is General. Omitting it can produce near-black output while NGX still
 returns success. The pass converts Metallic's UV motion to input pixels by multiplying
-by width/height. Unity's negative scaling does not apply. `depthInverted`
-defaults to true to match Metallic's reversed-Z guides.
+by width/height. Unity's negative scaling does not apply. Renderer depth uses
+reversed Z; upscaler guides convert it to standard normalized depth, so
+`DLSSNR.DepthInverted` is fixed to false.
 
 Runtime controls expose enable, preset 0–3, style 0–2, intensity, local tone,
-local structure, skin structure, automatic masking, UI correction, reversed Z,
+local structure, skin structure, automatic masking, UI correction,
 and history reset. Artistic controls are written before feature creation;
 changing them recreates the feature because this runtime captures tuning at
 creation. Each pass owns a separate feature and parameter map. History

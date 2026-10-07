@@ -154,7 +154,7 @@ def main():
             size=max((columns-1)*.14+.1,(rows-1)*.14+.1)
             distance=size*.5/math.tan(math.radians(25))*1.3
             camera={'eye':[0,size*.20,distance],'center':[0,0,0],'up':[0,1,0],'fovDegrees':50,
-                    'projection':'perspective','znear':.001,'zfar':100,'reversedZ':True}
+                    'projection':'perspective','znear':.001,'zfar':100}
             graph=json.loads(json.dumps(template));graph['name']='Painter / '+case['id']+' / '+mode
             for node in graph['nodes']:
                 props=node['properties']

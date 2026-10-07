@@ -15,7 +15,7 @@ struct HybridPush
     uint height;
     uint capacity;
     float maxPixels;
-    uint reversedZ;
+    uint reserved;
     uint subpixelBits;
     uint clusterBuffer;
     uint clusterArgumentsBuffer;
@@ -68,7 +68,7 @@ void hybridRasterMain(uint3 id : SV_DispatchThreadID, uniform HybridPush push)
     float4 c2 = asfloat(queue[offset + 2u]);
     uint4 payload = queue[offset + 3u];
     hybridRasterTriangle(c0, c1, c2, payload.x, payload.y != 0u,
-        push.width, push.height, push.reversedZ, push.subpixelBits, push.pixelBuffer);
+        push.width, push.height, push.subpixelBits, push.pixelBuffer);
 }
 
 struct HybridVertexOutput { float4 position : SV_Position; };
@@ -90,7 +90,7 @@ HybridFragmentOutput hybridResolveFragmentMain(HybridVertexOutput input, uniform
     uint key = uint(packed >> 32u);
     HybridFragmentOutput output;
     output.visibility = uint(packed);
-    output.depth = asfloat(push.reversedZ != 0u ? key : ~key);
+    output.depth = asfloat(key);
     return output;
 }
 
@@ -106,7 +106,6 @@ void hybridClusterResetMain(uniform HybridPush push)
     bins[6] = push.width;
     bins[7] = push.height;
     bins[8] = asuint(push.maxPixels);
-    bins[9] = push.reversedZ;
     bins[10] = push.subpixelBits;
     bins[11] = push.producerPixelBuffer;
     bins[12] = push.inputClusterCount;

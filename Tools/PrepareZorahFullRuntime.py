@@ -52,7 +52,7 @@ def main():
     camera_text = re.search(r'--camerastring\s+"([^"]+)"', cfg).group(1)
     camera = [[float(v) for v in group.split(',')] for group in re.findall(r'\{([^}]+)\}', camera_text)]
     graph['view']['camera'] = dict(eye=camera[0], center=camera[1], up=camera[2],
-                                   fovDegrees=camera[3][0], znear=camera[4][0], zfar=camera[4][1], reversedZ=True)
+                                   fovDegrees=camera[3][0], znear=camera[4][0], zfar=camera[4][1])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     current = None
     if args.output.exists():

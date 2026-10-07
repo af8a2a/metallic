@@ -35,10 +35,7 @@ public:
     const std::string& name() const { return name_; }
     void setName(std::string name);
     const RenderGraphProperties& viewProperties() const { return viewProperties_; }
-    void setViewProperties(RenderGraphProperties properties)
-    {
-        if (viewProperties_ != properties) { viewProperties_ = std::move(properties); dirty_ = true; }
-    }
+    void setViewProperties(RenderGraphProperties properties);
 
     const std::vector<RenderGraphNode>& nodes() const { return nodes_; }
     const std::vector<RenderGraphEdge>& edges() const { return edges_; }

@@ -10,7 +10,7 @@ GPUDrivenSample 使用同一组实时 Pass，默认场景为 MiniZorah，入口�
 - **环境光**：GPU 预计算九个 cosine-convolved SH 系数用于漫反射，另生成八档 GGX 粗糙度过滤的 HDRI 用于 split-sum 镜面反射。镜面端保留原 HDRI 分辨率，水平接缝循环、垂直极点夹取，粗糙度档位之间插值。旋转、强度和材质 AO 在求值时应用；漫反射只除一次 π，并与镜面能量分配。无 HDRI 时使用程序天空。预计算在源环境更换时执行，不随相机或曝光变化重复。
 - **实时模式**：`Deferred.lightingMode = realtime` 禁用渐进累积、环境逐像素路径采样和透射路径续追。直接照明保留 OpenPBR BSDF 和 ray-query 阴影。透射使用折射方向的环境近似；场景内多层折射、间接反弹和局部反射遮挡不在此模式中。原 LookDev 的 `reference` 模式仍支持采样环境及体积透射参考。
 - **统一视图**：相机由视口持有的 `RenderView` 管理，图资产顶层 `view.camera` / `view.temporalJitter` 保存初始配置。Executor 每帧生成 `ViewConstants`（当前/上一帧相机、抖动、渲染/显示尺寸、切镜与历史状态），按 frame slot 上传同一个只读 GPU buffer。VBuffer 和 LightGrid 使用其当前相机；延迟 shader 直接读取该 buffer；SR 从 execution context 获取相同的相机和历史。切换预览输出不影响相机，也不再通过 `cameraSyncGroup` 或 pass 类型同步相机。
-- **DLSS-SR**：默认 Quality。由 SR 查询输入尺寸并反向约束光栅/延迟分辨率，所有消费者使用 ViewConstants 的同一像素抖动。延迟导出 RG16F 的 current-to-previous UV motion 和 R32F 标准 Z（光栅可使用 reversed Z 或标准 Z）。普通平移/旋转保留 DLSS 重投影历史，只重置逐帧累积；切镜、尺寸变化、场景编辑或显式 Reset 仍重置重投影。当前运动矢量支持相机运动，不提供蒙皮或独立物体的逐顶点速度。
+- **DLSS-SR**：默认 Quality。由 SR 查询输入尺寸并反向约束光栅/延迟分辨率，所有消费者使用 ViewConstants 的同一像素抖动。Metallic 的透视和正交相机统一使用 reversed Z（near = 1、far = 0）；旧图中的 `camera.reversedZ` 会被忽略，新相机配置不再写出该选项。延迟导出 RG16F 的 current-to-previous UV motion 和 R32F 标准 Z 供 SR 使用。普通平移/旋转保留 DLSS 重投影历史，只重置逐帧累积；切镜、尺寸变化、场景编辑或显式 Reset 仍重置重投影。当前运动矢量支持相机运动，不提供蒙皮或独立物体的逐顶点速度。
 - **曝光**：SR 输入保持物理 HDR，AutoExposure 对升频后的 HDR 进行直方图测光、适应和色调映射。曝光设置沿用场景 Physical Lighting 中的自动曝光开关和参数。
 - **可选 NR**：开启 `DLSSNR.enabled`。NR 接收色调映射后的 RGBA8，以及 SR 生成的显示分辨率运动/深度引导。引导重采样去除当前抖动并在边缘选择前景深度；UV 运动不乘分辨率比例。其深度设置为 `depthInverted = false`。没有可用 NR runtime 时按 `fallbackToInput = true` 透传。SR 需要可用 NVIDIA Streamline/DLSS-SR；NR 依赖项目已有的实验性 runtime 接口。
 

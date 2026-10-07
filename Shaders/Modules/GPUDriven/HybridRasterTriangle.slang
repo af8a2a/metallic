@@ -18,7 +18,7 @@ internal int hybridEdgeBias(int2 a, int2 b)
 }
 
 public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilityId,
-    bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
+    bool doubleSided, uint width, uint height, uint subpixelBits,
     uint pixelBuffer)
 {
     float2 viewport = float2(width, height);
@@ -64,7 +64,6 @@ public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilit
             float b2 = (e1.x * q.y - e1.y * q.x) / determinant;
             float depth = saturate(z.x + b1 * (z.y - z.x) + b2 * (z.z - z.x));
             uint key = asuint(depth);
-            if (reversedZ == 0u) { key = ~key; }
             uint64_t packed = (uint64_t(key) << 32u) | uint64_t(visibilityId);
             InterlockedMax(pixels[uint(y) * width + uint(x)], packed);
         }
@@ -103,7 +102,7 @@ public struct HybridTriangleDecision
 };
 
 public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
-    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
+    uint visibilityId, bool doubleSided, uint width, uint height, uint subpixelBits,
     uint pixelBuffer, bool incrementalDepth, out HybridTriangleDecision decision)
 {
     decision = {};
@@ -158,7 +157,6 @@ public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScr
                     depth = saturate(z.x + b1 * (z.y-z.x) + b2 * (z.z-z.x));
                 }
                 uint key = asuint(depth);
-                if (reversedZ == 0u) { key = ~key; }
                 InterlockedMax(pixels[uint(y)*width+uint(x)], (uint64_t(key)<<32u) | uint64_t(visibilityId));
             }
             edges += stepX;
@@ -169,11 +167,11 @@ public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScr
 }
 // Ordinary callers discard the decision; no Printf or additional resource reads.
 public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
-    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
+    uint visibilityId, bool doubleSided, uint width, uint height, uint subpixelBits,
     uint pixelBuffer, bool incrementalDepth)
 {
     HybridTriangleDecision decision;
-    hybridRasterPreparedTriangleDecision(a,b,c,visibilityId,doubleSided,width,height,reversedZ,
+    hybridRasterPreparedTriangleDecision(a,b,c,visibilityId,doubleSided,width,height,
         subpixelBits,pixelBuffer,incrementalDepth,decision);
 }
 } // namespace Metallic.GPUDriven

@@ -15,7 +15,6 @@ struct ViewCamera {
     float farPlane = 1000.0f;
     float orthoHeight = 2.0f;
     bool orthographic = false;
-    bool reversedZ = true;
     bool operator==(const ViewCamera&) const = default;
 };
 
@@ -26,7 +25,7 @@ struct alignas(16) ViewCameraConstants {
     float center[4]{};
     float upProjection[4]{};
     float viewport[4]{}; // aspect, render width, render height, vertical FOV radians
-    float clipOrtho[4]{}; // near, far, orthographic height, reversed Z
+    float clipOrtho[4]{}; // near, far, orthographic height, reserved (always 1 for reversed Z)
 };
 
 struct alignas(16) ViewConstants {

@@ -247,13 +247,13 @@ public:
                 const uint32_t configuration = test % 4;
                 const uint32_t manual = configuration < 2 ? UINT32_MAX : configuration == 2 ? 0u : 31u;
                 const float error = configuration == 0 ? .05f : configuration == 1 ? 16.f : 1.5f;
-                const bool reversed = (test % 2) != 0;
+                const bool legacyReversedZ = (test % 2) != 0;
                 graph.setNodeRuntimeProperty(node, "autoLod", manual == UINT32_MAX);
                 graph.setNodeRuntimeProperty(node, "lodLevel", manual == UINT32_MAX ? 0u : manual);
                 graph.setNodeRuntimeProperty(node, "lodPixelError", error);
                 graph.setNodeRuntimeProperty(node, "lodBias", 0.f);
                 graph.setNodeRuntimeProperty(node, "camera.projection", ortho ? "orthographic" : "perspective");
-                graph.setNodeRuntimeProperty(node, "camera.reversedZ", reversed);
+                graph.setNodeRuntimeProperty(node, "camera.reversedZ", legacyReversedZ);
                 MeshletLODView view;
                 view.eye = {-.0168404f, .110154f, .22f, .001f};
                 view.forward = {0, 0, -1, ortho ? 1.f : 0.f};
@@ -380,7 +380,7 @@ public:
                             ++roundingTies;
                         }
                     }
-                    report["cases"].push_back({{"case", test}, {"orthographic", ortho}, {"reversedZ", reversed},
+                    report["cases"].push_back({{"case", test}, {"orthographic", ortho}, {"legacyReversedZ", legacyReversedZ},
                         {"manualLevel", manual}, {"targetPixels", error}, {"hybrid", hybrid}, {"producer", producer},
                         {"activeGroups", activeCount}, {"selectedClusters", selectedCount},
                         {"bvhVisitedNodes", traversal.visitedBvhNodes},
@@ -460,19 +460,19 @@ public:
             // depth even though no resident producer supplies the first raster.
             graph.setNodeRuntimeProperty(node, "camera.projection", "perspective");
             graph.setNodeRuntimeProperty(node, "camera.center", {-.0168404f, .110154f, 1.22f});
-            for (bool reversed : {false, true}) {
-                graph.setNodeRuntimeProperty(node, "camera.reversedZ", reversed);
+            for (bool legacyReversedZ : {false, true}) {
+                graph.setNodeRuntimeProperty(node, "camera.reversedZ", legacyReversedZ);
                 render();
                 if (std::any_of(preview.pixels().begin(), preview.pixels().end(), [](uint32_t id) { return id != 0; })) {
                     return RHITestResult::fail("Stream-only raster retained visibility after looking away");
                 }
                 render("VBuffer.depth");
-                const uint32_t clearDepth = std::bit_cast<uint32_t>(reversed ? 0.f : 1.f);
+                const uint32_t clearDepth = std::bit_cast<uint32_t>(0.f);
                 if (std::any_of(preview.pixels().begin(), preview.pixels().end(),
                         [clearDepth](uint32_t depth) { return depth != clearDepth; })) {
                     const auto [minimum, maximum] = std::minmax_element(preview.pixels().begin(), preview.pixels().end());
-                    return RHITestResult::fail("Stream-only raster did not clear depth: reversed=" +
-                        std::to_string(reversed) + ", expected=" + std::to_string(clearDepth) +
+                    return RHITestResult::fail("Stream-only raster did not clear reversed-Z depth: legacyReversedZ=" +
+                        std::to_string(legacyReversedZ) + ", expected=" + std::to_string(clearDepth) +
                         ", min=" + std::to_string(*minimum) + ", max=" + std::to_string(*maximum));
                 }
             }

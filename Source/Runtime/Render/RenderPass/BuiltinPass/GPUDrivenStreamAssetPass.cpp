@@ -530,24 +530,22 @@ public:
             return result;
         }
 
-        for (uint32_t reversedZ = 0; reversedZ < visibilityPipelines_.size(); ++reversedZ) {
-            result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, GraphicsPipelineDesc{
-                .meshShader = {meshShader_.get()},
-                .fragmentShader = {fragmentShader_.get()},
-                .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
-                .depthStencilFormat = Format::D32Sfloat,
-                .depthStencil = DepthStencilState{
-                        .depthTestEnable = true,
-                        .depthWriteEnable = true,
-                        .depthCompareOp = depthCompareOp(reversedZ != 0u),
-                    },
-                .usesBindlessHeap = true,
-            }).transform([&](auto rhiValue) { visibilityPipelines_[reversedZ] = std::move(rhiValue); });
-            if (!result || visibilityPipelines_[reversedZ] == nullptr) {
-                log += resultMessage("createGraphicsPipeline(GPUDrivenStreamAsset visibility)", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
+        result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, GraphicsPipelineDesc{
+            .meshShader = {meshShader_.get()},
+            .fragmentShader = {fragmentShader_.get()},
+            .colorFormats = {Format::R32Uint}, .colorAttachmentCount = 1,
+            .depthStencilFormat = Format::D32Sfloat,
+            .depthStencil = DepthStencilState{
+                .depthTestEnable = true,
+                .depthWriteEnable = true,
+                .depthCompareOp = depthCompareOp(),
+            },
+            .usesBindlessHeap = true,
+        }).transform([&](auto rhiValue) { visibilityPipeline_ = std::move(rhiValue); });
+        if (!result || visibilityPipeline_ == nullptr) {
+            log += resultMessage("createGraphicsPipeline(GPUDrivenStreamAsset visibility)", result);
+            log += '\n';
+            return result ? makeError(Error::Failure) : result;
         }
 
         result = ShaderRegistry::instance().getComputePipeline(*context.device, ComputePipelineDesc{
@@ -738,7 +736,7 @@ public:
             context.streamer() == nullptr ||
             !(streamRuntime_ && streamRuntime_->ready()) ||
             streamRuntime_->bindlessHeap() == nullptr ||
-            visibilityPipelines_[0] == nullptr || visibilityPipelines_[1] == nullptr ||
+            visibilityPipeline_ == nullptr ||
             deferredPipeline_ == nullptr ||
             compositePipeline_ == nullptr ||
             cullResetPipeline_ == nullptr ||
@@ -891,7 +889,7 @@ public:
                 }, RenderGraphPassKind::Unsafe, true},
                 {"Early Hardware raster", rasterUses, [&](CommandBuffer&) {
                     return draw(context, *visibility.view(), depth, GPUSceneCullPhase::Early,
-                        LoadOp::Clear, frame.camera.reversedZ);
+                        LoadOp::Clear);
                 }, RenderGraphPassKind::Raster},
                 {"Early HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }},
                 {"Late Instance cull", {}, [&](CommandBuffer& commands) {
@@ -899,7 +897,7 @@ public:
                 }},
                 {"Late Hardware raster", rasterUses, [&](CommandBuffer&) {
                     return draw(context, *visibility.view(), depth, GPUSceneCullPhase::Late,
-                        LoadOp::Load, frame.camera.reversedZ);
+                        LoadOp::Load);
                 }, RenderGraphPassKind::Raster},
                 {"Late HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }},
                 {"Deferred shading", deferredUses, [&](CommandBuffer&) { return dispatchDeferred(context); }},
@@ -1353,7 +1351,6 @@ private:
                 .znear = znear,
                 .zfar = zfar,
                 .orthographic = orthographic,
-                .reversedZ = camera != nullptr ? boolProperty(*camera, "reversedZ", kDefaultReversedZ) : kDefaultReversedZ,
                 .orthoHeight = cameraFloat(camera, "orthoHeight", 10.0f),
             },
         };
@@ -1367,7 +1364,6 @@ private:
             frame.camera.zfar = current.clipOrtho[1];
             frame.camera.orthographic = current.upProjection[3] > 0.5f;
             frame.camera.orthoHeight = current.clipOrtho[2];
-            frame.camera.reversedZ = current.clipOrtho[3] > 0.5f;
             frame.jitterX = view->jitter[0];
             frame.jitterY = view->jitter[1];
         }
@@ -1379,8 +1375,7 @@ private:
         TextureView& visibility,
         TextureHandle depth,
         GPUSceneCullPhase phase,
-        LoadOp loadOp,
-        bool reversedZ)
+        LoadOp loadOp)
     {
         const Rect renderArea{
             .x = 0,
@@ -1400,7 +1395,7 @@ private:
             .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = loadOp,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(reversedZ),
+            .clearDepth = depthClearValue(),
         };
         if (auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
@@ -1418,7 +1413,7 @@ private:
         context.commandBuffer().setScissor(renderArea);
         if (streamRuntime_->drawTaskCount() > 0) {
             if (auto commandResult = context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap()); !commandResult) { return commandResult; }
-            if (auto commandResult = context.commandBuffer().bindExecution((visibilityPipelines_[reversedZ ? 1u : 0u])->execution()); !commandResult) { return commandResult; }
+            if (auto commandResult = context.commandBuffer().bindExecution(visibilityPipeline_->execution()); !commandResult) { return commandResult; }
             MeshletStreamUserPush push = streamRuntime_->userPush();
             push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
             if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
@@ -1514,7 +1509,7 @@ private:
         push.clipOrtho[0] = frame.camera.znear;
         push.clipOrtho[1] = frame.camera.zfar;
         push.clipOrtho[2] = std::max(frame.camera.orthoHeight, 0.0001f);
-        push.clipOrtho[3] = 0.0f;
+        push.clipOrtho[3] = 1.0f;
         push.mode = rtasGranularityFromProperties(context.properties());
         push.width = context.width();
         push.height = context.height();
@@ -1549,7 +1544,7 @@ private:
     std::unique_ptr<ShaderModule> cullResetShader_;
     std::unique_ptr<ShaderModule> instanceCullShader_;
     std::unique_ptr<ShaderModule> hzbShader_;
-    std::array<std::unique_ptr<GraphicsPipeline>, 2> visibilityPipelines_;
+    std::unique_ptr<GraphicsPipeline> visibilityPipeline_;
     std::unique_ptr<ComputePipeline> deferredPipeline_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> cullResetPipeline_;

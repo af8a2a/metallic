@@ -394,7 +394,7 @@ private:
         outPush.clipOrtho[0] = zNear;
         outPush.clipOrtho[1] = zFar;
         outPush.clipOrtho[2] = orthoHeight;
-        outPush.clipOrtho[3] = 0.0f;
+        outPush.clipOrtho[3] = 1.0f;
         outPush.mode = visualizationModeFromProperties(properties);
         outPush.width = width;
         outPush.height = height;

@@ -5,7 +5,7 @@ using Metallic;
 // wave reduction, last-arriving group completes the tail), described at:
 // https://gpuopen.com/manuals/fidelityfx_sdk/techniques/single-pass-downsampler/
 // Unlike ordinary texture mips, this HZB keeps ceil-divided odd edges and mip 0.
-// Uses full FP32 min/max, no filtering or half precision.
+// Uses full FP32 minimum reduction for reversed Z, no filtering or half precision.
 
 #ifndef HZB_SPD_WAVE_OPS
 #define HZB_SPD_WAVE_OPS 1
@@ -19,7 +19,6 @@ struct HZBSPDPush
     uint width;
     uint height;
     uint mipCount;
-    uint reversedZ;
 };
 
 #if HZB_SPD_WAVE_OPS
@@ -72,18 +71,18 @@ uint spdMipOffset(HZBSPDPush push, uint mip)
     return offset;
 }
 
-float spdReduce4(float a, float b, float c, float d, bool reversedZ)
+float spdReduce4(float a, float b, float c, float d)
 {
-    return reversedZ ? min(min(a, b), min(c, d)) : max(max(a, b), max(c, d));
+    return min(min(a, b), min(c, d));
 }
 
 #if HZB_SPD_WAVE_OPS
-float spdWaveReduce4(float value, uint stride, bool reversedZ)
+float spdWaveReduce4(float value, uint stride)
 {
     uint lane = WaveGetLaneIndex();
     return spdReduce4(value, WaveReadLaneAt(value, lane ^ stride),
         WaveReadLaneAt(value, lane ^ (stride * 2u)),
-        WaveReadLaneAt(value, lane ^ (stride * 3u)), reversedZ);
+        WaveReadLaneAt(value, lane ^ (stride * 3u)));
 }
 #endif
 
@@ -97,7 +96,7 @@ float spdLoad(HZBSPDPush push, uint2 pixel, uint sourceMip)
         float depth = source.Load(int3(clamped, 0));
         // Non-finite depth must not prove occlusion. A clear-depth contribution
         // propagates through the pyramid and conservatively keeps candidates.
-        depth = isfinite(depth) ? saturate(depth) : (push.reversedZ != 0u ? 0.0 : 1.0);
+        depth = isfinite(depth) ? saturate(depth) : 0.0;
         if (all(pixel < size)) {
             RWStructuredBuffer<float> output = resolveUniform(ResourceHandle<RWStructuredBuffer<float>>(push.hzbBuffer));
             output[index] = depth;
@@ -139,20 +138,19 @@ void spdDownsampleTile(HZBSPDPush push, uint2 tile, uint lane, uint sourceMip)
         uint2 source = pixel * 2u;
         reduced[quadrant] = spdReduce4(
             spdLoad(push, source, sourceMip), spdLoad(push, source + uint2(1, 0), sourceMip),
-            spdLoad(push, source + uint2(0, 1), sourceMip), spdLoad(push, source + uint2(1, 1), sourceMip),
-            push.reversedZ != 0u);
+            spdLoad(push, source + uint2(0, 1), sourceMip), spdLoad(push, source + uint2(1, 1), sourceMip));
         spdStore(push, pixel, reduced[quadrant], sourceMip + 1u);
     }
-    float value = spdReduce4(reduced[0], reduced[1], reduced[2], reduced[3], push.reversedZ != 0u);
+    float value = spdReduce4(reduced[0], reduced[1], reduced[2], reduced[3]);
     spdStore(push, tile * 16u + xy, value, sourceMip + 2u);
 #if HZB_SPD_WAVE_OPS
     if (sourceMip + 3u >= push.mipCount) { return; }
     // Keep all wave lanes participating: every shuffle source is active,
     // including lanes whose pixels are outside a partial border tile.
-    value = spdWaveReduce4(value, 1u, push.reversedZ != 0u);
+    value = spdWaveReduce4(value, 1u);
     if ((lane & 3u) == 0u) { spdStore(push, tile * 8u + (xy >> 1u), value, sourceMip + 3u); }
     if (sourceMip + 4u >= push.mipCount) { return; }
-    value = spdWaveReduce4(value, 4u, push.reversedZ != 0u);
+    value = spdWaveReduce4(value, 4u);
     if ((lane & 15u) == 0u) {
         spdStore(push, tile * 4u + (xy >> 2u), value, sourceMip + 4u);
         spdIntermediate[lane >> 4u] = value;
@@ -163,12 +161,12 @@ void spdDownsampleTile(HZBSPDPush push, uint2 tile, uint lane, uint sourceMip)
     // 16 lanes participate, and all shuffle indices stay within [0, 15].
     if (lane < 16u) {
         value = spdIntermediate[lane];
-        value = spdWaveReduce4(value, 1u, push.reversedZ != 0u);
+        value = spdWaveReduce4(value, 1u);
         if ((lane & 3u) == 0u) {
             spdStore(push, tile * 2u + (spdMortonPixel(lane) >> 1u), value, sourceMip + 5u);
         }
         if (sourceMip + 6u < push.mipCount) {
-            value = spdWaveReduce4(value, 4u, push.reversedZ != 0u);
+            value = spdWaveReduce4(value, 4u);
             if (lane == 0u) { spdStore(push, tile, value, sourceMip + 6u); }
         }
     }
@@ -182,7 +180,7 @@ void spdDownsampleTile(HZBSPDPush push, uint2 tile, uint lane, uint sourceMip)
         if (lane < side * side) {
             uint base = pixel.y * 2u * 16u + pixel.x * 2u;
             value = spdReduce4(spdIntermediate[base], spdIntermediate[base + 1u],
-                spdIntermediate[base + 16u], spdIntermediate[base + 17u], push.reversedZ != 0u);
+                spdIntermediate[base + 16u], spdIntermediate[base + 17u]);
             spdStore(push, tile * side + pixel, value, sourceMip + level);
         }
         // Finish every read before reusing LDS locations for the next mip.

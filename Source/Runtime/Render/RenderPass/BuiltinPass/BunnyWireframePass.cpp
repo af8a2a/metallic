@@ -193,13 +193,12 @@ public:
             .storeOp = StoreOp::Store,
             .clearColor = ColorValue{0.015f, 0.018f, 0.024f, 1.0f},
         };
-        const bool reversedZ = cameraUsesReversedZ(cameraPropertiesFrom(context.properties()));
         RenderingAttachmentDesc depthAttachment{
             .view = depth.view(),
             .layout = TextureLayout::DepthStencilAttachment,
             .loadOp = LoadOp::Clear,
             .storeOp = StoreOp::Store,
-            .clearDepth = depthClearValue(reversedZ),
+            .clearDepth = depthClearValue(),
         };
         auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
@@ -222,7 +221,7 @@ public:
         context.commandBuffer().setScissor(renderArea);
         if (auto commandResult = registry_->bind(context.commandBuffer(), std::array{paramsHandle_, positionHandle_, transformHandle_}); !commandResult) { return commandResult; }
         const auto execution = program_->execution({.depthStencil = {
-            .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(reversedZ)}});
+            .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp()}});
         auto bound = context.commandBuffer().bindExecution(execution);
         if (!bound) { context.commandBuffer().endRendering(); return bound; }
         const BunnyWireframeUserPush push{
@@ -578,7 +577,6 @@ private:
         const float3 up = cameraVec3(cameraProperties, "up", float3(0.0f, 1.0f, 0.0f));
         const float zNear = std::max(cameraFloat(cameraProperties, "znear", 0.1f), 0.0001f);
         const float zFar = std::max(cameraFloat(cameraProperties, "zfar", 10000.0f), zNear + 0.001f);
-        const bool reversedZ = cameraUsesReversedZ(cameraProperties);
         const float cameraDistance = std::max(length(eye - target), 0.001f);
         const float defaultOrthoHeight = std::max(2.0f * cameraDistance * std::tan(fovRadians * 0.5f), 0.0001f);
         const float orthoHeight = std::max(
@@ -595,7 +593,7 @@ private:
         outParams.clipOrtho[0] = zNear;
         outParams.clipOrtho[1] = zFar;
         outParams.clipOrtho[2] = orthoHeight;
-        outParams.clipOrtho[3] = reversedZ ? 1.0f : 0.0f;
+        outParams.clipOrtho[3] = 1.0f;
         outParams.clearColor[0] = 0.015f;
         outParams.clearColor[1] = 0.018f;
         outParams.clearColor[2] = 0.024f;

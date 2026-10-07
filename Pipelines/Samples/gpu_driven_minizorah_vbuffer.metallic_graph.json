@@ -3,7 +3,7 @@
     "view": {
         "camera": {
             "eye": [55.34291, 6.4527273, 0.32432523], "center": [46.38051, 5.7994967, 0.5308178],
-            "up": [0, 1, 0], "fovDegrees": 60, "znear": 0.020000003, "zfar": 29999.998, "reversedZ": true
+            "up": [0, 1, 0], "fovDegrees": 60, "znear": 0.020000003, "zfar": 29999.998
         }
     },
     "nodes": [
@@ -29,7 +29,7 @@
                 "hybridRaster": true, "asyncSoftwareRaster": false,
                 "camera": {
                     "eye": [55.34291, 6.4527273, 0.32432523], "center": [46.38051, 5.7994967, 0.5308178],
-                    "up": [0, 1, 0], "fovDegrees": 60, "znear": 0.020000003, "zfar": 29999.998, "reversedZ": true
+                    "up": [0, 1, 0], "fovDegrees": 60, "znear": 0.020000003, "zfar": 29999.998
                 }
             }
         },

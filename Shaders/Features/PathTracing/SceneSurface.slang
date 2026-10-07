@@ -363,6 +363,8 @@ float cameraLinearDepth(float3 worldPosition, ScenePathTracePush push)
     return max(dot(worldPosition - push.eye.xyz, forward), 0.0);
 }
 
+// SDK guide textures use standard depth (near 0, far 1), independently of the
+// renderer's reversed-Z attachments and projection.
 float cameraHardwareDepth(float linearDepth, ScenePathTracePush push)
 {
     float zNear = max(push.clipOrtho.x, 0.0001);

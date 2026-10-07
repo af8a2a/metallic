@@ -551,7 +551,6 @@ struct MeshletStreamCameraDesc {
     float znear = 0.1f;
     float zfar = 1000.0f;
     bool orthographic = false;
-    bool reversedZ = true;
     float orthoHeight = 10.0f;
 };
 
