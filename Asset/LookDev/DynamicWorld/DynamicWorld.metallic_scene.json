@@ -1,0 +1,64 @@
+{
+    "version": 3,
+    "source": "../OpenPbrDefault/OpenPbrDefault.gltf",
+    "sceneIndex": 0,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "source": "physicalAtmosphere",
+            "enabled": true,
+            "visible": true,
+            "path": "",
+            "intensity": 1.0,
+            "rotationDegrees": 0.0,
+            "sun": {
+                "enabled": true,
+                "direction": [0.0, -1.0, 0.0],
+                "color": [1.0, 1.0, 1.0],
+                "illuminance": 130938.0,
+                "angularRadius": 0.00465,
+                "topOfAtmosphereIrradiance": [1.474, 1.8504, 1.91198]
+            },
+            "moon": {
+                "enabled": true,
+                "direction": [0.0, -1.0, 0.0],
+                "color": [1.0, 1.0, 1.0],
+                "illuminance": 0.26,
+                "angularRadius": 0.0045,
+                "topOfAtmosphereIrradiance": [0.000002948, 0.0000037008, 0.00000382396]
+            },
+            "time": {
+                "julianDateUTC": 2460483.0,
+                "timeScale": 240.0,
+                "paused": false
+            },
+            "astronomy": {
+                "mode": "astronomical",
+                "latitudeDegrees": 35.0,
+                "longitudeDegrees": 0.0,
+                "moonAlbedo": 0.12
+            },
+            "weather": {
+                "cloudEnabled": true,
+                "cloudCoverage": 0.45,
+                "cloudDensity": 1.0,
+                "cloudBaseAltitudeKm": 1.5,
+                "cloudTopAltitudeKm": 4.0,
+                "cloudExtinctionPerKm": 8.0,
+                "aerosolDensity": 1.0,
+                "humidity": 0.25,
+                "precipitation": 0.0,
+                "windSpeed": 10.0,
+                "windDirection": [1.0, 0.25],
+                "noiseSeed": 17
+            }
+        },
+        "lighting": {
+            "exposureEV100": 14.0,
+            "autoExposure": {
+                "enabled": true
+            },
+            "lights": []
+        }
+    }
+}

@@ -26,6 +26,25 @@ void scenePathTraceTonemapMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     float3 color = gSource[pixel].rgb;
+    // Native NRC resolve adds a neural prediction to the traced prefix. On a
+    // cache reset this prediction can undershoot the nonnegative radiance
+    // learned by this path (including a fully dark scene). Project finite
+    // resolved radiance to that domain before camera transport and history.
+    // Keep nonfinite values observable so an invalid resolve is still detected.
+    if (all(isfinite(color))) {
+        color = max(color, float3(0.0));
+    }
+    // NRC resolves complete surface radiance before this stage. Keep the
+    // camera segment outside the trained/query radiance and apply it once.
+    if (gStage.primaryAerial.index != 0xffffffffu) {
+        let aerial = resolveUniform(gStage.primaryAerial);
+        uint count, stride;
+        aerial.GetDimensions(count, stride);
+        uint index = (pixel.y * push.width + pixel.x) * 2u;
+        if (index + 1u < count) {
+            color = aerial[index].xyz * color + aerial[index + 1u].xyz;
+        }
+    }
     if (push.hasHistory != 0u) {
         color = lerp(gHistoryPrevious[pixel].rgb, color,
             1.0 / float(push.accumulationFrame + 1u));

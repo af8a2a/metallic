@@ -4532,6 +4532,11 @@ bool RenderGraphPreviewRenderer::setLighting(scene::LightingSettings lighting)
     return impl_->world.setLighting(std::move(lighting));
 }
 
+bool RenderGraphPreviewRenderer::setWorldEnvironment(environment::WorldEnvironment environment)
+{
+    return impl_->world.setWorldEnvironment(std::move(environment));
+}
+
 void RenderGraphPreviewRenderer::setDebugObserver(IRenderDebugObserver* observer)
 {
     impl_->executor.setDebugObserver(observer);

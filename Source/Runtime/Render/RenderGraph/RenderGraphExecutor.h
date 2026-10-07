@@ -195,6 +195,7 @@ public:
     void setRecordingWorkerLimit(uint32_t limit);
     void setEnvironment(EnvironmentSettings environment);
     bool setLighting(scene::LightingSettings lighting);
+    bool setWorldEnvironment(environment::WorldEnvironment environment);
     RenderSubsystemHost* subsystemHost();
     const RenderSubsystemHost* subsystemHost() const;
     const std::vector<uint32_t>& pixels() const;

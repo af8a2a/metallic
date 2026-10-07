@@ -980,8 +980,7 @@ bool GPUScene::syncLights(std::span<const scene::RenderLight> renderLights,
             .id = id,
             .source = source,
             .boundingSphere = lightBoundingSphere(source),
-            .unbounded = source.enabled &&
-                (source.gpu.directionType[3] == 0.0f || source.gpu.positionRange[3] == 0.0f),
+            .unbounded = source.enabled && source.gpu.positionRange[3] == 0.0f,
         };
         if (source.enabled) {
             drawSet_.lights.push_back(id);
@@ -1310,9 +1309,7 @@ bool GPUScene::prepareView(
     }
     for (GPUSceneLightId id : drawSet_.lights) {
         const GPUSceneLightRecord& record = lights_[id.index];
-        if (record.source.gpu.directionType[3] == 0.0f) {
-            visible.lights.directionalLights.push_back(id);
-        } else if (record.unbounded) {
+        if (record.unbounded) {
             visible.lights.unboundedLocalLights.push_back(id);
         } else if (lightIntersectsFrustum(record.boundingSphere, info.lightFrustumPlanes)) {
             visible.lights.localLights.push_back(id);

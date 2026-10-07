@@ -28,7 +28,6 @@
                 "sigmaDenoise": true,
                 "shadowLightIndex": -1,
                 "shadowBias": 0.01,
-                "shadowAngularRadius": 0.266,
                 "sigmaHistoryLength": 5,
                 "shadowLightRadius": 0.05,
                 "rayTracedShadows": true,

@@ -5,6 +5,7 @@
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Environment/AtmosphereResources.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -17,6 +18,7 @@
 #include <cstring>
 #include <limits>
 #include <numbers>
+#include <span>
 #include <utility>
 
 #ifndef PROJECT_SOURCE_DIR
@@ -220,6 +222,11 @@ public:
         owner_.pdfCompute_ = std::move(pdfCompute_);
         owner_.gpuPrecompute_ = std::move(gpuPrecompute_);
         owner_.requestInitialized_ = false;
+        std::scoped_lock lock(owner_.physicalMutex_);
+        if (owner_.host_ != nullptr) {
+            for (const auto& publication : owner_.physicalPublications_) { owner_.host_->retire(publication); }
+        }
+        owner_.physicalPublications_.clear();
     }
 
 private:
@@ -239,6 +246,17 @@ struct EnvironmentLightingSubsystem::Resources {
     bool mapAvailable = false;
 };
 
+struct EnvironmentLightingSubsystem::PhysicalPublication {
+    GPUAtmosphereParameters parameters{};
+    AtmosphereResourcesGPU atmosphere;
+    ImportancePdfTexture pdf;
+    std::unique_ptr<Buffer> sphericalHarmonicsBuffer;
+    std::unique_ptr<Buffer> prefilteredSpecularBuffer;
+    std::unique_ptr<Buffer> partials;
+    uint64_t revision = 0;
+    bool cancelled = false;
+};
+
 EnvironmentLightingSubsystem::EnvironmentLightingSubsystem() = default;
 EnvironmentLightingSubsystem::~EnvironmentLightingSubsystem() = default;
 
@@ -247,6 +265,7 @@ Result<> EnvironmentLightingSubsystem::initialize(
     std::string& log)
 {
     device_ = &context.device;
+    host_ = &context.host;
     if (const Desc* desc = context.host.configuration<EnvironmentLightingSubsystem>()) {
         desc_ = *desc;
     }
@@ -462,6 +481,14 @@ Result<> EnvironmentLightingSubsystem::recordPreGraph(
     if (context.commandBuffer == nullptr) {
         return makeError(Error::InvalidArgument);
     }
+    CelestialLightingResources celestial;
+    auto celestialResult = updateCelestial(context.device, *context.commandBuffer, context.host,
+        resolveWorldEnvironment(world_ != nullptr ? world_->scene() : nullptr, world_))
+        .transform([&](auto value) { celestial = std::move(value); });
+    if (!celestialResult) { return celestialResult; }
+    celestialLightsBuffer_ = std::move(celestial.buffer);
+    celestialResourceRevision_ = celestial.revision;
+    refreshSnapshot();
     if (pendingPublication_ != nullptr && !pendingPublication_->resolved()) {
         log = "Environment publication must be submitted or cancelled before recording again";
         return makeError(Error::InvalidArgument);
@@ -742,8 +769,179 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     return {};
 }
 
+Result<CelestialLightingResources> EnvironmentLightingSubsystem::updateCelestial(Device& device,
+    CommandBuffer& commands, RenderSubsystemHost& host, const environment::EnvironmentSnapshot& environment)
+{
+    const auto records = buildCelestialLightRecords(environment);
+    std::scoped_lock lock(celestialMutex_);
+    CelestialLightingResources resources;
+    auto found = std::find_if(celestialPublications_.begin(), celestialPublications_.end(),
+        [&](const auto& publication) {
+            return std::memcmp(records.data(), publication.records.data(), sizeof(records)) == 0;
+        });
+    if (found != celestialPublications_.end()) {
+        // Reuse a content-specific revision: graph scene overrides must not reset
+        // their accumulation whenever pre-graph recording publishes the world.
+        resources = found->resources;
+        auto publication = std::move(*found);
+        celestialPublications_.erase(found);
+        celestialPublications_.push_back(std::move(publication));
+    } else {
+        std::unique_ptr<Buffer> next;
+        auto result = device.createBuffer({.size = sizeof(records), .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::HostUpload})
+            .transform([&](auto buffer) { next = std::move(buffer); });
+        if (!result) { return makeError(result.error()); }
+        if (next == nullptr) { return makeError(Error::Failure); }
+        void* mapped = next->map();
+        if (mapped == nullptr) { return makeError(Error::Failure); }
+        std::memcpy(mapped, records.data(), sizeof(records));
+        next->flush({0, sizeof(records)});
+        next->unmap();
+        resources = {.buffer = std::move(next), .revision = ++nextCelestialResourceRevision_};
+        if (celestialPublications_.size() == 8) {
+            host.retire(celestialPublications_.front().resources.buffer);
+            celestialPublications_.erase(celestialPublications_.begin());
+        }
+        celestialPublications_.push_back({records, resources});
+    }
+    if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(resources.buffer); }
+    commands.hostWriteBarrier();
+    return resources;
+}
+
+Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadiance(Device& device,
+    CommandBuffer& commands, RenderSubsystemHost& host, const environment::EnvironmentSnapshot& environment,
+    const std::array<double, 3>& observerWorldMetres, std::string& log)
+{
+    if (environment.source == environment::EnvironmentSource::HDRI) { return snapshot_; }
+    if (device_ != &device || gpuPrecompute_ == nullptr || !pdfCompute_.valid() ||
+        environment.source != environment::EnvironmentSource::PhysicalAtmosphere ||
+        !environment::validAtmosphereState(environment.atmosphere) ||
+        !environment::validCelestialLight(environment.celestial[0]) ||
+        !environment::validCelestialLight(environment.celestial[1]) ||
+        !std::all_of(observerWorldMetres.begin(), observerWorldMetres.end(), [](double value) { return std::isfinite(value); })) {
+        log = "Invalid physical environment provider request";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto parameters = buildGPUAtmosphereParameters(environment, observerWorldMetres);
+    std::scoped_lock lock(physicalMutex_);
+    auto found = std::find_if(physicalPublications_.begin(), physicalPublications_.end(), [&](const auto& publication) {
+        return !publication->cancelled && std::memcmp(&publication->parameters, &parameters, sizeof(parameters)) == 0;
+    });
+    std::shared_ptr<PhysicalPublication> publication;
+    if (found != physicalPublications_.end()) {
+        publication = *found;
+        physicalPublications_.erase(found);
+        physicalPublications_.push_back(publication);
+    } else {
+        publication = std::make_shared<PhysicalPublication>();
+        publication->parameters = parameters;
+        // Revisions identify contents rather than allocations: eviction must
+        // not restart an unchanged pass's accumulation in a multi-scene graph.
+        uint64_t contentHash = 14695981039346656037ull;
+        for (const auto byte : std::as_bytes(std::span{&parameters, size_t{1}})) {
+            contentHash = (contentHash ^ std::to_integer<uint8_t>(byte)) * 1099511628211ull;
+        }
+        publication->revision = contentHash | (1ull << 63);
+        const auto sameMedium = [&](const auto& cached) {
+            const auto& previous = cached->parameters;
+            return !cached->cancelled &&
+                previous.observerPlanetBottom[3] == parameters.observerPlanetBottom[3] &&
+                previous.observerWorldTop[3] == parameters.observerWorldTop[3] &&
+                previous.rayleighScaleHeight == parameters.rayleighScaleHeight &&
+                previous.mieScatteringScaleHeight == parameters.mieScatteringScaleHeight &&
+                previous.mieExtinctionAnisotropy == parameters.mieExtinctionAnisotropy &&
+                previous.ozoneCenter == parameters.ozoneCenter &&
+                previous.groundOzoneWidth == parameters.groundOzoneWidth;
+        };
+        const auto medium = std::find_if(physicalPublications_.rbegin(), physicalPublications_.rend(), sameMedium);
+        const auto* sharedMedium = medium != physicalPublications_.rend() ? &(*medium)->atmosphere : nullptr;
+        auto result = publication->atmosphere.initialize(device, log, sharedMedium);
+        if (!result) { return makeError(result.error()); }
+        // Retain before recording; partial recordings also reference these
+        // allocations and must survive until cancellation/submission resolves.
+        host.retire(publication);
+        if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(publication); }
+        result = host.deferSubmission(commands, []() {}, [publication]() { publication->cancelled = true; })
+            .transform([](auto) {});
+        if (!result) { return makeError(result.error()); }
+        result = publication->atmosphere.record(commands, environment, observerWorldMetres, log);
+        if (!result) { return makeError(result.error()); }
+        constexpr uint32_t width = AtmosphereResourcesGPU::kRadianceWidth;
+        constexpr uint32_t height = AtmosphereResourcesGPU::kRadianceHeight;
+        constexpr uint64_t coefficientBytes = kEnvironmentSHCoefficientCount * sizeof(std::array<float, 4>);
+        constexpr uint64_t partialBytes = ((uint64_t(width) * height + kEnvironmentSHThreadCount - 1) /
+            kEnvironmentSHThreadCount) * coefficientBytes;
+        auto allocate = [&](std::unique_ptr<Buffer>& buffer, uint64_t size) {
+            return device.createBuffer({.size = size, .structureStride = 16,
+                .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::Device,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy})
+                .transform([&](auto value) { buffer = std::move(value); });
+        };
+        result = allocate(publication->sphericalHarmonicsBuffer, coefficientBytes);
+        if (!result) { return makeError(result.error()); }
+        result = allocate(publication->prefilteredSpecularBuffer, kEnvironmentSpecularBytes);
+        if (!result) { return makeError(result.error()); }
+        result = allocate(publication->partials, partialBytes);
+        if (!result) { return makeError(result.error()); }
+        result = publication->pdf.initialize(device, width, height, "Physical atmosphere PDF", log);
+        if (!result) { return makeError(result.error()); }
+        result = pdfCompute_.buildEnvironment(commands, *publication->atmosphere.radianceView(), publication->pdf);
+        if (!result) { return makeError(result.error()); }
+        result = gpuPrecompute_->build(commands, *publication->atmosphere.radianceView(), *publication->partials,
+            *publication->sphericalHarmonicsBuffer, *publication->prefilteredSpecularBuffer, width, height, false);
+        if (!result) { return makeError(result.error()); }
+        std::array barriers{
+            BufferBarrierDesc{.buffer = publication->sphericalHarmonicsBuffer.get(),
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
+            BufferBarrierDesc{.buffer = publication->prefilteredSpecularBuffer.get(),
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}},
+        };
+        result = commands.synchronize({.buffers = barriers});
+        if (!result) { return makeError(result.error()); }
+        if (physicalPublications_.size() == 8) {
+            host.retire(physicalPublications_.front());
+            physicalPublications_.erase(physicalPublications_.begin());
+        }
+        physicalPublications_.push_back(publication);
+    }
+    if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(publication); }
+    EnvironmentLightingSnapshot resolved = snapshot_;
+    resolved.source = environment::EnvironmentSource::PhysicalAtmosphere;
+    resolved.settings.enabled = true;
+    resolved.settings.path.clear();
+    resolved.settings.intensity = 1.0f;
+    resolved.settings.rotationDegrees = 0.0f;
+    resolved.settings.sourceColorSpace = kACEScg;
+    resolved.settings.sourceColorSpaceExplicit = true;
+    resolved.status = EnvironmentLightingStatus::Ready;
+    resolved.error.clear();
+    resolved.radianceView = publication->atmosphere.radianceView();
+    resolved.pdfView = publication->pdf.view();
+    resolved.sphericalHarmonicsBuffer = publication->sphericalHarmonicsBuffer.get();
+    resolved.prefilteredSpecularBuffer = publication->prefilteredSpecularBuffer.get();
+    resolved.atmosphereParametersBuffer = publication->atmosphere.parametersBuffer();
+    resolved.transmittanceView = publication->atmosphere.transmittanceView();
+    resolved.multiScatteringView = publication->atmosphere.multiScatteringView();
+    resolved.skyView = publication->atmosphere.skyView();
+    resolved.aerialPerspectiveBuffer = publication->atmosphere.aerialBuffer();
+    resolved.cloudShadowView = publication->atmosphere.cloudShadowView();
+    resolved.width = AtmosphereResourcesGPU::kRadianceWidth;
+    resolved.height = AtmosphereResourcesGPU::kRadianceHeight;
+    resolved.resourceRevision = publication->revision;
+    resolved.mapAvailable = true;
+    resolved.retainedResources = publication;
+    return resolved;
+}
+
 void EnvironmentLightingSubsystem::refreshSnapshot()
 {
+    snapshot_.celestialLightsBuffer = celestialLightsBuffer_.get();
+    snapshot_.celestialResourceRevision = celestialResourceRevision_;
     snapshot_.settings = requestedSettings_;
     snapshot_.settingsRevision = requestedSettingsRevision_;
     snapshot_.resourceRevision = resourceRevision_;
@@ -780,6 +978,11 @@ void EnvironmentLightingSubsystem::shutdown()
     pendingDecodeGeneration_ = 0;
     readyDecode_.reset();
     resources_.reset();
+    physicalPublications_.clear();
+    celestialLightsBuffer_.reset();
+    celestialPublications_.clear();
+    nextCelestialResourceRevision_ = 0;
+    celestialResourceRevision_ = 0;
     pdfCompute_.clear();
     gpuPrecompute_.reset();
     snapshot_ = {};

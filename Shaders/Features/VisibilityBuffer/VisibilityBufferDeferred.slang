@@ -286,10 +286,10 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
         : skyMotionVectorToPrevious(ray.direction, samplePixel, push);
 #endif
 #if MATERIAL_CLASS == 0
-    radiance = environmentRadiance(ray.direction, push, true);
+    radiance = environmentRadiance(ray.direction, push, true, ray.origin);
 #else
     if (!hasSurface) {
-        radiance = environmentRadiance(ray.direction, push, true);
+        radiance = environmentRadiance(ray.direction, push, true, ray.origin);
     }
     else {
         radiance = shadeVisibilitySurface(ray, hit, rayPixel, push, seed,

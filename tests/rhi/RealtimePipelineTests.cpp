@@ -571,9 +571,9 @@ public:
     {
         render::RenderPassReflection reflection;
         auto& source = reflection.addTextureInput("source").transferRead();
-        source.format = render::Format::RGBA16Sfloat;
+        source.format = render::Format::RGBA32Sfloat;
         source.matchOutputExtent = false;
-        reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 8).transferWrite();
+        reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 16).transferWrite();
         return reflection;
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -582,10 +582,128 @@ public:
         const auto width = source.desc().width, height = source.desc().height;
         return context.outputBuffer("pixels").buffer()->slice().and_then([&](const auto& slice) {
             return context.commandBuffer().copyTextureToBuffer({.texture = source.texture(), .buffer = slice,
-                .bufferRowPitch = width * 8, .bufferSlicePitch = width * height * 8, .width = width, .height = height});
+                .bufferRowPitch = width * 16, .bufferSlicePitch = width * height * 16, .width = width, .height = height});
         });
     }
 };
+
+class DLSSFloat32HDRContractTest final : public RHITest {
+public:
+    DLSSFloat32HDRContractTest() { type = RHITestType::Resource; name = "dlss_float32_hdr_contract"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        using namespace render;
+        for (const char* type : {"StreamlineDLSSSRPass", "StreamlineDLSSRRPass"}) {
+            auto pass = createRenderGraphPass(type);
+            if (!pass) { return realtimeFailure("Missing DLSS pass"); }
+            const auto reflection = pass->reflect({});
+            const auto* input = reflection.findField("inputColor", RenderGraphFieldVisibility::Input);
+            const auto* output = reflection.findField("color", RenderGraphFieldVisibility::Output);
+            if (!input || !output || input->format != Format::RGBA32Sfloat || output->format != Format::RGBA32Sfloat) {
+                return realtimeFailure(std::string(type) + " must preserve unexposed scene color in RGBA32F");
+            }
+        }
+        return RHITestResult::pass("SR/RR input and output HDR retain FP32 range before exposure");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(DLSSFloat32HDRContractTest);
+
+class DLSSFloat32HDRFixturePass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        using namespace render;
+        RenderPassReflection reflection;
+        for (const auto& [name, format] : {
+                std::pair{"color", Format::RGBA32Sfloat}, std::pair{"motionVectors", Format::RG16Sfloat},
+                std::pair{"depth", Format::R32Sfloat}, std::pair{"albedo", Format::RGBA16Sfloat},
+                std::pair{"specularAlbedo", Format::RGBA16Sfloat}, std::pair{"normalRoughness", Format::RGBA16Sfloat},
+                std::pair{"specularHitDistance", Format::R32Sfloat}}) {
+            auto& field = reflection.addTextureOutput(name).transferWrite();
+            field.format = format;
+            if (std::string_view(name) == "color") { field.colorEncoding = DisplayColorEncoding::SceneLinear; }
+        }
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        for (const char* name : {"color", "motionVectors", "depth", "albedo", "specularAlbedo", "normalRoughness", "specularHitDistance"}) {
+            const auto texture = context.outputTexture(name);
+            if (!texture.valid()) { continue; }
+            const std::array<float, 4> value = std::string_view(name) == "color"
+                ? std::array<float, 4>{1e9f, 2e8f, 0.125f, 1.0f} : std::array<float, 4>{0.5f, 0.0f, 0.0f, 0.0f};
+            auto result = context.commandBuffer().clearColorTexture(*texture.texture(),
+                render::TextureLayout::TransferDestination, {value[0], value[1], value[2], value[3]});
+            if (!result) { return result; }
+        }
+        return {};
+    }
+};
+
+class DLSSFloat32HDROffCopyTest final : public RHITest {
+public:
+    DLSSFloat32HDROffCopyTest() { type = RHITestType::Rendering; name = "dlss_float32_hdr_off_copy"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto capabilities = vulkan::deviceCapabilities(context.device);
+        if (!capabilities.streamlineDlssSr || !capabilities.streamlineDlssRr) {
+            return RHITestResult::skip("Requires --rhi-streamline and SR/RR support");
+        }
+        registerRenderGraphPassType("DLSSFloat32HDRFixturePass", "FP32 solar-range DLSS input",
+            [] { return std::make_unique<DLSSFloat32HDRFixturePass>(); });
+        registerRenderGraphPassType("WorkingColorHDRReadbackPass", "FP32 HDR raw readback",
+            [] { return std::make_unique<WorkingColorHDRReadbackPass>(); });
+        constexpr uint32_t width = 38, height = 26;
+        for (const char* type : {"StreamlineDLSSSRPass", "StreamlineDLSSRRPass"}) {
+            const bool rr = std::string_view(type) == "StreamlineDLSSRRPass";
+            RenderGraph graph;
+            graph.addNode("DLSSFloat32HDRFixturePass", "Source");
+            graph.addNode(type, "DLSS", {{"mode", "Off"}});
+            graph.addNode("WorkingColorHDRReadbackPass", "InputReadback");
+            graph.addNode("WorkingColorHDRReadbackPass", "OutputReadback");
+            graph.addEdge("Source.color", "DLSS.inputColor");
+            graph.addEdge("Source.motionVectors", "DLSS.motionVectors");
+            graph.addEdge("Source.depth", rr ? "DLSS.linearDepth" : "DLSS.depth");
+            if (rr) {
+                for (const char* name : {"albedo", "specularAlbedo", "normalRoughness", "specularHitDistance"}) {
+                    graph.addEdge(std::string("Source.") + name, std::string("DLSS.") + name);
+                }
+            }
+            graph.addEdge("Source.color", "InputReadback.source");
+            graph.addEdge("DLSS.color", "OutputReadback.source");
+            graph.markOutput("InputReadback.pixels");
+            graph.markOutput("OutputReadback.pixels");
+            RenderGraphExecutor executor;
+            std::string log;
+            if (!executor.compile(context.device, graph, width, height, log) ||
+                !executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
+                return realtimeFailure(std::string(type) + " FP32 Off graph failed: " + log);
+            }
+            auto* inputBuffer = executor.outputResource("InputReadback.pixels")->buffer;
+            auto* outputBuffer = executor.outputResource("OutputReadback.pixels")->buffer;
+            inputBuffer->invalidate();
+            outputBuffer->invalidate();
+            const auto* input = static_cast<const float*>(inputBuffer->map());
+            const auto* output = static_cast<const float*>(outputBuffer->map());
+            if (!input || !output) {
+                if (input) { inputBuffer->unmap(); }
+                if (output) { outputBuffer->unmap(); }
+                return realtimeFailure("FP32 DLSS readback map failed");
+            }
+            bool valid = std::memcmp(input, output, size_t(width) * height * 4 * sizeof(float)) == 0;
+            for (size_t pixel = 0; pixel < size_t(width) * height; ++pixel) {
+                valid &= std::isfinite(output[pixel * 4]) && output[pixel * 4] == 1e9f &&
+                    output[pixel * 4 + 1] == 2e8f && output[pixel * 4 + 2] == 0.125f;
+            }
+            inputBuffer->unmap();
+            outputBuffer->unmap();
+            if (!valid) { return realtimeFailure(std::string(type) + " clamped/quantized FP32 solar-range color in mode Off"); }
+        }
+        return RHITestResult::pass("SR/RR Off preserve 1e9 solar-range color and dark channels byte for byte in FP32");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(DLSSFloat32HDROffCopyTest);
 
 class WorkingColorDLSSDebugBypassTest : public RHITest {
 public:
@@ -639,16 +757,9 @@ public:
             const auto readPixels = [&](const char* resource, uint32_t width, uint32_t height) {
                 auto* buffer = executor.outputResource(resource)->buffer;
                 buffer->invalidate();
-                const auto* raw = static_cast<const uint16_t*>(buffer->map());
+                const auto* raw = static_cast<const std::array<float, 4>*>(buffer->map());
                 require(raw != nullptr, "Debug raw readback failed");
-                std::vector<std::array<float, 4>> pixels(size_t(width) * height);
-                for (size_t i = 0; i < pixels.size(); ++i) { for (size_t c = 0; c < 4; ++c) {
-                    const uint16_t bits = raw[i * 4 + c];
-                    const uint32_t exponent = (bits >> 10) & 31, mantissa = bits & 1023;
-                    const float value = exponent == 0 ? std::ldexp(float(mantissa), -24) :
-                        (exponent == 31 ? INFINITY : std::ldexp(float(mantissa + 1024), int(exponent) - 25));
-                    pixels[i][c] = (bits & 0x8000) ? -value : value;
-                }}
+                std::vector<std::array<float, 4>> pixels(raw, raw + size_t(width) * height);
                 buffer->unmap();
                 return pixels;
             };
@@ -750,11 +861,10 @@ public:
         scene::LightingSettings lighting;
         lighting.autoExposure.enabled = false;
         lighting.exposureEV100 = 4.0f;
-        scene::PunctualLight sun;
-        sun.properties.type = "directional";
-        sun.properties.intensity = 30;
-        sun.direction = float3(0.6f, -1.0f, -0.3f);
-        // A disabled prefix and an active local light must not compact the sun's source slot.
+        environment::WorldEnvironment environment;
+        environment.sun = {.direction = float3(0.6f, -1.0f, -0.3f), .illuminance = 30.0f,
+            .angularRadius = 1.5f * 0.01745329252f, .enabled = true};
+        // Disabled and active local sources must not change the fixed Sun slot.
         scene::PunctualLight inactive;
         inactive.enabled = false;
         lighting.lights.push_back(inactive);
@@ -762,15 +872,14 @@ public:
         point.enabled = true;
         point.properties.intensity = 0.001;
         lighting.lights.push_back(point);
-        lighting.lights.push_back(sun);
         preview.setLighting(lighting);
+        preview.setWorldEnvironment(environment);
         const auto* shadowNode = sample.graph.findNode("Shadows");
         if (shadowNode == nullptr || shadowNode->type != "RayTracedShadowPass") {
             return realtimeFailure("Realtime pipeline is missing the explicit shadow stage");
         }
         const auto shadows = shadowNode->id;
         const auto deferred = sample.graph.findNode("Deferred")->id;
-        sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", 1.5f);
         sample.graph.setNodeRuntimeProperty(shadows, "shadowRayLength", 100000.0f);
         std::vector<uint32_t> unshadowed;
         for (uint32_t mode = 0; mode < 4; ++mode) {
@@ -810,7 +919,8 @@ public:
         view["temporalJitter"] = false;
         sample.graph.setViewProperties(view);
         sample.graph.setNodeRuntimeProperty(shadows, "sigmaDenoise", false);
-        sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", 0.0f);
+        environment.sun.angularRadius = 0.0f;
+        preview.setWorldEnvironment(environment);
         sample.graph.setNodeRuntimeProperty(shadows, "shadowDebug", true);
         sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", -1);
         const auto draw = [&]() {
@@ -821,7 +931,7 @@ public:
             return preview.pixels();
         };
         const auto automatic = draw();
-        sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", int(scene.lights().size()) + 2);
+        sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", 0);
         if (draw() != automatic) { return realtimeFailure("Explicit sun slot and Auto produce different shadow signals"); }
         sample.graph.setNodeRuntimeProperty(shadows, "shadowLightIndex", 1412);
         if (draw() != automatic) { return realtimeFailure("Invalid slot did not fall back to Auto"); }
@@ -844,7 +954,7 @@ public:
         for (size_t i = 0; i < shortLighting.size(); ++i) {
             changed += int(shortLighting[i] & 255u) - int(longLighting[i] & 255u) > 8;
         }
-        if (changed < 30) { return realtimeFailure("Trace settings did not affect the selected stable LightGrid sun slot"); }
+        if (changed < 30) { return realtimeFailure("Trace settings did not affect the selected celestial Sun slot"); }
         const auto hardLighting = longLighting;
         // Live source-radius edits must widen the full geometry penumbra and
         // lighten pixels inside the old hard shadow in final deferred lighting.
@@ -857,7 +967,8 @@ public:
         uint32_t fullyLit = 0;
         for (auto pixel : hardVisibility) { fullyLit = std::max(fullyLit, pixel & 255u); }
         for (size_t angle = 0; angle < 3; ++angle) {
-            sample.graph.setNodeRuntimeProperty(shadows, "shadowAngularRadius", angles[angle]);
+            environment.sun.angularRadius = angles[angle] * 0.01745329252f;
+            preview.setWorldEnvironment(environment);
             const auto visibility = draw();
             for (size_t i = 0; i < visibility.size(); ++i) {
                 const auto value = visibility[i] & 255u;
@@ -948,7 +1059,6 @@ public:
                 graph.addEdge("Deferred.color", "AutoExposure.source");
                 graph.addEdge("AutoExposure.color", "FinalBlit.source");
                 graph.findNode("Shadows")->properties["sigmaDenoise"] = false;
-                graph.findNode("Shadows")->properties["shadowAngularRadius"] = 0.0;
             }
             registerRenderGraphPassType("RealtimeReadbackPass", "Realtime GPU regression readback",
                 [] { return std::make_unique<RealtimeReadbackPass>(); });
@@ -964,10 +1074,10 @@ public:
             scene::LightingSettings lighting;
             lighting.autoExposure.enabled = miniZorah_;
             lighting.exposureEV100 = 2;
-            scene::PunctualLight sun;
-            sun.properties.type = "directional"; sun.properties.intensity = 10;
-            sun.direction = float3(.6f, -1, -.3f);
-            lighting.lights.push_back(sun);
+            environment::WorldEnvironment environment;
+            environment.sun = {.direction = float3(.6f, -1, -.3f), .illuminance = 10.0f,
+                .angularRadius = 0.0f, .enabled = true};
+            world.setWorldEnvironment(environment);
             world.setLighting(lighting);
             RenderGraphExecutor executor;
             executor.bindRenderWorld(&world);

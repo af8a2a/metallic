@@ -7,7 +7,8 @@
 
 namespace metallic::scene {
 
-// SI means lux for a directional light, candela for a point/spot light.
+// SI means candela for production point/spot lights. The directional conversion
+// (lux) is retained for explicit legacy-to-Sun migration and photometry probes.
 // All scene-space distances are metres. RGB colors are linear multipliers.
 enum class LightUnit { SI, Lux, Candela, Lumens, EV100 };
 

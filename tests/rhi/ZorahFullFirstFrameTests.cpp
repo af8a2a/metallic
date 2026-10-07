@@ -130,11 +130,13 @@ public:
                     .path=std::filesystem::path(PROJECT_SOURCE_DIR)/sample.desc.environment->path, .visible=false});
                 scene::LightingSettings lighting;
                 lighting.autoExposure.enabled = false; lighting.exposureEV100 = 2;
-                scene::PunctualLight sun;
-                sun.properties.type = "directional"; sun.properties.intensity = 10;
-                sun.properties.color = float3(1, .8f, .5f);
+                environment::WorldEnvironment celestial;
+            auto& sun = celestial.sun;
+                sun.enabled = true; sun.illuminance = 10;
+                sun.color = float3(1, .8f, .5f);
                 sun.direction = float3(-.6f, -.7f, -.36f);
-                lighting.lights.push_back(sun);
+
+                preview.setWorldEnvironment(celestial);
                 requireFull(preview.setLighting(lighting), "Invalid validation lighting");
                 uint32_t readyFrame = 0;
                 const auto capture = [&](const std::string& name) {

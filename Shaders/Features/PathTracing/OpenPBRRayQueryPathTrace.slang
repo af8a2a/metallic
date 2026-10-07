@@ -227,11 +227,21 @@ struct PathSurfaceLights : ISurfaceLightProvider
     OpenPBRInteriorStack interiorStack;
     float3 viewDirection;
     uint seed;
-    uint count() { return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting) ? 0u : 1u; }
+    uint count() { return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting) ? 0u : kCelestialLightCount + 1u; }
     [mutating]
     SurfaceLightSample sample(uint index)
     {
         SurfaceLightSample result = (SurfaceLightSample)0;
+        if (index < kCelestialLightCount) {
+            PunctualLightSample light = samplePathCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, hit.position, seed);
+            result.direction = light.direction;
+            result.illuminance = light.illuminance;
+            result.distance = light.distance;
+            result.inverseSourcePdf = any(light.illuminance > 0.0) ? 1.0 : 0.0;
+            result.source = celestialSourceIdentity(index);
+            return result;
+        }
         uint source;
         float inversePdf;
         if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, source, inversePdf)) {
@@ -246,6 +256,10 @@ struct PathSurfaceLights : ISurfaceLightProvider
     }
     float3 visibility(SurfaceLightSample light)
     {
+        if ((light.source & kCelestialSourceBit) != 0u &&
+            !celestialLightCastsShadow(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights),
+                light.source & ~kCelestialSourceBit)) { return float3(1.0); }
         float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
         OpenPBRInteriorStack shadowStack = interiorStack;
         if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
@@ -275,6 +289,9 @@ float3 pathTraceOpenPBRWithPrimaryHit(
     specularHitDistance = 0.0;
     bool captureSpecularHitDistance = false;
     uint alphaLayers = 0u;
+    float3 primaryEndpoint = float3(0.0);
+    float3 primaryOrigin = ray.origin;
+    bool primarySurface = false;
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
@@ -295,13 +312,19 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             float misWeight = depth == 0u
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
-            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
+            float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
+            if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
+                missRadiance += physicalDeltaMissDisks(getResourceParameters<SceneResourceParameters>().environment,
+                    ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
+            }
+            radiance += throughput * missRadiance;
             break;
         }
         if (captureSpecularHitDistance) {
             specularHitDistance = hit.t;
             captureSpecularHitDistance = false;
         }
+        if (depth == 0u) { primaryEndpoint = hit.position; primarySurface = true; }
 
         rayCone = propagateRayCone(rayCone, hit.t);
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
@@ -325,6 +348,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
                 if (++alphaLayers >= 16u) { break; }
                 ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
                 hasPrimaryHit = false;
+                if (depth == 0u) { primarySurface = false; }
                 --depth;
                 continue;
             }
@@ -369,8 +393,9 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         lights.interiorStack = interiorStack;
         lights.viewDirection = viewDirection;
         lights.seed = seed;
-        // Delta light sources use MIS weight one. The shared kernel retains
-        // the original throughput-first multiplication and selection PDF.
+        // The environment proposal and ordinary secondary BSDF miss exclude
+        // celestial disks, so their separate finite NEE estimator has weight one.
+        // Local delta sources retain their source-selection PDF.
         radiance = integrateDirectLighting(prepared, lights, radiance, throughput);
         seed = lights.seed;
 
@@ -467,7 +492,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         }
     }
 
-    return radiance;
+    return primarySurface && push.debugView == kOpenPBRDebugViewFinal
+        ? applyPrimaryAerialPerspective(radiance, primaryEndpoint, primaryOrigin) : radiance;
 }
 
 // Preserve the ray-primary reference API; the raster path supplies an authored

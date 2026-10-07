@@ -6,6 +6,7 @@
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 
 #include <any>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <span>
@@ -187,6 +188,9 @@ public:
 
 private:
     struct Record;
+
+    std::chrono::steady_clock::time_point lastWorldFrameTime_{};
+    bool hasWorldFrameTime_ = false;
 
     Result<> activateRecursive(const std::string& id, std::vector<std::string>& stack, std::string& log);
     bool dependencyClosure(

@@ -94,6 +94,11 @@
             "id": 20,
             "src": "ColorGrading.lut",
             "dst": "FinalBlit.lut"
+        },
+        {
+            "id": 21,
+            "src": "RTXDI.emissive",
+            "dst": "Confidence.emissive"
         }
     ],
     "name": "RtxdiRelaxSample",

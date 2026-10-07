@@ -1,5 +1,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/SceneLightResources.h"
+#include "Runtime/Render/Environment/CelestialLighting.h"
+#include "Runtime/Render/Environment/AtmosphereResources.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/ImportanceSampling.h"
@@ -80,11 +82,109 @@ scene::LightingSettings resolveSceneLighting(const scene::Scene* actualScene, co
     return settings;
 }
 
+environment::EnvironmentSnapshot resolveWorldEnvironment(const scene::Scene* actualScene, const RenderWorld* world)
+{
+    if (world != nullptr && (actualScene == nullptr || actualScene == world->scene() ||
+        (world->scene() == nullptr && world->hasWorldEnvironmentOverride()))) {
+        return world->environmentSnapshot();
+    }
+    return actualScene != nullptr ? actualScene->environmentSnapshot() : environment::EnvironmentSnapshot{};
+}
+
+GPUCelestialLightRecords buildCelestialLightRecords(const environment::EnvironmentSnapshot& snapshot)
+{
+    GPUCelestialLightRecords records{};
+    for (size_t index = 0; index < records.size(); ++index) {
+        const auto& source = snapshot.celestial[index];
+        const bool physical = snapshot.source == environment::EnvironmentSource::PhysicalAtmosphere;
+        if (!source.enabled || !environment::validCelestialLight(source) || (!physical && source.illuminance <= 0.0f)) { continue; }
+        const auto converted = color::fromLinearRec709({source.color.x, source.color.y, source.color.z});
+        const double magnitude = std::sqrt(double(source.direction.x) * source.direction.x +
+            double(source.direction.y) * source.direction.y + double(source.direction.z) * source.direction.z);
+        GPUCelestialLight light;
+        const auto topOfAtmosphere = physical ? atmosphereSpectrumToWorkingColor(
+            {source.topOfAtmosphereIrradiance.x, source.topOfAtmosphereIrradiance.y, source.topOfAtmosphereIrradiance.z})
+            : std::array<float, 3>{};
+        for (size_t channel = 0; channel < 3; ++channel) {
+            // Physical direct estimators apply position-dependent spectral
+            // transmittance in shaders. The unattenuated value here supplies
+            // selection/importance and keeps the fixed celestial wire ABI.
+            light.irradiance[channel] = physical ? std::max(topOfAtmosphere[channel], 0.0f)
+                : converted[channel] * source.illuminance;
+        }
+        if (!std::isfinite(light.irradiance[0]) || !std::isfinite(light.irradiance[1]) ||
+            !std::isfinite(light.irradiance[2]) ||
+            (light.irradiance[0] <= 0.0f && light.irradiance[1] <= 0.0f && light.irradiance[2] <= 0.0f)) { continue; }
+        light.direction[0] = static_cast<float>(source.direction.x / magnitude);
+        light.direction[1] = static_cast<float>(source.direction.y / magnitude);
+        light.direction[2] = static_cast<float>(source.direction.z / magnitude);
+        light.angularRadius = source.angularRadius;
+        light.flags = kGPUCelestialLightEnabled | kGPUCelestialLightCastsShadow;
+        // Integral of a uniform disk against the perpendicular receiver cosine.
+        // A zero-radius source remains a delta light and has no finite disk radiance.
+        if (source.angularRadius > 0.0f) {
+            const double sine = std::sin(double(source.angularRadius));
+            const double projectedSolidAngle = 3.14159265358979323846 * sine * sine;
+            for (size_t channel = 0; channel < 3; ++channel) {
+                light.diskRadiance[channel] = static_cast<float>(std::min(
+                    double(light.irradiance[channel]) / projectedSolidAngle,
+                    double(std::numeric_limits<float>::max())));
+            }
+        }
+        light.shadowImportance = color::luminance({light.irradiance[0], light.irradiance[1], light.irradiance[2]});
+        if (!std::isfinite(light.shadowImportance)) { light.shadowImportance = std::numeric_limits<float>::max(); }
+        records[index] = light;
+    }
+    return records;
+}
+
+CelestialShadowPlan buildCelestialShadowPlan(const environment::EnvironmentSnapshot& snapshot,
+    const std::array<double, 3>& observerWorldMetres)
+{
+    CelestialShadowPlan plan;
+    std::array<double, 3> up{};
+    double radiusSquared = 0.0;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        up[axis] = observerWorldMetres[axis] - snapshot.atmosphere.planetCenter[axis];
+        radiusSquared += up[axis] * up[axis];
+    }
+    if (!std::isfinite(radiusSquared) || radiusSquared < 1e-12) { return plan; }
+    const double radius = std::sqrt(radiusSquared);
+    for (auto& axis : up) { axis /= radius; }
+    float dominantImportance = 0.0f;
+    for (uint32_t slot = 0; slot < environment::kCelestialLightCount; ++slot) {
+        const auto& light = snapshot.celestial[slot];
+        if (!light.enabled || !environment::validCelestialLight(light)) { continue; }
+        const double directionLength = std::sqrt(double(light.direction.x) * light.direction.x +
+            double(light.direction.y) * light.direction.y + double(light.direction.z) * light.direction.z);
+        const double elevation = -(up[0] * light.direction.x + up[1] * light.direction.y +
+            up[2] * light.direction.z) / directionLength;
+        const auto& s = light.topOfAtmosphereIrradiance;
+        const double illuminance = snapshot.source == environment::EnvironmentSource::PhysicalAtmosphere
+            ? 683.0 * (18.3286150698 * s.x + 76.9932864076 * s.y + 11.6242660516 * s.z)
+            : light.illuminance;
+        plan.importance[slot] = static_cast<float>(illuminance * std::max(elevation, 0.0));
+        if (plan.importance[slot] > dominantImportance) {
+            dominantImportance = plan.importance[slot];
+            plan.dominantIndex = slot;
+        }
+    }
+    if (dominantImportance <= 0.0f) { return plan; }
+    for (uint32_t slot = 0; slot < environment::kCelestialLightCount; ++slot) {
+        if (plan.importance[slot] >= dominantImportance * 0.0001f) {
+            plan.activeMask |= 1u << slot;
+            plan.sampleCounts[slot] = slot == plan.dominantIndex ? 48u : 12u;
+        }
+    }
+    return plan;
+}
+
 std::vector<SceneLightRecord> buildSceneLightRecords(
     std::span<const scene::RenderLight> renderLights,
     std::span<const scene::PunctualLight> virtualLights)
 {
-    std::vector<SceneLightRecord> records(renderLights.size() + virtualLights.size());
+    std::vector<SceneLightRecord> records;
+    records.reserve(renderLights.size() + virtualLights.size());
     // Native imported lights keep their source slots for stable GPUScene IDs,
     // but resolve placement against the current scene snapshot at collection
     // time. A RenderWorld copy of the authored light can outlive a scene update.
@@ -118,8 +218,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         light.directionType[0] = normalized.x;
         light.directionType[1] = normalized.y;
         light.directionType[2] = normalized.z;
-        light.directionType[3] = properties.type == "directional" ? 0.0f :
-            (properties.type == "point" ? 1.0f : 2.0f);
+        light.directionType[3] = properties.type == "point" ? 1.0f : 2.0f;
         const auto color = color::fromLinearRec709({properties.color.x, properties.color.y, properties.color.z});
         light.colorIntensity[0] = color[0];
         light.colorIntensity[1] = color[1];
@@ -132,7 +231,8 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
     };
     for (size_t index = 0; index < renderLights.size(); ++index) {
         const scene::RenderLight& light = renderLights[index];
-        SceneLightRecord& record = records[index];
+        if (light.type != "point" && light.type != "spot") { continue; }
+        SceneLightRecord& record = records.emplace_back();
         record.sourceRenderLightIndex = static_cast<int32_t>(index);
         record.sourceObject = light.object;
         if (light.virtualLightSceneIdentity != 0) {
@@ -149,7 +249,8 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
     }
     for (size_t index = 0; index < virtualLights.size(); ++index) {
         const scene::PunctualLight& light = virtualLights[index];
-        SceneLightRecord& record = records[renderLights.size() + index];
+        if (light.properties.type != "point" && light.properties.type != "spot") { continue; }
+        SceneLightRecord& record = records.emplace_back();
         record.sourceVirtualLightIndex = static_cast<int32_t>(index);
         if (light.imported) {
             const scene::ImportedLightBinding& binding = *light.imported;

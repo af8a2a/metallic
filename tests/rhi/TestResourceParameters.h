@@ -168,9 +168,10 @@ TEST_PUBLIC struct PhotometricProbeResources
     TEST_PUBLIC TEST_BUFFER output;
     TEST_PUBLIC TEST_BUFFER irradiance;
     TEST_PUBLIC TEST_BUFFER lights;
+    TEST_PUBLIC TEST_BUFFER celestialLights;
 };
 #ifdef __cplusplus
-static_assert(sizeof(PhotometricProbeResources) == 12);
+static_assert(sizeof(PhotometricProbeResources) == 16);
 #endif
 
 TEST_PUBLIC struct RealtimeGuideProbeResources

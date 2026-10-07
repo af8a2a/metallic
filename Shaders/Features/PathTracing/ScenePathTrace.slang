@@ -1,3 +1,4 @@
+import Atmosphere;
 #include "SceneSurface.slang"
 #include "SceneFiberPath.slang"
 
@@ -274,7 +275,8 @@ float3 pathTrace(
     ScenePathTracePush push,
     inout PathTraceCacheContext cache,
     inout uint seed,
-    out float specularHitDistance)
+    out float specularHitDistance,
+    out Metallic.Atmosphere::AtmosphereSegment primaryAerial)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -284,6 +286,11 @@ float3 pathTrace(
     cache.materialRoughnessPrev = 1.0;
     specularHitDistance = 0.0;
     bool captureSpecularHitDistance = false;
+    float3 primaryEndpoint = float3(0.0);
+    float3 primaryOrigin = ray.origin;
+    bool primarySurface = false;
+    primaryAerial.transmittance = float3(1.0);
+    primaryAerial.radiance = float3(0.0);
 
 #if METALLIC_PT_NRC
     NrcSetSampleIndex(cache.nrc, 0u);
@@ -299,7 +306,11 @@ float3 pathTrace(
             float misWeight = depth == 0u
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
-            float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
+            float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
+            if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
+                missRadiance += physicalDeltaMissDisks(getResourceParameters<SceneResourceParameters>().environment,
+                    ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
+            }
             radiance += throughput * missRadiance;
 #if METALLIC_PT_SHARC
             SharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
@@ -313,6 +324,7 @@ float3 pathTrace(
             specularHitDistance = hit.t;
             captureSpecularHitDistance = false;
         }
+        if (depth == 0u) { primaryEndpoint = hit.position; primarySurface = true; }
 
 #if METALLIC_PT_SHARC && SHARC_UPDATE
         // SHaRC accumulates each path segment independently: drop the signal
@@ -527,6 +539,23 @@ float3 pathTrace(
 #endif
 
         EnvironmentLightSample lightSample;
+        // Sun and Moon remain fixed sources outside local RIS; physical mode
+        // samples each finite disk before its projected BSDF and visibility.
+        for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
+            let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights);
+            PunctualLightSample light = samplePathCelestialLightAtPosition(celestial, celestialSlot, hit.position, seed);
+            float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
+                baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
+            if (luminanceMax(bsdf * light.illuminance) > 0.0) {
+                float3 origin = offsetRay(hit.position,
+                    dot(light.direction, hit.geometryNormal) >= 0.0 ? hit.geometryNormal : -hit.geometryNormal);
+                if (!celestialLightCastsShadow(celestial, celestialSlot) ||
+                    !traceShadow(origin, light.direction, light.distance, push)) {
+                    radiance += throughput * bsdf * light.illuminance;
+                }
+            }
+        }
         uint punctualLightIndex;
         float punctualInverseSourcePdf;
         if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
@@ -669,7 +698,16 @@ float3 pathTrace(
     NrcWriteFinalPathInfo(cache.nrc, cache.nrcPathState, throughput, radiance);
 #endif
 
+    if (primarySurface) {
+        primaryAerial = physicalAerialSegment(getResourceParameters<SceneResourceParameters>().environment, primaryEndpoint, primaryOrigin);
+    }
+#if SHARC_UPDATE || NRC_UPDATE || NRC_QUERY
+    // Cache radiance stays local to the shaded point. NRC's display resolve
+    // composes the completed radiance after its predicted indirect term is added.
     return radiance;
+#else
+    return primaryAerial.transmittance * radiance + primaryAerial.radiance;
+#endif
 }
 
 PathTraceCacheContext makeCacheContext()
@@ -794,7 +832,21 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         cache.nrcPathState = NrcCreatePathState(cache.nrc.constants, rand(seed));
 #endif
         float ignoredSpecularHitDistance;
-        color += pathTrace(ray, rayCone, push, cache, seed, ignoredSpecularHitDistance);
+        Metallic.Atmosphere::AtmosphereSegment primaryAerial;
+        color += pathTrace(ray, rayCone, push, cache, seed, ignoredSpecularHitDistance, primaryAerial);
+#if NRC_QUERY
+        let aerialHandle = getResourceParameters<SceneResourceParameters>().environment.primaryAerial;
+        if (aerialHandle.index != 0xffffffffu) {
+            let aerial = resolveBuffer<RWStructuredBuffer<float4>>(aerialHandle);
+            uint count, stride;
+            aerial.GetDimensions(count, stride);
+            uint index = (pixel.y * push.width + pixel.x) * 2u;
+            if (index + 1u < count) {
+                aerial[index] = float4(primaryAerial.transmittance, 1.0);
+                aerial[index + 1u] = float4(primaryAerial.radiance, 0.0);
+            }
+        }
+#endif
     }
 #if SHARC_UPDATE || NRC_UPDATE
     // Cache update passes produce no image output.

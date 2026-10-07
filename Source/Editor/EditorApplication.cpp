@@ -4529,14 +4529,17 @@ bool EditorApplication::drawRuntimeSettingsForNode(
             if (gpuScene != nullptr && gpuScene->sourceOverride() != nullptr) { source = gpuScene->sourceOverride(); }
         }
         const auto lighting = render::resolveSceneLighting(source, &renderWorld_);
-        const auto lights = render::buildScreenSpaceShadowLightRecords(source, lighting);
+        const auto lights = render::buildScreenSpaceShadowLightRecords(source, lighting,
+            render::resolveWorldEnvironment(source, &renderWorld_));
         const auto slotLabel = [&](uint32_t slot) {
-            const float type = lights[slot + 1].directionType[3];
-            std::string label = "Slot " + std::to_string(slot) + " - " +
-                (type < 0.5f ? "Directional" : type < 1.5f ? "Point" : "Spot");
+            const auto& light = lights[slot];
+            if (light.isCelestial) { return std::string(slot == 0 ? "Sun" : "Moon"); }
+            std::string label = "Local slot " + std::to_string(slot - environment::kCelestialLightCount) + " - " +
+                (light.local.directionType[3] < 1.5f ? "Point" : "Spot");
             const size_t nativeCount = source != nullptr ? source->lights().size() : 0;
-            if (slot >= nativeCount && slot - nativeCount < lighting.lights.size()) {
-                label += " - " + lighting.lights[slot - nativeCount].name;
+            const size_t localSlot = slot - environment::kCelestialLightCount;
+            if (localSlot >= nativeCount && localSlot - nativeCount < lighting.lights.size()) {
+                label += " - " + lighting.lights[localSlot - nativeCount].name;
             }
             return label;
         };
@@ -4547,8 +4550,8 @@ bool EditorApplication::drawRuntimeSettingsForNode(
         setting.label = "Shadow Light";
         setting.options = {{automatic == UINT32_MAX ? "Auto (-1): no active light"
             : "Auto (-1): " + slotLabel(automatic), -1}};
-        for (uint32_t i = 1; i < lights.size(); ++i) {
-            if (lights[i].colorIntensity[3] > 0) { setting.options.push_back({slotLabel(i - 1), i - 1}); }
+        for (uint32_t i = 0; i < lights.size(); ++i) {
+            if (lights[i].enabled) { setting.options.push_back({slotLabel(i), i}); }
         }
         shadowLightStatus = selected == UINT32_MAX ? "No active shadow light." : "Resolved: " + slotLabel(selected);
         if (requested >= 0 && selected != static_cast<uint32_t>(requested)) {
@@ -4728,28 +4731,231 @@ void EditorApplication::drawEnvironmentControls()
     ImGui::TextUnformatted("Environment");
     ImGui::PushID("SceneEnvironment");
 
-    if (ImGui::Checkbox("Enabled", &environment.enabled)) {
-        changed = true;
+    auto celestialEnvironment = scene_.worldEnvironment();
+    bool celestialChanged = false;
+    int sourceIndex = celestialEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere ? 1 : 0;
+    ImGui::BeginDisabled(!scene_.valid());
+    if (ImGui::Combo("Source", &sourceIndex, "HDRI\0Physical atmosphere\0")) {
+        celestialEnvironment.source = sourceIndex == 1
+            ? environment::EnvironmentSource::PhysicalAtmosphere : environment::EnvironmentSource::HDRI;
+        auto& weather = celestialEnvironment.weather;
+        const float atmosphereHeight = celestialEnvironment.atmosphere.topRadiusKm -
+            celestialEnvironment.atmosphere.bottomRadiusKm;
+        if (sourceIndex == 1 && weather.cloudEnabled && weather.cloudCoverage > 0.0f &&
+            weather.cloudDensity > 0.0f && weather.cloudExtinctionPerKm > 0.0f &&
+            weather.cloudTopAltitudeKm > atmosphereHeight) {
+            weather.cloudTopAltitudeKm = atmosphereHeight;
+            weather.cloudBaseAltitudeKm = std::min(weather.cloudBaseAltitudeKm,
+                std::nextafter(atmosphereHeight, 0.0f));
+        }
+        celestialChanged = true;
     }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Visible", &environment.visible)) {
+    ImGui::EndDisabled();
+    const bool physicalAtmosphere = celestialEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere;
+
+    if (!physicalAtmosphere) {
+        if (ImGui::Checkbox("HDRI lighting enabled", &environment.enabled)) {
+            changed = true;
+        }
+        ImGui::SameLine();
+    }
+    if (ImGui::Checkbox("Background visible", &environment.visible)) {
         changed = true;
     }
 
-    const std::string displayPath = environment.path.empty()
-        ? std::string("-")
-        : displayPathForProperty(environment.path);
-    ImGui::TextWrapped("HDRI: %s", displayPath.c_str());
+    if (!physicalAtmosphere) {
+        const std::string displayPath = environment.path.empty()
+            ? std::string("-")
+            : displayPathForProperty(environment.path);
+        ImGui::TextWrapped("HDRI: %s", displayPath.c_str());
 
-    ImGui::PushItemWidth(-1.0f);
-    if (ImGui::SliderFloat("Intensity", &environment.intensity, 0.0f, 16.0f, "%.3f")) {
-        environment.intensity = std::max(environment.intensity, 0.0f);
-        changed = true;
+        ImGui::PushItemWidth(-1.0f);
+        if (ImGui::SliderFloat("HDRI intensity", &environment.intensity, 0.0f, 16.0f, "%.3f")) {
+            environment.intensity = std::max(environment.intensity, 0.0f);
+            changed = true;
+        }
+        if (ImGui::SliderFloat("HDRI rotation", &environment.rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
+            changed = true;
+        }
+        ImGui::PopItemWidth();
     }
-    if (ImGui::SliderFloat("Rotation", &environment.rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
-        changed = true;
+    ImGui::BeginDisabled(!scene_.valid());
+    if (ImGui::TreeNode("Astronomy and clock")) {
+        int astronomyMode = static_cast<int>(celestialEnvironment.astronomy.mode);
+        if (ImGui::Combo("Celestial mode", &astronomyMode, "Manual\0Simplified day cycle\0Astronomical\0")) {
+            celestialEnvironment.astronomy.mode = static_cast<environment::AstronomyMode>(astronomyMode);
+            celestialChanged = true;
+        }
+        celestialChanged |= ImGui::InputDouble("Start UTC Julian date", &celestialEnvironment.time.julianDateUTC,
+            0.01, 1.0, "%.8f");
+        celestialChanged |= ImGui::Checkbox("Clock paused", &celestialEnvironment.time.paused);
+        const double minimumTimeScale = -1e9, maximumTimeScale = 1e9;
+        celestialChanged |= ImGui::DragScalar("Sim seconds / real second", ImGuiDataType_Double,
+            &celestialEnvironment.time.timeScale, 1.0f, &minimumTimeScale, &maximumTimeScale, "%.3f",
+            ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::InputDouble("Latitude (north degrees)", &celestialEnvironment.astronomy.latitudeDegrees,
+            0.1, 1.0, "%.6f");
+        celestialChanged |= ImGui::InputDouble("Longitude (east degrees)", &celestialEnvironment.astronomy.longitudeDegrees,
+            0.1, 1.0, "%.6f");
+        celestialChanged |= ImGui::SliderFloat("Lunar albedo", &celestialEnvironment.astronomy.moonAlbedo,
+            0.0f, 1.0f, "%.3f");
+        const auto evaluated = renderWorld_.environmentSnapshot();
+        ImGui::Text("Runtime UTC JD: %.8f", evaluated.evaluatedAstronomy.julianDateUTC);
+        if (ImGui::Button("Use runtime UTC as start")) {
+            celestialEnvironment.time.julianDateUTC = evaluated.evaluatedAstronomy.julianDateUTC;
+            celestialChanged = true;
+        }
+        if (evaluated.evaluatedAstronomy.automatic) {
+            ImGui::Text("Moon illuminated: %.1f%%; phase angle: %.2f deg",
+                100.0f * evaluated.evaluatedAstronomy.moonIlluminatedFraction,
+                57.295779513f * evaluated.evaluatedAstronomy.moonPhaseAngleRadians);
+            ImGui::Text("Moon distance: %.1f km; integrated phase: %.4f",
+                evaluated.evaluatedAstronomy.moonDistanceKm, evaluated.evaluatedAstronomy.moonLambertPhase);
+        }
+        ImGui::TextUnformatted("World frame: X east, Y up, Z north. UTC date range: 1900-2100.");
+        ImGui::TreePop();
     }
-    ImGui::PopItemWidth();
+    const bool automaticCelestial = celestialEnvironment.astronomy.mode != environment::AstronomyMode::Manual;
+    for (auto entry : {std::pair{"Sun", &celestialEnvironment.sun},
+                      std::pair{"Moon", &celestialEnvironment.moon}}) {
+        auto& light = *entry.second;
+        if (ImGui::TreeNode(entry.first)) {
+            celestialChanged |= ImGui::Checkbox("Enabled", &light.enabled);
+            const bool automaticMoon = automaticCelestial && entry.second == &celestialEnvironment.moon;
+            if (automaticMoon) {
+                ImGui::TextUnformatted("Moon spectrum and flux follow solar irradiance, lunar albedo and phase.");
+            } else if (physicalAtmosphere) {
+                float irradiance[] = {light.topOfAtmosphereIrradiance.x,
+                    light.topOfAtmosphereIrradiance.y, light.topOfAtmosphereIrradiance.z};
+                if (ImGui::DragFloat3("TOA irradiance (W/m2/nm)", irradiance, 0.01f,
+                        0.0f, 100.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp)) {
+                    light.topOfAtmosphereIrradiance = float3(irradiance[0], irradiance[1], irradiance[2]);
+                    celestialChanged = true;
+                }
+                ImGui::TextUnformatted("Spectral samples: 680, 550, 440 nm");
+            } else {
+                float color[] = {light.color.x, light.color.y, light.color.z};
+                if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
+                    light.color = float3(color[0], color[1], color[2]);
+                    celestialChanged = true;
+                }
+                celestialChanged |= ImGui::DragFloat("Illuminance (lux)", &light.illuminance,
+                    0.1f, 0.0f, 1e12f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            }
+            ImGui::BeginDisabled(automaticCelestial);
+            float direction[] = {light.direction.x, light.direction.y, light.direction.z};
+            if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
+                light.direction = float3(direction[0], direction[1], direction[2]);
+                celestialChanged = true;
+            }
+            float radiusDegrees = light.angularRadius * 57.295779513f;
+            if (ImGui::SliderFloat("Angular radius (deg)", &radiusDegrees, 0.0f, 10.0f)) {
+                light.angularRadius = radiusDegrees / 57.295779513f;
+                celestialChanged = true;
+            }
+            ImGui::EndDisabled();
+            if (automaticCelestial) {
+                const auto evaluated = renderWorld_.environmentSnapshot();
+                const auto& evaluatedLight = evaluated.celestial[entry.second == &celestialEnvironment.sun ? 0 : 1];
+                ImGui::Text("Evaluated direction: %.4f, %.4f, %.4f", evaluatedLight.direction.x,
+                    evaluatedLight.direction.y, evaluatedLight.direction.z);
+                ImGui::Text("Evaluated radius: %.4f deg", evaluatedLight.angularRadius * 57.295779513f);
+            }
+            ImGui::TreePop();
+        }
+    }
+    if (physicalAtmosphere && ImGui::TreeNode("Weather and clouds")) {
+        auto& weather = celestialEnvironment.weather;
+        celestialChanged |= ImGui::Checkbox("Volumetric clouds", &weather.cloudEnabled);
+        const float maximumCloudAltitude = celestialEnvironment.atmosphere.topRadiusKm -
+            celestialEnvironment.atmosphere.bottomRadiusKm;
+        const float maximumCloudBase = std::nextafter(maximumCloudAltitude, 0.0f);
+        celestialChanged |= ImGui::SliderFloat("Coverage", &weather.cloudCoverage, 0.0f, 1.0f, "%.3f");
+        celestialChanged |= ImGui::DragFloat("Cloud density", &weather.cloudDensity, 0.01f,
+            0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::DragFloat("Cloud base (km)", &weather.cloudBaseAltitudeKm,
+                0.01f, 0.0f, maximumCloudBase, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+            weather.cloudTopAltitudeKm = std::clamp(weather.cloudTopAltitudeKm,
+                std::nextafter(weather.cloudBaseAltitudeKm, maximumCloudAltitude), maximumCloudAltitude);
+            celestialChanged = true;
+        }
+        const float minimumCloudTop = std::nextafter(
+            std::clamp(weather.cloudBaseAltitudeKm, 0.0f, maximumCloudBase), maximumCloudAltitude);
+        celestialChanged |= ImGui::DragFloat("Cloud top (km)", &weather.cloudTopAltitudeKm,
+            0.01f, minimumCloudTop, maximumCloudAltitude,
+            "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::Text("Atmosphere height: %.3f km; active clouds must fit inside it.", maximumCloudAltitude);
+        celestialChanged |= ImGui::DragFloat("Cloud extinction (km^-1)", &weather.cloudExtinctionPerKm,
+            0.1f, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Aerosol density", &weather.aerosolDensity,
+            0.01f, 0.0f, 100.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::SliderFloat("Humidity", &weather.humidity, 0.0f, 1.0f, "%.3f");
+        celestialChanged |= ImGui::SliderFloat("Precipitation state", &weather.precipitation, 0.0f, 1.0f, "%.3f");
+        celestialChanged |= ImGui::DragFloat("Wind (m/real second)", &weather.windSpeed,
+            0.1f, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        float windDirection[] = {weather.windDirection.x, weather.windDirection.y};
+        if (ImGui::DragFloat2("Wind direction (east/north)", windDirection, 0.01f)) {
+            weather.windDirection = float2(windDirection[0], windDirection[1]);
+            celestialChanged = true;
+        }
+        celestialChanged |= ImGui::InputScalar("Cloud noise seed", ImGuiDataType_U32, &weather.noiseSeed);
+        ImGui::TextUnformatted("Clock pause freezes astronomy; zero wind freezes cloud drift.");
+        ImGui::TreePop();
+    }
+    if (physicalAtmosphere && ImGui::TreeNode("Atmosphere")) {
+        auto& atmosphere = celestialEnvironment.atmosphere;
+        const auto editSpectrum = [&](const char* label, float3& value, float maximum) {
+            float components[] = {value.x, value.y, value.z};
+            if (ImGui::DragFloat3(label, components, 0.0001f, 0.0f, maximum,
+                    "%.6f", ImGuiSliderFlags_AlwaysClamp)) {
+                value = float3(components[0], components[1], components[2]);
+                celestialChanged = true;
+            }
+        };
+        celestialChanged |= ImGui::InputScalarN("Planet center (m)", ImGuiDataType_Double,
+            atmosphere.planetCenter.data(), 3, nullptr, nullptr, "%.3f");
+        celestialChanged |= ImGui::DragFloat("Ground radius (km)", &atmosphere.bottomRadiusKm,
+            1.0f, 1.0f, 1e8f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Atmosphere top radius (km)", &atmosphere.topRadiusKm,
+            1.0f, 1.0f, 1e8f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Rayleigh scale height (km)", &atmosphere.rayleighScaleHeightKm,
+            0.1f, 0.001f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Mie scale height (km)", &atmosphere.mieScaleHeightKm,
+            0.01f, 0.001f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::SliderFloat("Mie anisotropy", &atmosphere.mieAnisotropy, -0.99f, 0.99f, "%.3f");
+        editSpectrum("Ground albedo", atmosphere.groundAlbedo, 1.0f);
+        celestialChanged |= ImGui::DragFloat("Aerial distance (km)", &atmosphere.maxAerialDistanceKm,
+            1.0f, 0.001f, 1e6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::TreeNode("Spectral coefficients")) {
+            ImGui::TextUnformatted("680, 550, 440 nm; coefficients in km^-1");
+            editSpectrum("Rayleigh scattering", atmosphere.rayleighScattering, 1000.0f);
+            editSpectrum("Mie scattering", atmosphere.mieScattering, 1000.0f);
+            editSpectrum("Mie extinction", atmosphere.mieExtinction, 1000.0f);
+            editSpectrum("Ozone absorption", atmosphere.ozoneAbsorption, 1000.0f);
+            celestialChanged |= ImGui::DragFloat("Ozone center (km)", &atmosphere.ozoneCenterAltitudeKm,
+                0.1f, 0.0f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            celestialChanged |= ImGui::DragFloat("Ozone half width (km)", &atmosphere.ozoneWidthKm,
+                0.1f, 0.001f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::TreePop();
+        }
+        ImGui::TreePop();
+    }
+    if (celestialChanged) {
+        if (!environment::validWorldEnvironment(celestialEnvironment)) {
+            renderGraphStatus_ = "World environment edit rejected: invalid clock, location, medium or weather; "
+                "active clouds must fit inside the atmosphere. Previous values were preserved.";
+        } else if (scene_.setWorldEnvironment(celestialEnvironment)) {
+            renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
+            sceneNonTransformDirty_ = true;
+            updateSceneDirtyState();
+            viewportPreviewNeedsRender_ = true;
+            renderGraphStatus_ = "Updated world environment";
+        }
+    }
+    if (renderGraphStatus_.starts_with("World environment edit rejected:")) {
+        ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
+    }
+    ImGui::EndDisabled();
     ImGui::PopID();
 
     if (!changed) {
@@ -4812,14 +5018,13 @@ void EditorApplication::drawLightingControls()
         ImGui::TreePop();
     }
     ImGui::EndDisabled();
-    for (const char* type : {"directional", "point", "spot"}) {
+    for (const char* type : {"point", "spot"}) {
         const std::string label = std::string("Add ") + type;
         if (ImGui::Button(label.c_str())) {
             scene::PunctualLight light;
             light.name = type;
             light.properties.type = type;
-            light.properties.intensityUnit = light.properties.type == "directional"
-                ? scene::LightUnit::Lux : scene::LightUnit::Candela;
+            light.properties.intensityUnit = scene::LightUnit::Candela;
             lighting.lights.push_back(std::move(light));
             changed = true;
         }
@@ -4841,7 +5046,6 @@ void EditorApplication::drawLightingControls()
                 p.color = float3(color[0], color[1], color[2]);
                 changed = true;
             }
-            const bool directional = p.type == "directional";
             const bool spot = p.type == "spot";
             scene::LightUnit unit = p.intensityUnit;
             if (ImGui::BeginCombo("Unit", scene::lightUnitName(unit))) {
@@ -4864,7 +5068,7 @@ void EditorApplication::drawLightingControls()
             const double maxIntensity = p.intensityUnit == scene::LightUnit::EV100 ? 38.0 : 1e12;
             changed |= ImGui::DragScalar("Intensity", ImGuiDataType_Double, &p.intensity,
                 0.1f, &minIntensity, &maxIntensity, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-            if (!directional) {
+            {
                 float position[] = {light.position.x, light.position.y, light.position.z};
                 if (ImGui::DragFloat3("Position (m)", position, 0.01f)) {
                     light.position = float3(position[0], position[1], position[2]);
@@ -4874,7 +5078,7 @@ void EditorApplication::drawLightingControls()
                 changed |= ImGui::DragScalar("Range (m; 0 = infinite)", ImGuiDataType_Double,
                     &p.range, 0.1f, &minRange, nullptr, "%.2f");
             }
-            if (directional || spot) {
+            if (spot) {
                 float direction[] = {light.direction.x, light.direction.y, light.direction.z};
                 if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
                     light.direction = float3(direction[0], direction[1], direction[2]);
@@ -4910,6 +5114,7 @@ void EditorApplication::drawLightingControls()
     ImGui::EndDisabled();
     if (changed && scene_.setLighting(lighting)) {
         renderWorld_.setLighting(scene_.lighting());
+        renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
         sceneNonTransformDirty_ = true;
         updateSceneDirtyState();
         viewportPreviewNeedsRender_ = true;
@@ -5322,6 +5527,7 @@ bool EditorApplication::applySceneEditValue(
         return false;
     }
     renderWorld_.setLighting(scene_.lighting());
+    renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
     notifyScenePropertiesChanged();
     return true;
 }
@@ -5487,6 +5693,7 @@ void EditorApplication::executePendingSceneAction()
         clearSceneAccelerationStructure();
         scene_.clear();
         renderWorld_.setLighting({});
+        renderWorld_.setWorldEnvironment({});
         renderWorld_.notifySceneChanged();
         resetTransformHistory();
         sceneSelection_ = SceneSelection{};
@@ -5550,6 +5757,7 @@ void EditorApplication::drawUnsavedSceneModal()
                 : "Failed to discard scene changes: " + message;
         } else {
             renderWorld_.setLighting(scene_.lighting());
+            renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
             sceneSelection_ = SceneSelection{};
             renderWorld_.notifySceneChanged();
             if (environmentEditBaselineValid_) {
@@ -5959,7 +6167,7 @@ void EditorApplication::drawSelectedLightComponentInspector()
     const bool directional = properties.type == "directional";
     const bool point = properties.type == "point";
     const bool spot = properties.type == "spot";
-    const bool supportedType = directional || point || spot;
+    const bool supportedType = point || spot;
     const auto& nativeLights = scene_.lighting().lights;
     const bool hasNativeLight = std::any_of(nativeLights.begin(), nativeLights.end(),
         [&object](const scene::PunctualLight& candidate) {
@@ -6124,6 +6332,7 @@ void EditorApplication::drawSelectedLightComponentInspector()
         }
         if (scene_.setObjectLightProperties(object.entity(), edited)) {
             renderWorld_.setLighting(scene_.lighting());
+            renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
             notifyScenePropertiesChanged();
             sceneStatus_ = "Updated LightComponent properties.";
         } else {
@@ -7451,6 +7660,7 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
     clearSceneAccelerationStructure();
     scene_.clear();
     renderWorld_.setLighting({});
+    renderWorld_.setWorldEnvironment({});
     renderWorld_.notifySceneChanged();
     resetTransformHistory();
     sceneSelection_ = SceneSelection{};
@@ -7997,12 +8207,8 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     }
     historyResources_.invalidateAll();
     scene_ = std::move(*loadedScene);
+    renderWorld_.setScene(&scene_);
     renderWorld_.setLighting(scene_.lighting());
-    if (renderWorld_.scene() == &scene_) {
-        renderWorld_.notifySceneChanged();
-    } else {
-        renderWorld_.setScene(&scene_);
-    }
     if (graphExecutor_ != nullptr) {
         graphExecutor_->bindRuntimeScene(&scene_);
     }

@@ -676,8 +676,10 @@ public:
             preview.bindRuntimeScene(&reloaded);
             scene::EnvironmentSettings environment; environment.enabled = false;
             scene::LightingSettings lighting; lighting.autoExposure.enabled = false;
-            scene::PunctualLight sun; sun.properties.type = "directional"; sun.properties.intensity = 2;
-            sun.direction = float3(-0.4f, -0.6f, -1); lighting.lights.push_back(sun);
+            environment::WorldEnvironment celestial;
+            auto& sun = celestial.sun; sun.enabled = true; sun.illuminance = 2;
+            sun.direction = float3(-0.4f, -0.6f, -1);
+            preview.setWorldEnvironment(celestial);
             preview.setEnvironment(environment); preview.setLighting(lighting); preview.setRawReadbackEnabled(true);
             check(preview.initialize(context.enableValidation, true, false), "Initialize device");
             const auto capture = [&](const char* output, const std::string& label) {
@@ -745,7 +747,8 @@ public:
             // Recreate the renderer for each oracle image to replay frame zero.
             const auto restart = [&] {
                 preview = RenderGraphPreviewRenderer{};
-                preview.bindRuntimeScene(&reloaded); preview.setEnvironment(environment); preview.setLighting(lighting);
+                preview.bindRuntimeScene(&reloaded); preview.setWorldEnvironment(celestial);
+            preview.setEnvironment(environment); preview.setLighting(lighting);
                 check(preview.subsystemHost()->configure<EnvironmentLightingSubsystem>({.initialDecodeTimeoutMilliseconds = 10000}, log), "Configure environment");
                 preview.setRawReadbackEnabled(true);
                 check(preview.initialize(context.enableValidation, true, false), "Restart deterministic renderer");

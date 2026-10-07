@@ -85,7 +85,7 @@ public:
             .format = Format::RGBA8Unorm;
         reflection.addTextureOutput("emissive", "Emissive and background radiance")
             .storageWrite()
-            .format = Format::RGBA16Sfloat;
+            .format = Format::RGBA32Sfloat;
         return reflection;
     }
 
@@ -294,6 +294,13 @@ public:
             {.binding = 21, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 23, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            {.binding = 57, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            {.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            {.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            {.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            {.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             {.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 53, .kind = ComputeResourceBindingKind::SampledImage},
         };
@@ -368,12 +375,32 @@ public:
         if (environmentSubsystem == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        const EnvironmentLightingSnapshot& environment = environmentSubsystem->snapshot();
-        if (!environment.valid()) {
-            return {};
-        }
+        EnvironmentLightingSnapshot environment = environmentSubsystem->snapshot();
         const scene::Scene* lightScene = context.runtimeScene();
         if (!lightScene || !context.subsystems()) { return makeError(Error::InvalidArgument); }
+        const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
+        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
+            SceneRTXDIPush observerPush;
+            buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
+                environment.settings, observerPush);
+            auto resolved = environmentSubsystem->resolveRadiance(*device_, context.commandBuffer(), *context.subsystems(),
+                worldEnvironment, {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]}, syncLog)
+                .transform([&](auto value) { environment = std::move(value); });
+            if (!resolved) { spdlog::error("Physical environment: {}", syncLog); return makeError(resolved.error()); }
+        }
+        if (!environment.valid()) { return {}; }
+        const auto celestialRecords = buildCelestialLightRecords(worldEnvironment);
+        CelestialLightingResources celestial;
+        auto celestialResult = environmentSubsystem->updateCelestial(*device_, context.commandBuffer(),
+            *context.subsystems(), worldEnvironment)
+            .transform([&](auto value) { celestial = std::move(value); });
+        if (!celestialResult) { return celestialResult; }
+        if (!celestialRecordsInitialized_ ||
+            std::memcmp(celestialRecords.data(), celestialRecords_.data(), sizeof(celestialRecords)) != 0) {
+            celestialRecords_ = celestialRecords;
+            celestialRecordsInitialized_ = true;
+            resetHistory_ = true;
+        }
         Result<> lightResult;
         auto lighting = resolveSceneLighting(lightScene, context.world());
         const bool benchmark = context.properties().value("lightSource", std::string("scene")) == "bench";
@@ -517,6 +544,10 @@ public:
         }
 
         TextureView* const environmentTextureViews[] = {environmentTextureView};
+        TextureView* const atmosphereTransmittanceViews[]{environment.transmittanceView};
+        TextureView* const atmosphereMultiScatteringViews[]{environment.multiScatteringView};
+        TextureView* const atmosphereSkyViews[]{environment.skyView};
+        TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         TextureView* const localLightPdfViews[] = {lights_.lightPdfView()};
         TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
         std::vector<ComputeDispatchBinding> bindings{
@@ -565,8 +596,19 @@ public:
                 .textureViews = {environmentImportanceTextureViews, static_cast<uint32_t>(std::size(environmentImportanceTextureViews))},
             },
             {.binding = 50, .buffer = lights_.buffer()},
+            {.binding = 55, .buffer = celestial.buffer.get()},
             {.binding = 52, .buffer = lights_.reGIRBuffer()},
         };
+        if (environment.atmosphereParametersBuffer != nullptr) {
+            bindings.push_back({.binding = 56, .buffer = environment.atmosphereParametersBuffer});
+            bindings.push_back({.binding = 57, .textureViews = {atmosphereTransmittanceViews, 1}});
+            bindings.push_back({.binding = 58, .textureViews = {atmosphereMultiScatteringViews, 1}});
+            bindings.push_back({.binding = 59, .textureViews = {atmosphereSkyViews, 1}});
+            bindings.push_back({.binding = 99, .buffer = environment.aerialPerspectiveBuffer});
+            if (environment.cloudShadowView != nullptr) {
+                bindings.push_back({.binding = 101, .textureViews = {atmosphereCloudShadowViews, 1}});
+            }
+        }
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
         if (sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
@@ -1032,6 +1074,8 @@ private:
     float previousBenchmarkIntensity_ = 0.0f;
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
+    GPUCelestialLightRecords celestialRecords_{};
+    bool celestialRecordsInitialized_ = false;
     uint64_t environmentSettingsRevision_ = 0;
     uint32_t frameIndex_ = 0;
     SceneRTXDICameraSnapshot previousCamera_;

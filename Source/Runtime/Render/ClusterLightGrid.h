@@ -39,7 +39,7 @@ struct alignas(16) ClusterLightGridParams {
     std::array<float, 4> forwardExtent{}; // forward.xyz, horizontal extent
     // Perspective: log2(depth * B + O) * S. Orthographic: (depth-near)*S.
     std::array<float, 4> zParams{}; // B, O, S, pixel guard band for temporal jitter
-    std::array<uint32_t, 4> counts{}; // bounded local, directional, unbounded local, source slots
+    std::array<uint32_t, 4> counts{}; // bounded local, reserved zero, unbounded local, source slots
 };
 static_assert(sizeof(ClusterLightGridParams) == 128);
 
@@ -63,7 +63,7 @@ bool clusterLightGridCellIndex(const ClusterLightGridParams& params,
 struct ClusterLightGridSnapshot {
     Buffer* parameters = nullptr;
     Buffer* lights = nullptr;
-    // Bounded locals first, followed by directionals, then unbounded locals.
+    // Bounded locals first, followed by unbounded locals.
     Buffer* candidates = nullptr;
     Buffer* cells = nullptr;
     Buffer* lightIndices = nullptr;

@@ -865,10 +865,12 @@ public:
                 scene::LightingSettings lighting;
                 lighting.autoExposure.enabled = true;
                 lighting.exposureEV100 = 2;
-                scene::PunctualLight sun;
-                sun.properties.type = "directional"; sun.properties.intensity = 10;
+                environment::WorldEnvironment celestial;
+            auto& sun = celestial.sun;
+                sun.enabled = true; sun.illuminance = 10;
                 sun.direction = float3(.6f, -1, -.3f);
-                lighting.lights.push_back(sun);
+
+                world.setWorldEnvironment(celestial);
                 world.setLighting(lighting);
                 report["lighting"] = {{"sunDirection", {.6f, -1.0f, -.3f}}, {"sunIntensity", 10},
                     {"environment", sample.desc.environment->path}, {"autoExposure", true}};

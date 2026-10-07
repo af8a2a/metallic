@@ -37,6 +37,7 @@ public:
     bool setSourceEnabled(std::string_view sourceId, bool enabled);
     bool setNodeLocalMatrix(int32_t nodeIndex, const float4x4& localMatrix);
     bool setEnvironment(EnvironmentSettings environment);
+    bool setWorldEnvironment(environment::WorldEnvironment environment);
     bool setLighting(LightingSettings lighting);
     const LightingSettings& lighting() const;
 

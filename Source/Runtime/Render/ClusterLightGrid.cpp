@@ -244,7 +244,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         return makeError(Error::InvalidArgument);
     }
     params.counts = {static_cast<uint32_t>(visibleLights->localLights.size()),
-        static_cast<uint32_t>(visibleLights->directionalLights.size()),
+        0u,
         static_cast<uint32_t>(visibleLights->unboundedLocalLights.size()),
         static_cast<uint32_t>(scene.lights().size())};
     std::vector<GPUPunctualLight> lightData;
@@ -256,7 +256,6 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         for (auto id : ids) { candidates.push_back(id.index); }
     };
     append(visibleLights->localLights);
-    append(visibleLights->directionalLights);
     append(visibleLights->unboundedLocalLights);
     if (candidates.empty()) { candidates.push_back(0); }
 

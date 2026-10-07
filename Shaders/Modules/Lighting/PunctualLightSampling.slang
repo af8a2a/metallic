@@ -43,9 +43,8 @@ public float punctualLightPower(GPUPunctualLight light)
 {
     const float pi = 3.14159265358979323846;
     float intensity = punctualIntensityLuminance(light);
-    // Infinite lights have no finite emitted power. Their illuminance provides
-    // a positive importance proxy; this never changes physical light evaluation.
-    if (light.directionType.w < 0.5) { return intensity; }
+    // The generic sampling domain contains only finite point/spot sources.
+    if (light.directionType.w < 0.5) { return 0.0; }
     float solidAngle = 4.0 * pi;
     if (light.directionType.w > 1.5) {
         float innerCosine = clamp(light.spot.x, -1.0, 1.0);
@@ -60,7 +59,7 @@ public float punctualLightPower(GPUPunctualLight light)
 public float punctualLightTargetForVolume(GPUPunctualLight light, float3 center, float radius)
 {
     float intensity = punctualIntensityLuminance(light);
-    if (light.directionType.w < 0.5) { return intensity; }
+    if (light.directionType.w < 0.5) { return 0.0; }
     float distance = length(light.positionRange.xyz - center);
     float denominator = max(distance + radius * 1.1547, 1e-6);
     float averageDistance = distance + radius * (radius / denominator) * (radius / denominator);

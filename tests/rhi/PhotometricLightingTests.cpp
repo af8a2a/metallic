@@ -5,6 +5,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "stb/stb_image_write.h"
 
@@ -40,10 +41,11 @@ public:
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 50, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+            {.binding = 50, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 55, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*device_, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 3},
+            .bindings = {bindings, 4},
             .requiresRayQuery = false,
             .resourceParameters = metallic::tests::kPhotometricProbeLayout,
         }, log);
@@ -57,8 +59,9 @@ public:
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
             {.binding = 1, .buffer = environment.sphericalHarmonicsBuffer},
-            {.binding = 50, .buffer = lights_.buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 3}});
+            {.binding = 50, .buffer = lights_.buffer()},
+            {.binding = 55, .buffer = environment.celestialLightsBuffer}};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 4}});
     }
 private:
     render::Device* device_ = nullptr;
@@ -89,7 +92,7 @@ public:
         world.setEnvironment({.enabled = true, .path = hdrPath});
         scene::LightingSettings lighting;
         lighting.exposureEV100 = 2.0f;
-        for (const char* type : {"point", "directional", "spot"}) {
+        for (const char* type : {"point", "spot"}) {
             scene::PunctualLight light;
             light.properties.type = type;
             light.properties.intensity = 100.0;
@@ -97,6 +100,11 @@ public:
             light.direction = float3(0.0f, 0.0f, 1.0f);
             lighting.lights.push_back(light);
         }
+        environment::WorldEnvironment celestial;
+        celestial.sun.enabled = true;
+        celestial.sun.illuminance = 100.0f;
+        celestial.sun.direction = float3(0.0f, 0.0f, 1.0f);
+        world.setWorldEnvironment(celestial);
         if (!world.setLighting(lighting)) { return RHITestResult::fail("invalid fixture lighting"); }
         render::registerRenderGraphPassType("PhotometricProbePass", "GPU photometry test",
             [] { return std::make_unique<PhotometricProbePass>(); });
@@ -114,9 +122,7 @@ public:
                 lighting.lights[0].properties.intensityUnit = scene::LightUnit::Lumens;
                 lighting.lights[0].properties.intensity = 400.0 * 3.14159265358979323846;
                 lighting.lights[1].properties.intensityUnit = scene::LightUnit::EV100;
-                lighting.lights[1].properties.intensity = std::log2(40.0);
-                lighting.lights[2].properties.intensityUnit = scene::LightUnit::EV100;
-                lighting.lights[2].properties.intensity = std::log2(100.0);
+                lighting.lights[1].properties.intensity = std::log2(100.0);
                 world.setLighting(lighting);
             } else if (iteration == 2) {
                 lighting.lights[0].properties.intensity *= 2.0;
@@ -149,7 +155,7 @@ public:
                 const std::array<float, 6> expected{100, 25, 100, 100, 100, 0};
                 for (size_t i = 0; i < expected.size(); ++i) {
                     if (std::abs(values[4 * i] - expected[i]) > 0.001f) {
-                        return RHITestResult::fail("GPU inverse-square/directional/spot mismatch at " + std::to_string(i));
+                        return RHITestResult::fail("GPU inverse-square/celestial/spot mismatch at " + std::to_string(i));
                     }
                 }
                 if (values[3] != 0.25f) { return RHITestResult::fail("GPU exposure metadata mismatch"); }
@@ -218,11 +224,14 @@ public:
             const std::array expected{2.0 * pi + 0.7 * (2.0 * pi / 3.0) * n[0],
                 pi + 0.4 * (2.0 * pi / 3.0) * n[1],
                 0.5 * pi + 0.25 * (pi / 4.0) * (3.0 * n[2] * n[2] - 1.0)};
+            const auto workingExpected = render::color::fromLinearRec709({
+                static_cast<float>(expected[0]), static_cast<float>(expected[1]), static_cast<float>(expected[2])});
             for (size_t c = 0; c < 3; ++c) {
                 // Includes RGBE fixture quantization and 64x32 texel quadrature.
                 if (!std::isfinite(directionalValues[(6 + i) * 4 + c]) ||
-                    std::abs(directionalValues[(6 + i) * 4 + c] - expected[c]) > 0.04) {
-                    return RHITestResult::fail("directional irradiance SH basis or cosine normalization changed");
+                    std::abs(directionalValues[(6 + i) * 4 + c] - workingExpected[c]) > 0.04) {
+                    return RHITestResult::fail("directional irradiance SH basis or cosine normalization changed: actual=" +
+                        std::to_string(directionalValues[(6 + i) * 4 + c]) + ", expected=" + std::to_string(workingExpected[c]));
                 }
             }
         }
@@ -253,25 +262,27 @@ public:
         const auto dark = preview.pixels();
         scene::LightingSettings settings;
         settings.autoExposure.enabled = false;
-        auto& light = settings.lights.emplace_back();
-        light.properties.type = "directional";
-        light.properties.intensityUnit = scene::LightUnit::Lux;
-        light.properties.intensity = 1000;
-        light.direction = float3(0.0f, -0.2f, -1.0f);
+        environment::WorldEnvironment celestial;
+        celestial.sun.enabled = true;
+        celestial.sun.illuminance = 1000;
+        celestial.sun.direction = float3(0.0f, -0.2f, -1.0f);
+        preview.setWorldEnvironment(celestial);
         settings.exposureEV100 = 8;
         preview.setLighting(settings);
         result = preview.render(graph, 64, 64);
         if (!result) { return RHITestResult::fail(preview.lastLog()); }
         const auto lit = preview.pixels();
-        if (lit == dark) { return RHITestResult::fail("directional light did not affect real-time material shading"); }
-        settings.lights[0].properties.intensityUnit = scene::LightUnit::EV100;
-        settings.lights[0].properties.intensity = std::log2(400.0);
+        if (lit == dark) { return RHITestResult::fail("Sun did not affect real-time material shading"); }
+        celestial.sun.illuminance = static_cast<float>(scene::lightIntensitySI(
+            "directional", scene::LightUnit::EV100, std::log2(400.0)));
+        preview.setWorldEnvironment(celestial);
         preview.setLighting(settings);
         result = preview.render(graph, 64, 64);
         if (!result || preview.pixels() != lit) {
             return RHITestResult::fail("equivalent lux/EV units changed real-time shading");
         }
-        settings.lights.clear();
+        celestial.sun.enabled = false;
+        preview.setWorldEnvironment(celestial);
         settings.exposureEV100 = 0;
         preview.setLighting(settings);
         result = preview.render(graph, 64, 64);
@@ -289,11 +300,8 @@ public:
         hdrGraph.addNode("FinalBlitPass", "Display");
         hdrGraph.addEdge("Exposure.color", "Display.source");
         hdrGraph.markOutput("Display.color");
-        auto& hdrLight = settings.lights.emplace_back();
-        hdrLight.properties.type = "directional";
-        hdrLight.properties.intensityUnit = scene::LightUnit::Lux;
-        hdrLight.properties.intensity = 1000;
-        hdrLight.direction = float3(0.0f, -0.2f, -1.0f);
+        celestial.sun.enabled = true;
+        preview.setWorldEnvironment(celestial);
         settings.exposureEV100 = 8;
         settings.autoExposure.enabled = false;
         preview.setLighting(settings);
@@ -316,7 +324,8 @@ public:
             subjectBrightness / subjectPixels < 40.0) {
             return RHITestResult::fail("black background dominated metering and lost subject detail");
         }
-        settings.lights[0].properties.intensity *= 1024;
+        celestial.sun.illuminance *= 1024;
+        preview.setWorldEnvironment(celestial);
         preview.setLighting(settings);
         hdrGraph.findNode(exposureId)->runtimeProperties = {{"resetSerial", 1}};
         result = preview.render(hdrGraph, 64, 64);

@@ -607,7 +607,7 @@ std::filesystem::path writeFullScene(const std::filesystem::path& directory)
       "lights": [
         {
           "name": "Key Light",
-          "type": "directional",
+          "type": "point",
           "color": [1.0, 0.8, 0.6],
           "intensity": 3.0
         }
@@ -811,7 +811,7 @@ std::filesystem::path writeNativePunctualScene(const std::filesystem::path& dire
   "extensions": {
     "KHR_lights_punctual": {
       "lights": [
-        { "name": "Imported Sun", "type": "directional", "color": [1, 0.8, 0.6], "intensity": 12 },
+        { "name": "Imported Fill", "type": "point", "color": [1, 0.8, 0.6], "intensity": 12 },
         { "name": "Shared Point", "type": "point", "color": [0.2, 0.4, 0.8], "intensity": 100, "range": 7 },
         { "name": "Imported Spot", "type": "spot", "color": [0.7, 0.5, 0.3], "intensity": 40, "range": 9,
           "spot": { "innerConeAngle": 0.1, "outerConeAngle": 0.6 } },
@@ -1593,7 +1593,7 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(nearlyEqual(static_cast<float>(orthoCamera.ymag), 3.0f), "orthographic ymag");
 
     expect(scene.lights().size() == 1, "punctual light count");
-    expect(scene.lights().front().type == "directional", "punctual light type");
+    expect(scene.lights().front().type == "point", "punctual light type");
     expect(
         scene.lights().front().object == scene.objectForNode(4).entity(),
         "light object mapping");
@@ -5445,7 +5445,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
         .compensation = 1.5f, .lowPercent = 60.0f, .highPercent = 95.0f,
         .histogramMinEV100 = -12.0f, .histogramMaxEV100 = 22.0f,
         .speedUp = 4.0f, .speedDown = 0.5f, .transitionDistance = 2.0f};
-    for (const char* type : {"directional", "point", "spot"}) {
+    for (const char* type : {"point", "spot"}) {
         PunctualLight light;
         light.name = type;
         light.properties.type = type;
@@ -5467,7 +5467,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     ASSERT_TRUE(document.save(message)) << message;
     SceneDocument restored;
     ASSERT_TRUE(restored.load(document.documentPath())) << restored.lastLoadResult().error;
-    ASSERT_EQ(restored.lighting().lights.size(), 4u);
+    ASSERT_EQ(restored.lighting().lights.size(), 3u);
     EXPECT_FLOAT_EQ(restored.lighting().exposureEV100, 12.0f);
     const auto& exposure = restored.lighting().autoExposure;
     EXPECT_TRUE(exposure.enabled);
@@ -5481,7 +5481,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     EXPECT_FLOAT_EQ(exposure.speedUp, 4.0f);
     EXPECT_FLOAT_EQ(exposure.speedDown, 0.5f);
     EXPECT_FLOAT_EQ(exposure.transitionDistance, 2.0f);
-    for (size_t i = 0; i < 3; ++i) {
+    for (size_t i = 0; i < 2; ++i) {
         const auto& light = restored.lighting().lights[i + 1];
         EXPECT_FALSE(light.imported.has_value());
         EXPECT_EQ(light.properties.type, lighting.lights[i + 1].properties.type);
@@ -5500,7 +5500,7 @@ TEST(SceneEditing, PhysicalLightingRoundTrip)
     EXPECT_FALSE(restored.setLighting(invalid));
     ASSERT_TRUE(restored.setLighting({}));
     ASSERT_TRUE(restored.revert(message)) << message;
-    EXPECT_EQ(restored.lighting().lights.size(), 4u);
+    EXPECT_EQ(restored.lighting().lights.size(), 3u);
     restored.clear();
     EXPECT_TRUE(restored.lighting().lights.empty());
 }
@@ -5558,6 +5558,497 @@ TEST(SceneEditing, AutoExposureValidationAndLegacyLoading)
     }
 }
 
+TEST(WorldEnvironment, FixedSlotsSnapshotsAndValidation)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    SceneDocument document;
+    const auto initial = document.environmentSnapshot();
+    ASSERT_EQ(initial.celestial.size(), 2u);
+    EXPECT_FALSE(initial.celestial[static_cast<size_t>(CelestialLightIndex::Sun)].enabled);
+    EXPECT_FALSE(initial.celestial[static_cast<size_t>(CelestialLightIndex::Moon)].enabled);
+    WorldEnvironment world;
+    world.sun = {.direction = float3(0.0f, -2.0f, -1.0f), .color = float3(1.0f, 0.8f, 0.6f),
+        .illuminance = 80000.0f, .angularRadius = 0.00465f, .enabled = true};
+    world.moon = {.direction = float3(0.0f, -1.0f, 1.0f), .color = float3(0.7f, 0.8f, 1.0f),
+        .illuminance = 0.25f, .angularRadius = 0.0045f, .enabled = true};
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto captured = document.environmentSnapshot();
+    EXPECT_EQ(captured.celestial[0], world.sun);
+    EXPECT_EQ(captured.celestial[1], world.moon);
+    EXPECT_GT(captured.celestialRevision, initial.celestialRevision);
+    EXPECT_GT(captured.lightingRevision, initial.lightingRevision);
+    EXPECT_FALSE(document.setWorldEnvironment(world));
+    EXPECT_EQ(document.environmentSnapshot().celestialRevision, captured.celestialRevision);
+    world.sun.direction = float3(1.0f, -1.0f, 0.0f);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    EXPECT_FLOAT_EQ(captured.celestial[0].direction.x, 0.0f);
+    const auto beforeInvalid = document.worldEnvironment();
+    for (int invalidCase = 0; invalidCase < 4; ++invalidCase) {
+        auto invalid = beforeInvalid;
+        if (invalidCase == 0) { invalid.sun.direction = float3(0.0f); }
+        if (invalidCase == 1) { invalid.moon.illuminance = -1.0f; }
+        if (invalidCase == 2) { invalid.sun.angularRadius = std::numeric_limits<float>::infinity(); }
+        if (invalidCase == 3) { invalid.moon.color.x = -0.1f; }
+        EXPECT_FALSE(document.setWorldEnvironment(invalid));
+        EXPECT_EQ(document.worldEnvironment(), beforeInvalid);
+    }
+    LightingSettings invalidProduction;
+    invalidProduction.lights.emplace_back().properties.type = "directional";
+    EXPECT_FALSE(validLightingSettings(invalidProduction));
+    EXPECT_FALSE(document.setLighting(invalidProduction));
+    const auto beforeHDRI = document.environmentSnapshot();
+    auto hdri = document.environment();
+    hdri.intensity = 2.0f;
+    ASSERT_TRUE(document.setEnvironment(hdri));
+    EXPECT_EQ(document.environmentSnapshot().celestialRevision, beforeHDRI.celestialRevision);
+    EXPECT_GT(document.environmentSnapshot().lightingRevision, beforeHDRI.lightingRevision);
+}
+
+TEST(WorldEnvironment, glTFDirectionalImportIsIgnoredWithWarning)
+{
+    using namespace metallic::scene;
+    const auto path = writeNativePunctualScene(prepareOutputDirectory() / "ignored_directional");
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(path));
+    nlohmann::json asset;
+    { std::ifstream stream(path); stream >> asset; }
+    asset["extensions"]["KHR_lights_punctual"]["lights"][0]["type"] = "directional";
+    writeTextFile(path, asset.dump(2));
+    Scene scene;
+    ASSERT_TRUE(scene.load(path)) << scene.lastLoadResult().error;
+    EXPECT_EQ(scene.lights().size(), 3u);
+    EXPECT_FALSE(scene.objectForNode(1).hasComponent<LightComponent>());
+    EXPECT_NE(scene.lastLoadResult().warning.find("Ignored glTF directional light"), std::string::npos);
+    EXPECT_FALSE(scene.worldEnvironment().sun.enabled);
+    SceneDocument document;
+    ASSERT_TRUE(document.load(path)) << document.documentWarning();
+    EXPECT_EQ(document.lighting().lights.size(), 3u);
+    EXPECT_NE(document.documentWarning().find("Ignored glTF directional light"), std::string::npos);
+    EXPECT_FALSE(document.worldEnvironment().sun.enabled);
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    ASSERT_TRUE(document.load(document.documentPath())) << document.documentWarning();
+    EXPECT_EQ(document.lighting().lights.size(), 3u);
+    EXPECT_FALSE(document.worldEnvironment().sun.enabled);
+}
+
+TEST(WorldEnvironment, PhysicalAtmosphereSnapshotRevisionDomainsAndValidation)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    SceneDocument document;
+    const auto initial = document.environmentSnapshot();
+    EXPECT_EQ(initial.source, EnvironmentSource::HDRI);
+    EXPECT_EQ(initial.atmosphereRevision, 0u);
+    EXPECT_TRUE(validAtmosphereState(initial.atmosphere));
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto selected = document.environmentSnapshot();
+    EXPECT_EQ(selected.source, EnvironmentSource::PhysicalAtmosphere);
+    EXPECT_GT(selected.atmosphereRevision, initial.atmosphereRevision);
+    EXPECT_EQ(selected.celestialRevision, initial.celestialRevision);
+    EXPECT_GT(selected.lightingRevision, initial.lightingRevision);
+    world.atmosphere.mieScaleHeightKm = 2.0f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto atmosphereChanged = document.environmentSnapshot();
+    EXPECT_GT(atmosphereChanged.atmosphereRevision, selected.atmosphereRevision);
+    EXPECT_EQ(atmosphereChanged.celestialRevision, selected.celestialRevision);
+    EXPECT_FLOAT_EQ(selected.atmosphere.mieScaleHeightKm, 1.2f);
+    world.sun.enabled = true;
+    world.sun.topOfAtmosphereIrradiance.x = 1.5f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto celestialChanged = document.environmentSnapshot();
+    EXPECT_GT(celestialChanged.celestialRevision, atmosphereChanged.celestialRevision);
+    EXPECT_EQ(celestialChanged.atmosphereRevision, atmosphereChanged.atmosphereRevision);
+    auto hdri = document.environment();
+    hdri.intensity = 4.0f;
+    ASSERT_TRUE(document.setEnvironment(hdri));
+    const auto hdriChanged = document.environmentSnapshot();
+    EXPECT_EQ(hdriChanged.celestialRevision, celestialChanged.celestialRevision);
+    EXPECT_EQ(hdriChanged.atmosphereRevision, celestialChanged.atmosphereRevision);
+    EXPECT_GT(hdriChanged.lightingRevision, celestialChanged.lightingRevision);
+    EXPECT_FALSE(document.setWorldEnvironment(world));
+    for (int invalidCase = 0; invalidCase < 14; ++invalidCase) {
+        auto invalid = world;
+        auto& atmosphere = invalid.atmosphere;
+        if (invalidCase == 0) { invalid.source = static_cast<EnvironmentSource>(99); }
+        if (invalidCase == 1) { atmosphere.planetCenter[0] = std::numeric_limits<double>::quiet_NaN(); }
+        if (invalidCase == 2) { atmosphere.topRadiusKm = atmosphere.bottomRadiusKm; }
+        if (invalidCase == 3) { atmosphere.rayleighScattering.x = -1.0f; }
+        if (invalidCase == 4) { atmosphere.rayleighScaleHeightKm = 0.0f; }
+        if (invalidCase == 5) { atmosphere.mieScattering.y = atmosphere.mieExtinction.y + 1.0f; }
+        if (invalidCase == 6) { atmosphere.mieScaleHeightKm = -1.0f; }
+        if (invalidCase == 7) { atmosphere.mieAnisotropy = 1.0f; }
+        if (invalidCase == 8) { atmosphere.ozoneAbsorption.z = std::numeric_limits<float>::infinity(); }
+        if (invalidCase == 9) { atmosphere.ozoneWidthKm = 0.0f; }
+        if (invalidCase == 10) { atmosphere.groundAlbedo.y = 1.01f; }
+        if (invalidCase == 11) { atmosphere.maxAerialDistanceKm = -1.0f; }
+        if (invalidCase == 12) { invalid.sun.topOfAtmosphereIrradiance.z = 100.1f; }
+        if (invalidCase == 13) { invalid.moon.topOfAtmosphereIrradiance.x = -0.001f; }
+        EXPECT_FALSE(document.setWorldEnvironment(invalid)) << invalidCase;
+        EXPECT_EQ(document.worldEnvironment(), world) << invalidCase;
+        EXPECT_EQ(document.environmentSnapshot().atmosphereRevision, hdriChanged.atmosphereRevision);
+        EXPECT_EQ(document.environmentSnapshot().celestialRevision, hdriChanged.celestialRevision);
+    }
+}
+
+TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalRejection)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    const auto directory = prepareOutputDirectory() / "physical_atmosphere_document";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(source));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    world.atmosphere.planetCenter = {123456789012.125, -6360000.0625, -987654321.875};
+    world.atmosphere.bottomRadiusKm = 6400.0f;
+    world.atmosphere.topRadiusKm = 6550.0f;
+    world.atmosphere.rayleighScattering = float3(0.004f, 0.01f, 0.025f);
+    world.atmosphere.rayleighScaleHeightKm = 9.5f;
+    world.atmosphere.mieScattering = float3(0.002f, 0.003f, 0.004f);
+    world.atmosphere.mieExtinction = float3(0.003f, 0.004f, 0.005f);
+    world.atmosphere.mieScaleHeightKm = 2.5f;
+    world.atmosphere.mieAnisotropy = 0.65f;
+    world.atmosphere.ozoneAbsorption = float3(0.001f, 0.002f, 0.003f);
+    world.atmosphere.ozoneCenterAltitudeKm = 27.0f;
+    world.atmosphere.ozoneWidthKm = 12.0f;
+    world.atmosphere.groundAlbedo = float3(0.1f, 0.2f, 0.4f);
+    world.atmosphere.maxAerialDistanceKm = 2000.0f;
+    world.sun.enabled = true;
+    world.sun.topOfAtmosphereIrradiance = float3(1.4f, 1.8f, 1.9f);
+    world.moon.topOfAtmosphereIrradiance = float3(0.00001f, 0.000012f, 0.000009f);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    const auto sidecar = document.documentPath();
+    nlohmann::json saved;
+    { std::ifstream stream(sidecar); stream >> saved; }
+    EXPECT_EQ(saved["world"]["environment"]["source"], "physicalAtmosphere");
+    EXPECT_DOUBLE_EQ(saved["world"]["environment"]["atmosphere"]["planetCenter"][0].get<double>(),
+        world.atmosphere.planetCenter[0]);
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    const auto identity = restored.resourceIdentity();
+    const std::array<nlohmann::json, 9> invalidSettings{
+        nlohmann::json{{"source", "weather"}}, nlohmann::json{{"source", 2}},
+        nlohmann::json{{"atmosphere", {{"planetCenter", {0.0, 1.0}}}}},
+        nlohmann::json{{"atmosphere", {{"topRadiusKm", 10.0}}}},
+        nlohmann::json{{"atmosphere", {{"mieAnisotropy", 1.0}}}},
+        nlohmann::json{{"atmosphere", {{"rayleighScattering", {-0.1, 0.1, 0.2}}}}},
+        nlohmann::json{{"atmosphere", {{"groundAlbedo", {0.5, 1.1, 0.5}}}}},
+        nlohmann::json{{"sun", {{"topOfAtmosphereIrradiance", {1.0, 101.0, 1.0}}}}},
+        nlohmann::json{{"moon", {{"topOfAtmosphereIrradiance", "invalid"}}}},
+    };
+    for (const auto& invalid : invalidSettings) {
+        auto rejected = saved;
+        rejected["world"]["environment"].update(invalid);
+        writeTextFile(sidecar, rejected.dump(2));
+        EXPECT_FALSE(restored.load(sidecar)) << invalid.dump();
+        EXPECT_EQ(restored.worldEnvironment(), world);
+        EXPECT_EQ(restored.resourceIdentity(), identity);
+    }
+    auto legacy = saved;
+    legacy["world"]["environment"].erase("source");
+    legacy["world"]["environment"].erase("atmosphere");
+    legacy["world"]["environment"]["sun"].erase("topOfAtmosphereIrradiance");
+    legacy["world"]["environment"]["moon"].erase("topOfAtmosphereIrradiance");
+    writeTextFile(sidecar, legacy.dump(2));
+    ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment().source, EnvironmentSource::HDRI);
+    EXPECT_EQ(restored.worldEnvironment().atmosphere, AtmosphereState{});
+    EXPECT_EQ(restored.worldEnvironment().sun.illuminance, world.sun.illuminance);
+}
+
+TEST(WorldEnvironment, DynamicAuthoringSnapshotsAndRevisionDomains)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    SceneDocument document;
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    world.sun.enabled = true;
+    world.moon.enabled = true;
+    world.time.julianDateUTC = 2460483.0;
+    world.astronomy.mode = AstronomyMode::Astronomical;
+    world.astronomy.latitudeDegrees = 35.0;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto astronomical = document.environmentSnapshot();
+    EXPECT_TRUE(astronomical.evaluatedAstronomy.automatic);
+    EXPECT_EQ(astronomical.authoredCelestial[0], world.sun);
+    EXPECT_EQ(astronomical.authoredCelestial[1], world.moon);
+    EXPECT_EQ(astronomical.time, world.time);
+    EXPECT_EQ(astronomical.astronomy, world.astronomy);
+    EXPECT_EQ(document.worldEnvironment(), world);
+    EXPECT_GE(astronomical.evaluatedAstronomy.moonIlluminatedFraction, 0.0f);
+    EXPECT_LE(astronomical.evaluatedAstronomy.moonIlluminatedFraction, 1.0f);
+
+    world.weather.cloudEnabled = true;
+    world.weather.cloudCoverage = 0.6f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto cloudy = document.environmentSnapshot();
+    EXPECT_GT(cloudy.weatherRevision, astronomical.weatherRevision);
+    EXPECT_EQ(cloudy.celestialRevision, astronomical.celestialRevision);
+    EXPECT_EQ(cloudy.astronomyRevision, astronomical.astronomyRevision);
+    EXPECT_EQ(cloudy.atmosphereRevision, astronomical.atmosphereRevision);
+    EXPECT_EQ(cloudy.celestial, astronomical.celestial);
+    EXPECT_FLOAT_EQ(astronomical.weather.cloudCoverage, 0.0f);
+
+    world.weather.humidity = 0.5f;
+    world.weather.aerosolDensity = 2.0f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto humid = document.environmentSnapshot();
+    EXPECT_GT(humid.weatherRevision, cloudy.weatherRevision);
+    EXPECT_GT(humid.atmosphereRevision, cloudy.atmosphereRevision);
+    EXPECT_EQ(humid.celestialRevision, cloudy.celestialRevision);
+    EXPECT_EQ(humid.authoredAtmosphere, world.atmosphere);
+    EXPECT_NEAR(humid.atmosphere.mieScattering.x, world.atmosphere.mieScattering.x * 3.5f, 1e-7f);
+    EXPECT_EQ(humid.celestial, cloudy.celestial);
+    world.time.julianDateUTC += 0.25;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto evening = document.environmentSnapshot();
+    EXPECT_GT(evening.astronomyRevision, humid.astronomyRevision);
+    EXPECT_GT(evening.celestialRevision, humid.celestialRevision);
+    EXPECT_EQ(evening.weatherRevision, humid.weatherRevision);
+    EXPECT_EQ(evening.atmosphereRevision, humid.atmosphereRevision);
+    EXPECT_FALSE(document.setWorldEnvironment(world));
+
+    const auto revisions = document.environmentSnapshot();
+    for (int invalidCase = 0; invalidCase < 19; ++invalidCase) {
+        auto invalid = world;
+        if (invalidCase == 0) { invalid.time.julianDateUTC = std::numeric_limits<double>::quiet_NaN(); }
+        if (invalidCase == 1) { invalid.time.timeScale = std::numeric_limits<double>::infinity(); }
+        if (invalidCase == 2) { invalid.astronomy.mode = static_cast<AstronomyMode>(99); }
+        if (invalidCase == 3) { invalid.astronomy.latitudeDegrees = 90.1; }
+        if (invalidCase == 4) { invalid.astronomy.longitudeDegrees = -180.1; }
+        if (invalidCase == 5) { invalid.astronomy.moonAlbedo = -0.1f; }
+        if (invalidCase == 6) { invalid.weather.cloudCoverage = 1.01f; }
+        if (invalidCase == 7) { invalid.weather.cloudDensity = -0.1f; }
+        if (invalidCase == 8) { invalid.weather.cloudTopAltitudeKm = invalid.weather.cloudBaseAltitudeKm; }
+        if (invalidCase == 9) { invalid.weather.cloudExtinctionPerKm = std::numeric_limits<float>::infinity(); }
+        if (invalidCase == 10) { invalid.weather.aerosolDensity = -0.1f; }
+        if (invalidCase == 11) { invalid.weather.humidity = 1.1f; }
+        if (invalidCase == 12) { invalid.weather.precipitation = -0.1f; }
+        if (invalidCase == 13) { invalid.weather.windSpeed = -1.0f; }
+        if (invalidCase == 14) { invalid.weather.windDirection = float2(0.0f); }
+        if (invalidCase == 15) { invalid.time.julianDateUTC = kMaximumJulianDateUTC + 1.0; }
+        if (invalidCase == 16) { invalid.weather.cloudBaseAltitudeKm = -1.0f; }
+        if (invalidCase == 17) { invalid.weather.cloudTopAltitudeKm = 101.0f; }
+        if (invalidCase == 18) { invalid.atmosphere.topRadiusKm = invalid.atmosphere.bottomRadiusKm + 2.0f; }
+        EXPECT_FALSE(document.setWorldEnvironment(invalid)) << invalidCase;
+        EXPECT_EQ(document.worldEnvironment(), world);
+        EXPECT_EQ(document.environmentSnapshot().weatherRevision, revisions.weatherRevision);
+        EXPECT_EQ(document.environmentSnapshot().astronomyRevision, revisions.astronomyRevision);
+    }
+    auto boundary = world;
+    boundary.weather.cloudTopAltitudeKm = boundary.atmosphere.topRadiusKm - boundary.atmosphere.bottomRadiusKm;
+    ASSERT_TRUE(document.setWorldEnvironment(boundary));
+    auto outside = boundary;
+    outside.weather.cloudTopAltitudeKm = std::nextafter(boundary.weather.cloudTopAltitudeKm,
+        std::numeric_limits<float>::infinity());
+    EXPECT_FALSE(document.setWorldEnvironment(outside));
+    EXPECT_EQ(document.worldEnvironment(), boundary);
+    for (int inactiveCase = 0; inactiveCase < 5; ++inactiveCase) {
+        auto inactive = outside;
+        if (inactiveCase == 0) { inactive.source = EnvironmentSource::HDRI; }
+        if (inactiveCase == 1) { inactive.weather.cloudEnabled = false; }
+        if (inactiveCase == 2) { inactive.weather.cloudCoverage = 0.0f; }
+        if (inactiveCase == 3) { inactive.weather.cloudDensity = 0.0f; }
+        if (inactiveCase == 4) { inactive.weather.cloudExtinctionPerKm = 0.0f; }
+        EXPECT_TRUE(document.setWorldEnvironment(inactive)) << inactiveCase;
+        EXPECT_EQ(document.worldEnvironment(), inactive);
+    }
+}
+
+TEST(WorldEnvironment, DynamicDocumentRoundTripRejectsInvalidStateAndPreservesLegacy)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    const auto directory = prepareOutputDirectory() / "dynamic_world_document";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(source));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    world.sun.enabled = world.moon.enabled = true;
+    world.time = {.julianDateUTC = 2460483.123456789, .timeScale = -120.25, .paused = false};
+    world.astronomy = {.mode = AstronomyMode::SimplifiedDayCycle, .latitudeDegrees = 35.678901234,
+        .longitudeDegrees = -122.345678901, .moonAlbedo = 0.18f};
+    world.weather = {.cloudEnabled = true, .cloudCoverage = 0.75f, .cloudDensity = 2.5f,
+        .cloudBaseAltitudeKm = 2.0f, .cloudTopAltitudeKm = 6.0f, .cloudExtinctionPerKm = 12.0f,
+        .aerosolDensity = 3.0f, .humidity = 0.8f, .precipitation = 0.6f, .windSpeed = 15.5f,
+        .windDirection = float2(-2.0f, 1.0f), .noiseSeed = UINT32_MAX};
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    EXPECT_FALSE(document.dirty());
+    nlohmann::json saved;
+    { std::ifstream stream(document.documentPath()); stream >> saved; }
+    EXPECT_EQ(saved["world"]["environment"]["astronomy"]["mode"], "simplifiedDayCycle");
+    EXPECT_DOUBLE_EQ(saved["world"]["environment"]["time"]["julianDateUTC"].get<double>(), world.time.julianDateUTC);
+    EXPECT_EQ(saved["world"]["environment"]["weather"]["noiseSeed"].get<uint32_t>(), UINT32_MAX);
+    EXPECT_FALSE(saved["world"]["environment"].contains("evaluatedAstronomy"));
+    EXPECT_FALSE(saved["world"]["environment"].contains("elapsedSeconds"));
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_EQ(restored.environmentSnapshot().authoredAtmosphere, world.atmosphere);
+    const auto evaluation = world.snapshot(1, 1, 0, 0, 0, 7200.0);
+    EXPECT_NE(evaluation.evaluatedAstronomy.julianDateUTC, world.time.julianDateUTC);
+    EXPECT_EQ(document.worldEnvironment(), world);
+    EXPECT_FALSE(document.dirty());
+    const auto identity = restored.resourceIdentity();
+    const std::array<nlohmann::json, 16> invalidSettings{
+        nlohmann::json{{"time", false}}, nlohmann::json{{"time", {{"julianDateUTC", 0.0}}}},
+        nlohmann::json{{"time", {{"paused", "false"}}}}, nlohmann::json{{"time", {{"timeScale", 1e10}}}},
+        nlohmann::json{{"astronomy", {{"mode", "ephemeris"}}}}, nlohmann::json{{"astronomy", {{"mode", 2}}}},
+        nlohmann::json{{"astronomy", {{"latitudeDegrees", 91.0}}}},
+        nlohmann::json{{"astronomy", {{"moonAlbedo", 1.1}}}},
+        nlohmann::json{{"weather", {{"cloudEnabled", 1}}}},
+        nlohmann::json{{"weather", {{"cloudBaseAltitudeKm", 10.0}, {"cloudTopAltitudeKm", 2.0}}}},
+        nlohmann::json{{"weather", {{"windDirection", {0.0, 0.0}}}}},
+        nlohmann::json{{"weather", {{"windDirection", {1.0, 2.0, 3.0}}}}},
+        nlohmann::json{{"weather", {{"noiseSeed", -1}}}},
+        nlohmann::json{{"weather", {{"noiseSeed", 4294967296.0}}}},
+        nlohmann::json{{"weather", {{"cloudTopAltitudeKm", 101.0}}}},
+        nlohmann::json{{"atmosphere", {{"topRadiusKm", 6364.0}}}},
+    };
+    for (const auto& invalid : invalidSettings) {
+        auto rejected = saved;
+        auto& rejectedEnvironment = rejected["world"]["environment"];
+        for (auto setting = invalid.begin(); setting != invalid.end(); ++setting) {
+            if (setting.value().is_object() && rejectedEnvironment[setting.key()].is_object()) {
+                rejectedEnvironment[setting.key()].update(setting.value());
+            } else {
+                rejectedEnvironment[setting.key()] = setting.value();
+            }
+        }
+        writeTextFile(document.documentPath(), rejected.dump(2));
+        EXPECT_FALSE(restored.load(document.documentPath())) << invalid.dump();
+        EXPECT_EQ(restored.worldEnvironment(), world);
+        EXPECT_EQ(restored.resourceIdentity(), identity);
+    }
+    auto boundaryDocument = saved;
+    boundaryDocument["world"]["environment"]["weather"]["cloudTopAltitudeKm"] = 100.0;
+    writeTextFile(document.documentPath(), boundaryDocument.dump(2));
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudTopAltitudeKm, 100.0f);
+    EXPECT_EQ(restored.worldEnvironment().source, EnvironmentSource::PhysicalAtmosphere);
+    const auto boundaryIdentity = restored.resourceIdentity();
+    auto outsideDocument = boundaryDocument;
+    outsideDocument["world"]["environment"]["weather"]["cloudTopAltitudeKm"] =
+        std::nextafter(100.0f, std::numeric_limits<float>::infinity());
+    writeTextFile(document.documentPath(), outsideDocument.dump(2));
+    EXPECT_FALSE(restored.load(document.documentPath()));
+    EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudTopAltitudeKm, 100.0f);
+    EXPECT_EQ(restored.resourceIdentity(), boundaryIdentity);
+    for (int inactiveCase = 0; inactiveCase < 5; ++inactiveCase) {
+        auto inactive = saved;
+        auto& settings = inactive["world"]["environment"];
+        settings["weather"]["cloudTopAltitudeKm"] = 1000.0;
+        if (inactiveCase == 0) { settings["source"] = "hdri"; }
+        if (inactiveCase == 1) { settings["weather"]["cloudEnabled"] = false; }
+        if (inactiveCase == 2) { settings["weather"]["cloudCoverage"] = 0.0; }
+        if (inactiveCase == 3) { settings["weather"]["cloudDensity"] = 0.0; }
+        if (inactiveCase == 4) { settings["weather"]["cloudExtinctionPerKm"] = 0.0; }
+        writeTextFile(document.documentPath(), inactive.dump(2));
+        ASSERT_TRUE(restored.load(document.documentPath())) << inactiveCase << ": " << restored.documentWarning();
+        EXPECT_FLOAT_EQ(restored.worldEnvironment().weather.cloudTopAltitudeKm, 1000.0f);
+    }
+    auto legacy = saved;
+    for (const auto* name : {"time", "astronomy", "weather"}) { legacy["world"]["environment"].erase(name); }
+    writeTextFile(document.documentPath(), legacy.dump(2));
+    ASSERT_TRUE(restored.load(document.documentPath())) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment().time, EnvironmentTimeState{});
+    EXPECT_EQ(restored.worldEnvironment().astronomy, AstronomyState{});
+    EXPECT_EQ(restored.worldEnvironment().weather, WeatherState{});
+    EXPECT_EQ(restored.environmentSnapshot().celestial[0], world.sun);
+    EXPECT_EQ(restored.environmentSnapshot().celestial[1], world.moon);
+    EXPECT_EQ(restored.environmentSnapshot().atmosphere, world.atmosphere);
+}
+
+TEST(WorldEnvironment, DynamicWorldSampleLoadsAuthoredState)
+{
+    using namespace metallic::environment;
+    metallic::scene::SceneDocument document;
+    ASSERT_TRUE(document.load(std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "Asset/LookDev/DynamicWorld/DynamicWorld.metallic_scene.json")) << document.documentWarning();
+    const auto& authored = document.worldEnvironment();
+    EXPECT_EQ(authored.source, EnvironmentSource::PhysicalAtmosphere);
+    EXPECT_EQ(authored.astronomy.mode, AstronomyMode::Astronomical);
+    EXPECT_FALSE(authored.time.paused);
+    EXPECT_TRUE(authored.sun.enabled && authored.moon.enabled);
+    EXPECT_TRUE(authored.weather.cloudEnabled);
+    EXPECT_GT(authored.weather.windSpeed, 0.0f);
+    EXPECT_TRUE(document.environmentSnapshot().evaluatedAstronomy.automatic);
+    EXPECT_FALSE(document.dirty());
+}
+
+TEST(WorldEnvironment, LegacyDirectionalMigratesToSunAndPersistsCelestialOnly)
+{
+    using namespace metallic::scene;
+    const auto directory = prepareOutputDirectory() / "legacy_celestial_migration";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    const auto sidecar = SceneDocument::sidecarPathForSource(source);
+    const nlohmann::json legacyLight{{"name", "Legacy Sun"}, {"type", "directional"},
+        {"intensity", 5.0}, {"intensityUnit", "ev100"}, {"color", {1.0, 0.8, 0.6}},
+        {"direction", {0.0, -2.0, -1.0}}, {"enabled", true}};
+    nlohmann::json legacy{{"version", 3}, {"source", source.filename().generic_string()}, {"sceneIndex", 0},
+        {"nodes", nlohmann::json::array()}, {"world", {{"lighting", {{"lights", {legacyLight}}}}}}};
+    writeTextFile(sidecar, legacy.dump(2));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    EXPECT_NE(document.documentWarning().find("Migrated legacy directional"), std::string::npos);
+    const auto sun = document.worldEnvironment().sun;
+    EXPECT_TRUE(sun.enabled);
+    EXPECT_FLOAT_EQ(sun.illuminance, 80.0f);
+    expectVec3(sun.direction, float3(0.0f, -2.0f, -1.0f), "legacy emitted direction unchanged");
+    expectVec3(sun.color, float3(1.0f, 0.8f, 0.6f), "legacy linear color unchanged");
+    EXPECT_FALSE(document.worldEnvironment().moon.enabled);
+    EXPECT_TRUE(std::ranges::all_of(document.lighting().lights,
+        [](const auto& light) { return light.properties.type == "point" || light.properties.type == "spot"; }));
+    auto world = document.worldEnvironment();
+    world.moon.enabled = true;
+    world.moon.illuminance = 0.25f;
+    world.moon.direction = float3(0.5f, -1.0f, 0.2f);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    nlohmann::json saved;
+    { std::ifstream stream(sidecar); stream >> saved; }
+    ASSERT_TRUE(saved["world"]["environment"].contains("sun"));
+    ASSERT_TRUE(saved["world"]["environment"].contains("moon"));
+    EXPECT_FLOAT_EQ(saved["world"]["environment"]["sun"]["illuminance"].get<float>(), 80.0f);
+    for (const auto& light : saved["world"]["lighting"]["lights"]) {
+        EXPECT_NE(light["type"].get<std::string>(), "directional");
+    }
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_EQ(restored.documentWarning().find("Migrated legacy directional"), std::string::npos);
+    const auto identity = restored.resourceIdentity();
+    legacy["world"]["lighting"]["lights"].push_back(legacyLight);
+    writeTextFile(sidecar, legacy.dump(2));
+    EXPECT_FALSE(restored.load(sidecar));
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_EQ(restored.resourceIdentity(), identity);
+    EXPECT_NE(restored.documentWarning().find("Multiple legacy directional"), std::string::npos);
+    legacy["world"]["lighting"]["lights"].erase(1);
+    legacy["world"]["environment"]["sun"] = saved["world"]["environment"]["sun"];
+    writeTextFile(sidecar, legacy.dump(2));
+    EXPECT_FALSE(restored.load(sidecar));
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    EXPECT_NE(restored.documentWarning().find("conflicts"), std::string::npos);
+}
+
 TEST(SceneEditing, ImportedglTFLightsBecomeNativeVirtualLights)
 {
     using namespace metallic::scene;
@@ -5571,14 +6062,14 @@ TEST(SceneEditing, ImportedglTFLightsBecomeNativeVirtualLights)
     ASSERT_EQ(imported.lights.size(), 4u);
     const std::array<float3, 4> positions{float3(10, 20, 28), float3(10, 23, 30),
         float3(14, 20, 30), float3(10, 20, 32)};
-    const std::array<const char*, 4> types{"directional", "point", "spot", "point"};
+    const std::array<const char*, 4> types{"point", "point", "spot", "point"};
     const std::array<double, 4> intensities{12.0, 100.0, 40.0, 100.0};
     const std::array<double, 4> ranges{0.0, 7.0, 9.0, 7.0};
     for (int32_t node = 1; node <= 4; ++node) {
         const auto* light = findImportedLight(imported, "main", node);
         ASSERT_NE(light, nullptr) << node;
         EXPECT_EQ(light->properties.type, types[node - 1]);
-        EXPECT_EQ(light->properties.intensityUnit, node == 1 ? LightUnit::Lux : LightUnit::Candela);
+        EXPECT_EQ(light->properties.intensityUnit, LightUnit::Candela);
         EXPECT_DOUBLE_EQ(light->properties.intensity, intensities[node - 1]);
         EXPECT_DOUBLE_EQ(light->properties.range, ranges[node - 1]);
         EXPECT_TRUE(light->enabled);

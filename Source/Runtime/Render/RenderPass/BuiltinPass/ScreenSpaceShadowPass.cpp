@@ -136,7 +136,8 @@ public:
             [] {}, [history = history_] { history->valid = false; }));
         if (!result) { return result; }
         profile.next("Build light records");
-        const auto lights = buildScreenSpaceShadowLightRecords(scene, resolveSceneLighting(scene, context.world()));
+        const auto lights = buildScreenSpaceShadowLightRecords(scene, resolveSceneLighting(scene, context.world()),
+            resolveWorldEnvironment(scene, context.world()));
         profile.next("Resolve stream resources");
         const MeshletStreamDeferredGPUResourcesView* stream = nullptr;
         if (scene->hasStreamGeometry()) {

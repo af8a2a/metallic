@@ -70,6 +70,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/ReGIR.cpp
     Runtime/Render/Streamer/SceneResourceManager.cpp
     Runtime/Render/SceneLightResources.cpp
+    Runtime/Render/Environment/AtmosphereResources.cpp
     Runtime/Render/Subsystem/BuiltinRenderSubsystems.cpp
     Runtime/Render/Subsystem/EnvironmentLightingSubsystem.cpp
     Runtime/Render/Subsystem/GPUScene.cpp
@@ -280,6 +281,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 add_library(MetallicRuntimeScene STATIC
+    Runtime/Environment/Astronomy.cpp
     Runtime/Material/MaterialAsset.cpp
     Runtime/Material/MaterialGraph.cpp
     Runtime/Material/MaterialSlangFrontend.cpp

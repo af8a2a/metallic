@@ -3410,11 +3410,12 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
         world.setEnvironment({.enabled = false, .visible = false});
         scene::LightingSettings lighting;
         lighting.exposureEV100 = 8;
-        auto& light = lighting.lights.emplace_back();
-        light.properties.type = "directional";
-        light.properties.intensityUnit = scene::LightUnit::Lux;
-        light.properties.intensity = 1000;
+        environment::WorldEnvironment celestial;
+        auto& light = celestial.sun;
+        light.enabled = true;
+        light.illuminance = 1000;
         light.direction = float3(0.0f, -0.2f, -1.0f);
+        world.setWorldEnvironment(celestial);
         if (!world.setLighting(lighting)) { return RHITestResult::fail("cache-stage lighting setup failed"); }
         render::HistoryResourceManager history;
         render::RenderGraphExecutor executor;
@@ -10017,7 +10018,6 @@ public:
         props["instanceFrustumCull"] = false; props["instanceHzbCull"] = false;
         props["meshletFrustumCull"] = false; props["hybridRaster"] = false;
         graph.findNode("Shadows")->properties["sigmaDenoise"] = false;
-        graph.findNode("Shadows")->properties["shadowAngularRadius"] = 0.0;
         for (const char* name : {"DLSSSR", "DLSSNR", "AutoExposure"}) {
             if (auto* node = graph.findNode(name)) { graph.removeNode(node->id); }
         }
@@ -10034,10 +10034,11 @@ public:
         scene::LightingSettings lighting;
         lighting.autoExposure.enabled = false;
         lighting.exposureEV100 = 2;
-        scene::PunctualLight sun;
-        sun.properties.type = "directional"; sun.properties.intensity = 10;
+        environment::WorldEnvironment celestial;
+            auto& sun = celestial.sun;
+        sun.enabled = true; sun.illuminance = 10; sun.angularRadius = 0;
         sun.direction = float3(.6f, -1, -.3f);
-        lighting.lights.push_back(sun);
+
         RenderGraphPreviewRenderer preview;
         auto result = preview.initialize(context.enableValidation, true, false);
         if (!result) {
@@ -10045,6 +10046,7 @@ public:
                 RHITestResult::fail(std::string("preview initialize returned ") + toString(result));
         }
         preview.setEnvironment({.enabled = false});
+        preview.setWorldEnvironment(celestial);
         preview.setLighting(lighting);
         preview.setExecutionCaptureEnabled(true);
         for (uint32_t frame = 0; frame < 24; ++frame) {

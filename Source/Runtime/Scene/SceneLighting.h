@@ -18,6 +18,8 @@ struct ImportedLightBinding {
 };
 
 struct PunctualLight {
+    // Production analytical lights are point/spot only. Infinite emission belongs
+    // to WorldEnvironment Sun/Moon and cannot be authored through LightingSettings.
     std::string name = "Light";
     LightProperties properties{.type = "point", .intensity = 1000.0};
     float3 position{0.0f, 2.0f, 0.0f};
@@ -77,7 +79,8 @@ inline bool validLightingSettings(const LightingSettings& settings)
     for (const PunctualLight& light : settings.lights) {
         const float3& p = light.position;
         const float3& d = light.direction;
-        if (!validLightProperties(light.properties) ||
+        if ((light.properties.type != "point" && light.properties.type != "spot") ||
+            !validLightProperties(light.properties) ||
             !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
             !std::isfinite(d.x) || !std::isfinite(d.y) || !std::isfinite(d.z) ||
             (light.properties.type != "point" &&

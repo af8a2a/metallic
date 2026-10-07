@@ -425,8 +425,9 @@ public:
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
             .storageReadWrite();
         color.colorEncoding = DisplayColorEncoding::SceneLinear;
-        color.format = (exportGuides || (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false))) ? Format::RGBA16Sfloat :
-                Format::RGBA32Sfloat;
+        // Preserve absolute solar disk radiance before exposure (~1e9 cd/m2),
+        // including when exporting denoiser or upscaler guides.
+        color.format = Format::RGBA32Sfloat;
         if (cacheModeFromProperties(properties()) == kScenePathTraceCacheModeNRC) {
             color.stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite, RenderGraphPassKind::Unsafe);
         }
@@ -593,7 +594,7 @@ public:
                 16,
                 false),
 #if METALLIC_HAS_NRC
-            runtimeFloatSetting("nrc.maxExpectedRadiance", "NRC Max Expected Radiance", 1.0f, 0.01f, 100.0f, false),
+            runtimeFloatSetting("nrc.maxExpectedRadiance", "NRC Expected Radiance (0 = Auto)", 0.0f, 0.0f, 100000000.0f, false),
             runtimeEnumSetting(
                 "nrc.resolveMode",
                 "NRC Resolve Mode",
@@ -791,6 +792,13 @@ public:
         // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeProgramBindingDesc> baseBindings{
             ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeProgramBindingDesc{.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeProgramBindingDesc{.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            ComputeProgramBindingDesc{.binding = 57, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeProgramBindingDesc{.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeProgramBindingDesc{.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeProgramBindingDesc{.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            ComputeProgramBindingDesc{.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             ComputeProgramBindingDesc{
                 .binding = 0,
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
@@ -1147,6 +1155,7 @@ public:
         if (cacheMode_ == kScenePathTraceCacheModeNRC) {
             const std::vector<ComputeProgramBindingDesc> nrcBindings = [cacheBindings]() {
                 std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
+                bindings.push_back({.binding = 100, .kind = ComputeResourceBindingKind::StorageBuffer});
                 bindings.push_back(ComputeProgramBindingDesc{
                     .binding = kScenePathTraceNRCQueryPathInfoBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
@@ -1300,13 +1309,63 @@ public:
         if (environmentSubsystem == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        const EnvironmentLightingSnapshot& environment = environmentSubsystem->snapshot();
-        if (!environment.valid()) {
-            return {};
-        }
+        EnvironmentLightingSnapshot environment = environmentSubsystem->snapshot();
         const scene::Scene* lightScene = context.runtimeScene();
         if (lightScene == nullptr || context.subsystems() == nullptr) {
             return makeError(Error::InvalidArgument);
+        }
+        const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
+#if METALLIC_HAS_NRC
+        nrcExpectedAverageRadiance_ = 1.0f;
+        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
+            // NRC expects daylight radiance in the application's scene units.
+            // Use unattenuated irradiance / pi as a stable outdoor scale, even
+            // when a source is disabled or moves below the horizon.
+            float irradianceY = 0.0f;
+            for (const auto& source : worldEnvironment.celestial) {
+                const auto& s = source.topOfAtmosphereIrradiance;
+                irradianceY += 683.0f * (18.3286150698f * s.x +
+                    76.9932864076f * s.y + 11.6242660516f * s.z);
+            }
+            nrcExpectedAverageRadiance_ = std::max(irradianceY * 0.31830988618f, 1.0f);
+        }
+#endif
+        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
+            ScenePathTracePush observerPush;
+            buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
+                environment.settings, environment.mapAvailable, observerPush);
+            if (visibilityDeferred_) {
+                const auto rasterInfo = context.inputBuffer("rasterInfo");
+                if (!rasterInfo.valid() || rasterInfo.desc().size != sizeof(VisibilityBufferFrameInfo) ||
+                    rasterInfo.desc().memoryLocation != MemoryLocation::HostUpload) {
+                    return makeError(Error::InvalidArgument);
+                }
+                const auto* mapped = static_cast<const VisibilityBufferFrameInfo*>(rasterInfo.buffer()->map());
+                if (mapped == nullptr) { return makeError(Error::Failure); }
+                std::memcpy(observerPush.eye, mapped->eye, sizeof(observerPush.eye));
+                rasterInfo.buffer()->unmap();
+            }
+            auto resolved = environmentSubsystem->resolveRadiance(*device_, context.commandBuffer(), *context.subsystems(),
+                worldEnvironment, {observerPush.eye[0], observerPush.eye[1], observerPush.eye[2]}, syncLog)
+                .transform([&](auto value) { environment = std::move(value); });
+            if (!resolved) { spdlog::error("Physical environment: {}", syncLog); return makeError(resolved.error()); }
+        }
+        if (!environment.valid()) { return {}; }
+        const auto celestialRecords = buildCelestialLightRecords(worldEnvironment);
+        CelestialLightingResources celestial;
+        auto celestialResult = environmentSubsystem->updateCelestial(*device_, context.commandBuffer(),
+            *context.subsystems(), worldEnvironment)
+            .transform([&](auto value) { celestial = std::move(value); });
+        if (!celestialResult) { return celestialResult; }
+        if (!celestialRecordsInitialized_ ||
+            std::memcmp(celestialRecords.data(), celestialRecords_.data(), sizeof(celestialRecords)) != 0) {
+            celestialRecords_ = celestialRecords;
+            celestialRecordsInitialized_ = true;
+            resetAccumulation_ = true;
+            sharcClearPending_ = true;
+#if METALLIC_HAS_NRC
+            nrcSceneRevision_ = 0;
+#endif
         }
         profile.next("Prepare lights and sampling");
         const uint64_t previousLightRevision = lights_.revision();
@@ -1345,6 +1404,10 @@ public:
             environmentSettingsRevision_ = environment.settingsRevision;
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
+            sharcClearPending_ = true;
+#if METALLIC_HAS_NRC
+            nrcSceneRevision_ = 0;
+#endif
         }
         TextureHandle color = context.outputTexture("color");
         Buffer* textureFeedback = context.preparedScene() ? context.preparedScene()->textureFeedback : nullptr;
@@ -1568,8 +1631,13 @@ public:
         }
 
         profile.next("Prepare dispatch bindings");
+        TextureView* const atmosphereTransmittanceViews[]{environment.transmittanceView};
+        TextureView* const atmosphereMultiScatteringViews[]{environment.multiScatteringView};
+        TextureView* const atmosphereSkyViews[]{environment.skyView};
+        TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
+            ComputeDispatchBinding{.binding = 55, .buffer = celestial.buffer.get()},
             ComputeDispatchBinding{
                 .binding = 0,
                 .accelerationStructure = visibilityDeferred_ ? nullptr :
@@ -1625,6 +1693,16 @@ public:
                 .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
             },
         };
+        if (environment.atmosphereParametersBuffer != nullptr) {
+            bindings.push_back({.binding = 56, .buffer = environment.atmosphereParametersBuffer});
+            bindings.push_back({.binding = 57, .textureViews = {atmosphereTransmittanceViews, 1}});
+            bindings.push_back({.binding = 58, .textureViews = {atmosphereMultiScatteringViews, 1}});
+            bindings.push_back({.binding = 59, .textureViews = {atmosphereSkyViews, 1}});
+            bindings.push_back({.binding = 99, .buffer = environment.aerialPerspectiveBuffer});
+            if (environment.cloudShadowView != nullptr) {
+                bindings.push_back({.binding = 101, .textureViews = {atmosphereCloudShadowViews, 1}});
+            }
+        }
         if (!visibilityDeferred_ && sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
         }
@@ -2008,9 +2086,7 @@ private:
 
         const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNRC;
         // NRC's native resolve shader declares rgba32f storage output.
-        const Format historyFormat = nrcHistory ? Format::RGBA32Sfloat :
-            exportDenoiserGuides(context.properties()) ? Format::RGBA16Sfloat :
-            Format::RGBA32Sfloat;
+        const Format historyFormat = Format::RGBA32Sfloat;
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled |
@@ -2443,14 +2519,19 @@ private:
                 return configureResult;
             }
             nrcContextSettings_ = settings;
+            // Reset is a pulse; comparing a stored true value with the next
+            // frame's false value would reallocate and reset the cache twice.
+            nrcContextSettings_.requestReset = false;
             nrcConfigured_ = true;
             nrcSceneRevision_ = sceneResourceRevision_;
             nrcEnvironmentRevision_ = environmentResourceRevision_;
         }
 
         nrc::FrameSettings frameSettings{};
-        frameSettings.maxExpectedAverageRadianceValue =
-            floatProperty(context.properties(), "nrc.maxExpectedRadiance", 1.0f);
+        const float expectedRadianceOverride =
+            floatProperty(context.properties(), "nrc.maxExpectedRadiance", 0.0f);
+        frameSettings.maxExpectedAverageRadianceValue = expectedRadianceOverride > 0.0f ?
+            expectedRadianceOverride : nrcExpectedAverageRadiance_;
         frameSettings.resolveMode = nrcResolveModeFromProperties(context.properties());
         // Select the retained per-frame allocation before compiling stage
         // identities. BeginFrame provides constants later, without replacing it.
@@ -2498,6 +2579,27 @@ private:
         };
 
         std::vector<ComputeDispatchBinding> traceBindings = baseBindings;
+        const uint64_t primaryAerialBytes = uint64_t(push.width) * push.height * 2 * sizeof(std::array<float, 4>);
+        auto aerialSlot = std::find_if(nrcAerialBuffers_.begin(), nrcAerialBuffers_.end(), [&](const auto& buffer) {
+            return buffer.use_count() == 1 && buffer->desc().size == primaryAerialBytes;
+        });
+        if (aerialSlot == nrcAerialBuffers_.end()) {
+            std::unique_ptr<Buffer> buffer;
+            result = device_->createBuffer({.size = primaryAerialBytes, .structureStride = 16,
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute})
+                .transform([&](auto value) { buffer = std::move(value); });
+            if (!result) { return result; }
+            // Remove idle allocations for an old viewport without touching
+            // the publications retained by in-flight frames.
+            std::erase_if(nrcAerialBuffers_, [](const auto& value) { return value.use_count() == 1; });
+            nrcAerialBuffers_.emplace_back(std::move(buffer));
+            aerialSlot = std::prev(nrcAerialBuffers_.end());
+        }
+        const auto primaryAerial = *aerialSlot;
+        if (auto* frame = RenderFrameContext::from(commandBuffer)) { frame->retain(primaryAerial); }
+        if (context.subsystems() != nullptr) { context.subsystems()->retire(primaryAerial); }
+        traceBindings.push_back({.binding = 100, .buffer = primaryAerial.get()});
         traceBindings.push_back(ComputeDispatchBinding{
             .binding = kScenePathTraceCacheParamsBinding,
             .buffer = cacheParamsBuffer_.get(),
@@ -2540,6 +2642,7 @@ private:
             .source = tonemapWriter.storageImage(historyCurrentView),
             .output = tonemapWriter.storageImage(context.outputTexture("color").view()),
             .historyPrevious = tonemapWriter.storageImage(historyPreviousView),
+            .primaryAerial = tonemapWriter.buffer(primaryAerial.get()),
             .settings = tonemapPush,
         };
         auto tonemapEncoded = tonemapWriter.encode(tonemapParams, kPathTraceTonemapABI, ParameterTransport::InlinePush);
@@ -2549,6 +2652,9 @@ private:
         result = importBuffer(resources, "cacheParams", cacheParamsBuffer_.get());
         if (!result) { return result; }
         resources.uses.push_back({"cacheParams", Access::BufferShaderRead});
+        result = importBuffer(resources, "primaryAerial", primaryAerial.get());
+        if (!result) { return result; }
+        resources.uses.push_back({"primaryAerial", Access::BufferStorageReadWrite});
         std::array<std::string, vulkan::NRCIntegration::kBufferCount> names;
         std::vector<RenderGraphStageUse> sdkUses;
         for (uint32_t i = 0; i < names.size(); ++i) {
@@ -2570,7 +2676,8 @@ private:
         resolveUses.push_back({currentHistory, Access::TextureStorageReadWrite});
         const std::array tonemapUses{RenderGraphStageUse{currentHistory, Access::TextureStorageReadWrite},
             RenderGraphStageUse{previousHistory, Access::TextureStorageRead},
-            RenderGraphStageUse{"output.color", Access::TextureStorageWrite}};
+            RenderGraphStageUse{"output.color", Access::TextureStorageWrite},
+            RenderGraphStageUse{"primaryAerial", Access::BufferShaderRead}};
         const std::array stages{
             RenderGraphStage{"NRC begin frame", sdkUses, [&](CommandBuffer& commands) -> Result<> {
                 auto begun = nrc_.beginFrame(commands, frameSettings);
@@ -3085,15 +3192,19 @@ private:
     std::shared_ptr<bool> sharcDiscarded_ = std::make_shared<bool>(false);
 #if METALLIC_HAS_NRC
     vulkan::NRCIntegration nrc_;
+    std::vector<std::shared_ptr<Buffer>> nrcAerialBuffers_;
     nrc::ContextSettings nrcContextSettings_{};
     bool nrcConfigured_ = false;
     std::shared_ptr<bool> nrcEndFramePending_ = std::make_shared<bool>(false);
     std::shared_ptr<bool> nrcDiscarded_ = std::make_shared<bool>(false);
     uint64_t nrcSceneRevision_ = 0;
     uint64_t nrcEnvironmentRevision_ = 0;
+    float nrcExpectedAverageRadiance_ = 1.0f;
 #endif
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
+    GPUCelestialLightRecords celestialRecords_{};
+    bool celestialRecordsInitialized_ = false;
     uint64_t environmentSettingsRevision_ = 0;
     uint32_t accumulationFrame_ = 0;
     ScenePathTraceCameraSnapshot previousCamera_;

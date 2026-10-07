@@ -64,19 +64,27 @@ struct VisibilitySurfaceLights : ISurfaceLightProvider
     uint count()
     {
         return openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)
-            ? 0u : lookup.count + clusterLightGridGlobalLightCount(grid);
+            ? 0u : kCelestialLightCount + lookup.count + clusterLightGridGlobalLightCount(grid);
     }
     SurfaceLightSample sample(uint index)
     {
         SurfaceLightSample result;
-        result.source = index < lookup.count
-            ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
-            : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
-        PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[result.source], position);
+        PunctualLightSample light;
+        if (index < kCelestialLightCount) {
+            result.source = celestialSourceIdentity(index);
+            light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, position);
+        } else {
+            index -= kCelestialLightCount;
+            result.source = index < lookup.count
+                ? clusterLightGridLocalLightIndex(lookup, gDeferredGridIndices, gDeferredGridCandidates, index)
+                : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, index - lookup.count);
+            light = samplePunctualLightData(gDeferredGridLights[result.source], position);
+        }
         result.direction = light.direction;
         result.illuminance = light.illuminance;
         result.distance = light.distance;
-        result.inverseSourcePdf = 1.0;
+        result.inverseSourcePdf = any(light.illuminance > 0.0) ? 1.0 : 0.0;
         return result;
     }
     float3 visibility(SurfaceLightSample light)
@@ -112,7 +120,7 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }
-    if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
+    if (material.emissive.w != 0.0) { return applyPrimaryAerialPerspective(surface.inputs.base_color, hit.position, ray.origin); }
     float3 viewDirection = -ray.direction;
     VisibilitySurfaceLights lights;
     lights.push = push;
@@ -130,7 +138,7 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
 #if METALLIC_CUSTOM_MATERIALS
     if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
         surface.inputs.specular_roughness_anisotropy > 0.0) {
-        return radiance + sceneSurfaceEnvironment(shaded.prepared, push) * surface.occlusion;
+        return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(shaded.prepared, push) * surface.occlusion, hit.position, ray.origin);
     }
 #endif
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
@@ -162,5 +170,5 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
         }
         radiance += (diffuse + specular + transmitted) * surface.occlusion;
     }
-    return radiance;
+    return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
 }

@@ -148,6 +148,7 @@ void RenderSubsystemHost::setWorld(RenderWorld* world)
         return;
     }
     world_ = world;
+    hasWorldFrameTime_ = false;
     for (const std::string& id : activeOrder_) {
         records_.at(id)->instance->onWorldChanged(world_);
     }
@@ -191,6 +192,12 @@ Result<> RenderSubsystemHost::beginFrame(
     frameActive_ = true;
     begunSubsystemCount_ = 0;
     preGraphOrder_.clear();
+    const auto worldFrameTime = std::chrono::steady_clock::now();
+    if (world_ != nullptr && hasWorldFrameTime_) {
+        world_->advanceWorldEnvironment(std::chrono::duration<double>(worldFrameTime - lastWorldFrameTime_).count());
+    }
+    lastWorldFrameTime_ = worldFrameTime;
+    hasWorldFrameTime_ = true;
     lastChanges_ = world_ != nullptr ? world_->consumeChanges() : RenderChangeBits::None;
 
     const RenderSubsystemFrameContext context = frameContext(nullptr, nullptr);
@@ -387,6 +394,7 @@ void RenderSubsystemHost::shutdown()
     retiredByFrameSlot_.clear();
     device_ = nullptr;
     world_ = nullptr;
+    hasWorldFrameTime_ = false;
     frameSlotCount_ = 0;
     lastChanges_ = RenderChangeBits::None;
 }
