@@ -139,6 +139,42 @@ exit nonzero after passing GPU assertions because sandbox access denies HTML
 report path canonicalization; use the retained GoogleTest XML and readbacks to
 distinguish assertion failures from report export errors.
 
+### Installed SDK 1.4.363 retest
+
+On 2026-10-07, rebuilt current Release binaries were retested with installed SDK
+`D:/Scoop/apps/vulkan/1.4.363.0`; Slang 2026.18.2 and driver 617.42 were unchanged.
+The layer DLL's SHA-256 matches the earlier isolated 1.4.363 DLL:
+`2ACC317EF880F73A9862F23A964694C03F531B866FAB6D70F1412FCBAE60CAAC`.
+Runners explicitly selected the new SDK tools/layer; existing session/system SDK
+350 settings and the registry were unchanged. C++ Vulkan headers still come from
+the SDL bundle (header version 358); this was not a header upgrade.
+
+The core run passed 13 GPU checks and two CPU ABI checks with zero VUIDs. Native
+DebugPrintf also passed GPU readback and 1/1 echo records with the new layer.
+Native alpha coverage remained 12100 with 4284 dark pixels; both native OMM tests still
+failed in the OMM-disabled fallback at step 0 ray 0. All three mapped controls
+passed. With VVL disabled, native displacement/recursive matrices still differed
+in all 32/96 resident cases out of 64/192 total combinations, with zero stream
+image differences; mapped passed all combinations and edit checks.
+
+The installed layer still reports `08758` and `08755` for raw native
+`OpConstantSizeOfEXT` heap expressions. The literal 128-byte control has zero
+VUIDs and genuinely oversized controls report the expected errors. Both raw
+task/mesh shaders pass the new `spirv-val` (exit 0); that does not replace VVL.
+
+Native default DLSS-RR PathTracingSample first warmed 370 requests (36 hits,
+334 compiled, zero failures), created PSOs and presented a frame with exit 0,
+with VVL disabled. A second run used `METALLIC_DEBUG_CONTROL=1` and
+`METALLIC_DEBUG_VALIDATION=1`, actually loaded the installed 1.4.363 layer, hit
+all 370 cache entries and presented a frame with exit 0 and zero VUIDs.
+These are startup smoke checks, not full-scene or temporal acceptance.
+
+All production workarounds remain enabled; the literal-stride policy cannot be
+removed. Evidence is in `.tmp/spirv-removal-research/Sdk363Retest/`: core
+`20261007-204055-079-core`, alpha/OMM `20261007-204221-156-alpha-omm`, pixels
+`20261007-204316-043-pixels`, `20261007-205145-094-printf`, `Payload`, `Sample`
+and `SampleValidated`; `Results.json` and `Report.md` aggregate the results.
+
 ## Conditions for removal
 
 Do not retire this policy solely because a newer SDK recognizes descriptor heap
