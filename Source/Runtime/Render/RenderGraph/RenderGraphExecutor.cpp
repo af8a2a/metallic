@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
@@ -451,7 +452,8 @@ struct RenderGraphExecutor::Impl {
     {
         return !textureAliasPlan.handoffs.empty() || !bufferAliasPlan.handoffs.empty();
     }
-    std::unique_ptr<BindlessHeap> bindlessHeap;
+    std::shared_ptr<ResourceRegistry> resourceRegistry;
+    std::vector<ResourceLease> bindlessLeases;
     std::shared_ptr<SceneResourceSnapshot> pendingSceneResourceSnapshot;
     std::vector<std::string> requiredSubsystemIds;
     std::array<std::unique_ptr<SubmissionSlot>, 2> submissionSlots{
@@ -1485,7 +1487,8 @@ struct RenderGraphExecutor::Impl {
         textureMemory = {};
         bufferMemory = {};
         resources.clear();
-        bindlessHeap.reset();
+        resourceRegistry.reset();
+        bindlessLeases.clear();
 
         ResolvedTextureExtentMap resolvedTextureExtents;
         Result<> extentConstraintResult = resolveTextureOutputExtents(
@@ -1654,15 +1657,9 @@ struct RenderGraphExecutor::Impl {
         }
 
         if (!bindlessPlan.sampledImageResources.empty() || !bindlessPlan.bufferResources.empty()) {
-            Result<> result = graphDevice.createBindlessHeap(BindlessHeapDesc{
-                    .maxSampledImages = static_cast<uint32_t>(bindlessPlan.sampledImageResources.size()),
-                    .maxBuffers = static_cast<uint32_t>(bindlessPlan.bufferResources.size()),
-                }).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
-            if (!result || bindlessHeap == nullptr) {
-                log += resultMessage("createBindlessHeap(RenderGraph)", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
+            auto registry = ResourceRegistry::forDevice(graphDevice);
+            if (!registry) { return makeError(registry.error()); }
+            resourceRegistry = *registry;
 
             for (const std::string& fullName : bindlessPlan.sampledImageResources) {
                 RenderGraphResource* graphResource = resource(fullName);
@@ -1671,25 +1668,11 @@ struct RenderGraphExecutor::Impl {
                     return makeError(Error::InvalidArgument);
                 }
 
-                BindlessHandle handle;
-                result = bindlessHeap->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
-                if (!result) {
-                    log += resultMessage(std::string("allocateSampledImage(") + fullName + ")", result);
-                    log += '\n';
-                    return result;
-                }
-
-                result = bindlessHeap->writeSampledImage(
-                    handle,
-                    *graphResource->view,
-                    TextureLayout::ShaderRead);
-                if (!result) {
-                    log += resultMessage(std::string("writeSampledImage(") + fullName + ")", result);
-                    log += '\n';
-                    return result;
-                }
-                graphResource->bindlessHandle = handle;
-                graphResource->sampledImageBindlessHandle = handle;
+                auto lease = resourceRegistry->sampledImage(*graphResource->view);
+                if (!lease) { return makeError(lease.error()); }
+                graphResource->bindlessHandle = lease->descriptorHandle();
+                graphResource->sampledImageBindlessHandle = lease->descriptorHandle();
+                bindlessLeases.push_back(std::move(*lease));
             }
 
             for (const std::string& fullName : bindlessPlan.bufferResources) {
@@ -1699,21 +1682,10 @@ struct RenderGraphExecutor::Impl {
                     return makeError(Error::InvalidArgument);
                 }
 
-                BindlessHandle handle;
-                result = bindlessHeap->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
-                if (!result) {
-                    log += resultMessage(std::string("allocateBuffer(") + fullName + ")", result);
-                    log += '\n';
-                    return result;
-                }
-
-                result = bindlessHeap->writeBufferView(handle, *graphResource->bufferView);
-                if (!result) {
-                    log += resultMessage(std::string("writeBufferView(") + fullName + ")", result);
-                    log += '\n';
-                    return result;
-                }
-                graphResource->bindlessHandle = handle;
+                auto lease = resourceRegistry->bufferView(*graphResource->bufferView);
+                if (!lease) { return makeError(lease.error()); }
+                graphResource->bindlessHandle = lease->descriptorHandle();
+                bindlessLeases.push_back(std::move(*lease));
             }
         }
 
@@ -2367,8 +2339,8 @@ struct RenderGraphExecutor::Impl {
             });
         }
 
-        if (bindlessHeap != nullptr && usesBindlessResource(node)) {
-            if (auto commandResult = commandBuffer.bindBindlessHeap(*bindlessHeap); !commandResult) { return commandResult; }
+        if (resourceRegistry != nullptr && usesBindlessResource(node)) {
+            if (auto commandResult = resourceRegistry->bind(commandBuffer, bindlessLeases); !commandResult) { return commandResult; }
         }
 
         StreamerSubsystem* upload = streamerSubsystem();
@@ -2966,7 +2938,8 @@ Result<> RenderGraphExecutor::compile(
     impl_->bufferMemory = {};
     impl_->resources.clear();
     impl_->inputAliases.clear();
-    impl_->bindlessHeap.reset();
+    impl_->resourceRegistry.reset();
+    impl_->bindlessLeases.clear();
     impl_->isCompiled = false;
     device.logMemoryBudget("graph load / previous graph resources released");
 

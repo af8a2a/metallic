@@ -214,7 +214,7 @@ public:
                   preparedSettings_,
                   log);
         preparedValid_ = result.has_value();
-        if (result && variant_ == DLSSVariant::SuperResolution && auxiliaryHeap_ != nullptr) {
+        if (result && variant_ == DLSSVariant::SuperResolution && auxiliaryRegistry_ != nullptr) {
             // Resource-only graph rebuilds reuse this pass. Resize its private
             // D32 export together with the newly negotiated input dimensions.
             return prepareSuperResolutionResources(*context.device, preparedSettings_.renderWidth,
@@ -905,26 +905,9 @@ private:
         }
 
         Result<> result;
-        if (auxiliaryHeap_ == nullptr) {
-            result = device.createBindlessHeap(BindlessHeapDesc{
-                    .maxSampledImages = 1,
-                    .maxStorageImages = 1,
-                }).transform([&](auto rhiValue) { auxiliaryHeap_ = std::move(rhiValue); });
-            if (!result || auxiliaryHeap_ == nullptr) {
-                log += resultMessage("createBindlessHeap(StreamlineDLSSSRPass)", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
-            result = auxiliaryHeap_->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { depthGuideHandle_ = std::move(rhiValue); });
-            if (!result || !depthGuideHandle_.valid()) {
-                log = "StreamlineDLSSSRPass failed to allocate its depth guide descriptor";
-                return result ? makeError(Error::Failure) : result;
-            }
-            result = auxiliaryHeap_->allocate(BindlessHandleKind::StorageImage).transform([&](auto rhiValue) { outputColorHandle_ = std::move(rhiValue); });
-            if (!result || !outputColorHandle_.valid()) {
-                log = "StreamlineDLSSSRPass failed to allocate its output descriptor";
-                return result ? makeError(Error::Failure) : result;
-            }
+        if (auxiliaryRegistry_ == nullptr) {
+            result = ResourceRegistry::forDevice(device).transform([&](auto value) { auxiliaryRegistry_ = std::move(value); });
+            if (!result) { return result; }
         }
 
         if (depthExportPipeline_ == nullptr) {
@@ -1036,17 +1019,15 @@ private:
         if (!validTexture(depthGuide) ||
             dlssDepth_ == nullptr ||
             dlssDepthView_ == nullptr ||
-            auxiliaryHeap_ == nullptr ||
+            auxiliaryRegistry_ == nullptr ||
             depthExportPipeline_ == nullptr ||
             renderWidth != dlssDepthWidth_ ||
             renderHeight != dlssDepthHeight_) {
             return makeError(Error::InvalidArgument);
         }
 
-        Result<> result = auxiliaryHeap_->writeSampledImage(
-            depthGuideHandle_,
-            *depthGuide.view(),
-            TextureLayout::ShaderRead);
+        Result<> result = auxiliaryRegistry_->sampledImage(*depthGuide.view())
+            .transform([&](auto lease) { depthGuideHandle_ = std::move(lease); });
         if (!result) {
             return result;
         }
@@ -1077,8 +1058,9 @@ private:
             .maxDepth = 1.0f,
         }); !commandResult) { return commandResult; }
         commandBuffer.setScissor(renderArea);
-        if (auto commandResult = commandBuffer.bindBindlessHeap(*auxiliaryHeap_); !commandResult) { return commandResult; }
-        if (auto commandResult = commandBuffer.bindExecution((depthExportPipeline_)->execution(), &depthGuideHandle_.shaderIndex, sizeof(depthGuideHandle_.shaderIndex)); !commandResult) { return commandResult; }
+        if (auto commandResult = auxiliaryRegistry_->bind(commandBuffer, std::array{depthGuideHandle_}); !commandResult) { return commandResult; }
+        const uint32_t depthIndex = depthGuideHandle_.shaderIndex();
+        if (auto commandResult = commandBuffer.bindExecution((depthExportPipeline_)->execution(), &depthIndex, sizeof(depthIndex)); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.draw(3); !commandResult) { return commandResult; }
         commandBuffer.endRendering();
 
@@ -1090,21 +1072,19 @@ private:
         TextureHandle outputColor)
     {
         if (!validTexture(outputColor) ||
-            auxiliaryHeap_ == nullptr ||
-            alphaResolvePipeline_ == nullptr ||
-            !outputColorHandle_.valid()) {
+            auxiliaryRegistry_ == nullptr ||
+            alphaResolvePipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        Result<> result = auxiliaryHeap_->writeStorageImage(
-            outputColorHandle_,
-            *outputColor.view());
+        Result<> result = auxiliaryRegistry_->storageImage(*outputColor.view())
+            .transform([&](auto lease) { outputColorHandle_ = std::move(lease); });
         if (!result) {
             return result;
         }
 
-        if (auto commandResult = commandBuffer.bindBindlessHeap(*auxiliaryHeap_); !commandResult) { return commandResult; }
+        if (auto commandResult = auxiliaryRegistry_->bind(commandBuffer, std::array{outputColorHandle_}); !commandResult) { return commandResult; }
         const StreamlineDLSSAlphaUserPush push{
-            .outputImage = outputColorHandle_.shaderIndex,
+            .outputImage = outputColorHandle_.shaderIndex(),
         };
         if (auto commandResult = commandBuffer.bindExecution((alphaResolvePipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
         if (auto commandResult = commandBuffer.dispatch(
@@ -1136,9 +1116,9 @@ private:
     uint32_t preparedOutputHeight_ = 0;
     bool preparedValid_ = false;
     bool forceReset_ = true;
-    std::unique_ptr<BindlessHeap> auxiliaryHeap_;
-    BindlessHandle depthGuideHandle_;
-    BindlessHandle outputColorHandle_;
+    std::shared_ptr<ResourceRegistry> auxiliaryRegistry_;
+    ResourceLease depthGuideHandle_;
+    ResourceLease outputColorHandle_;
     std::unique_ptr<ShaderModule> depthVertexShader_;
     std::unique_ptr<ShaderModule> depthFragmentShader_;
     std::unique_ptr<ShaderModule> alphaShader_;

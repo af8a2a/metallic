@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include <array>
 #include <string>
 
@@ -64,7 +64,8 @@ private:
         uint32_t streamMode = 0;
     } push_;
     std::array<std::unique_ptr<Buffer>, 3> buffers_;
-    std::unique_ptr<BindlessHeap> heap_;
+    std::shared_ptr<ResourceRegistry> registry_;
+    std::array<ResourceLease, 5> resources_;
     std::array<std::unique_ptr<ShaderModule>, 5> shaders_;
     std::array<std::unique_ptr<ComputePipeline>, 3> compute_;
     std::array<std::unique_ptr<GraphicsPipeline>, 2> resolve_;

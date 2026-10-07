@@ -27,7 +27,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         return makeError(Error::Unsupported);
     }
     push_.subpixelBits = device.capabilities().subPixelPrecisionBits;
-    auto result = device.createBindlessHeap({.maxBuffers = 5}).transform([&](auto rhiValue) { heap_ = std::move(rhiValue); });
+    auto result = ResourceRegistry::forDevice(device).transform([&](auto value) { registry_ = std::move(value); });
     if (!result) { return result; }
     const uint64_t sizes[] = {32ull + push_.capacity * 64ull, uint64_t(width) * height * 8, 12};
     const uint32_t strides[] = {16, 8, 4};
@@ -37,13 +37,12 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
                 (i == 2 ? BufferUsageBits::Indirect : BufferUsageBits::None),
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffers_[i] = std::move(rhiValue); });
         if (!result) { return result; }
-        BindlessHandle handle;
-        result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
-        if (result) { result = (*buffers_[i]).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(handle, bufferSlice); }); }
+        result = registry_->storageBuffer(*buffers_[i]).transform([&](auto lease) { resources_[i] = std::move(lease); });
         if (!result) { return result; }
-        if (i == 0) { push_.queueBuffer = handle.shaderIndex; }
-        if (i == 1) { push_.pixelBuffer = handle.shaderIndex; }
-        if (i == 2) { push_.argumentsBuffer = handle.shaderIndex; }
+        const auto& handle = resources_[i];
+        if (i == 0) { push_.queueBuffer = handle.shaderIndex(); }
+        if (i == 1) { push_.pixelBuffer = handle.shaderIndex(); }
+        if (i == 2) { push_.argumentsBuffer = handle.shaderIndex(); }
     }
     const uint64_t clusterSizes[] = {64ull + uint64_t(clusterCapacity) * 9u * 4u + ((clusterCapacity + 127u) / 128u) * 5ull * 4u, 5u * 12u};
     for (size_t i = 0; i < 2; ++i) {
@@ -53,11 +52,10 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
                 (i == 1 ? BufferUsageBits::Indirect : BufferUsageBits::None),
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!result) { return result; }
-        BindlessHandle handle;
-        result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
-        if (result) { result = (*buffer).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(handle, bufferSlice); }); }
+        result = registry_->storageBuffer(*buffer).transform([&](auto lease) { resources_[i + 3] = std::move(lease); });
         if (!result) { return result; }
-        if (i == 0) { push_.clusterBuffer = handle.shaderIndex; } else { push_.clusterArgumentsBuffer = handle.shaderIndex; }
+        const auto& handle = resources_[i + 3];
+        if (i == 0) { push_.clusterBuffer = handle.shaderIndex(); } else { push_.clusterArgumentsBuffer = handle.shaderIndex(); }
     }
     const char* clusterEntries[] = {"hybridClusterResetMain", "hybridClusterHistogramMain",
         "hybridClusterArgumentsMain", "hybridClusterScatterMain"};
@@ -150,7 +148,7 @@ Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPix
         };
     }
     if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
-    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
+    if (auto commandResult = registry_->bind(commands, resources_); !commandResult) { return commandResult; }
     if (auto commandResult = commands.bindExecution((compute_[0])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
     if (auto commandResult = commands.dispatch((push_.width + 63u) / 64u, push_.height); !commandResult) { return commandResult; }
     for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
@@ -169,7 +167,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
     };
     if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
-    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
+    if (auto commandResult = registry_->bind(commands, resources_); !commandResult) { return commandResult; }
     if (!softwareRasterized) {
         if (auto commandResult = commands.bindExecution((compute_[1])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }
         if (auto commandResult = commands.dispatch(1); !commandResult) { return commandResult; }
@@ -248,7 +246,7 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
     } else {
         if (auto result = begin(commands, maxPixels, reversedZ); !result) { return result; }
     }
-    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
+    if (auto commandResult = registry_->bind(commands, resources_); !commandResult) { return commandResult; }
     push_.producerPixelBuffer = producerPixelBuffer;
     push_.inputClusterCount = inputCount;
     push_.streamMode = (stream ? 1u : 0u) | (tessellation ? 2u : 0u);
@@ -368,7 +366,7 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
-    if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
+    if (auto commandResult = registry_->bind(commands, resources_); !commandResult) { return commandResult; }
     const uint32_t blocks = (push_.inputClusterCount + 127u) / 128u;
     for (size_t i = 1; i < clusterPipelines_.size(); ++i) {
         if (auto commandResult = commands.bindExecution((clusterPipelines_[i])->execution(), &push_, sizeof(push_)); !commandResult) { return commandResult; }

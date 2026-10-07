@@ -2403,6 +2403,60 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(AtmosphereResourceParametersTest);
 
+class RegistryBufferViewTest final : public RHITest {
+public:
+    RegistryBufferViewTest() { type = RHITestType::Resource; name = "registry_shared_heap_buffer_views_and_recording_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        auto registry = ResourceRegistry::forDevice(context.device);
+        REG_CHECK(registry);
+        auto buffer = context.device.createBuffer({.size = 1024,
+            .usage = BufferUsageBits::Storage | BufferUsageBits::Constant});
+        REG_CHECK(buffer);
+        auto fullView = context.device.createBufferView(**buffer, {.type = BufferViewType::Raw});
+        auto rangeView = context.device.createBufferView(**buffer,
+            {.type = BufferViewType::Raw, .range = {.offset = 256, .size = 256}});
+        auto constantView = context.device.createBufferView(**buffer,
+            {.type = BufferViewType::Constant, .range = {.offset = 256, .size = 256}});
+        REG_CHECK(fullView && rangeView && constantView);
+        auto full = (*registry)->bufferView(**fullView);
+        auto storage = (*registry)->storageBuffer(**buffer);
+        auto range = (*registry)->bufferView(**rangeView);
+        auto sameRange = (*registry)->bufferView(**rangeView);
+        auto constant = (*registry)->bufferView(**constantView);
+        REG_CHECK(full && storage && range && sameRange && constant);
+        REG_CHECK(full->shaderIndex() == storage->shaderIndex());
+        REG_CHECK(range->shaderIndex() == sameRange->shaderIndex());
+        REG_CHECK(range->shaderIndex() != full->shaderIndex());
+        REG_CHECK(constant->shaderIndex() != range->shaderIndex());
+        REG_CHECK(range->descriptorHandle().valid());
+        REG_CHECK((*rangeView)->slice().offset() == 256 && (*rangeView)->slice().size() == 256);
+        BufferView empty;
+        REG_CHECK(!(*registry)->bufferView(empty));
+        std::weak_ptr<void> allocation = (*buffer)->retainAllocation();
+        auto* queue = context.device.getQueue(QueueType::Graphics);
+        REG_CHECK(queue);
+        auto pool = context.device.createCommandPool(*queue);
+        REG_CHECK(pool);
+        auto commands = (*pool)->createCommandBuffer();
+        REG_CHECK(commands);
+        REG_REQUIRE((*commands)->begin());
+        REG_REQUIRE((*registry)->bind(**commands, std::array{*full, *range, *constant}));
+        REG_REQUIRE((*commands)->end());
+        full = ResourceLease{}; storage = ResourceLease{}; range = ResourceLease{};
+        sameRange = ResourceLease{}; constant = ResourceLease{};
+        fullView->reset(); rangeView->reset(); constantView->reset(); buffer->reset();
+        (*registry)->collect();
+        REG_CHECK(!allocation.expired()); // Recording owns leases even after wrappers are gone.
+        REG_REQUIRE((*pool)->reset());
+        (*registry)->collect();
+        REG_CHECK(allocation.expired());
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RegistryBufferViewTest);
+
 class RegistryDeviceLifetimeTest final : public RHITest {
 public:
     RegistryDeviceLifetimeTest()

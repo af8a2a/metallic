@@ -128,6 +128,11 @@ uint64_t ResourceLease::shaderValue() const
     return state_ ? state_->entry->value : UINT64_MAX;
 }
 
+BindlessHandle ResourceLease::descriptorHandle() const
+{
+    return state_ ? state_->entry->handle : BindlessHandle{};
+}
+
 ShaderResourceKind ResourceLease::kind() const
 {
     return state_ ? state_->entry->kind : ShaderResourceKind::Buffer;
@@ -201,6 +206,33 @@ Result<ResourceLease> ResourceRegistry::storageBuffer(const BufferSlice& buffer)
             entry.value = entry.handle.shaderIndex;
             return state_->heap->writeStorageBuffer(entry.handle, buffer);
         }).transform([](auto state) {
+        ResourceLease lease;
+        lease.state_ = std::move(state);
+        return lease;
+    });
+}
+
+Result<ResourceLease> ResourceRegistry::bufferView(BufferView& view)
+{
+    const auto slice = view.slice();
+    if (!state_ || !slice.valid() || slice.deviceIdentity() != state_->device) {
+        return makeError(Error::InvalidArgument);
+    }
+    // Full storage views share the same descriptor as DR buffer spans.
+    if (view.desc().type != BufferViewType::Constant && slice.offset() == 0 &&
+        slice.size() == slice.allocationDesc().size) { return storageBuffer(slice); }
+    auto allocation = slice.retainAllocation();
+    auto key = keyFor(ShaderResourceKind::Buffer, allocation);
+    key[2] = 1; // View range/type namespace, distinct from full storage allocations.
+    key[3] = slice.offset(); key[4] = slice.size();
+    key[5] = uint64_t(view.desc().type); key[6] = view.desc().structureStride;
+    return acquire(state_, key, ShaderResourceKind::Buffer, allocation, false, [&](auto& entry) {
+        auto result = state_->heap->allocate(BindlessHandleKind::Buffer)
+            .transform([&](auto handle) { entry.handle = handle; });
+        if (!result) { return result; }
+        entry.value = entry.handle.shaderIndex;
+        return state_->heap->writeBufferView(entry.handle, view);
+    }).transform([](auto state) {
         ResourceLease lease;
         lease.state_ = std::move(state);
         return lease;
@@ -305,9 +337,13 @@ BindlessHeap* ResourceRegistry::heap() const
     return state_ ? state_->heap.get() : nullptr;
 }
 
-Result<> ResourceRegistry::bind(CommandBuffer& commands) const
+Result<> ResourceRegistry::bind(CommandBuffer& commands, std::span<const ResourceLease> leases) const
 {
     if (!state_ || commands.deviceIdentity() != state_->device) { return makeError(Error::InvalidArgument); }
+    for (const auto& lease : leases) {
+        auto result = retain(commands, lease);
+        if (!result) { return result; }
+    }
     auto result = commands.retainResource(state_);
     if (result) { result = commands.bindBindlessHeap(*state_->heap); }
     return result;

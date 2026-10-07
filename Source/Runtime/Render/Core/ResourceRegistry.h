@@ -46,6 +46,8 @@ public:
     uint64_t shaderValue() const;
     uint32_t shaderIndex() const { return static_cast<uint32_t>(shaderValue()); }
     ShaderResourceKind kind() const;
+    // Borrowed identity for legacy graph bindings; registry owns writes and release.
+    BindlessHandle descriptorHandle() const;
 private:
     std::shared_ptr<detail::ResourceLeaseState> state_;
     friend class ResourceRegistry;
@@ -87,6 +89,7 @@ public:
     Result<> initialize(Device& device, const BindlessHeapDesc& capacity = {
         .maxSamplers = 64, .maxSampledImages = 8192, .maxStorageImages = 1024, .maxBuffers = 8192});
     [[nodiscard]] Result<ResourceLease> storageBuffer(Buffer& buffer);
+    [[nodiscard]] Result<ResourceLease> bufferView(BufferView& view);
     [[nodiscard]] Result<ResourceLease> storageBuffer(const BufferSlice& buffer);
     [[nodiscard]] Result<ResourceLease> sampledImage(
         TextureView& view,
@@ -101,7 +104,7 @@ public:
     BindlessHeap* heap() const;
     // Immutable provenance check for assembling packets without a command buffer.
     bool owns(const ResourceLease& lease) const;
-    Result<> bind(CommandBuffer& commands) const;
+    Result<> bind(CommandBuffer& commands, std::span<const ResourceLease> leases = {}) const;
     Result<> retain(CommandBuffer& commands, const ResourceLease& lease) const;
 private:
     [[nodiscard]] Result<ResourceLease> image(

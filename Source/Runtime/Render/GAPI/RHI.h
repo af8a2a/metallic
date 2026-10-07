@@ -575,6 +575,7 @@ private:
     uint64_t offset_ = 0;
     uint64_t size_ = 0;
     friend class Buffer;
+    friend class BufferView;
     friend class BindlessHeap;
     friend struct detail::BufferAddressCommandAccess;
 };
@@ -1523,6 +1524,7 @@ class BufferView {
     )
 
     const BufferViewDesc& desc() const;
+    BufferSlice slice() const;
 };
 
 class TimestampQueryPool {

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -40,31 +41,16 @@ public:
             return makeError(Error::InvalidArgument);
         }
         Result<> result;
-        result = context.device->createBindlessHeap(BindlessHeapDesc{
-                .maxSampledImages = 1,
-            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
-        if (!result || bindlessHeap_ == nullptr) {
-            log += resultMessage("createBindlessHeap(ImageSamplePass)", result);
+        result = ResourceRegistry::forDevice(*context.device).transform([&](auto value) { registry_ = std::move(value); });
+        if (!result || registry_ == nullptr) {
+            log += resultMessage("ResourceRegistry::forDevice(ImageSamplePass)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = bindlessHeap_->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { imageHandle_ = std::move(rhiValue); });
-        if (!result || !imageHandle_.valid()) {
-            log += resultMessage("allocateSampledImage(ImageSamplePass)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        result = bindlessHeap_->writeSampledImage(
-            imageHandle_,
-            *context.preparedScene->imageView,
-            TextureLayout::ShaderRead);
-        if (!result) {
-            log += resultMessage("writeSampledImage(ImageSamplePass)", result);
-            log += '\n';
-            return result;
-        }
+        result = registry_->sampledImage(*context.preparedScene->imageView)
+            .transform([&](auto lease) { imageHandle_ = std::move(lease); });
+        if (!result) { return result; }
 
         result = createShaderModule(*context.device, kImageSampleVertexEntryPoint, vertexShader_, log);
         if (!result) {
@@ -93,7 +79,7 @@ public:
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||
-            bindlessHeap_ == nullptr ||
+            registry_ == nullptr ||
             pipeline_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
@@ -124,8 +110,9 @@ public:
             .maxDepth = 1.0f,
         }); !commandResult) { return commandResult; }
         context.commandBuffer().setScissor(renderArea);
-        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*bindlessHeap_); !commandResult) { return commandResult; }
-        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution(), &imageHandle_.shaderIndex, sizeof(imageHandle_.shaderIndex)); !commandResult) { return commandResult; }
+        if (auto commandResult = registry_->bind(context.commandBuffer(), std::array{imageHandle_}); !commandResult) { return commandResult; }
+        const uint32_t imageIndex = imageHandle_.shaderIndex();
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution(), &imageIndex, sizeof(imageIndex)); !commandResult) { return commandResult; }
         if (auto commandResult = context.commandBuffer().draw(3); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
@@ -170,8 +157,8 @@ private:
         return result;
     }
 
-    std::unique_ptr<BindlessHeap> bindlessHeap_;
-    BindlessHandle imageHandle_;
+    std::shared_ptr<ResourceRegistry> registry_;
+    ResourceLease imageHandle_;
     std::unique_ptr<ShaderModule> vertexShader_;
     std::unique_ptr<ShaderModule> fragmentShader_;
     std::unique_ptr<GraphicsPipeline> pipeline_;

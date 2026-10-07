@@ -3966,6 +3966,17 @@ const BufferViewDesc& BufferView::desc() const
     return impl_ != nullptr ? impl_->desc : emptyDesc;
 }
 
+BufferSlice BufferView::slice() const
+{
+    BufferSlice slice;
+    if (impl_) {
+        slice.allocation_ = impl_->buffer;
+        slice.offset_ = impl_->desc.range.offset;
+        slice.size_ = impl_->size;
+    }
+    return slice;
+}
+
 METALLIC_RHI_HANDLE_DEFINITIONS(Texture)
 
 const TextureDesc& Texture::desc() const

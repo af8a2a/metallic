@@ -220,6 +220,8 @@ void WorkControlReplay::before(CommandBuffer& commands, ComputePipeline& pipelin
     s.evidence["heapAbi"] = {{"nativeDescriptorHeap", vulkan::nativeDevice(s.device).descriptorHeapEnabled},
         {"maxBuffers", productionHeap.desc().maxBuffers}, {"maxSamplers", productionHeap.desc().maxSamplers},
         {"maxSampledImages", productionHeap.desc().maxSampledImages}, {"maxStorageImages", productionHeap.desc().maxStorageImages}};
+    // Intentional private heap: replay preserves production indices but binds snapshot allocations.
+    // Registering these replacements in the production registry would change the captured ABI.
     require(bool(s.device.createBindlessHeap(productionHeap.desc()).transform([&](auto value) { s.heap = std::move(value); })),
         "replay_heap_creation_failed");
     std::map<uint32_t, BindlessHandle> handles;

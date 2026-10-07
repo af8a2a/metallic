@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -130,32 +131,30 @@ public:
             return result;
         }
 
-        result = context.device->createBindlessHeap(BindlessHeapDesc{
-                .maxBuffers = 5,
-            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
-        if (!result || bindlessHeap_ == nullptr) {
-            log += resultMessage("createBindlessHeap(SceneMaterialShaderObjectPass)", result);
+        result = ResourceRegistry::forDevice(*context.device).transform([&](auto value) { registry_ = std::move(value); });
+        if (!result || registry_ == nullptr) {
+            log += resultMessage("ResourceRegistry::forDevice(SceneMaterialShaderObjectPass)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = allocateAndWriteBuffer(*bindlessHeap_, *positionBuffer_, positionHandle_, log, "positions");
+        result = registerBuffer(*registry_, *positionBuffer_, positionHandle_, log, "positions");
         if (!result) {
             return result;
         }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *materialIndexBuffer_, materialIndexHandle_, log, "material indices");
+        result = registerBuffer(*registry_, *materialIndexBuffer_, materialIndexHandle_, log, "material indices");
         if (!result) {
             return result;
         }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *materialBuffer_, materialHandle_, log, "materials");
+        result = registerBuffer(*registry_, *materialBuffer_, materialHandle_, log, "materials");
         if (!result) {
             return result;
         }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *paramsBuffer_, paramsHandle_, log, "params");
+        result = registerBuffer(*registry_, *paramsBuffer_, paramsHandle_, log, "params");
         if (!result) {
             return result;
         }
-        result = allocateAndWriteBuffer(*bindlessHeap_, *transformBuffer_, transformHandle_, log, "transforms");
+        result = registerBuffer(*registry_, *transformBuffer_, transformHandle_, log, "transforms");
         if (!result) {
             return result;
         }
@@ -216,7 +215,7 @@ public:
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
             !depth.valid() ||
-            bindlessHeap_ == nullptr ||
+            registry_ == nullptr ||
             defaultProgram_ == nullptr ||
             alternateProgram_ == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -260,7 +259,7 @@ public:
             context.commandBuffer().endRendering();
             return {};
         }
-        if (auto commandResult = context.commandBuffer().bindBindlessHeap(*bindlessHeap_); !commandResult) { return commandResult; }
+        if (auto commandResult = registry_->bind(context.commandBuffer(), std::array{positionHandle_, materialIndexHandle_, materialHandle_, paramsHandle_, transformHandle_}); !commandResult) { return commandResult; }
         const RasterExecutionState rasterState{.depthStencil = {
             .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(kMaterialReversedZ)}};
         auto bound = context.commandBuffer().bindExecution(defaultProgram_->execution(rasterState));
@@ -291,13 +290,13 @@ public:
             }
 
             const MaterialShaderObjectUserPush push{
-                .positionBuffer = positionHandle_.shaderIndex,
-                .materialIndexBuffer = materialIndexHandle_.shaderIndex,
-                .materialBuffer = materialHandle_.shaderIndex,
-                .paramsBuffer = paramsHandle_.shaderIndex,
+                .positionBuffer = positionHandle_.shaderIndex(),
+                .materialIndexBuffer = materialIndexHandle_.shaderIndex(),
+                .materialBuffer = materialHandle_.shaderIndex(),
+                .paramsBuffer = paramsHandle_.shaderIndex(),
                 .vertexOffset = batch.firstVertex,
                 .materialVariant = desiredProgram == alternateProgram_.get() ? 1u : 0u,
-                .transformBuffer = transformHandle_.shaderIndex,
+                .transformBuffer = transformHandle_.shaderIndex(),
             };
             if (auto commandResult = context.commandBuffer().pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
             if (auto commandResult = context.commandBuffer().draw(batch.vertexCount); !commandResult) { return commandResult; }
@@ -345,7 +344,7 @@ private:
 
     Result<> rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
     {
-        if (device_ == nullptr || bindlessHeap_ == nullptr) {
+        if (device_ == nullptr || registry_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -422,19 +421,19 @@ private:
             return result;
         }
 
-        result = (*positionBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(positionHandle_, bufferSlice); });
+        result = registry_->storageBuffer(*positionBuffer).transform([&](auto lease) { positionHandle_ = std::move(lease); });
         if (!result) {
             return result;
         }
-        result = (*transformBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(transformHandle_, bufferSlice); });
+        result = registry_->storageBuffer(*transformBuffer).transform([&](auto lease) { transformHandle_ = std::move(lease); });
         if (!result) {
             return result;
         }
-        result = (*materialIndexBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(materialIndexHandle_, bufferSlice); });
+        result = registry_->storageBuffer(*materialIndexBuffer).transform([&](auto lease) { materialIndexHandle_ = std::move(lease); });
         if (!result) {
             return result;
         }
-        result = (*materialBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(materialHandle_, bufferSlice); });
+        result = registry_->storageBuffer(*materialBuffer).transform([&](auto lease) { materialHandle_ = std::move(lease); });
         if (!result) {
             return result;
         }
@@ -489,25 +488,15 @@ private:
         return {};
     }
 
-    static Result<> allocateAndWriteBuffer(
-        BindlessHeap& heap,
+    static Result<> registerBuffer(
+        ResourceRegistry& registry,
         Buffer& buffer,
-        BindlessHandle& outHandle,
+        ResourceLease& outHandle,
         std::string& log,
         std::string_view label)
     {
-        Result<> result = heap.allocate(BindlessHandleKind::Buffer).transform([&](BindlessHandle handle) { outHandle = handle; });
-        if (!result || !outHandle.valid()) {
-            log += resultMessage(std::string("allocateBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        result = (buffer).slice().and_then([&](const auto& bufferSlice) { return heap.writeStorageBuffer(outHandle, bufferSlice); });
-        if (!result) {
-            log += resultMessage(std::string("writeStorageBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
-            log += '\n';
-        }
+        auto result = registry.storageBuffer(buffer).transform([&](auto lease) { outHandle = std::move(lease); });
+        if (!result) { log += resultMessage(std::string("register buffer ") + std::string(label), result); }
         return result;
     }
 
@@ -752,12 +741,12 @@ private:
     std::unique_ptr<Buffer> materialIndexBuffer_;
     std::unique_ptr<Buffer> materialBuffer_;
     std::unique_ptr<Buffer> paramsBuffer_;
-    std::unique_ptr<BindlessHeap> bindlessHeap_;
-    BindlessHandle positionHandle_;
-    BindlessHandle transformHandle_;
-    BindlessHandle materialIndexHandle_;
-    BindlessHandle materialHandle_;
-    BindlessHandle paramsHandle_;
+    std::shared_ptr<ResourceRegistry> registry_;
+    ResourceLease positionHandle_;
+    ResourceLease transformHandle_;
+    ResourceLease materialIndexHandle_;
+    ResourceLease materialHandle_;
+    ResourceLease paramsHandle_;
     std::unique_ptr<GraphicsShaderObjectProgram> defaultProgram_;
     std::unique_ptr<GraphicsShaderObjectProgram> alternateProgram_;
     std::vector<MaterialShaderObjectBatch> batches_;
