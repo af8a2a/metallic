@@ -78,8 +78,8 @@ protected:
 
 TEST_F(DeviceFeatures, OptionalRequestsDoNotDisqualifyFallback)
 {
-    options.enableAftermath = true;
-    options.enableStreamline = true;
+    desc.enableAftermath = true;
+    desc.enableStreamline = true;
     auto selected = select();
     EXPECT_TRUE(selected.matches(request()));
     EXPECT_FALSE(selected.deviceGeneratedCommands);
@@ -316,7 +316,7 @@ TEST_F(DeviceFeatures, CoreEnablementAndBackendPublicationKeepUnrelatedCapabilit
 #if defined(VK_NVX_binary_import) && defined(VK_NVX_image_view_handle)
 TEST_F(DeviceFeatures, StreamlineBundleAndNRCSharePipelineAndUniqueExtensions)
 {
-    options.enableStreamline = true;
+    desc.enableStreamline = true;
     supportAS();
     extensions.rayQuery = extensions.rayTracingPipeline = extensions.pipelineLibrary = true;
     extensions.pushDescriptor = extensions.streamlineBinaryImport = extensions.streamlineImageViewHandle = true;
@@ -324,6 +324,8 @@ TEST_F(DeviceFeatures, StreamlineBundleAndNRCSharePipelineAndUniqueExtensions)
     probe.vulkan13Features.privateData = VK_TRUE;
     auto selected = select();
     EXPECT_TRUE(selected.streamline);
+    EXPECT_TRUE(selected.pushDescriptor);
+    EXPECT_FALSE(desc.backendExtensions.has_value());
     EXPECT_TRUE(selected.nrcRayTracingPipeline);
     auto names = extensionNames(selected);
     EXPECT_TRUE(names.contains(VK_NVX_BINARY_IMPORT_EXTENSION_NAME));
@@ -334,19 +336,26 @@ TEST_F(DeviceFeatures, StreamlineBundleAndNRCSharePipelineAndUniqueExtensions)
     extensions.streamlineBinaryImport = false;
     EXPECT_FALSE(select().streamline);
     EXPECT_TRUE(select().nrcRayTracingPipeline);
-    options.enableStreamline = false;
+    desc.enableStreamline = false;
     desc.enableRayQuery = true;
     selected = select();
     EXPECT_TRUE(selected.nrcRayTracingPipeline);
     EXPECT_FALSE(selected.streamline);
+    EXPECT_FALSE(selected.pushDescriptor);
+    EXPECT_FALSE(extensionNames(selected).contains(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME));
     EXPECT_FALSE(extensionNames(selected).contains(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME));
+    extensions.pushDescriptor = false;
+    EXPECT_TRUE(select().nrcRayTracingPipeline);
+    desc.enableStreamline = true;
+    extensions.streamlineBinaryImport = true;
+    EXPECT_FALSE(select().streamline);
 }
 #endif
 
 #if defined(VK_NV_device_diagnostic_checkpoints) && defined(VK_NV_device_diagnostics_config)
 TEST_F(DeviceFeatures, AftermathRequiresInitializationAndBothExtensions)
 {
-    options.enableAftermath = true;
+    desc.enableAftermath = true;
     extensions.aftermathDiagnosticCheckpoints = extensions.aftermathDiagnosticsConfig = true;
     probe.diagnosticsConfigFeatures.diagnosticsConfig = VK_TRUE;
     EXPECT_FALSE(select(true, false).aftermath);

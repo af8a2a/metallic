@@ -9,9 +9,6 @@ class ShaderPrintf;
 // A value stored in DeviceDesc::backendExtensions. No Vulkan SDK headers are
 // required by callers configuring these options.
 struct VulkanDeviceExtensions {
-    bool enablePushDescriptor = false;
-    bool enableStreamline = false;
-    bool enableAftermath = false;
     // Unsupported devices retain optimal image layouts.
     bool preferUnifiedImageLayouts = true;
     // Implies validation and excludes NvPerf. The capture must outlive Device.

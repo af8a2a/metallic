@@ -1,4 +1,3 @@
-#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/RHISmokeTests.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
@@ -104,9 +103,7 @@ Result<> TrianglePreviewRendererImpl::initialize(bool enableValidation)
     Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic Triangle Preview",
             .enableValidation = enableValidation,
-            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-                .enableAftermath = true,
-            },
+            .enableAftermath = true,
         }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
     if (!result) {
         return result;
@@ -438,9 +435,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                 .applicationName = "Metallic RHI Bindless Descriptor Heap Smoke Test",
                 .enableValidation = enableValidation,
                 .enableBindlessDescriptorHeap = true,
-                .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-                    .enableAftermath = true,
-                },
+                .enableAftermath = true,
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!checkResult(result, "createDevice")) {
             exitCode = resultToExitCode(result);
@@ -847,9 +842,7 @@ int runRhiSmokeTest(bool enableValidation)
     Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic RHI Smoke Test",
             .enableValidation = enableValidation,
-            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-                .enableAftermath = true,
-            },
+            .enableAftermath = true,
         }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
     if (!checkResult(result, "createDevice")) {
         cleanup();

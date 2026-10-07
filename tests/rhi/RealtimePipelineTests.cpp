@@ -535,7 +535,7 @@ public:
         auto created = createDevice({.applicationName = "Non-bindless DLSS compile contract",
             .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = false,
-            .backendExtensions = vulkan::VulkanDeviceExtensions{.enableStreamline = true}})
+            .enableStreamline = true})
             .transform([&](auto value) { device = std::move(value); });
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Streamline device unavailable"); }
         if (!created) { return realtimeFailure("Non-bindless Streamline device creation failed"); }

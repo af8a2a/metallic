@@ -153,8 +153,9 @@ MT_VK_FEATURE(rayQuery, desc.enableRayQuery, true,
         probe.rayQueryFeatures.rayQuery == VK_TRUE, 2,
     rayQueryFeatures.rayQuery = selection.rayQuery;, caps.rayQuery = rayQuery;)
 
-MT_VK_FEATURE(pushDescriptor, vulkanOptions.enablePushDescriptor, true,
-    (request.pushDescriptor || request.streamline) && extensions.pushDescriptor, 1,
+// SDK prerequisite, derived by the backend; ordinary ray queries do not need it.
+MT_VK_FEATURE(pushDescriptor, false, false,
+    request.streamline && extensions.pushDescriptor, 1,
     , backendCaps.pushDescriptor = pushDescriptor;)
 
 MT_VK_FEATURE(opacityMicromap, desc.enableOpacityMicromap, false,
@@ -194,16 +195,16 @@ MT_VK_FEATURE(partitionedAccelerationStructure, desc.enablePartitionedAccelerati
 MT_VK_DEPENDENCY(partitionedAccelerationStructure, rayTracingAccelerationStructure)
 #endif
 
-MT_VK_FEATURE(streamline, vulkanOptions.enableStreamline, false,
+MT_VK_FEATURE(streamline, desc.enableStreamline, false,
     request.streamline && streamlineSupported && result.rayTracingAccelerationStructure && result.rayQuery && result.pushDescriptor, 32,
     , )
 
 #ifdef VK_NV_device_diagnostics_config
-MT_VK_FEATURE(aftermath, vulkanOptions.enableAftermath && aftermathInitialized, false,
+MT_VK_FEATURE(aftermath, desc.enableAftermath && aftermathInitialized, false,
     request.aftermath && aftermathSupported, 0,
     diagnosticsConfigFeatures.diagnosticsConfig = selection.aftermath;, backendCaps.aftermath = aftermath;)
 #else
-MT_VK_FEATURE(aftermath, vulkanOptions.enableAftermath && aftermathInitialized, false, false, 0, , backendCaps.aftermath = aftermath;)
+MT_VK_FEATURE(aftermath, desc.enableAftermath && aftermathInitialized, false, false, 0, , backendCaps.aftermath = aftermath;)
 #endif
 
 // Opportunistic core bits used by NRC (layouts/fp16/int16) and SHaRC (int64 atomics).

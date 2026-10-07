@@ -1,5 +1,4 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -4558,10 +4557,7 @@ Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enab
             .enableRayQuery = enableRayQuery,
             .enableClusterAccelerationStructure = enableRayQuery,
             .enableAsyncCompute = true,
-            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-                .enablePushDescriptor = enableRayQuery,
-                .enableAftermath = enableAftermath,
-            },
+            .enableAftermath = enableAftermath,
         }).transform([&](auto rhiValue) { impl_->device = std::move(rhiValue); });
     if (!result) {
         return result;

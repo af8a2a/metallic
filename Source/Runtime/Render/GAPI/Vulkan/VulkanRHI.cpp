@@ -9459,12 +9459,12 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     std::lock_guard initializationLock(volkInitializationMutex());
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
     deviceImpl->logPipelineKeys = logPipelineKeys;
-    if (vulkanOptions.enableAftermath) {
+    if (desc.enableAftermath) {
         vulkan::toolingHooks().initializeDiagnostics(desc.applicationName);
     }
 
     PFN_vkGetInstanceProcAddr streamlineVkGetInstanceProcAddr = nullptr;
-    if (vulkanOptions.enableStreamline && vulkan::streamlineSdkAvailable()) {
+    if (desc.enableStreamline && vulkan::streamlineSdkAvailable()) {
         const char* const vulkanLibraryName = vulkan::streamlineVulkanLibraryName();
         streamlineVkGetInstanceProcAddr =
             loadVulkanLoaderProcAddr(vulkanLibraryName, deviceImpl->vulkanLoaderHandle);
@@ -10265,10 +10265,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
                 "NVIDIA Streamline Vulkan setup failed: {}",
                 streamlineLog.empty() ? resultToString(streamlineResult) : streamlineLog);
         }
-    } else if (deviceImpl->streamlineInitialized && vulkanOptions.enableStreamline) {
+    } else if (deviceImpl->streamlineInitialized && desc.enableStreamline) {
         spdlog::warn("NVIDIA Streamline initialized, but the selected Vulkan device is missing required extensions.");
     }
-    if (vulkanOptions.enableAftermath &&
+    if (desc.enableAftermath &&
         vulkan::toolingHooks().diagnosticsInitialized() &&
         !selectedFeatures.aftermath) {
         spdlog::warn(

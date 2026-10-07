@@ -228,9 +228,9 @@ public:
                     }
                 }, .context = &validationMessageCount_},
                 .enableAsyncCompute = options_.enableAsyncCompute,
+                .enableStreamline = options_.enableStreamline,
+                .enableAftermath = options_.enableAftermath,
                 .backendExtensions = render::vulkan::VulkanDeviceExtensions{
-                    .enableStreamline = options_.enableStreamline,
-                    .enableAftermath = options_.enableAftermath,
                     .preferUnifiedImageLayouts = options_.preferUnifiedImageLayouts,
                 },
             }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });

@@ -69,9 +69,6 @@ public:
                 .enableRayQuery = true,
                 .enableClusterAccelerationStructure = true,
                 .enablePartitionedAccelerationStructure = true,
-                .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-                    .enablePushDescriptor = true,
-                },
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return RHITestResult::fail(
@@ -705,8 +702,8 @@ public:
         DeviceDesc description{.applicationName = "Device extension contract",
             .enableValidation = context.enableValidation};
         const auto& defaults = vulkan::deviceExtensions(std::as_const(description));
-        if (!defaults.preferUnifiedImageLayouts || defaults.enableStreamline ||
-            defaults.enableAftermath || defaults.enablePushDescriptor || defaults.shaderPrintf ||
+        if (!defaults.preferUnifiedImageLayouts || description.enableStreamline ||
+            description.enableAftermath || defaults.shaderPrintf ||
             description.backendExtensions.has_value()) {
             return RHITestResult::fail("Empty extensions must preserve defaults without mutating the descriptor");
         }
@@ -717,16 +714,16 @@ public:
             return RHITestResult::fail("An unrelated extension payload must be rejected before initialization");
         }
         {
-            DeviceDesc original{.backendExtensions = vulkan::VulkanDeviceExtensions{
-                .enablePushDescriptor = true, .enableStreamline = true, .enableAftermath = true}};
-            description.backendExtensions = original.backendExtensions;
+            DeviceDesc original{.applicationName = "Copied device intentions",
+                .enableValidation = context.enableValidation, .enableStreamline = true, .enableAftermath = true,
+                .backendExtensions = vulkan::VulkanDeviceExtensions{}};
+            description = original;
             auto& copied = vulkan::deviceExtensions(description);
-            copied.enablePushDescriptor = false;
-            copied.enableStreamline = false;
-            copied.enableAftermath = false;
+            description.enableStreamline = false;
+            description.enableAftermath = false;
             copied.preferUnifiedImageLayouts = false;
             const auto& source = vulkan::deviceExtensions(std::as_const(original));
-            if (!source.enablePushDescriptor || !source.enableStreamline || !source.enableAftermath ||
+            if (!original.enableStreamline || !original.enableAftermath ||
                 !source.preferUnifiedImageLayouts) {
                 return RHITestResult::fail("Editing a descriptor copy changed the source extension value");
             }

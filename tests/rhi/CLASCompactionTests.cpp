@@ -1,4 +1,3 @@
-#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
@@ -667,12 +666,11 @@ class MiniZorahCLASInFlightTest final : public RHITest {
         desc.enableComputeFullSubgroups = true;
         desc.preferredTaskSubgroupSize = 32;
         desc.enableAsyncCompute = true;
-        metallic::render::vulkan::deviceExtensions(desc).enableStreamline = std::getenv("METALLIC_TEST_CLAS_SCENE_SWITCH") != nullptr;
+        desc.enableStreamline = std::getenv("METALLIC_TEST_CLAS_SCENE_SWITCH") != nullptr;
         desc.enableRayTracingAccelerationStructure = true;
-        metallic::render::vulkan::deviceExtensions(desc).enablePushDescriptor = true;
         desc.enableRayQuery = true;
         desc.enableClusterAccelerationStructure = true;
-        metallic::render::vulkan::deviceExtensions(desc).enableAftermath = true;
+        desc.enableAftermath = true;
         std::unique_ptr<Device> device;
         auto result = createDevice(desc).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(result, Error::Unsupported)) { return RHITestResult::skip("CLAS unavailable"); }

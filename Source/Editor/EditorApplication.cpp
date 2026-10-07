@@ -2665,10 +2665,9 @@ bool EditorApplication::initializeRhi()
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
                 .enableAsyncCompute = true,
                 .memoryBudget = {.enabled = gpuDrivenScenesOnly_},
+                .enableStreamline = enableStreamline,
+                .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
                 .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-                    .enablePushDescriptor = true,
-                    .enableStreamline = enableStreamline,
-                    .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
                     .shaderPrintf = shaderTrace_ ? &shaderTrace_->capture() : nullptr,
                 },
             }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });

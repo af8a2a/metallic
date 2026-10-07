@@ -1,5 +1,4 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanPipelineDiagnostics.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
@@ -285,10 +284,7 @@ public:
             .enableRayTracingAccelerationStructure = previewDevice,
             .enableRayQuery = previewDevice,
             .enableClusterAccelerationStructure = previewDevice,
-            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-                .enablePushDescriptor = previewDevice,
-                .enableAftermath = aftermath,
-            },
+            .enableAftermath = aftermath,
         }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) {
             return RHITestResult::skip("Requested device capabilities unavailable: " + description);

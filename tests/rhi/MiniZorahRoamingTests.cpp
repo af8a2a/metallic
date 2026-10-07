@@ -845,7 +845,6 @@ public:
             desc.enableAsyncCompute = true;
             // Both configurations use the same enabled device capabilities.
             desc.enableRayTracingAccelerationStructure = true;
-            metallic::render::vulkan::deviceExtensions(desc).enablePushDescriptor = true;
             desc.enableRayQuery = true;
             desc.enableClusterAccelerationStructure = true;
             auto start = Clock::now();

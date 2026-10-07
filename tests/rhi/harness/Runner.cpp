@@ -172,7 +172,7 @@ Json profileJson(const Profile& value)
         {"rayQuery", desc.enableRayQuery}, {"rayTracingAS", desc.enableRayTracingAccelerationStructure},
         {"partitionedAS", desc.enablePartitionedAccelerationStructure}, {"clusterAS", desc.enableClusterAccelerationStructure}, {"opacityMicromap", desc.enableOpacityMicromap},
         {"positionFetch", desc.enableRayTracingPositionFetch}, {"dgc", desc.enableDeviceGeneratedCommands},
-        {"streamline", metallic::render::vulkan::deviceExtensions(desc).enableStreamline}, {"aftermath", metallic::render::vulkan::deviceExtensions(desc).enableAftermath}};
+        {"streamline", desc.enableStreamline}, {"aftermath", desc.enableAftermath}};
 }
 
 std::string utf8(const std::filesystem::path& path)

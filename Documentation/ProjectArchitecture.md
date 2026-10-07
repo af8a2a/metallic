@@ -447,17 +447,22 @@ buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，�
 设备创建把通用功能与后端配置分开。`DeviceDesc::backendExtensions` 是拥有值语义的
 `std::any`，空值使用后端默认配置；Vulkan 只接受
 [`VulkanDeviceExtensions`](../Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h)。
-`enablePushDescriptor`、`enableStreamline`、`enableAftermath`、
-`preferUnifiedImageLayouts` 和 `ShaderPrintf*` 均放在这个独立结构中，`RHI.h`
-不再声明 `vulkan::ShaderPrintf`。这些配置的使用方显式包含后端头文件，无需包含 Vulkan SDK。
+`enableStreamline` 和 `enableAftermath` 是 `DeviceDesc` 上的中立 SDK/诊断意图，
+调用方无需为此包含 Vulkan 头。后端配置仅保留 `preferUnifiedImageLayouts` 和
+`ShaderPrintf*` 等 Vulkan 专属旋钮；`RHI.h` 不声明 `vulkan::ShaderPrintf`。
+这些专属配置的使用方显式包含后端头文件，无需包含 Vulkan SDK。
+
+push descriptor 不再暴露请求开关，由 Vulkan 特性目录根据 Streamline 请求推导。
+普通 ray query 不需要该扩展；当前 NRC SDK 的 `GetVulkanDeviceExtensions()` 返回
+NVX binary import、NVX image view handle、memory budget 和 buffer device address，
+不包含 push descriptor。NGX 直连的 DLSS-NR 路径要求已启用 Streamline 能力，
+复用该依赖链。升级 SDK 时需重新核实其必需扩展。
 
 ```cpp
 DeviceDesc desc{
     .enableBindlessDescriptorHeap = true,
-    .backendExtensions = vulkan::VulkanDeviceExtensions{
-        .enablePushDescriptor = true,
-        .enableStreamline = true,
-    },
+    .enableStreamline = true,
+    .enableAftermath = true,
 };
 auto device = createDevice(desc);
 ```
