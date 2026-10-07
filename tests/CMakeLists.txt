@@ -444,6 +444,8 @@ add_executable(MetallicRHITests
     rhi/PhotometricLightingTests.cpp
     rhi/CelestialLightingTests.cpp
     rhi/AtmosphereTests.cpp
+    rhi/AtmosphereSeamTests.cpp
+    rhi/AtmosphereSeamRenderingTests.cpp
     rhi/PhysicalEnvironmentRenderingTests.cpp
     rhi/PhysicalEnvironmentProviderTests.cpp
     rhi/DynamicWorldRenderingTests.cpp

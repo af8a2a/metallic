@@ -309,3 +309,67 @@ B report records NRC and DLSS numerical rendering separately from unresolved
 SDK teardown/device-reinitialization issues. C did not rerun those SDK paths,
 NRD/SIGMA, or claim to fix their shutdown/reinitialization gaps. They remain
 open acceptance items alongside M9 performance and quality work.
+
+## Follow-up: Moon longitude seam
+
+The Moon-only Manual state exposed a sky seam when the emitted direction was
+`(0.840, -1.000, 0.000)`: the source lies on the sky LUT's periodic longitude
+boundary. The forward producer's first/last columns and direct transport
+integrals agreed. The old software bilinear sampler's negative-index expression
+returned column **63** for texel **-1** in the 192-wide sky LUT on the tested GPU,
+instead of the intended column **191**. The resulting lookup mixed unrelated
+sky directions across the seam.
+
+`Atmosphere::sampleLinear` now wraps longitude into a positive period before
+the half-texel offset and uses unsigned remainder on nonnegative indices. The
+32³ aerial sampler follows the same indexing convention. Source radiometry,
+Moon phase and transport integration are unchanged by this correction.
+
+Two permanent regressions were added:
+
+- `atmosphere_moon_longitude_seam`: four Moon/Sun/cloud states, eight elevation
+  bands and 2,064 directions per state; checks periodic sky/capture/production
+  consumer and 10 km aerial radiance/transmittance, angular roundtrip, and
+  cloud-free source-plane/producer symmetry. TSV records also retain the old
+  wrap expression and an independent branch-based interpolation reference.
+- `physical_moon_longitude_seam_rendering`: actual isolated native PT and
+  Deferred branches, clear and frozen-cloud Moon states, 512×256 HDR/display
+  captures, fixed EV100 -3 and four accumulated frames. Its camera is outside
+  the LookDev geometry at `(-10, 2, 0)`, facing away from the mesh toward the
+  Moon. The numerical sky region excludes the Moon disk and requires the
+  clear-sky central adjacent-pixel difference to remain below 0.5%.
+
+Before the fix, the actual clear-sky PT and Deferred adjacent-pixel differences
+were **16.216%** and **16.239%**. The paired reproduction uses the same camera,
+source, exposure, viewport and accumulation settings. After the fix these
+differences are **0.025901%** and **0.000002476%**, respectively. The frozen-cloud
+images also have a continuous central sky; the cloud case is inspected visually
+rather than being required to have a physically symmetric field.
+
+The combined follow-up run passed **23/23**, with no selected skips: the prior
+18 core contracts/probes, three production rendering/history tests, and the two
+new seam regressions. Of these, four are CPU runtime/shadow contracts; the rest
+exercise GPU resources, transport or rendering. Across all four numerical
+seam states, the maximum sky/capture/consumer/aerial relative continuity error
+is **0.002313%**, with angular roundtrip error below **4.04e-7** in vector length.
+The selected native PT/Deferred captures were inspected, including both clear
+sky regions without geometry occlusion and frozen-cloud detail. This evidence
+does not rerun NRC or DLSS reconstruction.
+
+- [Combined follow-up HTML report](../build-scheduling-release/moon-seam-final/reports/17913408661872346/report.html)
+  and [XML](../build-scheduling-release/moon-seam-final.xml)
+- [Moon sampling/aerial metrics](../build-scheduling-release/moon-seam-final/AtmosphereSeamMetrics.json)
+- [Actual rendering metrics](../build-scheduling-release/moon-seam-final/MoonLongitudeSeamRendering.json)
+- [PT before/after comparison](../build-scheduling-release/moon-seam-final/MoonSeamBeforeAfter.png)
+- [Final clear Moon PT](../build-scheduling-release/moon-seam-final/ClearMoon_PathTrace.png)
+  and [Deferred](../build-scheduling-release/moon-seam-final/ClearMoon_Deferred.png)
+- [Final cloud Moon PT](../build-scheduling-release/moon-seam-final/FrozenCloudMoon_PathTrace.png)
+  and [Deferred](../build-scheduling-release/moon-seam-final/FrozenCloudMoon_Deferred.png)
+
+The editor, LookDev and RHI test targets build successfully in the existing
+Release tree. Shader registry audit and whitespace checks pass. The two new
+tests can be replayed independently with:
+
+```powershell
+.\build-scheduling-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.atmosphere_moon_longitude_seam:RHIRendering.physical_moon_longitude_seam_rendering --output-dir build-scheduling-release/moon-seam-recheck
+```

@@ -137,13 +137,17 @@ public float3 integrateTransmittance(GPUAtmosphereParameters p, float3 position,
 public float4 sampleLinear(Texture2D<float4> image, float2 uv, bool wrapLongitude = false)
 {
     uint width, height; image.GetDimensions(width, height);
-    float2 pixel = float2(uv.x, saturate(uv.y)) * float2(width, height) - 0.5;
+    // Keep periodic texel indices nonnegative. At u=0 the half-texel offset
+    // otherwise produces -1; signed remainder did not wrap that to width-1
+    // on the production GPU path (192-wide sky lookup returned column 63).
+    float longitude = wrapLongitude ? frac(uv.x) + 1.0 : uv.x;
+    float2 pixel = float2(longitude, saturate(uv.y)) * float2(width, height) - 0.5;
     int2 base = int2(floor(pixel)); float2 f = frac(pixel);
     float4 value = float4(0.0);
     for (int dy = 0; dy < 2; ++dy) {
         for (int dx = 0; dx < 2; ++dx) {
             int x = base.x + dx;
-            x = wrapLongitude ? (x % int(width) + int(width)) % int(width) : clamp(x, 0, int(width) - 1);
+            x = wrapLongitude ? int(uint(x) % width) : clamp(x, 0, int(width) - 1);
             int y = clamp(base.y + dy, 0, int(height) - 1);
             float weight = (dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - f.y : f.y);
             value += image.Load(int3(x, y, 0)) * weight;
@@ -443,7 +447,7 @@ public AtmosphereSegment aerialPerspective(GPUAtmosphereParameters p, BufferSpan
     result.radiance = float3(0.0); result.transmittance = float3(1.0);
     if (distance < 1e-7) { return result; }
     float2 uv = skyDirectionUV(p, delta / distance);
-    float3 coordinates = float3(uv.x * 32.0 - 0.5, uv.y * 32.0 - 0.5,
+    float3 coordinates = float3((frac(uv.x) + 1.0) * 32.0 - 0.5, uv.y * 32.0 - 0.5,
         saturate(log(1.0 + distance / 0.01) / log(1.0 + p.settings.x / 0.01)) * 31.0);
     int3 base = int3(floor(coordinates)); float3 f = frac(coordinates);
     // Interpolate in travelled distance rather than the logarithmic index.
@@ -457,7 +461,7 @@ public AtmosphereSegment aerialPerspective(GPUAtmosphereParameters p, BufferSpan
     for (int z = 0; z < 2; ++z) {
         for (int y = 0; y < 2; ++y) {
             for (int x = 0; x < 2; ++x) {
-                int ix = ((base.x + x) % 32 + 32) % 32;
+                uint ix = uint(base.x + x) % 32u;
                 int iy = clamp(base.y + y, 0, 31), iz = clamp(base.z + z, 0, 31);
                 uint index = uint((iz * 32 + iy) * 32 + ix) * 2u;
                 float weight = (x == 0 ? 1.0 - f.x : f.x) * (y == 0 ? 1.0 - f.y : f.y) * (z == 0 ? 1.0 - f.z : f.z);
