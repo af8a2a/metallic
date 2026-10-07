@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/ShaderObjectCacheFile.h"
+#include "Runtime/Render/GAPI/Hash.h"
 
 #include <atomic>
 #include <chrono>
@@ -23,8 +24,6 @@ namespace {
 constexpr std::array<char, 8> kShaderObjectCacheMagic{'M', 'T', 'L', 'S', 'H', 'B', '0', '1'};
 constexpr uint32_t kShaderObjectCacheFileVersion = 1;
 constexpr uint64_t kMaxShaderBinarySize = 64ull << 20u;
-constexpr uint64_t kFnvOffset = 14695981039346656037ull;
-constexpr uint64_t kFnvPrime = 1099511628211ull;
 
 struct ShaderObjectCacheFileHeader {
     std::array<char, 8> magic{};
@@ -40,16 +39,6 @@ struct ShaderObjectCacheFileHeader {
 
 static_assert(std::is_trivially_copyable_v<ShaderObjectCacheFileHeader>);
 static_assert(sizeof(ShaderObjectCacheFileHeader) == 72);
-
-uint64_t hashBytes(uint64_t hash, const void* data, size_t byteSize)
-{
-    const auto* bytes = static_cast<const uint8_t*>(data);
-    for (size_t index = 0; index < byteSize; ++index) {
-        hash ^= bytes[index];
-        hash *= kFnvPrime;
-    }
-    return hash;
-}
 
 uint64_t payloadHash(const ShaderObjectCacheFileData& data)
 {

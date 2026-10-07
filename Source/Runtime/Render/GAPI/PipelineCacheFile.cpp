@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
+#include "Runtime/Render/GAPI/Hash.h"
 
 #include <algorithm>
 #include <chrono>
@@ -21,8 +22,6 @@ constexpr std::array<char, 8> kPipelineCacheMagic{'M', 'T', 'L', 'P', 'S', 'O', 
 constexpr uint32_t kPipelineCacheFileVersion = 1;
 constexpr uint64_t kMaxPSOHashCount = 1'048'576;
 constexpr uint64_t kMaxBackendDataSize = 1ull << 32u;
-constexpr uint64_t kFnvOffset = 14695981039346656037ull;
-constexpr uint64_t kFnvPrime = 1099511628211ull;
 
 struct PipelineCacheFileHeader {
     std::array<char, 8> magic{};
@@ -38,16 +37,6 @@ struct PipelineCacheFileHeader {
 
 static_assert(std::is_trivially_copyable_v<PipelineCacheFileHeader>);
 static_assert(sizeof(PipelineCacheFileHeader) == 80);
-
-uint64_t hashBytes(uint64_t hash, const void* data, size_t byteSize)
-{
-    const auto* bytes = static_cast<const uint8_t*>(data);
-    for (size_t index = 0; index < byteSize; ++index) {
-        hash ^= bytes[index];
-        hash *= kFnvPrime;
-    }
-    return hash;
-}
 
 uint64_t payloadHash(
     std::span<const uint64_t> psoHashes,

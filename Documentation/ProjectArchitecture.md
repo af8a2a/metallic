@@ -540,6 +540,8 @@ RHI 通过 `PipelineCache` 暴露不依赖图形后端的 PSO 缓存生命周期
 
 `VK_EXT_shader_object` 使用 Registry 自动管理的独立 `.shaderbin` 文件，保存整个 linked vertex/fragment binary pair。兼容文件以 BINARY 创建，文件或驱动拒绝时回退 SPIR-V；命中由实际 Vulkan BINARY 创建成功确认。详见 [ShaderRegistry](ShaderRegistry.md)。
 
+GAPI 的 FNV-1a 字节运算统一由 `GAPI/Hash.h` 提供，各缓存格式仍显式维护字段宽度、长度前缀和顺序，以保持已有缓存键及校验值兼容。`ShaderModule::contentHash()` 表示带长度前缀的设备端 SPIR-V；`inputSpirvHash()` 缓存后端改写前输入字节的原始 FNV，用于诊断报告和回放文件匹配。两者不能互换，消费侧直接读取模块缓存的身份，避免再次遍历 SPIR-V。
+
 PSO 缓存不替代 Slang 源码到 SPIR-V 的编译缓存；它优化的是驱动侧 graphics/compute pipeline 创建。GPUDriven 样例将缓存保存在 `.cache/pso/VisibilityBufferPass.pso`，并记录 load status、hit/miss、PSO 数和后端数据大小。
 
 三类资产的关系是：

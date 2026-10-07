@@ -2,11 +2,46 @@
 #include "TraceRecorder.h"
 #include "BufferSequence.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSynchronization.h"
+#include "Runtime/Render/GAPI/Hash.h"
+#include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include <thread>
 
 namespace metallic::tests {
 namespace {
 using namespace render;
+class HashContractTest final : public RHITest {
+public:
+    HashContractTest() { type = RHITestType::Validation; name = "fnv_hash_contract_cpu"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .requirements = {.requiresDevice = false,
+            .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {"hash.fnv.compatibility"}, .artifacts = {}};
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        bench::Evidence evidence(context.outputDirectory / "hash");
+        return runCpu(evidence);
+    }
+    RHITestResult runCpu(bench::Evidence&) override
+    {
+        using namespace render::detail;
+        if (hashBytes(kFnvOffset, nullptr, 0) != 0xcbf29ce484222325ull ||
+            hashBytes(kFnvOffset, "foobar", 6) != 0x85944171f73967e8ull ||
+            hashBytes(hashBytes(kFnvOffset, "foo", 3), "bar", 3) != 0x85944171f73967e8ull) {
+            return RHITestResult::fail("raw FNV-1a golden vectors or incremental hashing changed");
+        }
+        // Existing x64 little-endian shader cache framing: uint64 length then bytes.
+        const std::array<uint32_t, 2> words{0x07230203u, 0x00010600u};
+        if (shaderContentHash({}) != 0xa8c7f832281a39c5ull ||
+            shaderContentHash({.spirv = words}) != 0xc86b44b93e1de3b9ull) {
+            return RHITestResult::fail("length-prefixed shader cache identity changed");
+        }
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(HashContractTest);
+
 class SynchronizationContractTest final : public RHITest {
 public:
     SynchronizationContractTest() { type = RHITestType::Validation; name = "synchronization_encoding_cpu"; }

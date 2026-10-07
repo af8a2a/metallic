@@ -1,4 +1,5 @@
 #include "RHITest.h"
+#include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
@@ -44,6 +45,10 @@ public:
         }
         auto shader = registry.getShaderModule(context.device, {.spirv = first->spirv});
         if (!shader) { return RHITestResult::fail("registry shader module creation failed"); }
+        if ((*shader)->inputSpirvHash() != detail::hashBytes(detail::kFnvOffset,
+                first->spirv.data(), first->spirv.size() * sizeof(uint32_t))) {
+            return RHITestResult::fail("cached module input fingerprint differs from compiler SPIR-V");
+        }
         const ComputePipelineDesc pipelineDesc{.computeShader = {shader->get()}};
         auto pipeline = registry.getComputePipeline(context.device, pipelineDesc);
         auto reused = registry.getComputePipeline(context.device, pipelineDesc);

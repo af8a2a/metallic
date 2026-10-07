@@ -8,6 +8,7 @@
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/ShaderObjectCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
+#include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
@@ -4033,6 +4034,11 @@ METALLIC_RHI_HANDLE_DEFINITIONS(ShaderModule)
 uint64_t ShaderModule::contentHash() const
 {
     return impl_ != nullptr ? impl_->contentHash : 0;
+}
+
+uint64_t ShaderModule::inputSpirvHash() const
+{
+    return impl_ != nullptr ? impl_->inputSpirvFnv1a64 : 0;
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(PipelineCache)
@@ -8532,6 +8538,8 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
     shaderImpl->module = module;
     shaderImpl->deviceSpirv.assign(deviceDesc.spirv.begin(), deviceDesc.spirv.end());
     shaderImpl->contentHash = detail::shaderContentHash(deviceDesc);
+    shaderImpl->inputSpirvFnv1a64 = detail::hashBytes(detail::kFnvOffset,
+        desc.spirv.data(), desc.spirv.size_bytes());
     const char* replayCode = std::getenv("METALLIC_WORK_CONTROL_REPLAY");
     if (replayCode && std::strcmp(replayCode, "1") == 0) {
         const auto* input = reinterpret_cast<const uint8_t*>(desc.spirv.data());
@@ -8540,14 +8548,8 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
         shaderImpl->replayDeviceSpirv.assign(actual, actual + deviceDesc.spirv.size_bytes());
     }
     if (impl_->pipelineExecutableStatistics) {
-        const auto fingerprint = [](const ShaderModuleDesc& source) {
-            uint64_t hash = 14695981039346656037ull;
-            const auto* bytes = reinterpret_cast<const uint8_t*>(source.spirv.data());
-            for (uint64_t i = 0; i < source.spirv.size_bytes(); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
-            return hash;
-        };
-        shaderImpl->inputSpirvFnv1a64 = fingerprint(desc);
-        shaderImpl->deviceSpirvFnv1a64 = fingerprint(deviceDesc);
+        shaderImpl->deviceSpirvFnv1a64 = detail::hashBytes(detail::kFnvOffset,
+            deviceDesc.spirv.data(), deviceDesc.spirv.size_bytes());
         shaderImpl->diagnosticName = desc.debugName ? desc.debugName : "";
     }
     return std::unique_ptr<ShaderModule>(new ShaderModule(std::move(shaderImpl)));
@@ -9209,10 +9211,9 @@ uint64_t shaderObjectProgramHash(const GraphicsShaderObjectProgramDesc& desc,
     const std::array<VkShaderCreateInfoEXT, 2>& infos,
     std::span<const VkDescriptorSetAndBindingMappingEXT> mappings)
 {
-    uint64_t hash = 14695981039346656037ull;
+    uint64_t hash = detail::kFnvOffset;
     auto bytes = [&hash](const void* data, size_t size) {
-        const auto* source = static_cast<const uint8_t*>(data);
-        for (size_t i = 0; i < size; ++i) { hash = (hash ^ source[i]) * 1099511628211ull; }
+        hash = detail::hashBytes(hash, data, size);
     };
     auto value = [&bytes](uint64_t number) { bytes(&number, sizeof(number)); };
     // Increment when implicit layouts, push ranges or specialization change.

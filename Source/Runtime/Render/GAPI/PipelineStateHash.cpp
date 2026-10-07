@@ -1,34 +1,15 @@
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
+#include "Runtime/Render/GAPI/Hash.h"
 
 #include <cstring>
-#include <type_traits>
 
 namespace metallic::render::detail {
 namespace {
 
-constexpr uint64_t kFnvOffset = 14695981039346656037ull;
-constexpr uint64_t kFnvPrime = 1099511628211ull;
 // Increment when an implicit RHI pipeline state changes without a desc change.
 constexpr uint32_t kPipelineStateHashVersion = 6;
 constexpr uint32_t kGraphicsPipelineTag = 0x4750534fu;
 constexpr uint32_t kComputePipelineTag = 0x4350534fu;
-
-uint64_t hashBytes(uint64_t hash, const void* data, size_t byteSize)
-{
-    const auto* bytes = static_cast<const uint8_t*>(data);
-    for (size_t index = 0; index < byteSize; ++index) {
-        hash ^= bytes[index];
-        hash *= kFnvPrime;
-    }
-    return hash;
-}
-
-template <typename T>
-uint64_t hashValue(uint64_t hash, const T& value)
-{
-    static_assert(std::is_trivially_copyable_v<T>);
-    return hashBytes(hash, &value, sizeof(T));
-}
 
 uint64_t hashString(uint64_t hash, const char* value)
 {

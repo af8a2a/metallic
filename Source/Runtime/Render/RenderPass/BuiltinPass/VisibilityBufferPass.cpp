@@ -1431,14 +1431,13 @@ private:
             return result;
         }
         const std::string shaderDebugName = std::string(moduleName) + "." + entryPoint;
-        uint64_t hash = 14695981039346656037ull;
-        const auto* bytes = reinterpret_cast<const uint8_t*>(compileResult.spirv.data());
-        for (size_t i = 0; i < compileResult.spirv.size() * sizeof(uint32_t); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
-        shaderHashes_[shaderDebugName] = std::to_string(hash);
         result = ShaderRegistry::instance().getShaderModule(device, ShaderModuleDesc{
             .spirv = compileResult.spirv,
             .debugName = shaderDebugName.c_str(),
-        }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
+        }).transform([&](auto rhiValue) {
+            shaderHashes_[shaderDebugName] = std::to_string(rhiValue->inputSpirvHash());
+            outShader = std::move(rhiValue);
+        });
         if (!result) {
             log += resultMessage(
                 std::string("createShaderModule(VisibilityBufferPass ") + entryPoint + ")",

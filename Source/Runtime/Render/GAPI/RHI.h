@@ -1616,7 +1616,10 @@ class ShaderModule {
         friend struct detail::VulkanNativeAccess;
     )
 
+    // Length-prefixed device SPIR-V identity used by pipeline caches.
     uint64_t contentHash() const;
+    // Raw input SPIR-V FNV-1a, before backend rewriting, for diagnostic file matching.
+    uint64_t inputSpirvHash() const;
 };
 
 class PipelineCache {
