@@ -10,6 +10,7 @@
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <limits>
 
 namespace metallic::tests {
 namespace {
@@ -18,6 +19,16 @@ namespace {
     const render::Result<> result = (expression); \
     if (!result) { return RHITestResult::fail(std::string(#expression) + ": " + toString(result) + " " + log); } \
 } while (false)
+
+bool hasOpaqueDescriptorSizes(std::span<const uint32_t> code)
+{
+    const render::vulkan::SpirvWalker walker(code);
+    if (!walker.valid()) { return true; }
+    for (const auto& instruction : walker.instructions()) {
+        if (instruction.opcode == 5129u) { return true; } // OpConstantSizeOfEXT
+    }
+    return false;
+}
 
 class NativeDescriptorHeapTest final : public RHITest {
 public:
@@ -36,6 +47,12 @@ public:
             untouched != std::vector<uint32_t>{0x12345678}) {
             return RHITestResult::fail("malformed SPIR-V modified output or was accepted");
         }
+        std::unique_ptr<render::Device> device;
+        auto setup = render::createDevice({.applicationName = "Native descriptor layout regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
+        if (render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("descriptor heaps unavailable"); }
+        NATIVE_REQUIRE(setup);
+        if (!device->capabilities().bindlessDescriptorHeap) { return RHITestResult::skip("descriptor heaps unavailable"); }
         const char* rayCapabilities[] = {"spvRayQueryKHR"};
         render::ShaderCompileResult rejected;
         if (render::compileSlangShaderToSpirv({
@@ -48,11 +65,6 @@ public:
             rejected.diagnostics.find("resolveDescriptor") == std::string::npos) {
             return RHITestResult::fail("unsafe native AS lowering was not rejected: " + rejected.diagnostics);
         }
-        std::unique_ptr<render::Device> device;
-        auto setup = render::createDevice({.applicationName = "Native descriptor layout regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("descriptor heaps unavailable"); }
-        NATIVE_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             render::ShaderCompileResult shader;
@@ -60,6 +72,9 @@ public:
                 .moduleName = "NativeDescriptorHandles", .entryPointName = "nestedBufferMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
             }, {.enableDiskCache = false}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
+            if (mode == render::SlangDescriptorHeapMode::Native && hasOpaqueDescriptorSizes(shader.spirv)) {
+                return RHITestResult::fail("native compiler output still has opaque descriptor-size queries");
+            }
             std::vector<uint32_t> normalized;
             if (!render::vulkan::normalizeNativeDescriptorHeapSpirv(shader.spirv, normalized, log) || normalized != shader.spirv) {
                 return RHITestResult::fail("normalization is not idempotent: " + log);
@@ -80,6 +95,23 @@ public:
                 return RHITestResult::skip("mapped passed; native requires KHR untyped pointers");
             }
             NATIVE_REQUIRE(initialized);
+            if (mode == render::SlangDescriptorHeapMode::Native) {
+                auto wrongStrides = render::slangDescriptorHeapShaderStrides();
+                wrongStrides.resource = wrongStrides.resource < std::numeric_limits<int32_t>::max()
+                    ? wrongStrides.resource + 1u : wrongStrides.resource - 1u;
+                render::ShaderCompileResult mismatched;
+                NATIVE_REQUIRE(render::compileSlangShaderToSpirv({
+                    .moduleName = "NativeDescriptorHandles", .entryPointName = "nestedBufferMain",
+                    .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
+                    .descriptorHeapStrides = wrongStrides,
+                }, {.enableDiskCache = false}, mismatched.diagnostics).transform([&](auto value) { mismatched = std::move(value); }));
+                const auto wrongModule = device->createShaderModule({
+                    .spirv = mismatched.spirv, .debugName = "wrong native descriptor stride regression",
+                });
+                if (!render::hasError(wrongModule, render::Error::InvalidArgument)) {
+                    return RHITestResult::fail("native shader compiled for the wrong stride was not rejected");
+                }
+            }
             std::unique_ptr<render::Buffer> records, output;
             NATIVE_REQUIRE(device->createBuffer({.size = 32u * 96u, .structureStride = 96,
                 .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::Device}).transform([&](auto rhiValue) { records = std::move(rhiValue); }));
@@ -157,6 +189,7 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("descriptor heaps unavailable"); }
         NATIVE_REQUIRE(setup);
+        if (!device->capabilities().bindlessDescriptorHeap) { return RHITestResult::skip("descriptor heaps unavailable"); }
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             render::ShaderCompileResult compiled;
@@ -164,6 +197,9 @@ public:
                 .moduleName = "FinalDescriptorIndices", .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
             }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
+            if (mode == render::SlangDescriptorHeapMode::Native && hasOpaqueDescriptorSizes(compiled.spirv)) {
+                return RHITestResult::fail("native cached compiler output still has opaque descriptor-size queries");
+            }
             std::unique_ptr<render::ShaderModule> shader;
             const auto moduleResult = device->createShaderModule({
                 .spirv = compiled.spirv,
@@ -288,6 +324,7 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("descriptor heaps unavailable"); }
         NATIVE_REQUIRE(setup);
+        if (!device->capabilities().bindlessDescriptorHeap) { return RHITestResult::skip("descriptor heaps unavailable"); }
         if (!device->capabilities().shaderBufferInt64Atomics) { return RHITestResult::skip("uint64 buffer atomics unavailable"); }
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         constexpr uint32_t count = 256, base = 8;
@@ -296,6 +333,9 @@ public:
             render::ShaderCompileResult compiled;
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "NativeDescriptorAtomics", .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, {.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
+            if (mode == render::SlangDescriptorHeapMode::Native && hasOpaqueDescriptorSizes(compiled.spirv)) {
+                return RHITestResult::fail("native atomic compiler output still has opaque descriptor-size queries");
+            }
             std::vector<uint32_t> normalized;
             if (!render::vulkan::normalizeNativeDescriptorHeapSpirv(compiled.spirv, normalized, log) || normalized != compiled.spirv) {
                 return RHITestResult::fail("mixed atomic normalization is not idempotent: " + log);

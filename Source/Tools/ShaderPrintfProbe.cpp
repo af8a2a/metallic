@@ -122,6 +122,30 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         const char* names[]{"TRACE_SESSION_LO","TRACE_SESSION_HI","TRACE_RUN_LO","TRACE_RUN_HI","TRACE_DISPATCH_LO","TRACE_DISPATCH_HI","TRACE_MAX_RECORDS","TRACE_SCENARIO"};
         for (size_t i=0; i<values.size(); ++i) { traceValues[i]=std::to_string(values[i]); macros.push_back({names[i],traceValues[i].c_str()}); }
     }
+    const auto createProbeDevice = [&] {
+        report["phase"] = "device-create";
+        save(directory / "Report.json", report);
+        auto device = require(render::createDevice({.applicationName = "Metallic Shader Printf P0",
+            .enableBindlessDescriptorHeap = heapMode,
+            .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
+                .shaderPrintf = &capture,
+            },
+        }), "createDevice");
+        const auto native = vk::nativeDevice(*device);
+        const auto& driver = native.properties->driver;
+        const auto& properties = native.properties->core;
+        report["device"] = {{"name", properties.deviceName}, {"apiVersion", version(properties.apiVersion)},
+            {"driverVersionRaw", properties.driverVersion}, {"driverName", driver.driverName},
+            {"driverInfo", driver.driverInfo}, {"vendorId", properties.vendorID}, {"deviceId", properties.deviceID},
+            {"descriptorHeap", native.descriptorHeapEnabled}};
+        report["loadedLayerModule"] = loadedModule(L"VkLayer_khronos_validation.dll");
+        return device;
+    };
+    std::unique_ptr<render::Device> device;
+    if (mode == "heap-native") {
+        device = createProbeDevice();
+    }
+    report["phase"] = "compile";
     slang::IGlobalSession* slang = nullptr;
     if (SLANG_FAILED(slang::createGlobalSession(&slang))) { throw std::runtime_error("Slang session failed"); }
     report["slang"] = {{"buildTag", slang->getBuildTagString()},
@@ -156,29 +180,16 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         }
         validateSources();
         trace->compiledVariant(report["variant"]);
-        if (!trace->maySubmit()) { throw std::runtime_error("Shader observation cancelled or stale before device creation"); }
+        if (!trace->maySubmit()) { throw std::runtime_error("Shader observation cancelled or stale before pipeline creation"); }
     }
     if (printfInstructions(compiled.spirv) == 0) { throw std::runtime_error("No DebugPrintf instructions emitted"); }
     std::ofstream binary(directory / "compiler.spv", std::ios::binary);
     binary.write(reinterpret_cast<const char*>(compiled.spirv.data()), compiled.spirv.size() * sizeof(uint32_t));
     binary.close();
     if (!binary) { throw std::runtime_error("Cannot write compiler.spv"); }
-    report["phase"] = "device-create";
-    save(directory / "Report.json", report);
-    auto device = require(render::createDevice({.applicationName = "Metallic Shader Printf P0",
-        .enableBindlessDescriptorHeap = heapMode,
-        .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{
-            .shaderPrintf = &capture,
-        },
-    }), "createDevice");
-    const auto native = vk::nativeDevice(*device);
-    const auto& driver = native.properties->driver;
-    const auto& properties = native.properties->core;
-    report["device"] = {{"name", properties.deviceName}, {"apiVersion", version(properties.apiVersion)},
-        {"driverVersionRaw", properties.driverVersion}, {"driverName", driver.driverName},
-        {"driverInfo", driver.driverInfo}, {"vendorId", properties.vendorID}, {"deviceId", properties.deviceID},
-        {"descriptorHeap", native.descriptorHeapEnabled}};
-    report["loadedLayerModule"] = loadedModule(L"VkLayer_khronos_validation.dll");
+    if (!device) {
+        device = createProbeDevice();
+    }
     auto shader = require(render::ShaderRegistry::instance().getShaderModule(*device, {
         .spirv = compiled.spirv,
     }), "createShaderModule");

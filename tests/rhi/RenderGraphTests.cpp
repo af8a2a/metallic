@@ -50,6 +50,9 @@ namespace metallic::tests {
 namespace {
 
 constexpr const char* kShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
+// Offline shader compile tests never create modules or submit these binaries.
+// This test ABI is independent of production device descriptor sizes.
+constexpr render::DescriptorHeapShaderStrides kOfflineNativeShaderStrides{64, 32};
 constexpr const char* kBindlessSmokeShaderModuleName = "Features/SmokeTests/BindlessSmoke";
 constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
 constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
@@ -3787,6 +3790,7 @@ public:
             .searchPath = kShaderSearchPath,
             .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
             .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
+            .descriptorHeapStrides = kOfflineNativeShaderStrides,
         }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             return RHITestResult::fail(
@@ -5578,6 +5582,7 @@ public:
                         ? static_cast<uint32_t>(std::size(capabilities))
                         : 0u},
                 .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
+                .descriptorHeapStrides = kOfflineNativeShaderStrides,
             }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
             if (!result) {
                 return RHITestResult::fail(
@@ -5628,6 +5633,7 @@ public:
                     .capabilities = {capabilities, 1u + positionFetch},
                     .macroDefines = {defines, static_cast<uint32_t>(std::size(defines))},
                     .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
+                    .descriptorHeapStrides = kOfflineNativeShaderStrides,
                 }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
                 if (!result || compileResult.spirv.empty()) {
                     return RHITestResult::fail(

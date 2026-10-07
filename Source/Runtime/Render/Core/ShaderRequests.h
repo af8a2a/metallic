@@ -19,6 +19,7 @@ struct ShaderRequest {
     std::string searchPath = PROJECT_SOURCE_DIR "/Shaders";
     std::string profile = kDefaultSlangProfileName;
     SlangDescriptorHeapMode descriptorHeapMode = SlangDescriptorHeapMode::Default;
+    DescriptorHeapShaderStrides descriptorHeapStrides;
 
     bool operator==(const ShaderRequest&) const = default;
 };
@@ -38,7 +39,8 @@ public:
         return {.moduleName = request_.module.c_str(), .entryPointName = request_.entry.c_str(),
             .searchPath = request_.searchPath.c_str(), .additionalSearchPaths = paths_,
             .profileName = request_.profile.c_str(), .capabilities = capabilities_, .macroDefines = defines_,
-            .descriptorHeapMode = request_.descriptorHeapMode};
+            .descriptorHeapMode = request_.descriptorHeapMode,
+            .descriptorHeapStrides = request_.descriptorHeapStrides};
     }
 
 private:

@@ -14,10 +14,12 @@ add_library(MetallicShaderWarmupCore STATIC EXCLUDE_FROM_ALL
     "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/SlangCompiler.cpp"
     "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/ShaderRegistryCompiler.cpp"
     "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/Vulkan/VulkanShaderTarget.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/Vulkan/VulkanDescriptorHeapShaderStrides.cpp"
 )
 target_include_directories(MetallicShaderWarmupCore PUBLIC "${CMAKE_SOURCE_DIR}/Source")
 find_package(Threads REQUIRED)
-target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads MetallicMaterialValueCompiler)
+target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads
+    MetallicMaterialValueCompiler metallic::volk ${CMAKE_DL_LIBS})
 target_compile_definitions(MetallicShaderWarmupCore PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}"

@@ -1,6 +1,7 @@
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/GAPI/ShaderTarget.h"
 #include "ShaderWarmupRequests.h"
 
 #include <spdlog/spdlog.h>
@@ -26,10 +27,12 @@ struct CompileOutcome {
     std::string error;
 };
 
-CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& request, const std::string& cacheDirectory)
+CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& request,
+    const std::string& cacheDirectory, DescriptorHeapShaderStrides strides)
 {
     const ShaderRequestView source(request);
-    const SlangShaderDesc desc = source.desc();
+    SlangShaderDesc desc = source.desc();
+    desc.descriptorHeapStrides = strides;
     bool cacheHit = false;
     const SlangShaderCacheOptions options{
         .cacheDirectory = cacheDirectory.empty() ? nullptr : cacheDirectory.c_str(),
@@ -57,19 +60,25 @@ int run(int argc, char** argv)
     std::string filter;
     std::string cacheDirectory;
     bool listOnly = false;
+    DescriptorHeapShaderStrides explicitStrides;
+    bool resourceStrideSpecified = false;
+    bool samplerStrideSpecified = false;
     size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 4u);
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--help") {
             std::cout << "MetallicShaderCompiler [--list] [--filter substring] [--cache-dir path]\n"
                          "                       [--debug-mode disabled|capture|debug] [--jobs N]\n"
+                         "                       [--resource-heap-stride N --sampler-heap-stride N]\n"
                          "Default workers: min(CPU threads, 4); --jobs 1 compiles serially.\n"
-                         "Defaults to the runtime .cache/shaders/spirv cache. No GPU is required.\n";
+                         "Native shaders query a supported adapter unless both byte strides are supplied.\n"
+                         "Defaults to the runtime .cache/shaders/spirv cache. No GPU device is created.\n";
             return 0;
         }
         if (argument == "--list") {
             listOnly = true;
-        } else if ((argument == "--filter" || argument == "--cache-dir" || argument == "--debug-mode" || argument == "--jobs") && i + 1 < argc) {
+        } else if ((argument == "--filter" || argument == "--cache-dir" || argument == "--debug-mode" || argument == "--jobs" ||
+            argument == "--resource-heap-stride" || argument == "--sampler-heap-stride") && i + 1 < argc) {
             const std::string value = argv[++i];
             if (argument == "--filter") {
                 filter = value;
@@ -81,6 +90,14 @@ int run(int argc, char** argv)
                     std::cerr << "--jobs requires a positive integer\n";
                     return 2;
                 }
+            } else if (argument == "--resource-heap-stride" || argument == "--sampler-heap-stride") {
+                uint32_t& stride = argument == "--resource-heap-stride" ? explicitStrides.resource : explicitStrides.sampler;
+                const auto parsed = std::from_chars(value.data(), value.data() + value.size(), stride);
+                if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || stride == 0) {
+                    std::cerr << argument << " requires a positive byte stride\n";
+                    return 2;
+                }
+                (argument == "--resource-heap-stride" ? resourceStrideSpecified : samplerStrideSpecified) = true;
             } else if (value == "disabled") {
                 setSlangShaderDebugMode(SlangShaderDebugMode::Disabled);
             } else if (value == "capture") {
@@ -96,6 +113,10 @@ int run(int argc, char** argv)
             return 2;
         }
     }
+    if (resourceStrideSpecified != samplerStrideSpecified) {
+        std::cerr << "--resource-heap-stride and --sampler-heap-stride must be supplied together\n";
+        return 2;
+    }
 
     auto requests = metallic::tools::shaderWarmupRequests();
     std::erase_if(requests, [&](const auto& request) {
@@ -105,6 +126,30 @@ int run(int argc, char** argv)
         std::cerr << "No shader requests matched the filter\n";
         return 2;
     }
+
+    std::vector<bool> nativeRequests(requests.size(), false);
+    DescriptorHeapShaderStrides nativeStrides;
+    if (!listOnly) {
+        for (size_t index = 0; index < requests.size(); ++index) {
+            const ShaderRequestView source(requests[index]);
+            nativeRequests[index] = slangUsesNativeDescriptorHeap(source.desc());
+        }
+        if (std::ranges::any_of(nativeRequests, [](bool native) { return native; })) {
+            if (resourceStrideSpecified) {
+                nativeStrides = explicitStrides;
+            } else {
+                std::string diagnostics;
+                if (!queryVulkanDescriptorHeapShaderStrides(nativeStrides, diagnostics) ||
+                    nativeStrides.resource == 0 || nativeStrides.sampler == 0) {
+                    std::cerr << "Native shader warmup cannot determine descriptor heap strides: " << diagnostics << '\n';
+                    return 1;
+                }
+            }
+            std::cout << "Native shader warmup descriptor strides: resource=" << nativeStrides.resource
+                      << ", sampler=" << nativeStrides.sampler << " bytes" << std::endl;
+        }
+    }
+    const size_t totalRequests = requests.size();
 
     // Restore application logging and console formatting, including failure paths.
     struct OutputStateGuard {
@@ -126,8 +171,8 @@ int run(int argc, char** argv)
     size_t failures = 0;
     const auto progress = [&](const char* status) {
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        std::cout << "[" << selected << '/' << requests.size() << " "
-                  << (selected * 100 / requests.size()) << "%] " << status
+        std::cout << "[" << selected << '/' << totalRequests << " "
+                  << (selected * 100 / totalRequests) << "%] " << status
                   << " | cached: " << hits << " | failed: " << failures
                   << " | elapsed: " << std::fixed << std::setprecision(1) << seconds << "s";
         std::cout << std::endl;
@@ -159,15 +204,20 @@ int run(int argc, char** argv)
                             return;
                         }
                         const auto& request = requests[index];
-                        const std::string name = request.module + "." + request.entry;
+                        const DescriptorHeapShaderStrides strides = nativeRequests[index] ? nativeStrides : DescriptorHeapShaderStrides{};
+                        std::string name = request.module + "." + request.entry;
+                        if (strides.resource != 0) {
+                            name += " [resource-stride=" + std::to_string(strides.resource) +
+                                ", sampler-stride=" + std::to_string(strides.sampler) + "]";
+                        }
                         {
                             std::scoped_lock lock(outputMutex);
-                            std::cout << "  Processing " << (index + 1) << '/' << requests.size()
+                            std::cout << "  Processing " << (index + 1) << '/' << totalRequests
                                       << ": " << name << std::endl;
                         }
                         CompileOutcome outcome;
                         try {
-                            outcome = compileRequest(request, cacheDirectory);
+                            outcome = compileRequest(request, cacheDirectory, strides);
                         } catch (const std::exception& error) {
                             outcome.error = error.what();
                         } catch (...) {

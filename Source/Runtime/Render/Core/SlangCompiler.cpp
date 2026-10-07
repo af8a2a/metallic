@@ -27,6 +27,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -46,7 +47,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 26;
+constexpr uint32_t kShaderCacheRequestVersion = 27;
 // The default SPIR-V optimization preset exhaustively inlines entry points.
 // With NonSemantic debug records this dominates large scene-shader compiles.
 // Keep functions and run only local/dead-code cleanup; the driver still lowers
@@ -71,6 +72,7 @@ constexpr auto kShaderDependencyHashInterval = std::chrono::milliseconds(500);
 constexpr auto kShaderDependencyScanInterval = std::chrono::milliseconds(50);
 
 std::atomic<SlangShaderDebugMode> gSlangShaderDebugMode{SlangShaderDebugMode::Disabled};
+std::atomic<uint64_t> gSlangDescriptorHeapShaderStrides{0};
 
 struct ShaderDependencyStamp {
     bool exists = false;
@@ -470,6 +472,11 @@ void publishShaderDependencies(
 
 bool nativeDescriptorHeapEnabled(const SlangShaderDesc& desc)
 {
+    for (const char* capability : desc.capabilities) {
+        if (capability && std::string_view(capability) == "spvDescriptorHeapEXT") {
+            return true;
+        }
+    }
     const char* mode = std::getenv("METALLIC_SLANG_DESCRIPTOR_MODE");
     if (desc.descriptorHeapMode != SlangDescriptorHeapMode::Default) {
         return desc.descriptorHeapMode == SlangDescriptorHeapMode::Native;
@@ -491,6 +498,8 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
     hash = hashText(hash, debugMode == SlangShaderDebugMode::ShaderDebug
         ? "" : kSPIRVOptimizationPasses);
     hash = hashValue(hash, nativeDescriptorHeapEnabled(desc));
+    hash = hashValue(hash, desc.descriptorHeapStrides.resource);
+    hash = hashValue(hash, desc.descriptorHeapStrides.sampler);
     hash = hashText(hash, desc.moduleName);
     hash = hashText(hash, desc.entryPointName);
     hash = hashText(hash, desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName);
@@ -854,6 +863,23 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept
     return gSlangShaderDebugMode.load(std::memory_order_relaxed);
 }
 
+bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept
+{
+    return nativeDescriptorHeapEnabled(desc);
+}
+
+void setSlangDescriptorHeapShaderStrides(DescriptorHeapShaderStrides strides) noexcept
+{
+    const uint64_t packed = (uint64_t(strides.resource) << 32) | strides.sampler;
+    gSlangDescriptorHeapShaderStrides.store(packed, std::memory_order_release);
+}
+
+DescriptorHeapShaderStrides slangDescriptorHeapShaderStrides() noexcept
+{
+    const uint64_t packed = gSlangDescriptorHeapShaderStrides.load(std::memory_order_acquire);
+    return {uint32_t(packed >> 32), uint32_t(packed)};
+}
+
 std::vector<std::string> pollSlangShaderChanges(
     uint32_t debounceMilliseconds,
     uint32_t retryMilliseconds)
@@ -905,9 +931,26 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
             return makeError(Error::InvalidArgument);
         }
     }
+    const bool native = nativeDescriptorHeapEnabled(desc);
+    SlangShaderDesc resolvedDesc = desc;
+    resolvedDesc.descriptorHeapMode = native ? SlangDescriptorHeapMode::Native : SlangDescriptorHeapMode::Mapped;
+    resolvedDesc.descriptorHeapStrides = {};
+    if (native) {
+        auto strides = desc.descriptorHeapStrides;
+        if (!strides.resource && !strides.sampler) {
+            strides = slangDescriptorHeapShaderStrides();
+        }
+        if (strides.resource < 8 || !strides.sampler ||
+            strides.resource > INT32_MAX || strides.sampler > INT32_MAX) {
+            log = "Native descriptor-heap compilation requires explicit resource/sampler strides "
+                "or an initialized Vulkan device. Both strides must fit a positive Slang int32 option.\n";
+            return makeError(Error::InvalidArgument);
+        }
+        resolvedDesc.descriptorHeapStrides = strides;
+    }
     const SlangShaderDebugMode debugMode = slangShaderDebugMode();
     const auto& target = vulkanSpirvTarget();
-    const uint64_t requestHash = shaderRequestHash(desc, debugMode, target);
+    const uint64_t requestHash = shaderRequestHash(resolvedDesc, debugMode, target);
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
     std::vector<ShaderDependencySnapshot> cachedDependencies;
     if (cacheOptions.enableDiskCache &&
@@ -975,7 +1018,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         searchPaths.push_back(searchPath.c_str());
     }
     std::vector<slang::CompilerOptionEntry> compilerOptions;
-    compilerOptions.reserve(desc.capabilities.size() + desc.macroDefines.size() + 6u);
+    compilerOptions.reserve(desc.capabilities.size() + desc.macroDefines.size() + 8u);
     compilerOptions.push_back(slang::CompilerOptionEntry{
         .name = slang::CompilerOptionName::EmitSpirvDirectly,
         .value = slang::CompilerOptionValue{
@@ -1000,16 +1043,23 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
             },
         });
     }
-    if (nativeDescriptorHeapEnabled(desc)) {
-        // Matches the RHI's single image/buffer index unit, specialized on device.
-        // Samplers keep their own stride; AS retains its legacy address resolver.
-        compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::SPIRVUnifiedDescriptorHeapStride,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::Int,
-                .intValue0 = 1,
-            },
-        });
+    if (native) {
+        // TO-REMOVE(VVL payload-size): retain literal ArrayStride until VVL correctly
+        // sizes task/mesh payloads with unrelated opaque-size spec expressions.
+        // Revert to SPIRVUnifiedDescriptorHeapStride only after the raw native
+        // task/mesh regression passes; then remove device ABI cache inputs and
+        // warmup property query together. See Documentation/NativeDescriptorHeapStrideWorkaround.md.
+        for (const auto& [option, stride] : {
+                std::pair{slang::CompilerOptionName::SPIRVResourceHeapStride, resolvedDesc.descriptorHeapStrides.resource},
+                std::pair{slang::CompilerOptionName::SPIRVSamplerHeapStride, resolvedDesc.descriptorHeapStrides.sampler}}) {
+            compilerOptions.push_back(slang::CompilerOptionEntry{
+                .name = option,
+                .value = slang::CompilerOptionValue{
+                    .kind = slang::CompilerOptionValueKind::Int,
+                    .intValue0 = static_cast<int32_t>(stride),
+                },
+            });
+        }
         compilerOptions.push_back(slang::CompilerOptionEntry{
             .name = slang::CompilerOptionName::Capability,
             .value = slang::CompilerOptionValue{

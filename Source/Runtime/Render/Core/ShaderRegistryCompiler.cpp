@@ -59,7 +59,7 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
     auto compiled = compileSlangShaderToSpirv(desc, options, log);
     if (compiled) {
         // Input byte-content identity. Module creation associates the final
-        // device code after RHI specialization with the same storage group.
+        // device code after Vulkan feature finalization with the same group.
         const uint64_t size = compiled->spirv.size() * sizeof(uint32_t);
         auto hash = hashBytes(14695981039346656037ull, &size, sizeof(size));
         hash = hashBytes(hash, compiled->spirv.data(), size_t(size));

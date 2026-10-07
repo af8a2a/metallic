@@ -17,14 +17,29 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   sizes as their index stride. Individual descriptor writes
   retain their native byte sizes. Capacity, offsets, shader indices and mappings
   for compute/graphics/shader objects use the same stride. Native compilation
-  enables `SPIRVUnifiedDescriptorHeapStride`; shader cache request version is 24.
-  Samplers retain their separate heap and stride.
-- Before creating a Vulkan shader module, `DescriptorHeapSPIRV.h` resolves
-  `OpConstantSizeOfEXT` for image/buffer/sampler types to the device's aligned
-  descriptor sizes. The generic disk cache remains device-independent; the
-  existing pipeline content hash and shader-object code use the specialized
-  device binary. This avoids the observed native task/mesh payload validation
-  failure caused by specialization expressions referencing opaque sizes.
+  passes that resource stride and the separate sampler stride through Slang's
+  `SPIRVResourceHeapStride` / `SPIRVSamplerHeapStride` options, producing literal
+  `ArrayStride` decorations. Both values enter compiler and shader-registry cache
+  identity; native binaries are specific to a descriptor-heap ABI. Mapped shader
+  compilation keeps its existing descriptor mappings.
+- **TO-REMOVE(VVL payload-size), temporary compiler policy:** VVL 1.4.350,
+  the locally built 1.4.357 layer and official 1.4.363 still miscalculate fixed
+  task/mesh payload sizes when unrelated heap stride expressions contain
+  `OpConstantSizeOfEXT`. The literal Slang options replace module-time SPIR-V
+  rewriting; `DescriptorHeapSPIRV.h` and `specializeDescriptorHeapSizes` are removed.
+  Startup native warmup uses instance-only local Vulkan dispatch to query the
+  first heap/untyped-pointer-capable adapter before logical-device creation.
+  Device creation publishes the selected adapter's validated strides for runtime
+  compilation, including skipped warmup.
+  Missing or invalid strides fail compilation instead of choosing a fixed ABI.
+  Module creation checks the native opaque-array literal strides without
+  modifying SPIR-V; old opaque-size expressions, ID-based strides and mismatched
+  literals are rejected with the resource/sampler values needed to recompile.
+  Remove this policy and its device-specific cache inputs when upstream payload
+  validation correctly accepts native opaque-size/unified-stride expressions.
+  This workaround does not alter native buffer-pointer normalization or OMM.
+  See [Native descriptor heap literal strides](NativeDescriptorHeapStrideWorkaround.md)
+  for the verified cause and the regression criteria required for removal.
 - Scene renderer image/buffer accesses use DR: postprocessing, lighting, scene and
   material data, GPU-driven culling/raster/streaming, path tracing, RTXDI, SHaRC,
   and the maintained NRD adapter. EditorDisplay remains the ImGui boundary

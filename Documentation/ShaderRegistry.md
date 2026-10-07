@@ -2,6 +2,12 @@
 
 运行时与预热通过 `ShaderRegistry::instance()` 获取 shader。Registry 负责未编译/失效源码的 Slang 编译、已有 SPIR-V 的依赖验证与读取，以及 compute/raster PSO 的持久缓存加载和保存。新增 Pass 不需要创建、传递或保存 `PipelineCache`。
 
+Native descriptor heap 的编译缓存包含 resource/sampler stride；运行时使用所选 GPU 的
+heap ABI，预热通过物理设备属性查询取得同一配置。模块创建会拒绝旧的尺寸表达式或
+与设备不匹配的 literal stride，并明确要求重新编译。`TO-REMOVE(VVL payload-size)`
+标记这项临时编译策略，移除条件及相关代码见
+[Native descriptor heap stride workaround](NativeDescriptorHeapStrideWorkaround.md)。
+
 ```cpp
 #include "Runtime/Render/Core/ShaderRegistry.h"
 

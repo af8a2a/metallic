@@ -9,6 +9,8 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <unordered_map>
 
 using namespace metallic::render;
 
@@ -25,16 +27,81 @@ bool contains(const std::vector<ShaderRequest>& catalog, const ShaderRequest& re
     return std::find(catalog.begin(), catalog.end(), request) != catalog.end();
 }
 
+ShaderRequest nativeHeapStrideProbe(DescriptorHeapShaderStrides strides = {})
+{
+    return {.module = "NativeHeapStrideProbe", .entry = "main",
+        .searchPath = PROJECT_SOURCE_DIR "/tests/editor/shaders",
+        .descriptorHeapMode = SlangDescriptorHeapMode::Native, .descriptorHeapStrides = strides};
+}
+
+std::string uniqueShaderCacheDirectory(const char* name)
+{
+    return (std::filesystem::path(TEST_BINARY_DIR) / "shader-request-cache" / name /
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())).string();
+}
+
+void expectNativeHeapStrides(const std::vector<uint32_t>& words, DescriptorHeapShaderStrides expected,
+    bool requireImages = true, bool requireSamplers = true, bool requireBuffers = true)
+{
+    ASSERT_GE(words.size(), 5u);
+    std::unordered_map<uint32_t, uint32_t> opaqueTypes;
+    std::unordered_map<uint32_t, uint32_t> arrays;
+    std::unordered_map<uint32_t, uint32_t> literalStrides;
+    for (size_t offset = 5; offset < words.size();) {
+        const uint32_t count = words[offset] >> 16, opcode = words[offset] & 0xffffu;
+        ASSERT_GT(count, 0u);
+        ASSERT_LE(offset + count, words.size());
+        EXPECT_NE(opcode, 5129u); // OpConstantSizeOfEXT must never reach the cache or the driver.
+        if (opcode == 25u || opcode == 26u || opcode == 5115u) { // Image, Sampler, BufferEXT
+            ASSERT_GE(count, 2u);
+            opaqueTypes.emplace(words[offset + 1], opcode);
+        }
+        if (opcode == 29u) { // OpTypeRuntimeArray
+            ASSERT_EQ(count, 3u);
+            arrays.emplace(words[offset + 1], words[offset + 2]);
+        }
+        if (opcode == 71u && count >= 4u && words[offset + 2] == 6u) { // OpDecorate ArrayStride
+            ASSERT_EQ(count, 4u);
+            literalStrides.emplace(words[offset + 1], words[offset + 3]);
+        }
+        if (opcode == 332u && count >= 3u) { // OpDecorateId
+            EXPECT_NE(words[offset + 2], 6u); // Descriptor ArrayStride must be a literal, not an ID.
+        }
+        offset += count;
+    }
+    size_t bufferCount = 0, imageCount = 0, samplerCount = 0;
+    for (const auto& [array, element] : arrays) {
+        const auto type = opaqueTypes.find(element);
+        if (type == opaqueTypes.end()) { continue; } // Ignore the buffer's ordinary data-element stride.
+        SCOPED_TRACE(array);
+        const auto stride = literalStrides.find(array);
+        ASSERT_NE(stride, literalStrides.end());
+        EXPECT_EQ(stride->second, type->second == 26u ? expected.sampler : expected.resource);
+        if (type->second == 26u) { ++samplerCount; }
+        else if (type->second == 25u) { ++imageCount; }
+        else { ++bufferCount; }
+    }
+    if (requireBuffers) { EXPECT_GT(bufferCount, 0u); }
+    if (requireImages) { EXPECT_GT(imageCount, 0u); }
+    if (requireSamplers) { EXPECT_GT(samplerCount, 0u); }
+}
+
 class ShaderRequestCompileTest : public testing::Test {
 protected:
     void SetUp() override
     {
         oldMode_ = slangShaderDebugMode();
+        oldStrides_ = slangDescriptorHeapShaderStrides();
         setSlangShaderDebugMode(SlangShaderDebugMode::Disabled);
     }
-    void TearDown() override { setSlangShaderDebugMode(oldMode_); }
+    void TearDown() override
+    {
+        setSlangShaderDebugMode(oldMode_);
+        setSlangDescriptorHeapShaderStrides(oldStrides_);
+    }
 private:
     SlangShaderDebugMode oldMode_;
+    DescriptorHeapShaderStrides oldStrides_;
 };
 
 TEST(ShaderRequests, OwnsStringsAcrossCopiesAndMoves)
@@ -53,6 +120,169 @@ TEST(ShaderRequests, OwnsStringsAcrossCopiesAndMoves)
     EXPECT_STREQ(desc.additionalSearchPaths[0], "C:/Original");
     EXPECT_STREQ(desc.capabilities[0], "spvRayQueryKHR");
     EXPECT_STREQ(desc.profileName, kDefaultSlangProfileName);
+}
+
+TEST(ShaderRequests, OwnsNativeDescriptorHeapStridesAcrossCopiesAndMoves)
+{
+    auto original = nativeHeapStrideProbe({48, 16});
+    auto copied = original;
+    original.descriptorHeapStrides = {64, 32};
+    const auto moved = std::move(copied);
+    EXPECT_NE(original, moved);
+    const ShaderRequestView source(moved);
+    EXPECT_EQ(source.desc().descriptorHeapStrides, (DescriptorHeapShaderStrides{48, 16}));
+}
+
+TEST_F(ShaderRequestCompileTest, NativeDescriptorHeapStridesSeparateTheCompilerCache)
+{
+    const std::string directory = uniqueShaderCacheDirectory("native-heap-strides");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    std::vector<std::vector<uint32_t>> binaries;
+    for (const auto strides : {DescriptorHeapShaderStrides{48, 16},
+            DescriptorHeapShaderStrides{64, 16}, DescriptorHeapShaderStrides{48, 32}}) {
+        SCOPED_TRACE(strides.resource);
+        SCOPED_TRACE(strides.sampler);
+        const auto request = nativeHeapStrideProbe(strides);
+        const ShaderRequestView source(request);
+        const auto compiled = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_FALSE(hit); // Both sizes participate in cache identity, independently.
+        expectNativeHeapStrides(compiled->spirv, strides);
+        binaries.push_back(compiled->spirv);
+        const auto reused = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_EQ(compiled->spirv, reused->spirv);
+    }
+    EXPECT_NE(binaries[0], binaries[1]);
+    EXPECT_NE(binaries[0], binaries[2]);
+}
+
+TEST_F(ShaderRequestCompileTest, NativeDescriptorHeapStridesStayLiteralWithShaderDebugInformation)
+{
+    const auto request = nativeHeapStrideProbe({48, 16});
+    const ShaderRequestView source(request);
+    std::string diagnostics;
+    for (const auto mode : {SlangShaderDebugMode::CaptureSymbols, SlangShaderDebugMode::ShaderDebug}) {
+        SCOPED_TRACE(static_cast<int>(mode));
+        setSlangShaderDebugMode(mode);
+        const auto compiled = compileSlangShaderToSpirv(source.desc(), {.enableDiskCache = false}, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        expectNativeHeapStrides(compiled->spirv, {48, 16});
+    }
+}
+
+TEST_F(ShaderRequestCompileTest, MappedDescriptorHeapIgnoresNativeStridesInTheCompilerCache)
+{
+    const std::string directory = uniqueShaderCacheDirectory("mapped-heap-strides");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    std::vector<uint32_t> reference;
+    for (const auto strides : {DescriptorHeapShaderStrides{}, DescriptorHeapShaderStrides{48, 16},
+            DescriptorHeapShaderStrides{64, 32}}) {
+        auto request = nativeHeapStrideProbe(strides);
+        request.descriptorHeapMode = SlangDescriptorHeapMode::Mapped;
+        const ShaderRequestView source(request);
+        const auto compiled = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_EQ(hit, !reference.empty());
+        if (reference.empty()) { reference = compiled->spirv; }
+        else { EXPECT_EQ(compiled->spirv, reference); }
+    }
+}
+
+TEST_F(ShaderRequestCompileTest, NativeDescriptorHeapRequiresValidDeviceStrides)
+{
+    setSlangDescriptorHeapShaderStrides({});
+    std::string diagnostics;
+    const uint32_t tooLarge = uint32_t(std::numeric_limits<int32_t>::max()) + 1u;
+    for (const auto strides : {DescriptorHeapShaderStrides{}, DescriptorHeapShaderStrides{48, 0},
+            DescriptorHeapShaderStrides{0, 16}, DescriptorHeapShaderStrides{4, 16},
+            DescriptorHeapShaderStrides{tooLarge, 16}, DescriptorHeapShaderStrides{48, tooLarge}}) {
+        SCOPED_TRACE(strides.resource);
+        SCOPED_TRACE(strides.sampler);
+        const auto request = nativeHeapStrideProbe(strides);
+        const ShaderRequestView source(request);
+        const auto compiled = compileSlangShaderToSpirv(source.desc(), {.enableDiskCache = false}, diagnostics);
+        EXPECT_FALSE(compiled);
+        EXPECT_FALSE(diagnostics.empty());
+    }
+}
+
+TEST_F(ShaderRequestCompileTest, NativeDescriptorHeapFallbackAndExplicitStridesShareTheCompilerCache)
+{
+    const std::string directory = uniqueShaderCacheDirectory("native-heap-device-policy");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    setSlangDescriptorHeapShaderStrides({48, 16});
+    const auto implicit = nativeHeapStrideProbe();
+    const ShaderRequestView implicitSource(implicit);
+    const auto compiled = compileSlangShaderToSpirv(implicitSource.desc(), cache, diagnostics);
+    ASSERT_TRUE(compiled) << diagnostics;
+    EXPECT_FALSE(hit);
+    expectNativeHeapStrides(compiled->spirv, {48, 16});
+    setSlangDescriptorHeapShaderStrides({64, 32});
+    const auto explicitRequest = nativeHeapStrideProbe({48, 16});
+    const ShaderRequestView explicitSource(explicitRequest);
+    const auto reused = compileSlangShaderToSpirv(explicitSource.desc(), cache, diagnostics);
+    ASSERT_TRUE(reused) << diagnostics;
+    EXPECT_TRUE(hit); // An explicit request takes priority over the current device's pair.
+    EXPECT_EQ(compiled->spirv, reused->spirv);
+    const auto otherDevice = compileSlangShaderToSpirv(implicitSource.desc(), cache, diagnostics);
+    ASSERT_TRUE(otherDevice) << diagnostics;
+    EXPECT_FALSE(hit);
+    expectNativeHeapStrides(otherDevice->spirv, {64, 32});
+    EXPECT_NE(compiled->spirv, otherDevice->spirv);
+}
+
+TEST_F(ShaderRequestCompileTest, NativeDescriptorHeapCapabilityRequiresTheSameDeviceStrides)
+{
+    setSlangDescriptorHeapShaderStrides({});
+    auto request = nativeHeapStrideProbe();
+    request.descriptorHeapMode = SlangDescriptorHeapMode::Mapped;
+    request.capabilities = {"spvDescriptorHeapEXT"};
+    const ShaderRequestView source(request);
+    std::string diagnostics;
+    EXPECT_FALSE(compileSlangShaderToSpirv(source.desc(), {.enableDiskCache = false}, diagnostics));
+    request.descriptorHeapStrides = {48, 16};
+    const auto compiled = compileSlangShaderToSpirv(source.desc(), {.enableDiskCache = false}, diagnostics);
+    ASSERT_TRUE(compiled) << diagnostics;
+    expectNativeHeapStrides(compiled->spirv, {48, 16});
+}
+
+TEST_F(ShaderRequestCompileTest, NativeWarmupExplicitStridesHitTheRuntimeDeviceCache)
+{
+    auto runtime = makeColorResizeShaderRequest();
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const auto entry = std::find(catalog.begin(), catalog.end(), runtime);
+    ASSERT_NE(entry, catalog.end());
+    auto warmup = *entry;
+    // Warmup enumerates device ABIs; runtime obtains the selected device ABI.
+    warmup.descriptorHeapMode = SlangDescriptorHeapMode::Native;
+    runtime.descriptorHeapMode = SlangDescriptorHeapMode::Native;
+    const std::string directory = uniqueShaderCacheDirectory("native-warmup-runtime");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    for (const auto strides : {DescriptorHeapShaderStrides{48, 16}, DescriptorHeapShaderStrides{64, 32}}) {
+        warmup.descriptorHeapStrides = strides;
+        setSlangDescriptorHeapShaderStrides({});
+        const ShaderRequestView warmupSource(warmup);
+        const auto warmed = compileSlangShaderToSpirv(warmupSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(warmed) << diagnostics;
+        EXPECT_FALSE(hit);
+        expectNativeHeapStrides(warmed->spirv, strides, true, false, false);
+        setSlangDescriptorHeapShaderStrides(strides);
+        const ShaderRequestView runtimeSource(runtime);
+        const auto reused = compileSlangShaderToSpirv(runtimeSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_EQ(warmed->spirv, reused->spirv);
+    }
 }
 
 TEST(ShaderRequests, IncludesTheRuntimeCustomMaterialDefaultInItsOriginalPosition)

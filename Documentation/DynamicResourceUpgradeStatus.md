@@ -9,6 +9,36 @@
 - Native 启用 `spvDescriptorHeapEXT` 和设备支持的 `VK_KHR_shader_untyped_pointers`，没有 legacy Binding / DescriptorSet 的 shader 不附加 descriptor mappings。不支持 untyped pointers 的设备创建 native module 返回 Unsupported。
 - 补齐 mapped storage image 非一致索引 feature。模式和修复版本进入 shader cache 身份，避免复用升级前字节码。
 
+### Native literal stride 临时方案（2026-10-07）
+
+**TO-REMOVE(VVL payload-size)：** native 编译通过 Slang 的
+`SPIRVResourceHeapStride` / `SPIRVSamplerHeapStride`（CLI 为
+`-spirv-resource-heap-stride` / `-spirv-sampler-heap-stride`）直接生成字面量
+`ArrayStride`。资源 stride 与 CPU heap writer 相同，是 aligned image/buffer
+descriptor size 的最大值；sampler 使用独立 descriptor size。删除原来的
+`DescriptorHeapSPIRV.h` 和 module 创建前 `OpConstantSizeOfEXT` 改写。
+
+这是验证层 payload-size 问题的临时编译配置：真实 create-only A/B 中，VVL
+1.4.350、既有本地 1.4.357 以及官方 1.4.363 都误报与 descriptor stride
+无关的固定 128-byte task/mesh payload；替换为字面量后误报消失。仅升级
+Validation Layers 不能解除本机阻断；这些 A/B 没有提交 GPU 工作。
+
+Native warmup 在创建逻辑设备前使用本地 Vulkan dispatch 查询首个支持 descriptor
+heap/untyped pointers 的适配器 stride；实际设备创建后发布选中适配器的配置，
+跳过 warmup 时也生效。两个 stride 纳入编译器与
+shader registry cache key，旧设备无关 native cache 不再复用；没有可用配置时
+明确失败，不硬编码本机数值。创建 shader module 时只读验证 native opaque
+array 的字面量 stride；旧 sizeof、ID-based
+stride 或与设备不匹配的字面量会明确拒绝，并输出需要用于重新编译的
+resource/sampler stride，不修改传入 SPIR-V。上游正确解析 native opaque-size/unified-stride
+表达式后，应移除该策略、查询入口和设备相关 cache 输入。typed/untyped 指针
+normalizer、AS resolver、OMM 与其他 SDK workaround 沿用当前行为。
+
+详见 [ResourceAccessABI](ResourceAccessABI.md) 和
+[临时 stride 策略的移除条件](NativeDescriptorHeapStrideWorkaround.md)。独立证据保留在
+`.tmp/spirv-removal-research/vvl/`；生产 GPU 回归结果另行记录，不能以
+create-only A/B 或 `spirv-val` 代替真实读回和图像验证。
+
 ## DeviceLost 修复
 
 环境：NVIDIA GB203-A，驱动 616.92，Slang 2026.18.2。以下是本机对照证据；后续独立 AS 调查已将数值读取故障缩小到驱动的 native heap load 路径，详见下文。

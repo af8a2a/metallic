@@ -1,7 +1,7 @@
 #include "Runtime/Render/GAPI/ShaderTarget.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanPipelineDiagnostics.h"
 #include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
-#include "Runtime/Render/GAPI/Vulkan/DescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/DescriptorHeapShaderABI.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -289,49 +289,52 @@ TEST(NativeDescriptorHeapSPIRV, MappedIsByteIdenticalAndMalformedInputIsTransact
     expectRejected(invalidPhi, "invalid phi operands");
 }
 
-TEST(DescriptorHeapSPIRV, ResolvesDifferentOpaqueSizesWithoutChangingIdsOrExpressions)
+TEST(DescriptorHeapShaderABI, RequiresDeviceLiteralStridesWithoutChangingCode)
 {
-    Words code{0x07230203, 0x10600, 0, 64, 0};
-    emit(code, 21, {1, 32, 0}); emit(code, 21, {2, 64, 0});
-    emit(code, 25, {3, 1, 1, 0, 0, 0, 1, 0});
-    emit(code, 5115, {4, 12}); emit(code, 26, {5});
-    emit(code, 5129, {1, 10, 3}); emit(code, 5129, {1, 11, 4}); emit(code, 5129, {2, 12, 5});
-    emit(code, 52, {1, 13, 169, 20, 10, 11});
-    // Compiler-cache finalization must preserve device-dependent sizeof queries.
-    auto finalized = code;
+    Words code{0x07230203, 0x10600, 0, 32, 0};
+    emit(code, 17, {5128});
+    emit(code, 5115, {1, 12}); emit(code, 29, {2, 1}); emit(code, 71, {2, 6, 32});
+    emit(code, 26, {3}); emit(code, 29, {4, 3}); emit(code, 71, {4, 6, 8});
+    // Ordinary data arrays have their own layout and do not use heap strides.
+    emit(code, 21, {5, 32, 0}); emit(code, 29, {6, 5}); emit(code, 71, {6, 6, 4});
+    emit(code, 43, {5, 8, 4}); emit(code, 28, {7, 1, 8}); emit(code, 71, {7, 6, 32});
+    // An ID stride on ordinary data is outside the descriptor-heap ABI.
+    emit(code, 28, {9, 5, 8}); emit(code, 332, {9, 5124, 8});
+    const auto original = code;
     std::string diagnostics;
-    ASSERT_TRUE(render::vulkanSpirvTarget().finalizeSpirv(finalized, diagnostics));
-    EXPECT_EQ(finalized, code);
-    Words result;
-    ASSERT_TRUE(render::vulkan::specializeDescriptorHeapSizes(finalized, result, 48, 16, 8));
-    EXPECT_EQ(instruction(result, 43, 10), (Words{(4u << 16) | 43u, 1, 10, 48}));
-    EXPECT_EQ(instruction(result, 43, 11), (Words{(4u << 16) | 43u, 1, 11, 16}));
-    EXPECT_EQ(instruction(result, 43, 12), (Words{(5u << 16) | 43u, 2, 12, 8, 0}));
-    EXPECT_EQ(instruction(result, 52, 13), instruction(code, 52, 13));
-    EXPECT_EQ(result[3], code[3]);
-    auto repeated = result;
-    ASSERT_TRUE(render::vulkan::specializeDescriptorHeapSizes(repeated, repeated, 48, 16, 8));
-    EXPECT_EQ(repeated, result);
+    EXPECT_TRUE(render::vulkan::validateNativeDescriptorHeapStrides(code, {32, 8}, diagnostics));
+    EXPECT_EQ(code, original);
+    EXPECT_FALSE(render::vulkan::validateNativeDescriptorHeapStrides(code, {64, 8}, diagnostics));
+    EXPECT_NE(diagnostics.find("Recompile this shader with resource/sampler strides 64/8"), std::string::npos);
+    EXPECT_EQ(code, original);
+    EXPECT_FALSE(render::vulkan::validateNativeDescriptorHeapStrides(code, {32, 16}, diagnostics));
+    EXPECT_EQ(code, original);
 }
 
-TEST(DescriptorHeapSPIRV, MappedUnchangedAndMalformedInputTransactional)
+TEST(DescriptorHeapShaderABI, RejectsLegacySizeQueriesAndIdStridesButAllowsMappedCode)
 {
-    Words mapped{0x07230203, 0x10600, 0, 64, 0};
-    emit(mapped, 21, {1, 32, 0}); emit(mapped, 43, {1, 2, 123});
-    Words result;
-    ASSERT_TRUE(render::vulkan::specializeDescriptorHeapSizes(mapped, result, 0, 0, 0));
-    EXPECT_EQ(result, mapped);
-    auto truncated = mapped; truncated.push_back((4u << 16) | 5129u);
-    ASSERT_FALSE(render::vulkan::specializeDescriptorHeapSizes(truncated, result, 48, 16, 8));
-    EXPECT_EQ(result, mapped);
-    Words invalidWidth{0x07230203, 0x10600, 0, 64, 0};
-    emit(invalidWidth, 21, {1, 16, 0}); emit(invalidWidth, 5115, {2, 12});
-    emit(invalidWidth, 5129, {1, 3, 2});
-    ASSERT_FALSE(render::vulkan::specializeDescriptorHeapSizes(invalidWidth, result, 48, 16, 8));
-    EXPECT_EQ(result, mapped);
-    auto missingSize = invalidWidth; missingSize[7] = 32;
-    ASSERT_FALSE(render::vulkan::specializeDescriptorHeapSizes(missingSize, result, 48, 0, 8));
-    EXPECT_EQ(result, mapped);
+    Words oldSize{0x07230203, 0x10600, 0, 32, 0};
+    emit(oldSize, 17, {5128}); emit(oldSize, 5115, {1, 12}); emit(oldSize, 5129, {2, 3, 1});
+    std::string diagnostics;
+    EXPECT_FALSE(render::vulkan::validateNativeDescriptorHeapStrides(oldSize, {32, 8}, diagnostics));
+    EXPECT_NE(diagnostics.find("opaque descriptor-size"), std::string::npos);
+    Words oldId{0x07230203, 0x10600, 0, 32, 0};
+    emit(oldId, 17, {5128}); emit(oldId, 5115, {1, 12}); emit(oldId, 29, {2, 1});
+    emit(oldId, 332, {2, 5124, 3});
+    const auto original = oldId;
+    EXPECT_FALSE(render::vulkan::validateNativeDescriptorHeapStrides(oldId, {32, 8}, diagnostics));
+    EXPECT_NE(diagnostics.find("ArrayStride must be a literal"), std::string::npos);
+    EXPECT_EQ(oldId, original);
+    Words fixedId{0x07230203, 0x10600, 0, 32, 0};
+    emit(fixedId, 17, {5128}); emit(fixedId, 5115, {1, 12}); emit(fixedId, 28, {2, 1, 4});
+    emit(fixedId, 332, {2, 5124, 3});
+    EXPECT_FALSE(render::vulkan::validateNativeDescriptorHeapStrides(fixedId, {32, 8}, diagnostics));
+    Words missing{0x07230203, 0x10600, 0, 32, 0};
+    emit(missing, 17, {5128}); emit(missing, 5115, {1, 12}); emit(missing, 29, {2, 1});
+    EXPECT_FALSE(render::vulkan::validateNativeDescriptorHeapStrides(missing, {32, 8}, diagnostics));
+    Words mapped{0x07230203, 0x10600, 0, 32, 0};
+    emit(mapped, 17, {1}); emit(mapped, 21, {1, 32, 0});
+    EXPECT_TRUE(render::vulkan::validateNativeDescriptorHeapStrides(mapped, {}, diagnostics));
 }
 
 } // namespace

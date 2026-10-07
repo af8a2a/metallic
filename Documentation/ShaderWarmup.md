@@ -10,6 +10,10 @@ Use your own build directory/configuration in place of the example. The target
 builds the small MetallicShaderCompiler executable and warms the project's
 .cache/shaders/spirv directory using the same SlangCompiler.cpp as the runtime.
 It does not start Metallic, create a GPU device, load scenes, or build the editor.
+Mapped-mode compilation requires no GPU. Native-mode compilation queries Vulkan
+physical devices for descriptor strides, without creating a logical device or
+submitting work. Supplying both strides explicitly also permits offline native
+compilation.
 
 The editor, LookDev, all rendering samples, and MetallicShaderPrintfProbe now
 warm the complete catalog synchronously before initializing rendering. Warmup
@@ -28,6 +32,10 @@ executables do not automatically run this startup warmup.
 The shared implementation runs inside each rendering process, after selecting
 its shader debug mode and before GPU initialization. It uses the existing
 parallel workers and progress display, then restores application logging.
+When requests use native descriptor heaps, warmup queries a supported adapter's
+resource/sampler stride pair before starting workers. Every request compiles once;
+the pair is passed only to native requests. Listing requests and explicitly
+skipping warmup do not query Vulkan.
 There is no external compiler process to locate or deploy. Startup always uses
 the complete catalog; METALLIC_SHADER_WARMUP_ARGS only configures the manual
 target and cannot bypass or filter startup warmup.
@@ -83,6 +91,26 @@ The default shader debug mode is disabled, independently of C++ Debug/Release.
 capture corresponds to CaptureSymbols; debug corresponds to ShaderDebug.
 The tool also honors the runtime METALLIC_SLANG_DESCRIPTOR_MODE environment
 variable. Cache entries for different modes are separate.
+Native cache identity also includes the resource and sampler byte strides. The
+compiler emits literal descriptor `ArrayStride` values instead of relying on
+device-size specialization of the emitted SPIR-V. At runtime, device creation
+publishes the selected adapter's actual strides before shader compilation.
+This is the temporary `TO-REMOVE(VVL payload-size)` compiler policy; see
+[the verified cause and removal conditions](NativeDescriptorHeapStrideWorkaround.md).
+
+For offline native warmup, specify the two strides together. The resource stride
+must match the runtime's common buffer/image descriptor slot stride; the sampler
+stride must match its sampler descriptor stride. For example, if the target
+adapter uses 64-byte resource slots and 16-byte sampler slots:
+
+~~~powershell
+$env:METALLIC_SLANG_DESCRIPTOR_MODE = "native"
+.\build-release\Source\MetallicShaderCompiler.exe --resource-heap-stride 64 --sampler-heap-stride 16
+~~~
+
+Without these arguments, native warmup discovers a supported adapter automatically.
+Failure to find a valid native stride pair aborts compilation. Explicit strides
+produce cache entries for that ABI; another adapter can require different entries.
 
 To pass arguments through the CMake target, configure with a semicolon-separated
 list, for example:
@@ -113,6 +141,7 @@ unlisted combinations continue to compile on demand. No cache is required to run
 When adding or changing requests, copy the owning runtime pass's module, entry,
 capabilities, additional search paths, and macro definitions **in the same order**.
 The runtime cache key includes all of them, even explicit zero-valued defines.
+For native requests it also includes both descriptor strides.
 Compile include-file entry points through the same root module used by the pass.
 The tool deliberately reuses runtime hashing, dependency validation, SPIR-V
 processing, and cache serialization instead of duplicating that logic.

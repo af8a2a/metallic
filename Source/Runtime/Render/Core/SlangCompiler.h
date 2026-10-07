@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Render/GAPI/ShaderTarget.h"
 
 #include <string>
 #include <vector>
@@ -41,6 +42,9 @@ struct SlangShaderDesc {
     std::span<const char* const> capabilities;
     std::span<const SlangMacroDefine> macroDefines;
     SlangDescriptorHeapMode descriptorHeapMode = SlangDescriptorHeapMode::Default;
+    // Native compilation uses this explicit device ABI, or the active device's
+    // strides when both are zero. Mapped compilation ignores this field.
+    DescriptorHeapShaderStrides descriptorHeapStrides;
 };
 
 struct ShaderCompileResult {
@@ -59,6 +63,12 @@ struct SlangShaderCacheOptions {
 // Process-global compilation policy. Configure it before shader compilation begins.
 void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept;
 SlangShaderDebugMode slangShaderDebugMode() noexcept;
+bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept;
+
+// The selected Vulkan device publishes its heap ABI before runtime compilation.
+// Warmup/offline compiles pass explicit strides instead of changing this state.
+void setSlangDescriptorHeapShaderStrides(DescriptorHeapShaderStrides strides) noexcept;
+DescriptorHeapShaderStrides slangDescriptorHeapShaderStrides() noexcept;
 
 // Successful shader compiles automatically register their complete Slang
 // dependency list. File metadata and content hashes are scanned by a background

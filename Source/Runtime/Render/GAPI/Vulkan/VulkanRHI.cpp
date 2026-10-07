@@ -13,6 +13,7 @@
 #include "Runtime/Render/GAPI/ShaderObjectCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Hash.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
@@ -21,7 +22,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.h"
-#include "Runtime/Render/GAPI/Vulkan/DescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/DescriptorHeapShaderABI.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/GAPI/CommandSubmission.h"
 
@@ -8651,15 +8652,15 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
     }
 
 
-    std::vector<uint32_t> heapCode, opacityCode;
-    ShaderModuleDesc deviceDesc = desc;
-    if (!vulkan::specializeDescriptorHeapSizes(desc.spirv, heapCode,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageShaderDescriptorSize()),
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferShaderDescriptorSize()),
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()))) {
+    std::string strideDiagnostics;
+    if (!vulkan::validateNativeDescriptorHeapStrides(desc.spirv,
+            {static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()),
+             static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize())}, strideDiagnostics)) {
+        spdlog::error("Shader '{}' rejected: {}", desc.debugName ? desc.debugName : "<unnamed>", strideDiagnostics);
         return makeError(Error::InvalidArgument);
     }
-    deviceDesc.spirv = heapCode;
+    std::vector<uint32_t> opacityCode;
+    ShaderModuleDesc deviceDesc = desc;
     if (impl_->vulkanCapabilities.opacityMicromap) {
         if (!vulkan::enableOpacityMicromapSpirv(
                 deviceDesc.spirv, opacityCode, impl_->opacityMicromapExt)) {
@@ -10295,6 +10296,18 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         if (vkResult != VK_SUCCESS) {
             return std::unexpected(resultFromVk(vkResult).error());
         }
+
+        const VkDeviceSize resourceShaderStride = deviceImpl->descriptorHeapWriter.resourceDescriptorStride();
+        const VkDeviceSize samplerShaderStride = deviceImpl->descriptorHeapWriter.samplerDescriptorSize();
+        if (resourceShaderStride > std::numeric_limits<int32_t>::max() ||
+            samplerShaderStride > std::numeric_limits<int32_t>::max()) {
+            spdlog::error("Vulkan descriptor heap strides exceed Slang's compiler option range.");
+            return makeError(Error::Unsupported);
+        }
+        // TO-REMOVE(VVL payload-size): emit literal strides in Slang while VVL
+        // miscalculates task/mesh payloads with unresolved opaque-size queries.
+        setSlangDescriptorHeapShaderStrides({static_cast<uint32_t>(resourceShaderStride),
+            static_cast<uint32_t>(samplerShaderStride)});
 
         const VkDeviceSize samplerCapacityBytes =
             deviceImpl->descriptorHeapWriter.maxSamplerHeapSize() >
