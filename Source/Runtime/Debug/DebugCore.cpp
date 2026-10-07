@@ -364,6 +364,22 @@ DebugValue DebugCore::dispatch(const DebugValue& request)
     catch (const std::exception& error) { return debugErrorResponse(id, "InvalidArgument", error.what()); }
 }
 
+std::shared_ptr<const DebugSnapshot> DebugCore::latestSnapshot() const
+{
+    std::lock_guard lock(mutex_);
+    for (auto it = snapshots_.rbegin(); it != snapshots_.rend(); ++it) {
+        if (it->first->evidence.provenance.value("completion", "Ready") == "Ready") { return it->first; }
+    }
+    return {};
+}
+
+std::shared_ptr<const DebugCapture> DebugCore::completedCapture(std::string_view id) const
+{
+    std::lock_guard lock(mutex_);
+    const auto found = jobs_.find(std::string(id));
+    return found != jobs_.end() && found->second.state == "Ready" ? found->second.capture : nullptr;
+}
+
 DebugValue DebugCore::route(std::string_view method, const DebugValue& params)
 {
     std::unique_lock lock(mutex_);

@@ -630,6 +630,13 @@ set_tests_properties(MetallicRHITests PROPERTIES
     SKIP_RETURN_CODE 77
 )
 
+add_test(NAME MetallicResourceInspectorSmoke
+    COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
+        $<TARGET_FILE:Metallic> --skip-shader-warmup
+        --resource-inspector-smoke "${CMAKE_CURRENT_BINARY_DIR}/resource-inspector-evidence")
+set_tests_properties(MetallicResourceInspectorSmoke PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "editor;rhi;resource-inspector" TIMEOUT 120)
+
 if(METALLIC_HAS_DLSS_NR)
     add_test(NAME MetallicDLSSNRRuntimeTests COMMAND MetallicRHITests
         --rhi-streamline --filter dlss_nr_runtime --rhi-no-validation

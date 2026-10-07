@@ -23,6 +23,13 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"BGRA8", 4, {{"b", "u8", 0}, {"g", "u8", 1}, {"r", "u8", 2}, {"a", "u8", 3}}});
     add({"RGBA16F", 8, {{"r", "f16", 0}, {"g", "f16", 2}, {"b", "f16", 4}, {"a", "f16", 6}}});
     add({"RGBA32F", 16, {{"r", "f32", 0}, {"g", "f32", 4}, {"b", "f32", 8}, {"a", "f32", 12}}});
+    add({"R16F", 2, {{"r", "f16", 0}}});
+    add({"RG16F", 4, {{"r", "f16", 0}, {"g", "f16", 2}}});
+    add({"RG32F", 8, {{"r", "f32", 0}, {"g", "f32", 4}}});
+    add({"RG32U", 8, {{"r", "u32", 0}, {"g", "u32", 4}}});
+    add({"RGBA32U", 16, {{"r", "u32", 0}, {"g", "u32", 4}, {"b", "u32", 8}, {"a", "u32", 12}}});
+    add({"RG32I", 8, {{"r", "i32", 0}, {"g", "i32", 4}}});
+    add({"RGBA32I", 16, {{"r", "i32", 0}, {"g", "i32", 4}, {"b", "i32", 8}, {"a", "i32", 12}}});
 #define DEBUG_FIELD(T, F) DebugFieldDesc{#F, "u32", static_cast<uint32_t>(offsetof(T, F))}
     add({"MeshletLODSelectionHeader", 16, {{"count", "u32", 0}, {"capacity", "u32", 4},
         {"candidateCount", "u32", 8}, {"overflow", "u32", 12}}});

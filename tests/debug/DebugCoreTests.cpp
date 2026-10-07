@@ -61,6 +61,37 @@ static DebugValue request(DebugCore& core, std::string method, DebugValue params
     return core.dispatch({{"id", "test"}, {"method", method}, {"params", params}});
 }
 
+TEST(DebugCore, InspectorBorrowsOnlyCompletedImmutableEvidence)
+{
+    DebugLimits limits;
+    limits.snapshotCount = 1;
+    DebugCore core(limits);
+    core.setGraph(graph());
+    DebugSnapshot snapshot;
+    snapshot.evidence.execution = 1;
+    snapshot.evidence.provenance["completion"] = "Untracked";
+    core.publish(snapshot);
+    EXPECT_FALSE(core.latestSnapshot());
+    snapshot.evidence.provenance["completion"] = "Ready";
+    core.publish(snapshot);
+    const auto borrowed = core.latestSnapshot();
+    ASSERT_TRUE(borrowed);
+    snapshot.evidence.execution = 2;
+    core.publish(snapshot);
+    EXPECT_EQ(borrowed->evidence.execution, 1);
+    EXPECT_EQ(core.latestSnapshot()->evidence.execution, 2);
+
+    const auto queued = request(core, "capture.batch", {{"pass", "Cull"}, {"resources", {{{"id", "ids"}, {"count", 1}}}}});
+    const std::string job = queued.at("result").at("job");
+    EXPECT_FALSE(core.completedCapture(job));
+    auto capture = std::make_shared<DebugCapture>();
+    capture->artifacts.push_back({{}, {"u32", 4, {{"value", "u32", 0}}}, {42, 0, 0, 0}});
+    core.complete(job, capture);
+    ASSERT_TRUE(core.completedCapture(job));
+    EXPECT_EQ(core.completedCapture(job)->artifacts[0].bytes[0], 42);
+    EXPECT_FALSE(core.completedCapture("missing"));
+}
+
 TEST(DebugCore, CompletionAndStaleGeneration)
 {
     DebugCore core; core.setGraph(graph());

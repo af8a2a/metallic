@@ -57,6 +57,14 @@ std::string textureLayout(Format format)
     case Format::BGRA8Unorm: case Format::BGRA8sRGB: return "BGRA8";
     case Format::RGBA16Sfloat: return "RGBA16F";
     case Format::RGBA32Sfloat: return "RGBA32F";
+    case Format::R16Sfloat: return "R16F";
+    case Format::RG16Sfloat: return "RG16F";
+    case Format::RG32Sfloat: return "RG32F";
+    case Format::RG32Uint: return "RG32U";
+    case Format::RGBA32Uint: return "RGBA32U";
+    case Format::R32Sint: return "i32";
+    case Format::RG32Sint: return "RG32I";
+    case Format::RGBA32Sint: return "RGBA32I";
     case Format::R32Uint: return "u32";
     case Format::R32Sfloat: case Format::D32Sfloat: return "f32";
     default: return {};
@@ -77,6 +85,13 @@ DebugValue resourceMetadata(const DebugResourceBinding& binding)
         value["width"] = desc.width; value["height"] = desc.height;
         value["format"] = static_cast<uint32_t>(desc.format);
         value["layout"] = textureLayout(desc.format);
+        value["textureType"] = static_cast<uint32_t>(desc.type);
+        value["depth"] = desc.depth; value["mipCount"] = desc.mipCount; value["layerCount"] = desc.layerCount;
+        if (value["layout"] == "" || desc.type != TextureType::Texture2D ||
+            (uint32_t(desc.usage) & uint32_t(TextureUsageBits::TransferSource)) == 0) {
+            value["captureSupported"] = false;
+            value["reason"] = "Texture inspection requires a supported uncompressed 2D transfer-source texture";
+        }
     } else if (binding.buffer) {
         value["kind"] = "buffer";
         value["size"] = binding.size ? binding.size : binding.buffer->desc().size - binding.offset;

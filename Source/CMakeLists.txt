@@ -417,6 +417,8 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorStreamlineDebug.cpp
     Editor/EditorProfiler.cpp
     Editor/EditorRenderGraphViewer.cpp
+    Editor/EditorResourceInspector.cpp
+    Editor/EditorResourceInspectorSmoke.cpp
     Editor/NVMLMonitor.cpp
 )
 

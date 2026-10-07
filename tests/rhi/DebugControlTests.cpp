@@ -129,9 +129,13 @@ public:
         RenderDebugRuntime runtime;
         RenderGraphExecutor executor;
         FrameCommands frame;
-        executor.setDebugObserver(&runtime);
         std::string log;
+        // The editor explicitly recompiles on inspector activation, even without aliases.
         DEBUG_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
+        executor.setDebugObserver(&runtime);
+        DEBUG_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
+        executor.setDebugObserver(&runtime);
+        if (!executor.compiled()) { return RHITestResult::fail("Reattaching the same observer invalidated the graph"); }
         DEBUG_REQUIRE(frame.initialize(context.device, context.graphicsQueue));
         const auto group = call(runtime, "capture.batch", {{"batches", {
             {{"pass", "Probe"}, {"checkpoint", "Early"}, {"resources", {{{"id", "Ids"}, {"count", 4}}}}},
@@ -141,11 +145,18 @@ public:
         DEBUG_REQUIRE(frame.begin(70));
         DEBUG_REQUIRE(executor.execute(*frame.commands));
         runtime.poll();
+        if (runtime.core().completedCapture(early) || runtime.core().latestSnapshot()) {
+            return RHITestResult::fail("Inspector exposed unsubmitted GPU data");
+        }
         if (call(runtime, "jobs.get", {{"job", early}})["result"]["state"] != "Recorded" ||
             call(runtime, "frame.latest")["status"] != "error") {
             return RHITestResult::fail("Unsubmitted recording was published as complete");
         }
         DEBUG_REQUIRE(frame.submit()); DEBUG_REQUIRE(frame.frame.wait(5'000'000'000ull)); runtime.poll();
+        const auto inspectorCapture = runtime.core().completedCapture(late);
+        if (!inspectorCapture || inspectorCapture->artifacts[0].bytes.size() != 16 || !runtime.core().latestSnapshot()) {
+            return RHITestResult::fail("Inspector did not receive completed buffer bytes");
+        }
         for (const auto& [id, expected] : {std::pair{early, 11u}, std::pair{late, 22u}}) {
             const auto result = call(runtime, "eval", {{"job", id}, {"expression", "buffers[\"Ids\"][0]"}});
             if (result.value("status", "") != "ok" || result["result"]["value"] != expected) {
@@ -185,6 +196,8 @@ public:
         }
         // Submit a recorded prefix after the pass reports failure, then reject
         // a later segment. Already accepted evidence must survive frame.cancel.
+        // A failed execution invalidates the executor's resource state tracking.
+        DEBUG_REQUIRE(executor.compile(context.device, graph, 8, 8, log));
         const auto prefixJob = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.begin(72));
         if (executor.execute(*frame.commands)) { return RHITestResult::fail("Expected prefix fixture failure"); }
@@ -199,6 +212,7 @@ public:
             prefixResult["result"]["evidence"]["provenance"]["executionComplete"] != false) {
             return RHITestResult::fail("Submitted prefix capture was released early or attributed to a complete execution");
         }
+        DEBUG_REQUIRE(executor.compile(context.device, graph, 8, 8, log));
         const auto legacyJob = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.pool->reset()); DEBUG_REQUIRE(frame.commands->begin());
         (void)executor.execute(*frame.commands); DEBUG_REQUIRE(frame.commands->end());
@@ -209,6 +223,7 @@ public:
         }
         DEBUG_REQUIRE(frame.pool->reset());
         runtime.drain();
+        executor.setDebugObserver(nullptr);
         return RHITestResult::pass("Early/late copies, external/self submission, overwrite isolation, resize and cancellation verified");
     }
 };

@@ -478,13 +478,13 @@ Result<> VulkanImGuiBackend::retainTextures(CommandBuffer& commands)
     return scope ? Result<>{} : makeError(Error::InvalidArgument);
 }
 
-Result<> VulkanImGuiBackend::render(CommandBuffer& commands)
+Result<> VulkanImGuiBackend::render(CommandBuffer& commands, ImDrawData* drawData)
 {
     auto retained = retainTextures(commands);
     if (!retained) { return retained; }
     Impl::Call call(*impl_);
     ExternalCommandScope scope(commands);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), scope.commandBuffer(), impl_->display.mainPipeline());
+    ImGui_ImplVulkan_RenderDrawData(drawData ? drawData : ImGui::GetDrawData(), scope.commandBuffer(), impl_->display.mainPipeline());
     if (impl_->display.failed) { return makeError(Error::Failure); }
     return resultFromVk(impl_->error);
 }

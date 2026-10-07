@@ -53,6 +53,7 @@ void printUsage()
         "Metallic options:\n"
         "  --debug-control                               Enable local Agent debug control\n"
         "  --smoke-test                                  Render one frame and exit\n"
+        "  --resource-inspector-smoke <directory>         Test GPU resource inspection and export native UI/evidence\n"
         "  --scene <path>                                Override the sample scene (glTF or USD)\n"
         "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
         "  --nsight-shader-debug                         Emit unoptimized shader debug information\n"
@@ -180,6 +181,7 @@ int main(int argc, char** argv)
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
     bool nsightShaderDebug = false;
     bool debugControl = false;
+    std::string resourceInspectorSmokeOutput;
     std::filesystem::path buildMeshstreamSourcePath;
     std::filesystem::path buildMeshstreamOutputPath;
     std::filesystem::path scenePath;
@@ -197,6 +199,13 @@ int main(int argc, char** argv)
             printUsage();
             return 0;
         } else if (argument == "--smoke-test") {
+            smokeTest = true;
+        } else if (argument == "--resource-inspector-smoke") {
+            if (index + 1 >= argc || std::string_view(argv[index + 1]).starts_with("--")) {
+                std::fputs("--resource-inspector-smoke requires an output directory\n", stderr);
+                return 1;
+            }
+            resourceInspectorSmokeOutput = argv[++index];
             smokeTest = true;
         } else if (argument == "--rhi-smoke-test") {
             rhiSmokeTest = true;
@@ -295,10 +304,11 @@ int main(int argc, char** argv)
     return app.run(
         smokeTest,
         waitForGraphicsDebugger,
-        nullptr,
+        resourceInspectorSmokeOutput.empty() ? nullptr : "triangle",
         scenePathString.empty() ? nullptr : scenePathString.c_str(),
         nullptr,
         nsightOptions.mode,
         nsightShaderDebug,
-        debugControl, false, warmupOptions.skip);
+        debugControl, false, warmupOptions.skip, metallic::render::LookDevRenderPath::Comparison,
+        resourceInspectorSmokeOutput.empty() ? nullptr : resourceInspectorSmokeOutput.c_str());
 }

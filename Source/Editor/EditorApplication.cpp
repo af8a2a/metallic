@@ -2044,7 +2044,8 @@ int EditorApplication::run(
     bool enableDebugControl,
     bool gpuDrivenScenesOnly,
     bool skipShaderWarmup,
-    render::LookDevRenderPath lookDevRenderPath)
+    render::LookDevRenderPath lookDevRenderPath,
+    const char* resourceInspectorSmokeOutput)
 {
     lookDevRenderPath_ = lookDevRenderPath;
     gpuDrivenScenesOnly_ = gpuDrivenScenesOnly;
@@ -2203,6 +2204,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (resourceInspectorSmokeOutput || environmentFlagEnabled("METALLIC_SMOKE_TEST_RESOURCE_INSPECTOR")) {
+            const bool passed = runResourceInspectorSmokeTest(resourceInspectorSmokeOutput);
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_LOOKDEV_PATHS") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_STUDIO_SWITCH") ||
@@ -2326,7 +2332,8 @@ int EditorApplication::run(
         if (debugRuntime_) {
             debugRuntime_->poll();
             debugRuntime_->core().setEngineState({{"state", (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) ? "Minimized" : "Running"},
-                {"editorSubmittedFrame", submittedFrameIndex_}, {"historyFrame", historyFrameIndex_}});
+                {"editorSubmittedFrame", submittedFrameIndex_}, {"historyFrame", historyFrameIndex_},
+                {"resourceInspector", resourceInspector_.diagnostics()}});
         }
         if ((SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0) {
             auto profileScope = profiler_.scope("Minimized Wait");
@@ -2894,6 +2901,7 @@ void EditorApplication::shutdown()
     }
     (void)frameSubmissions_.reset();
     if (debugRuntime_) { debugRuntime_->drain(); }
+    resourceInspector_.shutdown(imguiBackend_);
 
     destroyViewportTexture();
     historyResources_.reset();
@@ -3144,6 +3152,15 @@ bool EditorApplication::renderFrame()
     {
         auto profileScope = profiler_.scope("Shader Hot Reload");
         pollShaderHotReload();
+    }
+
+    resourceInspector_.runtime().poll();
+    if (!debugRuntime_ && graphExecutor_ && resourceInspectorAttached_ != resourceInspectorVisible_) {
+        resourceInspectorAttached_ = resourceInspectorVisible_;
+        graphExecutor_->setDebugObserver(resourceInspectorAttached_ ? &resourceInspector_.runtime() : nullptr);
+        // Recompile on both edges to update transfer usages and allocation policy.
+        // Keep transient observer switching in diagnostic benchmarks unchanged.
+        viewportPreviewValid_ = false;
     }
 
     if (renderMainViewport && (swapchainOutOfDate_ ||
@@ -7207,6 +7224,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
     }
 
     bool frameLabelOpen = true;
+    if (!resourceInspector_.upload(*frame.commandBuffer)) { return false; }
     frame.commandBuffer->beginDebugLabel(render::DebugLabelDesc{
         .name = "Metallic Editor Frame",
         .color = render::ColorValue{0.24f, 0.40f, 0.95f, 1.0f},
@@ -8401,6 +8419,7 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
 
 void EditorApplication::drawRenderGraphEditorWindow()
 {
+    resourceInspectorVisible_ = false;
     if (graphExecutor_) { graphExecutor_->setExecutionCaptureEnabled(false); }
     if (!renderGraphEditorOpen_) {
         return;
@@ -8499,6 +8518,12 @@ void EditorApplication::drawRenderGraphEditorWindow()
             if (selectedPass != UINT32_MAX && selectedPass != previousSelection && renderGraph_.findNode(selectedPass)) {
                 selectedGraphNodeId_ = static_cast<int>(selectedPass);
             }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Resources", nullptr, resourceInspectorSelectTab_ ? ImGuiTabItemFlags_SetSelected : 0)) {
+            resourceInspectorVisible_ = true;
+            resourceInspectorSelectTab_ = false;
+            resourceInspector_.draw(debugRuntime_ ? *debugRuntime_ : resourceInspector_.runtime(), *device_, imguiBackend_, mainScale_);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -8614,6 +8639,10 @@ void EditorApplication::drawRenderGraphPanel()
     if (ImGui::BeginPopup("RenderGraphOutputPinMenu")) {
         ImGui::TextUnformatted(graphOutputBuffer_);
         ImGui::Separator();
+        if (ImGui::MenuItem("Inspect Resource")) {
+            resourceInspector_.select(graphOutputBuffer_);
+            resourceInspectorSelectTab_ = true;
+        }
         if (ImGui::MenuItem("Preview This Output")) {
             setActivePreviewOutput(graphOutputBuffer_);
         }

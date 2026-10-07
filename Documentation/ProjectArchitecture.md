@@ -20,6 +20,8 @@ Metallic 是一个以 C++23、Slang 和 Vulkan 为核心的实验性实时渲染
 
 M2 首批自定义 Value Program 的前端、独立参数、静态程序集与支持范围见 [M2 实施记录](MaterialValueProgramsM2.md)。
 
+RenderGraph 资源快照、Texture/Buffer Inspector 与无需桌面自动化的原生调试入口见 [资源可视化与验证](RenderGraphResourceInspector.md)。
+
 ## 2. 总体架构
 
 ```mermaid

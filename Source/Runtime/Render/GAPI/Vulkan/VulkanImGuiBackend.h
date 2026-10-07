@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/RHI.h"
 
 struct ImDrawList;
+struct ImDrawData;
 struct ImGuiViewport;
 
 namespace metallic::render::vulkan {
@@ -52,7 +53,8 @@ public:
     // Retains registered views/descriptors for this recording, including textures
     // used only in platform windows. Call even when the main window is minimized.
     Result<> retainTextures(CommandBuffer& commands);
-    Result<> render(CommandBuffer& commands);
+    // Explicit draw data enables native offscreen panel captures without desktop automation.
+    Result<> render(CommandBuffer& commands, ImDrawData* drawData = nullptr);
     Result<> encodeHDR10(CommandBuffer& commands, ImGuiTexture source, uint32_t width, uint32_t height);
     // The caller seals its frame completion after this method, covering all windows.
     Result<> renderPlatformWindows();
