@@ -239,9 +239,11 @@ public:
             return RHITestResult::fail("ROI shape or coverage mismatch: " + response.dump());
         }
         const auto sink = runtime.validationSink();
-        sink.callback(sink.context, {.severity = 4096, .messageId = 7, .messageIdName = "fixture", .message = "validation evidence"});
+        sink.callback(sink.context, {.severity = render::ValidationSeverity::Error, .messageId = 7, .messageIdName = "fixture", .message = "validation evidence"});
         const auto events = runtime.core().events("validation");
-        if (events["events"][0]["messageId"] != 7 || !events["events"][0]["execution"].is_null()) {
+        if (events["events"][0]["encoding"] != "metallic-validation-v1" ||
+            events["events"][0]["severity"].get<ValidationSeverity>() != ValidationSeverity::Error ||
+            events["events"][0]["messageId"] != 7 || !events["events"][0]["execution"].is_null()) {
             return RHITestResult::fail("Validation event lost severity/identity or invented frame association");
         }
         runtime.drain();
@@ -461,7 +463,8 @@ public:
         const auto events = runtime.core().events("validation");
         for (const auto& event : events["events"]) {
             // Keep loader GENERAL events in captured evidence; fail on API validation errors.
-            if ((event["severity"].get<uint32_t>() & 4096) && (event["type"].get<uint32_t>() & 2)) {
+            if (event["severity"].get<ValidationSeverity>() == ValidationSeverity::Error &&
+                hasFlag(event["type"].get<ValidationCategory>(), ValidationCategory::Validation)) {
                 return RHITestResult::fail("Probe validation error: " + event.dump());
             }
         }

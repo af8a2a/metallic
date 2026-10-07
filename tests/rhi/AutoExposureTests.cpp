@@ -2,7 +2,6 @@
 #include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -134,11 +133,11 @@ public:
             auto result = render::createDevice({.applicationName = "Auto exposure internal stages",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
-                    if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                    if (message.severity == render::ValidationSeverity::Error) {
                         std::fprintf(stderr, "AutoExposure validation: %s\n", message.message);
                         // Broken loader manifest registrations are GENERAL messages,
                         // not synchronization validation of this workload.
-                        if (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) {
+                        if (render::hasFlag(message.type, render::ValidationCategory::Validation)) {
                             ++*static_cast<std::atomic_uint*>(target);
                         }
                     }

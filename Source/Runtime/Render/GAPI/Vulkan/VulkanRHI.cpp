@@ -3,6 +3,7 @@
 #include "VulkanSynchronization.h"
 #include "VulkanTrace.h"
 #include "VulkanResult.h"
+#include "VulkanValidation.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
 #include "VulkanInterop.h"
@@ -968,12 +969,12 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         try {
             std::vector<ValidationObject> objects(callbackData->objectCount);
             for (uint32_t i = 0; i < callbackData->objectCount; ++i) {
-                objects[i] = {callbackData->pObjects[i].objectHandle, static_cast<uint32_t>(callbackData->pObjects[i].objectType), callbackData->pObjects[i].pObjectName};
+                objects[i] = {callbackData->pObjects[i].objectHandle, vulkan::validationObjectType(callbackData->pObjects[i].objectType), callbackData->pObjects[i].pObjectName};
             }
-            sink->callback(sink->context, {static_cast<uint32_t>(severity), type, callbackData->messageIdNumber,
+            sink->callback(sink->context, {vulkan::validationSeverity(severity), vulkan::validationCategory(type), callbackData->messageIdNumber,
                 callbackData->pMessageIdName, callbackData->pMessage, objects});
         } catch (...) {
-            sink->callback(sink->context, {VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, type, 0,
+            sink->callback(sink->context, {ValidationSeverity::Error, vulkan::validationCategory(type), 0,
                 "Metallic.ValidationCaptureFailure", "Could not retain validation objects", {}});
         }
     }

@@ -742,3 +742,8 @@ add_executable(MetallicRHIObserverTests rhi/RHIObserverTests.cpp)
 target_link_libraries(MetallicRHIObserverTests PRIVATE MetallicRuntimeRender GTest::gtest_main)
 add_test(NAME MetallicRHIObserverTests COMMAND MetallicRHIObserverTests)
 set_tests_properties(MetallicRHIObserverTests PROPERTIES LABELS "rhi;profiling;cpu")
+
+add_executable(MetallicValidationTranslationTests rhi/ValidationTranslationTests.cpp)
+target_link_libraries(MetallicValidationTranslationTests PRIVATE MetallicRuntimeRender GTest::gtest_main)
+add_test(NAME MetallicValidationTranslationTests COMMAND MetallicValidationTranslationTests)
+set_tests_properties(MetallicValidationTranslationTests PROPERTIES LABELS "rhi;validation;cpu")

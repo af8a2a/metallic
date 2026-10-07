@@ -317,7 +317,7 @@ protected:
              .validationSink = {.callback =
                                     [](void* context, const render::ValidationMessage& message) noexcept {
                                         // GENERAL loader registration errors are logged separately from API validation.
-                                        if ((message.severity & 0x1100u) != 0 && (message.type & 0x2u) != 0)
+                                        if ((message.severity == render::ValidationSeverity::Warning || message.severity == render::ValidationSeverity::Error) && render::hasFlag(message.type, render::ValidationCategory::Validation))
                                             static_cast<std::atomic<uint32_t>*>(context)->fetch_add(1);
                                     },
                                 .context = &validationErrors}}).transform([&](auto rhiValue) { device = std::move(rhiValue); });

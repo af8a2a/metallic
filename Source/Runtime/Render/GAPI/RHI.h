@@ -351,15 +351,46 @@ struct RayTracingAccelerationStructureCompactionQueryPoolDesc {
     uint32_t queryCount = 0;
 };
 
+// Backend-independent diagnostic values; numeric encodings are not native API bits.
+enum class ValidationSeverity : uint8_t {
+    Unknown, Verbose, Info, Warning, Error,
+};
+
+enum class ValidationCategory : uint8_t {
+    None = 0,
+    General = 1 << 0,
+    Validation = 1 << 1,
+    Performance = 1 << 2,
+    ResourceBinding = 1 << 3,
+    Unknown = 1 << 4,
+};
+
+constexpr ValidationCategory operator|(ValidationCategory lhs, ValidationCategory rhs)
+{
+    return static_cast<ValidationCategory>(static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+}
+
+constexpr bool hasFlag(ValidationCategory value, ValidationCategory flags)
+{
+    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flags)) != 0;
+}
+
+enum class ValidationObjectType : uint8_t {
+    Unknown, Instance, Adapter, Device, Queue, CommandBuffer, Semaphore, Fence,
+    DeviceMemory, Buffer, BufferView, Texture, TextureView, Sampler, ShaderModule,
+    Pipeline, PipelineCache, PipelineLayout, DescriptorHeap, QueryPool, CommandPool,
+    Surface, Swapchain, AccelerationStructure, Micromap,
+};
+
 struct ValidationObject {
     uint64_t handle = 0;
-    uint32_t type = 0;
+    ValidationObjectType type = ValidationObjectType::Unknown;
     const char* name = nullptr;
 };
 
 struct ValidationMessage {
-    uint32_t severity = 0;
-    uint32_t type = 0;
+    ValidationSeverity severity = ValidationSeverity::Unknown;
+    ValidationCategory type = ValidationCategory::None;
     int32_t messageId = 0;
     const char* messageIdName = nullptr;
     const char* message = nullptr;

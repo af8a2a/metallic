@@ -1,6 +1,5 @@
 #include "RHITest.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Material/RayMaterialQueue.h"
 #include "harness/Fixtures.h"
 #include <algorithm>
@@ -57,7 +56,7 @@ public:
                  .enableValidation = context.enableValidation,
                  .enableBindlessDescriptorHeap = true,
                  .validationSink = {[](void* pointer, const ValidationMessage& message) noexcept {
-                                        if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+                                        if (message.severity == render::ValidationSeverity::Error) {
                                             ++*static_cast<std::atomic_uint*>(pointer);
                                         }
                                     },

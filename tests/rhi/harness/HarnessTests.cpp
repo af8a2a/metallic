@@ -1,7 +1,6 @@
 #include "Runner.h"
 #include "ValidationRecorder.h"
 #include <gtest/gtest.h>
-#include <volk.h>
 #include <thread>
 #include <fstream>
 
@@ -55,18 +54,22 @@ void recorderLifetime()
 {
     ValidationRecorder recorder;
     std::string id = "SYNC-HAZARD-WRITE-AFTER-READ", text = "original", objectName = "buffer";
-    render::ValidationObject object{1, 2, objectName.c_str()};
+    render::ValidationObject object{1, render::ValidationObjectType::Buffer, objectName.c_str()};
     const auto sink = recorder.sink();
-    sink.callback(sink.context, {VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, 1, 42, id.c_str(), text.c_str(), {&object, 1}});
+    sink.callback(sink.context, {render::ValidationSeverity::Error, render::ValidationCategory::General, 42, id.c_str(), text.c_str(), {&object, 1}});
     text.assign("changed"); objectName.assign("changed"); id.assign("changed");
     const auto snapshot = recorder.snapshot();
+    EXPECT_EQ(snapshot["encoding"], "metallic-validation-v1");
+    EXPECT_EQ(snapshot["messages"][0]["severity"].get<render::ValidationSeverity>(), render::ValidationSeverity::Error);
+    EXPECT_EQ(snapshot["messages"][0]["type"].get<render::ValidationCategory>(), render::ValidationCategory::General);
+    EXPECT_EQ(snapshot["messages"][0]["objects"][0]["type"].get<render::ValidationObjectType>(), render::ValidationObjectType::Buffer);
     EXPECT_EQ(snapshot["messages"][0]["text"], "original");
     EXPECT_EQ(snapshot["messages"][0]["objects"][0]["name"], "buffer");
     EXPECT_TRUE(recorder.failed());
     ValidationRecorder small(1);
     const auto bounded = small.sink();
-    bounded.callback(bounded.context, {0, 0, 0, "info", "message", {}});
-    bounded.callback(bounded.context, {0, 0, 0, "info", "message", {}});
+    bounded.callback(bounded.context, {render::ValidationSeverity::Info, render::ValidationCategory::None, 0, "info", "message", {}});
+    bounded.callback(bounded.context, {render::ValidationSeverity::Info, render::ValidationCategory::None, 0, "info", "message", {}});
     EXPECT_TRUE(small.failed());
     EXPECT_TRUE(small.snapshot()["captureFailed"]);
 }
@@ -77,12 +80,12 @@ void recorderThreads()
     auto sink = recorder.sink();
     std::vector<std::jthread> threads;
     for (int i = 0; i < 4; ++i) {
-        threads.emplace_back([sink] { for (int n = 0; n < 50; ++n) { sink.callback(sink.context, {0, 0, n, "info", "message", {}}); } });
+        threads.emplace_back([sink] { for (int n = 0; n < 50; ++n) { sink.callback(sink.context, {render::ValidationSeverity::Info, render::ValidationCategory::None, n, "info", "message", {}}); } });
     }
     threads.clear();
     EXPECT_EQ(recorder.snapshot()["messages"].size(), 200);
     EXPECT_FALSE(recorder.failed());
-    sink.callback(sink.context, {VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT, 0, 0, "non-VUID", "warning", {}});
+    sink.callback(sink.context, {render::ValidationSeverity::Warning, render::ValidationCategory::None, 0, "non-VUID", "warning", {}});
     EXPECT_TRUE(recorder.failed());
 }
 

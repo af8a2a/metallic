@@ -717,3 +717,9 @@ RHI 测试支持原有便捷参数 `--list`/`--filter`，并会转换到 GoogleT
 - 分页运行时：[`Source/Runtime/Render/Streamer/MeshletStreamRuntime.h`](../Source/Runtime/Render/Streamer/MeshletStreamRuntime.h)
 - TaskSystem：[`Source/Runtime/Task/TaskSystem.h`](../Source/Runtime/Task/TaskSystem.h)
 - 构建目标：[`Source/CMakeLists.txt`](../Source/CMakeLists.txt)
+
+### Validation 消息边界
+
+`ValidationMessage` 使用中立的单值 `ValidationSeverity` 和可组合的 `ValidationCategory`，类别通过 `hasFlag()` 检查；`ValidationObject::type` 使用 `ValidationObjectType`。Vulkan debug-utils 位与对象类型只在 `GAPI/Vulkan/VulkanValidation.h` 转换，未知类别位保留为 `Unknown` 标志，未映射的后端对象返回 `Unknown`，其不透明 handle/name 仍可用于关联诊断。
+
+测试 ValidationRecorder 快照与 RenderDebug validation 事件使用 `encoding: metallic-validation-v1`，`severity`、`type` 和对象 `type` 的数值对应 RHI 枚举，不再是 Vulkan 常量。旧报告缺少该 encoding，不能按新枚举解释。Vulkan ShaderPrintf 的原生采集记录是独立协议，不受此变更影响。

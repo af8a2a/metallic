@@ -1,7 +1,6 @@
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderSample.h"
@@ -45,8 +44,8 @@ public:
             check(bench::createTestDevice(context, {.applicationName = "Fiber domain",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .validationSink = {[](void* target, const ValidationMessage& message) noexcept {
-                    if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
-                        (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) { ++*static_cast<std::atomic_uint*>(target); }
+                    if ((message.severity == render::ValidationSeverity::Error) &&
+                        (render::hasFlag(message.type, render::ValidationCategory::Validation))) { ++*static_cast<std::atomic_uint*>(target); }
                 }, &errors}}).transform([&](auto value) { device = std::move(value); }), "Device");
             ResourceRegistry registry;
             check(registry.initialize(*device), "Registry");

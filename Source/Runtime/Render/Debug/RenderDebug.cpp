@@ -203,7 +203,7 @@ ValidationSink RenderDebugRuntime::validationSink()
             for (const auto& object : message.objects) {
                 objects.push_back({{"handle", object.handle}, {"type", object.type}, {"name", copy(object.name)}});
             }
-            runtime.core_.pushEvent("validation", {{"severity", message.severity}, {"type", message.type},
+            runtime.core_.pushEvent("validation", {{"encoding", "metallic-validation-v1"}, {"severity", message.severity}, {"type", message.type},
                 {"messageId", message.messageId}, {"messageIdName", copy(message.messageIdName)}, {"message", copy(message.message)},
                 {"objects", objects}, {"execution", nullptr}, {"pass", nullptr},
                 {"timestampNs", uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count())}});

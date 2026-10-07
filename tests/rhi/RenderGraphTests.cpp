@@ -5,7 +5,6 @@
 #include "RHITest.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -3381,8 +3380,8 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
         .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
         .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
             // General loader diagnostics are still logged; count command validation here.
-            if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
-                (message.type & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT))) {
+            if ((message.severity == render::ValidationSeverity::Error) &&
+                (render::hasFlag(message.type, render::ValidationCategory::Validation | render::ValidationCategory::Performance))) {
                 ++*static_cast<std::atomic_uint*>(target);
             }
         }, &validationErrors}, .backendExtensions = metallic::render::vulkan::VulkanDeviceExtensions{.preferUnifiedImageLayouts = false}})

@@ -3,7 +3,6 @@
 #include "Runtime/Material/MaterialClosureClassification.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #include <algorithm>
 #include <array>
@@ -80,8 +79,8 @@ public:
             require(bench::createTestDevice(context, {.applicationName = "Closure scheduling A/B",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .validationSink = {[](void* target, const ValidationMessage& message) noexcept {
-                    if ((message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
-                        (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
+                    if ((message.severity == render::ValidationSeverity::Error) &&
+                        (render::hasFlag(message.type, render::ValidationCategory::Validation))) {
                         ++*static_cast<std::atomic_uint*>(target);
                     }
                 }, &validationErrors}}).transform([&](auto value) { device = std::move(value); }), "Device failed");

@@ -129,8 +129,8 @@ public:
             std::ofstream(context.outputDirectory / (std::string(name) + std::to_string(i) + ".json")) << evidence.dump(2);
             if (evidence.at("captureFailed").get<bool>()) { return RHITestResult::fail("validation capture failed"); }
             for (const auto& message : evidence.at("messages")) {
-                if ((message.at("severity").get<uint32_t>() & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
-                    (message.at("type").get<uint32_t>() & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
+                if ((message.at("severity").get<render::ValidationSeverity>() == render::ValidationSeverity::Error) &&
+                    (render::hasFlag(message.at("type").get<render::ValidationCategory>(), render::ValidationCategory::Validation))) {
                     return RHITestResult::fail(message.at("text").get<std::string>());
                 }
             }
@@ -239,8 +239,8 @@ public:
         for (const auto& message : evidence.at("messages")) {
             // Retain loader GENERAL diagnostics in evidence, but only API validation
             // errors (including leaked children and double destruction) fail this test.
-            if ((message.at("severity").get<uint32_t>() & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) &&
-                (message.at("type").get<uint32_t>() & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)) {
+            if ((message.at("severity").get<render::ValidationSeverity>() == render::ValidationSeverity::Error) &&
+                (render::hasFlag(message.at("type").get<render::ValidationCategory>(), render::ValidationCategory::Validation))) {
                 return RHITestResult::fail(message.at("text").get<std::string>());
             }
         }
