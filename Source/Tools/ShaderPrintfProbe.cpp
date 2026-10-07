@@ -231,12 +231,10 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     }
     require(commands->dispatch(2, 1, 1), "dispatch");
     if (heapMode) {
-        VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
-        VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-        vk::ExternalCommandScope scope(*commands);
-        scope.functions().vkCmdPipelineBarrier2(scope.commandBuffer(), &dependency);
+        const render::MemoryBarrierDesc barrier{
+            .before = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
+            .after = {render::PipelineStageBits::Host, render::AccessBits::HostRead}};
+        require(commands->synchronize({.memory = {&barrier, 1}}), "synchronizeReadback");
     }
     require(commands->end(), "endCommands");
     report["phase"] = "submit";

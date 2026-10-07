@@ -788,26 +788,12 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
     }
 
     if (hasCooperativeVector) {
-#ifdef VK_NV_cooperative_vector
-        VkMemoryBarrier2 memoryBarrier{
-            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-            .srcStageMask =
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT |
-                VK_PIPELINE_STAGE_2_CONVERT_COOPERATIVE_VECTOR_MATRIX_BIT_NV,
-            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+        const MemoryBarrierDesc memoryBarrier{
+            .before = {PipelineStageBits::Transfer | PipelineStageBits::CooperativeVectorConversion,
+                AccessBits::TransferWrite | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead},
         };
-        const VkDependencyInfo dependencyInfo{
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &memoryBarrier,
-        };
-        vulkan::ExternalCommandScope scope(commandBuffer);
-        scope.functions().vkCmdPipelineBarrier2(scope.commandBuffer(), &dependencyInfo);
-#else
-        return makeError(Error::Unsupported);
-#endif
+        if (auto commandResult = commandBuffer.synchronize({.memory = {&memoryBarrier, 1}}); !commandResult) { return commandResult; }
     } else {
         BufferBarrierDesc toGeneral{
             .buffer = impl_->weightsBuffer.get(),

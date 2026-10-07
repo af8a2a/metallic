@@ -14,6 +14,7 @@ struct SyncSupport {
     bool decompression = false;
     bool rayTracingPipeline = false;
     bool bindless = false;
+    bool cooperativeVector = false;
 };
 VkImageLayout imageLayout(TextureLayout usage, bool unified);
 VkPipelineStageFlags2 toVkPipelineStages(PipelineStageBits stages);

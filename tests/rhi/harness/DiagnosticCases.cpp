@@ -77,6 +77,7 @@ public:
             {PipelineStageBits::AccelerationStructureBuild, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR},
             {PipelineStageBits::RayTracingShader, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR},
             {PipelineStageBits::MemoryDecompression, VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT},
+            {PipelineStageBits::CooperativeVectorConversion, VK_PIPELINE_STAGE_2_CONVERT_COOPERATIVE_VECTOR_MATRIX_BIT_NV},
             {PipelineStageBits::Host, VK_PIPELINE_STAGE_2_HOST_BIT}};
         for (const auto [stage, flags] : stages) { check(vulkan::toVkPipelineStages(stage) == flags, "stage/" + std::to_string(uint64_t(stage))); }
         const std::pair<AccessBits, VkAccessFlags2> accesses[]{
@@ -97,7 +98,7 @@ public:
             combined.access == (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_READ_BIT), "combined scope");
         check(vulkan::scopeInfo({}).stage == 0 && vulkan::scopeInfo({}).access == 0, "empty scope");
         const vulkan::SyncSupport copy{VK_QUEUE_TRANSFER_BIT};
-        const vulkan::SyncSupport full{VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, true, true, true, true};
+        const vulkan::SyncSupport full{VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, true, true, true, true, true};
         check(vulkan::validScope({}, copy), "empty valid");
         check(vulkan::validScope({PipelineStageBits::Transfer, AccessBits::None}, copy), "execution-only");
         check(vulkan::validScope({PipelineStageBits::Transfer, AccessBits::TransferWrite}, copy), "copy transfer");
@@ -115,6 +116,19 @@ public:
         auto transferOnly = full; transferOnly.queues = VK_QUEUE_TRANSFER_BIT;
         auto computeOnly = full; computeOnly.queues = VK_QUEUE_COMPUTE_BIT;
         auto graphicsOnly = full; graphicsOnly.queues = VK_QUEUE_GRAPHICS_BIT;
+        auto noCooperativeVector = full; noCooperativeVector.cooperativeVector = false;
+        const SyncScope conversion{PipelineStageBits::CooperativeVectorConversion, AccessBits::MemoryWrite};
+        check(vulkan::validScope(conversion, graphicsOnly) && vulkan::validScope(conversion, computeOnly),
+            "cooperative conversion graphics and compute queues");
+        check(!vulkan::validScope(conversion, transferOnly) && !vulkan::validScope(conversion, noCooperativeVector),
+            "cooperative conversion queue and feature dependency");
+        check(!vulkan::validScope({conversion.stages, AccessBits::ShaderWrite}, full),
+            "cooperative conversion is not a shader stage");
+        check(vulkan::validDeviceStages(conversion.stages, full) &&
+            !vulkan::validDeviceStages(conversion.stages, noCooperativeVector),
+            "cooperative conversion device stage dependency");
+        check(vulkan::validScope({PipelineStageBits::Transfer | conversion.stages,
+            AccessBits::TransferWrite | AccessBits::MemoryWrite}, full), "mixed copy and cooperative conversion producer");
         check(vulkan::validScope({PipelineStageBits::AllCommands, AccessBits::TransferRead | AccessBits::TransferWrite}, transferOnly),
             "all commands includes transfer");
         for (const auto access : {AccessBits::ShaderWrite, AccessBits::UniformRead, AccessBits::IndirectRead,

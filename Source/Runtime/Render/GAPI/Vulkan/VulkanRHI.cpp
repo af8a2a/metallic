@@ -3315,7 +3315,7 @@ vulkan::SyncSupport syncSupport(const detail::DeviceImpl& device, VkQueueFlags q
 {
     return {queues, device.capabilities.rayTracingAccelerationStructure,
         device.capabilities.memoryDecompression, device.rayTracingPipelineEnabled,
-        device.capabilities.bindlessDescriptorHeap};
+        device.capabilities.bindlessDescriptorHeap, device.capabilities.cooperativeVector};
 }
 } // namespace
 

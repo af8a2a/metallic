@@ -159,6 +159,8 @@ enum class PipelineStageBits : uint64_t {
     RayTracingShader = 1ull << 12,
     MemoryDecompression = 1ull << 13,
     Host = 1ull << 14,
+    // Matrix layout/type conversion; use MemoryRead/MemoryWrite access scopes.
+    CooperativeVectorConversion = 1ull << 15,
 };
 
 // Access semantics are independent of image layout policy.

@@ -257,10 +257,10 @@ void WorkControlReplay::before(CommandBuffer& commands, ComputePipeline& pipelin
         if (binding.name == "arguments") { s.arguments = s.resources.size(); }
         s.evidence["bindings"].push_back({{"name", binding.name}, {"shaderIndex", binding.shaderIndex},
             {"bytes", binding.buffer->desc().size}, {"stride", binding.buffer->desc().structureStride},
-            {"sourceAddress", std::to_string(vulkan::nativeBuffer(*binding.buffer).address)},
+            {"sourceAddress", std::to_string(binding.buffer->deviceAddress())},
             {"sourceAllocation", binding.buffer->memoryInfo().allocationId},
             {"scratchAllocation", resource.working->memoryInfo().allocationId},
-            {"scratchAddress", std::to_string(vulkan::nativeBuffer(*resource.working).address)}});
+            {"scratchAddress", std::to_string(resource.working->deviceAddress())}});
         s.resources.push_back(std::move(resource));
     }
     require(s.pixel != SIZE_MAX && s.arguments != SIZE_MAX, "replay_incomplete_closure");

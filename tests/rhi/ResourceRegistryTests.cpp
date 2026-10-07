@@ -1321,6 +1321,15 @@ public:
         }
         barriers[0].range.offset = 64;
         REG_CHECK(render::hasError(command.synchronize({.buffers = {barriers.data(), 3}}), render::Error::InvalidArgument));
+        const render::MemoryBarrierDesc conversion{
+            .before = {S::Transfer | S::CooperativeVectorConversion, A::TransferWrite | A::MemoryWrite},
+            .after = {S::ComputeShader, A::ShaderRead}};
+        const auto converted = command.synchronize({.memory = {&conversion, 1}});
+        if (device.capabilities().cooperativeVector) {
+            REG_REQUIRE(converted); // Exercise the real Vulkan recording/validation entry point.
+        } else {
+            REG_CHECK(render::hasError(converted, render::Error::InvalidArgument));
+        }
         REG_REQUIRE(command.end());
         REG_CHECK(render::hasError(command.synchronize({}), render::Error::InvalidArgument));
         recording.frame.cancel();
@@ -1438,6 +1447,24 @@ public:
         image.newLayout = L::Undefined;
         REG_CHECK(render::hasError(command.synchronize({.textures = {&image, 1}}), render::Error::InvalidArgument));
         REG_CHECK(capture.calls == beforeInvalid);
+        // NTC combines ordinary copies and cooperative-vector matrix conversions.
+        // Exercise the production capability bridge as well as the rule-table encoding.
+        const render::MemoryBarrierDesc conversion{
+            .before = {S::Transfer | S::CooperativeVectorConversion, A::TransferWrite | A::MemoryWrite},
+            .after = {S::ComputeShader, A::ShaderRead}};
+        const auto converted = command.synchronize({.memory = {&conversion, 1}});
+        if (context.device.capabilities().cooperativeVector) {
+            REG_REQUIRE(converted);
+            REG_CHECK(capture.calls == beforeInvalid + 1 && capture.memory.size() == 1 && capture.images.empty());
+            REG_CHECK(capture.memory[0].srcStageMask ==
+                (VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_CONVERT_COOPERATIVE_VECTOR_MATRIX_BIT_NV));
+            REG_CHECK(capture.memory[0].srcAccessMask == (VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT));
+            REG_CHECK(capture.memory[0].dstStageMask == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+                capture.memory[0].dstAccessMask == VK_ACCESS_2_SHADER_READ_BIT);
+        } else {
+            REG_CHECK(render::hasError(converted, render::Error::InvalidArgument));
+            REG_CHECK(capture.calls == beforeInvalid);
+        }
         REG_REQUIRE(command.end());
         recording.frame.cancel();
         return RHITestResult::pass();

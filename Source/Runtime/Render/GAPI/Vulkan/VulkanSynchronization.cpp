@@ -55,6 +55,8 @@ constexpr StageRule kStages[]{
     {Stage::RayTracingShader, VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR, kCompute, &SyncSupport::rayTracingPipeline},
     {Stage::MemoryDecompression, VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT, kCompute, &SyncSupport::decompression},
     {Stage::Host, VK_PIPELINE_STAGE_2_HOST_BIT, 0, nullptr, false, false},
+    {Stage::CooperativeVectorConversion, VK_PIPELINE_STAGE_2_CONVERT_COOPERATIVE_VECTOR_MATRIX_BIT_NV,
+        kDrawQueues, &SyncSupport::cooperativeVector},
 };
 
 struct AccessRule {
