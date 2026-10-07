@@ -442,6 +442,9 @@ add_executable(MetallicRHITests
     rhi/LightGridDebugPassTests.cpp
     rhi/PhotometricLightingTests.cpp
     rhi/CelestialLightingTests.cpp
+    rhi/AtmosphereTests.cpp
+    rhi/PhysicalEnvironmentRenderingTests.cpp
+    rhi/PhysicalEnvironmentProviderTests.cpp
     rhi/RealtimePipelineTests.cpp
     rhi/EnvironmentPrefilterTests.cpp
     rhi/HybridRasterTests.cpp

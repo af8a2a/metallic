@@ -4731,43 +4731,68 @@ void EditorApplication::drawEnvironmentControls()
     ImGui::TextUnformatted("Environment");
     ImGui::PushID("SceneEnvironment");
 
-    if (ImGui::Checkbox("Enabled", &environment.enabled)) {
-        changed = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Visible", &environment.visible)) {
-        changed = true;
-    }
-
-    const std::string displayPath = environment.path.empty()
-        ? std::string("-")
-        : displayPathForProperty(environment.path);
-    ImGui::TextWrapped("HDRI: %s", displayPath.c_str());
-
-    ImGui::PushItemWidth(-1.0f);
-    if (ImGui::SliderFloat("Intensity", &environment.intensity, 0.0f, 16.0f, "%.3f")) {
-        environment.intensity = std::max(environment.intensity, 0.0f);
-        changed = true;
-    }
-    if (ImGui::SliderFloat("Rotation", &environment.rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
-        changed = true;
-    }
-    ImGui::PopItemWidth();
-    ImGui::BeginDisabled(!scene_.valid());
     auto celestialEnvironment = scene_.worldEnvironment();
     bool celestialChanged = false;
+    int sourceIndex = celestialEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere ? 1 : 0;
+    ImGui::BeginDisabled(!scene_.valid());
+    if (ImGui::Combo("Source", &sourceIndex, "HDRI\0Physical atmosphere\0")) {
+        celestialEnvironment.source = sourceIndex == 1
+            ? environment::EnvironmentSource::PhysicalAtmosphere : environment::EnvironmentSource::HDRI;
+        celestialChanged = true;
+    }
+    ImGui::EndDisabled();
+    const bool physicalAtmosphere = celestialEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere;
+
+    if (!physicalAtmosphere) {
+        if (ImGui::Checkbox("HDRI lighting enabled", &environment.enabled)) {
+            changed = true;
+        }
+        ImGui::SameLine();
+    }
+    if (ImGui::Checkbox("Background visible", &environment.visible)) {
+        changed = true;
+    }
+
+    if (!physicalAtmosphere) {
+        const std::string displayPath = environment.path.empty()
+            ? std::string("-")
+            : displayPathForProperty(environment.path);
+        ImGui::TextWrapped("HDRI: %s", displayPath.c_str());
+
+        ImGui::PushItemWidth(-1.0f);
+        if (ImGui::SliderFloat("HDRI intensity", &environment.intensity, 0.0f, 16.0f, "%.3f")) {
+            environment.intensity = std::max(environment.intensity, 0.0f);
+            changed = true;
+        }
+        if (ImGui::SliderFloat("HDRI rotation", &environment.rotationDegrees, -180.0f, 180.0f, "%.1f deg")) {
+            changed = true;
+        }
+        ImGui::PopItemWidth();
+    }
+    ImGui::BeginDisabled(!scene_.valid());
     for (auto entry : {std::pair{"Sun", &celestialEnvironment.sun},
                       std::pair{"Moon", &celestialEnvironment.moon}}) {
         auto& light = *entry.second;
         if (ImGui::TreeNode(entry.first)) {
             celestialChanged |= ImGui::Checkbox("Enabled", &light.enabled);
-            float color[] = {light.color.x, light.color.y, light.color.z};
-            if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
-                light.color = float3(color[0], color[1], color[2]);
-                celestialChanged = true;
+            if (physicalAtmosphere) {
+                float irradiance[] = {light.topOfAtmosphereIrradiance.x,
+                    light.topOfAtmosphereIrradiance.y, light.topOfAtmosphereIrradiance.z};
+                if (ImGui::DragFloat3("TOA irradiance (W/m2/nm)", irradiance, 0.01f,
+                        0.0f, 100.0f, "%.5f", ImGuiSliderFlags_AlwaysClamp)) {
+                    light.topOfAtmosphereIrradiance = float3(irradiance[0], irradiance[1], irradiance[2]);
+                    celestialChanged = true;
+                }
+                ImGui::TextUnformatted("Spectral samples: 680, 550, 440 nm");
+            } else {
+                float color[] = {light.color.x, light.color.y, light.color.z};
+                if (ImGui::ColorEdit3("Linear Rec.709 color", color, ImGuiColorEditFlags_Float)) {
+                    light.color = float3(color[0], color[1], color[2]);
+                    celestialChanged = true;
+                }
+                celestialChanged |= ImGui::DragFloat("Illuminance (lux)", &light.illuminance,
+                    0.1f, 0.0f, 1e12f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
             }
-            celestialChanged |= ImGui::DragFloat("Illuminance (lux)", &light.illuminance,
-                0.1f, 0.0f, 1e12f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
             float direction[] = {light.direction.x, light.direction.y, light.direction.z};
             if (ImGui::DragFloat3("Emission direction", direction, 0.01f)) {
                 light.direction = float3(direction[0], direction[1], direction[2]);
@@ -4781,12 +4806,50 @@ void EditorApplication::drawEnvironmentControls()
             ImGui::TreePop();
         }
     }
+    if (physicalAtmosphere && ImGui::TreeNode("Atmosphere")) {
+        auto& atmosphere = celestialEnvironment.atmosphere;
+        const auto editSpectrum = [&](const char* label, float3& value, float maximum) {
+            float components[] = {value.x, value.y, value.z};
+            if (ImGui::DragFloat3(label, components, 0.0001f, 0.0f, maximum,
+                    "%.6f", ImGuiSliderFlags_AlwaysClamp)) {
+                value = float3(components[0], components[1], components[2]);
+                celestialChanged = true;
+            }
+        };
+        celestialChanged |= ImGui::InputScalarN("Planet center (m)", ImGuiDataType_Double,
+            atmosphere.planetCenter.data(), 3, nullptr, nullptr, "%.3f");
+        celestialChanged |= ImGui::DragFloat("Ground radius (km)", &atmosphere.bottomRadiusKm,
+            1.0f, 1.0f, 1e8f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Atmosphere top radius (km)", &atmosphere.topRadiusKm,
+            1.0f, 1.0f, 1e8f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Rayleigh scale height (km)", &atmosphere.rayleighScaleHeightKm,
+            0.1f, 0.001f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::DragFloat("Mie scale height (km)", &atmosphere.mieScaleHeightKm,
+            0.01f, 0.001f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        celestialChanged |= ImGui::SliderFloat("Mie anisotropy", &atmosphere.mieAnisotropy, -0.99f, 0.99f, "%.3f");
+        editSpectrum("Ground albedo", atmosphere.groundAlbedo, 1.0f);
+        celestialChanged |= ImGui::DragFloat("Aerial distance (km)", &atmosphere.maxAerialDistanceKm,
+            1.0f, 0.001f, 1e6f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::TreeNode("Spectral coefficients")) {
+            ImGui::TextUnformatted("680, 550, 440 nm; coefficients in km^-1");
+            editSpectrum("Rayleigh scattering", atmosphere.rayleighScattering, 1000.0f);
+            editSpectrum("Mie scattering", atmosphere.mieScattering, 1000.0f);
+            editSpectrum("Mie extinction", atmosphere.mieExtinction, 1000.0f);
+            editSpectrum("Ozone absorption", atmosphere.ozoneAbsorption, 1000.0f);
+            celestialChanged |= ImGui::DragFloat("Ozone center (km)", &atmosphere.ozoneCenterAltitudeKm,
+                0.1f, 0.0f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            celestialChanged |= ImGui::DragFloat("Ozone half width (km)", &atmosphere.ozoneWidthKm,
+                0.1f, 0.001f, 1e5f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::TreePop();
+        }
+        ImGui::TreePop();
+    }
     if (celestialChanged && scene_.setWorldEnvironment(celestialEnvironment)) {
         renderWorld_.setWorldEnvironment(scene_.worldEnvironment());
         sceneNonTransformDirty_ = true;
         updateSceneDirtyState();
         viewportPreviewNeedsRender_ = true;
-        renderGraphStatus_ = "Updated celestial lighting";
+        renderGraphStatus_ = "Updated world environment";
     }
     ImGui::EndDisabled();
     ImGui::PopID();

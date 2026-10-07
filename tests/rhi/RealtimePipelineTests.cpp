@@ -571,9 +571,9 @@ public:
     {
         render::RenderPassReflection reflection;
         auto& source = reflection.addTextureInput("source").transferRead();
-        source.format = render::Format::RGBA16Sfloat;
+        source.format = render::Format::RGBA32Sfloat;
         source.matchOutputExtent = false;
-        reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 8).transferWrite();
+        reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 16).transferWrite();
         return reflection;
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -582,10 +582,128 @@ public:
         const auto width = source.desc().width, height = source.desc().height;
         return context.outputBuffer("pixels").buffer()->slice().and_then([&](const auto& slice) {
             return context.commandBuffer().copyTextureToBuffer({.texture = source.texture(), .buffer = slice,
-                .bufferRowPitch = width * 8, .bufferSlicePitch = width * height * 8, .width = width, .height = height});
+                .bufferRowPitch = width * 16, .bufferSlicePitch = width * height * 16, .width = width, .height = height});
         });
     }
 };
+
+class DLSSFloat32HDRContractTest final : public RHITest {
+public:
+    DLSSFloat32HDRContractTest() { type = RHITestType::Resource; name = "dlss_float32_hdr_contract"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        using namespace render;
+        for (const char* type : {"StreamlineDLSSSRPass", "StreamlineDLSSRRPass"}) {
+            auto pass = createRenderGraphPass(type);
+            if (!pass) { return realtimeFailure("Missing DLSS pass"); }
+            const auto reflection = pass->reflect({});
+            const auto* input = reflection.findField("inputColor", RenderGraphFieldVisibility::Input);
+            const auto* output = reflection.findField("color", RenderGraphFieldVisibility::Output);
+            if (!input || !output || input->format != Format::RGBA32Sfloat || output->format != Format::RGBA32Sfloat) {
+                return realtimeFailure(std::string(type) + " must preserve unexposed scene color in RGBA32F");
+            }
+        }
+        return RHITestResult::pass("SR/RR input and output HDR retain FP32 range before exposure");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(DLSSFloat32HDRContractTest);
+
+class DLSSFloat32HDRFixturePass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        using namespace render;
+        RenderPassReflection reflection;
+        for (const auto& [name, format] : {
+                std::pair{"color", Format::RGBA32Sfloat}, std::pair{"motionVectors", Format::RG16Sfloat},
+                std::pair{"depth", Format::R32Sfloat}, std::pair{"albedo", Format::RGBA16Sfloat},
+                std::pair{"specularAlbedo", Format::RGBA16Sfloat}, std::pair{"normalRoughness", Format::RGBA16Sfloat},
+                std::pair{"specularHitDistance", Format::R32Sfloat}}) {
+            auto& field = reflection.addTextureOutput(name).transferWrite();
+            field.format = format;
+            if (std::string_view(name) == "color") { field.colorEncoding = DisplayColorEncoding::SceneLinear; }
+        }
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        for (const char* name : {"color", "motionVectors", "depth", "albedo", "specularAlbedo", "normalRoughness", "specularHitDistance"}) {
+            const auto texture = context.outputTexture(name);
+            if (!texture.valid()) { continue; }
+            const std::array<float, 4> value = std::string_view(name) == "color"
+                ? std::array<float, 4>{1e9f, 2e8f, 0.125f, 1.0f} : std::array<float, 4>{0.5f, 0.0f, 0.0f, 0.0f};
+            auto result = context.commandBuffer().clearColorTexture(*texture.texture(),
+                render::TextureLayout::TransferDestination, {value[0], value[1], value[2], value[3]});
+            if (!result) { return result; }
+        }
+        return {};
+    }
+};
+
+class DLSSFloat32HDROffCopyTest final : public RHITest {
+public:
+    DLSSFloat32HDROffCopyTest() { type = RHITestType::Rendering; name = "dlss_float32_hdr_off_copy"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const auto capabilities = vulkan::deviceCapabilities(context.device);
+        if (!capabilities.streamlineDlssSr || !capabilities.streamlineDlssRr) {
+            return RHITestResult::skip("Requires --rhi-streamline and SR/RR support");
+        }
+        registerRenderGraphPassType("DLSSFloat32HDRFixturePass", "FP32 solar-range DLSS input",
+            [] { return std::make_unique<DLSSFloat32HDRFixturePass>(); });
+        registerRenderGraphPassType("WorkingColorHDRReadbackPass", "FP32 HDR raw readback",
+            [] { return std::make_unique<WorkingColorHDRReadbackPass>(); });
+        constexpr uint32_t width = 38, height = 26;
+        for (const char* type : {"StreamlineDLSSSRPass", "StreamlineDLSSRRPass"}) {
+            const bool rr = std::string_view(type) == "StreamlineDLSSRRPass";
+            RenderGraph graph;
+            graph.addNode("DLSSFloat32HDRFixturePass", "Source");
+            graph.addNode(type, "DLSS", {{"mode", "Off"}});
+            graph.addNode("WorkingColorHDRReadbackPass", "InputReadback");
+            graph.addNode("WorkingColorHDRReadbackPass", "OutputReadback");
+            graph.addEdge("Source.color", "DLSS.inputColor");
+            graph.addEdge("Source.motionVectors", "DLSS.motionVectors");
+            graph.addEdge("Source.depth", rr ? "DLSS.linearDepth" : "DLSS.depth");
+            if (rr) {
+                for (const char* name : {"albedo", "specularAlbedo", "normalRoughness", "specularHitDistance"}) {
+                    graph.addEdge(std::string("Source.") + name, std::string("DLSS.") + name);
+                }
+            }
+            graph.addEdge("Source.color", "InputReadback.source");
+            graph.addEdge("DLSS.color", "OutputReadback.source");
+            graph.markOutput("InputReadback.pixels");
+            graph.markOutput("OutputReadback.pixels");
+            RenderGraphExecutor executor;
+            std::string log;
+            if (!executor.compile(context.device, graph, width, height, log) ||
+                !executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
+                return realtimeFailure(std::string(type) + " FP32 Off graph failed: " + log);
+            }
+            auto* inputBuffer = executor.outputResource("InputReadback.pixels")->buffer;
+            auto* outputBuffer = executor.outputResource("OutputReadback.pixels")->buffer;
+            inputBuffer->invalidate();
+            outputBuffer->invalidate();
+            const auto* input = static_cast<const float*>(inputBuffer->map());
+            const auto* output = static_cast<const float*>(outputBuffer->map());
+            if (!input || !output) {
+                if (input) { inputBuffer->unmap(); }
+                if (output) { outputBuffer->unmap(); }
+                return realtimeFailure("FP32 DLSS readback map failed");
+            }
+            bool valid = std::memcmp(input, output, size_t(width) * height * 4 * sizeof(float)) == 0;
+            for (size_t pixel = 0; pixel < size_t(width) * height; ++pixel) {
+                valid &= std::isfinite(output[pixel * 4]) && output[pixel * 4] == 1e9f &&
+                    output[pixel * 4 + 1] == 2e8f && output[pixel * 4 + 2] == 0.125f;
+            }
+            inputBuffer->unmap();
+            outputBuffer->unmap();
+            if (!valid) { return realtimeFailure(std::string(type) + " clamped/quantized FP32 solar-range color in mode Off"); }
+        }
+        return RHITestResult::pass("SR/RR Off preserve 1e9 solar-range color and dark channels byte for byte in FP32");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(DLSSFloat32HDROffCopyTest);
 
 class WorkingColorDLSSDebugBypassTest : public RHITest {
 public:
@@ -639,16 +757,9 @@ public:
             const auto readPixels = [&](const char* resource, uint32_t width, uint32_t height) {
                 auto* buffer = executor.outputResource(resource)->buffer;
                 buffer->invalidate();
-                const auto* raw = static_cast<const uint16_t*>(buffer->map());
+                const auto* raw = static_cast<const std::array<float, 4>*>(buffer->map());
                 require(raw != nullptr, "Debug raw readback failed");
-                std::vector<std::array<float, 4>> pixels(size_t(width) * height);
-                for (size_t i = 0; i < pixels.size(); ++i) { for (size_t c = 0; c < 4; ++c) {
-                    const uint16_t bits = raw[i * 4 + c];
-                    const uint32_t exponent = (bits >> 10) & 31, mantissa = bits & 1023;
-                    const float value = exponent == 0 ? std::ldexp(float(mantissa), -24) :
-                        (exponent == 31 ? INFINITY : std::ldexp(float(mantissa + 1024), int(exponent) - 25));
-                    pixels[i][c] = (bits & 0x8000) ? -value : value;
-                }}
+                std::vector<std::array<float, 4>> pixels(raw, raw + size_t(width) * height);
                 buffer->unmap();
                 return pixels;
             };

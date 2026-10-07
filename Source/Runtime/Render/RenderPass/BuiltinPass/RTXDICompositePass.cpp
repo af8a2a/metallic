@@ -24,7 +24,7 @@ public:
             .format = Format::RGBA8Unorm;
         reflection.addTextureInput("emissive", "Emissive and background radiance")
             .storageRead()
-            .format = Format::RGBA16Sfloat;
+            .format = Format::RGBA32Sfloat;
         auto& color = reflection.addTextureOutput("color", "Composited RELAX-denoised RTXDI color")
             .storageWrite()
             // The full-resolution dispatch writes every in-bounds output texel.

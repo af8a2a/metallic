@@ -219,6 +219,25 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
+class PhysicalAtmosphereLookDevSample final : public RenderSample {
+public:
+    std::string_view id() const override { return "physical-atmosphere-lookdev"; }
+    std::string_view name() const override { return "Physical Atmosphere / OpenPBR LookDev"; }
+    std::string_view category() const override { return "Environment"; }
+    std::string_view description() const override
+    {
+        return "Physical sky, atmospheric solar irradiance and aerial perspective on the OpenPBR shaderball, "
+            "with linked raster/path-traced views and fixed EV100 14 exposure.";
+    }
+    std::string scenePath() const override
+    {
+        return "Asset/LookDev/PhysicalAtmosphere/PhysicalAtmosphere.metallic_scene.json";
+    }
+    std::string graphPath() const override { return "Pipelines/Samples/lookdev_vbuffer.metallic_graph.json"; }
+    std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
+    std::string previewOutput() const override { return "FinalBlit.color"; }
+};
+
 class PathTracingMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-meet-mat"; }
@@ -847,6 +866,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const LookDevShadingCompareSample lookDevShadingCompare;
     static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
     static const LookDevABeautifulGameSample lookDevABeautifulGame;
+    static const PhysicalAtmosphereLookDevSample physicalAtmosphereLookDev;
     static const PathTracingDLSSNRSample pathTracingDlssNr;
     static const GPUDrivenVisibilitySample gpuDrivenVisibility;
     static const GPUDrivenZorahFullSample gpuDrivenZorahFull;
@@ -862,6 +882,7 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &lookDevShadingCompare,
         &lookDevVisibilityBuffer,
         &lookDevABeautifulGame,
+        &physicalAtmosphereLookDev,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
         &pathTracingNrcMeetMatSample(),

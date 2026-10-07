@@ -75,8 +75,14 @@ bool RenderWorld::setWorldEnvironment(environment::WorldEnvironment environment)
         }
         return firstOverride;
     }
+    if (!(worldEnvironment_.sun == environment.sun) || !(worldEnvironment_.moon == environment.moon)) {
+        ++celestialRevision_;
+    }
+    if (worldEnvironment_.source != environment.source || !(worldEnvironment_.atmosphere == environment.atmosphere)) {
+        ++atmosphereRevision_;
+        ++environmentRevision_;
+    }
     worldEnvironment_ = std::move(environment);
-    ++celestialRevision_;
     ++lightingRevision_;
     pendingChanges_ |= RenderChangeBits::Lighting | RenderChangeBits::InvalidateTemporalHistory;
     return true;

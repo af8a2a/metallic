@@ -89,8 +89,8 @@ struct RealtimeSurfaceLights : ISurfaceLightProvider
         PunctualLightSample light;
         if (index < kCelestialLightCount) {
             result.source = celestialSourceIdentity(index);
-            light = sampleCelestialLight(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index);
+            light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, hit.position);
         } else {
             index -= kCelestialLightCount;
 #if METALLIC_DEFERRED_LIGHT_GRID
@@ -152,7 +152,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }
-    if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
+    if (material.emissive.w != 0.0) { return applyPrimaryAerialPerspective(surface.inputs.base_color, hit.position, ray.origin); }
     float3 viewDirection = -ray.direction;
     RealtimeSurfaceLights lights;
     lights.push = push;
@@ -175,7 +175,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
 #if METALLIC_CUSTOM_MATERIALS
         if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
             surface.inputs.specular_roughness_anisotropy > 0.0) {
-            return radiance + sceneSurfaceEnvironment(prepared, push) * surface.occlusion;
+            return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push) * surface.occlusion, hit.position, ray.origin);
         }
 #endif
         float3 normal = hit.normal;
@@ -220,7 +220,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
         radiance += environment * surface.occlusion / float(count);
     } else if (!sampledEnvironment) {
 #if METALLIC_CUSTOM_MATERIALS
-        if (surface.family != 0u) { return radiance + sceneSurfaceEnvironment(prepared, push); }
+        if (surface.family != 0u) { return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push), hit.position, ray.origin); }
 #endif
         float3 normal = dot(hit.normal, viewDirection) >= 0.0 ? hit.normal : -hit.normal;
         float diffuseWeight = surface.inputs.base_weight * (1.0 - surface.inputs.base_metalness) *
@@ -229,5 +229,5 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             environmentDiffuseIrradiance(normal, push) / kPi;
     }
 #endif
-    return radiance;
+    return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
 }

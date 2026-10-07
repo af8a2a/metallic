@@ -5,6 +5,7 @@
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -32,6 +33,15 @@ struct EnvironmentLightingSnapshot {
     // Eight 256x128 lat-long layers, linear perceptual roughness, GGX filtered.
     Buffer* prefilteredSpecularBuffer = nullptr;
     Buffer* celestialLightsBuffer = nullptr;
+    Buffer* atmosphereParametersBuffer = nullptr;
+    TextureView* transmittanceView = nullptr;
+    TextureView* multiScatteringView = nullptr;
+    TextureView* skyView = nullptr;
+    Buffer* aerialPerspectiveBuffer = nullptr;
+    environment::EnvironmentSource source = environment::EnvironmentSource::HDRI;
+    // A resolved provider snapshot owns its immutable publication, independently
+    // of later source switches and cache eviction.
+    std::shared_ptr<void> retainedResources;
     uint64_t celestialResourceRevision = 0;
     uint32_t width = 1;
     uint32_t height = 1;
@@ -82,6 +92,9 @@ public:
     const EnvironmentLightingSnapshot& snapshot() const { return snapshot_; }
     Result<CelestialLightingResources> updateCelestial(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         const environment::EnvironmentSnapshot& environment);
+    Result<EnvironmentLightingSnapshot> resolveRadiance(Device& device, CommandBuffer& commands,
+        RenderSubsystemHost& host, const environment::EnvironmentSnapshot& environment,
+        const std::array<double, 3>& observerWorldMetres, std::string& log);
     uint64_t decodeCount() const { return decodeCount_; }
 
 private:
@@ -89,6 +102,7 @@ private:
     struct DecodeJob;
     struct GPUPrecompute;
     struct Resources;
+    struct PhysicalPublication;
     class ShaderReload;
 
     void requestEnvironment(const EnvironmentSettings& settings, uint64_t settingsRevision);
@@ -101,11 +115,14 @@ private:
     void refreshSnapshot();
 
     Device* device_ = nullptr;
+    RenderSubsystemHost* host_ = nullptr;
     RenderWorld* world_ = nullptr;
     Desc desc_;
     ImportancePdfCompute pdfCompute_;
     std::unique_ptr<GPUPrecompute> gpuPrecompute_;
     std::shared_ptr<Resources> resources_;
+    std::vector<std::shared_ptr<PhysicalPublication>> physicalPublications_;
+    std::mutex physicalMutex_;
     std::shared_ptr<Buffer> celestialLightsBuffer_;
     struct CelestialPublication {
         GPUCelestialLightRecords records;

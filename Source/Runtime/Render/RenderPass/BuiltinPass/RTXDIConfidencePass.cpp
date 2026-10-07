@@ -48,6 +48,10 @@ public:
         reflection.addTextureInput("motionVectors", "Previous-minus-current UV motion")
             .storageRead()
             .format = Format::RGBA16Sfloat;
+        reflection.addTextureInput("emissive", "Unscaled HDR guide with inverse noisy-radiance exposure in alpha")
+            .setOptional()
+            .storageRead()
+            .format = Format::RGBA32Sfloat;
         reflection.addTextureOutput("diffuseConfidence", "NRD diffuse history confidence")
             .storageWrite()
             // Resolve writes every texel; temporal data lives in separate imports.
@@ -165,6 +169,7 @@ public:
         TextureHandle noisySpecular = context.inputTexture("noisySpecular");
         TextureHandle baseColorMetalness = context.inputTexture("baseColorMetalness");
         TextureHandle motionVectors = context.inputTexture("motionVectors");
+        TextureHandle emissive = context.inputTexture("emissive");
         TextureHandle diffuseConfidence = context.outputTexture("diffuseConfidence");
         TextureHandle specularConfidence = context.outputTexture("specularConfidence");
         if (!validTexture(noisyDiffuse) ||
@@ -199,7 +204,7 @@ public:
         Result<> result = prepareHistoryTexture(
             context,
             "luminance",
-            Format::RG16Sfloat,
+            Format::RG32Sfloat,
             luminanceHistory);
         if (!result) {
             return result;
@@ -226,6 +231,7 @@ public:
         push.height = context.height();
         push.gradientWidth = gradientWidth_;
         push.gradientHeight = gradientHeight_;
+        push.hasEmissiveScale = validTexture(emissive) ? 1u : 0u;
         push.hasHistory = !resetHistory_ &&
             luminanceHistory.previousValid &&
             diffuseConfidenceHistory.previousValid &&
@@ -271,6 +277,7 @@ public:
             .specularConfidence = writer.storageImage(specularConfidence.view()),
             .currentDiffuseConfidence = writer.storageImage(diffuseConfidenceHistory.current),
             .currentSpecularConfidence = writer.storageImage(specularConfidenceHistory.current),
+            .emissive = push.hasEmissiveScale != 0u ? writer.storageImage(emissive.view()) : ShaderStorageImage{},
             .settings = push,
         };
         auto dispatch = [&](CommandBuffer& commands, uint32_t mode,
@@ -305,7 +312,7 @@ public:
             {"gradientA", Access::TextureStorageReadWrite},
             {"gradientB", Access::TextureStorageReadWrite},
         };
-        const RenderGraphStageUse gradientUses[] = {
+        std::vector<RenderGraphStageUse> gradientUses = {
             {"noisyDiffuse", Access::TextureStorageRead},
             {"noisySpecular", Access::TextureStorageRead},
             {"baseColorMetalness", Access::TextureStorageRead},
@@ -314,6 +321,9 @@ public:
             {"luminanceCurrent", Access::TextureStorageWrite},
             {"gradientA", Access::TextureStorageWrite},
         };
+        if (push.hasEmissiveScale != 0u) {
+            gradientUses.push_back({"emissive", Access::TextureStorageRead});
+        }
         const RenderGraphStageUse filterAToB[] = {
             {"gradientA", Access::TextureStorageRead}, {"gradientB", Access::TextureStorageWrite},
         };
@@ -478,7 +488,7 @@ private:
         Result<> result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Storage,
-                .format = Format::RGBA16Sfloat,
+                .format = Format::RGBA32Sfloat,
                 .width = width,
                 .height = height,
                 .depth = 1,
@@ -493,7 +503,7 @@ private:
             return result ? makeError(Error::Failure) : result;
         }
         result = device.createTextureView(*outTexture.texture,
-            TextureViewDesc{.format = Format::RGBA16Sfloat}).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
+            TextureViewDesc{.format = Format::RGBA32Sfloat}).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
         if (!result || outTexture.view == nullptr) {
             log = resultMessage(
                 std::string("createTextureView(RTXDIConfidence gradient ") + std::string(label) + ')',

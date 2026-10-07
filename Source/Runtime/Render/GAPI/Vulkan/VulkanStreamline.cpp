@@ -1601,9 +1601,10 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
         log = "DLSS-SR depth must use D32_SFLOAT";
         return makeError(Error::InvalidArgument);
     }
-    if (desc.inputColor.texture->desc().format != Format::RGBA16Sfloat ||
-        desc.outputColor.texture->desc().format != Format::RGBA16Sfloat) {
-        log = "DLSS-SR inputColor and outputColor must use RGBA16_SFLOAT";
+    const Format colorFormat = desc.inputColor.texture->desc().format;
+    if ((colorFormat != Format::RGBA16Sfloat && colorFormat != Format::RGBA32Sfloat) ||
+        desc.outputColor.texture->desc().format != colorFormat) {
+        log = "DLSS-SR inputColor and outputColor must use matching RGBA16_SFLOAT or RGBA32_SFLOAT";
         return makeError(Error::InvalidArgument);
     }
 
@@ -1759,6 +1760,12 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
     }
     if (desc.motionVectors.texture->desc().format != Format::RG16Sfloat) {
         log = "DLSS-RR motionVectors must use RG16_SFLOAT";
+        return makeError(Error::InvalidArgument);
+    }
+    const Format colorFormat = desc.inputColor.texture->desc().format;
+    if ((colorFormat != Format::RGBA16Sfloat && colorFormat != Format::RGBA32Sfloat) ||
+        desc.outputColor.texture->desc().format != colorFormat) {
+        log = "DLSS-RR inputColor and outputColor must use matching RGBA16_SFLOAT or RGBA32_SFLOAT";
         return makeError(Error::InvalidArgument);
     }
 

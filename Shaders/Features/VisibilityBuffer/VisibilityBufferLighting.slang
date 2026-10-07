@@ -72,8 +72,8 @@ struct VisibilitySurfaceLights : ISurfaceLightProvider
         PunctualLightSample light;
         if (index < kCelestialLightCount) {
             result.source = celestialSourceIdentity(index);
-            light = sampleCelestialLight(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index);
+            light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, position);
         } else {
             index -= kCelestialLightCount;
             result.source = index < lookup.count
@@ -120,7 +120,7 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     if (push.debugView != kOpenPBRDebugViewFinal) {
         return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
     }
-    if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
+    if (material.emissive.w != 0.0) { return applyPrimaryAerialPerspective(surface.inputs.base_color, hit.position, ray.origin); }
     float3 viewDirection = -ray.direction;
     VisibilitySurfaceLights lights;
     lights.push = push;
@@ -138,7 +138,7 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
 #if METALLIC_CUSTOM_MATERIALS
     if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
         surface.inputs.specular_roughness_anisotropy > 0.0) {
-        return radiance + sceneSurfaceEnvironment(shaded.prepared, push) * surface.occlusion;
+        return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(shaded.prepared, push) * surface.occlusion, hit.position, ray.origin);
     }
 #endif
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
@@ -170,5 +170,5 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
         }
         radiance += (diffuse + specular + transmitted) * surface.occlusion;
     }
-    return radiance;
+    return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
 }

@@ -16,7 +16,9 @@ void main()
         output[slot * 3u] = float4(sampleCelestialLight(lights, slot).direction, light.angularRadius);
         output[slot * 3u + 1u] = float4(light.irradiance, asfloat(light.flags));
         output[slot * 3u + 2u] = float4(light.diskRadiance, light.shadowImportance);
-        sum += sampleCelestialLight(lights, slot).illuminance;
+        // Missing optional atmosphere bindings must preserve the HDRI-mode
+        // celestial value without resolving the invalid descriptor sentinel.
+        sum += sampleCelestialLightAtPosition(lights, slot, float3(0.0)).illuminance;
     }
     output[6] = float4(sum, 0.0);
     output[7] = float4(asfloat(celestialSourceIdentity(0u)), asfloat(celestialSourceIdentity(1u)),

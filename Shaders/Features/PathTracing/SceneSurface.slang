@@ -680,7 +680,7 @@ float3 environmentMapRadiance(float3 direction, ScenePathTracePush push)
     return max(gEnvironmentMap.Load(int3(texel, 0)).rgb, float3(0.0, 0.0, 0.0));
 }
 
-float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss)
+float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss, float3 primaryWorldOrigin)
 {
     if (push.environmentMode == kEnvironmentModeDisabled) {
         return float3(0.0, 0.0, 0.0);
@@ -688,11 +688,22 @@ float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool prima
     if (primaryMiss && push.environmentVisible == 0u) {
         return float3(0.0, 0.0, 0.0);
     }
+    // The proposal/capture excludes celestial disks. Only the primary visible
+    // background queries the physical sky with disks, avoiding direct-light MIS duplication.
+    let physicalResources = getResourceParameters<SceneResourceParameters>().environment;
+    if (primaryMiss && physicalEnvironmentEnabled(physicalResources)) {
+        return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin) * max(push.environmentIntensity, 0.0);
+    }
 
     float3 radiance = push.environmentMode == kEnvironmentModeMap
         ? environmentMapRadiance(direction, push)
         : proceduralSkyRadiance(direction, push.environmentRotationRadians);
     return radiance * max(push.environmentIntensity, 0.0);
+}
+
+float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool primaryMiss)
+{
+    return environmentRadiance(direction, push, primaryMiss, push.eye.xyz);
 }
 
 float3 sampleCosineHemisphere(float3 normal, inout uint seed)

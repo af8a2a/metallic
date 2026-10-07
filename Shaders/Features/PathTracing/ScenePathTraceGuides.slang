@@ -153,7 +153,8 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         ray.direction = rayDirectionFromPixel(samplePixel, push);
         RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
         float sampleSpecularHitDistance;
-        color += pathTrace(ray, rayCone, push, cache, seed, sampleSpecularHitDistance);
+        Metallic.Atmosphere::AtmosphereSegment primaryAerial;
+        color += pathTrace(ray, rayCone, push, cache, seed, sampleSpecularHitDistance, primaryAerial);
 
         if (sampleIndex == 0u) {
             firstSampleSpecularHitDistance = sampleSpecularHitDistance;

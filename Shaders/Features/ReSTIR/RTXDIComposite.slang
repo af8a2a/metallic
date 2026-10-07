@@ -37,8 +37,12 @@ void rtxdiCompositeMain(
     float metalness = saturate(baseColorMetalness.a);
     float3 diffuseAlbedo = baseColor * (1.0 - metalness);
     float3 specularF0 = lerp(float3(0.04, 0.04, 0.04), baseColor, metalness);
-    float3 color = Metallic.WorkingColor::fromLinearRec709(gDenoisedDiffuse[pixel].rgb) * diffuseAlbedo;
-    color += Metallic.WorkingColor::fromLinearRec709(gDenoisedSpecular[pixel].rgb) * specularF0;
-    color += gEmissive[pixel].rgb;
+    float4 emissive = gEmissive[pixel];
+    // SceneRTXDI stores unscaled HDR emission/scattering in RGB and the inverse
+    // NRD pre-exposure in alpha. HDRI retains alpha=1 for its existing contract.
+    float inversePreExposure = max(emissive.a, 1.0);
+    float3 color = Metallic.WorkingColor::fromLinearRec709(gDenoisedDiffuse[pixel].rgb) * diffuseAlbedo * inversePreExposure;
+    color += Metallic.WorkingColor::fromLinearRec709(gDenoisedSpecular[pixel].rgb) * specularF0 * inversePreExposure;
+    color += emissive.rgb;
     gOutput[pixel] = float4(push.outputLinear != 0u ? color : toneMap(color, push.exposure), 1.0);
 }

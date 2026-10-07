@@ -17,6 +17,8 @@ using Metallic;
 
 #define gMotionVectors resolveUniform(gParams.motionVectors)
 
+#define gEmissive resolveUniform(gParams.emissive)
+
 #define gPreviousLuminance resolveUniform(gParams.previousLuminance)
 
 #define gCurrentLuminance resolveUniform(gParams.currentLuminance)
@@ -43,7 +45,6 @@ static const uint kFilterBToA = 2u;
 static const uint kResolveA = 3u;
 static const uint kResolveB = 4u;
 static const uint kGradientFactor = 3u;
-static const float kFP16Maximum = 65504.0;
 
 float luminance(float3 color)
 {
@@ -60,6 +61,13 @@ float2 currentLightingLuminance(uint2 pixel)
     float2 signal = float2(
         luminance(Metallic.WorkingColor::fromLinearRec709(gNoisyDiffuse[pixel].rgb) * diffuseAlbedo),
         luminance(Metallic.WorkingColor::fromLinearRec709(gNoisySpecular[pixel].rgb) * specularF0));
+    // NRD's 16F noisy inputs are pre-exposed. Compare absolute luminance so
+    // darkness bias, denominator epsilon, and temporal history retain one domain
+    // when the environment source or celestial irradiance changes.
+    if (gParams.settings.hasEmissiveScale != 0u) {
+        float inverseScale = gEmissive[pixel].a;
+        signal *= isfinite(inverseScale) ? max(inverseScale, 1.0) : 1.0;
+    }
     return all(isfinite(signal)) ? max(signal, 0.0) : float2(0.0, 0.0);
 }
 
@@ -119,7 +127,7 @@ void computeGradient(uint2 gradientPixel, RTXDIConfidencePush push)
         gradient.xy = abs(selectedLuminance - comparisonLuminance);
         gradient.zw = max(selectedLuminance, comparisonLuminance);
     }
-    gGradientA[gradientPixel] = min(gradient, kFP16Maximum);
+    gGradientA[gradientPixel] = all(isfinite(gradient)) ? gradient : float4(0.0);
 }
 
 float4 loadFilterSource(int2 position, bool sourceA, RTXDIConfidencePush push)

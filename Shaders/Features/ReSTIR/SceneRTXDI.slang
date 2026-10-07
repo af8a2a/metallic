@@ -1204,6 +1204,13 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
+    let environment = getResourceParameters<SceneResourceParameters>().environment;
+    float physicalExposure = push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
+    float nrdInversePreExposure = physicalNrdInversePreExposure(environment);
+    if (physicalEnvironmentEnabled(environment)) {
+        nrdInversePreExposure *= max(physicalExposure, 1.0);
+    }
+
     uint seed = hash(
         pixel.x +
         pixel.y * max(push.width, 1u) +
@@ -1221,6 +1228,10 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
                 ? environmentRadiance(ray.direction, push)
                 : skyColor(ray.direction))
             : float3(0.0, 0.0, 0.0);
+        if (behaviorEnabled(push, kBehaviorEnvironmentVisible) &&
+            behaviorEnabled(push, kBehaviorEnvironmentEnabled) && physicalEnvironmentEnabled(environment)) {
+            sky = physicalVisibleEnvironment(environment, ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
+        }
         gReservoirCurrent[pixel] = packReservoir(emptyReservoir());
         gPositionCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
         gNormalCurrent[pixel] = float4(0.0, 0.0, 0.0, 0.0);
@@ -1239,8 +1250,10 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             0.0);
         gNrdViewZ[pixel] = max(push.clipOrtho.y, 1.0);
         gBaseColorMetalness[pixel] = float4(0.0, 0.0, 0.0, 0.0);
-        sky *= push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
-        gEmissive[pixel] = float4(sky, 1.0);
+        sky *= physicalExposure;
+        // Alpha carries the frame-wide inverse pre-exposure for composition;
+        // RGB remains the physical HDR sky, including visible source disks.
+        gEmissive[pixel] = float4(sky, nrdInversePreExposure);
         gOutput[pixel] = float4(visualizationMode(push) != kVisualizationShaded ? float3(0.0)
             : (push.outputLinear != 0u ? sky : toneMap(sky, push.exposure)), 1.0);
         return;
@@ -1259,7 +1272,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         0.0);
     gNrdViewZ[pixel] = cameraLinearDepth(surface.position, push);
     gBaseColorMetalness[pixel] = float4(surface.baseColor, surface.metalness);
-    gEmissive[pixel] = float4(surface.emissive * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
+    gEmissive[pixel] = float4(surface.emissive * physicalExposure, nrdInversePreExposure);
 
     DIReservoir reservoir = emptyReservoir();
     uint localSampleCount = push.lightCount > 0u ? max(push.initialSampleCount, 1u) : 0u;
@@ -1393,7 +1406,7 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
         let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
             getResourceParameters<SceneResourceParameters>().environment.celestialLights);
-        LightEvaluation selected = evaluateDeltaLight(sampleCelestialLight(celestial, celestialSlot), surface);
+        LightEvaluation selected = evaluateDeltaLight(sampleCelestialLightAtPosition(celestial, celestialSlot, surface.position), surface);
         if (selected.target <= 0.0) { continue; }
         float3 offsetNormal = dot(selected.direction, surface.geometryNormal) >= 0.0
             ? surface.geometryNormal : -surface.geometryNormal;
@@ -1427,10 +1440,17 @@ void sceneRtxdiMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             color += selected.contribution * reservoirWeight;
         }
     }
-    // HDR mode keeps all NRD inputs in the same physical space for post exposure.
-    float physicalExposure = push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
-    noisyDiffuse *= physicalExposure;
-    noisySpecular *= physicalExposure;
+    let aerial = physicalAerialSegment(environment, surface.position, ray.origin);
+    noisyDiffuse *= aerial.transmittance;
+    noisySpecular *= aerial.transmittance;
+    color = aerial.transmittance * color + aerial.radiance;
+    // NRD denoises the attenuated lighting signals. Its composite adds this
+    // emissive guide, which carries in-scattering exactly once.
+    gEmissive[pixel] = float4((aerial.transmittance * surface.emissive + aerial.radiance) * physicalExposure, nrdInversePreExposure);
+    // RELAX accepts half-float Rec.709 radiance. Apply the same pre-exposure
+    // to both signals before frontend sanitization; hit distance is unchanged.
+    noisyDiffuse *= physicalExposure / nrdInversePreExposure;
+    noisySpecular *= physicalExposure / nrdInversePreExposure;
     color *= physicalExposure;
     gNoisyDiffuse[pixel] = packNrdRadianceHitDistance(
         noisyDiffuse,

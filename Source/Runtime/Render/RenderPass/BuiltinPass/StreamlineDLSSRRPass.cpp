@@ -73,7 +73,10 @@ public:
             rayReconstruction ? "DLSS-RR noisy HDR input color" : "DLSS-SR HDR input color")
             .texture2D(renderWidth, renderHeight)
             .storageReadWrite();
-        inputColor.format = Format::RGBA16Sfloat;
+        // Solar disks can exceed FP16's finite range before exposure. NGX's
+        // formatted color reads/writes support FP32; keep the scene HDR domain
+        // intact through SR/RR, including mode-Off and display/debug bypasses.
+        inputColor.format = Format::RGBA32Sfloat;
         inputColor.usage = inputColor.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
         inputColor.stageAccess(RenderGraphResourceAccess::TextureTransferRead)
             .stageAccess(RenderGraphResourceAccess::TextureSampleRead);
@@ -114,7 +117,7 @@ public:
             rayReconstruction ? "DLSS-RR denoised HDR output color" : "DLSS-SR upscaled HDR output color")
             .texture2D(context.width, context.height)
             .storageReadWrite();
-        outputColor.format = Format::RGBA16Sfloat;
+        outputColor.format = Format::RGBA32Sfloat;
         outputColor.colorEncoding = DisplayColorEncoding::SceneLinear;
         outputColor.usage = outputColor.usage | TextureUsageBits::TransferDestination;
         outputColor.stageAccess(RenderGraphResourceAccess::TextureTransferWrite);

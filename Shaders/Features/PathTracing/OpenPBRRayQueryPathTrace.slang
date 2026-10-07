@@ -233,8 +233,8 @@ struct PathSurfaceLights : ISurfaceLightProvider
     {
         SurfaceLightSample result = (SurfaceLightSample)0;
         if (index < kCelestialLightCount) {
-            PunctualLightSample light = sampleCelestialLight(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index);
+            PunctualLightSample light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
+                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, hit.position);
             result.direction = light.direction;
             result.illuminance = light.illuminance;
             result.distance = light.distance;
@@ -289,6 +289,9 @@ float3 pathTraceOpenPBRWithPrimaryHit(
     specularHitDistance = 0.0;
     bool captureSpecularHitDistance = false;
     uint alphaLayers = 0u;
+    float3 primaryEndpoint = float3(0.0);
+    float3 primaryOrigin = ray.origin;
+    bool primarySurface = false;
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
@@ -309,13 +312,14 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             float misWeight = depth == 0u
                 ? 1.0
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
-            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u) * misWeight;
+            radiance += throughput * environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
             break;
         }
         if (captureSpecularHitDistance) {
             specularHitDistance = hit.t;
             captureSpecularHitDistance = false;
         }
+        if (depth == 0u) { primaryEndpoint = hit.position; primarySurface = true; }
 
         rayCone = propagateRayCone(rayCone, hit.t);
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
@@ -339,6 +343,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
                 if (++alphaLayers >= 16u) { break; }
                 ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
                 hasPrimaryHit = false;
+                if (depth == 0u) { primarySurface = false; }
                 --depth;
                 continue;
             }
@@ -481,7 +486,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         }
     }
 
-    return radiance;
+    return primarySurface && push.debugView == kOpenPBRDebugViewFinal
+        ? applyPrimaryAerialPerspective(radiance, primaryEndpoint, primaryOrigin) : radiance;
 }
 
 // Preserve the ray-primary reference API; the raster path supplies an authored

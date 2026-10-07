@@ -359,7 +359,19 @@ nlohmann::json serializeCelestialLight(const environment::CelestialLight& light)
 {
     return {{"enabled", light.enabled}, {"direction", {light.direction.x, light.direction.y, light.direction.z}},
         {"color", {light.color.x, light.color.y, light.color.z}}, {"illuminance", light.illuminance},
-        {"angularRadius", light.angularRadius}};
+        {"angularRadius", light.angularRadius},
+        {"topOfAtmosphereIrradiance", {light.topOfAtmosphereIrradiance.x,
+            light.topOfAtmosphereIrradiance.y, light.topOfAtmosphereIrradiance.z}}};
+}
+
+bool readOptionalSpectrum(const nlohmann::json& value, const char* key, float3& destination, std::string& reason)
+{
+    if (!value.contains(key)) { return true; }
+    if (!readOptionalColor(nlohmann::json{{"color", value[key]}}, destination, reason)) {
+        reason = std::string(key) + " must be a finite three-number array";
+        return false;
+    }
+    return true;
 }
 
 bool parseCelestialLight(const nlohmann::json& value, environment::CelestialLight& light, std::string& reason)
@@ -369,8 +381,8 @@ bool parseCelestialLight(const nlohmann::json& value, environment::CelestialLigh
         return false;
     }
     if (!readOptionalColor(value, light.color, reason) ||
-        (value.contains("direction") && !readOptionalColor(nlohmann::json{{"color", value["direction"]}},
-            light.direction, reason))) {
+        !readOptionalSpectrum(value, "direction", light.direction, reason) ||
+        !readOptionalSpectrum(value, "topOfAtmosphereIrradiance", light.topOfAtmosphereIrradiance, reason)) {
         return false;
     }
     double illuminance = light.illuminance;
@@ -383,7 +395,66 @@ bool parseCelestialLight(const nlohmann::json& value, environment::CelestialLigh
     light.angularRadius = static_cast<float>(angularRadius);
     light.enabled = value.value("enabled", light.enabled);
     if (!environment::validCelestialLight(light)) {
-        reason = "invalid celestial color, direction, lux or angular radius";
+        reason = "invalid celestial color, direction, lux, angular radius or TOA irradiance";
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json serializeAtmosphere(const environment::AtmosphereState& atmosphere)
+{
+    const auto spectrum = [](const float3& value) {
+        return nlohmann::json::array({value.x, value.y, value.z});
+    };
+    return {{"planetCenter", atmosphere.planetCenter}, {"bottomRadiusKm", atmosphere.bottomRadiusKm},
+        {"topRadiusKm", atmosphere.topRadiusKm}, {"rayleighScattering", spectrum(atmosphere.rayleighScattering)},
+        {"rayleighScaleHeightKm", atmosphere.rayleighScaleHeightKm},
+        {"mieScattering", spectrum(atmosphere.mieScattering)}, {"mieExtinction", spectrum(atmosphere.mieExtinction)},
+        {"mieScaleHeightKm", atmosphere.mieScaleHeightKm}, {"mieAnisotropy", atmosphere.mieAnisotropy},
+        {"ozoneAbsorption", spectrum(atmosphere.ozoneAbsorption)},
+        {"ozoneCenterAltitudeKm", atmosphere.ozoneCenterAltitudeKm}, {"ozoneWidthKm", atmosphere.ozoneWidthKm},
+        {"groundAlbedo", spectrum(atmosphere.groundAlbedo)}, {"maxAerialDistanceKm", atmosphere.maxAerialDistanceKm}};
+}
+
+bool parseAtmosphere(const nlohmann::json& value, environment::AtmosphereState& atmosphere, std::string& reason)
+{
+    if (!value.is_object()) {
+        reason = "atmosphere must be an object";
+        return false;
+    }
+    if (value.contains("planetCenter")) {
+        const auto& center = value["planetCenter"];
+        if (!center.is_array() || center.size() != 3u ||
+            !std::ranges::all_of(center, [](const auto& component) { return component.is_number(); })) {
+            reason = "planetCenter must be a finite three-number array in metres";
+            return false;
+        }
+        for (size_t index = 0; index < atmosphere.planetCenter.size(); ++index) {
+            atmosphere.planetCenter[index] = center[index].get<double>();
+        }
+    }
+    const std::pair<const char*, float*> scalarFields[] = {
+        {"bottomRadiusKm", &atmosphere.bottomRadiusKm}, {"topRadiusKm", &atmosphere.topRadiusKm},
+        {"rayleighScaleHeightKm", &atmosphere.rayleighScaleHeightKm},
+        {"mieScaleHeightKm", &atmosphere.mieScaleHeightKm}, {"mieAnisotropy", &atmosphere.mieAnisotropy},
+        {"ozoneCenterAltitudeKm", &atmosphere.ozoneCenterAltitudeKm}, {"ozoneWidthKm", &atmosphere.ozoneWidthKm},
+        {"maxAerialDistanceKm", &atmosphere.maxAerialDistanceKm},
+    };
+    for (const auto& [key, destination] : scalarFields) {
+        double number = *destination;
+        if (!readOptionalFiniteNumber(value, key, number, reason)) { return false; }
+        *destination = static_cast<float>(number);
+    }
+    for (const auto& [key, destination] : {
+            std::pair{"rayleighScattering", &atmosphere.rayleighScattering},
+            std::pair{"mieScattering", &atmosphere.mieScattering},
+            std::pair{"mieExtinction", &atmosphere.mieExtinction},
+            std::pair{"ozoneAbsorption", &atmosphere.ozoneAbsorption},
+            std::pair{"groundAlbedo", &atmosphere.groundAlbedo}}) {
+        if (!readOptionalSpectrum(value, key, *destination, reason)) { return false; }
+    }
+    if (!environment::validAtmosphereState(atmosphere)) {
+        reason = "invalid atmosphere radius, center, coefficient, density, anisotropy or albedo";
         return false;
     }
     return true;
@@ -1033,8 +1104,13 @@ bool SceneDocument::setWorldEnvironment(environment::WorldEnvironment environmen
     if (!environment::validWorldEnvironment(environment) || worldEnvironment_ == environment) {
         return false;
     }
+    if (!(worldEnvironment_.sun == environment.sun) || !(worldEnvironment_.moon == environment.moon)) {
+        ++celestialRevision_;
+    }
+    if (worldEnvironment_.source != environment.source || !(worldEnvironment_.atmosphere == environment.atmosphere)) {
+        ++atmosphereRevision_;
+    }
     worldEnvironment_ = std::move(environment);
-    ++celestialRevision_;
     ++environmentLightingRevision_;
     dirty_ = true;
     return true;
@@ -1370,6 +1446,28 @@ bool SceneDocument::applySidecar(const std::filesystem::path& path)
                     appendWarning(documentWarning_, "Ignored a non-object world.environment setting.");
                 } else {
                     const nlohmann::json& environment = world["environment"];
+                    if (environment.contains("source")) {
+                        if (!environment["source"].is_string()) {
+                            documentWarning_ = "world.environment.source must be hdri or physicalAtmosphere.";
+                            return false;
+                        }
+                        const auto source = environment["source"].get<std::string>();
+                        if (source == "hdri") {
+                            worldEnvironment_.source = environment::EnvironmentSource::HDRI;
+                        } else if (source == "physicalAtmosphere") {
+                            worldEnvironment_.source = environment::EnvironmentSource::PhysicalAtmosphere;
+                        } else {
+                            documentWarning_ = "world.environment.source must be hdri or physicalAtmosphere.";
+                            return false;
+                        }
+                    }
+                    if (environment.contains("atmosphere")) {
+                        std::string reason;
+                        if (!parseAtmosphere(environment["atmosphere"], worldEnvironment_.atmosphere, reason)) {
+                            documentWarning_ = "Invalid world.environment.atmosphere: " + reason;
+                            return false;
+                        }
+                    }
                     for (const auto& [name, destination] : {
                             std::pair{"sun", &worldEnvironment_.sun}, std::pair{"moon", &worldEnvironment_.moon}}) {
                         if (!environment.contains(name)) { continue; }
@@ -1875,6 +1973,9 @@ bool SceneDocument::save(std::string& message)
             {"importedSources", std::move(serializedImportedSources)},
         }},
         {"environment", {
+            {"source", worldEnvironment_.source == environment::EnvironmentSource::PhysicalAtmosphere
+                ? "physicalAtmosphere" : "hdri"},
+            {"atmosphere", serializeAtmosphere(worldEnvironment_.atmosphere)},
             {"sun", serializeCelestialLight(worldEnvironment_.sun)},
             {"moon", serializeCelestialLight(worldEnvironment_.moon)},
             {"enabled", environment_.enabled},

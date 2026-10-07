@@ -61,7 +61,7 @@ public:
     const environment::WorldEnvironment& worldEnvironment() const { return worldEnvironment_; }
     environment::EnvironmentSnapshot environmentSnapshot() const
     {
-        return worldEnvironment_.snapshot(celestialRevision_, lightingRevision_);
+        return worldEnvironment_.snapshot(celestialRevision_, lightingRevision_, atmosphereRevision_);
     }
     bool setLighting(scene::LightingSettings lighting);
     const scene::LightingSettings& lighting() const { return lighting_; }
@@ -80,6 +80,7 @@ private:
     environment::WorldEnvironment worldEnvironment_;
     bool worldEnvironmentOverride_ = false;
     uint64_t celestialRevision_ = 1;
+    uint64_t atmosphereRevision_ = 0;
     uint64_t lightingRevision_ = 1;
     uint64_t sceneRevision_ = 1;
     uint64_t sceneContentRevision_ = 1;

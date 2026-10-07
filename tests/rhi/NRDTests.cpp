@@ -13,6 +13,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include <fstream>
+#include <limits>
 
 #include <gtest/gtest.h>
 #include <SDL3/SDL.h>
@@ -702,6 +703,205 @@ TEST(NRDWorkingColor, RTXDIRelaxSceneChromaticity)
     for (size_t channel = 0; channel < 3; ++channel) {
         EXPECT_NEAR(chromaticities[0][channel], chromaticities[1][channel], 0.015f)
             << "NRD changed scene chromaticity in channel " << channel;
+    }
+}
+
+std::vector<float> physicalNRDReadback(const render::RenderGraphPreviewRenderer& preview)
+{
+    const auto& bytes = preview.readbackBytes();
+    std::vector<float> result;
+    if (preview.readbackFormat() == render::Format::RGBA32Sfloat) {
+        result.resize(bytes.size() / sizeof(float));
+        std::memcpy(result.data(), bytes.data(), bytes.size());
+    } else if (preview.readbackFormat() == render::Format::RGBA16Sfloat ||
+        preview.readbackFormat() == render::Format::R16Sfloat) {
+        result.reserve(bytes.size() / sizeof(uint16_t));
+        for (size_t offset = 0; offset < bytes.size(); offset += sizeof(uint16_t)) {
+            uint16_t half;
+            std::memcpy(&half, bytes.data() + offset, sizeof(half));
+            const uint32_t exponent = (half >> 10) & 31u;
+            const uint32_t mantissa = half & 1023u;
+            const float magnitude = exponent == 0 ? std::ldexp(float(mantissa), -24) :
+                exponent == 31 ? (mantissa == 0 ? std::numeric_limits<float>::infinity() :
+                    std::numeric_limits<float>::quiet_NaN()) :
+                std::ldexp(float(1024u + mantissa), int(exponent) - 25);
+            result.push_back((half & 0x8000u) != 0 ? -magnitude : magnitude);
+        }
+    } else {
+        throw std::runtime_error("Unexpected physical NRD readback format");
+    }
+    for (const float value : result) {
+        if (!std::isfinite(value)) { throw std::runtime_error("Nonfinite physical NRD color/guide"); }
+    }
+    return result;
+}
+
+TEST(NRDWorkingColor, PhysicalAtmosphereHDRAndAerial)
+{
+    ASSERT_TRUE(SDL_Init(SDL_INIT_VIDEO)) << SDL_GetError();
+    struct VideoLifetime { ~VideoLifetime() { SDL_Quit(); } } video;
+    render::RenderSampleLoadResult sample;
+    render::RenderSampleLoadResult physicalSample;
+    std::string log;
+    ASSERT_TRUE(render::loadBuiltInRenderSample("rtxdi-sample", sample, log)) << log;
+    ASSERT_TRUE(render::loadBuiltInRenderSample("physical-atmosphere-lookdev", physicalSample, log)) << log;
+    scene::SceneDocument document;
+    ASSERT_TRUE(document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / physicalSample.desc.scenePath))
+        << document.documentWarning() << document.lastLoadResult().error;
+    // Non-emissive surfaces make emissive-guide energy an observation of aerial
+    // in-scattering, rather than authored material emission.
+    for (size_t index = 0; index < document.materials().size(); ++index) {
+        auto material = document.materials()[index];
+        material.emissiveFactor = float3(0.0f);
+        (void)document.setMaterialProperties(static_cast<int32_t>(index), material);
+    }
+    sample.graph.findNode("RTXDI")->properties["path"] = physicalSample.desc.scenePath;
+    sample.graph.findNode("RTXDI")->properties["lightSource"] = "scene";
+    sample.graph.findNode("RTXDI")->properties["environmentSamples"] = 4;
+    sample.graph.findNode("RTXDI")->properties["outputLinear"] = true;
+    sample.graph.findNode("Composite")->properties["outputLinear"] = true;
+    auto camera = physicalSample.graph.findNode("Reference")->properties.at("camera");
+    camera["zfar"] = 100.0;
+    auto lighting = document.lighting();
+    lighting.autoExposure.enabled = false;
+    lighting.exposureEV100 = 14.0f;
+    render::RenderGraphPreviewRenderer preview;
+    preview.bindRuntimeScene(&document);
+    preview.setLighting(lighting);
+    preview.setEnvironment(document.environment());
+    const auto initialized = preview.initialize(true, true, false);
+    if (render::hasError(initialized, render::Error::Unsupported)) { GTEST_SKIP() << "Ray query unavailable"; }
+    ASSERT_TRUE(initialized) << preview.lastLog();
+    preview.setRawReadbackEnabled(true);
+    constexpr uint32_t width = 96, height = 96;
+    const size_t pixels = size_t(width) * height;
+    const auto evidenceDirectory = std::filesystem::path(PROJECT_SOURCE_DIR) / "build/physical-environment-nrd";
+    std::filesystem::create_directories(evidenceDirectory);
+    auto measurements = render::RenderGraphProperties::array();
+    std::array<double, 2> aerialSurfaceEnergy{};
+    try {
+        const auto renderOutput = [&](const char* output, uint32_t frames) {
+            for (uint32_t frame = 0; frame < frames; ++frame) {
+                preview.setRawReadbackEnabled(frame + 1 == frames);
+                require(preview.render(sample.graph, width, height, output, frame + 1 == frames));
+                bool sawRTXDI = false, sawRelax = false, sawComposite = false;
+                for (const auto& node : preview.executionStats().nodes) {
+                    sawRTXDI |= node.name == "RTXDI";
+                    sawRelax |= node.name == "Relax";
+                    sawComposite |= node.name == "Composite";
+                }
+                if (!sawRTXDI || !sawRelax || !sawComposite) {
+                    throw std::runtime_error("Physical NRD case did not execute RTXDI -> RELAX -> Composite");
+                }
+            }
+            return physicalNRDReadback(preview);
+        };
+        const auto writeHDR = [&](const std::string& label, const std::vector<float>& values) {
+            std::ofstream raw(evidenceDirectory / (label + ".float32"), std::ios::binary);
+            raw.write(reinterpret_cast<const char*>(values.data()), values.size() * sizeof(float));
+            if (!raw) { throw std::runtime_error("Physical NRD evidence write failed"); }
+        };
+        const auto setCamera = [&](const render::RenderGraphProperties& selectedCamera) {
+            for (const char* name : {"RTXDI", "Relax"}) {
+                auto* node = sample.graph.findNode(name);
+                auto properties = node->properties;
+                properties["camera"] = selectedCamera;
+                if (node->properties == properties) { continue; }
+                if (!sample.graph.setNodeProperties(node->id, std::move(properties))) {
+                    throw std::runtime_error("Physical NRD camera update failed");
+                }
+            }
+        };
+        auto world = document.worldEnvironment();
+        for (uint32_t mode = 0; mode < 4; ++mode) {
+            const std::string label = mode == 0 ? "Physical" : mode == 1 ? "AerialMieHeavy" :
+                mode == 2 ? "HDRIReturn" : "SolarDisk";
+            auto state = world;
+            auto selectedCamera = camera;
+            if (mode == 1) {
+                state.atmosphere.mieScattering *= 10.0f;
+                state.atmosphere.mieExtinction *= 10.0f;
+            } else if (mode == 2) {
+                state.source = environment::EnvironmentSource::HDRI;
+                state.sun.illuminance = 1000.0f;
+                preview.setEnvironment({.enabled = true,
+                    .path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/LookDev/OpenPbrDefault/san_giuseppe_bridge_split.hdr",
+                    .intensity = 1.0f, .visible = true});
+            } else if (mode == 3) {
+                const auto& eye = selectedCamera["eye"];
+                const float3 sourceDirection = -normalize(state.sun.direction);
+                selectedCamera["center"] = {eye[0].get<float>() + sourceDirection.x,
+                    eye[1].get<float>() + sourceDirection.y, eye[2].get<float>() + sourceDirection.z};
+                selectedCamera["fovDegrees"] = 8.0;
+                preview.setEnvironment(document.environment());
+            }
+            setCamera(selectedCamera);
+            if (!preview.setWorldEnvironment(state) && mode != 0) {
+                throw std::runtime_error("Physical NRD world update was rejected");
+            }
+            const auto color = renderOutput("Composite.color", 32);
+            if (preview.readbackFormat() != render::Format::RGBA32Sfloat || color.size() != pixels * 4) {
+                throw std::runtime_error("Physical NRD composite must retain RGBA32F");
+            }
+            const auto emissive = renderOutput("RTXDI.emissive", 1);
+            if (preview.readbackFormat() != render::Format::RGBA32Sfloat || emissive.size() != pixels * 4) {
+                throw std::runtime_error("Physical NRD emissive/sky guide must retain RGBA32F");
+            }
+            const auto diffuse = renderOutput("RTXDI.noisyDiffuse", 1);
+            if (preview.readbackFormat() != render::Format::RGBA16Sfloat || diffuse.size() != pixels * 4) {
+                throw std::runtime_error("Physical NRD diffuse adapter must produce finite RGBA16F");
+            }
+            const auto specular = renderOutput("RTXDI.noisySpecular", 1);
+            if (preview.readbackFormat() != render::Format::RGBA16Sfloat || specular.size() != pixels * 4) {
+                throw std::runtime_error("Physical NRD specular adapter must produce finite RGBA16F");
+            }
+            const auto depth = renderOutput("RTXDI.viewZ", 1);
+            if (depth.size() != pixels) { throw std::runtime_error("Physical NRD depth readback missing"); }
+            double energy = 0.0, maxColor = 0.0, surfaceAerial = 0.0;
+            const float inverseScale = emissive[3];
+            size_t surfacePixels = 0;
+            for (size_t pixel = 0; pixel < pixels; ++pixel) {
+                for (size_t channel = 0; channel < 3; ++channel) {
+                    const float value = color[pixel * 4 + channel];
+                    if (value < -0.0001f) { throw std::runtime_error("Negative physical NRD HDR"); }
+                    energy += value;
+                    maxColor = std::max(maxColor, double(value));
+                    if (mode < 2 && depth[pixel] < 90.0f) { surfaceAerial += emissive[pixel * 4 + channel]; }
+                }
+                if (mode < 2 && depth[pixel] < 90.0f) { ++surfacePixels; }
+                if (emissive[pixel * 4 + 3] != inverseScale) {
+                    throw std::runtime_error("Physical NRD inverse exposure scale varies across one scene");
+                }
+            }
+            if (mode == 2 ? inverseScale != 1.0f : inverseScale <= 1.0f) {
+                throw std::runtime_error("Physical NRD pre-exposure failed to switch physical/HDRI domains");
+            }
+            if (mode < 2) {
+                if (surfacePixels < 100 || surfaceAerial <= 0.00001) {
+                    throw std::runtime_error("Non-emissive physical surfaces lack aerial in-scattering");
+                }
+                aerialSurfaceEnergy[mode] = surfaceAerial;
+            }
+            if (mode == 3 && maxColor <= 65504.0) {
+                throw std::runtime_error("NRD composite clamped the visible physical Sun to FP16 range");
+            }
+            writeHDR(label + "Composite", color);
+            writeHDR(label + "Emissive", emissive);
+            writeHDR(label + "NoisyDiffuse", diffuse);
+            writeHDR(label + "NoisySpecular", specular);
+            measurements.push_back({{"case", label}, {"meanRGBEnergy", energy / pixels},
+                {"maximumRGB", maxColor}, {"inversePreExposure", inverseScale},
+                {"surfacePixels", surfacePixels}, {"surfaceAerialEnergy", surfaceAerial}});
+        }
+        std::ofstream summary(evidenceDirectory / "PhysicalNRDIntegration.json");
+        summary << render::RenderGraphProperties{{"width", width}, {"height", height},
+            {"framesPerCase", 32}, {"cases", measurements}}.dump(2) << '\n';
+        summary.close();
+        if (!summary) { throw std::runtime_error("Physical NRD summary write failed"); }
+        EXPECT_GT(std::abs(aerialSurfaceEnergy[1] - aerialSurfaceEnergy[0]), aerialSurfaceEnergy[0] * 0.001)
+            << "Atmospheric edits did not update the aerial guide";
+    } catch (const std::exception& error) {
+        FAIL() << error.what() << ": " << preview.lastLog();
     }
 }
 

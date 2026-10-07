@@ -5491,6 +5491,7 @@ void Scene::clearParsedData()
     lighting_ = LightingSettings{};
     worldEnvironment_ = environment::WorldEnvironment{};
     celestialRevision_ = 1;
+    atmosphereRevision_ = 0;
     environmentLightingRevision_ = 1;
     filename_.clear();
     sceneName_.clear();

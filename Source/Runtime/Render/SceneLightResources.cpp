@@ -1,6 +1,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
+#include "Runtime/Render/Environment/AtmosphereResources.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/ImportanceSampling.h"
@@ -95,13 +96,21 @@ GPUCelestialLightRecords buildCelestialLightRecords(const environment::Environme
     GPUCelestialLightRecords records{};
     for (size_t index = 0; index < records.size(); ++index) {
         const auto& source = snapshot.celestial[index];
-        if (!source.enabled || !environment::validCelestialLight(source) || source.illuminance <= 0.0f) { continue; }
+        const bool physical = snapshot.source == environment::EnvironmentSource::PhysicalAtmosphere;
+        if (!source.enabled || !environment::validCelestialLight(source) || (!physical && source.illuminance <= 0.0f)) { continue; }
         const auto converted = color::fromLinearRec709({source.color.x, source.color.y, source.color.z});
         const double magnitude = std::sqrt(double(source.direction.x) * source.direction.x +
             double(source.direction.y) * source.direction.y + double(source.direction.z) * source.direction.z);
         GPUCelestialLight light;
+        const auto topOfAtmosphere = physical ? atmosphereSpectrumToWorkingColor(
+            {source.topOfAtmosphereIrradiance.x, source.topOfAtmosphereIrradiance.y, source.topOfAtmosphereIrradiance.z})
+            : std::array<float, 3>{};
         for (size_t channel = 0; channel < 3; ++channel) {
-            light.irradiance[channel] = converted[channel] * source.illuminance;
+            // Physical direct estimators apply position-dependent spectral
+            // transmittance in shaders. The unattenuated value here supplies
+            // selection/importance and keeps the fixed celestial wire ABI.
+            light.irradiance[channel] = physical ? std::max(topOfAtmosphere[channel], 0.0f)
+                : converted[channel] * source.illuminance;
         }
         if (!std::isfinite(light.irradiance[0]) || !std::isfinite(light.irradiance[1]) ||
             !std::isfinite(light.irradiance[2]) ||

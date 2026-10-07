@@ -5632,6 +5632,139 @@ TEST(WorldEnvironment, glTFDirectionalImportIsIgnoredWithWarning)
     EXPECT_FALSE(document.worldEnvironment().sun.enabled);
 }
 
+TEST(WorldEnvironment, PhysicalAtmosphereSnapshotRevisionDomainsAndValidation)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    SceneDocument document;
+    const auto initial = document.environmentSnapshot();
+    EXPECT_EQ(initial.source, EnvironmentSource::HDRI);
+    EXPECT_EQ(initial.atmosphereRevision, 0u);
+    EXPECT_TRUE(validAtmosphereState(initial.atmosphere));
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto selected = document.environmentSnapshot();
+    EXPECT_EQ(selected.source, EnvironmentSource::PhysicalAtmosphere);
+    EXPECT_GT(selected.atmosphereRevision, initial.atmosphereRevision);
+    EXPECT_EQ(selected.celestialRevision, initial.celestialRevision);
+    EXPECT_GT(selected.lightingRevision, initial.lightingRevision);
+    world.atmosphere.mieScaleHeightKm = 2.0f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto atmosphereChanged = document.environmentSnapshot();
+    EXPECT_GT(atmosphereChanged.atmosphereRevision, selected.atmosphereRevision);
+    EXPECT_EQ(atmosphereChanged.celestialRevision, selected.celestialRevision);
+    EXPECT_FLOAT_EQ(selected.atmosphere.mieScaleHeightKm, 1.2f);
+    world.sun.enabled = true;
+    world.sun.topOfAtmosphereIrradiance.x = 1.5f;
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    const auto celestialChanged = document.environmentSnapshot();
+    EXPECT_GT(celestialChanged.celestialRevision, atmosphereChanged.celestialRevision);
+    EXPECT_EQ(celestialChanged.atmosphereRevision, atmosphereChanged.atmosphereRevision);
+    auto hdri = document.environment();
+    hdri.intensity = 4.0f;
+    ASSERT_TRUE(document.setEnvironment(hdri));
+    const auto hdriChanged = document.environmentSnapshot();
+    EXPECT_EQ(hdriChanged.celestialRevision, celestialChanged.celestialRevision);
+    EXPECT_EQ(hdriChanged.atmosphereRevision, celestialChanged.atmosphereRevision);
+    EXPECT_GT(hdriChanged.lightingRevision, celestialChanged.lightingRevision);
+    EXPECT_FALSE(document.setWorldEnvironment(world));
+    for (int invalidCase = 0; invalidCase < 14; ++invalidCase) {
+        auto invalid = world;
+        auto& atmosphere = invalid.atmosphere;
+        if (invalidCase == 0) { invalid.source = static_cast<EnvironmentSource>(99); }
+        if (invalidCase == 1) { atmosphere.planetCenter[0] = std::numeric_limits<double>::quiet_NaN(); }
+        if (invalidCase == 2) { atmosphere.topRadiusKm = atmosphere.bottomRadiusKm; }
+        if (invalidCase == 3) { atmosphere.rayleighScattering.x = -1.0f; }
+        if (invalidCase == 4) { atmosphere.rayleighScaleHeightKm = 0.0f; }
+        if (invalidCase == 5) { atmosphere.mieScattering.y = atmosphere.mieExtinction.y + 1.0f; }
+        if (invalidCase == 6) { atmosphere.mieScaleHeightKm = -1.0f; }
+        if (invalidCase == 7) { atmosphere.mieAnisotropy = 1.0f; }
+        if (invalidCase == 8) { atmosphere.ozoneAbsorption.z = std::numeric_limits<float>::infinity(); }
+        if (invalidCase == 9) { atmosphere.ozoneWidthKm = 0.0f; }
+        if (invalidCase == 10) { atmosphere.groundAlbedo.y = 1.01f; }
+        if (invalidCase == 11) { atmosphere.maxAerialDistanceKm = -1.0f; }
+        if (invalidCase == 12) { invalid.sun.topOfAtmosphereIrradiance.z = 100.1f; }
+        if (invalidCase == 13) { invalid.moon.topOfAtmosphereIrradiance.x = -0.001f; }
+        EXPECT_FALSE(document.setWorldEnvironment(invalid)) << invalidCase;
+        EXPECT_EQ(document.worldEnvironment(), world) << invalidCase;
+        EXPECT_EQ(document.environmentSnapshot().atmosphereRevision, hdriChanged.atmosphereRevision);
+        EXPECT_EQ(document.environmentSnapshot().celestialRevision, hdriChanged.celestialRevision);
+    }
+}
+
+TEST(WorldEnvironment, PhysicalAtmosphereDocumentRoundTripAndTransactionalRejection)
+{
+    using namespace metallic::scene;
+    using namespace metallic::environment;
+    const auto directory = prepareOutputDirectory() / "physical_atmosphere_document";
+    std::filesystem::create_directories(directory);
+    const auto source = writeFullScene(directory);
+    std::filesystem::remove(SceneDocument::sidecarPathForSource(source));
+    SceneDocument document;
+    ASSERT_TRUE(document.load(source)) << document.documentWarning();
+    auto world = document.worldEnvironment();
+    world.source = EnvironmentSource::PhysicalAtmosphere;
+    world.atmosphere.planetCenter = {123456789012.125, -6360000.0625, -987654321.875};
+    world.atmosphere.bottomRadiusKm = 6400.0f;
+    world.atmosphere.topRadiusKm = 6550.0f;
+    world.atmosphere.rayleighScattering = float3(0.004f, 0.01f, 0.025f);
+    world.atmosphere.rayleighScaleHeightKm = 9.5f;
+    world.atmosphere.mieScattering = float3(0.002f, 0.003f, 0.004f);
+    world.atmosphere.mieExtinction = float3(0.003f, 0.004f, 0.005f);
+    world.atmosphere.mieScaleHeightKm = 2.5f;
+    world.atmosphere.mieAnisotropy = 0.65f;
+    world.atmosphere.ozoneAbsorption = float3(0.001f, 0.002f, 0.003f);
+    world.atmosphere.ozoneCenterAltitudeKm = 27.0f;
+    world.atmosphere.ozoneWidthKm = 12.0f;
+    world.atmosphere.groundAlbedo = float3(0.1f, 0.2f, 0.4f);
+    world.atmosphere.maxAerialDistanceKm = 2000.0f;
+    world.sun.enabled = true;
+    world.sun.topOfAtmosphereIrradiance = float3(1.4f, 1.8f, 1.9f);
+    world.moon.topOfAtmosphereIrradiance = float3(0.00001f, 0.000012f, 0.000009f);
+    ASSERT_TRUE(document.setWorldEnvironment(world));
+    std::string message;
+    ASSERT_TRUE(document.save(message)) << message;
+    const auto sidecar = document.documentPath();
+    nlohmann::json saved;
+    { std::ifstream stream(sidecar); stream >> saved; }
+    EXPECT_EQ(saved["world"]["environment"]["source"], "physicalAtmosphere");
+    EXPECT_DOUBLE_EQ(saved["world"]["environment"]["atmosphere"]["planetCenter"][0].get<double>(),
+        world.atmosphere.planetCenter[0]);
+    SceneDocument restored;
+    ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment(), world);
+    const auto identity = restored.resourceIdentity();
+    const std::array<nlohmann::json, 9> invalidSettings{
+        nlohmann::json{{"source", "weather"}}, nlohmann::json{{"source", 2}},
+        nlohmann::json{{"atmosphere", {{"planetCenter", {0.0, 1.0}}}}},
+        nlohmann::json{{"atmosphere", {{"topRadiusKm", 10.0}}}},
+        nlohmann::json{{"atmosphere", {{"mieAnisotropy", 1.0}}}},
+        nlohmann::json{{"atmosphere", {{"rayleighScattering", {-0.1, 0.1, 0.2}}}}},
+        nlohmann::json{{"atmosphere", {{"groundAlbedo", {0.5, 1.1, 0.5}}}}},
+        nlohmann::json{{"sun", {{"topOfAtmosphereIrradiance", {1.0, 101.0, 1.0}}}}},
+        nlohmann::json{{"moon", {{"topOfAtmosphereIrradiance", "invalid"}}}},
+    };
+    for (const auto& invalid : invalidSettings) {
+        auto rejected = saved;
+        rejected["world"]["environment"].update(invalid);
+        writeTextFile(sidecar, rejected.dump(2));
+        EXPECT_FALSE(restored.load(sidecar)) << invalid.dump();
+        EXPECT_EQ(restored.worldEnvironment(), world);
+        EXPECT_EQ(restored.resourceIdentity(), identity);
+    }
+    auto legacy = saved;
+    legacy["world"]["environment"].erase("source");
+    legacy["world"]["environment"].erase("atmosphere");
+    legacy["world"]["environment"]["sun"].erase("topOfAtmosphereIrradiance");
+    legacy["world"]["environment"]["moon"].erase("topOfAtmosphereIrradiance");
+    writeTextFile(sidecar, legacy.dump(2));
+    ASSERT_TRUE(restored.load(sidecar)) << restored.documentWarning();
+    EXPECT_EQ(restored.worldEnvironment().source, EnvironmentSource::HDRI);
+    EXPECT_EQ(restored.worldEnvironment().atmosphere, AtmosphereState{});
+    EXPECT_EQ(restored.worldEnvironment().sun.illuminance, world.sun.illuminance);
+}
+
 TEST(WorldEnvironment, LegacyDirectionalMigratesToSunAndPersistsCelestialOnly)
 {
     using namespace metallic::scene;

@@ -36,9 +36,15 @@ DR_PUBLIC struct EnvironmentResourceParameters
 {
     // Fixed celestial domain: Sun at slot 0, Moon at slot 1; no count header.
     DR_PUBLIC DR_BUFFER celestialLights;
+    DR_PUBLIC DR_BUFFER atmosphereParameters;
+    DR_PUBLIC DR_SAMPLED(2D<float4>) transmittance;
+    DR_PUBLIC DR_SAMPLED(2D<float4>) multiScattering;
+    DR_PUBLIC DR_SAMPLED(2D<float4>) skyView;
+    DR_PUBLIC DR_BUFFER aerialPerspective;
+    DR_PUBLIC DR_BUFFER primaryAerial;
 };
 #ifdef __cplusplus
-static_assert(sizeof(EnvironmentResourceParameters) == 4);
+static_assert(sizeof(EnvironmentResourceParameters) == 28);
 #endif
 
 DR_PUBLIC struct SceneResourceParameters
@@ -144,7 +150,7 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC EnvironmentResourceParameters environment;
 };
 #ifdef __cplusplus
-static_assert(sizeof(SceneResourceParameters) == 448);
+static_assert(sizeof(SceneResourceParameters) == 472);
 static_assert(offsetof(SceneResourceParameters, environment) == 444);
 #endif
 

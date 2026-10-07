@@ -292,7 +292,10 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
         const auto& field = impl_->resourceFields[input];
         auto* destination = parameters.data() + field.offset;
         const auto* binding = findDispatchBinding(desc, expected.binding);
-        if (!binding) { return makeError(Error::InvalidArgument); }
+        if (!binding) {
+            if (expected.optional) { continue; }
+            return makeError(Error::InvalidArgument);
+        }
         if (expected.kind == ComputeResourceBindingKind::DataBuffer) {
             BufferSlice slice = binding->data;
             if (slice.valid()) {

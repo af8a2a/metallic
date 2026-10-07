@@ -13,6 +13,7 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
+#include "Runtime/Render/Environment/AtmosphereKernelParameters.h"
 
 #include <array>
 #include <bit>
@@ -166,7 +167,7 @@ public:
                 FIELD(RTXDIConfidenceParams, previousDiffuseConfidence), FIELD(RTXDIConfidenceParams, previousSpecularConfidence),
                 FIELD(RTXDIConfidenceParams, diffuseConfidence), FIELD(RTXDIConfidenceParams, specularConfidence),
                 FIELD(RTXDIConfidenceParams, currentDiffuseConfidence), FIELD(RTXDIConfidenceParams, currentSpecularConfidence),
-                FIELD(RTXDIConfidenceParams, settings)}},
+                FIELD(RTXDIConfidenceParams, emissive), FIELD(RTXDIConfidenceParams, settings)}},
             {"Metallic.RTXDICompositeParams", {FIELD(RTXDICompositeParams, denoisedDiffuse), FIELD(RTXDICompositeParams, denoisedSpecular),
                 FIELD(RTXDICompositeParams, baseColorMetalness), FIELD(RTXDICompositeParams, emissive),
                 FIELD(RTXDICompositeParams, output), FIELD(RTXDICompositeParams, settings)}},
@@ -174,7 +175,7 @@ public:
                 FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0),
                 FIELD(SharcMaintenanceParams, settings)}},
             {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
-                FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, settings)}},
+                FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, primaryAerial), FIELD(PathTraceTonemapParams, settings)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -2090,6 +2091,102 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(NamedResourceParametersTest);
 
+class OptionalNamedResourceParametersTest final : public RHITest {
+public:
+    OptionalNamedResourceParametersTest()
+    {
+        type = RHITestType::Resource;
+        name = "named_optional_resource_sentinel_and_required_contract";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"compute.named.optional.sentinel", "compute.named.required.validation"},
+            bench::Layer::Core, "binding", "binding", {"optional-resource-readback.bin"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice fixture;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Optional named resource contract",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { fixture = std::move(value); }));
+        auto& device = *fixture;
+        auto* queue = device.getQueue(QueueType::Graphics);
+        REG_CHECK(queue != nullptr);
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true}};
+        const ComputeProgramBindingDesc requiredBindings[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        const ComputeResourceField fields[] = {
+            {0, ComputeResourceBindingKind::StorageBuffer, 0, ComputeResourceFieldFormat::Handle},
+            {1, ComputeResourceBindingKind::StorageBuffer, 4, ComputeResourceFieldFormat::Handle}};
+        std::unique_ptr<Buffer> input, output;
+        REG_REQUIRE(makeBuffer(device, input, 42));
+        REG_REQUIRE(makeBuffer(device, output));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, *queue));
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(device, *queue));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{*queue, *gate};
+        std::vector<uint32_t> evidence;
+        uint32_t frame = 0;
+        for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
+            ShaderCompileResult shader;
+            REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "OptionalNamedResourceProbe", .entryPointName = "main",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics)
+                .transform([&](auto value) { shader = std::move(value); }));
+            ComputeProgram program, required;
+            std::string log;
+            REG_REQUIRE(program.initialize(device, {.spirv = shader.spirv, .bindings = bindings,
+                .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
+            REG_REQUIRE(required.initialize(device, {.spirv = shader.spirv, .bindings = requiredBindings,
+                .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
+            // Reuse one program first with the optional input, then without it:
+            // omission must clear the previous handle rather than reuse a packet tail.
+            for (uint32_t present = 1; present <= 2; ++present) {
+                REG_REQUIRE(recording.begin(frame++));
+                const ComputeDispatchBinding outputOnly{.binding = 0, .buffer = output.get()};
+                const ComputeDispatchBinding inputOnly{.binding = 1, .buffer = input.get()};
+                REG_CHECK(hasError(program.prepareDispatch(recording.frame, {.bindings = {&inputOnly, 1}}), Error::InvalidArgument));
+                REG_CHECK(hasError(required.prepareDispatch(recording.frame, {.bindings = {&outputOnly, 1}}), Error::InvalidArgument));
+                // Batch substitution must retain the optional/required policy,
+                // even when the two programs share the same wire field layout.
+                const ComputeIndirectDispatch incompatible{.program = &required};
+                REG_CHECK(hasError(program.prepareIndirectBatch(recording.frame,
+                    {.bindings = {&outputOnly, 1}, .indirectArguments = input.get()}, {&incompatible, 1}), Error::InvalidArgument));
+                const ComputeDispatchBinding invalidOptional[] = {outputOnly, {.binding = 1}};
+                REG_CHECK(hasError(program.prepareDispatch(recording.frame, {.bindings = invalidOptional}), Error::InvalidArgument));
+                const ComputeDispatchBinding complete[] = {outputOnly, inputOnly};
+                auto dispatch = program.prepareDispatch(recording.frame,
+                    {.bindings = present == 1 ? std::span<const ComputeDispatchBinding>{complete} :
+                        std::span<const ComputeDispatchBinding>{&outputOnly, 1}});
+                REG_CHECK(dispatch.has_value());
+                REG_REQUIRE(dispatch->record(*recording.commands));
+                REG_REQUIRE(recording.submit(tracker, *gate));
+                REG_REQUIRE(recording.frame.wait());
+                output->invalidate();
+                const auto* values = static_cast<const uint32_t*>(output->map());
+                REG_CHECK(values != nullptr);
+                std::array<uint32_t, 3> actual{values[0], values[1], values[2]};
+                output->unmap();
+                evidence.insert(evidence.end(), actual.begin(), actual.end());
+                if (present == 1) {
+                    REG_CHECK(actual[0] != UINT32_MAX && actual[1] == 42 && actual[2] == 1);
+                } else {
+                    REG_CHECK(actual[0] == UINT32_MAX && actual[1] == 0 && actual[2] == 0);
+                }
+            }
+        }
+        bench::readbackEvidence(context, "optional-resource-readback.bin", std::span<const uint32_t>(evidence));
+        return RHITestResult::pass("Mapped/native optional omission keeps invalid sentinel; required omissions and invalid present inputs reject");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(OptionalNamedResourceParametersTest);
+
 class CelestialResourceParametersTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
@@ -2189,6 +2286,120 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(CelestialResourceParametersTest);
+
+class AtmosphereResourceParametersTest final : public RHITest {
+public:
+    AtmosphereResourceParametersTest()
+    {
+        type = RHITestType::Resource;
+        name = "atmosphere_named_resources_and_parameter_abi";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"environment.atmosphere.named.resources.abi"}, bench::Layer::Core,
+            "binding", "binding", {"atmosphere-resources.bin"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice fixture;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Atmosphere named resource ABI",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { fixture = std::move(value); }));
+        auto& device = *fixture;
+        auto* queue = device.getQueue(QueueType::Graphics);
+        REG_CHECK(queue != nullptr);
+        ShaderCompileResult shader;
+        REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "AtmosphereNamedResourceProbe", .entryPointName = "main",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
+            .transform([&](auto value) { shader = std::move(value); }));
+        const ComputeProgramBindingDesc bindings[] = {
+            {.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 57, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = 58, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = 59, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 100, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = 63, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        ComputeProgram program;
+        std::string log;
+        REG_REQUIRE(program.initialize(device, {.spirv = shader.spirv, .bindings = bindings,
+            .requiresRayQuery = false, .resourceParameters = kSceneProbeResourceLayout}, log));
+        std::unique_ptr<Buffer> parameters, aerial, primary, output;
+        const auto create = [&](std::unique_ptr<Buffer>& buffer, uint32_t size, uint32_t stride) {
+            return device.createBuffer({.size = size, .structureStride = stride,
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback,
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute})
+                .transform([&](auto value) { buffer = std::move(value); });
+        };
+        REG_REQUIRE(create(parameters, sizeof(GPUAtmosphereParameters), sizeof(GPUAtmosphereParameters)));
+        REG_REQUIRE(create(aerial, 32, 16));
+        REG_REQUIRE(create(primary, 32, 16));
+        REG_REQUIRE(create(output, 19 * 16, 16));
+        std::array<float, 48> expectedParameters;
+        for (size_t i = 0; i < expectedParameters.size(); ++i) { expectedParameters[i] = float(i + 1); }
+        const std::array<float, 8> expectedAerial{1, 2, 3, 4, 5, 6, 7, 8};
+        const std::array<float, 8> expectedPrimary{9, 10, 11, 12, 13, 14, 15, 16};
+        const auto upload = [&](Buffer& buffer, const auto& data) {
+            void* mapped = buffer.map();
+            if (!mapped) { return false; }
+            std::memcpy(mapped, data.data(), sizeof(data));
+            buffer.flush(); buffer.unmap();
+            return true;
+        };
+        REG_CHECK(upload(*parameters, expectedParameters));
+        REG_CHECK(upload(*aerial, expectedAerial));
+        REG_CHECK(upload(*primary, expectedPrimary));
+        std::array<std::unique_ptr<Texture>, 3> images;
+        std::array<std::unique_ptr<TextureView>, 3> views;
+        std::array<TextureBarrierDesc, 3> barriers;
+        for (uint32_t i = 0; i < images.size(); ++i) {
+            REG_REQUIRE(device.createTexture({.usage = TextureUsageBits::Sampled,
+                .format = Format::RGBA32Sfloat, .width = i * 2 + 2, .height = i * 2 + 3})
+                .transform([&](auto value) { images[i] = std::move(value); }));
+            REG_REQUIRE(device.createTextureView(*images[i], {})
+                .transform([&](auto value) { views[i] = std::move(value); }));
+            barriers[i] = {.texture = images[i].get(), .oldLayout = TextureLayout::Undefined,
+                .newLayout = TextureLayout::ShaderRead, .before = {},
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+        }
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, *queue));
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(device, *queue));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{*queue, *gate};
+        REG_REQUIRE(recording.begin(0));
+        REG_REQUIRE(recording.commands->synchronize({.textures = barriers}));
+        const ComputeDispatchBinding resources[] = {
+            {.binding = 56, .buffer = parameters.get()}, {.binding = 57, .textureView = views[0].get()},
+            {.binding = 58, .textureView = views[1].get()}, {.binding = 59, .textureView = views[2].get()},
+            {.binding = 99, .buffer = aerial.get()}, {.binding = 100, .buffer = primary.get()},
+            {.binding = 63, .buffer = output.get()}};
+        REG_REQUIRE(program.dispatch({.commandBuffer = recording.commands.get(), .bindings = resources}));
+        REG_REQUIRE(recording.submit(tracker, *gate));
+        REG_REQUIRE(recording.frame.wait());
+        output->invalidate();
+        const auto* values = static_cast<const float*>(output->map());
+        REG_CHECK(values != nullptr);
+        std::array<float, 76> actual;
+        std::memcpy(actual.data(), values, sizeof(actual));
+        output->unmap();
+        for (size_t i = 0; i < expectedParameters.size(); ++i) { REG_CHECK(actual[i] == expectedParameters[i]); }
+        for (size_t i = 0; i < 3; ++i) {
+            REG_CHECK(actual[48 + i * 4] == float(i * 2 + 2));
+            REG_CHECK(actual[49 + i * 4] == float(i * 2 + 3));
+        }
+        for (size_t i = 0; i < 8; ++i) {
+            REG_CHECK(actual[60 + i] == expectedAerial[i]);
+            REG_CHECK(actual[68 + i] == expectedPrimary[i]);
+        }
+        bench::readbackEvidence(context, "atmosphere-resources.bin", std::span<const float>(actual));
+        return RHITestResult::pass("192-byte atmosphere state, sampled LUT identities, aerial and NRC camera-segment bindings");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(AtmosphereResourceParametersTest);
 
 class RegistryDeviceLifetimeTest final : public RHITest {
 public:

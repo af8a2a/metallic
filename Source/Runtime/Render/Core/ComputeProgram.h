@@ -27,6 +27,9 @@ struct ComputeProgramBindingDesc {
     // DataBuffer only: explicit element ABI for a descriptor-backed buffer span.
     uint32_t dataStride = 0;
     uint32_t dataAlignment = 0;
+    // A missing dispatch input retains the invalid named-field sentinel.
+    // Present inputs still require a valid allocation and matching resource kind.
+    bool optional = false;
     bool operator==(const ComputeProgramBindingDesc&) const = default;
 };
 

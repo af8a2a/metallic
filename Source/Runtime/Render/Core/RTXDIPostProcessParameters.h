@@ -28,7 +28,7 @@ struct RTXDIConfidencePush
     RTXDIUInt gradientHeight;
     RTXDIUInt hasHistory;
     RTXDIUInt filterStep;
-    RTXDIUInt padding0;
+    RTXDIUInt hasEmissiveScale;
     float darknessBias;
     float sensitivity;
     float blendFactor;
@@ -50,6 +50,7 @@ struct RTXDIConfidenceParams {
     RTXDIStorage1 specularConfidence;
     RTXDIStorage1 currentDiffuseConfidence;
     RTXDIStorage1 currentSpecularConfidence;
+    RTXDIStorage4 emissive;
     RTXDIConfidencePush settings;
 };
 
@@ -71,11 +72,11 @@ struct RTXDICompositeParams {
 };
 
 #ifdef __cplusplus
-inline constexpr uint64_t kRTXDIConfidenceABI = 0x5254434f4e460002ull;
+inline constexpr uint64_t kRTXDIConfidenceABI = 0x5254434f4e460003ull;
 inline constexpr uint64_t kRTXDICompositeABI = 0x5254434f4d500002ull;
 static_assert(sizeof(RTXDIConfidencePush) == 48);
 static_assert(sizeof(RTXDICompositePush) == 16);
-static_assert(sizeof(RTXDIConfidenceParams) == 104 && offsetof(RTXDIConfidenceParams, settings) == 56);
+static_assert(sizeof(RTXDIConfidenceParams) == 108 && offsetof(RTXDIConfidenceParams, settings) == 60);
 static_assert(sizeof(RTXDICompositeParams) == 36 && offsetof(RTXDICompositeParams, settings) == 20);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

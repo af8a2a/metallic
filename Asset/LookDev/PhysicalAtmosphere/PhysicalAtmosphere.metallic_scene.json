@@ -1,0 +1,55 @@
+{
+    "version": 3,
+    "source": "../OpenPbrDefault/OpenPbrDefault.gltf",
+    "sceneIndex": 0,
+    "nodes": [],
+    "world": {
+        "environment": {
+            "source": "physicalAtmosphere",
+            "enabled": true,
+            "visible": true,
+            "path": "",
+            "intensity": 1.0,
+            "rotationDegrees": 0.0,
+            "sun": {
+                "enabled": true,
+                "direction": [-0.4330127, -0.8660254, -0.25],
+                "color": [1.0, 1.0, 1.0],
+                "illuminance": 0.0,
+                "angularRadius": 0.00465,
+                "topOfAtmosphereIrradiance": [1.474, 1.8504, 1.91198]
+            },
+            "moon": {
+                "enabled": false,
+                "direction": [0.0, -1.0, 0.0],
+                "color": [1.0, 1.0, 1.0],
+                "illuminance": 0.0,
+                "angularRadius": 0.0045,
+                "topOfAtmosphereIrradiance": [0.000002948, 0.0000037008, 0.00000382396]
+            },
+            "atmosphere": {
+                "planetCenter": [0.0, -6360000.0, 0.0],
+                "bottomRadiusKm": 6360.0,
+                "topRadiusKm": 6460.0,
+                "rayleighScattering": [0.005802, 0.013558, 0.0331],
+                "rayleighScaleHeightKm": 8.0,
+                "mieScattering": [0.003996, 0.003996, 0.003996],
+                "mieExtinction": [0.00444, 0.00444, 0.00444],
+                "mieScaleHeightKm": 1.2,
+                "mieAnisotropy": 0.8,
+                "ozoneAbsorption": [0.00065, 0.001881, 0.000085],
+                "ozoneCenterAltitudeKm": 25.0,
+                "ozoneWidthKm": 15.0,
+                "groundAlbedo": [0.3, 0.3, 0.3],
+                "maxAerialDistanceKm": 1000.0
+            }
+        },
+        "lighting": {
+            "exposureEV100": 14.0,
+            "autoExposure": {
+                "enabled": false
+            },
+            "lights": []
+        }
+    }
+}
