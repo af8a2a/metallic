@@ -112,6 +112,17 @@ Without these arguments, native warmup discovers a supported adapter automatical
 Failure to find a valid native stride pair aborts compilation. Explicit strides
 produce cache entries for that ABI; another adapter can require different entries.
 
+The stride query obtains Vulkan functions through its own local dispatch and
+uses volk only for header declarations. Keep `MetallicShaderWarmupCore` free of
+a volk implementation link dependency. Adding that dependency can move
+`volk.lib` after `sl.interposer.lib` in application links on Windows: Streamline's
+Vulkan function imports then replace volk's same-named global function pointers,
+and `volkInitializeCustom` crashes while writing an import thunk in the code
+section. This startup failure also affects mapped mode, even when every warmup
+request is a cache hit and the native query never runs. Validate changes to this
+dependency with a Streamline-enabled application startup; tests built with
+Streamline disabled cannot cover the collision.
+
 To pass arguments through the CMake target, configure with a semicolon-separated
 list, for example:
 
