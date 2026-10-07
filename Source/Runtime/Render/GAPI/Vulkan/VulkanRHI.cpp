@@ -2046,7 +2046,6 @@ struct PipelineCacheImpl {
     DeviceImpl* device = nullptr;
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     std::filesystem::path filePath;
-    std::string filePathString;
     PipelineCacheFileIdentity fileIdentity;
     PipelineCacheStats stats;
     std::unordered_set<uint64_t> storedPsoHashes;
@@ -2608,7 +2607,6 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
     fileIdentity = owningDevice.pipelineCacheFileIdentity;
     if (desc.filePath != nullptr && desc.filePath[0] != '\0') {
         filePath = desc.filePath;
-        filePathString = filePath.string();
         if (!isPipelineCacheFilePath(filePath)) {
             return makeError(Error::InvalidArgument);
         }
@@ -3856,17 +3854,6 @@ Result<> BufferSlice::validate(
     return {};
 }
 
-Result<> BufferSlice::validateData(const void* device, uint32_t stride, uint32_t alignment) const
-{
-    auto result = validate(device, BufferUsageBits::None, alignment);
-    if (!result) { return result; }
-    if (!hasFlag(allocationDesc().usage, BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress) ||
-        stride == 0 || stride % alignment || size_ % stride || size_ / stride > UINT32_MAX) {
-        return makeError(Error::InvalidArgument);
-    }
-    return {};
-}
-
 METALLIC_RHI_HANDLE_DEFINITIONS(RayTracingAccelerationStructure)
 
 const RayTracingAccelerationStructureDesc& RayTracingAccelerationStructure::desc() const
@@ -3878,13 +3865,6 @@ const RayTracingAccelerationStructureDesc& RayTracingAccelerationStructure::desc
 ResourceMemoryInfo RayTracingAccelerationStructure::memoryInfo() const
 {
     return impl_ && impl_->storage ? impl_->storage->memoryInfo() : ResourceMemoryInfo{};
-}
-
-bool RayTracingAccelerationStructure::supportsQueueAccess(QueueAccessBits access) const
-{
-    return impl_ && impl_->storage && access != QueueAccessBits::None &&
-        (static_cast<uint8_t>(impl_->storage->desc().queueAccess) & static_cast<uint8_t>(access)) ==
-            static_cast<uint8_t>(access);
 }
 
 bool RayTracingAccelerationStructure::valid() const
@@ -4007,18 +3987,6 @@ const void* Texture::deviceIdentity() const
 
 METALLIC_RHI_HANDLE_DEFINITIONS(TextureView)
 
-Result<> TextureView::prepareNative()
-{
-    return impl_ ? impl_->materialize() : Result<>(makeError(Error::InvalidArgument));
-}
-
-bool TextureView::hasNativeView() const
-{
-    if (!impl_) { return false; }
-    std::lock_guard lock(impl_->mutex);
-    return impl_->view != VK_NULL_HANDLE;
-}
-
 const TextureViewDesc& TextureView::desc() const
 {
     static const TextureViewDesc empty;
@@ -4053,11 +4021,6 @@ uint64_t ShaderModule::inputSpirvHash() const
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(PipelineCache)
-
-const char* PipelineCache::filePath() const
-{
-    return impl_ != nullptr ? impl_->filePathString.c_str() : "";
-}
 
 PipelineCacheStats PipelineCache::stats() const
 {
@@ -5135,7 +5098,7 @@ Result<> CommandBuffer::clearColorTexture(Texture& texture, TextureLayout layout
 Result<> CommandBuffer::useNativeTextureView(TextureView& view)
 {
     if (!impl_ || !recording_ || view.deviceIdentity() != deviceIdentity()) { return makeError(Error::InvalidArgument); }
-    auto result = view.prepareNative();
+    auto result = view.impl_->materialize();
     return result ? retainResource(view.impl_) : result;
 }
 
@@ -10513,9 +10476,16 @@ struct VulkanNativeAccess {
         return view.impl_ ? imageLayout(layout, view.impl_->device->vulkanCapabilities.unifiedImageLayouts) : VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
+    static bool hasNativeImageView(const TextureView& view)
+    {
+        if (!view.impl_) { return false; }
+        std::lock_guard lock(view.impl_->mutex);
+        return view.impl_->view != VK_NULL_HANDLE;
+    }
+
     static VkImageView nativeImageView(TextureView& view)
     {
-        return view.prepareNative() ? view.impl_->view : VK_NULL_HANDLE;
+        return view.impl_ && view.impl_->materialize() ? view.impl_->view : VK_NULL_HANDLE;
     }
 
 };
@@ -10613,6 +10583,11 @@ VkFormat nativeSwapchainFormat(Swapchain& swapchain)
 VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout)
 {
     return detail::VulkanNativeAccess::nativeImageLayout(view, layout);
+}
+
+bool hasNativeImageView(const TextureView& view)
+{
+    return detail::VulkanNativeAccess::hasNativeImageView(view);
 }
 
 VkImageView nativeImageView(TextureView& view)

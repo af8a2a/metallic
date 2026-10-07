@@ -86,5 +86,7 @@ void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer);
 VkFormat nativeSwapchainFormat(Swapchain& swapchain);
 // Exporters use the backend policy, rather than hard-coding an optimal layout.
 VkImageLayout nativeImageLayout(TextureView& view, TextureLayout layout);
+// Backend diagnostic query; does not materialize a view.
+bool hasNativeImageView(const TextureView& view);
 VkImageView nativeImageView(TextureView& view);
 } // namespace metallic::render::vulkan

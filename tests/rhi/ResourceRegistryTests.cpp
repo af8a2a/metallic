@@ -55,6 +55,16 @@ render::Result<> makeBuffer(render::Device& device, std::unique_ptr<render::Buff
     return {};
 }
 
+render::Result<> validateShaderSpan(render::Device& device, const render::BufferSlice& slice,
+    uint32_t stride, uint32_t alignment)
+{
+    auto registry = render::ResourceRegistry::forDevice(device);
+    if (!registry) { return render::makeError(registry.error()); }
+    render::ParameterWriter writer(device, **registry);
+    (void)writer.bufferSpan(slice, stride, alignment);
+    return writer.status();
+}
+
 struct Commands {
     render::RenderFrameContext frame;
     std::unique_ptr<render::CommandPool> pool;
@@ -433,7 +443,7 @@ public:
         REG_CHECK(generalImage.shaderValue() != imageA.shaderValue());
         REG_REQUIRE(registry.storageImage(*second).transform([&](auto value) { storageImage = std::move(value); }));
         REG_CHECK(storageImage.kind() == render::ShaderResourceKind::StorageImage);
-        REG_CHECK(!first->hasNativeView() && !second->hasNativeView());
+        REG_CHECK(!render::vulkan::hasNativeImageView(*first) && !render::vulkan::hasNativeImageView(*second));
         std::weak_ptr<void> textureAllocation = first->retainTexture();
         texture.reset(); first.reset(); second.reset();
         REG_CHECK(!textureAllocation.expired());
@@ -969,7 +979,7 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(RegistryTextureSubmissionTest);
-// Native provenance and narrowing are checked without creating descriptors.
+// Range composition and provenance are checked through the production DR encoder.
 class BufferSliceValidationTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
@@ -994,11 +1004,11 @@ public:
         REG_CHECK(child.deviceAddress() == buffer->deviceAddress() + 24);
         REG_CHECK(child.deviceIdentity() == device->identity());
         REG_CHECK(child.allocationIdentity() == buffer->retainAllocation().get());
-        REG_REQUIRE(child.validateData(device->identity(), 4, 4));
-        REG_CHECK(render::hasError(child.validateData(other->identity(), 4, 4), render::Error::InvalidArgument));
+        REG_REQUIRE(validateShaderSpan(*device, child, 4, 4));
+        REG_CHECK(render::hasError(validateShaderSpan(*other, child, 4, 4), render::Error::InvalidArgument));
         REG_REQUIRE(parent.subslice({32}).transform([&](auto value) { empty = std::move(value); }));
         REG_CHECK(empty.valid() && empty.size() == 0);
-        REG_CHECK(!empty.validateData(device->identity(), 4, 4));
+        REG_CHECK(!validateShaderSpan(*device, empty, 4, 4));
         for (uint64_t offset : {uint64_t(33), UINT64_MAX}) {
             const auto rejected = parent.subslice({offset});
             REG_CHECK(render::hasError(rejected, render::Error::InvalidArgument));
@@ -1007,13 +1017,13 @@ public:
         REG_CHECK(render::hasError(parent.subslice({0, 33}), render::Error::InvalidArgument));
         REG_CHECK(render::hasError(parent.subslice({31, UINT64_MAX - 1}), render::Error::InvalidArgument));
         REG_REQUIRE(parent.subslice({1, 8}).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
-        REG_CHECK(!invalid.validateData(device->identity(), 4, 4));
+        REG_CHECK(!validateShaderSpan(*device, invalid, 4, 4));
         REG_REQUIRE(parent.subslice({0, 12}).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
-        REG_CHECK(!invalid.validateData(device->identity(), 8, 4));
-        REG_CHECK(!child.validateData(device->identity(), 0, 4));
-        REG_CHECK(!child.validateData(device->identity(), 4, 0));
-        REG_CHECK(!child.validateData(device->identity(), 4, 3));
-        REG_CHECK(!child.validateData(device->identity(), 3, 4));
+        REG_CHECK(!validateShaderSpan(*device, invalid, 8, 4));
+        REG_CHECK(!validateShaderSpan(*device, child, 0, 4));
+        REG_CHECK(!validateShaderSpan(*device, child, 4, 0));
+        REG_CHECK(!validateShaderSpan(*device, child, 4, 3));
+        REG_CHECK(!validateShaderSpan(*device, child, 3, 4));
         REG_CHECK(!child.validate(device->identity(), render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource));
         REG_REQUIRE(parent.subslice({8, 8}).transform([&](auto rhiValue) { parent = std::move(rhiValue); }));
         REG_CHECK(parent.offset() == child.offset() && parent.size() == child.size());
@@ -1126,7 +1136,7 @@ public:
             REG_REQUIRE(work->slice({48, 12}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
             REG_REQUIRE(output->slice({20, 16}).transform([&](auto rhiValue) { to = std::move(rhiValue); }));
             // Transfer-only memory is not a shader data buffer.
-            REG_CHECK(!from.validateData(device->identity(), 4, 4));
+            REG_CHECK(!validateShaderSpan(*device, from, 4, 4));
             REG_REQUIRE(to.subslice({0, 12}).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
             REG_CHECK(!recording.commands->copyBuffer(from, invalid));
             REG_CHECK(!recording.commands->copyBuffer(to, to));
@@ -1524,11 +1534,11 @@ public:
                     .format = render::Format::RGBA8Unorm, .width = extent, .height = extent}).transform([&](auto value) { texture = std::move(value); }));
                 std::unique_ptr<render::TextureView> view;
                 REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto value) { view = std::move(value); }));
-                REG_CHECK(!view->hasNativeView());
+                REG_CHECK(!render::vulkan::hasNativeImageView(*view));
                 REG_CHECK(render::hasError(device->createTextureView(*texture, {.range = {.baseMip = 1}}).transform([](auto) {}), render::Error::InvalidArgument));
                 REG_CHECK(render::vulkan::nativeImageLayout(*view, render::TextureLayout::ColorAttachment) ==
                     (unified ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
-                REG_CHECK(!view->hasNativeView());
+                REG_CHECK(!render::vulkan::hasNativeImageView(*view));
                 allocations[i] = view->retainTexture();
                 REG_REQUIRE(device->createBuffer({.size = bytes, .usage = render::BufferUsageBits::TransferDestination,
                     .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto value) { readbacks[i] = std::move(value); }));
@@ -1543,7 +1553,7 @@ public:
                 render::RenderingAttachmentDesc attachment{.view = view.get(), .layout = render::TextureLayout::ColorAttachment,
                     .loadOp = render::LoadOp::Clear, .clearColor = {0, 0, 0, 1}};
                 REG_REQUIRE(command.beginRendering({.renderArea = {0, 0, extent, extent}, .colorAttachments = {&attachment, 1}}));
-                REG_CHECK(view->hasNativeView());
+                REG_CHECK(render::vulkan::hasNativeImageView(*view));
                 const auto native = render::vulkan::nativeImageView(*view);
                 REG_CHECK(native != VK_NULL_HANDLE && native == render::vulkan::nativeImageView(*view));
                 // Simulate the SDK/DGC boundary, then explicitly establish the new state.

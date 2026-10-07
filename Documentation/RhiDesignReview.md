@@ -109,29 +109,26 @@
 
 （`PipelineCacheFileIdentity` 与 `PipelineCacheStats` 字段互补，**不是**重复。）
 
-### R6 【可删契约】13 个公开方法零外部调用点
+### R6 【已收敛】公开方法调用面
 
-按真实调用表达式（`.name(` / `->name(` / `::name(`，排除 `RHI.h` 与 `VulkanRHI.cpp` 自身）统计，`RHI.h` 的 173 个公开方法中**仍有 13 个**零外部调用点（与第 1 版一致，仅行号变化）：
+复核生产代码、后端内部调用和测试后，不再将“仅测试调用”等同于无效接口：
 
-| 类型 | 方法 | RHI.h 行 | 判定 |
-|---|---|---|---|
-| `BindlessHeap` | `allocateAccelerationStructure` | 1725 | 全仓零调用 |
-| `BindlessHeap` | `writeConstantBuffer` | 1733 | 全仓零调用 |
-| `BindlessHeap` | `writeSamplers` | 1728 | 仅内部被 `writeSampler` 转发 → 应转 private |
-| `BindlessHeap` | `writeImages` | 1731 | 仅内部被 `writeSampledImage`/`writeStorageImage` 转发 → 应转 private |
-| `BufferSlice` | `subslice` | 1487 | 全仓零调用 |
-| `BufferSlice` | `validateData` | 1491 | 全仓零调用 |
-| `CommandBuffer` | `drawMeshTasks` | 1816 | 全仓零调用（只用 `drawMeshTasksIndirect`） |
-| `CommandBuffer` | `setDepthStencilState` | 1806 | 全仓零调用 |
-| `PipelineCache` | `filePath` | 1637 | 全仓零调用（`stats()` 有用） |
-| `RayTracingAccelerationStructure` | `supportsQueueAccess` | 1577 | 全仓零调用 |
-| `Semaphore` | `signal` | 1436 | 全仓零调用（实现存在于 `VulkanRHI.cpp`） |
-| `TextureView` | `hasNativeView` | 1616 | 全仓零调用 |
-| `TextureView` | `prepareNative` | 1615 | 全仓零调用 |
+| 处理 | 方法 | 理由 |
+|---|---|---|
+| 已删除 | `allocateAccelerationStructure` | 已由按 kind 分配替代 |
+| 删除 | `PipelineCache::filePath` | 无消费方，同时删除仅为该 getter 保存的路径字符串副本 |
+| 删除 | `BufferSlice::validateData` | 未被生产路径使用；相关测试改走 `ParameterWriter::bufferSpan` 的实际 DR 编码校验 |
+| 删除 | `RayTracingAccelerationStructure::supportsQueueAccess` | 无生产调用；测试通过 compute queue 实际录制/提交验证 AS 同步 |
+| 转 private | `writeSamplers` / `writeImages`、写入记录结构 | 只有单资源写入方法转发使用 |
+| 转 private | `CommandBuffer::setDepthStencilState` | 由 `bindExecution` 按完整执行状态设置 |
+| 后端内部物化 | `TextureView::prepareNative` | 使用 `detail::TextureViewImpl::materialize()`，保留失败传播和录制期保活 |
+| Vulkan 诊断入口 | `TextureView::hasNativeView` | 改为 `vulkan::hasNativeImageView`，只观察 lazy-view 契约，不泄漏到通用 RHI |
+| 保留 | `BufferSlice::subslice` | 组合拥有 allocation 的范围，后端 scratch 对齐也使用 |
+| 保留 | `Semaphore::signal` | CPU 到 GPU 的 timeline 门控，生命周期/取消测试依赖此能力 |
+| 保留 | `CommandBuffer::drawMeshTasks` | CPU 已知任务数的直接 mesh draw，与间接命令是不同契约 |
+| 保留 | `BindlessHeap::writeConstantBuffer` | uniform buffer 写入的底层入口，具有 usage/设备归属回归覆盖 |
 
-`TextureView` 这一对值得单独定调：`ProjectArchitecture.md` 与 `RhiSimplificationResearch.md` 都把「lazy native view」当作方向，`VulkanNative.h:82` 也暴露了 `nativeImageLayout(TextureView&, TextureLayout)`，但**消费侧从不调用 `prepareNative()`/`hasNativeView()`**——物化由 backend 内部隐式完成。要么让它成为显式契约，要么承认物化是隐式的、收掉这两个方法。
-
-**建议**：批量 API（`writeImages`/`writeSamplers`）转 private；其余评估删除。若 `drawMeshTasks`/`prepareNative`/`hasNativeView` 是为测试或未来路径刻意保留，**在声明处加一行注释说明保留理由**，避免下次评审重复排查。
+保留的测试常用入口已在声明处注明用途；lazy native view 的原生细节仅留在 Vulkan 层。
 
 ### R7 【架构，近期不宜动】24 值图访问枚举 + 7 处手写 switch
 

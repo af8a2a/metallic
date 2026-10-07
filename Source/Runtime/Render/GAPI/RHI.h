@@ -565,11 +565,11 @@ public:
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
     // UINT64_MAX takes the remainder; failure returns an error. Empty CPU slices are valid.
+    // Preserve allocation ownership when composing ranges (also used by AS scratch alignment).
     [[nodiscard]] Result<BufferSlice> subslice(BufferRange range = {}) const;
     // Requires a nonempty addressed range, all usage bits, and absolute alignment.
     Result<> validate(const void* device, BufferUsageBits usage, uint64_t alignment = 1,
         uint64_t minimumSize = 1) const;
-    Result<> validateData(const void* device, uint32_t stride, uint32_t alignment) const;
 private:
     std::shared_ptr<detail::BufferImpl> allocation_;
     uint64_t offset_ = 0;
@@ -1355,17 +1355,6 @@ struct SamplerDesc {
     float maxLod = 1000.0f;
 };
 
-struct BindlessSamplerWrite {
-    BindlessHandle handle;
-    SamplerDesc sampler;
-};
-
-struct BindlessImageWrite {
-    BindlessHandle handle;
-    class TextureView* view = nullptr;
-    TextureLayout layout = TextureLayout::ShaderRead;
-};
-
 namespace detail {
 struct DeviceImpl;
 struct QueueImpl;
@@ -1438,6 +1427,7 @@ class Semaphore {
     )
 
     Result<> wait(uint64_t value, uint64_t timeoutNanoseconds = UINT64_MAX);
+    // Host-to-GPU timeline synchronization; also used to gate in-flight lifetime tests.
     Result<> signal(uint64_t value);
     uint64_t currentValue() const;
 };
@@ -1566,7 +1556,6 @@ class RayTracingAccelerationStructure {
 
     const RayTracingAccelerationStructureDesc& desc() const;
     ResourceMemoryInfo memoryInfo() const;
-    bool supportsQueueAccess(QueueAccessBits access) const;
     bool valid() const;
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
@@ -1604,8 +1593,6 @@ class TextureView {
 
     const TextureViewDesc& desc() const;
     // Semantic shader views are cheap. Materialize only for attachments/interop.
-    Result<> prepareNative();
-    bool hasNativeView() const;
     // Owns the image allocation, not this view. Borrowed swapchain images return empty.
     std::shared_ptr<void> retainTexture() const;
     const void* deviceIdentity() const;
@@ -1631,7 +1618,6 @@ class PipelineCache {
         friend struct detail::VulkanNativeAccess;
     )
 
-    const char* filePath() const;
     PipelineCacheStats stats() const;
     // Persists pending cache changes. This is a no-op when no new PSO hash was
     // recorded since loading or the previous save.
@@ -1720,10 +1706,8 @@ class BindlessHeap {
     [[nodiscard]] Result<BindlessHandle> allocate(BindlessHandleKind kind);
     void release(BindlessHandle handle);
     Result<> writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
-    Result<> writeSamplers(std::span<const BindlessSamplerWrite> writes);
     Result<> writeSampledImage(BindlessHandle handle, TextureView& view, TextureLayout layout = TextureLayout::ShaderRead);
     Result<> writeStorageImage(BindlessHandle handle, TextureView& view);
-    Result<> writeImages(std::span<const BindlessImageWrite> writes);
     Result<> writeBufferView(BindlessHandle handle, BufferView& view);
     Result<> writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
     // Writes the complete backing allocation, even when only a slice owner remains.
@@ -1731,6 +1715,20 @@ class BindlessHeap {
     Result<> writeAccelerationStructure(
         BindlessHandle handle,
         RayTracingAccelerationStructure& accelerationStructure);
+
+private:
+    struct BindlessSamplerWrite {
+        BindlessHandle handle;
+        SamplerDesc sampler;
+    };
+
+    struct BindlessImageWrite {
+        BindlessHandle handle;
+        TextureView* view = nullptr;
+        TextureLayout layout = TextureLayout::ShaderRead;
+    };
+    Result<> writeSamplers(std::span<const BindlessSamplerWrite> writes);
+    Result<> writeImages(std::span<const BindlessImageWrite> writes);
 };
 
 class SubmissionTransaction;
@@ -1797,7 +1795,6 @@ class CommandBuffer {
     void endRendering();
     [[nodiscard]] Result<> setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
-    void setDepthStencilState(const DepthStencilState& state);
     [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution);
     [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution, const void* pushData, uint32_t byteSize);
     [[nodiscard]] Result<> bindBindlessHeap(BindlessHeap& heap);
@@ -1807,6 +1804,7 @@ class CommandBuffer {
     // descriptor heap and shared push data before returning. No rendering scope.
     Result<> recordIsolatedCompute(const std::function<Result<>()>& record);
     [[nodiscard]] Result<> draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
+    // Direct mesh dispatch for CPU-known counts; distinct from GPU-generated indirect draws.
     [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     [[nodiscard]] Result<> drawMeshTasksIndirect(const BufferSlice& arguments);
     [[nodiscard]] Result<> dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
@@ -1829,6 +1827,7 @@ private:
     enum class BufferTextureCopyDirection { ToBuffer, ToTexture };
     Result<> copyBufferTexture(const BufferTextureRegion& region, BufferTextureCopyDirection direction);
     void setGraphicsShaderObjectState();
+    void setDepthStencilState(const DepthStencilState& state);
     Result<> bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData);
 
     std::shared_ptr<CommandSubmissionContext> submissionContext_;
