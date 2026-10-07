@@ -211,8 +211,6 @@ struct VulkanDeviceFeatureSelection {
     uint32_t minSubgroupSize = 0;
     uint32_t maxSubgroupSize = 0;
     uint32_t maxComputeWorkgroupSubgroups = 0;
-    bool nvxBinaryImport = false;
-    bool nvxImageViewHandle = false;
 
     static VulkanDeviceFeatureSelection select(VulkanDeviceFeatureRequest request,
         const VulkanExtensionSet& extensions, const VulkanDeviceFeatureProbe& probe,
@@ -237,12 +235,6 @@ struct VulkanDeviceFeatureSelection {
         result.minSubgroupSize = probe.subgroupSizeControlProperties.minSubgroupSize;
         result.maxSubgroupSize = probe.subgroupSizeControlProperties.maxSubgroupSize;
         result.maxComputeWorkgroupSubgroups = probe.subgroupSizeControlProperties.maxComputeWorkgroupSubgroups;
-#ifdef VK_NVX_binary_import
-        result.nvxBinaryImport = extensions.streamlineBinaryImport;
-#endif
-#ifdef VK_NVX_image_view_handle
-        result.nvxImageViewHandle = extensions.streamlineImageViewHandle;
-#endif
         return result;
     }
 
@@ -303,7 +295,7 @@ struct VulkanEnabledFeatureChain : VulkanFeatureStorage {
         vulkan13Features.synchronization2 = VK_TRUE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         deviceAddressCommandsFeatures.deviceAddressCommands = VK_TRUE;
-        rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline || selection.nrcRayTracingPipeline;
+        rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline;
 #define MT_VK_FEATURE(id, requested, preferred, support, score, enable, publish) enable
 #include "VulkanDeviceFeatureCatalog.inl"
         void** featureTail = &features.pNext;

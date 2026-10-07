@@ -2,7 +2,7 @@
 
 All application compute shaders that previously declared `vk::binding` now import `Core`. Its ABI is declared in
 `Shaders/Modules/Core/ComputeResources.slang`. This covers RTXDI/ReGIR,
-Standard and OpenPBR path tracing and guides, SHaRC/NRC, neural textures,
+Standard and OpenPBR path tracing and guides, SHaRC, neural textures,
 visibility-buffer deferred shading/material binning, environment precomputation,
 post processing and debug passes. NRD already uses its own native bindless ABI.
 

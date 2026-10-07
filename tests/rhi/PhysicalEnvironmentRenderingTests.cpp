@@ -311,23 +311,15 @@ METALLIC_REGISTER_RHI_TEST(PhysicalEnvironmentRenderingTest);
 
 class PhysicalEnvironmentHistoryTest : public RHITest {
 public:
-    explicit PhysicalEnvironmentHistoryTest(bool nrc = false) : nrc_(nrc)
+    explicit PhysicalEnvironmentHistoryTest(bool sharc = false) : sharc_(sharc)
     {
-        name = nrc ? "physical_environment_nrc_source_and_history" : "physical_environment_source_and_history";
+        name = sharc ? "physical_environment_sharc_source_and_history" : "physical_environment_source_and_history";
         type = RHITestType::Rendering;
     }
 
     RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
-        if (nrc_) {
-#if METALLIC_HAS_NRC
-            const char* enabled = std::getenv("METALLIC_TEST_NRC_CACHE");
-            if (!enabled || std::string_view(enabled) != "1") { return RHITestResult::skip("Set METALLIC_TEST_NRC_CACHE=1 for native NRC validation"); }
-#else
-            return RHITestResult::skip("Built without the NRC SDK");
-#endif
-        }
         const auto fixture = std::filesystem::absolute(context.outputDirectory / "ConstantAP1.hdr");
         constexpr std::array<float, 3> kHDRIRadiance{32.0f, 16.0f, 8.0f};
         std::vector<float> texels(16 * 8 * 3);
@@ -345,7 +337,7 @@ public:
             return RHITestResult::fail(document.lastLoadResult().error);
         }
         auto report = RenderGraphProperties::object();
-        for (uint32_t pathIndex = 0; pathIndex < (nrc_ ? 1u : 2u); ++pathIndex) {
+        for (uint32_t pathIndex = 0; pathIndex < (sharc_ ? 1u : 2u); ++pathIndex) {
             const bool pt = pathIndex == 0;
             const std::string label = pt ? "PathTrace" : "Deferred";
             RenderGraph graph;
@@ -356,15 +348,19 @@ public:
             if (pt) {
                 auto* node = graph.findNode("Reference");
                 auto properties = node->properties;
-                properties["cacheMode"] = nrc_ ? "nrc" : "off";
-                if (nrc_) { properties["bsdf"] = "standard"; }
+                properties["cacheMode"] = sharc_ ? "sharc" : "off";
+                if (sharc_) {
+                    properties["bsdf"] = "standard";
+                    properties["sharc.entriesLog2"] = 16;
+                    properties["sharc.updateStride"] = 1;
+                }
                 properties["accumulate"] = true;
                 if (!graph.setNodeProperties(node->id, std::move(properties))) { return RHITestResult::fail("Set PT history fixture"); }
             }
             RenderGraphPreviewRenderer preview;
             preview.bindRuntimeScene(&document);
             auto hdri = document.environment();
-            preview.setExecutionCaptureEnabled(nrc_);
+            preview.setExecutionCaptureEnabled(sharc_);
             hdri.enabled = true;
             hdri.visible = true;
             hdri.path = fixture;
@@ -387,12 +383,12 @@ public:
                     preview.setRawReadbackEnabled(frame + 1 == frames);
                     if (!preview.render(graph, kPhysicalEnvironmentSize, kPhysicalEnvironmentSize,
                             pt ? "Reference.color" : "Deferred.color", frame + 1 == frames)) { return false; }
-                    if (nrc_) {
+                    if (sharc_) {
                         const auto snapshot = preview.executionSnapshot();
                         if (!snapshot || !std::any_of(snapshot->passes.begin(), snapshot->passes.end(), [](const auto& pass) {
                                 return pass.name == "Reference" && std::any_of(pass.stages.begin(), pass.stages.end(),
-                                    [](const auto& stage) { return stage.name == "NRC tonemap"; });
-                            })) { log = "Physical NRC test did not execute native NRC resolve/tonemap"; return false; }
+                                    [](const auto& stage) { return stage.name == "SHaRC query"; });
+                            })) { log = "Physical SHaRC test did not execute its cache query"; return false; }
                     }
                 }
                 image.rgba = decodePhysicalEnvironmentHDR(preview);
@@ -436,23 +432,23 @@ public:
                 {"darkAfterHDRI", darkAgain.backgroundMeanRGB}, {"restored", restored.backgroundMeanRGB},
                 {"halfTOA", halfSun.backgroundMeanRGB}, {"halfTOARelativeError", halfError}};
         }
-        std::ofstream summary(context.outputDirectory / (nrc_ ? "PhysicalEnvironmentNRCHistory.json" : "PhysicalEnvironmentHistory.json"));
+        std::ofstream summary(context.outputDirectory / (sharc_ ? "PhysicalEnvironmentSharcHistory.json" : "PhysicalEnvironmentHistory.json"));
         summary << report.dump(2) << '\n';
         if (!summary) { return RHITestResult::fail("Source/history evidence write failed"); }
-        return RHITestResult::pass(nrc_ ? "Native NRC physical source switching and camera-segment history" :
+        return RHITestResult::pass(sharc_ ? "SHaRC physical source switching and accumulation history" :
             "HDRI/physical source switching, dark-frame history rejection and TOA response on both real branches");
     }
 
 private:
-    bool nrc_ = false;
+    bool sharc_ = false;
 };
 METALLIC_REGISTER_RHI_TEST(PhysicalEnvironmentHistoryTest);
 
-class PhysicalEnvironmentNRCHistoryTest final : public PhysicalEnvironmentHistoryTest {
+class PhysicalEnvironmentSharcHistoryTest final : public PhysicalEnvironmentHistoryTest {
 public:
-    PhysicalEnvironmentNRCHistoryTest() : PhysicalEnvironmentHistoryTest(true) {}
+    PhysicalEnvironmentSharcHistoryTest() : PhysicalEnvironmentHistoryTest(true) {}
 };
-METALLIC_REGISTER_RHI_TEST(PhysicalEnvironmentNRCHistoryTest);
+METALLIC_REGISTER_RHI_TEST(PhysicalEnvironmentSharcHistoryTest);
 
 } // namespace
 } // namespace metallic::tests

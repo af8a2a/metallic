@@ -53,7 +53,7 @@
 #define SHARC_VERSION_REVISION                  0
 
 // Normalize the update/query mode defines so preprocessor conditionals never
-// see undefined identifiers (mirrors Nrc.hlsli's handling).
+// see undefined identifiers.
 #if defined(SHARC_UPDATE) && defined(SHARC_QUERY)
 // both defined by the application; nothing to do
 #elif defined(SHARC_UPDATE)

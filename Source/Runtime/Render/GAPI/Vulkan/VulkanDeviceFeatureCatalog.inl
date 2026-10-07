@@ -207,7 +207,7 @@ MT_VK_FEATURE(aftermath, desc.enableAftermath && aftermathInitialized, false,
 MT_VK_FEATURE(aftermath, desc.enableAftermath && aftermathInitialized, false, false, 0, , backendCaps.aftermath = aftermath;)
 #endif
 
-// Opportunistic core bits used by NRC (layouts/fp16/int16) and SHaRC (int64 atomics).
+// Opportunistic core bits for shader layouts, precision and 64-bit atomics.
 MT_VK_FEATURE(scalarBlockLayout, true, false,
     probe.vulkan12Features.scalarBlockLayout == VK_TRUE, 0,
     vulkan12Features.scalarBlockLayout = selection.scalarBlockLayout;, )
@@ -232,11 +232,6 @@ MT_VK_FEATURE(shaderInt64, true, false,
 MT_VK_FEATURE(textureCompressionBC, true, false,
     probe.features.features.textureCompressionBC == VK_TRUE, 0,
     features.features.textureCompressionBC = selection.textureCompressionBC;, )
-
-// NRC barriers include the ray-tracing shader stage even for compute ray queries.
-MT_VK_FEATURE(nrcRayTracingPipeline, true, false,
-    result.rayQuery && extensions.rayTracingPipeline && probe.rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE, 0,
-    , )
 
 MT_VK_FEATURE(shaderFloat16, true, false,
     probe.vulkan12Features.shaderFloat16 == VK_TRUE, 0,
@@ -273,7 +268,7 @@ MT_VK_NODE(VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT, deviceGeneratedCo
 MT_VK_NODE(VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR, deviceAddressCommandsFeatures,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR, extensions.deviceAddressCommands, true)
 MT_VK_NODE(VkPhysicalDeviceRayTracingPipelineFeaturesKHR, rayTracingPipelineFeatures,
-    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, extensions.rayTracingPipeline, selection.streamline || selection.nrcRayTracingPipeline)
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, extensions.rayTracingPipeline, selection.streamline)
 #ifdef VK_NV_device_diagnostics_config
 MT_VK_NODE(VkPhysicalDeviceDiagnosticsConfigFeaturesNV, diagnosticsConfigFeatures,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV, extensions.aftermathDiagnosticsConfig, selection.aftermath)
@@ -284,7 +279,6 @@ MT_VK_NODE(VkPhysicalDeviceMeshShaderFeaturesEXT, meshShaderFeatures,
 #endif
 
 // Featureless dependencies and SDK-required pre-promotion extension names.
-// NVX imports may be requested by both NRC and Streamline; emit each name once.
 MT_VK_EXTENSION(swapchain, VK_KHR_SWAPCHAIN_EXTENSION_NAME, true)
 MT_VK_EXTENSION(deviceAddressCommands, VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME, true)
 MT_VK_EXTENSION(deviceGeneratedCommands, VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME, selection.deviceGeneratedCommands)
@@ -299,13 +293,13 @@ MT_VK_EXTENSION(rayQuery, VK_KHR_RAY_QUERY_EXTENSION_NAME, selection.rayQuery)
 MT_VK_EXTENSION(khrOpacityMicromap, VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME, selection.opacityMicromap && !selection.opacityMicromapExt)
 MT_VK_EXTENSION(extOpacityMicromap, VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME, selection.opacityMicromapExt)
 MT_VK_EXTENSION(pushDescriptor, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, selection.pushDescriptor)
-MT_VK_EXTENSION(rayTracingPipeline, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, selection.streamline || selection.nrcRayTracingPipeline)
+MT_VK_EXTENSION(rayTracingPipeline, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, selection.streamline)
 MT_VK_EXTENSION(pipelineLibrary, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME, selection.streamline)
 #ifdef VK_NVX_binary_import
-MT_VK_EXTENSION(streamlineBinaryImport, VK_NVX_BINARY_IMPORT_EXTENSION_NAME, selection.nvxBinaryImport || selection.streamline)
+MT_VK_EXTENSION(streamlineBinaryImport, VK_NVX_BINARY_IMPORT_EXTENSION_NAME, selection.streamline)
 #endif
 #ifdef VK_NVX_image_view_handle
-MT_VK_EXTENSION(streamlineImageViewHandle, VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME, selection.nvxImageViewHandle || selection.streamline)
+MT_VK_EXTENSION(streamlineImageViewHandle, VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME, selection.streamline)
 #endif
 #ifdef VK_NV_device_diagnostic_checkpoints
 MT_VK_EXTENSION(aftermathDiagnosticCheckpoints, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, selection.aftermath)

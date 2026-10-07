@@ -313,34 +313,6 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
-class PathTracingNRCMeetMatSample final : public RenderSample {
-public:
-    std::string_view id() const override { return "pathtracing-nrc-meet-mat"; }
-    std::string_view name() const override { return "Path Tracing / meet_mat / NRC"; }
-    std::string_view category() const override { return "PathTracing"; }
-    std::string_view description() const override
-    {
-        return "meet_mat path tracing accelerated with the NVIDIA Neural Radiance Cache (requires an RTX GPU).";
-    }
-    std::string scenePath() const override { return "Asset/meet_mat.glb"; }
-    std::string graphPath() const override
-    {
-        return "Pipelines/Samples/pathtracing_meet_mat_nrc.metallic_graph.json";
-    }
-    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
-    std::optional<RenderSampleEnvironmentDesc> environment() const override
-    {
-        return RenderSampleEnvironmentDesc{
-            .enabled = true,
-            .path = "Asset/ABeautifulGame/environment.hdr",
-            .intensity = 1.0f,
-            .rotationDegrees = 0.0f,
-            .visible = true,
-        };
-    }
-    std::string previewOutput() const override { return "FinalBlit.color"; }
-};
-
 class PathTracingSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-sample"; }
@@ -738,12 +710,6 @@ const RenderSample& pathTracingSharcMeetMatSample()
     return sample;
 }
 
-const RenderSample& pathTracingNrcMeetMatSample()
-{
-    static const PathTracingNRCMeetMatSample sample;
-    return sample;
-}
-
 const RenderSample& pathTracingSample()
 {
     static const PathTracingSample sample;
@@ -906,7 +872,6 @@ std::vector<const RenderSample*> builtInRenderSamples()
         &dynamicWorldLookDev,
         &pathTracingMeetMatSample(),
         &pathTracingSharcMeetMatSample(),
-        &pathTracingNrcMeetMatSample(),
         &pathTracingSample(),
         &pathTracingDlssSrSample(),
         &pathTracingDlssRrSample(),

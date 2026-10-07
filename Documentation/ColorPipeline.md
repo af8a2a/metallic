@@ -130,11 +130,10 @@ its display sRGB RGBA8 input.
 [SR guide](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS.md)
 and [RR guide](https://github.com/NVIDIA-RTX/Streamline/blob/main/docs/ProgrammingGuideDLSS_RR.md).
 
-NRC/SHARC scene values retain the selected working basis consistently in training,
-query and accumulation. NRC's vendored LogLuv packing has Rec.709-based numeric
-matrices; these are paired compression/decompression transforms, not a scene
-luminance decision. This path needs color/precision testing independently of
-SR/RR and remains subject to the SDK's nonnegative signal packing limits.
+SHARC scene values retain the selected working basis consistently in update,
+query and accumulation. Its signal packing needs color/precision testing
+independently of SR/RR and remains subject to the SDK's nonnegative signal
+packing limits.
 
 ## Display and UI
 

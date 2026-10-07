@@ -19,7 +19,7 @@ std::string groupForSource(const char* moduleName)
     // Preserve existing production cache files during this migration. New
     // modules automatically receive a stable group; passes cannot omit caching.
     const std::string module = moduleName ? moduleName : "";
-    if (module.starts_with("Features/PathTracing/") || module == "Features/PostProcess/ScenePathTraceTonemap") {
+    if (module.starts_with("Features/PathTracing/")) {
         return "ScenePathTracePass";
     }
     if (module == "Features/Lighting/SceneRealtimeLighting") { return "RealtimeLightingPass"; }

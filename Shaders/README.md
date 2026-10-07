@@ -31,7 +31,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Interop/NeuralTextures.slang` | NTC 的唯一模块适配入口，封装 Generic/CoopVec 和无 NTC 的回退 |
 | `Interop/NRDEncoding.slang` | NRD 前端编码的唯一模块适配入口 |
 | `Interop/Denoising/NRD/` | 已适配的 NRD pass、bindings、配置和算法快照；保留程序内 HLSL 宏 |
-| `ThirdParty/RadianceCache/` | SHARC/NRC 头文件与许可证，保留原有 HLSL 包含方式 |
+| `ThirdParty/RadianceCache/` | SHARC 头文件与许可证，保留原有 HLSL 包含方式 |
 | `Features/` | Shader programs：入口、pass 资源和流程相关代码；路径保持兼容现有 C++ 和管线资产 |
 | `Licenses/` | 第三方 shader 许可证 |
 
@@ -111,7 +111,7 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 历史纹理和 ping-pong 梯度的访问与同步仍由 RenderGraph 阶段声明负责。
 
 [PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（80 字节）
-和 NRC 输出累积/tonemap（36 字节）的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
+的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
 主追踪及其 OpenPBR、NTC、VisibilityBuffer 使用共享的 `SceneResourceParameters` 具名 DR 字段。
 
@@ -152,7 +152,7 @@ Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `Punctua
   SDK 全局排列使用 `SlangShaderDesc::macroDefines`，它们也参与缓存键。
 - 同一程序中，每个 vendor header 有一个 canonical owner。其他模块导入 owner，
   不重复包含 vendor header；include guard 不能跨 module 去重。
-- NRD pass、OpenPBR 的纹理回调和 feature 宏、SHARC/NRC 等仍允许
+- NRD pass、OpenPBR 的纹理回调和 feature 宏、SHARC 等仍允许
   程序内 `#define` + `#include`。`Features/` 中复用这些配置的路径追踪、引导图和实时着色
   文件仍属于程序组合层，不能被 `Modules/` 反向引用。
 - 新的 Metallic 子系统使用 `import`，不要通过 `#include` 引入 `Modules/` 的实现文件。

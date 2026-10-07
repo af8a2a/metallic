@@ -22,7 +22,6 @@
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.h"
 #include "Runtime/Render/GAPI/Vulkan/DescriptorHeapSPIRV.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/GAPI/CommandSubmission.h"
 
@@ -2580,9 +2579,6 @@ DeviceImpl::~DeviceImpl()
         if (waitResult == VK_ERROR_DEVICE_LOST) {
             vulkan::toolingHooks().deviceLost();
         }
-#if METALLIC_HAS_NRC
-        vulkan::shutdownNrcLibrary(device);
-#endif
     }
 
     if (streamlineInitialized) {
@@ -9727,10 +9723,6 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         deviceImpl->debugUtilsEnabled = true;
     }
-    // Required by the NRC SDK's physical-device feature queries.
-    if (hasName(availableExtensions, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
-        instanceExtensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-    }
 
     std::string toolingError;
     if (!vulkan::toolingHooks().instanceExtensions(instanceExtensions, kVulkanAPIVersion,
@@ -10332,7 +10324,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     selectedFeatures.publish(deviceImpl->capabilities, deviceImpl->vulkanCapabilities);
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
-    deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline || selectedFeatures.nrcRayTracingPipeline;
+    deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline;
     deviceImpl->opacityMicromapExt = selectedFeatures.opacityMicromapExt;
     if (selectedFeatures.opacityMicromap) {
         spdlog::info("[Vulkan] {} enabled{}",

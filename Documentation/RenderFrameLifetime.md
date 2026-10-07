@@ -88,7 +88,7 @@ visualization, triangle rasterization, clear, copy and image sample passes.
 Passes that still use singleton host-written buffers, mutable custom heaps,
 readbacks or SDK contexts retain a graph-level completion wait. This includes
 the legacy wireframe/shader-object paths, GPU-driven streaming, DLSS/NRD/RTXDI,
-and SHaRC/NRC modes. New/custom passes default to this compatibility behavior
+and SHaRC mode. New/custom passes default to this compatibility behavior
 until their resource lifetimes are audited. The editor still has two slots;
 those graphs serialize GPU-dependent recording rather than risking data races.
 

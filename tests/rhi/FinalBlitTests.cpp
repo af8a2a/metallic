@@ -284,7 +284,6 @@ public:
             {"pathtracing_abeautiful_game_openpbr_dlss_nr.metallic_graph.json", "DLSSRR.color"},
             {"pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json", "DLSSSR.color"},
             {"pathtracing_meet_mat.metallic_graph.json", "PathTrace.color"},
-            {"pathtracing_meet_mat_nrc.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_meet_mat_sharc.metallic_graph.json", "PathTrace.color"},
             {"rtxcr_material_showcase.metallic_graph.json", "PathTrace.color"},
             {"realtime_lighting.metallic_graph.json", "DLSSSR.color"},

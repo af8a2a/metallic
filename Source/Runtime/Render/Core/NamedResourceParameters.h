@@ -41,11 +41,10 @@ DR_PUBLIC struct EnvironmentResourceParameters
     DR_PUBLIC DR_SAMPLED(2D<float4>) multiScattering;
     DR_PUBLIC DR_SAMPLED(2D<float4>) skyView;
     DR_PUBLIC DR_BUFFER aerialPerspective;
-    DR_PUBLIC DR_BUFFER primaryAerial;
     DR_PUBLIC DR_SAMPLED(2D<float4>) cloudShadow;
 };
 #ifdef __cplusplus
-static_assert(sizeof(EnvironmentResourceParameters) == 32);
+static_assert(sizeof(EnvironmentResourceParameters) == 28);
 #endif
 
 DR_PUBLIC struct SceneResourceParameters
@@ -85,11 +84,6 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_STORAGE(2D<float4>) noisySpecular;
     DR_PUBLIC DR_STORAGE(2D<float4>) normalCurrent;
     DR_PUBLIC DR_STORAGE(2D<float4>) normalPrevious;
-    DR_PUBLIC DR_BUFFER nrcCounters;
-    DR_PUBLIC DR_BUFFER nrcQueryPathInfo;
-    DR_PUBLIC DR_BUFFER nrcQueryRadianceParams;
-    DR_PUBLIC DR_BUFFER nrcTrainingPathInfo;
-    DR_PUBLIC DR_BUFFER nrcTrainingPathVertices;
     DR_PUBLIC DR_STORAGE(2D<float4>) nrdMotion;
     DR_PUBLIC DR_STORAGE(2D<float4>) nrdNormalRoughness;
     DR_PUBLIC DR_STORAGE(2D<float>) nrdViewZ;
@@ -152,8 +146,8 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_PADDING reserved;
 };
 #ifdef __cplusplus
-static_assert(sizeof(SceneResourceParameters) == 480);
-static_assert(offsetof(SceneResourceParameters, environment) == 444);
+static_assert(sizeof(SceneResourceParameters) == 456);
+static_assert(offsetof(SceneResourceParameters, environment) == 424);
 #endif
 
 DR_PUBLIC struct OutputImageResourceParameters

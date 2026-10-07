@@ -2,7 +2,7 @@
 
 Metallic 是一个以 **C++23 + Slang + Vulkan** 为核心的实验性实时渲染框架。仓库同时包含一个可视化编辑器外壳、一套数据驱动的 RenderGraph、一个面向 Bindless / 动态渲染 / Mesh Shader / Ray Query 的 RHI，以及若干可独立运行的渲染样例（路径追踪、实时 OpenPBR 光照、RTXDI、NRD 去噪、GPU-driven 可见性缓冲等）。
 
-项目的目标是：把「场景导入 → GPU 数据 → RenderGraph 装配 → Slang Shader → Vulkan 提交 → 调试/性能分析」整条链路放在同一个可读、可序列化、可测试的代码库里，并持续吸收 NVIDIA RTX 生态中的现代特性（Streamline DLSS、NRD、NRC、SHaRC、RTXCR、Nsight、Aftermath、Tracy）。
+项目的目标是：把「场景导入 → GPU 数据 → RenderGraph 装配 → Slang Shader → Vulkan 提交 → 调试/性能分析」整条链路放在同一个可读、可序列化、可测试的代码库里，并持续吸收 NVIDIA RTX 生态中的现代特性（Streamline DLSS、NRD、SHaRC、RTXCR、Nsight、Aftermath、Tracy）。
 
 > 架构细节见 [`Documentation/ProjectArchitecture.md`](Documentation/ProjectArchitecture.md)；构建变体与依赖复用见 [`Documentation/Build.md`](Documentation/Build.md)。
 
@@ -17,7 +17,7 @@ Metallic 是一个以 **C++23 + Slang + Vulkan** 为核心的实验性实时渲�
 | 场景 | TinyGLTF（glTF/GLB）与 OpenUSD（USD/USDA/USDC/USDZ）导入；材质、相机、灯光提取；meshlet / LOD / cluster 构建与缓存 |
 | 光追 | 普通三角形 BLAS+TLAS、partitioned TLAS、cluster acceleration structure、Ray Query compute 路径 |
 | GPU-driven | 两阶段 HZB 实例剔除、meshlet 剔除、Visibility Buffer、材质分箱、Mesh Shader 绘制、分页 StreamAsset 驻留与 CLAS 更新 |
-| 降噪与超分 | NRD RELAX/SIGMA、Streamline DLSS-RR / DLSS-SR / DLSS-NR、Reflex、NRC、SHaRC |
+| 降噪与超分 | NRD RELAX/SIGMA、Streamline DLSS-RR / DLSS-SR / DLSS-NR、Reflex、SHaRC |
 | 物理光照 | 勒克斯/坎德拉单位、Cluster Light Grid、HDRI GGX mip 预过滤、球谐环境光、自动曝光 |
 | 流送 | `MeshletStreamAsset` 离线构建 + `MeshletStreamRuntime` 异步分页、驻留预算、LRU 淘汰、page table patch |
 | 任务系统 | `TaskGraph` / `TaskSystem`（基于 stdexec）：依赖图执行、取消、快照、事件观察者 |
@@ -121,15 +121,15 @@ cd Metallic
 git submodule update --init --recursive
 ```
 
-`External/NRC`、`External/RTXCR-*` 等可选 SDK 按需初始化，例如：
+`External/RTXCR-*` 等可选 SDK 按需初始化，例如：
 
 ```powershell
-git submodule update --init --recursive -- External/NRC
+git submodule update --init --recursive -- External/RTXCR-Material
 ```
 
 ### 2. 配置与构建
 
-日常开发（最快：关闭 OpenUSD/NRD/NTC 与测试，启用 DLSS 与 NRC）：
+日常开发（最快：关闭 OpenUSD/NRD/NTC 与测试，启用 DLSS，保留 SHaRC）：
 
 ```powershell
 cmake --preset metallic-dev
@@ -171,11 +171,11 @@ build\Source\Debug\Metallic.exe --smoke-test
 
 | 预设 | 构建目录 | 说明 |
 | --- | --- | --- |
-| `metallic-dev` | `build-dev` | 日常开发：glTF + DLSS + NRC，关闭 OpenUSD/NRD/NTC 与测试 |
+| `metallic-dev` | `build-dev` | 日常开发：glTF + DLSS + SHaRC，关闭 OpenUSD/NRD/NTC 与测试 |
 | `metallic-release` | `build-release` | 同 `metallic-dev` 的 `Release` 配置 |
 | `metallic-relwithdebinfo` | `build-relwithdebinfo` | 优化 + 原生调试符号，默认启用 Nsight Graphics Capture |
-| `metallic-full` | `build-full` | 使用已安装依赖包的完整配置（OpenUSD/NRD/NRC/NTC + 全部测试） |
-| `metallic-ci` | `build-ci` | 关闭 Streamline/NRC，启用 scene/task/debug 测试 |
+| `metallic-full` | `build-full` | 使用已安装依赖包的完整配置（OpenUSD/NRD/NTC + 全部测试） |
+| `metallic-ci` | `build-ci` | 关闭 Streamline，启用 scene/task/debug 测试 |
 | `metallic-deps-debug` | `build-dependencies/debug` | 单独构建可复用的依赖包（SDL3、spdlog、oneTBB、OpenUSD） |
 
 常用 CMake 选项：
@@ -187,7 +187,7 @@ build\Source\Debug\Metallic.exe --smoke-test
 | `METALLIC_ENABLE_NRD` | `ON` | NRD 去噪（vendored shader，无需 SDK 构建） |
 | `METALLIC_ENABLE_TRACY` | `ON` | Tracy CPU/GPU 分析 |
 | `METALLIC_ENABLE_STREAMLINE` | 按预设 | Streamline / DLSS 集成 |
-| `METALLIC_ENABLE_NRC` / `METALLIC_ENABLE_NTC` | 按预设 | NRC 辐射缓存 / 神经纹理压缩 |
+| `METALLIC_ENABLE_NTC` | 按预设 | 神经纹理压缩 |
 | `METALLIC_DEPENDENCY_MODE` | `SOURCE` | `SOURCE` 全量源码构建，`PREBUILT` 复用依赖包 |
 | `METALLIC_CLUSTER_LOD_TOPOLOGY_NYX` | `OFF` | 实验性 Nyx 风格 ClusterLOD 顶层 BVH |
 | `SLANG_ROOT` | `External/slang` | Slang SDK 路径 |
@@ -204,7 +204,6 @@ build\Source\Debug\Metallic.exe --smoke-test
 | `pathtracing-sample` | PathTracingSample（编辑器默认） | Path Tracing |
 | `pathtracing-meet-mat` | Path Tracing / meet_mat | Path Tracing |
 | `pathtracing-sharc-meet-mat` | Path Tracing / meet_mat / SHaRC | Path Tracing |
-| `pathtracing-nrc-meet-mat` | Path Tracing / meet_mat / NRC | Path Tracing |
 | `pathtracing-sample-dlss-rr` | PathTracingSample / DLSS-RR | Path Tracing |
 | `pathtracing-sample-dlss-sr` | PathTracingSample / DLSS-SR | Path Tracing |
 | `pathtracing-sample-dlss-nr` | PathTracingSample / DLSS-NR（实验） | Path Tracing |

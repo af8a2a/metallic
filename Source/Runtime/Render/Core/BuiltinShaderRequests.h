@@ -138,13 +138,13 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
             if (streamed && positionFetch) { continue; }
             SceneShaderOptions options{.streamMaterials = streamed, .hasRTXCR = hasRtxcr,
                 .positionFetch = positionFetch, .rtxcrInclude = rtxcrInclude};
-            for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve, SceneShaderProgram::Tonemap,
+            for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve,
                     SceneShaderProgram::RealtimeLighting, SceneShaderProgram::PathTraceGuides,
                     SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
                 requests.push_back(makeSceneShaderRequest(program, options));
             }
             requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options));
-            for (const char* cacheDefine : {"SHARC_UPDATE", "SHARC_QUERY", "NRC_UPDATE", "NRC_QUERY"}) {
+            for (const char* cacheDefine : {"SHARC_UPDATE", "SHARC_QUERY"}) {
                 const SlangMacroDefine define{cacheDefine, "1"};
                 requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1}));
             }

@@ -24,10 +24,10 @@ cmake --preset metallic-dev
 cmake --build --preset metallic-dev
 ```
 
-This builds the editor with glTF, Streamline DLSS and NVIDIA NRC support when the
-SDKs are available. OpenUSD/oneTBB, NRD denoising and NTC are disabled; tests are off.
+This builds the editor with glTF, Streamline DLSS when the SDK is available, and
+the bundled SHaRC radiance cache. OpenUSD/oneTBB, NRD denoising and NTC are disabled; tests are off.
 USD files report an explicit unsupported-build error. The `metallic-ci` profile
-disables Streamline and NRC and enables the scene, task and debug tests:
+disables Streamline and enables the scene, task and debug tests:
 
 ```powershell
 cmake --preset metallic-ci
@@ -80,7 +80,7 @@ verify catalog coverage, warmup-to-runtime cache reuse, and compiled SPIR-V
 equivalence for folded material classes. These checks do not require a GPU.
 
 Scene path tracing also persists Vulkan PSOs in `.cache/pso/ScenePathTracePass.pso`.
-Base/OpenPBR, SHaRC/NRC update/query and SHaRC clear/resolve/NRC tonemap use the
+Base/OpenPBR, SHaRC update/query and SHaRC clear/resolve use the
 same device-owned [ShaderRegistry](ShaderRegistry.md) cache. Realtime lighting and Deferred use separate
 `RealtimeLightingPass.pso` and `VisibilityBufferDeferredPass.pso` files.
 Shader bytes, pipeline state and device/backend compatibility still control
@@ -95,24 +95,13 @@ creation feedback. The cross-process `MetallicLookDevPathTracePipelineCacheSmoke
 test disables the driver internal cache to verify application cache coverage.
 `MetallicShaderRegistryUsageAudit` rejects new acquisition paths bypassing the registry.
 
-## NVIDIA Neural Radiance Cache
+## SHaRC radiance cache
 
-`External/NRC` is a Git submodule of the official
-[NVIDIA NRC SDK](https://github.com/NVIDIA-RTX/NRC), pinned by the parent repository.
-Initialize it before configuring to fetch the headers, import libraries and runtime
-DLLs together:
-
-```powershell
-git submodule update --init --recursive -- External/NRC
-cmake --preset metallic-dev
-cmake --build --preset metallic-dev
-```
-
-On Windows, CMake enables `METALLIC_HAS_NRC=1` when it finds the SDK headers,
-`Lib/NRC_Vulkan.lib` and `Bin/NRC_Vulkan.dll`. The build copies the SDK runtime DLLs
-next to the executable. Dev, Release, RelWithDebInfo and Full presets enable NRC
-detection; CI disables it. Pass `-DMETALLIC_NRC_ROOT=<path>` to use another SDK
-checkout, or `-DMETALLIC_ENABLE_NRC=OFF` to disable the integration.
+SHaRC is the supported path-tracing radiance cache. Its headers and license are
+bundled in `Shaders/ThirdParty/RadianceCache/Sharc`; no separate SDK checkout or
+runtime DLL is required. Select `cacheMode: "sharc"` in a `ScenePathTracePass`
+graph node, or run the `pathtracing-sharc-meet-mat` sample. `cacheMode: "off"`
+keeps uncached path tracing available.
 
 ## Release and optimized debugging
 
@@ -123,7 +112,7 @@ Native configure and build presets provide both optimized configurations:
 | `metallic-release` | `Release` | `build-release` |
 | `metallic-relwithdebinfo` | `RelWithDebInfo` | `build-relwithdebinfo` |
 
-Both inherit the `metallic-dev` feature settings, including Streamline DLSS and NRC,
+Both inherit the `metallic-dev` feature settings, including Streamline DLSS and SHaRC,
 source dependencies and disabled tests. `RelWithDebInfo` enables optimization
 and native debug symbols. Each configuration has its own CMake cache and output
 directory.
@@ -350,8 +339,8 @@ Installed packages live in `.cache/dependencies/<sha256>`, outside `build-full`.
 Deleting or cleaning the application build therefore keeps the dependency
 binaries. A clean full build imports those four libraries with `find_package`;
 their C/C++ sources do not enter its build graph. Smaller libraries, GoogleTest,
-and NTC when enabled still build from source. NRC/Streamline retain their
-existing SDK binary integration.
+and NTC when enabled still build from source. Streamline retains its existing
+SDK binary integration.
 
 NRD now uses vendored shaders and Metallic-owned dispatch scheduling. Enabling
 `METALLIC_ENABLE_NRD` does not build the NRD SDK or ShaderMake, fetch DXC, or compile

@@ -9,10 +9,6 @@ import Atmosphere;
 //   (no defines)      plain path tracing
 //   SHARC_UPDATE=1    sparse SHaRC update pass (populates the hash-grid cache)
 //   SHARC_QUERY=1     full-resolution pass with SHaRC early termination
-//   NRC_UPDATE=1      NRC training pass at reduced resolution
-//   NRC_QUERY=1       full-resolution pass creating NRC queries; outputs
-//                     linear HDR that the NRC resolve adds onto before the
-//                     separate tonemap pass
 // ---------------------------------------------------------------------------
 #if defined(SHARC_UPDATE) || defined(SHARC_QUERY)
 #define METALLIC_PT_SHARC 1
@@ -20,22 +16,13 @@ import Atmosphere;
 #define METALLIC_PT_SHARC 0
 #endif
 
-#if defined(NRC_UPDATE) || defined(NRC_QUERY)
-#define METALLIC_PT_NRC 1
-#else
-#define METALLIC_PT_NRC 0
-#endif
-
 #if METALLIC_PT_SHARC
 #include "../../ThirdParty/RadianceCache/Sharc/SharcCommon.h"
 #endif
 
-#include "../../ThirdParty/RadianceCache/Nrc/Nrc.hlsli"
-
 // Cache mode pushed through the per-frame parameter buffer.
 #define METALLIC_CACHE_MODE_OFF 0
 #define METALLIC_CACHE_MODE_SHARC 1
-#define METALLIC_CACHE_MODE_NRC 2
 
 // Per-frame radiance-cache parameters (binding 20). Layout must match
 // ScenePathTraceCacheParams in BuiltinPassCommon.h byte for byte.
@@ -52,12 +39,9 @@ struct ScenePathTraceCacheParams
     uint sharcUpdateStride;
     uint width;
     uint height;
-    uint trainingWidth;
-    uint trainingHeight;
-    NrcConstants nrc;
 };
 
-// Match the tightly packed CPU constants, including NRC at byte offset 76.
+// Match the tightly packed 68-byte CPU constants.
 typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
 #define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameters<SceneResourceParameters>().cacheParams)
 
@@ -67,19 +51,6 @@ typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathT
 #define gSharcAccumulation resolveBuffer<RWStructuredBuffer<SharcAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation)
 
 #define gSharcResolved resolveBuffer<RWStructuredBuffer<SharcPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved)
-#endif
-
-#if METALLIC_PT_NRC
-#define gNrcQueryPathInfo resolveBuffer<RWStructuredBuffer<NrcPackedQueryPathInfo>>(getResourceParameters<SceneResourceParameters>().nrcQueryPathInfo)
-
-#define gNrcTrainingPathInfo resolveBuffer<RWStructuredBuffer<NrcPackedTrainingPathInfo>>(getResourceParameters<SceneResourceParameters>().nrcTrainingPathInfo)
-
-#define gNrcTrainingPathVertices resolveBuffer<RWStructuredBuffer<NrcPackedPathVertex>>(getResourceParameters<SceneResourceParameters>().nrcTrainingPathVertices)
-
-typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NRCQueryRadianceBuffer;
-#define gNrcQueryRadianceParams resolveBuffer<NRCQueryRadianceBuffer>(getResourceParameters<SceneResourceParameters>().nrcQueryRadianceParams)
-
-#define gNrcCounters resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().nrcCounters)
 #endif
 
 #define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
@@ -262,10 +233,6 @@ struct PathTraceCacheContext
     SharcParameters sharc;
     SharcState sharcState;
 #endif
-#if METALLIC_PT_NRC
-    NrcContext nrc;
-    NrcPathState nrcPathState;
-#endif
     float materialRoughnessPrev;
 };
 
@@ -292,10 +259,6 @@ float3 pathTrace(
     primaryAerial.transmittance = float3(1.0);
     primaryAerial.radiance = float3(0.0);
 
-#if METALLIC_PT_NRC
-    NrcSetSampleIndex(cache.nrc, 0u);
-#endif
-
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         if (!traceClosest(ray, push, hit)) {
@@ -314,9 +277,6 @@ float3 pathTrace(
             radiance += throughput * missRadiance;
 #if METALLIC_PT_SHARC
             SharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
-#endif
-#if METALLIC_PT_NRC
-            NrcUpdateOnMiss(cache.nrcPathState);
 #endif
             break;
         }
@@ -485,32 +445,10 @@ float3 pathTrace(
         }
 
         // ------------------------------------------------------------------
-        // Radiance caches (RTXGI SHaRC / NVIDIA NRC reference integration).
-        // Delta-lobe segments (ideal transmission, hair) skip the caches,
+        // Radiance cache (RTXGI SHaRC reference integration).
+        // Delta-lobe segments (ideal transmission, hair) skip the cache,
         // mirroring the reference treatment of skipped delta vertices.
         // ------------------------------------------------------------------
-#if METALLIC_PT_NRC
-        NrcSurfaceAttributes nrcSurface = (NrcSurfaceAttributes)0;
-        nrcSurface.encodedPosition = NrcEncodePosition(hit.position, cache.nrc.constants);
-        nrcSurface.roughness = roughness;
-        nrcSurface.specularF0 = f0;
-        nrcSurface.diffuseReflectance = baseColor * occlusion * (1.0 - metallic) * (1.0 - diffuseTransmission);
-        nrcSurface.shadingNormal = hit.normal;
-        nrcSurface.viewVector = -ray.direction;
-        nrcSurface.isDeltaLobe = transmission > 0.01;
-        NrcProgressState nrcProgressState = NrcUpdateOnHit(
-            cache.nrc,
-            cache.nrcPathState,
-            nrcSurface,
-            hit.t,
-            depth,
-            throughput,
-            radiance);
-        if (nrcProgressState == NrcProgressState::TerminateImmediately) {
-            break;
-        }
-#endif
-
 #if METALLIC_PT_SHARC
         SharcHitData sharcHitData;
         sharcHitData.positionWorld = hit.position;
@@ -614,14 +552,6 @@ float3 pathTrace(
             }
         }
 
-#if METALLIC_PT_NRC
-        // The NRC query was created at this vertex; direct lighting and
-        // emissive terms have been added, so the path can terminate here.
-        if (nrcProgressState == NrcProgressState::TerminateAfterDirectLighting) {
-            break;
-        }
-#endif
-
 #if METALLIC_PT_SHARC && SHARC_UPDATE
         // Feed the signal accumulated for this segment (emissive + direct
         // lighting) into the cache. Returning false means the path must stop.
@@ -672,20 +602,13 @@ float3 pathTrace(
         // footprint test performed on the next hit.
         cache.materialRoughnessPrev += sampledSpecularLobe ? roughness : 1.0;
 #endif
-#if METALLIC_PT_NRC
-        NrcSetBrdfPdf(cache.nrcPathState, previousBsdfPdf);
-#endif
 #if METALLIC_PT_SHARC && SHARC_UPDATE
         // Hand the segment throughput to the cache; each segment is
         // accumulated independently afterwards.
         SharcSetThroughput(cache.sharcState, throughput);
 #endif
 
-        bool allowRussianRoulette = true;
-#if METALLIC_PT_NRC
-        allowRussianRoulette = NrcCanUseRussianRoulette(cache.nrcPathState);
-#endif
-        if (allowRussianRoulette && depth >= 2u) {
+        if (depth >= 2u) {
             float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
             if (rand(seed) > continueProbability) {
                 break;
@@ -694,16 +617,11 @@ float3 pathTrace(
         }
     }
 
-#if METALLIC_PT_NRC
-    NrcWriteFinalPathInfo(cache.nrc, cache.nrcPathState, throughput, radiance);
-#endif
-
     if (primarySurface) {
         primaryAerial = physicalAerialSegment(getResourceParameters<SceneResourceParameters>().environment, primaryEndpoint, primaryOrigin);
     }
-#if SHARC_UPDATE || NRC_UPDATE || NRC_QUERY
-    // Cache radiance stays local to the shaded point. NRC's display resolve
-    // composes the completed radiance after its predicted indirect term is added.
+#if SHARC_UPDATE
+    // Cache radiance stays local to the shaded point.
     return radiance;
 #else
     return primaryAerial.transmittance * radiance + primaryAerial.radiance;
@@ -726,15 +644,6 @@ PathTraceCacheContext makeCacheContext()
     cache.sharc.resolvedBuffer = gSharcResolved;
     cache.sharc.radianceScale = 1.0e3;
     SharcInit(cache.sharcState);
-#endif
-#if METALLIC_PT_NRC
-    NrcBuffers nrcBuffers;
-    nrcBuffers.queryPathInfo = gNrcQueryPathInfo;
-    nrcBuffers.trainingPathInfo = gNrcTrainingPathInfo;
-    nrcBuffers.trainingPathVertices = gNrcTrainingPathVertices;
-    nrcBuffers.queryRadianceParams = gNrcQueryRadianceParams;
-    nrcBuffers.countersData = gNrcCounters;
-    cache.nrc = NrcCreateContext(params.nrc, nrcBuffers, uint2(0, 0));
 #endif
     cache.materialRoughnessPrev = 1.0;
     return cache;
@@ -768,34 +677,6 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
     samples = 1u;
-#elif NRC_UPDATE
-    // NRC training pass: dispatch covers the training resolution; each thread
-    // traces one path at a jittered position in the corresponding full-res area.
-    ScenePathTraceCacheParams cacheParams = gCacheParams[0];
-    if (pixel.x >= cacheParams.trainingWidth || pixel.y >= cacheParams.trainingHeight) {
-        return;
-    }
-    seed = hash(
-        pixel.x +
-        pixel.y * max(cacheParams.trainingWidth, 1u) +
-        (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
-    float2 updateJitter = float2(rand(seed), rand(seed));
-    float2 samplePixel = (float2(pixel) + updateJitter) *
-        float2(push.width, push.height) /
-        float2(max(cacheParams.trainingWidth, 1u), max(cacheParams.trainingHeight, 1u));
-    samplePixel = min(samplePixel, float2(push.width, push.height) - float2(0.001, 0.001));
-    samples = 1u;
-#elif NRC_QUERY
-    if (pixel.x >= push.width || pixel.y >= push.height) {
-        return;
-    }
-    ScenePathTraceCacheParams cacheParams = gCacheParams[0];
-    seed = hash(
-        pixel.x +
-        pixel.y * max(push.width, 1u) +
-        (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
-    float2 samplePixel = float2(pixel) + float2(0.5, 0.5);
-    samples = 1u;
 #else
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
@@ -811,14 +692,14 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     float3 color = float3(0.0, 0.0, 0.0);
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
-#if SHARC_UPDATE || NRC_UPDATE || NRC_QUERY
+#if SHARC_UPDATE
         float2 jitter = float2(0.0, 0.0);
 #else
         float2 jitter = push.temporalJitter != 0u
             ? float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY)
             : (samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed)));
 #endif
-#if !(SHARC_UPDATE || NRC_UPDATE || NRC_QUERY)
+#if !SHARC_UPDATE
         samplePixel = float2(outputPixel) + jitter;
 #endif
 
@@ -826,40 +707,15 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         ray.origin = rayOriginFromPixel(samplePixel, push);
         ray.direction = rayDirectionFromPixel(samplePixel, push);
         RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
-#if METALLIC_PT_NRC
-        cache.nrc.pixelIndex = outputPixel;
-        NrcSetSampleIndex(cache.nrc, sampleIndex);
-        cache.nrcPathState = NrcCreatePathState(cache.nrc.constants, rand(seed));
-#endif
         float ignoredSpecularHitDistance;
         Metallic.Atmosphere::AtmosphereSegment primaryAerial;
         color += pathTrace(ray, rayCone, push, cache, seed, ignoredSpecularHitDistance, primaryAerial);
-#if NRC_QUERY
-        let aerialHandle = getResourceParameters<SceneResourceParameters>().environment.primaryAerial;
-        if (aerialHandle.index != 0xffffffffu) {
-            let aerial = resolveBuffer<RWStructuredBuffer<float4>>(aerialHandle);
-            uint count, stride;
-            aerial.GetDimensions(count, stride);
-            uint index = (pixel.y * push.width + pixel.x) * 2u;
-            if (index + 1u < count) {
-                aerial[index] = float4(primaryAerial.transmittance, 1.0);
-                aerial[index + 1u] = float4(primaryAerial.radiance, 0.0);
-            }
-        }
-#endif
     }
-#if SHARC_UPDATE || NRC_UPDATE
+#if SHARC_UPDATE
     // Cache update passes produce no image output.
     return;
 #endif
     color /= float(samples);
-
-#if NRC_QUERY
-    // Resolve adds this frame's predicted indirect light. Accumulate the
-    // complete frame afterwards so direct and cached light share one weight.
-    gHistoryCurrent[pixel] = float4(color, 1.0);
-    return;
-#endif
 
     if (push.outputLinear == 0u) {
         color = Metallic.WorkingColor::toLinearRec709(color);

@@ -3369,10 +3369,10 @@ public:
     }
 };
 
-RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
+RHITestResult runPathTraceCacheStages(RHITestContext& context)
 {
     constexpr uint32_t kWidth = 64, kHeight = 48;
-    const char* mode = nrc ? "nrc" : "sharc";
+    const char* mode = "sharc";
     std::atomic_uint validationErrors{0};
     std::unique_ptr<render::Device> device;
     auto result = render::createDevice({.applicationName = "Path trace cache stages",
@@ -3426,7 +3426,7 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
         if (log.find("cache disabled") != std::string::npos) {
             return RHITestResult::fail(std::string(mode) + " test silently disabled its cache: " + log);
         }
-        const std::string historyName = std::string("ScenePathTracePass.PathTrace.accumulation") + (nrc ? ".hdr" : "");
+        const std::string historyName = "ScenePathTracePass.PathTrace.accumulation";
         const auto hasStage = [&](std::string_view stage) {
             for (const auto& node : executor.executionStats().nodes) {
                 if (node.name != "PathTrace") { continue; }
@@ -3437,9 +3437,7 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
             return false;
         };
         const auto checkFrame = [&]() -> std::string {
-            for (const char* stage : nrc ? std::initializer_list<const char*>{"NRC begin frame", "NRC update", "NRC query",
-                     "NRC train", "NRC resolve", "NRC tonemap"}
-                     : std::initializer_list<const char*>{"SHaRC update", "SHaRC resolve", "SHaRC query"}) {
+            for (const char* stage : {"SHaRC update", "SHaRC resolve", "SHaRC query"}) {
                 if (!hasStage(stage)) { return std::string("cache did not execute stage ") + stage; }
             }
             const auto current = history.texture(historyName, render::HistorySlot::Current);
@@ -3462,15 +3460,12 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
             result = executor.execute({.graphicsQueue = queue, .historyResources = &history, .recordingWorkerLimit = 1,
                 .submissionMode = render::FrameSubmissionMode::Joined});
             if (!result) {
-                if (nrc && render::hasError(result, render::Error::Unsupported)) {
-                    return RHITestResult::skip("NRC SDK/runtime unsupported on this device");
-                }
                 return RHITestResult::fail(std::string(mode) + " cache frame " + std::to_string(frame) + ": " + toString(result));
             }
             if (!executor.waitForSubmittedWork(5'000'000'000ull)) { return RHITestResult::fail("cache frame did not complete"); }
             const auto failure = checkFrame();
             if (!failure.empty()) { return RHITestResult::fail(std::string(mode) + ": " + failure); }
-            if (!nrc && frame == 0 && !hasStage("SHaRC clear")) { return RHITestResult::fail("first cache frame omitted SHaRC clear"); }
+            if (frame == 0 && !hasStage("SHaRC clear")) { return RHITestResult::fail("first cache frame omitted SHaRC clear"); }
         }
         std::unique_ptr<render::CommandPool> pool;
         std::unique_ptr<render::CommandBuffer> commands;
@@ -3496,10 +3491,10 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
         }
         const auto failure = checkFrame();
         if (!failure.empty()) { return RHITestResult::fail(std::string(mode) + " cancelled retry: " + failure); }
-        if (!nrc && !hasStage("SHaRC clear")) { return RHITestResult::fail("cancelled SHaRC cache was not reset on retry"); }
+        if (!hasStage("SHaRC clear")) { return RHITestResult::fail("cancelled SHaRC cache was not reset on retry"); }
         return RHITestResult::pass(std::string(mode) + ": 64x48, two accepted frames, cancel and retry with history/pixel checks");
     }();
-    // Include executor, SDK context and device destruction in validation.
+    // Include executor and device destruction in validation.
     device.reset();
     if (validationErrors != 0) {
         return RHITestResult::fail(std::string(mode) + " cache lifecycle emitted " +
@@ -3511,23 +3506,7 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
 class RenderGraphSharcStagesTest final : public RHITest {
 public:
     RenderGraphSharcStagesTest() { type = RHITestType::Rendering; name = "render_graph_sharc_stages_history_and_cancel"; }
-    RHITestResult run(RHITestContext& context) override { return runPathTraceCacheStages(context, false); }
-};
-
-class RenderGraphNRCStagesTest final : public RHITest {
-public:
-    RenderGraphNRCStagesTest() { type = RHITestType::Rendering; name = "render_graph_nrc_stages_history_and_cancel"; }
-    RHITestResult run(RHITestContext& context) override
-    {
-#if METALLIC_HAS_NRC
-        const char* enabled = std::getenv("METALLIC_TEST_NRC_CACHE");
-        if (!enabled || std::string_view(enabled) != "1") { return RHITestResult::skip("set METALLIC_TEST_NRC_CACHE=1 for NRC SDK cache stages"); }
-        return runPathTraceCacheStages(context, true);
-#else
-        (void)context;
-        return RHITestResult::skip("built without the NRC SDK");
-#endif
-    }
+    RHITestResult run(RHITestContext& context) override { return runPathTraceCacheStages(context); }
 };
 
 class SlangShaderDiskCacheTest : public RHITest {
@@ -10535,7 +10514,6 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSharcStagesTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphNRCStagesTest);
 METALLIC_REGISTER_RHI_TEST(SlangShaderDiskCacheTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 #if defined(METALLIC_HAS_RTXCR) && METALLIC_HAS_RTXCR

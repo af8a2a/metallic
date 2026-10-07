@@ -11,7 +11,7 @@ No Unreal code is copied. Metallic uses an analytically integrated linear/expone
 
 ## Use
 
-The physical realtime, path tracing (including SHaRC/NRC), RTXDI/NRD and DLSS sample graphs include the new stage. In **Physical Lighting**, enable **Auto Exposure (Histogram)** and adjust **Eye Adaptation**. Newly loaded scenes default to automatic exposure. Existing sidecars with a lighting block but no `autoExposure` block retain manual exposure. Settings are saved with the scene.
+The physical realtime, path tracing (including SHaRC), RTXDI/NRD and DLSS sample graphs include the new stage. In **Physical Lighting**, enable **Auto Exposure (Histogram)** and adjust **Eye Adaptation**. Newly loaded scenes default to automatic exposure. Existing sidecars with a lighting block but no `autoExposure` block retain manual exposure. Settings are saved with the scene.
 
 For a custom graph:
 
@@ -58,7 +58,7 @@ Display values above one clip, while the upstream HDR output remains available.
 The existing Reinhard and Exponential options retain their original gamma-2.2
 encoding. See [OpenPBR LookDev](OpenPbrLookDev.md) for a calibrated example.
 
-Ordinary HDR lighting and path-trace accumulation use RGBA32F. The existing NRC/DLSS/NRD paths retain their FP16 resource contracts; inputs exceeding their representable range require pre-exposure before entering those integrations. This change does not implement feedback pre-exposure, metering masks, exposure compensation curves or local exposure.
+Ordinary HDR lighting and path-trace accumulation use RGBA32F. The existing DLSS/NRD paths retain their FP16 resource contracts; inputs exceeding their representable range require pre-exposure before entering those integrations. This change does not implement feedback pre-exposure, metering masks, exposure compensation curves or local exposure.
 
 ## Validation
 

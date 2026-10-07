@@ -101,7 +101,7 @@ will not be used automatically by the application.
 
 Tools/ShaderWarmupRequests.h lists explicit runtime requests: editor display,
 postprocessing, environment lighting, basic samples, GPU-driven/mesh/tessellation
-rendering, ReSTIR, conventional-texture path tracing and guides, SHARC/NRC path
+rendering, ReSTIR, conventional-texture path tracing and guides, SHARC path
 tracing variants, and the default global-view reference/realtime deferred paths.
 The realtime deferred variants include upscaler guides and opaque/transmission
 StreamAsset paths. RTXCR sample requests are added only when its SDK is configured.

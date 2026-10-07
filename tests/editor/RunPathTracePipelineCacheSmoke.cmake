@@ -17,16 +17,11 @@ foreach(option IN ITEMS METALLIC_SMOKE_TEST_PAINTER_SWITCH METALLIC_SMOKE_TEST_S
 endforeach()
 
 set(samples openpbr-lookdev pathtracing-sharc-meet-mat)
-if(HAS_NRC)
-    list(APPEND samples pathtracing-nrc-meet-mat)
-endif()
 foreach(sample IN LISTS samples)
     set(cache_name ScenePathTracePass)
     set(minimum_hits 1)
     if(sample STREQUAL "pathtracing-sharc-meet-mat")
         set(minimum_hits 5)
-    elseif(sample STREQUAL "pathtracing-nrc-meet-mat")
-        set(minimum_hits 4)
     endif()
     foreach(run RANGE 1 2)
         execute_process(
@@ -43,7 +38,6 @@ foreach(sample IN LISTS samples)
         # missing-layer-manifest message from GPU validation checks.
         string(REGEX REPLACE "[^\n]*Vulkan validation: loader_get_json: Failed to open JSON file[^\n]*" "" checked_log "${log}")
         if(NOT result STREQUAL "0" OR checked_log MATCHES "Vulkan validation:|\\[error\\]"
-                OR log MATCHES "NRC (initialization|configure) failed"
                 OR NOT log MATCHES "\\[Smoke\\] Presented editor frame")
             message(FATAL_ERROR "${sample} run ${run} failed (${result}); see ${TEST_DIRECTORY}/${sample}-${run}.log")
         endif()

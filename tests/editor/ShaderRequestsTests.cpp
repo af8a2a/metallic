@@ -74,13 +74,13 @@ TEST(ShaderRequests, PreservesCustomMaterialAndSDKSearchPrecedence)
     const SceneShaderOptions options{.customMaterials = true, .hasRTXCR = true, .hasNTC = true,
         .cooperativeVector = true, .positionFetch = true,
         .materialInclude = "C:/Values", .rtxcrInclude = "C:/RTXCR", .ntcInclude = "C:/NTC"};
-    const SlangMacroDefine cacheDefine{"NRC_QUERY", "1"};
+    const SlangMacroDefine cacheDefine{"SHARC_QUERY", "1"};
     const auto request = makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&cacheDefine, 1});
     EXPECT_EQ(request.searchPaths, (std::vector<std::string>{"C:/Values", "C:/RTXCR", "C:/NTC"}));
     EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "spvGroupNonUniformBallot",
         "spvRayQueryPositionFetchKHR", "spvCooperativeVectorNV"}));
     EXPECT_EQ(request.defines.front(), (std::pair<std::string, std::string>{"METALLIC_CUSTOM_MATERIALS", "1"}));
-    EXPECT_EQ(request.defines.back(), (std::pair<std::string, std::string>{"NRC_QUERY", "1"}));
+    EXPECT_EQ(request.defines.back(), (std::pair<std::string, std::string>{"SHARC_QUERY", "1"}));
     const auto maintenance = makeSceneShaderRequest(SceneShaderProgram::SharcClear, options);
     EXPECT_TRUE(maintenance.defines.empty());
     EXPECT_TRUE(maintenance.searchPaths.empty());
@@ -115,10 +115,10 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
                 SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides,
                 SceneShaderProgram::RealtimeLighting, SceneShaderProgram::SharcClear,
-                SceneShaderProgram::SharcResolve, SceneShaderProgram::Tonemap}) {
+                SceneShaderProgram::SharcResolve}) {
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(program, options)));
         }
-        for (const char* name : {"SHARC_UPDATE", "SHARC_QUERY", "NRC_UPDATE", "NRC_QUERY"}) {
+        for (const char* name : {"SHARC_UPDATE", "SHARC_QUERY"}) {
             const SlangMacroDefine define{name, "1"};
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1})));
         }

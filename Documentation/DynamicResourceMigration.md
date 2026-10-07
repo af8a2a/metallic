@@ -145,12 +145,12 @@ CPU 在资源 view 注册时获得 handle；dispatch 仅填充 `BlitParams` 并�
 | 1：native 后端 PoC | `SlangCompiler` 增加模式/stride；RHI compute/graphics/shader-object 区分 mappings 与 native；明确 RTAS 转换 | image+sampler、混合 buffer、AS 的 GPU 回读通过；native 用例无 set/binding 资源装饰与 mapping |
 | 2：稳定资源管理 | 实现共享 registry、统一 stride、延迟回收、frame 参数 arena | 两个 program 共享同一 view/handle；重复 dispatch、跨帧、销毁/resize 后在途提交均正确 |
 | 3：完整垂直切片 | FinalBlit 使用 typed params，移除该 pass 的 binding 描述和私有 heap；再迁 AutoExposure、SH/PDF | 两个不同 pass 验证共享资源；画面/回读正确；记录 descriptor 写入及 CPU 提交成本 |
-| 4：批量迁移 | 后处理/调试 → lighting/ReGIR/RTXDI → path tracing/guides/SHaRC/NRC → material binning/GPU-driven/streaming | 每组原有编译、GPU、间接批处理、完整场景验证通过后继续 |
+| 4：批量迁移 | 后处理/调试 → lighting/ReGIR/RTXDI → path tracing/guides/SHaRC → material binning/GPU-driven/streaming | 每组原有编译、GPU、间接批处理、完整场景验证通过后继续 |
 | 5：收尾 | 迁 NRD adapter 和样例；处理 EditorDisplay 边界；删除 slot API、旧 header/base 依赖和生产 mapping 分支 | 自有生产渲染路径满足最终 ABI 断言；例外有明确 allowlist；更新旧迁移文档 |
 
 第 1 阶段可暂时保留 slot 参数，只用于降低后端切换的诊断成本；第 3～5 阶段必须真正消除它。保留临时兼容路径以支持阶段回退，但不要将“双架构长期维护”视为迁移完成。
 
-EditorDisplay 当前依赖 ImGui layout；若要求连该路径都没有 binding，需要一并改造它与 ImGui texture/render-state 的互操作。闭源 Streamline/NRC SDK 的内部 ABI 不能由本项目全量改写，应保留为显式外部边界。进入/退出外部路径必须恢复实际 Vulkan heap/push 状态及 RHI 状态缓存，不能仅因“之前绑定过同一 heap 指针”就跳过恢复。
+EditorDisplay 当前依赖 ImGui layout；若要求连该路径都没有 binding，需要一并改造它与 ImGui texture/render-state 的互操作。闭源 Streamline SDK 的内部 ABI 不能由本项目全量改写，应保留为显式外部边界。进入/退出外部路径必须恢复实际 Vulkan heap/push 状态及 RHI 状态缓存，不能仅因“之前绑定过同一 heap 指针”就跳过恢复。
 
 NRD 的算法输入编号可保留在 SDK adapter 边界，但应转换成 registry handles；它不应使生产 ComputeProgram 再次依赖通用 slot layout。
 
@@ -164,7 +164,7 @@ NRD 的算法输入编号可保留在 SDK adapter 边界，但应转换成 regis
 2. native pipeline/shader-object 不再附加公共数组 mappings；继续检查 heap flags、push data 大小及 CPU/Slang 字段布局。
 3. 类型矩阵包含 sampled/storage image、mip/layer、sampler、constant/structured/raw buffer、atomics、nonuniform 材质索引、普通/partitioned AS。需要支持相关扩展的 `spirv-val`。
 4. 现有 `frame_descriptor_snapshots` 改写成资源/参数寿命断言，并增加跨 program 共享、释放后再分配、heap 扩容、多 queue、场景卸载和 resize 的真实用例。
-5. 保留 `material_binning_indirect_coverage`、RTXDI/RELAX、OpenPBR/Standard path tracing、guides、position fetch、SH/PDF、SHaRC/NRC、GPU-driven/streaming 的回归。DLSS RR/NR 和编辑器 HDR/ImGui 需要实际交互负载验证。
+5. 保留 `material_binning_indirect_coverage`、RTXDI/RELAX、OpenPBR/Standard path tracing、guides、position fetch、SH/PDF、SHaRC、GPU-driven/streaming 的回归。DLSS RR/NR 和编辑器 HDR/ImGui 需要实际交互负载验证。
 6. compiler version、编译模式、实际 stride、参数/heap ABI 必须参与 cache 身份。已有 shader hash 含 Slang 版本/capabilities，但新增选项仍须加入；同步检查 PSO cache、热重载和旧模块失效。
 
 直接 heap built-ins 的非一致访问规则不同于旧 descriptor-array 接口。迁移期继续明确标注可能分歧的材质索引，PoC 核对实际 SPIR-V；不要机械删除全部 `nonuniform`，也不要给所有 uniform 参数无差别加分歧标记。见 [Vulkan shader heap interface](https://docs.vulkan.org/spec/latest/chapters/interfaces.html#interfaces-resources-descset)。

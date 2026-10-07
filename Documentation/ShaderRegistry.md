@@ -17,7 +17,7 @@ auto result = ShaderRegistry::instance().getComputeKernel(device,
 
 Registry 是进程单例，但全局仅保存源码字节标识与缓存分组。创建 module 时关联 RHI descriptor-heap/opacity-micromap 转换前后的字节标识，保持实际 GPU shader 的来源分组。GPU cache 通过 `Device::sharedState` 按设备创建一次，在 native Device 销毁前释放；不同 Device 不共享 native handles。每个返回的 PSO 是调用者拥有的 RHI 对象，持久缓存向驱动提供预编译数据；这是 `.pso` 复用，不是按日志 hash 直接返回任意执行对象。源码每次经过现有 Slang 依赖检查，不能从失效请求拿到旧字节码。
 
-缓存放在 `.cache/pso/`。PT、SHaRC/NRC、实时光照、Deferred、VisibilityBuffer 与 GPUDrivenStreamAsset 保留既有文件名；其他 module 自动使用 `ShaderRegistry-<module basename>-<full module hash>.pso`，无来源元数据的原始 SPIR-V 使用 `ShaderRegistry.pso`。同一 module 的入口和变体共享容器，shader 字节、入口、完整 RHI 管线状态及 backend/device 兼容性决定实际 PSO 身份。分组只决定存储文件，不决定执行对象是否相同。
+缓存放在 `.cache/pso/`。PT、SHaRC、实时光照、Deferred、VisibilityBuffer 与 GPUDrivenStreamAsset 保留既有文件名；其他 module 自动使用 `ShaderRegistry-<module basename>-<full module hash>.pso`，无来源元数据的原始 SPIR-V 使用 `ShaderRegistry.pso`。同一 module 的入口和变体共享容器，shader 字节、入口、完整 RHI 管线状态及 backend/device 兼容性决定实际 PSO 身份。分组只决定存储文件，不决定执行对象是否相同。
 
 成功创建的新 PSO 交给设备持有的后台 worker 保存；同一 group 的请求合并，在最后一次新状态请求后 750 ms 保存，持续新增请求最多等待 5 s（不含已有保存任务的执行时间）。命中不延长等待；失败候选不记录为成功。正常 Device 销毁先排空并 join worker，再销毁 native cache；需要立即确保持久化的工具/测试可调用 `flushPipelineCaches(device)`，普通管线获取无需调用。保存失败会记录 warning 并保留待保存状态，后台延迟重试，当前管线仍可执行；退出/显式 flush 的失败尝试有界，避免永久等待。显式 `desc.pipelineCache` 沿用调用者的保存契约，`PipelineCache::save()` 仍同步；默认 null 必须走 Registry 持久缓存。
 
@@ -45,6 +45,6 @@ Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shad
 - `MetallicShaderObjectBinaryRenderingSmoke`：检查 Vulkan 校验日志、Material/Wireframe 的两个 Device 生命周期及逐帧像素一致性。
 - `shader_object_material_readback`：通过 BINARY 创建的两套 bindless 材质 shader 实际绘制与读回。
 - `hdr_editor_imgui_composite`：编辑器显示管线的 native 缓存复用与 scRGB/PQ 像素读回。
-- `MetallicLookDevPathTracePipelineCacheSmoke`：关闭驱动内部缓存，用两个实际 LookDev 进程检查 OpenPBR PT、SHaRC 与 NRC 的 Registry 缓存覆盖。
+- `MetallicLookDevPathTracePipelineCacheSmoke`：关闭驱动内部缓存，用两个实际 LookDev 进程检查 OpenPBR PT 与 SHaRC 的 Registry 缓存覆盖。
 
 `[ShaderRegistry] PSO cache group=... hits=... misses=...` 是容器 hash-table 统计，不是 Vulkan native creation feedback；性能结论仍需同负载实际计时。

@@ -40,9 +40,6 @@ void main()
     resolveUniform(environment.cloudShadow).GetDimensions(width, height);
     output[23] = float4(width, height, 0.0, 0.0);
     let aerial = resolveBuffer<StructuredBuffer<float4>>(environment.aerialPerspective);
-    let primary = resolveBuffer<StructuredBuffer<float4>>(environment.primaryAerial);
     output[24] = aerial[0];
     output[25] = aerial[1];
-    output[26] = primary[0];
-    output[27] = primary[1];
 }

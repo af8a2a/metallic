@@ -166,7 +166,6 @@ foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupNsightGraphicsCapture
     SetupNvPerf
     SetupAftermath
-    SetupNRC
     SetupNTC
 )
     set(METALLIC_SETUP_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/${METALLIC_SETUP_MODULE}.cmake")

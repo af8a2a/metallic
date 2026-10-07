@@ -87,7 +87,7 @@ Cancelled GPU recordings invalidate the sampling allocation; the next build
 recreates the PDF/grid resources rather than assuming cancelled texture-layout
 transitions executed. This keeps first-build and resize retries valid.
 
-Standard and OpenPBR path tracing, NRC/SHARC cache query/update paths, and RTXCR
+Standard and OpenPBR path tracing, SHARC cache query/update paths, and RTXCR
 hair direct lighting use the same selector with one virtual-light sample per
 eligible path vertex. Its contribution is multiplied by the RIS inverse source
 weight. Directional, point and spot lights are delta distributions: BSDF or

@@ -110,7 +110,7 @@ struct ScenePathTracePush
     float environmentRotationRadians;
     uint environmentMode;
     uint environmentVisible;
-    uint outputLinear;      // when set, write linear HDR (tonemap happens in a follow-up pass; used by NRC query mode)
+    uint outputLinear;      // when set, write linear HDR for the downstream composite
     uint cacheMode;         // METALLIC_CACHE_MODE_*
     uint ntcTextureSetCount;
     uint debugView;

@@ -155,13 +155,11 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/Vulkan/VulkanAftermath.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNvPerf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanNsightCapture.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanShaderTarget.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp
     Runtime/Render/GAPI/Vulkan/VulkanResult.cpp
     Runtime/Render/GAPI/Vulkan/VulkanDeviceProperties.cpp
     Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
     Runtime/Render/GAPI/Vulkan/VulkanDLSSNR.cpp
@@ -191,7 +189,6 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::nsight_events
     metallic::streamline
     metallic::dlss_nr
-    metallic::nrc
     nlohmann_json
     MetallicShaderWarmupCore
     slang::slang
@@ -482,7 +479,6 @@ if(WIN32)
     metallic_copy_streamline_runtime(Metallic)
     metallic_copy_dlss_nr_runtime(Metallic)
     metallic_copy_aftermath_runtime(Metallic)
-    metallic_copy_nrc_runtime(Metallic)
 endif()
 metallic_copy_openusd_runtime(Metallic)
 metallic_copy_spdlog_runtime(Metallic)
@@ -544,7 +540,6 @@ function(configure_metallic_editor_sample target_name)
         metallic_copy_streamline_runtime(${target_name})
         metallic_copy_dlss_nr_runtime(${target_name})
         metallic_copy_aftermath_runtime(${target_name})
-        metallic_copy_nrc_runtime(${target_name})
     endif()
     metallic_copy_openusd_runtime(${target_name})
     metallic_copy_spdlog_runtime(${target_name})
@@ -611,7 +606,6 @@ if(WIN32)
     metallic_copy_streamline_runtime(MetallicShaderPrintfProbe)
     metallic_copy_dlss_nr_runtime(MetallicShaderPrintfProbe)
     metallic_copy_aftermath_runtime(MetallicShaderPrintfProbe)
-    metallic_copy_nrc_runtime(MetallicShaderPrintfProbe)
 endif()
 metallic_copy_spdlog_runtime(MetallicShaderPrintfProbe)
 

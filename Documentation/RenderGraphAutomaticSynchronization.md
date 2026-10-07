@@ -358,7 +358,7 @@ Histogram 使用外层已经同步好的图资源边界。Reduce 前的计划合
 | --- | --- |
 | VisibilityBuffer | Init/LOD/Cull、Raster、HZB、Composite；冻结相机私有纹理；统计与诊断私有 buffer 的局部阶段 |
 | GPUDrivenStreamAsset | early/late Cull、Raster、HZB、Deferred、Composite 及私有颜色 buffer |
-| PathTrace | LUT 上传、普通/间接 shading、history、SHaRC clear/update/resolve/query、NRC BeginFrame/update/query/train/resolve/tonemap |
+| PathTrace | LUT 上传、普通/间接 shading、history、SHaRC clear/update/resolve/query |
 | RTXDI / Confidence | ReSTIR history；gradient/filter ping-pong/resolve；首次描述符可达纹理初始化 |
 | DLSS NR / Streamline | bypass/fallback copy、SDK 边界、SR 私有 depth、alpha/guide/slider；失败才执行 fallback 的 transfer 计划 |
 | NRD / shadow | clear、逐 dispatch 的真实纹理访问；shadow trace/denoise/output/copy 边界 |
@@ -369,7 +369,7 @@ Histogram 使用外层已经同步好的图资源边界。Reduce 前的计划合
 
 Visibility 的 Raster 阶段显式使用 `Unsafe + allowParallelCompute` 保留原软件/硬件光栅 fork/join。只有原本已保证分支独立且完整 join 的 opaque 操作可以选择它；阶段结束重新获取 join command buffer，并在最终 segment 保留资源。这不是新的内部多队列自动调度器。
 
-私有 history、冻结相机纹理、LUT 上传和缓存有效性通过现有 submission transaction 处理取消。NRC 的 EndFrame pending 在提交接受后发布，遵守 SDK 已提交要求；NRD 在 schedule 后准备失败也强制历史失效，防止槽位已轮转却沿用旧历史。未改变提交策略、缓存容量或上传预算。
+私有 history、冻结相机纹理、LUT 上传和缓存有效性通过现有 submission transaction 处理取消。NRD 在 schedule 后准备失败也强制历史失效，防止槽位已轮转却沿用旧历史。未改变提交策略、缓存容量或上传预算。
 
 GPUScene、ResidentLOD、HybridRasterizer、streaming、MaterialBinning 和 SDK 仍是具有自身内部同步契约的 opaque 操作。推导覆盖它们的声明边界，不猜测动态 BDA/bindless 使用集；shader workgroup barrier 仍属于算法。当前模型不宣称全局最少 barrier、精确 subresource 跟踪或自动 queue ownership transfer，也不能仅由 barrier 数量推断帧率收益。
 

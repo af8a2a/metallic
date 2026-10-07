@@ -50,7 +50,7 @@ private:
 
 enum class SceneShaderProgram {
     PathTrace, PathTraceGuides, OpenPBRPathTrace, OpenPBRPathTraceGuides,
-    RealtimeLighting, Deferred, DeferredBinned, SharcClear, SharcResolve, Tonemap,
+    RealtimeLighting, Deferred, DeferredBinned, SharcClear, SharcResolve,
 };
 
 struct ShaderProgramIdentity {
@@ -70,7 +70,6 @@ inline ShaderProgramIdentity sceneShaderIdentity(SceneShaderProgram program)
     case SceneShaderProgram::DeferredBinned: return {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredBinnedMain"};
     case SceneShaderProgram::SharcClear: return {"Features/PathTracing/SceneSharcMaintenance", "sharcClearMain"};
     case SceneShaderProgram::SharcResolve: return {"Features/PathTracing/SceneSharcMaintenance", "sharcResolveMain"};
-    case SceneShaderProgram::Tonemap: return {"Features/PostProcess/ScenePathTraceTonemap", "scenePathTraceTonemapMain"};
     }
     std::unreachable();
 }
@@ -101,8 +100,7 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
     if (!deferred) { request.capabilities.insert(request.capabilities.begin(), "spvRayQueryKHR"); }
     if (!deferred && options.positionFetch) { request.capabilities.emplace_back("spvRayQueryPositionFetchKHR"); }
     if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
-    if (program == SceneShaderProgram::SharcClear || program == SceneShaderProgram::SharcResolve ||
-        program == SceneShaderProgram::Tonemap) { return request; }
+    if (program == SceneShaderProgram::SharcClear || program == SceneShaderProgram::SharcResolve) { return request; }
 
     const auto flag = [](bool value) { return value ? "1" : "0"; };
     request.defines = {

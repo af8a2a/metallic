@@ -7,7 +7,6 @@
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
@@ -24,10 +23,6 @@
 #include "Runtime/Render/Material/OpenPBRLutData.h"
 
 #include <chrono>
-
-#if METALLIC_HAS_NRC
-#include <NrcCommon.h>
-#endif
 
 #ifndef METALLIC_HAS_RTXCR
 #define METALLIC_HAS_RTXCR 0
@@ -55,7 +50,7 @@ using namespace openpbr;
 constexpr uint32_t kDefaultRealtimeEnvironmentSamples = 64;
 constexpr uint32_t kMaxRealtimeEnvironmentSamples = 1024;
 
-// Radiance-cache related constants (RTXGI SHaRC / NVIDIA NRC integrations).
+// Radiance-cache related constants for RTXGI SHaRC.
 constexpr uint32_t kSharcDefaultEntriesLog2 = 22;
 constexpr uint32_t kSharcMinEntriesLog2 = 16;
 constexpr uint32_t kSharcMaxEntriesLog2 = 24;
@@ -63,14 +58,11 @@ constexpr uint32_t kSharcMaintenanceBlockSize = 256;
 constexpr uint32_t kSharcDefaultMaxAccumulatedFrames = 20;
 constexpr uint32_t kSharcDefaultStaleFrameNum = 60;
 constexpr uint32_t kSharcDefaultUpdateStride = 5;
-constexpr uint32_t kNRCMaxPathVertices = 8;
 
 enum class PathTracePermutation : uint32_t {
     Base = 0,
     SharcUpdate,
     SharcQuery,
-    NRCUpdate,
-    NRCQuery,
     Count
 };
 
@@ -83,10 +75,6 @@ constexpr const char* toString(PathTracePermutation permutation)
         return "sharc-update";
     case PathTracePermutation::SharcQuery:
         return "sharc-query";
-    case PathTracePermutation::NRCUpdate:
-        return "nrc-update";
-    case PathTracePermutation::NRCQuery:
-        return "nrc-query";
     default:
         return "?";
     }
@@ -376,19 +364,6 @@ public:
         return cacheMode_ == kScenePathTraceCacheModeOff;
     }
 
-    ~ScenePathTracePass() override
-    {
-#if METALLIC_HAS_NRC
-        // The final submitted frame has no following execute() to finish it.
-        if (*nrcEndFramePending_ && graphicsQueue_ != nullptr) {
-            (void)nrc_.endFrame(*graphicsQueue_);
-            if (device_ != nullptr) {
-                (void)device_->waitIdle();
-            }
-        }
-#endif
-    }
-
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
         static constexpr std::array deferredRequired{
@@ -428,9 +403,6 @@ public:
         // Preserve absolute solar disk radiance before exposure (~1e9 cd/m2),
         // including when exporting denoiser or upscaler guides.
         color.format = Format::RGBA32Sfloat;
-        if (cacheModeFromProperties(properties()) == kScenePathTraceCacheModeNRC) {
-            color.stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite, RenderGraphPassKind::Unsafe);
-        }
         if (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false)) {
             reflection.addTextureOutput("motionVectors", "Unjittered current-to-previous UV motion")
                 .storageReadWrite().format = Format::RG16Sfloat;
@@ -561,7 +533,6 @@ public:
                 {
                     {"Off", "off"},
                     {"SHaRC (RTXGI)", "sharc"},
-                    {"NRC (NVIDIA)", "nrc"},
                 },
                 true),
             runtimeIntSetting(
@@ -593,21 +564,6 @@ public:
                 1,
                 16,
                 false),
-#if METALLIC_HAS_NRC
-            runtimeFloatSetting("nrc.maxExpectedRadiance", "NRC Expected Radiance (0 = Auto)", 0.0f, 0.0f, 100000000.0f, false),
-            runtimeEnumSetting(
-                "nrc.resolveMode",
-                "NRC Resolve Mode",
-                "add",
-                {
-                    {"Add Query Result", "add"},
-                    {"Replace Output", "replace"},
-                    {"Training Bounce Heatmap", "heatmap"},
-                    {"Query Index", "queryIndex"},
-                    {"Direct Cache View", "cacheView"},
-                },
-                false),
-#endif
         };
         appendCameraRuntimeSettings(
             settings,
@@ -648,7 +604,6 @@ public:
             return makeError(Error::Unsupported);
         }
         device_ = context.device;
-        graphicsQueue_ = context.graphicsQueue;
         if (!context.preparedScene || !context.preparedScene->snapshot ||
             !context.preparedScene->snapshot->pathTraceResources) {
             log = "Scene resources were not prepared by StreamerSubsystem";
@@ -700,17 +655,6 @@ public:
                 cacheWarning =
                     "ScenePathTracePass radiance cache requires the standard BSDF without denoiser guides; cache disabled\n";
             }
-#if METALLIC_HAS_NRC
-            else if (cacheMode == kScenePathTraceCacheModeNRC && !context.device->capabilities().rayQuery) {
-                cacheMode = kScenePathTraceCacheModeOff;
-            }
-#else
-            else if (cacheMode == kScenePathTraceCacheModeNRC) {
-                cacheMode = kScenePathTraceCacheModeOff;
-                cacheWarning =
-                    "ScenePathTracePass built without the NRC SDK (METALLIC_HAS_NRC=0); NRC cache disabled\n";
-            }
-#endif
         }
         cacheMode_ = cacheMode;
         if (!cacheWarning.empty()) {
@@ -764,11 +708,7 @@ public:
             (programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() &&
                 programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() &&
                 sharcClearProgram_.valid() && sharcResolveProgram_.valid());
-        const bool nrcReady = cacheMode_ != kScenePathTraceCacheModeNRC ||
-            (programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid() &&
-                programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() &&
-                tonemapProgram_.valid());
-        if (baseReady && sharcReady && nrcReady) {
+        if (baseReady && sharcReady) {
             // Legacy fixed/sparse schedules can reuse identical shaders.
             compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
             return {};
@@ -1151,109 +1091,6 @@ public:
             }
         }
 
-#if METALLIC_HAS_NRC
-        if (cacheMode_ == kScenePathTraceCacheModeNRC) {
-            const std::vector<ComputeResourceBindingDesc> nrcBindings = [cacheBindings]() {
-                std::vector<ComputeResourceBindingDesc> bindings = cacheBindings;
-                bindings.push_back({.binding = 100, .kind = ComputeResourceBindingKind::StorageBuffer});
-                bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceNRCQueryPathInfoBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceNRCTrainingPathInfoBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceNRCTrainingPathVerticesBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceNRCQueryRadianceParamsBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceNRCCountersBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                return bindings;
-            }();
-
-            const std::array<SlangMacroDefine, 1> nrcUpdateDefines{
-                SlangMacroDefine{.name = "NRC_UPDATE", .value = "1"},
-            };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid()) {
-                result = compilePermutation(
-                    PathTracePermutation::NRCUpdate,
-                    nrcUpdateDefines,
-                    nrcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)]);
-                if (!result) {
-                    return result;
-                }
-            }
-
-            const std::array<SlangMacroDefine, 1> nrcQueryDefines{
-                SlangMacroDefine{.name = "NRC_QUERY", .value = "1"},
-            };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid()) {
-                result = compilePermutation(
-                    PathTracePermutation::NRCQuery,
-                    nrcQueryDefines,
-                    nrcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)]);
-                if (!result) {
-                    return result;
-                }
-            }
-
-            // Tonemap pass producing the final displayable color after the
-            // NRC resolve has added the predicted radiance.
-            if (!tonemapProgram_.valid()) {
-                const auto request = makeSceneShaderRequest(SceneShaderProgram::Tonemap, shaderOptions);
-                const ShaderRequestView source(request);
-                ShaderCompileResult tonemapCompile;
-                Result<> tonemapResult = ShaderRegistry::instance().getShader(source.desc(), tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
-                if (!tonemapResult) {
-                    log += "compileSlangShaderToSpirv(";
-                    log += kScenePathTraceTonemapShaderModuleName;
-                    log += ") returned ";
-                    log += resultToString(tonemapResult);
-                    if (!tonemapCompile.diagnostics.empty()) {
-                        log += ": ";
-                        log += tonemapCompile.diagnostics;
-                    }
-                    log += '\n';
-                    tonemapProgram_.clear();
-                    return tonemapResult;
-                }
-                std::string programLog;
-                tonemapResult = tonemapProgram_.initialize(
-                    *context.device,
-                    ComputeKernelDesc{
-                        .spirv = tonemapCompile.spirv,
-                        .parameters = parameterAbi<PathTraceTonemapParams>(kPathTraceTonemapABI, ParameterTransport::InlinePush),
-                        .debugName = "ScenePathTracePass.Tonemap",
-                    },
-                    programLog);
-                if (!programLog.empty()) {
-                    if (!log.empty() && log.back() != '\n') {
-                        log += '\n';
-                    }
-                    log += programLog;
-                }
-                if (!tonemapResult) {
-                    tonemapProgram_.clear();
-                    return tonemapResult;
-                }
-            }
-        }
-#else
-        if (cacheMode_ == kScenePathTraceCacheModeNRC) {
-            // Already downgraded to off above; nothing to compile.
-        }
-#endif
-
         compiledShaderKey_ = shaderKey;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
@@ -1300,9 +1137,6 @@ public:
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
             sharcClearPending_ = true;
-#if METALLIC_HAS_NRC
-            nrcSceneRevision_ = 0;
-#endif
         }
         EnvironmentLightingSubsystem* environmentSubsystem =
             context.subsystem<EnvironmentLightingSubsystem>();
@@ -1315,21 +1149,6 @@ public:
             return makeError(Error::InvalidArgument);
         }
         const auto worldEnvironment = resolveWorldEnvironment(lightScene, context.world());
-#if METALLIC_HAS_NRC
-        nrcExpectedAverageRadiance_ = 1.0f;
-        if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
-            // NRC expects daylight radiance in the application's scene units.
-            // Use unattenuated irradiance / pi as a stable outdoor scale, even
-            // when a source is disabled or moves below the horizon.
-            float irradianceY = 0.0f;
-            for (const auto& source : worldEnvironment.celestial) {
-                const auto& s = source.topOfAtmosphereIrradiance;
-                irradianceY += 683.0f * (18.3286150698f * s.x +
-                    76.9932864076f * s.y + 11.6242660516f * s.z);
-            }
-            nrcExpectedAverageRadiance_ = std::max(irradianceY * 0.31830988618f, 1.0f);
-        }
-#endif
         if (worldEnvironment.source == environment::EnvironmentSource::PhysicalAtmosphere) {
             ScenePathTracePush observerPush;
             buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(),
@@ -1363,9 +1182,6 @@ public:
             celestialRecordsInitialized_ = true;
             resetAccumulation_ = true;
             sharcClearPending_ = true;
-#if METALLIC_HAS_NRC
-            nrcSceneRevision_ = 0;
-#endif
         }
         profile.next("Prepare lights and sampling");
         const uint64_t previousLightRevision = lights_.revision();
@@ -1377,9 +1193,6 @@ public:
             resetAccumulation_ = true;
             // Invalidate radiance caches as well as the displayed accumulation.
             sharcClearPending_ = true;
-#if METALLIC_HAS_NRC
-            nrcSceneRevision_ = 0;
-#endif
         }
         if (!realtime_) {
             const auto& bounds = sceneResources_.bounds();
@@ -1405,9 +1218,6 @@ public:
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
             sharcClearPending_ = true;
-#if METALLIC_HAS_NRC
-            nrcSceneRevision_ = 0;
-#endif
         }
         TextureHandle color = context.outputTexture("color");
         Buffer* textureFeedback = context.preparedScene() ? context.preparedScene()->textureFeedback : nullptr;
@@ -1440,18 +1250,6 @@ public:
             } else {
                 renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)];
             }
-        } else if (cacheMode == kScenePathTraceCacheModeNRC) {
-#if METALLIC_HAS_NRC
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() ||
-                !programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid() ||
-                !tonemapProgram_.valid()) {
-                cacheMode = kScenePathTraceCacheModeOff;
-                renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
-            }
-#else
-            cacheMode = kScenePathTraceCacheModeOff;
-            renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
-#endif
         }
         cacheMode_ = cacheMode;
 
@@ -1909,20 +1707,6 @@ public:
             if (!result) {
                 return result;
             }
-        } else if (cacheMode == kScenePathTraceCacheModeNRC) {
-#if METALLIC_HAS_NRC
-            result = executeNrcFrame(
-                context,
-                push,
-                bindings,
-                programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)],
-                programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)],
-                historyCurrentView,
-                historyPreviousView);
-            if (!result) {
-                return result;
-            }
-#endif
         } else {
             auto resources = stageResources(context, push);
             if (materialBins.arguments != nullptr) {
@@ -1978,7 +1762,7 @@ public:
 
         profile.next("Publish shading history");
         if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
-            const auto name = historyNameForContext(context, push.cacheMode);
+            const auto name = historyNameForContext(context);
             result = context.historyResources()->publishTextureState(context.commandBuffer(), name,
                 HistorySlot::Current, ResourceState::General, true);
             if (result) { result = context.historyResources()->publishTextureState(context.commandBuffer(), name,
@@ -2035,7 +1819,7 @@ private:
             }
         }
         if (push.enableAccumulation != 0) {
-            const auto name = historyNameForContext(context, push.cacheMode);
+            const auto name = historyNameForContext(context);
             const auto current = context.historyResources()->texture(name, HistorySlot::Current);
             const auto previous = context.historyResources()->texture(name, HistorySlot::Previous);
             resources.textures.push_back({"historyCurrent", current.texture, current.view, current.state, ResourceState::General});
@@ -2076,13 +1860,10 @@ private:
         TextureView*& outPreviousView)
     {
         HistoryResourceManager* history = context.historyResources();
-        // NRC mode always routes through the linear HDR history texture: the
-        // resolve pass adds predicted radiance before a separate tonemap pass.
         const bool debugViewEnabled =
             useOpenPBRBsdf(context.properties()) && push.debugView != kScenePathTraceDebugViewFinal;
         const bool accumulationEnabled = !realtime_ && !debugViewEnabled &&
-            (push.cacheMode == kScenePathTraceCacheModeNRC ||
-                boolProperty(context.properties(), "accumulate", true));
+            boolProperty(context.properties(), "accumulate", true);
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
         push.hasHistory = 0;
         push.accumulationFrame = 0;
@@ -2094,8 +1875,6 @@ private:
             return {};
         }
 
-        const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNRC;
-        // NRC's native resolve shader declares rgba32f storage output.
         const Format historyFormat = Format::RGBA32Sfloat;
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
@@ -2110,7 +1889,7 @@ private:
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
         };
-        const std::string historyName = historyNameForContext(context, push.cacheMode);
+        const std::string historyName = historyNameForContext(context);
         Result<> result = history->ensureTexture(
             historyName,
             historyDesc,
@@ -2146,9 +1925,6 @@ private:
         if (mode == "sharc" || mode == "SHaRC") {
             return kScenePathTraceCacheModeSharc;
         }
-        if (mode == "nrc" || mode == "NRC") {
-            return kScenePathTraceCacheModeNRC;
-        }
         return kScenePathTraceCacheModeOff;
     }
 
@@ -2169,7 +1945,6 @@ private:
         }
         sharcClearProgram_.clear();
         sharcResolveProgram_.clear();
-        tonemapProgram_.clear();
         materialBinning_.clear();
     }
 
@@ -2194,13 +1969,12 @@ private:
         return {};
     }
 
-    Result<> writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params,
-        bool acquireAllocation = true)
+    Result<> writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params)
     {
         if (cacheParamsBuffer_ == nullptr) {
             return makeError(Error::Failure);
         }
-        if (RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commandBuffer); frame && acquireAllocation) {
+        if (RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
             auto allocation = std::find_if(cacheParamsAllocations_.begin(), cacheParamsAllocations_.end(),
                 [](const auto& candidate) { return candidate.completion.isComplete(); });
             if (allocation == cacheParamsAllocations_.end()) {
@@ -2448,293 +2222,6 @@ private:
         });
     }
 
-#if METALLIC_HAS_NRC
-    static NrcResolveMode nrcResolveModeFromProperties(const RenderGraphProperties& properties)
-    {
-        const std::string mode = stringProperty(properties, "nrc.resolveMode", "add");
-        if (mode == "replace") {
-            return NrcResolveMode::ReplaceOutputWithQueryResult;
-        }
-        if (mode == "heatmap") {
-            return NrcResolveMode::TrainingBounceHeatMap;
-        }
-        if (mode == "queryIndex") {
-            return NrcResolveMode::QueryIndex;
-        }
-        if (mode == "cacheView") {
-            return NrcResolveMode::DirectCacheView;
-        }
-        return NrcResolveMode::AddQueryResultToOutput;
-    }
-
-    Result<> executeNrcFrame(
-        RenderGraphExecutionContext& context,
-        ScenePathTracePush& push,
-        const std::vector<ComputeDispatchBinding>& baseBindings,
-        ComputeKernel& updateProgram,
-        ComputeKernel& queryProgram,
-        TextureView* historyCurrentView,
-        TextureView* historyPreviousView)
-    {
-        if (device_ == nullptr || graphicsQueue_ == nullptr ||
-            historyCurrentView == nullptr || historyPreviousView == nullptr) {
-            return makeError(Error::InvalidArgument);
-        }
-        CommandBuffer& commandBuffer = context.commandBuffer();
-
-        // NRC requires EndFrame after submission; defer it to the next frame's
-        // execute, when the previous command buffer is guaranteed submitted.
-        if (*nrcEndFramePending_) {
-            *nrcEndFramePending_ = false;
-            Result<> endResult = nrc_.endFrame(*graphicsQueue_);
-            if (!endResult) {
-                return endResult;
-            }
-        }
-        if (!nrc_.valid()) {
-            std::string nrcLog;
-            Result<> initResult = nrc_.initialize(*device_, nrcLog);
-            if (!initResult) {
-                spdlog::warn("[ScenePathTracePass] NRC initialization failed: {}", nrcLog);
-                return initResult;
-            }
-        }
-
-        const scene::Bounds& bounds = sceneResources_.bounds();
-        nrc::ContextSettings settings{};
-        settings.learnIrradiance = false;
-        settings.includeDirectLighting = false;
-        settings.requestReset =
-            *nrcDiscarded_ ||
-            sceneResourceRevision_ != nrcSceneRevision_ ||
-            environmentResourceRevision_ != nrcEnvironmentRevision_;
-        settings.sceneBoundsMin = nrc_float3{bounds.min.x, bounds.min.y, bounds.min.z};
-        settings.sceneBoundsMax = nrc_float3{bounds.max.x, bounds.max.y, bounds.max.z};
-        settings.smallestResolvableFeatureSize = std::max(bounds.radius() * 0.001f, 0.001f);
-        settings.frameDimensions = nrc_uint2{context.width(), context.height()};
-        const nrc_uint2 idealTraining =
-            nrc::ComputeIdealTrainingDimensions(settings.frameDimensions, 4);
-        settings.trainingDimensions = nrc_uint2{
-            std::min(idealTraining.x, context.width()),
-            std::min(idealTraining.y, context.height())};
-        settings.samplesPerPixel = 1;
-        settings.maxPathVertices = kNRCMaxPathVertices;
-
-        const bool reconfigure =
-            !nrcConfigured_ || settings != nrcContextSettings_ || settings.requestReset;
-        if (reconfigure) {
-            std::string configureLog;
-            Result<> configureResult = nrc_.configure(settings, *device_, configureLog);
-            if (!configureResult) {
-                spdlog::warn("[ScenePathTracePass] NRC configure failed: {}", configureLog);
-                return configureResult;
-            }
-            nrcContextSettings_ = settings;
-            // Reset is a pulse; comparing a stored true value with the next
-            // frame's false value would reallocate and reset the cache twice.
-            nrcContextSettings_.requestReset = false;
-            nrcConfigured_ = true;
-            nrcSceneRevision_ = sceneResourceRevision_;
-            nrcEnvironmentRevision_ = environmentResourceRevision_;
-        }
-
-        nrc::FrameSettings frameSettings{};
-        const float expectedRadianceOverride =
-            floatProperty(context.properties(), "nrc.maxExpectedRadiance", 0.0f);
-        frameSettings.maxExpectedAverageRadianceValue = expectedRadianceOverride > 0.0f ?
-            expectedRadianceOverride : nrcExpectedAverageRadiance_;
-        frameSettings.resolveMode = nrcResolveModeFromProperties(context.properties());
-        // Select the retained per-frame allocation before compiling stage
-        // identities. BeginFrame provides constants later, without replacing it.
-        ScenePathTraceCacheParams params;
-        Result<> result = writeCacheParamsBuffer(commandBuffer, params);
-        if (!result) { return result; }
-        auto prepareParams = [&]() -> Result<> {
-            const auto constants = nrc_.populateShaderConstants();
-            if (!constants) {
-                return makeError(constants.error());
-            }
-            const auto& nrcConstants = *constants;
-
-            copyFloat4(push.eye, params.sharcCameraPosition);
-            copyFloat4(push.previousEye, params.sharcCameraPositionPrev);
-            params.sharcEntriesNum = 0;
-            params.frameIndex = push.accumulationFrame;
-            params.cacheMode = kScenePathTraceCacheModeNRC;
-            params.width = push.width;
-            params.height = push.height;
-            params.trainingWidth = nrcContextSettings_.trainingDimensions.x;
-            params.trainingHeight = nrcContextSettings_.trainingDimensions.y;
-            params.nrcFrameDimensions[0] = nrcConstants.frameDimensions.x;
-            params.nrcFrameDimensions[1] = nrcConstants.frameDimensions.y;
-            params.nrcTrainingDimensions[0] = nrcConstants.trainingDimensions.x;
-            params.nrcTrainingDimensions[1] = nrcConstants.trainingDimensions.y;
-            params.nrcScenePosScale[0] = nrcConstants.scenePosScale.x;
-            params.nrcScenePosScale[1] = nrcConstants.scenePosScale.y;
-            params.nrcScenePosScale[2] = nrcConstants.scenePosScale.z;
-            params.nrcSamplesPerPixel = nrcConstants.samplesPerPixel;
-            params.nrcScenePosBias[0] = nrcConstants.scenePosBias.x;
-            params.nrcScenePosBias[1] = nrcConstants.scenePosBias.y;
-            params.nrcScenePosBias[2] = nrcConstants.scenePosBias.z;
-            params.nrcMaxPathVertices = nrcConstants.maxPathVertices;
-            params.nrcLearnIrradiance = nrcConstants.learnIrradiance;
-            params.nrcRadianceCacheDirect = nrcConstants.radianceCacheDirect;
-            params.nrcRadianceUnpackMultiplier = nrcConstants.radianceUnpackMultiplier;
-            params.nrcResolveMode = static_cast<int32_t>(nrcConstants.resolveMode);
-            params.nrcEnableTerminationHeuristic = nrcConstants.enableTerminationHeuristic;
-            params.nrcSkipDeltaVertices = nrcConstants.skipDeltaVertices;
-            params.nrcTerminationHeuristicThreshold = nrcConstants.terminationHeuristicThreshold;
-            params.nrcTrainingTerminationHeuristicThreshold = nrcConstants.trainingTerminationHeuristicThreshold;
-            params.nrcProportionUnbiased = nrcConstants.proportionUnbiased;
-            return writeCacheParamsBuffer(commandBuffer, params, false);
-        };
-
-        std::vector<ComputeDispatchBinding> traceBindings = baseBindings;
-        const uint64_t primaryAerialBytes = uint64_t(push.width) * push.height * 2 * sizeof(std::array<float, 4>);
-        auto aerialSlot = std::find_if(nrcAerialBuffers_.begin(), nrcAerialBuffers_.end(), [&](const auto& buffer) {
-            return buffer.use_count() == 1 && buffer->desc().size == primaryAerialBytes;
-        });
-        if (aerialSlot == nrcAerialBuffers_.end()) {
-            std::unique_ptr<Buffer> buffer;
-            result = device_->createBuffer({.size = primaryAerialBytes, .structureStride = 16,
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::Device,
-                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute})
-                .transform([&](auto value) { buffer = std::move(value); });
-            if (!result) { return result; }
-            // Remove idle allocations for an old viewport without touching
-            // the publications retained by in-flight frames.
-            std::erase_if(nrcAerialBuffers_, [](const auto& value) { return value.use_count() == 1; });
-            nrcAerialBuffers_.emplace_back(std::move(buffer));
-            aerialSlot = std::prev(nrcAerialBuffers_.end());
-        }
-        const auto primaryAerial = *aerialSlot;
-        if (auto* frame = RenderFrameContext::from(commandBuffer)) { frame->retain(primaryAerial); }
-        if (context.subsystems() != nullptr) { context.subsystems()->retire(primaryAerial); }
-        traceBindings.push_back({.binding = 100, .buffer = primaryAerial.get()});
-        traceBindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceCacheParamsBinding,
-            .buffer = cacheParamsBuffer_.get(),
-        });
-        static constexpr nrc::BufferIdx kTraceBuffers[] = {
-            nrc::BufferIdx::QueryPathInfo,
-            nrc::BufferIdx::TrainingPathInfo,
-            nrc::BufferIdx::TrainingPathVertices,
-            nrc::BufferIdx::QueryRadianceParams,
-            nrc::BufferIdx::Counter,
-        };
-        static constexpr uint32_t kTraceBindings[] = {
-            kScenePathTraceNRCQueryPathInfoBinding,
-            kScenePathTraceNRCTrainingPathInfoBinding,
-            kScenePathTraceNRCTrainingPathVerticesBinding,
-            kScenePathTraceNRCQueryRadianceParamsBinding,
-            kScenePathTraceNRCCountersBinding,
-        };
-        for (size_t index = 0; index < std::size(kTraceBuffers); ++index) {
-            traceBindings.push_back(ComputeDispatchBinding{
-                .binding = kTraceBindings[index],
-                .buffer = nrc_.buffer(static_cast<uint32_t>(kTraceBuffers[index])),
-            });
-        }
-
-        const uint32_t trainingWidth = std::max(nrcContextSettings_.trainingDimensions.x, 1u);
-        const uint32_t trainingHeight = std::max(nrcContextSettings_.trainingDimensions.y, 1u);
-        ScenePathTraceTonemapPush tonemapPush{
-            .width = push.width,
-            .height = push.height,
-            .exposure = context.world() != nullptr ? std::exp2(-context.world()->lighting().exposureEV100) : 1.0f,
-            .outputLinear = 1u,
-            .hasHistory = push.hasHistory,
-            .accumulationFrame = push.accumulationFrame,
-        };
-        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
-        if (!registry) { return makeError(registry.error()); }
-        ParameterWriter tonemapWriter(*device_, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
-        const PathTraceTonemapParams tonemapParams{
-            .source = tonemapWriter.storageImage(historyCurrentView),
-            .output = tonemapWriter.storageImage(context.outputTexture("color").view()),
-            .historyPrevious = tonemapWriter.storageImage(historyPreviousView),
-            .primaryAerial = tonemapWriter.buffer(primaryAerial.get()),
-            .settings = tonemapPush,
-        };
-        auto tonemapEncoded = tonemapWriter.encode(tonemapParams, kPathTraceTonemapABI, ParameterTransport::InlinePush);
-        if (!tonemapEncoded) { return makeError(tonemapEncoded.error()); }
-        using Access = RenderGraphResourceAccess;
-        auto resources = stageResources(context, push);
-        result = importBuffer(resources, "cacheParams", cacheParamsBuffer_.get());
-        if (!result) { return result; }
-        resources.uses.push_back({"cacheParams", Access::BufferShaderRead});
-        result = importBuffer(resources, "primaryAerial", primaryAerial.get());
-        if (!result) { return result; }
-        resources.uses.push_back({"primaryAerial", Access::BufferStorageReadWrite});
-        std::array<std::string, vulkan::NRCIntegration::kBufferCount> names;
-        std::vector<RenderGraphStageUse> sdkUses;
-        for (uint32_t i = 0; i < names.size(); ++i) {
-            auto* buffer = nrc_.buffer(i);
-            if (!buffer) { continue; }
-            names[i] = "nrcBuffer" + std::to_string(i);
-            result = importBuffer(resources, names[i], buffer);
-            if (!result) { return result; }
-            sdkUses.push_back({names[i], Access::BufferStorageReadWrite});
-        }
-        for (const auto buffer : kTraceBuffers) {
-            const auto i = static_cast<size_t>(buffer);
-            if (names[i].empty()) { return makeError(Error::InvalidArgument); }
-            resources.uses.push_back({names[i], Access::BufferStorageReadWrite});
-        }
-        auto resolveUses = sdkUses;
-        const char* currentHistory = push.enableAccumulation ? "historyCurrent" : "output.color";
-        const char* previousHistory = push.enableAccumulation ? "historyPrevious" : "output.color";
-        resolveUses.push_back({currentHistory, Access::TextureStorageReadWrite});
-        const std::array tonemapUses{RenderGraphStageUse{currentHistory, Access::TextureStorageReadWrite},
-            RenderGraphStageUse{previousHistory, Access::TextureStorageRead},
-            RenderGraphStageUse{"output.color", Access::TextureStorageWrite},
-            RenderGraphStageUse{"primaryAerial", Access::BufferShaderRead}};
-        const std::array stages{
-            RenderGraphStage{"NRC begin frame", sdkUses, [&](CommandBuffer& commands) -> Result<> {
-                auto begun = nrc_.beginFrame(commands, frameSettings);
-                return begun ? prepareParams() : begun;
-            }, RenderGraphPassKind::Unsafe},
-            RenderGraphStage{"NRC update", resources.uses, [&](CommandBuffer& commands) {
-                return dispatchResources(updateProgram, encoderFor(updateProgram), {
-                    .commandBuffer = &commands,
-                    .bindings = traceBindings,
-                    .pushData = &push,
-                    .pushDataSize = sizeof(push),
-                    .groupCountX = (trainingWidth + 7) / 8,
-                    .groupCountY = (trainingHeight + 7) / 8,
-                    .groupCountZ = 1,
-                });
-            }},
-            RenderGraphStage{"NRC query", resources.uses, [&](CommandBuffer& commands) {
-                return dispatchResources(queryProgram, encoderFor(queryProgram), {
-                    .commandBuffer = &commands,
-                    .bindings = traceBindings,
-                    .pushData = &push,
-                    .pushDataSize = sizeof(push),
-                    .groupCountX = (push.width + 7) / 8,
-                    .groupCountY = (push.height + 7) / 8,
-                    .groupCountZ = 1,
-                });
-            }},
-            RenderGraphStage{"NRC train", sdkUses,
-                [&](CommandBuffer& commands) { return nrc_.queryAndTrain(commands, nullptr); }, RenderGraphPassKind::Unsafe},
-            RenderGraphStage{"NRC resolve", resolveUses,
-                [&](CommandBuffer& commands) { return nrc_.resolve(commands, *historyCurrentView); }, RenderGraphPassKind::Unsafe},
-            RenderGraphStage{"NRC tonemap", tonemapUses, [&](CommandBuffer& commands) {
-                return tonemapProgram_.dispatch(commands, *tonemapEncoded,
-                    (push.width + 7u) / 8u, (push.height + 7u) / 8u);
-            }}};
-        const auto pending = nrcEndFramePending_;
-        const auto discarded = nrcDiscarded_;
-        result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
-            [pending] { *pending = true; }, [discarded] { *discarded = true; }));
-        if (!result) { return result; }
-        result = context.executeStages(stages, resources.buffers, resources.textures);
-        if (result) { *nrcDiscarded_ = false; }
-        return result;
-    }
-#endif
-
     static uint32_t uintProperty(
         const RenderGraphProperties& properties,
         const char* key,
@@ -2927,14 +2414,11 @@ private:
         return kScenePathTraceDebugViewFinal;
     }
 
-    static std::string historyNameForContext(const RenderGraphExecutionContext& context, uint32_t cacheMode)
+    static std::string historyNameForContext(const RenderGraphExecutionContext& context)
     {
         std::string name(kScenePathTraceHistoryPrefix);
         name += context.passName();
         name += ".accumulation";
-        if (cacheMode == kScenePathTraceCacheModeNRC) {
-            name += ".hdr";
-        }
         return name;
     }
 
@@ -3173,7 +2657,6 @@ private:
     };
     bool streamMaterials_ = false;
     Device* device_ = nullptr;
-    Queue* graphicsQueue_ = nullptr;
     SamplerDesc openPBRLutSampler_{
         .minFilter = SamplerFilter::Linear,
         .magFilter = SamplerFilter::Linear,
@@ -3186,7 +2669,6 @@ private:
     std::array<ComputeKernel, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel sharcClearProgram_;
     ComputeKernel sharcResolveProgram_;
-    ComputeKernel tonemapProgram_;
     std::string compiledShaderKey_;
     uint32_t cacheMode_ = kScenePathTraceCacheModeOff;
     struct CacheParamsAllocation {
@@ -3202,17 +2684,6 @@ private:
     uint64_t sharcResourcesRevision_ = 0;
     bool sharcClearPending_ = false;
     std::shared_ptr<bool> sharcDiscarded_ = std::make_shared<bool>(false);
-#if METALLIC_HAS_NRC
-    vulkan::NRCIntegration nrc_;
-    std::vector<std::shared_ptr<Buffer>> nrcAerialBuffers_;
-    nrc::ContextSettings nrcContextSettings_{};
-    bool nrcConfigured_ = false;
-    std::shared_ptr<bool> nrcEndFramePending_ = std::make_shared<bool>(false);
-    std::shared_ptr<bool> nrcDiscarded_ = std::make_shared<bool>(false);
-    uint64_t nrcSceneRevision_ = 0;
-    uint64_t nrcEnvironmentRevision_ = 0;
-    float nrcExpectedAverageRadiance_ = 1.0f;
-#endif
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
     GPUCelestialLightRecords celestialRecords_{};

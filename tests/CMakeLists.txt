@@ -121,7 +121,6 @@ if(WIN32)
             "-DLOOKDEV_EXECUTABLE=$<TARGET_FILE:LookDev>"
             "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/lookdev-path-trace-pipeline-cache"
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
-            "-DHAS_NRC=${METALLIC_HAS_NRC}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunPathTracePipelineCacheSmoke.cmake")
     set_tests_properties(MetallicLookDevPathTracePipelineCacheSmoke PROPERTIES
         LABELS "editor;shader;gpu" TIMEOUT 1500 RESOURCE_LOCK MetallicEditor
@@ -580,7 +579,6 @@ if(WIN32)
     metallic_copy_streamline_runtime(MetallicRHITests)
     metallic_copy_dlss_nr_runtime(MetallicRHITests)
     metallic_copy_aftermath_runtime(MetallicRHITests)
-    metallic_copy_nrc_runtime(MetallicRHITests)
 endif()
 metallic_copy_openusd_runtime(MetallicRHITests)
 metallic_copy_spdlog_runtime(MetallicRHITests)

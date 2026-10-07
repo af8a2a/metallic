@@ -185,8 +185,6 @@ public:
             {"Metallic.SharcMaintenanceParams", {FIELD(SharcMaintenanceParams, hashEntries), FIELD(SharcMaintenanceParams, accumulation),
                 FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0),
                 FIELD(SharcMaintenanceParams, settings)}},
-            {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
-                FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, primaryAerial), FIELD(PathTraceTonemapParams, settings)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -208,7 +206,6 @@ public:
             {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", 10},
             {"Features/PathTracing/SceneSharcMaintenance", "sharcClearMain", 11},
             {"Features/PathTracing/SceneSharcMaintenance", "sharcResolveMain", 11},
-            {"Features/PostProcess/ScenePathTraceTonemap", "scenePathTraceTonemapMain", 12},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
@@ -2466,14 +2463,13 @@ public:
             {.binding = 58, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 59, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 100, .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = 101, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 63, .kind = ComputeResourceBindingKind::StorageBuffer}};
         ComputeProgram program;
         std::string log;
         REG_REQUIRE(program.initialize(device, {.spirv = shader.spirv, .bindings = bindings,
             .requiresRayQuery = false, .resourceParameters = kSceneProbeResourceLayout}, log));
-        std::unique_ptr<Buffer> parameters, aerial, primary, output;
+        std::unique_ptr<Buffer> parameters, aerial, output;
         const auto create = [&](std::unique_ptr<Buffer>& buffer, uint32_t size, uint32_t stride) {
             return device.createBuffer({.size = size, .structureStride = stride,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback,
@@ -2482,12 +2478,10 @@ public:
         };
         REG_REQUIRE(create(parameters, sizeof(GPUAtmosphereParameters), sizeof(GPUAtmosphereParameters)));
         REG_REQUIRE(create(aerial, 32, 16));
-        REG_REQUIRE(create(primary, 32, 16));
-        REG_REQUIRE(create(output, 28 * 16, 16));
+        REG_REQUIRE(create(output, 26 * 16, 16));
         std::array<float, 80> expectedParameters;
         for (size_t i = 0; i < expectedParameters.size(); ++i) { expectedParameters[i] = float(i + 1); }
         const std::array<float, 8> expectedAerial{1, 2, 3, 4, 5, 6, 7, 8};
-        const std::array<float, 8> expectedPrimary{9, 10, 11, 12, 13, 14, 15, 16};
         const auto upload = [&](Buffer& buffer, const auto& data) {
             void* mapped = buffer.map();
             if (!mapped) { return false; }
@@ -2497,7 +2491,6 @@ public:
         };
         REG_CHECK(upload(*parameters, expectedParameters));
         REG_CHECK(upload(*aerial, expectedAerial));
-        REG_CHECK(upload(*primary, expectedPrimary));
         std::array<std::unique_ptr<Texture>, 4> images;
         std::array<std::unique_ptr<TextureView>, 4> views;
         std::array<TextureBarrierDesc, 4> barriers;
@@ -2523,7 +2516,7 @@ public:
         const ComputeDispatchBinding resources[] = {
             {.binding = 56, .buffer = parameters.get()}, {.binding = 57, .textureView = views[0].get()},
             {.binding = 58, .textureView = views[1].get()}, {.binding = 59, .textureView = views[2].get()},
-            {.binding = 99, .buffer = aerial.get()}, {.binding = 100, .buffer = primary.get()},
+            {.binding = 99, .buffer = aerial.get()},
             {.binding = 101, .textureView = views[3].get()},
             {.binding = 63, .buffer = output.get()}};
         REG_REQUIRE(program.dispatch({.commandBuffer = recording.commands.get(), .bindings = resources}));
@@ -2532,7 +2525,7 @@ public:
         output->invalidate();
         const auto* values = static_cast<const float*>(output->map());
         REG_CHECK(values != nullptr);
-        std::array<float, 112> actual;
+        std::array<float, 104> actual;
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
         for (size_t i = 0; i < expectedParameters.size(); ++i) { REG_CHECK(actual[i] == expectedParameters[i]); }
@@ -2542,10 +2535,9 @@ public:
         }
         for (size_t i = 0; i < 8; ++i) {
             REG_CHECK(actual[96 + i] == expectedAerial[i]);
-            REG_CHECK(actual[104 + i] == expectedPrimary[i]);
         }
         bench::readbackEvidence(context, "atmosphere-resources.bin", std::span<const float>(actual));
-        return RHITestResult::pass("320-byte atmosphere state including cloud/phase tail, LUT/cloud-shadow binding 101, aerial and primary camera-segment bindings");
+        return RHITestResult::pass("320-byte atmosphere state including cloud/phase tail, LUT/cloud-shadow binding 101 and aerial perspective binding");
     }
 };
 METALLIC_REGISTER_RHI_TEST(AtmosphereResourceParametersTest);

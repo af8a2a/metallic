@@ -246,7 +246,7 @@ sequenceDiagram
 
 Pass 通过 `executeStages()` 声明 compute、raster、transfer 或 Unsafe 内部阶段，复用跨 pass 的 planner 和 barrier 编码器。反射的 `stageAccess()` 聚合内部权限、usage 和真实读写；内部改变 layout 的字段按独占访问参与外层依赖，序列结束恢复反射边界。全部声明先验证，再录制回调；同名输入/输出用 `input.field` / `output.field` 区分。原 `executeComputeStages()` 保留更严格的单 compute/layout 不变契约。
 
-私有 buffer 通过 `BufferSlice`、纹理通过 allocation identity 与真实初态导入；共享编码器保留分配直到 GPU completion，包括省略了 barrier 的访问。History 的 `publishTextureState()` 只事务性发布状态，不再重复发 barrier。AutoExposure、VisibilityBuffer/StreamAsset、PathTrace/SHaRC/NRC、RTXDI/Confidence、DLSS、NRD 与 shadow 的阶段边界已使用统一计划。Unsafe 可显式声明完整 join 的既有 `parallelCompute` 操作，保留 Visibility 软件/硬件光栅并行；SDK、GPUScene、streaming 等 opaque 操作仍负责内部同步。此接口不推断未声明的 BDA/bindless 访问，不自动调度内部多队列，也尚不跟踪精确 mip/slice 范围。
+私有 buffer 通过 `BufferSlice`、纹理通过 allocation identity 与真实初态导入；共享编码器保留分配直到 GPU completion，包括省略了 barrier 的访问。History 的 `publishTextureState()` 只事务性发布状态，不再重复发 barrier。AutoExposure、VisibilityBuffer/StreamAsset、PathTrace/SHaRC、RTXDI/Confidence、DLSS、NRD 与 shadow 的阶段边界已使用统一计划。Unsafe 可显式声明完整 join 的既有 `parallelCompute` 操作，保留 Visibility 软件/硬件光栅并行；SDK、GPUScene、streaming 等 opaque 操作仍负责内部同步。此接口不推断未声明的 BDA/bindless 访问，不自动调度内部多队列，也尚不跟踪精确 mip/slice 范围。
 
 提供两种执行入口：
 
@@ -453,10 +453,10 @@ buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，�
 这些专属配置的使用方显式包含后端头文件，无需包含 Vulkan SDK。
 
 push descriptor 不再暴露请求开关，由 Vulkan 特性目录根据 Streamline 请求推导。
-普通 ray query 不需要该扩展；当前 NRC SDK 的 `GetVulkanDeviceExtensions()` 返回
-NVX binary import、NVX image view handle、memory budget 和 buffer device address，
-不包含 push descriptor。NGX 直连的 DLSS-NR 路径要求已启用 Streamline 能力，
-复用该依赖链。升级 SDK 时需重新核实其必需扩展。
+ray tracing pipeline、NVX binary import 和 NVX image view handle 同样仅在
+Streamline 启用时加入；普通 ray query 与 SHaRC 不需要这些扩展。
+NGX 直连的 DLSS-NR 路径要求已启用 Streamline 能力，复用该依赖链。
+升级 SDK 时需重新核实其必需扩展。
 
 ```cpp
 DeviceDesc desc{

@@ -179,7 +179,7 @@ Vulkan 后端把 buffer 和相同 layout 的 image 普通依赖合并为 `VkMemo
 
 只有 attachment 或 SDK 原生导出才触发后端 `detail::TextureViewImpl::materialize()`；同一个 view 以 mutex 保护首次创建，随后复用。通用 `TextureView` 不公开物化或查询入口；Vulkan 契约测试通过 `vulkan::hasNativeImageView()` 观察这一边界，该查询不会创建原生 view。`beginRendering()` 现在返回 Result，生产光栅调用者传播首次创建失败。`ExternalCommandScope::imageView()` 通过 `CommandBuffer::useNativeTextureView()` 在 SDK 导出前准备并保留 view，attachment 录制也保留 view 本身，因此 view 与 image 都能活到提交完成；取消走已有录制回收机制。单独调用 `nativeImageView()` 只负责按需导出，不自行建立提交期保留，该入口仅用于有外部 owner 的主机端 descriptor 创建；录制期导出使用 `ExternalCommandScope::imageView()` 并检查返回的 Result。
 
-Streamline、DLSS-NR 与 NRC 已接入该准备/保留入口，编辑器 ImGui descriptor 使用后端导出的实际 layout。CPU 语义 view/registry identity 与原生对象没有合并成第三套 shader 句柄体系。
+Streamline 与 DLSS-NR 已接入该准备/保留入口，编辑器 ImGui descriptor 使用后端导出的实际 layout。CPU 语义 view/registry identity 与原生对象没有合并成第三套 shader 句柄体系。
 
 ### 预备执行对象
 

@@ -53,6 +53,3 @@
 [submodule "External/oneTBB"]
 	path = External/oneTBB
 	url = https://github.com/oneapi-src/oneTBB.git
-[submodule "External/NRC"]
-	path = External/NRC
-	url = https://github.com/NVIDIA-RTX/NRC.git

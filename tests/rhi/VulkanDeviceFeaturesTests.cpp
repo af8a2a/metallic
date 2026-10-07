@@ -324,7 +324,7 @@ TEST_F(DeviceFeatures, CoreEnablementAndBackendPublicationKeepUnrelatedCapabilit
 }
 
 #if defined(VK_NVX_binary_import) && defined(VK_NVX_image_view_handle)
-TEST_F(DeviceFeatures, StreamlineBundleAndNRCSharePipelineAndUniqueExtensions)
+TEST_F(DeviceFeatures, StreamlineOwnsItsPipelineAndNativeImportExtensions)
 {
     desc.enableStreamline = true;
     supportAS();
@@ -336,7 +336,6 @@ TEST_F(DeviceFeatures, StreamlineBundleAndNRCSharePipelineAndUniqueExtensions)
     EXPECT_TRUE(selected.streamline);
     EXPECT_TRUE(selected.pushDescriptor);
     EXPECT_FALSE(desc.backendExtensions.has_value());
-    EXPECT_TRUE(selected.nrcRayTracingPipeline);
     auto names = extensionNames(selected);
     EXPECT_TRUE(names.contains(VK_NVX_BINARY_IMPORT_EXTENSION_NAME));
     EXPECT_TRUE(names.contains(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME));
@@ -344,18 +343,26 @@ TEST_F(DeviceFeatures, StreamlineBundleAndNRCSharePipelineAndUniqueExtensions)
     EXPECT_TRUE(chainTypes(chain.features.pNext).contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR));
     EXPECT_EQ(chain.rayTracingPipelineFeatures.rayTracingPipeline, VK_TRUE);
     extensions.streamlineBinaryImport = false;
-    EXPECT_FALSE(select().streamline);
-    EXPECT_TRUE(select().nrcRayTracingPipeline);
+    selected = select();
+    EXPECT_FALSE(selected.streamline);
+    EXPECT_FALSE(extensionNames(selected).contains(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
+    EXPECT_FALSE(extensionNames(selected).contains(VK_NVX_BINARY_IMPORT_EXTENSION_NAME));
+    EXPECT_FALSE(extensionNames(selected).contains(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME));
     desc.enableStreamline = false;
     desc.enableRayQuery = true;
     selected = select();
-    EXPECT_TRUE(selected.nrcRayTracingPipeline);
+    EXPECT_TRUE(selected.rayQuery);
     EXPECT_FALSE(selected.streamline);
     EXPECT_FALSE(selected.pushDescriptor);
     EXPECT_FALSE(extensionNames(selected).contains(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME));
     EXPECT_FALSE(extensionNames(selected).contains(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME));
+    EXPECT_FALSE(extensionNames(selected).contains(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
+    EXPECT_FALSE(extensionNames(selected).contains(VK_NVX_BINARY_IMPORT_EXTENSION_NAME));
+    EXPECT_FALSE(extensionNames(selected).contains(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME));
+    VulkanEnabledFeatureChain queryChain(selected);
+    EXPECT_FALSE(chainTypes(queryChain.features.pNext).contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR));
     extensions.pushDescriptor = false;
-    EXPECT_TRUE(select().nrcRayTracingPipeline);
+    EXPECT_TRUE(select().rayQuery);
     desc.enableStreamline = true;
     extensions.streamlineBinaryImport = true;
     EXPECT_FALSE(select().streamline);
