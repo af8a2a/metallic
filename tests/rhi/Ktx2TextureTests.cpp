@@ -1,13 +1,13 @@
-#include "TestResourceLayouts.h"
-#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ResourceMember.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "TestComputeProgram.h"
 #include "json.hpp"
 #include <zstd.h>
 #include <fstream>
@@ -164,7 +164,7 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                    .pushConstantSize = 16,
                                    .bindings = {layout, 2},
                                    .requiresRayQuery = false,
-                                   .resourceParameters = render::resourceParameterLayout<render::TextureProbeResourceParameters>(),
+                                   .resourceParameterSize = sizeof(render::TextureProbeResourceParameters),
                                },
                                log),
             log);
@@ -587,7 +587,7 @@ public:
             .pushConstantSize = 16,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
-            .resourceParameters = render::resourceParameterLayout<render::TextureFeedbackResourceParameters>(),
+            .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters),
         },log),log);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -722,7 +722,7 @@ public:
         ComputeProgram program;
         const ComputeResourceBindingDesc layout{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameters = render::resourceParameterLayout<render::TextureFeedbackResourceParameters>()}, log), log);
+            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters)}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::array<std::unique_ptr<CommandBuffer>, 3> commands;
         QueueSubmissionTracker tracker;
@@ -847,11 +847,11 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
         const ComputeResourceBindingDesc layout[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
-            {.binding = 1}, {.binding = 2}, {.binding = 3, .kind = ComputeResourceBindingKind::Sampler}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, textures), .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, feedback)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, sampler), .kind = ComputeResourceBindingKind::Sampler}};
         ComputeProgram program;
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = layout, .requiresRayQuery = false, .resourceParameters = metallic::tests::kTextureStreamingProbeLayout}, log), log);
+            .bindings = layout, .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::TextureStreamingProbeResources)}, log), log);
         const SamplerDesc sampler{.mipFilter = SamplerFilter::Linear,
             .addressU = SamplerAddressMode::Repeat, .addressV = SamplerAddressMode::Repeat};
         std::unique_ptr<Buffer> output;
@@ -884,9 +884,9 @@ public:
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
             require(commands->synchronize({.buffers = {&ready, 1}}), "stability output ready");
             const ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .sampledImages = resources.materialTextureSnapshot()},
-                {.binding = 1, .buffer = feedback}, {.binding = 2, .buffer = output.get()},
-                {.binding = 3, .sampler = &sampler}};
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, textures), .sampledImages = resources.materialTextureSnapshot()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, feedback), .buffer = feedback}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output), .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, sampler), .sampler = &sampler}};
             struct Push { uint32_t slot, visible; float nearSourceLod, farSourceLod; };
             const Push push{imageSlot, visible ? 1u : 0u, .25f, 5.25f};
             require(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,

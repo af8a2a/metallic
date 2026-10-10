@@ -340,7 +340,7 @@ public:
                 .pushConstantSize = sizeof(SceneRTXDIPush),
                 .bindings = bindings,
                 .debugName = "SceneRTXDIPass",
-                .resourceParameters = resourceParameterLayout<SceneResourceParameters>(),
+                .resourceParameterSize = sizeof(SceneResourceParameters),
             }, rayQueryProgram_, rayQueryProgramEncoder_,
             programLog);
         if (!programLog.empty()) {

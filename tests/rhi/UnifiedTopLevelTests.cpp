@@ -1,7 +1,8 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -136,12 +137,12 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         TLAS_REQUIRE(compiled);
-        const ComputeResourceBindingDesc layout[] = {{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
+        const ComputeResourceBindingDesc layout[] = {{METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output)}};
         ComputeProgram program;
         const auto initialized = program.initialize(device, {
             .spirv = shader.spirv,
             .bindings = {layout, 2},
-            .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::UnifiedTopLevelProbeResources),
         }, log);
         if (native_ && hasError(initialized, Error::Unsupported)) { return RHITestResult::skip("native descriptor heap unavailable"); }
         TLAS_REQUIRE(initialized);
@@ -254,7 +255,7 @@ public:
                     }
                     TLAS_CHECK(structure.deviceAddress() == address);
                 }
-                const ComputeDispatchBinding bindings[] = {{.binding = 0, .accelerationStructure = &structure}, {.binding = 1, .buffer = output->get()}};
+                const ComputeDispatchBinding bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), .accelerationStructure = &structure}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output), .buffer = output->get()}};
                 TLAS_REQUIRE(program.dispatch({.commandBuffer = commands->get(), .bindings = {bindings, 2}}));
                 TLAS_REQUIRE((*commands)->end());
                 CommandBuffer* submitted[] = {commands->get()};

@@ -24,7 +24,7 @@ static_assert(sizeof(ComputeResourceParameters) == 24);
 
 const ComputeDispatchBinding* findDispatchBinding(
     const ComputeDispatchDesc& desc,
-    uint32_t binding)
+    ComputeResourceMember binding)
 {
     if (desc.bindings.empty()) {
         return nullptr;
@@ -65,13 +65,12 @@ struct ComputeResourceEncoder::Impl {
     uint32_t pushConstantSize = 0;
     uint32_t resourceParameterSize = 0;
     uint32_t resourceParameterAlignment = 4;
-    std::vector<ComputeResourceField> resourceFields;
     std::string debugName;
 
     bool hasCompatibleBindings(const Impl& other) const
     {
         return device == other.device && pushConstantSize == other.pushConstantSize && bindings == other.bindings &&
-            resourceParameterSize == other.resourceParameterSize && resourceFields == other.resourceFields;
+            resourceParameterSize == other.resourceParameterSize;
     }
 };
 
@@ -80,7 +79,7 @@ Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComput
     clear();
     log.clear();
     if (desc.bindings.size() > kMaxComputeResourceBindings || hasDuplicateBindings(desc.bindings)) {
-        log = "Resource encoder requires unique resource input IDs";
+        log = "Resource encoder requires unique resource members";
         return makeError(Error::InvalidArgument);
     }
     if ((desc.requiresRayQuery && (!device.capabilities().rayQuery || !device.capabilities().rayTracingAccelerationStructure)) ||
@@ -93,7 +92,7 @@ Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComput
     impl->pushConstantSize = desc.pushConstantSize;
     impl->debugName = desc.debugName ? desc.debugName : "ComputeResourceEncoder";
     for (const auto& binding : desc.bindings) {
-        if (binding.descriptorCount == 0 ||
+        if (!binding.binding.valid() || binding.binding.kind() != binding.kind || binding.descriptorCount == 0 ||
             binding.kind > ComputeResourceBindingKind::Sampler ||
             (!usesImageHeap(binding.kind) && binding.descriptorCount != 1) ||
             (binding.kind == ComputeResourceBindingKind::DataBuffer &&
@@ -104,53 +103,37 @@ Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComput
         }
         impl->bindings.push_back(binding);
     }
-    // CPU member identities (or legacy input IDs) never depend on descriptor allocation order.
+    // CPU member identities never depend on descriptor allocation order.
     std::ranges::sort(impl->bindings, {}, &ComputeResourceBindingDesc::binding);
     {
-        const auto& layout = desc.resourceParameters;
-        if (!layout.size || layout.size > 65536 || (layout.size & 3u)) {
-            log = "ComputeResourceEncoder requires an explicit named resource layout";
+        const auto size = desc.resourceParameterSize;
+        if (!size || size > 65536 || (size & 3u)) {
+            log = "ComputeResourceEncoder requires a valid resource parameter size";
             return makeError(Error::InvalidArgument);
         }
-        impl->resourceParameterSize = layout.size;
-        for (const auto& binding : impl->bindings) {
-            ComputeResourceField member;
-            const ComputeResourceField* selected = nullptr;
-            if (binding.binding & kResourceMemberTag) {
-                if (!layout.fields.empty()) { log = "Named members cannot use a legacy field table"; return makeError(Error::InvalidArgument); }
-                member = {binding.binding, ComputeResourceBindingKind((binding.binding >> 16) & 0xffu),
-                    binding.binding & 0xffffu, ComputeResourceFieldFormat((binding.binding >> 24) & 0x7fu)};
-                if (member.kind != binding.kind) { log = "Named member resource kind mismatch"; return makeError(Error::InvalidArgument); }
-                selected = &member;
-            }
-            for (const auto& field : layout.fields) {
-                if (field.binding != binding.binding || field.kind != binding.kind) { continue; }
-                if (selected) { log = "Duplicate named resource input " + std::to_string(binding.binding); return makeError(Error::InvalidArgument); }
-                selected = &field;
-            }
-            if (!selected) { log = "Missing named resource field for input " + std::to_string(binding.binding); return makeError(Error::InvalidArgument); }
-            const auto& field = *selected;
-            const bool span = field.format != ComputeResourceFieldFormat::Handle;
-            const uint32_t size = span ? sizeof(GPUBufferSpan) :
-                field.kind == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
-            const uint32_t alignment = !span && size == 8 ? 8u : 4u;
-            if (field.format > ComputeResourceFieldFormat::DataSpan || field.offset % alignment || layout.size % alignment ||
-                field.offset > layout.size || size > layout.size - field.offset ||
-                (field.format == ComputeResourceFieldFormat::IndexSpan && !usesImageHeap(field.kind)) ||
-                (field.format == ComputeResourceFieldFormat::DataSpan) != (field.kind == ComputeResourceBindingKind::DataBuffer) ||
-                (field.format == ComputeResourceFieldFormat::Handle && binding.descriptorCount != 1)) {
-                log = "Invalid named resource field for input " + std::to_string(binding.binding);
+        impl->resourceParameterSize = size;
+        const auto memberSize = [](ComputeResourceMember member) -> uint32_t {
+            return member.format() != ResourceMemberFormat::Handle ? sizeof(GPUBufferSpan) :
+                member.kind() == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
+        };
+        for (size_t index = 0; index < impl->bindings.size(); ++index) {
+            const auto& binding = impl->bindings[index];
+            const auto member = binding.binding;
+            const uint32_t fieldSize = memberSize(member);
+            const uint32_t alignment = member.kind() == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
+            if (member.offset() % alignment || size % alignment ||
+                member.offset() > size || fieldSize > size - member.offset() ||
+                (member.format() == ResourceMemberFormat::Handle && binding.descriptorCount != 1)) {
+                log = "Invalid resource member at offset " + std::to_string(member.offset());
                 return makeError(Error::InvalidArgument);
             }
-            for (const auto& previous : impl->resourceFields) {
-                const uint32_t previousSize = previous.format != ComputeResourceFieldFormat::Handle ? sizeof(GPUBufferSpan) :
-                    previous.kind == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
-                if (field.offset < previous.offset + previousSize && previous.offset < field.offset + size) {
-                    log = "Overlapping named resource inputs " + std::to_string(previous.binding) + " and " + std::to_string(binding.binding);
+            for (size_t previousIndex = 0; previousIndex < index; ++previousIndex) {
+                const auto previous = impl->bindings[previousIndex].binding;
+                if (member.offset() < previous.offset() + memberSize(previous) && previous.offset() < member.offset() + fieldSize) {
+                    log = "Overlapping resource members";
                     return makeError(Error::InvalidArgument);
                 }
             }
-            impl->resourceFields.push_back(field);
             impl->resourceParameterAlignment = std::max(impl->resourceParameterAlignment, alignment);
         }
     }
@@ -245,8 +228,8 @@ Result<std::vector<EncodedParameters>> ComputeResourceEncoder::encode(
     std::vector<uint8_t> parameters(impl_->resourceParameterSize, 0xff);
     for (size_t input = 0; input < impl_->bindings.size(); ++input) {
         const auto& expected = impl_->bindings[input];
-        const auto& field = impl_->resourceFields[input];
-        auto* destination = parameters.data() + field.offset;
+        const auto member = expected.binding;
+        auto* destination = parameters.data() + member.offset();
         const auto* binding = findDispatchBinding(desc, expected.binding);
         if (!binding) {
             if (expected.optional) { continue; }
@@ -325,7 +308,7 @@ Result<std::vector<EncodedParameters>> ComputeResourceEncoder::encode(
             if (!result) { return makeError(result.error()); }
             handles.push_back(lease->shaderValue());
         }
-        if (field.format == ComputeResourceFieldFormat::IndexSpan) {
+        if (member.format() == ResourceMemberFormat::IndexSpan) {
             std::vector<uint32_t> indices;
             indices.reserve(handles.size());
             for (auto handle : handles) { indices.push_back(static_cast<uint32_t>(handle)); }

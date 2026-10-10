@@ -156,7 +156,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     const bool coop = ntc && neural->cooperativeVectorActive();
     profile.next("Prepare trace pipeline");
     auto& trace = traces_[streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0)];
-    constexpr uint32_t shadowOutputs[] = {
+    constexpr ComputeResourceMember shadowOutputs[] = {
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, penumbra),
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowNormal),
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowViewZ),
@@ -218,7 +218,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             .bindings = layout,
             .debugName = "Ray-traced shadows",
             .requiresRayQuery = true,
-            .resourceParameters = resourceParameterLayout<SceneResourceParameters>(),
+            .resourceParameterSize = sizeof(SceneResourceParameters),
         }, trace, traceEncoders_[traceIndex], log);
         if (!result) { return makeError(result.error()); }
     }

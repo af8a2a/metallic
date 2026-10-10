@@ -1,6 +1,7 @@
 #include "RHITest.h"
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "harness/Fixtures.h"
 
@@ -80,19 +81,19 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
         if (!shader) { return RHITestResult::fail("MIS probe shader compile failed: " + log); }
         const ComputeResourceBindingDesc layout[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer},
         };
         ComputeProgram program;
         if (!program.initialize(*device, {.spirv = shader->spirv, .bindings = layout,
-            .requiresRayQuery = false, .resourceParameters = kFrameCopyProbeLayout}, log)) {
+            .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::FrameCopyProbeResources)}, log)) {
             return RHITestResult::fail("MIS probe program initialization failed: " + log);
         }
         bench::GPUCommands gpu(*device->getQueue(QueueType::Graphics));
         if (!gpu.initialize(*device)) { return RHITestResult::fail("MIS probe command initialization failed"); }
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = inputs.get()},
-            {.binding = 1, .buffer = output.get()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .buffer = inputs.get()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .buffer = output.get()},
         };
         if (!program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = bindings,
             .groupCountX = uint32_t(kCases.size())}) || !gpu.submitAndWait()) {

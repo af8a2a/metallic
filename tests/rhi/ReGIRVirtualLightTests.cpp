@@ -1,9 +1,10 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 
-#include "TestComputeProgram.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -95,15 +96,15 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!compiled) { return RHITestResult::fail(shader.diagnostics); }
         const std::array<render::ComputeResourceBindingDesc, 4> bindings{{
-            {.binding = 0}, {.binding = 50}, {.binding = 52},
-            {.binding = 53, .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, lights)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, lightAlias)},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, lightsPdf), .kind = render::ComputeResourceBindingKind::SampledImage},
         }};
         REGIR_CHECK(program_.initialize(*device_, {
             .spirv = shader.spirv,
             .pushConstantSize = sizeof(ReGIRProbePush),
             .bindings = bindings,
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kReGIRVirtualLightProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::ReGIRVirtualLightProbeResources),
         }, log_));
         return RHITestResult::pass();
     }
@@ -251,11 +252,11 @@ public:
         render::TextureView* pdfViews[] = {
             cancelledWrapperSettings != nullptr ? wrappedLights.lightPdfView() : pdf_.view()};
         const std::array<render::ComputeDispatchBinding, 4> bindings{{
-            {.binding = 0, .buffer = probe.get()},
-            {.binding = 50, .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.buffer() : lightBuffer.get()},
-            {.binding = 52, .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.reGIRBuffer()
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, output), .buffer = probe.get()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, lights), .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.buffer() : lightBuffer.get()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, lightAlias), .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.reGIRBuffer()
                 : (syntheticGrid ? syntheticGrid.get() : selector_.buffer())},
-            {.binding = 53, .textureViews = {pdfViews, 1}},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ReGIRVirtualLightProbeResources, lightsPdf), .textureViews = {pdfViews, 1}},
         }};
         ReGIRProbePush push;
         std::copy(position.begin(), position.end(), push.position);

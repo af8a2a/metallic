@@ -1,5 +1,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
@@ -9,9 +11,7 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/Environment/AtmosphereKernelParameters.h"
@@ -1094,13 +1094,13 @@ public:
         REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
             .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         render::ComputeProgram adapter;
-        const render::ComputeResourceBindingDesc layout{.binding = 0,
+        const render::ComputeResourceBindingDesc layout{.binding = METALLIC_DATA_MEMBER(metallic::tests::DataSliceProbeResources, output),
             .kind = render::ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4};
         REG_REQUIRE(adapter.initialize(*device, {
             .spirv = shader.spirv,
             .bindings = {&layout, 1},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kDataSliceProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::DataSliceProbeResources),
         }, log));
         std::unique_ptr<render::Buffer> source, work, output;
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::TransferSource,
@@ -1168,7 +1168,7 @@ public:
             if (auto commandResult = recording.commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatchIndirect(*recording.commands, encoded, arguments));
             if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            render::ComputeDispatchBinding binding{.binding = 0, .data = to};
+            render::ComputeDispatchBinding binding{.binding = METALLIC_DATA_MEMBER(metallic::tests::DataSliceProbeResources, output), .data = to};
             render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = {&binding, 1}};
             binding.range.offset = 4;
             REG_CHECK(render::hasError(adapter.dispatch(dispatch), render::Error::InvalidArgument));
@@ -1761,8 +1761,8 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             render::ComputeProgram programs[2];
             render::ComputeResourceBindingDesc layout[] = {
-                {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-                {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .kind = render::ComputeResourceBindingKind::StorageBuffer},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer}};
             std::string log;
             for (auto& program : programs) {
                 REG_REQUIRE(program.initialize(*device, {
@@ -1770,7 +1770,7 @@ public:
                     .pushConstantSize = 4,
                     .bindings = {layout, 2},
                     .requiresRayQuery = false,
-                    .resourceParameters = metallic::tests::kFrameCopyProbeLayout,
+                    .resourceParameterSize = sizeof(metallic::tests::FrameCopyProbeResources),
                 }, log));
                 std::swap(layout[0], layout[1]);
             }
@@ -1794,7 +1794,7 @@ public:
             render::PreparedComputeDispatch packets[2];
             render::Result<> outcomes[2];
             uint32_t indices[] = {0, 1, 2};
-            const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = input.get()}, {.binding = 1, .buffer = output.get()}};
+            const render::ComputeDispatchBinding bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .buffer = input.get()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .buffer = output.get()}};
             std::jthread first([&] {
                 outcomes[0] = programs[0].prepareDispatch(frame, {
                     .bindings = {bindings, 2},
@@ -2005,14 +2005,14 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                 .descriptorHeapMode = path == 1 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
-            const render::ComputeResourceBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
+            const render::ComputeResourceBindingDesc layout{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::BatchBarrierProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer};
             render::ComputeProgram program;
             std::string log;
             REG_REQUIRE(program.initialize(*device, {
                 .spirv = shader.spirv,
                 .bindings = {&layout, 1},
                 .requiresRayQuery = false,
-                .resourceParameters = metallic::tests::kBatchBarrierProbeLayout,
+                .resourceParameterSize = sizeof(metallic::tests::BatchBarrierProbeResources),
             }, log));
             std::unique_ptr<render::Buffer> output, arguments;
             REG_REQUIRE(makeBuffer(*device, output));
@@ -2028,7 +2028,7 @@ public:
             std::unique_ptr<render::Semaphore> gate;
             REG_REQUIRE(device->createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
             Drain drain{queue, *gate};
-            const render::ComputeDispatchBinding binding{.binding = 0, .buffer = output.get()};
+            const render::ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::BatchBarrierProbeResources, output), .buffer = output.get()};
             const render::TestComputeIndirectDispatch items[] = {{.argumentOffset = 0}, {.argumentOffset = 12}};
             render::MemoryBarrierDesc memory{
                 .before = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
@@ -2063,12 +2063,10 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(BatchMemoryBarrierTest);
 
-// Direct fields must be independent of CPU binding IDs and retain slice/root storage.
-class NamedResourceParametersTest : public RHITest {
-protected:
-    bool namedMembers_ = false;
+// Member manifests validate their bounds and retain slice/root storage.
+class ResourceMemberParametersTest final : public RHITest {
 public:
-    NamedResourceParametersTest() { type = RHITestType::Resource; name = "named_resource_parameters_layout_and_lifetime"; }
+    ResourceMemberParametersTest() { type = RHITestType::Resource; name = "resource_member_parameters_and_lifetime"; }
     RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
@@ -2077,55 +2075,41 @@ public:
         REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "NamedResourceProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); }));
-        const ComputeResourceBindingDesc bindings[] = {
-            {.binding = 65537, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4},
-            {.binding = 7, .kind = ComputeResourceBindingKind::StorageBuffer}};
-        ComputeResourceField fields[] = {
-            {65537, ComputeResourceBindingKind::DataBuffer, 4, ComputeResourceFieldFormat::DataSpan},
-            {7, ComputeResourceBindingKind::StorageBuffer, 0}};
-        ComputeProgram program;
-        std::string log;
-        ResourceComputeKernelDesc description{.spirv = shader.spirv, .pushConstantSize = 4,
-            .bindings = bindings, .requiresRayQuery = false, .resourceParameters = {16, fields}};
-        auto missingLayout = description;
-        missingLayout.resourceParameters = {};
-        REG_CHECK(hasError(program.initialize(device, missingLayout, log), Error::InvalidArgument));
-        REG_CHECK(log.find("explicit named resource layout") != std::string::npos);
-        fields[1].offset = 4;
-        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
-        fields[1].offset = 16;
-        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
-        fields[1].offset = 0;
-        fields[1].kind = ComputeResourceBindingKind::SampledImage;
-        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
-        fields[1].kind = ComputeResourceBindingKind::StorageBuffer;
-        fields[0].format = ComputeResourceFieldFormat::Handle;
-        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
-        fields[0].format = ComputeResourceFieldFormat::DataSpan;
-        REG_REQUIRE(program.initialize(device, description, log));
-        // Layout metadata is borrowed only at initialize; mutation cannot change a live program.
-        fields[0].offset = 0;
-        struct Resources {
-            GPUResourceHandle<ResourceViewKind::RawBuffer> output;
-            GPUBufferSpan input;
-        };
-        constexpr auto inputMember = METALLIC_DATA_MEMBER(Resources, input);
-        constexpr auto outputMember = METALLIC_RESOURCE_MEMBER(Resources, output);
+        static_assert(!std::is_constructible_v<ComputeResourceMember, uint32_t>);
+        static_assert(!std::is_convertible_v<uint32_t, ComputeResourceMember>);
+        constexpr auto inputMember = METALLIC_DATA_MEMBER(NamedResourceProbeResources, input);
+        constexpr auto outputMember = METALLIC_RESOURCE_MEMBER(NamedResourceProbeResources, output);
         ComputeResourceBindingDesc members[] = {
             {.binding = inputMember, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4},
             {.binding = outputMember, .kind = ComputeResourceBindingKind::StorageBuffer}};
-        if (namedMembers_) {
-            description.bindings = members;
-            REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument)); // no mixed table
-            description.resourceParameters = resourceParameterLayout<Resources>();
-            members[1].kind = ComputeResourceBindingKind::SampledImage;
-            REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
-            members[1].kind = ComputeResourceBindingKind::StorageBuffer;
-            description.resourceParameters.size = 8;
-            REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
-            description.resourceParameters = resourceParameterLayout<Resources>();
-            REG_REQUIRE(program.initialize(device, description, log));
-        }
+        ComputeProgram program;
+        std::string log;
+        ResourceComputeKernelDesc description{.spirv = shader.spirv, .pushConstantSize = 4,
+            .bindings = members, .requiresRayQuery = false, .resourceParameterSize = sizeof(NamedResourceProbeResources)};
+        auto missingLayout = description;
+        missingLayout.resourceParameterSize = {};
+        REG_CHECK(hasError(program.initialize(device, missingLayout, log), Error::InvalidArgument));
+        REG_CHECK(log.find("resource parameter size") != std::string::npos);
+        members[1].binding = {};
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        members[1].binding = outputMember;
+        members[1].kind = ComputeResourceBindingKind::SampledImage;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        members[1].kind = ComputeResourceBindingKind::StorageBuffer;
+        members[1].descriptorCount = 2;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        members[1].descriptorCount = 1;
+        description.resourceParameterSize = 8;
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        description.resourceParameterSize = sizeof(NamedResourceProbeResources);
+        // A different shared shape must not alias bytes occupied by the data span.
+        members[1].binding = METALLIC_RESOURCE_MEMBER(FrameCopyProbeResources, output);
+        REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
+        REG_CHECK(log.find("Overlapping") != std::string::npos);
+        members[1].binding = outputMember;
+        REG_REQUIRE(program.initialize(device, description, log));
+        // Caller metadata is borrowed only during initialization.
+        members[0].dataStride = 8;
         std::unique_ptr<Buffer> input, output;
         REG_REQUIRE(makeBuffer(device, input));
         REG_REQUIRE(makeBuffer(device, output));
@@ -2139,11 +2123,7 @@ public:
         REG_REQUIRE(recording.initialize(device, context.graphicsQueue));
         REG_REQUIRE(recording.begin(0));
         ComputeDispatchBinding resources[] = {
-            {.binding = 7, .buffer = output.get()}, {.binding = 65537, .data = *slice}};
-        if (namedMembers_) {
-            resources[0].binding = outputMember;
-            resources[1].binding = inputMember;
-        }
+            {.binding = outputMember, .buffer = output.get()}, {.binding = inputMember, .data = *slice}};
         const uint32_t add = 2;
         auto prepared = program.prepareDispatch(recording.frame, {.bindings = resources,
             .pushData = &add, .pushDataSize = sizeof(add)});
@@ -2165,17 +2145,7 @@ public:
         bench::readbackEvidence(context, "named-resources.bin", std::span<const uint32_t>(values, 16));
         output->unmap();
         REG_CHECK(actual == 42 && guard == 0);
-        return RHITestResult::pass("Direct named fields, sparse IDs, bounded slice and retained packet");
-    }
-};
-METALLIC_REGISTER_RHI_TEST(NamedResourceParametersTest);
-
-class ResourceMemberParametersTest final : public NamedResourceParametersTest {
-public:
-    ResourceMemberParametersTest()
-    {
-        namedMembers_ = true;
-        name = "resource_member_parameters_and_lifetime";
+        return RHITestResult::pass("Strong member identities, validated bounds, bounded slice and retained packet");
     }
 };
 METALLIC_REGISTER_RHI_TEST(ResourceMemberParametersTest);
@@ -2277,14 +2247,11 @@ public:
         auto* queue = device.getQueue(QueueType::Graphics);
         REG_CHECK(queue != nullptr);
         const ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true}};
+            {.binding = METALLIC_RESOURCE_MEMBER(OptionalNamedResourceProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(OptionalNamedResourceProbeResources, input), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true}};
         const ComputeResourceBindingDesc requiredBindings[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
-        const ComputeResourceField fields[] = {
-            {0, ComputeResourceBindingKind::StorageBuffer, 0, ComputeResourceFieldFormat::Handle},
-            {1, ComputeResourceBindingKind::StorageBuffer, 4, ComputeResourceFieldFormat::Handle}};
+            {.binding = METALLIC_RESOURCE_MEMBER(OptionalNamedResourceProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(OptionalNamedResourceProbeResources, input), .kind = ComputeResourceBindingKind::StorageBuffer}};
         std::unique_ptr<Buffer> input, output;
         REG_REQUIRE(makeBuffer(device, input, 42));
         REG_REQUIRE(makeBuffer(device, output));
@@ -2305,17 +2272,17 @@ public:
             ComputeProgram program, required;
             std::string log;
             REG_REQUIRE(program.initialize(device, {.spirv = shader.spirv, .bindings = bindings,
-                .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
+                .requiresRayQuery = false, .resourceParameterSize = sizeof(OptionalNamedResourceProbeResources)}, log));
             REG_REQUIRE(required.initialize(device, {.spirv = shader.spirv, .bindings = requiredBindings,
-                .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
+                .requiresRayQuery = false, .resourceParameterSize = sizeof(OptionalNamedResourceProbeResources)}, log));
             REG_CHECK(program.kernel.parameterABI() != required.kernel.parameterABI());
             ComputeResourceEncoder equivalent;
             REG_REQUIRE(equivalent.initialize(device, {.bindings = bindings,
-                .requiresRayQuery = false, .resourceParameters = {8, fields}}, log));
+                .requiresRayQuery = false, .resourceParameterSize = sizeof(OptionalNamedResourceProbeResources)}, log));
             REG_CHECK(equivalent.parameterABI() == program.kernel.parameterABI());
             const auto previousABI = program.kernel.parameterABI();
             REG_CHECK(hasError(initializeResourceKernel(device, {.bindings = bindings,
-                .requiresRayQuery = false, .resourceParameters = {8, fields}},
+                .requiresRayQuery = false, .resourceParameterSize = sizeof(OptionalNamedResourceProbeResources)},
                 program.kernel, program.encoder, log), Error::InvalidArgument));
             REG_CHECK(program.valid() && program.kernel.parameterABI() == previousABI &&
                 program.encoder.parameterABI() == previousABI);
@@ -2323,8 +2290,8 @@ public:
             // omission must clear the previous handle rather than reuse a packet tail.
             for (uint32_t present = 1; present <= 2; ++present) {
                 REG_REQUIRE(recording.begin(frame++));
-                const ComputeDispatchBinding outputOnly{.binding = 0, .buffer = output.get()};
-                const ComputeDispatchBinding inputOnly{.binding = 1, .buffer = input.get()};
+                const ComputeDispatchBinding outputOnly{.binding = METALLIC_RESOURCE_MEMBER(OptionalNamedResourceProbeResources, output), .buffer = output.get()};
+                const ComputeDispatchBinding inputOnly{.binding = METALLIC_RESOURCE_MEMBER(OptionalNamedResourceProbeResources, input), .buffer = input.get()};
                 // A compatible-looking two-span root cannot pair a kernel with
                 // another encoder's required/optional resource contract.
                 REG_CHECK(hasError(prepareResourceDispatch(required.kernel, program.encoder, &recording.frame,
@@ -2339,7 +2306,7 @@ public:
                 const TestComputeIndirectDispatch incompatible{.program = &required};
                 REG_CHECK(hasError(program.prepareIndirectBatch(recording.frame,
                     {.bindings = {&outputOnly, 1}, .indirectArguments = input.get()}, {&incompatible, 1}), Error::InvalidArgument));
-                const ComputeDispatchBinding invalidOptional[] = {outputOnly, {.binding = 1}};
+                const ComputeDispatchBinding invalidOptional[] = {outputOnly, {.binding = METALLIC_RESOURCE_MEMBER(OptionalNamedResourceProbeResources, input)}};
                 REG_CHECK(hasError(program.prepareDispatch(recording.frame, {.bindings = invalidOptional}), Error::InvalidArgument));
                 const ComputeDispatchBinding complete[] = {outputOnly, inputOnly};
                 auto dispatch = program.prepareDispatch(recording.frame,
@@ -2401,7 +2368,7 @@ public:
         ComputeProgram program;
         std::string log;
         const auto initialized = program.initialize(device, {.spirv = shader.spirv, .bindings = bindings,
-            .requiresRayQuery = false, .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>()}, log);
+            .requiresRayQuery = false, .resourceParameterSize = sizeof(render::SceneResourceParameters)}, log);
         if (!initialized) { return RHITestResult::fail(log + ": " + toString(initialized)); }
         std::unique_ptr<Buffer> celestial, output;
         const auto create = [&](std::unique_ptr<Buffer>& buffer, uint32_t size, uint32_t stride) {
@@ -2505,7 +2472,7 @@ public:
         ComputeProgram program;
         std::string log;
         REG_REQUIRE(program.initialize(device, {.spirv = shader.spirv, .bindings = bindings,
-            .requiresRayQuery = false, .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>()}, log));
+            .requiresRayQuery = false, .resourceParameterSize = sizeof(render::SceneResourceParameters)}, log));
         std::unique_ptr<Buffer> parameters, aerial, output;
         const auto create = [&](std::unique_ptr<Buffer>& buffer, uint32_t size, uint32_t stride) {
             return device.createBuffer({.size = size, .structureStride = stride,

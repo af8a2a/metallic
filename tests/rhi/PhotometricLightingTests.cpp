@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/SceneLightResources.h"
@@ -39,15 +40,15 @@ public:
             .entryPointName = "photometricProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 50, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 55, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, irradiance), .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, lights), .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, celestialLights), .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*device_, {
             .spirv = shader.spirv,
             .bindings = {bindings, 4},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kPhotometricProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::PhotometricProbeResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -57,10 +58,10 @@ public:
         if (!result) { return result; }
         const auto& environment = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 1, .buffer = environment.sphericalHarmonicsBuffer},
-            {.binding = 50, .buffer = lights_.buffer()},
-            {.binding = 55, .buffer = environment.celestialLightsBuffer}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, output), .buffer = context.outputBuffer("data").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, irradiance), .buffer = environment.sphericalHarmonicsBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, lights), .buffer = lights_.buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::PhotometricProbeResources, celestialLights), .buffer = environment.celestialLightsBuffer}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 4}});
     }
 private:

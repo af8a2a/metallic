@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -28,17 +29,17 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "GPUDrivenConeProbe",
             .entryPointName = "gpuDrivenConeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 0}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::GPUDrivenConeProbeResources, output)}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 1},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kGPUDrivenConeProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::GPUDrivenConeProbeResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = context.outputBuffer("data").buffer()}};
+        const render::ComputeDispatchBinding bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::GPUDrivenConeProbeResources, output), .buffer = context.outputBuffer("data").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 1}});
     }
 private:
@@ -101,20 +102,20 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "TwoPassOcclusionProbe",
             .entryPointName = "twoPassOcclusionProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}, {.binding = 2}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TwoPassOcclusionProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TwoPassOcclusionProbeResources, previousHzb)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TwoPassOcclusionProbeResources, currentHzb)}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 3},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kTwoPassOcclusionProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::TwoPassOcclusionProbeResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 1, .buffer = context.outputBuffer("history").buffer()},
-            {.binding = 2, .buffer = context.outputBuffer("current").buffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TwoPassOcclusionProbeResources, output), .buffer = context.outputBuffer("data").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TwoPassOcclusionProbeResources, previousHzb), .buffer = context.outputBuffer("history").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TwoPassOcclusionProbeResources, currentHzb), .buffer = context.outputBuffer("current").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 3}});
     }
 private:

@@ -69,8 +69,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     if (!compiled) { return makeError(compiled.error()); }
     candidate->shader = std::move(*compiled);
     candidate->resources.assign(layout.bindings.begin(), layout.bindings.end());
-    candidate->resourceFields.assign(layout.resourceParameters.fields.begin(), layout.resourceParameters.fields.end());
-    candidate->resourceParameterSize = layout.resourceParameters.size;
+    candidate->resourceParameterSize = layout.resourceParameterSize;
     candidate->requiresRayQuery = layout.requiresRayQuery;
     candidate->constantsSize = layout.pushConstantSize;
     ProgramHash definition, ir, specialization, capabilities;
@@ -86,13 +85,9 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
         specialization.add(define.value ? define.value : "");
     }
     specialization.add(candidate->constantsSize);
-    specialization.add(layout.resourceParameters.size);
-    for (const auto& field : layout.resourceParameters.fields) {
-        specialization.add(field.binding); specialization.add(uint64_t(field.kind));
-        specialization.add(field.offset); specialization.add(uint64_t(field.format));
-    }
+    specialization.add(layout.resourceParameterSize);
     for (const auto& binding : layout.bindings) {
-        specialization.add(binding.binding); specialization.add(uint64_t(binding.kind));
+        specialization.add(binding.binding.key()); specialization.add(uint64_t(binding.kind));
         specialization.add(binding.descriptorCount); specialization.add(binding.dataStride);
         specialization.add(binding.dataAlignment);
     }
@@ -117,7 +112,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
         const auto cached = entry.artifact.lock();
         // Check full code/layout as well, so a hash collision cannot alias code.
         if (!cached || cached->shader.spirv != candidate->shader.spirv || cached->resources != candidate->resources ||
-            cached->resourceFields != candidate->resourceFields || cached->constantsSize != candidate->constantsSize ||
+            cached->constantsSize != candidate->constantsSize ||
             cached->resourceParameterSize != candidate->resourceParameterSize || cached->requiresRayQuery != candidate->requiresRayQuery) {
             continue;
         }
@@ -146,7 +141,7 @@ Result<> initializeMaterialErrorProgram(Device& device, ComputeKernel& program, 
     auto result = compileMaterialExecutable(device,
         {.moduleName = "Features/Material/MaterialError", .entryPointName = "materialErrorMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-        {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false, .resourceParameters = resourceParameterLayout<OutputImageResourceParameters>()},
+        {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false, .resourceParameterSize = sizeof(OutputImageResourceParameters)},
         program, artifact, log);
     if (result) { encoder = artifact->encoder; }
     return result;

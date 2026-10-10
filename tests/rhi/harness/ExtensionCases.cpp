@@ -1,4 +1,6 @@
-#include "../TestResourceLayouts.h"
+#include "../TestResourceParameters.h"
+#include "../TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RayQueryFixture.h"
 #include "../TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -74,9 +76,9 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
     const auto shader = checked(compileSlangShaderToSpirv({.moduleName = "UnifiedTopLevelProbe",
         .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
         .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log));
-    const ComputeResourceBindingDesc layout[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
+    const ComputeResourceBindingDesc layout[]{{METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output)}};
     ComputeProgram program;
-    checked(program.initialize(device, {.spirv = shader.spirv, .bindings = layout, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log));
+    checked(program.initialize(device, {.spirv = shader.spirv, .bindings = layout, .resourceParameterSize = sizeof(metallic::tests::UnifiedTopLevelProbeResources)}, log));
     auto output = buffer(device, sizeof(RayObservations), MemoryLocation::HostReadback);
     auto pool = checked(device.createCommandPool(queue));
     auto commands = checked(pool->createCommandBuffer());
@@ -87,7 +89,7 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
         ~Drain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
     } drain{frame, *pool};
     checked(frame.begin(0)); checked(commands->begin(frame.submissionContext()));
-    const ComputeDispatchBinding bindings[]{{.binding = 0, .accelerationStructure = tlas.get()}, {.binding = 1, .buffer = output.get()}};
+    const ComputeDispatchBinding bindings[]{{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), .accelerationStructure = tlas.get()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output), .buffer = output.get()}};
     checked(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}));
     checked(commands->end());
     CommandBuffer* submitted[]{commands.get()};

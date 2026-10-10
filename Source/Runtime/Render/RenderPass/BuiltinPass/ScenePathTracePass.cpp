@@ -80,14 +80,14 @@ constexpr const char* toString(PathTracePermutation permutation)
     }
 }
 
-constexpr uint32_t kLightGridMembers[] = {
+constexpr ComputeResourceMember kLightGridMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridParams),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridLights),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridCandidates),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridCells),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridIndices)
 };
-constexpr uint32_t kRasterGeometryMembers[] = {
+constexpr ComputeResourceMember kRasterGeometryMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterVertices),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterMeshlets),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterRecords),
@@ -97,7 +97,7 @@ constexpr uint32_t kRasterGeometryMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterInstances),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterMaterials)
 };
-constexpr uint32_t kStreamGeometryMembers[] = {
+constexpr ComputeResourceMember kStreamGeometryMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamRecords),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamGroups),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPages),
@@ -825,7 +825,7 @@ public:
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .kind = ComputeResourceBindingKind::SampledImage});
         }
         if (visibilityDeferred_) {
-            for (const uint32_t binding : kLightGridMembers) {
+            for (const auto binding : kLightGridMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             if (globalView) { baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer}); }
@@ -839,13 +839,13 @@ public:
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .kind = ComputeResourceBindingKind::SampledImage});
-            for (const uint32_t binding : kRasterGeometryMembers) {
+            for (const auto binding : kRasterGeometryMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialSampler), .kind = ComputeResourceBindingKind::Sampler});
-            for (const uint32_t binding : kStreamGeometryMembers) {
+            for (const auto binding : kStreamGeometryMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             if (materialBinningEnabled(properties())) {
@@ -940,7 +940,7 @@ public:
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
-                    .resourceParameters = resourceParameterLayout<SceneResourceParameters>()},
+                    .resourceParameterSize = sizeof(SceneResourceParameters)},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});

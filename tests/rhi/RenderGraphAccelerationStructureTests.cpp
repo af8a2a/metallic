@@ -1,7 +1,8 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -183,16 +184,16 @@ public:
             .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return makeError(shader.error()); }
-        const ComputeResourceBindingDesc bindings[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
-        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log);
+        const ComputeResourceBindingDesc bindings[]{{METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output)}};
+        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameterSize = sizeof(metallic::tests::UnifiedTopLevelProbeResources)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         auto* accelerationStructure = context.inputAccelerationStructure("structure");
         auto* output = context.outputBuffer("observations").buffer();
         if (!accelerationStructure || !output) { return makeError(Error::InvalidArgument); }
-        const ComputeDispatchBinding bindings[]{{.binding = 0, .accelerationStructure = accelerationStructure},
-            {.binding = 1, .buffer = output}};
+        const ComputeDispatchBinding bindings[]{{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), .accelerationStructure = accelerationStructure},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output), .buffer = output}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
     }
 private:

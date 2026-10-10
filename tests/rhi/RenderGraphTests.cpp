@@ -832,7 +832,7 @@ public:
         const render::ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
-            .requiresRayQuery = false, .resourceParameters = render::resourceParameterLayout<render::TextureFeedbackResourceParameters>()}, log);
+            .requiresRayQuery = false, .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters)}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

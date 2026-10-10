@@ -3,11 +3,11 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "harness/RayQueryFixture.h"
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
 
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
@@ -311,7 +311,7 @@ public:
                 .spirv = compiled.spirv,
                 .pushConstantSize = 4,
                 .bindings = {layout, uint32_t(std::size(layout))},
-                .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>(),
+                .resourceParameterSize = sizeof(render::SceneResourceParameters),
             }, log));
             std::unique_ptr<render::Buffer> output;
             OMM_REQUIRE(device->createBuffer({.size = sizeof(Probe), .structureStride = 8,
@@ -646,10 +646,10 @@ public:
             .entryPointName = "coverageBuildPlanMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .capabilities = capabilities, .descriptorHeapMode = render::SlangDescriptorHeapMode::Mapped}, log);
         OMM_REQUIRE(compiled);
-        const render::ComputeResourceBindingDesc layout[] = {{0, render::ComputeResourceBindingKind::AccelerationStructure}, {1}};
+        const render::ComputeResourceBindingDesc layout[] = {{METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), render::ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output)}};
         render::ComputeProgram program;
         OMM_REQUIRE(program.initialize(*device, {.spirv = compiled->spirv, .bindings = layout,
-            .resourceParameters = kUnifiedTopLevelProbeLayout}, log));
+            .resourceParameterSize = sizeof(metallic::tests::UnifiedTopLevelProbeResources)}, log));
         auto outputResult = makeBuffer(sizeof(bench::RayObservations), render::MemoryLocation::HostReadback);
         OMM_REQUIRE(outputResult);
         auto output = std::move(*outputResult);
@@ -668,7 +668,7 @@ public:
         } drain{frame, *pool};
         OMM_REQUIRE(frame.begin(0)); OMM_REQUIRE(commands->begin(frame.submissionContext()));
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .accelerationStructure = tlas.get()}, {.binding = 1, .buffer = output.get()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), .accelerationStructure = tlas.get()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output), .buffer = output.get()}};
         OMM_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}));
         OMM_REQUIRE(commands->end());
         render::CommandBuffer* submitted[] = {commands.get()};

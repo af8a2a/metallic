@@ -1,7 +1,8 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -84,12 +85,14 @@ public:
                 (mode == render::SlangDescriptorHeapMode::Native ? "native.spv" : "mapped.spv"), std::ios::binary);
             binary.write(reinterpret_cast<const char*>(shader.spirv.data()), shader.spirv.size() * sizeof(uint32_t));
             render::ComputeProgram program;
-            const render::ComputeResourceBindingDesc layout[] = {{0}, {1}};
+            const render::ComputeResourceBindingDesc layout[] = {
+                {METALLIC_RESOURCE_MEMBER(NativeDescriptorHandlesResources, records)},
+                {METALLIC_RESOURCE_MEMBER(NativeDescriptorHandlesResources, output)}};
             const auto initialized = program.initialize(*device, {
                 .spirv = shader.spirv,
                 .bindings = {layout, 2},
                 .requiresRayQuery = false,
-                .resourceParameters = metallic::tests::kNativeDescriptorHandlesLayout,
+                .resourceParameterSize = sizeof(metallic::tests::NativeDescriptorHandlesResources),
             }, log);
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(initialized, render::Error::Unsupported)) {
                 return RHITestResult::skip("mapped passed; native requires KHR untyped pointers");
@@ -136,7 +139,7 @@ public:
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
             NATIVE_REQUIRE(commands->begin(frame.submissionContext()));
-            const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = records.get()}, {.binding = 1, .buffer = output.get()}};
+            const render::ComputeDispatchBinding bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::NativeDescriptorHandlesResources, records), .buffer = records.get()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::NativeDescriptorHandlesResources, output), .buffer = output.get()}};
             NATIVE_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = {bindings, 2}}));
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};

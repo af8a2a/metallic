@@ -90,7 +90,7 @@ public:
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, output), ComputeResourceBindingKind::StorageImage}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, indices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, primitives)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, instances)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials)},
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues)}};
         return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = 8, .bindings = bindings,
-            .requiresRayQuery = true, .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>()}, log);
+            .requiresRayQuery = true, .resourceParameterSize = sizeof(render::SceneResourceParameters)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {

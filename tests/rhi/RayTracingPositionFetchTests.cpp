@@ -176,7 +176,7 @@ public:
                 .spirv = shader.spirv,
                 .pushConstantSize = sizeof(float),
                 .bindings = {layout.data(), static_cast<uint32_t>(std::size(layout))},
-                .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>(),
+                .resourceParameterSize = sizeof(render::SceneResourceParameters),
             }, log);
             if (native_ && render::hasError(initialized, render::Error::Unsupported)) {
                 return RHITestResult::skip("native descriptor heaps require KHR untyped pointers");
@@ -365,7 +365,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {layout, 2},
             .requiresRayQuery = false,
-            .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>(),
+            .resourceParameterSize = sizeof(render::SceneResourceParameters),
         }, log));
         render::QueueSubmissionTracker tracker;
         FETCH_REQUIRE(tracker.initialize(*device, queue));

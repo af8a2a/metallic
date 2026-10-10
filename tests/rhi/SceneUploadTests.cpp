@@ -1,7 +1,8 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -159,13 +160,13 @@ public:
         UPLOAD_REQUIRE(compileSlangShaderToSpirv({.moduleName = "SceneUploadProbe", .entryPointName = "sceneUploadProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         ComputeProgram program;
-        const ComputeResourceBindingDesc layout[] = {{0, ComputeResourceBindingKind::SampledImage}, {1}};
+        const ComputeResourceBindingDesc layout[] = {{METALLIC_RESOURCE_MEMBER(metallic::tests::SceneUploadProbeResources, texture), ComputeResourceBindingKind::SampledImage}, {METALLIC_RESOURCE_MEMBER(metallic::tests::SceneUploadProbeResources, output)}};
         UPLOAD_REQUIRE(program.initialize(*device, {
             .spirv = shader.spirv,
             .pushConstantSize = 4,
             .bindings = {layout, 2},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kSceneUploadProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::SceneUploadProbeResources),
         }, log));
         std::unique_ptr<Buffer> output;
         UPLOAD_REQUIRE(device->createBuffer({.size = kTextureCount * kMipCount * 2u * 16u, .structureStride = 16,
@@ -186,8 +187,8 @@ public:
         UPLOAD_REQUIRE(commands->begin(frame.submissionContext()));
         for (uint32_t index = 0; index < kTextureCount; ++index) {
             const ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .textureViews = {resources.materialTextureViews().data() + index + 1, 1}},
-                {.binding = 1, .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SceneUploadProbeResources, texture), .textureViews = {resources.materialTextureViews().data() + index + 1, 1}},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SceneUploadProbeResources, output), .buffer = output.get()},
             };
             const uint32_t offset = index * kMipCount * 2u;
             UPLOAD_REQUIRE(program.dispatch({

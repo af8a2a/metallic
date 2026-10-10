@@ -10,10 +10,8 @@ namespace metallic::render {
 
 // CPU-only member identity. It carries the information needed by a dynamic
 // manifest without a second input-ID-to-offset table. Never uploaded to shaders.
-inline constexpr uint32_t kResourceMemberTag = 0x80000000u;
-
 template<typename Owner, typename Member, bool Data = false>
-consteval uint32_t resourceMember(uint32_t offset)
+consteval ComputeResourceMember resourceMember(uint32_t offset)
 {
     static_assert(std::is_standard_layout_v<Owner> && sizeof(Owner) <= 65536);
     using T = std::remove_cvref_t<Member>;
@@ -32,16 +30,9 @@ consteval uint32_t resourceMember(uint32_t offset)
         std::is_same_v<T, GPUResourceHandle<ResourceViewKind::RawBuffer>> ? ComputeResourceBindingKind::StorageBuffer :
         std::is_same_v<T, GPUResourceHandle<ResourceViewKind::StorageImage>> ? ComputeResourceBindingKind::StorageImage :
         ComputeResourceBindingKind::SampledImage;
-    constexpr auto format = Data ? ComputeResourceFieldFormat::DataSpan :
-        span ? ComputeResourceFieldFormat::IndexSpan : ComputeResourceFieldFormat::Handle;
-    return kResourceMemberTag | (uint32_t(format) << 24) | (uint32_t(kind) << 16) | offset;
-}
-
-template<typename T>
-constexpr ComputeResourceLayout resourceParameterLayout()
-{
-    static_assert(std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>);
-    return {sizeof(T), {}};
+    constexpr auto format = Data ? ResourceMemberFormat::DataSpan :
+        span ? ResourceMemberFormat::IndexSpan : ResourceMemberFormat::Handle;
+    return ComputeResourceMember((uint32_t(format) << 24) | (uint32_t(kind) << 16) | offset);
 }
 
 } // namespace metallic::render

@@ -8,6 +8,7 @@
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedResourceParameters.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -207,18 +208,19 @@ public:
             auto shader = compileSlangShaderToSpirv({.moduleName = "MaterialValueIRTextureProbe", .entryPointName = "materialValueIRTextureProbeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths = paths, .macroDefines = macros}, log);
             check(bool(shader), log.c_str());
-            const ComputeResourceField fields[] = {
-                {0, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, probeOutput), ComputeResourceFieldFormat::Handle},
-                {9, ComputeResourceBindingKind::SampledImage, offsetof(SceneResourceParameters, materialTextures), ComputeResourceFieldFormat::IndexSpan},
-                {97, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, materialValues), ComputeResourceFieldFormat::Handle}};
-            const ComputeResourceBindingDesc bindings[] = {{0}, {9, ComputeResourceBindingKind::SampledImage, 1}, {97}};
+            const ComputeResourceBindingDesc bindings[] = {
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput)},
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, 1},
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues)}};
             ComputeProgram program;
             const auto initialized = program.initialize(*device, {.spirv = shader->spirv, .bindings = bindings, .requiresRayQuery = false,
-                .resourceParameters = {sizeof(SceneResourceParameters), fields}}, log);
+                .resourceParameterSize = sizeof(SceneResourceParameters)}, log);
             check(bool(initialized), log.c_str());
             TextureView* views[] = {view.get()};
-            const ComputeDispatchBinding dispatch[] = {{.binding = 0, .buffer = output.get()},
-                {.binding = 9, .textureViews = views}, {.binding = 97, .buffer = input.get()}};
+            const ComputeDispatchBinding dispatch[] = {
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = views},
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = input.get()}};
             check(bool(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = dispatch, .groupCountX = uint32_t(materials.size())})), "IR dispatch failed");
             check(bool(gpu.submitAndWait()), "IR GPU execution failed");
             output->invalidate(); const auto* data = static_cast<const Float4*>(output->map());

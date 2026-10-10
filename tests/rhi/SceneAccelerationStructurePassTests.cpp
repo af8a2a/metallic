@@ -1,8 +1,9 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -61,8 +62,8 @@ public:
             .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return makeError(shader.error()); }
-        const ComputeResourceBindingDesc bindings[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
-        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log);
+        const ComputeResourceBindingDesc bindings[]{{METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output)}};
+        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameterSize = sizeof(metallic::tests::UnifiedTopLevelProbeResources)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
@@ -72,9 +73,9 @@ public:
         if (!sceneResources_ || sceneResources_->accelerationStructure().accelerationStructure() != structure) {
             return makeError(Error::InvalidArgument);
         }
-        const ComputeDispatchBinding bindings[]{{.binding = 0,
+        const ComputeDispatchBinding bindings[]{{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene),
             .accelerationStructure = structure},
-            {.binding = 1, .buffer = context.outputBuffer("observations").buffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output), .buffer = context.outputBuffer("observations").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
     }
 private:

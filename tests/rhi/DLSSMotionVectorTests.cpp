@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -35,19 +36,19 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc binding{
-            .binding = 63, .kind = render::ComputeResourceBindingKind::StorageBuffer};
+            .binding = METALLIC_RESOURCE_MEMBER(metallic::tests::DLSSMotionVectorProbeResources, motionResults), .kind = render::ComputeResourceBindingKind::StorageBuffer};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kDLSSMotionVectorProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::DLSSMotionVectorProbeResources),
         }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding binding{
-            .binding = 63, .buffer = context.outputBuffer("motion").buffer()};
+            .binding = METALLIC_RESOURCE_MEMBER(metallic::tests::DLSSMotionVectorProbeResources, motionResults), .buffer = context.outputBuffer("motion").buffer()};
         return program_.dispatch({
             .commandBuffer = &context.commandBuffer(),
             .bindings = {&binding, 1},

@@ -26,7 +26,6 @@ struct MaterialExecutableArtifact
     // every pass share a single underlying kernel, never one per instance.
     ComputeKernel executable;
     ComputeResourceEncoder encoder;
-    std::vector<ComputeResourceField> resourceFields;
     uint32_t resourceParameterSize = 0;
     bool requiresRayQuery = false;
 };

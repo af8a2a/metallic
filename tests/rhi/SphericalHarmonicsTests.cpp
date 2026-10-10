@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -60,21 +61,21 @@ public:
             .entryPointName = "sphericalHarmonicsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SphericalHarmonicsProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SphericalHarmonicsProbeResources, input), .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kSphericalHarmonicsProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::SphericalHarmonicsProbeResources),
         }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 1, .buffer = input_.get()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SphericalHarmonicsProbeResources, output), .buffer = context.outputBuffer("data").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SphericalHarmonicsProbeResources, input), .buffer = input_.get()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 

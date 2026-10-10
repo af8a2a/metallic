@@ -59,24 +59,25 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   `getResourceParameters<T>()`, then resolve their explicit handles/spans. The
   shared `NamedResourceParameters.h` declares the CPU/Slang wire fields.
   Dynamic manifests reference members through `METALLIC_RESOURCE_MEMBER` or
-  `METALLIC_DATA_MEMBER` and `resourceParameterLayout<T>()`. The member type and
+  `METALLIC_DATA_MEMBER`, with `resourceParameterSize = sizeof(T)`. The member type and
   offset determine the CPU-only encoding contract; there is no separate numbered
   input-to-field table. Static passes can directly use `ParameterWriter` instead.
   The scene block is 456 bytes. Scalar images do not allocate index arrays.
-  Explicit numeric layouts remain only for low-level compatibility tests.
-- `ResourceComputeKernelDesc.resourceParameters` validates field type, bounds, alignment,
+  `ComputeResourceMember` cannot be constructed from a numeric ID. Tests use the
+  same member contract; the numeric adapter and explicit field tables are deleted.
+- `ComputeResourceEncoder` validates member type, bounds, alignment,
   overlap and array representation before pipeline creation. The encoder copies
-  layout metadata and preserves immutable prepared dispatch/submission leases.
+  manifest metadata and preserves immutable prepared dispatch/submission leases.
   Its 24-byte root still carries resource and constant DR spans. Image arrays
   contain 32-bit indices; named data spans count words and `typedBufferSpan<T>`
   validates divisibility before exposing typed elements. AS fields remain 64-bit.
 - The numeric-slot adapter and `ComputeResourceSlot` wire table are removed.
-  `ComputeResourceEncoder` requires an explicit nonempty named layout and writes directly
-  to field offsets, without a sparse CPU slot array. CPU IDs are not limited to
-  the old 0..255 slot range; only the number of bindings remains bounded at 256.
+  `ComputeResourceEncoder` requires a nonzero parameter block size and writes directly
+  to member offsets, without a sparse CPU slot array or numeric input IDs.
+  The number of resource members remains bounded at 256.
   `getResource`, `getResourceArray` and `getData` no longer exist in Core or its
-  callers. Test fixtures share `tests/rhi/TestResourceParameters.h` and
-  `TestResourceLayouts.h`; image arrays use bounded DR index spans.
+  callers. Test fixtures share `tests/rhi/TestResourceParameters.h` and use
+  member references directly; image arrays use bounded DR index spans.
 - `ShaderDataSpan`, `DataSpan`, `dataBuffer`, and address-returning `data` /
   `EncodedParameters::address` APIs are removed. `dataSpan` and `sampledImages`
   return descriptor spans. BufferSlice registration retains the allocation after

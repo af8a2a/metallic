@@ -133,13 +133,13 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 [NamedResourceParameters.h](../Source/Runtime/Render/Core/NamedResourceParameters.h) 共用 C++/Slang 字段；
 静态 pass 优先使用 `ParameterWriter` 直接构造具名参数。动态资源清单通过
 `METALLIC_RESOURCE_MEMBER(Params, member)` / `METALLIC_DATA_MEMBER(Params, member)`
-引用字段，并用 `resourceParameterLayout<Params>()` 声明参数类型。
+引用字段，并用 `resourceParameterSize = sizeof(Params)` 声明参数块大小。
 [ResourceMember.h](../Source/Runtime/Render/Core/ResourceMember.h) 从 C++ 成员类型和 `offsetof`
 推导资源类别、字段格式及偏移；不再维护数字 ID 到字段的独立布局表。
 编码器仍检查字段范围、对齐、重叠、资源类型和数组形式，保留可选资源与批量 dispatch 的契约。
 生产 GPU 参数块没有逻辑 slot table；场景结构为 456 字节，buffer/image/sampler 字段为 4 字节，
 数组和原始数据字段为 12 字节 span，AS 独立保留完整地址。常量仍通过 `getConstants<T>()` 读取。
-旧数字输入 ID 和显式 `ComputeResourceField` 表仅保留给底层兼容性测试，生产代码不应新增。
+`ComputeResourceMember` 不接受整数 ID；测试与生产均使用成员引用，旧数字 ID 和显式字段表兼容路径已删除。
 `Core` 导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。RHI 不在用户 push 数据前插入 heap header。
 
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；

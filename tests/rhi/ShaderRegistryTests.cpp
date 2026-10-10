@@ -2,6 +2,8 @@
 #include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "TestComputeProgram.h"
+#include "TestResourceParameters.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 
 #include <algorithm>
@@ -85,10 +87,9 @@ public:
             return RHITestResult::fail("failed pipeline creation replaced the published kernel");
         }
         ComputeProgram program;
-        const ComputeResourceBindingDesc binding{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
-        const ComputeResourceField field{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
+        const ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(BatchBarrierProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer};
         const ResourceComputeKernelDesc programLayout{.bindings = {&binding, 1}, .requiresRayQuery = false,
-            .resourceParameters = {.size = 4, .fields = {&field, 1}}};
+            .resourceParameterSize = sizeof(BatchBarrierProbeResources)};
         const auto acquire = [&](Device& device, const SlangShaderDesc& request,
             const ResourceComputeKernelDesc& layout, ComputeProgram& output, std::string& diagnostics) -> Result<> {
             auto shader = registry.getShader(request, diagnostics);

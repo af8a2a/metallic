@@ -1,9 +1,10 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
@@ -162,19 +163,19 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
             .entryPointName = "environmentPrefilterProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 2}, {.binding = 3}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, data)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, prefilter)}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kRealtimeGuideProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::RealtimeGuideProbeResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 2, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 3, .buffer = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot().prefilteredSpecularBuffer}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, data), .buffer = context.outputBuffer("data").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, prefilter), .buffer = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot().prefilteredSpecularBuffer}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:
@@ -252,14 +253,14 @@ public:
             .entryPointName = "realtimeGuideProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, motion), .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, depth), .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, data), .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 3},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kRealtimeGuideProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::RealtimeGuideProbeResources),
         }, log);
     }
 
@@ -272,9 +273,9 @@ public:
         auto* motion = context.inputTexture("motion").view();
         auto* depth = context.inputTexture("depth").view();
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = {&motion, 1}},
-            {.binding = 1, .textureViews = {&depth, 1}},
-            {.binding = 2, .buffer = context.outputBuffer("guides").buffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, motion), .textureViews = {&motion, 1}},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, depth), .textureViews = {&depth, 1}},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::RealtimeGuideProbeResources, data), .buffer = context.outputBuffer("guides").buffer()}};
         return program_.dispatch({
             .commandBuffer = &context.commandBuffer(),
             .bindings = {bindings, 3},

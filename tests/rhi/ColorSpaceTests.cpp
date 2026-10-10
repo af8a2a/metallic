@@ -1,8 +1,9 @@
 #include "RHITest.h"
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SceneColorConversion.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include <gtest/gtest.h>
 #include <array>
@@ -69,10 +70,10 @@ public:
         const SlangMacroDefine adapterDefine{"METALLIC_TEST_NRD_ADAPTER", "1"};
         if (!compileSlangShaderToSpirv({.moduleName = "WorkingColorProbe", .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = {&adapterDefine, 1}}, log).transform([&](auto value) { shader = std::move(value); })) { return fail("compile"); }
-        const ComputeResourceBindingDesc layout{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
+        const ComputeResourceBindingDesc layout{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::BatchBarrierProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer};
         ComputeProgram program;
         if (!program.initialize(gpuDevice, {.spirv = shader.spirv, .bindings = {&layout, 1},
-                .requiresRayQuery = false, .resourceParameters = kBatchBarrierProbeLayout}, log)) { return fail("program"); }
+                .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::BatchBarrierProbeResources)}, log)) { return fail("program"); }
         std::unique_ptr<Buffer> output;
         if (!gpuDevice.createBuffer({.size = 11*16, .structureStride = 16, .usage = BufferUsageBits::Storage,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { output = std::move(value); })) { return fail("buffer"); }
@@ -82,7 +83,7 @@ public:
         if (!gpuDevice.createCommandPool(graphicsQueue).transform([&](auto value) { pool = std::move(value); }) ||
             !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
             !gpuDevice.createFence({}).transform([&](auto value) { fence = std::move(value); }) || !commands->begin()) { return fail("commands"); }
-        const ComputeDispatchBinding binding{.binding = 0, .buffer = output.get()};
+        const ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::BatchBarrierProbeResources, output), .buffer = output.get()};
         if (!program.dispatch({.commandBuffer = commands.get(), .bindings = {&binding, 1}}) || !commands->end()) { return fail("dispatch"); }
         CommandBuffer* raw = commands.get();
         if (!graphicsQueue.submit({.commandBuffers = {&raw, 1}, .signalFence = fence.get()}) || !fence->wait()) { return fail("submit"); }

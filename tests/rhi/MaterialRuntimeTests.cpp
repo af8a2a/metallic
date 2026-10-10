@@ -1,10 +1,11 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SceneColorConversion.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -196,17 +197,17 @@ public:
             log).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
         const std::array bindings{
-            ComputeResourceBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeResourceBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv,
-            .bindings = bindings, .requiresRayQuery = false, .resourceParameters = metallic::tests::kMaterialRuntimeProbeLayout}, log);
+            .bindings = bindings, .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::MaterialRuntimeProbeResources)}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const std::array bindings{
-            render::ComputeDispatchBinding{.binding = 0, .buffer = input_.get()},
-            render::ComputeDispatchBinding{.binding = 1, .buffer = context.outputBuffer("result").buffer()}};
+            render::ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .buffer = input_.get()},
+            render::ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .buffer = context.outputBuffer("result").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
     }
 private:
@@ -411,7 +412,7 @@ public:
         std::weak_ptr<MaterialBindingGeneration> oldBinding = published;
         ComputeProgram program;
         std::shared_ptr<const MaterialExecutableArtifact> artifact;
-        const ComputeResourceBindingDesc layout[] = {{.binding = 0}, {.binding = 1}};
+        const ComputeResourceBindingDesc layout[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output)}};
         SlangShaderDesc source{.moduleName = "MaterialRuntimeProbe", .entryPointName = "materialRuntimeProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"};
         scene::RenderMaterial semantic;
@@ -421,7 +422,7 @@ public:
         const SlangMacroDefine featureDefine{"MATERIAL_CLASS", classification.c_str()};
         source.macroDefines = {&featureDefine, 1};
         const ResourceComputeKernelDesc description{.bindings = layout, .requiresRayQuery = false,
-            .resourceParameters = kMaterialRuntimeProbeLayout};
+            .resourceParameterSize = sizeof(metallic::tests::MaterialRuntimeProbeResources)};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log)) {
             return RHITestResult::fail(log);
         }
@@ -456,7 +457,7 @@ public:
         if (!frame.begin(0) || !commands->begin(frame.submissionContext())) { return RHITestResult::fail("Begin failed"); }
         frame.retain(published);
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .buffer = published->buffer()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .buffer = output.get()}};
         if (!program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}) || !commands->end()) {
             return RHITestResult::fail("Material dispatch failed");
         }
@@ -471,10 +472,10 @@ public:
             return RHITestResult::fail("Compile failure replaced last successful executable");
         }
         source.entryPointName = "materialRuntimeProbeMain";
-        const ComputeResourceBindingDesc invalidManifest[] = {{.binding = 0}, {.binding = 0}};
+        const ComputeResourceBindingDesc invalidManifest[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials)}};
         if (compileMaterialExecutable(*device, source,
                 {.bindings = invalidManifest, .requiresRayQuery = false,
-                 .resourceParameters = kMaterialRuntimeProbeLayout}, program, artifact, log) ||
+                 .resourceParameterSize = sizeof(metallic::tests::MaterialRuntimeProbeResources)}, program, artifact, log) ||
             artifact != originalArtifact) { return RHITestResult::fail("Invalid manifest was published"); }
         const SlangMacroDefine revision{"MATERIAL_PROBE_REVISION", "1"};
         source.macroDefines = {&revision, 1};
@@ -510,7 +511,7 @@ public:
         // previous output was not merely a permanently stale dispatch.
         if (!frame.begin(1) || !commands->begin(frame.submissionContext())) { return RHITestResult::fail("Recovery begin failed"); }
         const ComputeDispatchBinding next[] = {
-            {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .buffer = published->buffer()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .buffer = output.get()}};
         if (!program.dispatch({.commandBuffer = commands.get(), .bindings = next}) || !commands->end() ||
             !tracker.submit({.commandBuffers = recorded}, frame) || !frame.wait(5'000'000'000ull)) {
             return RHITestResult::fail("Recovered dispatch failed");
@@ -548,7 +549,7 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const uint32_t color = 1;
-        const render::ComputeDispatchBinding binding{.binding = 0, .textureView = context.outputTexture("color").view()};
+        const render::ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(metallic::render::OutputImageResourceParameters, output), .textureView = context.outputTexture("color").view()};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
             .pushData = &color, .pushDataSize = sizeof(color), .groupCountX = (context.width() + 7) / 8,
             .groupCountY = (context.height() + 7) / 8});

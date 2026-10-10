@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -41,13 +42,13 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "EnvironmentPrefilterFieldProbe",
             .entryPointName = "environmentPrefilterFieldProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 0}, {.binding = 1},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::SampledImage}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::EnvironmentPrefilterFieldProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::EnvironmentPrefilterFieldProbeResources, coefficients)},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::EnvironmentPrefilterFieldProbeResources, environment), .kind = render::ComputeResourceBindingKind::SampledImage}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 3},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kEnvironmentPrefilterFieldProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::EnvironmentPrefilterFieldProbeResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -55,9 +56,9 @@ public:
         const auto& environment = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
         auto* source = environment.radianceView;
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("field").buffer()},
-            {.binding = 1, .buffer = environment.prefilteredSpecularBuffer},
-            {.binding = 2, .textureViews = {&source, 1}}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::EnvironmentPrefilterFieldProbeResources, output), .buffer = context.outputBuffer("field").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::EnvironmentPrefilterFieldProbeResources, coefficients), .buffer = environment.prefilteredSpecularBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::EnvironmentPrefilterFieldProbeResources, environment), .textureViews = {&source, 1}}};
         return program_.dispatch({
             .commandBuffer = &context.commandBuffer(),
             .bindings = {bindings, 3},

@@ -206,7 +206,7 @@ public:
                 .pushConstantSize = sizeof(SceneMaterialVisualizationPush),
                 .bindings = bindings,
                 .debugName = "SceneMaterialVisualizationPass",
-                .resourceParameters = resourceParameterLayout<SceneResourceParameters>(),
+                .resourceParameterSize = sizeof(SceneResourceParameters),
             }, rayQueryProgram_, rayQueryProgramEncoder_,
             programLog);
         if (!programLog.empty()) {

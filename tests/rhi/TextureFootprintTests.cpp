@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
@@ -84,20 +85,20 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc binding{
-            .binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
+            .binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureFootprintProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .pushConstantSize = sizeof(TextureFootprintProbePush),
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kTextureFootprintProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::TextureFootprintProbeResources),
         }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding binding{
-            .binding = 0, .buffer = context.outputBuffer("cones").buffer()};
+            .binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureFootprintProbeResources, output), .buffer = context.outputBuffer("cones").buffer()};
         for (const auto& input : footprintCases()) {
             auto result = program_.dispatch({
                 .commandBuffer = &context.commandBuffer(),

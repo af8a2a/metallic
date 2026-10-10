@@ -417,7 +417,7 @@ public:
         const std::array bindings{ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .kind = ComputeResourceBindingKind::StorageBuffer},
             ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv, .bindings = bindings, .requiresRayQuery = false,
-            .resourceParameters = resourceParameterLayout<SceneResourceParameters>()}, log);
+            .resourceParameterSize = sizeof(SceneResourceParameters)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {

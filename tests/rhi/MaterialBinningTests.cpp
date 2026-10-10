@@ -1,9 +1,10 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -75,9 +76,9 @@ public:
             return {};
         }
         const render::ComputeResourceBindingDesc layout[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 1}, {.binding = 2}, {.binding = 3},
-            {.binding = 4}, {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, visibility), .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, records)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, instances)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, materials)},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output)}};
         const char* entries[] = {fixture_ ? "materialFixtureMain" : "materialReadbackResetMain",
             "materialIndirectProbeMain", "materialIndirectProbeMain"};
         for (uint32_t i = 0; i < (fixture_ ? 1u : 3u); ++i) {
@@ -96,7 +97,7 @@ public:
                 .pushConstantSize = 16,
                 .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
                 .requiresRayQuery = false,
-                .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
+                .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources),
             }, log);
             if (!result) { return result; }
             if (!fixture_ && i == 0) {
@@ -104,7 +105,7 @@ public:
                 result = incompatibleProgram_.initialize(*device_, {
                     .spirv = shader.spirv, .pushConstantSize = 20,
                     .bindings = {layout + 5, 4}, .requiresRayQuery = false,
-                    .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
+                    .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources),
                 }, log);
                 if (!result) { return result; }
             }
@@ -121,11 +122,11 @@ public:
         const uint32_t readbackGroups = (std::max(pixels, kBinCount) + 63) / 64;
         if (fixture_) {
             const render::ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .textureView = context.outputTexture("visibility").view()},
-                {.binding = 1, .buffer = context.outputBuffer("records").buffer()},
-                {.binding = 2, .buffer = context.outputBuffer("instances").buffer()},
-                {.binding = 3, .buffer = context.outputBuffer("materials").buffer()},
-                {.binding = 4, .buffer = context.outputBuffer("shadingMaterials").buffer()}};
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, visibility), .textureView = context.outputTexture("visibility").view()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, records), .buffer = context.outputBuffer("records").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, instances), .buffer = context.outputBuffer("instances").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, materials), .buffer = context.outputBuffer("materials").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials), .buffer = context.outputBuffer("shadingMaterials").buffer()}};
             return programs_[0].dispatch({
                 .commandBuffer = &commands,
                 .bindings = {bindings, 5},
@@ -163,8 +164,8 @@ public:
         };
         if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 5, .buffer = bins.bins}, {.binding = 6, .buffer = bins.tiles},
-            {.binding = 7, .buffer = bins.arguments}, {.binding = 8, .buffer = context.outputBuffer("data").buffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins), .buffer = bins.bins}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles), .buffer = bins.tiles},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments), .buffer = bins.arguments}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output), .buffer = context.outputBuffer("data").buffer()}};
         render::ComputeDispatchDesc dispatch{
             .commandBuffer = &commands,
             .bindings = {bindings, 4},
@@ -424,9 +425,9 @@ public:
         using namespace render;
         device_ = context.device;
         if (executables_->reset.valid()) { return {}; }
-        const ComputeResourceBindingDesc bindings[] = {{.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
+        const ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output)}};
         const ResourceComputeKernelDesc layout{.pushConstantSize = 16, .bindings = bindings, .requiresRayQuery = false,
-            .resourceParameters = kMaterialBinningProbeLayout};
+            .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources)};
         executables_->programs.resize(count_);
         for (uint32_t program = 0; program <= count_; ++program) {
             const std::string binCount = std::to_string(count_), slot = std::to_string(program % count_);
@@ -477,8 +478,8 @@ public:
             bins = *result;
         }
         uint32_t push[]{context.width(), context.height(), count_, phase};
-        const ComputeDispatchBinding bindings[] = {{.binding = 5, .buffer = bins.bins}, {.binding = 6, .buffer = bins.tiles},
-            {.binding = 7, .buffer = bins.arguments}, {.binding = 8, .buffer = context.outputBuffer("data").buffer()}};
+        const ComputeDispatchBinding bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins), .buffer = bins.bins}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles), .buffer = bins.tiles},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments), .buffer = bins.arguments}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output), .buffer = context.outputBuffer("data").buffer()}};
         BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
             .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};

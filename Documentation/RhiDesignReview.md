@@ -160,7 +160,9 @@
 
 2026-10-10：中央布局表已删除。生产动态清单直接用 `ResourceMember.h` 引用共享参数结构成员，
 偏移、类别和字段格式由成员推导；不再维护手写编号到字段的映射。shader wire ABI 未变，
-原始数字 ID 不属于 CPU/Slang 共享 ABI。以下为改动前的审查快照。
+原始数字 ID 不属于 CPU/Slang 共享 ABI。测试也已迁移，`TestResourceLayouts.h`、
+`ComputeResourceField` / `ComputeResourceLayout` 和旧表查找分支已删除；成员标识拒绝整数构造。
+以下为改动前的审查快照。
 
 `Core/NamedResourceLayouts.h`（434 行，`6e7f9ab6a` 未触及）实测：377 个 `offsetof` 字段行，只有 **122** 个不同的 `(结构体, 字段)` 组合，即 **约 68% 重复**。重复形式是同一个 `SceneResourceParameters` 字段被声明 4–6 次：
 

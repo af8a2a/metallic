@@ -3,6 +3,7 @@
 #include "Runtime/Render/Core/ComputeKernel.h"
 
 #include <cstdint>
+#include <compare>
 #include <memory>
 #include <span>
 #include <string>
@@ -19,11 +20,28 @@ enum class ComputeResourceBindingKind : uint8_t {
     Sampler,
 };
 
+enum class ResourceMemberFormat : uint8_t { Handle, IndexSpan, DataSpan };
+
+// A reference to a shared parameter member, never an arbitrary numeric slot.
+class ComputeResourceMember {
+public:
+    constexpr ComputeResourceMember() = default;
+    constexpr bool valid() const { return key_ != UINT32_MAX; }
+    constexpr uint32_t offset() const { return key_ & 0xffffu; }
+    constexpr ComputeResourceBindingKind kind() const { return ComputeResourceBindingKind((key_ >> 16) & 0xffu); }
+    constexpr ResourceMemberFormat format() const { return ResourceMemberFormat(key_ >> 24); }
+    constexpr uint32_t key() const { return key_; }
+    auto operator<=>(const ComputeResourceMember&) const = default;
+private:
+    template<typename Owner, typename Member, bool Data>
+    friend consteval ComputeResourceMember resourceMember(uint32_t offset);
+    constexpr explicit ComputeResourceMember(uint32_t key) : key_(key) {}
+    uint32_t key_ = UINT32_MAX;
+};
+
 struct ComputeResourceBindingDesc {
-    // Production manifests use METALLIC_RESOURCE_MEMBER / METALLIC_DATA_MEMBER.
-    // Numeric input IDs require an explicit table and are retained for legacy tests only.
-    // Neither form is sent to the shader.
-    uint32_t binding = 0;
+    // Construct with METALLIC_RESOURCE_MEMBER / METALLIC_DATA_MEMBER.
+    ComputeResourceMember binding;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
     // DataBuffer only: explicit element ABI for a descriptor-backed buffer span.
@@ -35,23 +53,7 @@ struct ComputeResourceBindingDesc {
     bool operator==(const ComputeResourceBindingDesc&) const = default;
 };
 
-enum class ComputeResourceFieldFormat : uint8_t { Handle, IndexSpan, DataSpan };
-
-struct ComputeResourceField {
-    uint32_t binding = 0;
-    ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
-    uint32_t offset = 0;
-    ComputeResourceFieldFormat format = ComputeResourceFieldFormat::Handle;
-    bool operator==(const ComputeResourceField&) const = default;
-};
-
-struct ComputeResourceLayout {
-    uint32_t size = 0;
-    // Empty for member-based manifests. Explicit input-ID maps are a legacy test adapter.
-    std::span<const ComputeResourceField> fields;
-};
-
-// Creation description for the resource-input compatibility boundary. New passes use typed parameters.
+// Creation description for dynamic resource manifests. New static passes use typed parameters.
 struct ResourceComputeKernelDesc {
     std::span<const uint32_t> spirv;
     uint32_t pushConstantSize = 0;
@@ -61,7 +63,7 @@ struct ResourceComputeKernelDesc {
     // Optional explicit cache borrowed during creation. Null uses ShaderRegistry.
     PipelineCache* pipelineCache = nullptr;
     // Required direct CPU/Slang resource struct. There is no implicit slot layout.
-    ComputeResourceLayout resourceParameters;
+    uint32_t resourceParameterSize = 0;
 };
 
 struct CPUProfileRecorder;
@@ -79,7 +81,7 @@ struct ComputeDispatchStats {
 };
 
 struct ComputeDispatchBinding {
-    uint32_t binding = 0;
+    ComputeResourceMember binding;
     union {
         RayTracingAccelerationStructure* accelerationStructure = nullptr;
         const SamplerDesc* sampler;
