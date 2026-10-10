@@ -763,6 +763,13 @@ bool EditorApplication::runMultiViewportSmokeTest()
     SDL_WindowID closedWindowId = 0;
     for (uint32_t index = 0; index < 16; ++index) {
         auto profileFrame = profiler_.beginFrame();
+        if (testFinalBlit && index == 4) {
+            viewportView_.setAdaptiveResolution(true);
+            renderGraph_.markDirty();
+        } else if (testFinalBlit && index == 7) {
+            viewportView_.setRenderResolution(1920, 1080);
+            renderGraph_.markDirty();
+        }
         if (testFinalBlit && index == 2) {
             const render::RenderGraphEdge* edge = renderGraph_.addEdge(sourceOutput, finalInput);
             if (!expect(edge != nullptr, "Connect scene output to FinalBlit")) {
@@ -830,6 +837,18 @@ bool EditorApplication::runMultiViewportSmokeTest()
                 renderGraph_.outputs().empty(),
                 "FinalBlit presents without manually marked outputs")) {
             return false;
+        }
+
+        if (testFinalBlit && index >= 2 && index < 8) {
+            const auto* source = graphExecutor_->outputResource(sourceOutput);
+            const auto* final = graphExecutor_->outputResource(activePreviewOutput_);
+            if (!expect(source != nullptr && final != nullptr &&
+                    source->desc.width == viewportView_.renderWidth(graphExecutor_->width()) &&
+                    source->desc.height == viewportView_.renderHeight(graphExecutor_->height()) &&
+                    final->desc.width == graphExecutor_->width() && final->desc.height == graphExecutor_->height(),
+                    "Fixed/adaptive scene extent and actual FinalBlit extent match the selected view mode")) {
+                return false;
+            }
         }
 
         if (index == 10 || index == 11) {

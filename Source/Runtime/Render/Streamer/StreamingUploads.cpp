@@ -81,7 +81,7 @@ Result<> StreamingUploads::flush(CommandBuffer& commandBuffer, const StreamUploa
 {
     if (streamer_ != nullptr) {
         const StreamerStats streamerStats = streamer_->stats();
-        const StreamerPendingCopyStats pendingCopies = streamerStats.pendingCopies;
+        const StreamerPendingCopyStats pendingCopies = streamer_->pendingCopyStats();
         ++stats_.flushCount;
         if (pendingCopies.copyCount() > 0) {
             ++stats_.flushesWithWork;

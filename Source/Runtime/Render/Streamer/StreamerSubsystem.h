@@ -7,6 +7,7 @@
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
 #include <optional>
+#include <unordered_set>
 
 namespace metallic::render {
 
@@ -25,6 +26,7 @@ public:
     Result<> recordPostGraph(const RenderSubsystemFrameContext& context, std::string& log) override;
     void endFrame(const RenderSubsystemFrameContext& context) override;
     void shutdown() override;
+    void appendDebugBindings(const RenderSubsystemFrameContext& context, std::vector<DebugResourceBinding>& bindings) override;
 
     Result<> prepareScene(const SceneStreamingRequirements& requirements,
         const RenderGraphProperties& properties, const scene::Scene* scene,
@@ -64,6 +66,13 @@ private:
     // Sessions are view-specific: traversal feedback must not be consumed by
     // another view. The subsystem retains ownership until all borrowers retire.
     std::vector<std::shared_ptr<MeshletStreamRuntime>> streams_;
+    struct DebugStreamIdentity {
+        std::weak_ptr<MeshletStreamRuntime> owner;
+        uint64_t id = 0;
+    };
+    std::unordered_map<const MeshletStreamRuntime*, DebugStreamIdentity> debugStreamIds_;
+    std::unordered_set<const MeshletStreamRuntime*> debugFrameStreams_;
+    uint64_t nextDebugStreamId_ = 0;
     // Do not populate replacement roots while old passes still own their stream.
     struct InitialLoad {
         std::weak_ptr<MeshletStreamRuntime> runtime;

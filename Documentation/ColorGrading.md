@@ -22,6 +22,10 @@ HDR10 encodes BT.2020/PQ after FP16 UI composition. See [display profiles](Displ
 - Coordinates use log2(1 + linear / 0.01) / log2(1 + 65504 / 0.01) per channel.
   Black maps exactly to zero; the finite nonnegative FP16 range is covered.
   Out-of-domain input clamps. Sampling is trilinear with texel-center coordinates.
+- Generation derives dispatch coverage and endpoint coordinates from the actual
+  volume dimensions, matching the dimension-based lookup. All 64 cubed voxels
+  are written. Large near-white regions in SDR volume previews are expected:
+  the log-shaped domain extends to 65504, well into the tone mapper's highlights.
 - SDR cube values are sRGB display code values; HDR values are absolute scRGB
   (1 = 80 nits). PQ is not baked into the cube. Display EV applies once before lookup.
 - The cube regenerates each execution, supporting live edits, reload, resize and
@@ -91,7 +95,8 @@ configuration, then run:
 
     .\build-scheduling-release\tests\MetallicRHITests.exe --gtest_filter=*color_grading_*:*hdr_*:*final_blit* --rhi-validation --output-dir .cache/lut-validation
 
-GPU coverage includes native volume allocation, default ACES2, the Film 18% anchor,
+GPU coverage includes native volume allocation, full 64-cubed finite RGB/alpha
+readback with a nonmatching viewport, default ACES2, the Film 18% anchor,
 custom LUT axes/interpolation/weights, live updates without recompilation, exposure
 placement, black, reload, profile/peak changes and dimension mismatch rejection.
 Fixed OpenPBR captures use 384 x 384, 64 frames / 256 spp.

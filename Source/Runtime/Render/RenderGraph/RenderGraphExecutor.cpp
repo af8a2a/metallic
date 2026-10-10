@@ -415,6 +415,8 @@ struct RenderGraphExecutor::Impl {
     std::unordered_map<std::string, MemoryBudgetReservation> firstFeatureReservations;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t renderWidth = 0;
+    uint32_t renderHeight = 0;
     Format defaultFormat = Format::RGBA8Unorm;
     DisplayOutputParameters displayOutput;
     HistoryResourceManager* historyResources = nullptr;
@@ -532,6 +534,12 @@ struct RenderGraphExecutor::Impl {
                     resource.buffer ? "buffer" : "texture"}, {"size", resource.bufferDesc.size}, {"stride", resource.bufferDesc.structureStride},
                 {"width", resource.desc.width}, {"height", resource.desc.height}, {"depth", resource.desc.depth},
                 {"textureType", static_cast<uint32_t>(resource.desc.type)}, {"format", static_cast<uint32_t>(resource.desc.format)}});
+            if (resource.buffer) { debugGraph["resources"].back()["layout"] = resource.debugLayout.empty() ? "raw" : resource.debugLayout; }
+        }
+        debugGraph["subsystems"] = debug::DebugValue::array();
+        for (const auto& id : subsystemHost->debugSubsystemIds(requiredSubsystemViews())) {
+            debugGraph["subsystems"].push_back({{"name", "subsystem." + id}, {"subsystem", id},
+                {"active", true}, {"checkpoints", {"AfterGraph"}}});
         }
         debugSceneIdentity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
         debugObserver->compiled(debugGraph);
@@ -572,18 +580,18 @@ struct RenderGraphExecutor::Impl {
         auto* view = renderView();
         frameViewBuffer = nullptr;
         if (view == nullptr) { return {}; }
-        uint32_t renderWidth = width, renderHeight = height;
+        uint32_t sceneWidth = renderWidth, sceneHeight = renderHeight;
         // Resolution negotiation already resolved scene producers before recording.
         // The view uses the scene's render extent, not an upscaler's display extent.
         for (const auto& node : executionList) {
             if (node.sceneDependency.source != RenderGraphSceneSource::None &&
                 !node.sceneBinding.localView) {
-                renderWidth = node.executionWidth;
-                renderHeight = node.executionHeight;
+                sceneWidth = node.executionWidth;
+                sceneHeight = node.executionHeight;
                 break;
             }
         }
-        frameView = view->constants(frameIndex, renderWidth, renderHeight, width, height,
+        frameView = view->constants(frameIndex, sceneWidth, sceneHeight, renderWidth, renderHeight,
             hasPreviousView && previousViewCompletion.isSubmitted() ? &previousView : nullptr);
         frameCameraProperties = view->cameraProperties();
         RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commands);
@@ -865,10 +873,11 @@ struct RenderGraphExecutor::Impl {
         const RenderGraphCompileContext context{
             .device = device, .graphicsQueue = device->getQueue(QueueType::Graphics),
             .runtimeScene = runtimeScene,
-            .renderWorld = world, .subsystemHost = subsystemHost, .width = width, .height = height,
+            .renderWorld = world, .subsystemHost = subsystemHost, .width = renderWidth, .height = renderHeight,
             .defaultFormat = defaultFormat, .debugReadback = debugObserver != nullptr,
             .renderView = renderView(),
             .displayOutput = displayOutput,
+            .presentationWidth = width, .presentationHeight = height,
         };
         for (size_t index = 0; index < executionList.size(); ++index) {
             auto& node = executionList[index];
@@ -1225,11 +1234,11 @@ struct RenderGraphExecutor::Impl {
         for (auto& [fullName, extent] : resolvedExtents) {
             (void)fullName;
             if (extent.width == 0) {
-                extent.width = width;
+                extent.width = renderWidth;
                 extent.widthSource = "graph default width";
             }
             if (extent.height == 0) {
-                extent.height = height;
+                extent.height = renderHeight;
                 extent.heightSource = "graph default height";
             }
         }
@@ -1239,8 +1248,8 @@ struct RenderGraphExecutor::Impl {
     Result<> resolveNodeExecutionExtents(std::string& log)
     {
         for (CompiledNode& node : executionList) {
-            node.executionWidth = width;
-            node.executionHeight = height;
+            node.executionWidth = renderWidth;
+            node.executionHeight = renderHeight;
             bool foundTextureOutput = false;
             for (const RenderGraphField& field : node.reflection.fields()) {
                 if (field.visibility != RenderGraphFieldVisibility::Output ||
@@ -1575,6 +1584,15 @@ struct RenderGraphExecutor::Impl {
                         .logicalResourceId = (uint64_t{1} << 63) | nextAccelerationStructureResourceId.fetch_add(1),
                     };
                 } else {
+                    if (!field.debugLayout.empty()) {
+                        static const auto layouts = renderDebugLayouts();
+                        const auto layout = layouts.find(field.debugLayout);
+                        if (layout == layouts.end() || !layout->second.stride ||
+                            layout->second.stride != field.structureStride || field.size % layout->second.stride != 0) {
+                            log = validationPrefix("buffer debug layout/stride mismatch for '" + fullName + "': " + field.debugLayout);
+                            return makeError(Error::InvalidArgument);
+                        }
+                    }
                     BufferUsageBits usage = bufferUsageForField(field);
                     if (usage == BufferUsageBits::None) {
                         usage = BufferUsageBits::Storage;
@@ -1637,6 +1655,7 @@ struct RenderGraphExecutor::Impl {
                         .bufferDesc = desc,
                         .bufferViewDesc = viewDesc,
                         .state = ResourceState::Undefined,
+                        .debugLayout = field.debugLayout,
                     };
                 }
 
@@ -2793,6 +2812,8 @@ Result<> RenderGraphExecutor::compile(
         impl_->hasOwnedView = !graph.viewProperties().empty();
         if (impl_->hasOwnedView && (!impl_->ownedView.setCameraProperties(
                 graph.viewProperties().value("camera", RenderGraphProperties::object())) ||
+                !impl_->ownedView.setRenderResolutionProperties(
+                    graph.viewProperties().value("renderResolution", RenderGraphProperties::object())) ||
                 !graph.viewProperties().value("temporalJitter", RenderGraphProperties(false)).is_boolean())) {
             log = "RenderGraph contains invalid view properties";
             impl_->isCompiled = false;
@@ -2864,7 +2885,11 @@ Result<> RenderGraphExecutor::compile(
         }
     }
 
-    const bool dimensionsChanged = impl_->width != width || impl_->height != height;
+    const auto* view = impl_->renderView();
+    const uint32_t renderWidth = view != nullptr ? view->renderWidth(width) : width;
+    const uint32_t renderHeight = view != nullptr ? view->renderHeight(height) : height;
+    const bool dimensionsChanged = impl_->width != width || impl_->height != height ||
+        impl_->renderWidth != renderWidth || impl_->renderHeight != renderHeight;
     if (!options.displayOutput.valid()) {
         log = "Invalid display output parameters";
         return makeError(Error::InvalidArgument);
@@ -2876,6 +2901,8 @@ Result<> RenderGraphExecutor::compile(
     impl_->device = &device;
     impl_->width = width;
     impl_->height = height;
+    impl_->renderWidth = renderWidth;
+    impl_->renderHeight = renderHeight;
 
     StreamerSubsystem* sceneResources = impl_->streamerSubsystem();
     if (sceneResources == nullptr) {
@@ -2890,12 +2917,13 @@ Result<> RenderGraphExecutor::compile(
         .runtimeScene = impl_->runtimeScene,
         .renderWorld = impl_->world,
         .subsystemHost = impl_->subsystemHost,
-        .width = width,
-        .height = height,
+        .width = renderWidth,
+        .height = renderHeight,
         .defaultFormat = impl_->defaultFormat,
         .debugReadback = impl_->debugObserver != nullptr,
         .renderView = impl_->renderView(),
         .displayOutput = impl_->displayOutput,
+        .presentationWidth = width, .presentationHeight = height,
     };
 
     if (auto* gpuScene = impl_->subsystemHost->get<GPUSceneSubsystem>()) {
@@ -3062,12 +3090,13 @@ Result<> RenderGraphExecutor::reloadShaders(std::string& log)
         .runtimeScene = impl_->runtimeScene,
         .renderWorld = impl_->world,
         .subsystemHost = impl_->subsystemHost,
-        .width = impl_->width,
-        .height = impl_->height,
+        .width = impl_->renderWidth,
+        .height = impl_->renderHeight,
         .defaultFormat = impl_->defaultFormat,
         .debugReadback = impl_->debugObserver != nullptr,
         .renderView = impl_->renderView(),
         .displayOutput = impl_->displayOutput,
+        .presentationWidth = impl_->width, .presentationHeight = impl_->height,
         .shaderReload = true,
     };
 
@@ -3328,6 +3357,10 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         upload != nullptr ? upload->streamer() : nullptr,
         requiredSubsystems,
         subsystemLog);
+    if (graphResult && postResult && impl_->debugObserver) {
+        impl_->subsystemHost->publishDebugResources(commandBuffer, upload != nullptr ? upload->streamer() : nullptr,
+            requiredSubsystems, *impl_->debugObserver);
+    }
     const auto cpuEnd = std::chrono::steady_clock::now();
     impl_->lastExecutionStats.cpuMilliseconds =
         std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
@@ -4189,6 +4222,10 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         result = impl_->subsystemHost->recordPostGraph(*segments[index].commandBuffer,
             upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, log);
         if (!result) { return abort(result); }
+        if (impl_->debugObserver) {
+            impl_->subsystemHost->publishDebugResources(*segments[index].commandBuffer,
+                upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, *impl_->debugObserver);
+        }
         if (graphicsTimings) { impl_->finishGpuTiming(*segments[index].commandBuffer, true); }
         result = segments[index].commandBuffer->end();
         if (!result) { return abort(result); }
@@ -4393,7 +4430,11 @@ const RenderGraphStreamingStats& RenderGraphExecutor::streamingStats() const
 
 bool RenderGraphExecutor::compiled() const
 {
-    return impl_->isCompiled && (!impl_->hasResourceAliases() ||
+    const auto* view = impl_->renderView();
+    const bool resolutionMatches = view == nullptr ||
+        (impl_->renderWidth == view->renderWidth(impl_->width) &&
+            impl_->renderHeight == view->renderHeight(impl_->height));
+    return impl_->isCompiled && resolutionMatches && (!impl_->hasResourceAliases() ||
         std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
             [](const auto& point) { return point.isCancelled(); }));
 }

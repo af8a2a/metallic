@@ -218,6 +218,12 @@ RenderGraphField& RenderGraphField::buffer(uint64_t newSize, uint32_t newStructu
     return *this;
 }
 
+RenderGraphField& RenderGraphField::bufferLayout(std::string layout)
+{
+    debugLayout = std::move(layout);
+    return *this;
+}
+
 RenderGraphField& RenderGraphField::setOptional(bool value)
 {
     optional = value;
@@ -706,7 +712,7 @@ void RenderGraphExecutionContext::debugCheckpoint(std::string_view name,
             if (!resource) { continue; }
             resources.push_back({.id = passName_ + "." + binding.fieldName, .buffer = resource->buffer,
                 .texture = resource->texture, .state = resource->state,
-                .layout = "raw", // A stride does not identify scalar/field types.
+                .layout = resource->debugLayout.empty() ? "raw" : resource->debugLayout,
                 .metadata = {{"visibility", binding.visibility == RenderGraphFieldVisibility::Input ? "input" : "output"}}});
         }
     }

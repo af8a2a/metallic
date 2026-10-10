@@ -166,6 +166,9 @@ struct RenderGraphField {
     uint32_t depth = 1;
     uint64_t size = 0;
     uint32_t structureStride = 0;
+    // Output element schema registered by renderDebugLayouts(). Empty means raw;
+    // stride alone never identifies a type. Input aliases inherit the producer schema.
+    std::string debugLayout;
     MemoryLocation memoryLocation = MemoryLocation::Device;
     // Aggregate internal operations; access/state remain the stable pass boundary.
     std::vector<RenderGraphInternalAccess> internalAccesses;
@@ -176,6 +179,7 @@ struct RenderGraphField {
     // Depth zero is allowed on inputs to accept a producer's declared depth.
     RenderGraphField& texture3D(uint32_t newWidth, uint32_t newHeight, uint32_t newDepth);
     RenderGraphField& buffer(uint64_t newSize, uint32_t newStructureStride = 0);
+    RenderGraphField& bufferLayout(std::string layout);
     RenderGraphField& accelerationStructure();
     RenderGraphField& accelerationStructureRead();
     RenderGraphField& buildRead();
@@ -237,6 +241,11 @@ struct RenderGraphCompileContext {
     RenderView* renderView = nullptr;
     DisplayOutputParameters displayOutput;
 
+    // Actual viewport extent. width/height remain the fixed render/reconstruction
+    // target; only presentation passes resample to these dimensions.
+    uint32_t presentationWidth = 0;
+    uint32_t presentationHeight = 0;
+
     // Reload must keep the last successful graph instead of an initial error material.
     bool shaderReload = false;
 
@@ -267,6 +276,7 @@ struct RenderGraphResource {
     ResourceState state = ResourceState::Undefined;
     BindlessHandle bindlessHandle;
     BindlessHandle sampledImageBindlessHandle;
+    std::string debugLayout;
 };
 
 class TextureHandle {

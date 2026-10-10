@@ -19,10 +19,30 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"i32", 4, {{"value", "i32", 0}}});
     add({"u64", 8, {{"value", "u64", 0}}});
     add({"f32", 4, {{"value", "f32", 0}}});
+    for (const auto& [name, scalar] : {std::pair{"float", "f32"}, {"uint", "u32"}, {"int", "i32"}}) {
+        for (uint32_t count = 2; count <= 4; ++count) {
+            DebugTypeDesc type{std::string(name) + std::to_string(count), count * 4};
+            for (uint32_t i = 0; i < count; ++i) {
+                type.fields.push_back({std::string(1, "xyzw"[i]), scalar, i * 4});
+            }
+            add(std::move(type));
+        }
+    }
+    // AutoExposure.slang stores one float4 in this order through RWBufferSpan<float4>.
+    // This semantic view is checked against the actual GPU pass by the inspector smoke.
+    add({"AutoExposureState", 16, {{"multiplier", "f32", 0}, {"adaptedEV100", "f32", 4},
+        {"targetEV100", "f32", 8}, {"luminance", "f32", 12}}});
     add({"RGBA8", 4, {{"r", "u8", 0}, {"g", "u8", 1}, {"b", "u8", 2}, {"a", "u8", 3}}});
     add({"BGRA8", 4, {{"b", "u8", 0}, {"g", "u8", 1}, {"r", "u8", 2}, {"a", "u8", 3}}});
     add({"RGBA16F", 8, {{"r", "f16", 0}, {"g", "f16", 2}, {"b", "f16", 4}, {"a", "f16", 6}}});
     add({"RGBA32F", 16, {{"r", "f32", 0}, {"g", "f32", 4}, {"b", "f32", 8}, {"a", "f32", 12}}});
+    add({"R16F", 2, {{"r", "f16", 0}}});
+    add({"RG16F", 4, {{"r", "f16", 0}, {"g", "f16", 2}}});
+    add({"RG32F", 8, {{"r", "f32", 0}, {"g", "f32", 4}}});
+    add({"RG32U", 8, {{"r", "u32", 0}, {"g", "u32", 4}}});
+    add({"RGBA32U", 16, {{"r", "u32", 0}, {"g", "u32", 4}, {"b", "u32", 8}, {"a", "u32", 12}}});
+    add({"RG32I", 8, {{"r", "i32", 0}, {"g", "i32", 4}}});
+    add({"RGBA32I", 16, {{"r", "i32", 0}, {"g", "i32", 4}, {"b", "i32", 8}, {"a", "i32", 12}}});
 #define DEBUG_FIELD(T, F) DebugFieldDesc{#F, "u32", static_cast<uint32_t>(offsetof(T, F))}
     add({"MeshletLODSelectionHeader", 16, {{"count", "u32", 0}, {"capacity", "u32", 4},
         {"candidateCount", "u32", 8}, {"overflow", "u32", 12}}});
@@ -163,6 +183,15 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
         values["streaming"] = {{"instances", DebugValue::array({streaming->debugSnapshot(
             context.properties().value("debugStreamingPages", true))})}};
         values["streaming"]["instances"][0]["pass"] = context.passName();
+    }
+    for (auto& binding : bindings) {
+        if (binding.id.starts_with("gpuScene.")) {
+            binding.metadata["subsystem"] = std::string(GPUSceneSubsystem::kSubsystemId);
+            binding.metadata["resourceName"] = binding.id.substr(9);
+        } else if (binding.id.starts_with("streaming.")) {
+            binding.metadata["subsystem"] = "render.streamer";
+            binding.metadata["resourceName"] = binding.id.substr(10);
+        }
     }
     context.debugCheckpoint(checkpoint, bindings, values);
 }

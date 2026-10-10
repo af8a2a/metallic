@@ -1,0 +1,262 @@
+{
+  "date": "2026-10-07",
+  "timezone": "Asia/Shanghai",
+  "baseline_commit": "d079a20ca1889cd4f12ef2697f3692216c3de110",
+  "cpu": "AMD Ryzen 7 7800X3D, 8 cores / 16 threads",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "driver": "617.42",
+  "build": "build-pass-stages-nrd; Ninja; MSVC 14.51.36231; Release",
+  "power_plan": "Windows Balanced",
+  "affinity": "unpinned",
+  "validation_for_benchmark": false,
+  "completion_tracked_for_benchmark": false,
+  "warmup_rounds": 3,
+  "measured_rounds_per_process_case": 7,
+  "requests_per_worker": {
+    "64": 32768,
+    "4096": 8192
+  },
+  "sample_rows": 896,
+  "raw_csv_sha256": "1e6be2eb3fbbb5cdd4e76d118ca2aad885bdd0015e15e704873e63751fdf2349",
+  "process_order": [
+    {
+      "run": "long-0",
+      "mode": "baseline"
+    },
+    {
+      "run": "long-1",
+      "mode": "batches"
+    },
+    {
+      "run": "long-2",
+      "mode": "batches"
+    },
+    {
+      "run": "long-3",
+      "mode": "baseline"
+    },
+    {
+      "run": "long-4",
+      "mode": "batches"
+    },
+    {
+      "run": "long-5",
+      "mode": "baseline"
+    },
+    {
+      "run": "long-6",
+      "mode": "baseline"
+    },
+    {
+      "run": "long-7",
+      "mode": "batches"
+    }
+  ],
+  "baseline_hashes": [
+    {
+      "Algorithm": "SHA256",
+      "Hash": "6C9F9CB78B51025C510A10CAA81325EF92F360CCA6B849799E4B925FDF7CD8F2",
+      "Path": "E:\\metallic\\tests\\rhi\\StreamerConcurrencyTests.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "860AF9DF3287CA9A0431C123C2DF1413E56D64325C40C1F23A06BC60E39A1DE6",
+      "Path": "E:\\metallic\\Source\\Runtime\\Render\\Streamer\\UploadStreamer.cpp"
+    },
+    {
+      "Algorithm": "SHA256",
+      "Hash": "C50718E7AF78DC1E477C4F2B3DEB46F9452AB558D11459F426360934CA72787C",
+      "Path": "E:\\metallic\\build-pass-stages-nrd\\tests\\MetallicStreamerLongBaseline.exe"
+    }
+  ],
+  "final_source_hashes": {
+    "Source/Runtime/Render/Streamer/UploadStreamer.cpp": "7e536c6845294a4668f92417b12e746da3bb35dfa872f22f63c2c66e6c317d46",
+    "Source/Runtime/Render/Streamer/UploadStreamer.h": "400071bf4fdb4bda0e96ddc6b7d51ae6a93d3a799dd763bf6d112aaeb8f016b6",
+    "tests/rhi/StreamerConcurrencyTests.cpp": "7a11d0f709f19c480391721045d1037b862f7156f4b849b74d97d2f39c63256e",
+    "tests/rhi/GPUDecompressionTests.cpp": "c49a68df85a83dedc2700caef26c9a1276d89c03d78a43147b1cc80e6b018d70"
+  },
+  "final_executable": {
+    "path": "build-pass-stages-nrd/tests/MetallicStreamerLongFinal.exe",
+    "sha256": "9e207a94968c8b9722955337f231eac07573a8028c1f75ead49f9dbdbf1e40e3"
+  },
+  "correctness": {
+    "passed": 39,
+    "skipped_opt_in_benchmark": 1,
+    "vulkan_validation": true,
+    "log": ".cache\\benchmarks\\streamer-thread-safety\\long-regression.log",
+    "tsan": false,
+    "forced_noncoherent": false,
+    "log_sha256": "a1a5bc3292f669bf41b8ebb25128c8f2fdb3d10d4681dae28f0ff0c4d6785601",
+    "vuid_count": 0
+  },
+  "summary": [
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 64,
+      "threads": 1,
+      "baseline_requests_per_second": 3240490.0,
+      "final_requests_per_second": 3248395.0,
+      "change_percent": 0.24394458862702084,
+      "baseline_ns_per_request": 308.5953050310293,
+      "final_ns_per_request": 307.8443354333448
+    },
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 64,
+      "threads": 2,
+      "baseline_requests_per_second": 2960595.0,
+      "final_requests_per_second": 2852460.0,
+      "change_percent": -3.6524752625739065,
+      "baseline_ns_per_request": 337.76994151513463,
+      "final_ns_per_request": 350.5745917558879
+    },
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 64,
+      "threads": 4,
+      "baseline_requests_per_second": 2709220.0,
+      "final_requests_per_second": 2656560.0,
+      "change_percent": -1.9437328825270717,
+      "baseline_ns_per_request": 369.1099283188519,
+      "final_ns_per_request": 376.42665703014427
+    },
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 64,
+      "threads": 8,
+      "baseline_requests_per_second": 2746075.0,
+      "final_requests_per_second": 2566295.0,
+      "change_percent": -6.546798612565208,
+      "baseline_ns_per_request": 364.1561137259543,
+      "final_ns_per_request": 389.6668153895012
+    },
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 4096,
+      "threads": 1,
+      "baseline_requests_per_second": 2892050.0,
+      "final_requests_per_second": 2726085.0,
+      "change_percent": -5.738662886187996,
+      "baseline_ns_per_request": 345.7754879756574,
+      "final_ns_per_request": 366.8264195723904
+    },
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 4096,
+      "threads": 2,
+      "baseline_requests_per_second": 2613500.0,
+      "final_requests_per_second": 2253275.0,
+      "change_percent": -13.783240864740765,
+      "baseline_ns_per_request": 382.6286588865506,
+      "final_ns_per_request": 443.798471114267
+    },
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 4096,
+      "threads": 4,
+      "baseline_requests_per_second": 2438370.0,
+      "final_requests_per_second": 2262645.0,
+      "change_percent": -7.20665854648802,
+      "baseline_ns_per_request": 410.1100325217256,
+      "final_ns_per_request": 441.9606257278539
+    },
+    {
+      "workload": "stage_only",
+      "bytes_per_request": 4096,
+      "threads": 8,
+      "baseline_requests_per_second": 2447280.0,
+      "final_requests_per_second": 2340655.0,
+      "change_percent": -4.356877839887552,
+      "baseline_ns_per_request": 408.61691347128243,
+      "final_ns_per_request": 427.23083923089905
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 64,
+      "threads": 1,
+      "baseline_requests_per_second": 2385930.0,
+      "final_requests_per_second": 1881445.0,
+      "change_percent": -21.144166006546715,
+      "baseline_ns_per_request": 419.123779825896,
+      "final_ns_per_request": 531.5063687750638
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 64,
+      "threads": 2,
+      "baseline_requests_per_second": 1883005.0,
+      "final_requests_per_second": 1933620.0,
+      "change_percent": 2.6879907382083346,
+      "baseline_ns_per_request": 531.0660354061725,
+      "final_ns_per_request": 517.1646962691739
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 64,
+      "threads": 4,
+      "baseline_requests_per_second": 1779315.0,
+      "final_requests_per_second": 2170440.0,
+      "change_percent": 21.981773884893908,
+      "baseline_ns_per_request": 562.0140334904163,
+      "final_ns_per_request": 460.736071948545
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 64,
+      "threads": 8,
+      "baseline_requests_per_second": 1742195.0,
+      "final_requests_per_second": 2045345.0,
+      "change_percent": 17.400463208768247,
+      "baseline_ns_per_request": 573.988560407991,
+      "final_ns_per_request": 488.9150730072433
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 4096,
+      "threads": 1,
+      "baseline_requests_per_second": 1865230.0,
+      "final_requests_per_second": 2054115.0,
+      "change_percent": 10.126633176605559,
+      "baseline_ns_per_request": 536.1269119625998,
+      "final_ns_per_request": 486.82766057401847
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 4096,
+      "threads": 2,
+      "baseline_requests_per_second": 1785935.0,
+      "final_requests_per_second": 2173535.0,
+      "change_percent": 21.702917519394592,
+      "baseline_ns_per_request": 559.9307925540403,
+      "final_ns_per_request": 460.08000791337616
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 4096,
+      "threads": 4,
+      "baseline_requests_per_second": 1747415.0,
+      "final_requests_per_second": 2089200.0,
+      "change_percent": 19.559463550444512,
+      "baseline_ns_per_request": 572.2739017348483,
+      "final_ns_per_request": 478.65211564235113
+    },
+    {
+      "workload": "stage_record_16",
+      "bytes_per_request": 4096,
+      "threads": 8,
+      "baseline_requests_per_second": 1664190.0,
+      "final_requests_per_second": 1932930.0,
+      "change_percent": 16.148396517224594,
+      "baseline_ns_per_request": 600.8929268893576,
+      "final_ns_per_request": 517.3493090799977
+    }
+  ],
+  "excluded_diagnostics": [
+    "baseline-a",
+    "final-a",
+    "measured-a through measured-d",
+    "paired-0 through paired-7",
+    "optimized-0 through optimized-7"
+  ],
+  "exclusion_reason": "The entire earlier short-sample protocol used 2048 requests and one warmup, producing sub-ms samples sensitive to scheduling; no final-protocol samples were excluded."
+}

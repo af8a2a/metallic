@@ -84,11 +84,21 @@ public:
             for (uint32_t iteration = 0; iteration < 7; ++iteration) {
                 requireGpuPage(bool(frame.begin(iteration)) && bool(pool->reset()) && bool(commands->begin(frame.submissionContext())) &&
                     bool(streamer->beginFrame(frame)), "Frame begin");
-                requireGpuPage(!streamer->streamDecompressedBufferData(stored, tiles, *destination, 1), "Misaligned destination accepted");
-                requireGpuPage(streamer->streamDecompressedBufferData(stored, tiles, *destination, 0), "GPU page staging");
-                auto receipt = streamer->pendingCopyCompletion();
+                StreamerCopyBatch batch;
+                if (iteration % 2) {
+                    auto created = streamer->beginCopyBatch();
+                    requireGpuPage(bool(created), "Explicit decompression batch creation");
+                    batch = *created;
+                }
+                requireGpuPage(!streamer->streamDecompressedBufferData(stored, tiles, *destination, 1, batch), "Misaligned destination accepted");
+                requireGpuPage(streamer->streamDecompressedBufferData(stored, tiles, *destination, 0, batch), "GPU page staging");
+                auto receipt = streamer->pendingCopyCompletion(batch);
                 requireGpuPage(receipt && !receipt->isRecordedBefore(*commands) && !receipt->isComplete(), "Premature upload completion");
-                if (auto commandResult = streamer->copyStreamedData(*commands); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                if (batch.valid()) {
+                    requireGpuPage(bool(streamer->copyStreamedData(*commands)) && !receipt->isRecordedBefore(*commands) &&
+                        streamer->pendingCopyStats(batch).copyCount() == tiles.size(), "Default flush stole explicit decompression requests");
+                }
+                if (auto commandResult = streamer->copyStreamedData(*commands, batch); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 requireGpuPage(receipt->isRecordedBefore(*commands), "Decode not covered by upload receipt");
                 const BufferBarrierDesc barrier{
                     .buffer = destination.get(),
@@ -122,7 +132,7 @@ public:
                 readback->unmap();
                 requireGpuPage(equal, "GPU GDeflate output differs from CPU oracle");
             }
-            return RHITestResult::pass("EXT GPU/CPU byte oracle, mixed 64 KiB tiles + tail, cancellation and slot reuse");
+            return RHITestResult::pass("EXT GPU/CPU byte oracle, default/explicit batch isolation, mixed tiles, cancellation and slot reuse");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

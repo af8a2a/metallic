@@ -59,6 +59,9 @@ public:
     DebugValue events(std::string_view provider) const;
     void publish(DebugSnapshot snapshot);
     DebugValue dispatch(const DebugValue& request);
+    // In-process viewers borrow immutable CPU evidence, never live GPU objects.
+    std::shared_ptr<const DebugSnapshot> latestSnapshot() const;
+    std::shared_ptr<const DebugCapture> completedCapture(std::string_view id) const;
 
     // The runtime drains these only at a graph execution boundary. No callbacks
     // into the renderer exist in DebugCore.

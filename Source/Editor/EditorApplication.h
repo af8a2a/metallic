@@ -3,6 +3,7 @@
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Editor/EditorProfiler.h"
 #include "Editor/EditorRenderGraphViewer.h"
+#include "Editor/EditorResourceInspector.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanImGuiBackend.h"
 #include "Editor/EditorMaterialGraph.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -46,7 +47,8 @@ public:
         bool enableDebugControl = false,
         bool gpuDrivenScenesOnly = false,
         bool skipShaderWarmup = false,
-        render::LookDevRenderPath lookDevRenderPath = render::LookDevRenderPath::Comparison);
+        render::LookDevRenderPath lookDevRenderPath = render::LookDevRenderPath::Comparison,
+        const char* resourceInspectorSmokeOutput = nullptr);
 
 private:
     enum class PendingSceneAction : int32_t;
@@ -67,12 +69,14 @@ private:
     bool runVisibilityPreviewSmokeTest();
     bool runMaterialInspectorSmokeTest();
     bool runMaterialGraphSmokeTest();
+    bool runResourceInspectorSmokeTest(const char* outputDirectory = nullptr);
     void drawMaterialGraphEditor();
     bool applyMaterialGraph(int32_t materialIndex, const material::CompiledMaterialFrontend& compiled);
     EditorMaterialGraph materialGraphEditor_;
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
+    void drawRuntimeSettingsPanel();
     void drawInspectorPanel();
     void drawStatisticsPanel();
     void drawStreamlineDebugPanel();
@@ -284,6 +288,7 @@ private:
     render::RenderSubsystemHost subsystemHost_;
     render::RenderWorld renderWorld_;
     render::RenderView viewportView_;
+    int customRenderResolution_[2] = {1920, 1080};
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     std::unique_ptr<render::RenderDebugRuntime> debugRuntime_;
     std::unique_ptr<render::WorkControlShaderTrace> shaderTrace_;
@@ -291,6 +296,10 @@ private:
     std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;
     editor::RenderGraphExecutionViewer graphExecutionViewer_;
+    EditorResourceInspector resourceInspector_;
+    bool resourceInspectorVisible_ = false;
+    bool resourceInspectorAttached_ = false;
+    bool resourceInspectorSelectTab_ = false;
     NVMLMonitor nvmlMonitor_;
     render::profiling::NsightGraphicsCapture nsightGraphicsCapture_;
     render::RenderGraph renderGraph_;
@@ -347,6 +356,7 @@ private:
     bool nvmlMonitorOpen_ = true;
     bool streamlineDebugOpen_ = false;
     bool inspectorOpen_ = true;
+    bool runtimeSettingsOpen_ = true;
     bool statisticsOpen_ = true;
     bool graphEditorPositionsInitialized_ = false;
     bool snapEnabled_ = false;

@@ -19,7 +19,15 @@ add_library(MetallicShaderWarmupCore STATIC EXCLUDE_FROM_ALL
 target_include_directories(MetallicShaderWarmupCore PUBLIC "${CMAKE_SOURCE_DIR}/Source")
 find_package(Threads REQUIRED)
 target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads
-    MetallicMaterialValueCompiler metallic::volk ${CMAKE_DL_LIBS})
+    MetallicMaterialValueCompiler ${CMAKE_DL_LIBS})
+# The stride query uses local Vulkan dispatch and only needs volk's headers.
+# Linking its implementation here can reorder volk after the Streamline import
+# library, whose Vulkan function exports collide with volk's global pointers.
+# On Windows that makes volkInitializeCustom write to an import thunk in .text.
+target_include_directories(MetallicShaderWarmupCore SYSTEM PRIVATE
+    "$<TARGET_PROPERTY:metallic::volk,INTERFACE_INCLUDE_DIRECTORIES>")
+target_compile_definitions(MetallicShaderWarmupCore PRIVATE
+    "$<TARGET_PROPERTY:metallic::volk,INTERFACE_COMPILE_DEFINITIONS>")
 target_compile_definitions(MetallicShaderWarmupCore PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}"

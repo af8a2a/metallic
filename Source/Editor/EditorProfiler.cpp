@@ -16,6 +16,7 @@ namespace {
 
 constexpr size_t kProfilerHistorySize = 500;
 constexpr size_t kProfilerScopeTreeLimit = 8192;
+constexpr uint32_t kIdleColor = 0x9299a3ffu;
 constexpr float kPi = 3.14159265358979323846f;
 
 ImU32 imguiColor(uint32_t rgba)
@@ -65,6 +66,7 @@ using ProfilerTableRow = EditorProfiler::HistoryStatistics;
 
 const char* tableQueueName(const EditorProfiler::Node& node)
 {
+    if (node.cpuIdle) { return "CPU Idle"; }
     if (node.cpuOnly || node.renderGraphExecutionId == UINT64_MAX) { return "CPU"; }
     return node.renderGraphNodeId == UINT32_MAX ? "Envelope" : queueName(node.queue);
 }
@@ -110,7 +112,7 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame,
     ImGui::TableNextColumn(); drawDuration(cpu.average, cpu.count != 0);
     ImGui::TableNextColumn();
     if (node.renderGraphExecutionId != UINT64_MAX) { ImGui::TextUnformatted(tableQueueName(node)); }
-    else { ImGui::TextDisabled("CPU"); }
+    else { ImGui::TextDisabled("%s", tableQueueName(node)); }
     if (detailed) {
         ImGui::TableNextColumn(); drawDuration(node.gpuMilliseconds, node.gpuTimingAvailable);
         ImGui::TableNextColumn(); drawDuration(gpu.minimum, gpu.count != 0);
@@ -870,6 +872,24 @@ EditorProfiler::Scope EditorProfiler::scope(std::string_view name, uint32_t colo
     return Scope(this, beginSection(name, color == 0 ? colorFromName(name) : color));
 }
 
+EditorProfiler::Scope EditorProfiler::idleScope(std::string_view name)
+{
+    if (!frameActive_) { return {}; }
+    const size_t index = beginSection("Idle / " + std::string(name), kIdleColor);
+    currentNodes_[index].cpuOnly = true;
+    currentNodes_[index].cpuIdle = true;
+    return Scope(this, index);
+}
+
+void EditorProfiler::addIdleSample(std::string_view name, double milliseconds)
+{
+    if (!frameActive_ || !std::isfinite(milliseconds) || milliseconds < 0.0) { return; }
+    const size_t parent = stack_.empty() ? 0 : stack_.back();
+    const size_t index = addFinishedSection(parent, "Idle / " + std::string(name), kIdleColor, milliseconds);
+    currentNodes_[index].cpuOnly = true;
+    currentNodes_[index].cpuIdle = true;
+}
+
 void EditorProfiler::addCpuProfile(const std::vector<render::RenderGraphProfileSection>& sections)
 {
     if (!frameActive_) { return; }
@@ -1014,6 +1034,7 @@ EditorProfiler::Frame EditorProfiler::presentationFrame()
         target.gpuMilliseconds = node.gpuMilliseconds;
         target.gpuTimingAvailable = node.gpuTimingAvailable;
         target.cpuOnly = node.cpuOnly;
+        target.cpuIdle = node.cpuIdle;
         target.renderGraphExecutionId = node.renderGraphExecutionId;
         target.renderGraphNodeId = node.renderGraphNodeId;
         target.renderGraphSectionIndex = node.renderGraphSectionIndex;
@@ -1102,6 +1123,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         static_cast<unsigned long long>(frame.index), static_cast<unsigned long long>(latestFrame_.index - frame.index)); }
     else { ImGui::TextDisabled("GPU queries pending / unavailable"); }
     ImGui::TextDisabled("GPU envelope covers RenderGraph; editor UI and presentation are outside this interval.");
+    ImGui::TextDisabled("CPU timings are inclusive wall time. Gray Idle scopes mark waits, included in Frame and parent totals.");
     if (render::profiling::NsightGraphicsCapture::vulkanInjectionActive()) {
         ImGui::TextColored(ImVec4(1, .65f, .2f, 1),
             "Graphics Capture is active; live timings include capture overhead. Measure a separate baseline without injection.");

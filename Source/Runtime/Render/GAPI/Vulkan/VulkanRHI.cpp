@@ -1559,7 +1559,13 @@ public:
             return VK_ERROR_VALIDATION_FAILED_EXT;
         }
 
-        std::vector<VkHostAddressRangeEXT> dstRanges(descriptorCount);
+        // Public single-sampler writes are common during streaming. Keep their
+        // scratch storage on the stack instead of contending on the CPU allocator.
+        VkHostAddressRangeEXT singleRange{};
+        std::vector<VkHostAddressRangeEXT> rangeStorage;
+        if (descriptorCount > 1) { rangeStorage.resize(descriptorCount); }
+        std::span<VkHostAddressRangeEXT> dstRanges = descriptorCount == 1
+            ? std::span<VkHostAddressRangeEXT>(&singleRange, 1) : std::span<VkHostAddressRangeEXT>(rangeStorage);
         for (uint32_t index = 0; index < descriptorCount; ++index) {
             const BindlessHandle handle = handles[index];
             if (handle.kind != BindlessHandleKind::Sampler || handle.index >= maxSamplers_) {
@@ -1842,11 +1848,13 @@ private:
     VkDeviceSize imageRegionStartBytes_ = 0;
     VkDeviceSize bufferRegionStartBytes_ = 0;
     VkDeviceSize resourceReservedRangeOffsetBytes_ = 0;
-    uint32_t nextSamplerSlot_ = 0;
-    uint32_t nextImageSlot_ = 0;
-    uint32_t nextBufferSlot_ = 0;
+    // Independent free lists are mutated under independent locks. Separate
+    // their cache lines so parallel allocation does not bounce vector metadata.
+    alignas(64) uint32_t nextSamplerSlot_ = 0;
     std::vector<uint32_t> freeSamplerSlots_;
+    alignas(64) uint32_t nextImageSlot_ = 0;
     std::vector<uint32_t> freeImageSlots_;
+    alignas(64) uint32_t nextBufferSlot_ = 0;
     std::vector<uint32_t> freeBufferSlots_;
     uint32_t samplerDirtyMin_ = std::numeric_limits<uint32_t>::max();
     uint32_t samplerDirtyMax_ = 0;
@@ -2209,6 +2217,19 @@ struct BindlessHeapBuffer {
 };
 
 struct BindlessHeapImpl {
+    // Slot allocation does not touch descriptor bytes/dirty ranges. Keep the
+    // three free lists independent of driver writes and of each other.
+    struct alignas(64) SlotMutex { std::mutex mutex; };
+    std::array<SlotMutex, 3> slotMutexes;
+    std::mutex& slotMutex(BindlessHandleKind kind)
+    {
+        return slotMutexes[kind == BindlessHandleKind::Sampler ? 0 :
+            (kind == BindlessHandleKind::SampledImage || kind == BindlessHandleKind::StorageImage) ? 1 : 2].mutex;
+    }
+    // Each write lock covers the complete descriptor write/dirty-range/flush
+    // transaction. Binding reads immutable layout/addresses and needs no lock.
+    std::mutex samplerMutex;
+    std::mutex resourceMutex;
     DeviceImpl* device = nullptr;
     BindlessHeapDesc desc;
     DescriptorHeap heap;
@@ -4207,6 +4228,7 @@ Result<BindlessHandle> BindlessHeap::allocate(BindlessHandleKind kind)
     if (impl_ == nullptr || kind < BindlessHandleKind::Sampler || kind > BindlessHandleKind::AccelerationStructure) {
         return makeError(Error::InvalidArgument);
     }
+    std::lock_guard lock(impl_->slotMutex(kind));
     BindlessHandle handle{};
     if (!impl_->heap.allocate(kind, handle)) { return makeError(Error::OutOfMemory); }
     return handle;
@@ -4215,6 +4237,7 @@ Result<BindlessHandle> BindlessHeap::allocate(BindlessHandleKind kind)
 void BindlessHeap::release(BindlessHandle handle)
 {
     if (impl_ != nullptr) {
+        std::lock_guard lock(impl_->slotMutex(handle.kind));
         impl_->heap.release(handle);
     }
 }
@@ -4237,8 +4260,18 @@ Result<> BindlessHeap::writeSamplers(std::span<const BindlessSamplerWrite> write
         return makeError(Error::InvalidArgument);
     }
 
-    std::vector<BindlessHandle> handles(writes.size());
-    std::vector<VkSamplerCreateInfo> samplerInfos(writes.size());
+    BindlessHandle singleHandle;
+    VkSamplerCreateInfo singleInfo{};
+    std::vector<BindlessHandle> handleStorage;
+    std::vector<VkSamplerCreateInfo> infoStorage;
+    if (writes.size() > 1) {
+        handleStorage.resize(writes.size());
+        infoStorage.resize(writes.size());
+    }
+    std::span<BindlessHandle> handles = writes.size() == 1
+        ? std::span<BindlessHandle>(&singleHandle, 1) : std::span<BindlessHandle>(handleStorage);
+    std::span<VkSamplerCreateInfo> samplerInfos = writes.size() == 1
+        ? std::span<VkSamplerCreateInfo>(&singleInfo, 1) : std::span<VkSamplerCreateInfo>(infoStorage);
     for (uint32_t index = 0; index < writes.size(); ++index) {
         const BindlessSamplerWrite& write = writes[index];
         if (write.handle.kind != BindlessHandleKind::Sampler ||
@@ -4261,6 +4294,7 @@ Result<> BindlessHeap::writeSamplers(std::span<const BindlessSamplerWrite> write
         };
     }
 
+    std::lock_guard lock(impl_->samplerMutex);
     const VkResult result = impl_->heap.writeSamplerDescriptors(
         handles.data(),
         samplerInfos.data(),
@@ -4337,6 +4371,7 @@ Result<> BindlessHeap::writeImages(std::span<const BindlessImageWrite> writes)
         };
     }
 
+    std::lock_guard lock(impl_->resourceMutex);
     const VkResult result = impl_->heap.writeImageDescriptors(
         handles.data(),
         resourceInfos.data(),
@@ -4359,6 +4394,7 @@ Result<> BindlessHeap::writeBufferView(BindlessHandle handle, BufferView& view)
         return makeError(Error::InvalidArgument);
     }
 
+    std::lock_guard lock(impl_->resourceMutex);
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
         view.impl_->address,
@@ -4379,6 +4415,7 @@ Result<> BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer
         return makeError(Error::InvalidArgument);
     }
 
+    std::lock_guard lock(impl_->resourceMutex);
     const VkDeviceAddress address = buffer.impl_->address;
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
@@ -4401,6 +4438,7 @@ Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, const BufferSli
         return makeError(Error::InvalidArgument);
     }
 
+    std::lock_guard lock(impl_->resourceMutex);
     const VkDeviceAddress address = buffer.allocation_->address;
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
@@ -4426,6 +4464,7 @@ Result<> BindlessHeap::writeAccelerationStructure(
         return makeError(Error::InvalidArgument);
     }
 
+    std::lock_guard lock(impl_->resourceMutex);
     const VkDeviceAddress address = accelerationStructure.deviceAddress();
     const VkResult result = accelerationStructure.desc().topLevelBackend == RayTracingTopLevelBackend::Partitioned
         ? impl_->heap.writePartitionedAccelerationStructureDescriptor(handle, address, 0, impl_->resourceHeap.mapped)

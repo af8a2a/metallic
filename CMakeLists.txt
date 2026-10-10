@@ -175,13 +175,14 @@ foreach(METALLIC_SETUP_MODULE IN ITEMS
 endforeach()
 
 find_package(Git QUIET)
+option(METALLIC_SUBMODULE_AUTO_DOWNLOAD "Initialize missing required Git submodules" ON)
 
 function(ensure_git_submodule path marker display_name)
     if(EXISTS "${marker}")
         return()
     endif()
 
-    if(NOT GIT_FOUND OR NOT EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    if(NOT METALLIC_SUBMODULE_AUTO_DOWNLOAD OR NOT GIT_FOUND OR NOT EXISTS "${CMAKE_SOURCE_DIR}/.git")
         message(FATAL_ERROR
             "${display_name} dependency is missing at ${path}.\n"
             "Run `git submodule update --init --recursive -- ${path}` and reconfigure.")
@@ -204,6 +205,24 @@ function(ensure_git_submodule path marker display_name)
             "${submodule_output}\n${submodule_error}")
     endif()
 endfunction()
+
+foreach(dependency IN ITEMS "imgui|imgui.h" "imnodes|imnodes.h"
+        "ImGuizmo|src/ImGuizmo.cpp" "VulkanMemoryAllocator|include/vk_mem_alloc.h"
+        "meshoptimizer|src/meshoptimizer.h" "stdexec|include/stdexec/execution.hpp"
+        "openpbr-bsdf|impl/data/openpbr_ideal_dielectric_energy_complement_data.h"
+        "SDL3|src/video/khronos/vulkan/vulkan.h")
+    string(REPLACE "|" ";" dependency_parts "${dependency}")
+    list(GET dependency_parts 0 dependency_path)
+    list(GET dependency_parts 1 dependency_marker)
+    ensure_git_submodule(
+        "External/${dependency_path}"
+        "${CMAKE_SOURCE_DIR}/External/${dependency_path}/${dependency_marker}"
+        "${dependency_path}")
+endforeach()
+if(METALLIC_DEPENDENCY_MODE STREQUAL "SOURCE")
+    ensure_git_submodule("External/spdlog"
+        "${CMAKE_SOURCE_DIR}/External/spdlog/CMakeLists.txt" "spdlog")
+endif()
 
 ensure_git_submodule(
     "External/microprofile"

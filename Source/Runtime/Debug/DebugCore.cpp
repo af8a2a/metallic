@@ -315,9 +315,11 @@ DebugValue DebugCore::enqueueCaptureLocked(const DebugValue& params, bool probe)
         const std::string pass = specification.at("pass").get<std::string>();
         const std::string checkpoint = specification.value("checkpoint", "AfterPass");
         bool valid = false;
-        for (const auto& node : graph_.value("passes", DebugValue::array())) {
-            if (node.at("name") != pass || !node.value("active", false)) { continue; }
-            for (const auto& point : node.value("checkpoints", DebugValue::array())) { if (point == checkpoint) { valid = true; } }
+        for (const char* group : {"passes", "subsystems"}) {
+            for (const auto& node : graph_.value(group, DebugValue::array())) {
+                if (node.at("name") != pass || !node.value("active", false)) { continue; }
+                for (const auto& point : node.value("checkpoints", DebugValue::array())) { if (point == checkpoint) { valid = true; } }
+            }
         }
         if (!valid) { reject("Unsupported", "Pass/checkpoint is not registered in the active graph"); }
         const auto generation = debugUnsigned(specification.value("generation", graph_.value("generation", DebugValue(0))));
@@ -362,6 +364,22 @@ DebugValue DebugCore::dispatch(const DebugValue& request)
         return {{"version", 1}, {"id", id}, {"status", "ok"}, {"result", std::move(result)}};
     } catch (const DebugError& error) { return debugErrorResponse(id, error.code, error.message); }
     catch (const std::exception& error) { return debugErrorResponse(id, "InvalidArgument", error.what()); }
+}
+
+std::shared_ptr<const DebugSnapshot> DebugCore::latestSnapshot() const
+{
+    std::lock_guard lock(mutex_);
+    for (auto it = snapshots_.rbegin(); it != snapshots_.rend(); ++it) {
+        if (it->first->evidence.provenance.value("completion", "Ready") == "Ready") { return it->first; }
+    }
+    return {};
+}
+
+std::shared_ptr<const DebugCapture> DebugCore::completedCapture(std::string_view id) const
+{
+    std::lock_guard lock(mutex_);
+    const auto found = jobs_.find(std::string(id));
+    return found != jobs_.end() && found->second.state == "Ready" ? found->second.capture : nullptr;
 }
 
 DebugValue DebugCore::route(std::string_view method, const DebugValue& params)

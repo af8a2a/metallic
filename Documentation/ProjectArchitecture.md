@@ -20,6 +20,8 @@ Metallic 是一个以 C++23、Slang 和 Vulkan 为核心的实验性实时渲染
 
 M2 首批自定义 Value Program 的前端、独立参数、静态程序集与支持范围见 [M2 实施记录](MaterialValueProgramsM2.md)。
 
+RenderGraph 资源快照、Texture/Buffer Inspector 与无需桌面自动化的原生调试入口见 [资源可视化与验证](RenderGraphResourceInspector.md)。
+
 ## 2. 总体架构
 
 ```mermaid
@@ -188,6 +190,8 @@ sequenceDiagram
 ```
 
 编辑器视口不会执行另一套渲染器：它将活动图输出转成 `ShaderRead`，再通过 ImGui Vulkan 描述符显示。图结构或编译期属性变化会触发重新编译；仅运行时属性变化时，执行器尝试原位同步。
+
+Viewport 工具栏的 `Render: 宽x高` 可选择自适应 `Auto (Viewport size)`、1080P（1920×1080，默认）、2K（2560×1440）、4K（3840×2160）或自定义尺寸（每边 1–8192）。固定模式下窗口缩放只改变呈现尺寸，`FinalBlit` 将颜色结果双线性缩放到实际视口大小；自适应模式使用实际视口的 framebuffer 像素尺寸，随窗口缩放更新渲染目标。设置保存为 `view.renderResolution.width/height/adaptive`，旧图未指定时使用固定 1080P；选择预设或应用自定义尺寸会退出自适应模式。DLSS 的质量模式仍在所选目标尺寸内协商输入分辨率。切换渲染尺寸会重新编译图并使时序历史失效；拾取和 Gizmo 使用对应的渲染宽高比。没有 RenderView 的底层图继续使用调用者传入的默认尺寸。
 
 ## 6. RenderGraph 子系统
 
@@ -372,6 +376,10 @@ RHI 只发布队列接受/取消状态，GPU 完成由 Core 的 timeline 与 `GP
 使用 Slang 编译器的冒烟/三角形预览工具位于 `Core/RHISmokeTests`。
 
 运行时的 RenderGraph、内置 raster Pass、HybridRasterizer 与 DLSS 辅助 Pass 统一使用 `ResourceRegistry::forDevice()` 的设备级堆。登记返回的 `ResourceLease` 在录制时随 `bind(commands, leases)` 保留；资源替换登记新索引，不覆盖未完成提交使用的描述符。完整 storage buffer view 与 DR buffer span 复用描述符，局部 view 和 constant view 按范围及类型区分。独立堆仅用于底层测试/能力探针，以及需要保持生产索引并替换快照资源的 WorkControlReplay；不能把这些私有堆索引传给生产堆。
+
+`BindlessHeap` 支持多线程分配/释放不同 handle，以及更新不同槽位。sampler、image、buffer 三类槽位独立加锁；描述符写入另外按 sampler/resource 两个存储域加锁，覆盖完整的写入、dirty range、flush 操作。命令绑定只读取初始化后不变的布局与地址。同一槽位的更新/释放仍由调用方串行化，每个 handle 只能释放一次；覆盖或回收前必须等待 GPU 使用结束。移动/销毁 heap 需要独占访问，Device 和输入资源在调用期间必须保持存活且不被修改。`ResourceRegistry` 的锁继续保护登记、复用和回收等组合操作。
+
+并发测试、CPU 吞吐量基线及已知同步开销见 [BindlessHeap 线程安全报告](BindlessHeapThreadSafety.md)。
 
 ### 10.1 公共 RHI
 

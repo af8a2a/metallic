@@ -7,13 +7,17 @@
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <unordered_map>
 #include <utility>
 
 namespace metallic::render {
 namespace {
+
+std::atomic<uint64_t> nextCopyBatchId{1};
 
 constexpr uint64_t kDynamicBufferChunkSize = 64ull * 1024ull;
 constexpr uint64_t kInvalidStreamOffset = std::numeric_limits<uint64_t>::max();
@@ -63,7 +67,49 @@ struct StreamerImpl {
         uint32_t frameCount = 0;
     };
 
+    struct CopyBatch {
+        std::shared_ptr<StreamUploadCompletion> pendingCompletion;
+        std::vector<BufferCopyRequest> bufferRequests;
+        std::vector<BufferDecompressionDesc> decompressions;
+        std::vector<BufferBarrierDesc> decompressionCopyBarriers;
+        std::vector<BufferBarrierDesc> decompressionInputBarriers;
+        std::vector<BufferBarrierDesc> decompressionOutputBarriers;
+        std::vector<TextureCopyRequest> textureRequests;
+
+        void clear()
+        {
+            pendingCompletion.reset();
+            bufferRequests.clear();
+            textureRequests.clear();
+            decompressions.clear();
+            decompressionCopyBarriers.clear();
+            decompressionInputBarriers.clear();
+            decompressionOutputBarriers.clear();
+        }
+
+        void cancel()
+        {
+            if (pendingCompletion) { pendingCompletion->submission_->cancel(); }
+            clear();
+        }
+
+        void accumulate(StreamerPendingCopyStats& stats) const
+        {
+            stats.bufferCopyCount += static_cast<uint32_t>(bufferRequests.size());
+            stats.textureCopyCount += static_cast<uint32_t>(textureRequests.size());
+            for (const auto& request : bufferRequests) { stats.bufferCopyBytes += request.size; }
+            for (const auto& request : textureRequests) { stats.textureCopyBytes += textureCopyByteSize(request.copy); }
+        }
+    };
+
+    // Retain one holder from the coordinator. Worker staging only changes this
+    // holder under mutex; it never mutates RenderFrameContext's resource list.
+    struct UploadResources {
+        std::vector<std::shared_ptr<Buffer>> buffers;
+    };
+
     struct UploadSlot {
+        std::shared_ptr<UploadResources> resources;
         GPUCompletionPoint completion;
         uint64_t dynamicOffset = 0;
         uint64_t constantOffset = 0;
@@ -78,7 +124,8 @@ struct StreamerImpl {
 
     ~StreamerImpl()
     {
-        if (pendingCompletion) { pendingCompletion->submission_->cancel(); }
+        defaultBatch.cancel();
+        for (auto& [id, batch] : batches) { batch.cancel(); }
     }
 
     Result<> create(const StreamerDesc& streamerDesc)
@@ -117,6 +164,16 @@ struct StreamerImpl {
             if (!result || buffer == nullptr) {
                 return result ? makeError(Error::Failure) : result;
             }
+            constantHostAlignment = buffer->hostWriteAlignment();
+            while (constantBufferStride % constantHostAlignment) {
+                if (constantBufferStride > UINT64_MAX - (constantHostAlignment - 1)) { return makeError(Error::InvalidArgument); }
+                constantBufferStride = alignUp(constantBufferStride, constantHostAlignment);
+                if (constantBufferStride > UINT64_MAX / desc.queuedFrameCount) { return makeError(Error::InvalidArgument); }
+                bufferDesc.size = constantBufferStride * desc.queuedFrameCount;
+                result = device->createBuffer(bufferDesc).transform([&](auto value) { buffer = std::move(value); });
+                if (!result) { return result; }
+                constantHostAlignment = buffer->hostWriteAlignment();
+            }
             constantBuffer = std::move(buffer);
         }
         return {};
@@ -126,7 +183,7 @@ struct StreamerImpl {
     {
         std::lock_guard lock(mutex);
         if (!frame.recording() || frame.slotIndex() >= desc.queuedFrameCount ||
-            !bufferRequests.empty() || !textureRequests.empty() ||
+            !defaultBatch.bufferRequests.empty() || !defaultBatch.textureRequests.empty() || !batches.empty() ||
             (activeFrame != nullptr && activeFrame != &frame)) {
             return makeError(Error::InvalidArgument);
         }
@@ -136,6 +193,11 @@ struct StreamerImpl {
             if (!slot.completion.isComplete()) {
                 return makeError(Error::InvalidArgument);
             }
+            slot.resources = std::make_shared<UploadResources>();
+            if (constantBuffer) { slot.resources->buffers.push_back(constantBuffer); }
+            if (dynamicBuffer) { slot.resources->buffers.push_back(dynamicBuffer); }
+            if (slot.compressed) { slot.resources->buffers.push_back(slot.compressed); }
+            frame.retain(slot.resources);
             slot.completion = frame.completion();
             slot.dynamicOffset = slot.constantOffset = slot.compressedOffset = 0;
             dynamicBufferOffset = 0;
@@ -147,7 +209,6 @@ struct StreamerImpl {
         frameIndex = frame.slotIndex();
         activeFrame = &frame;
         completionTracked = true;
-        frame.retain(constantBuffer);
         return {};
     }
 
@@ -186,19 +247,32 @@ struct StreamerImpl {
             return result ? makeError(Error::Failure) : result;
         }
 
-        if (dynamicBuffer != nullptr) {
-            if (activeFrame != nullptr) {
-                activeFrame->retain(dynamicBuffer);
-            } else {
-                garbage.push_back(BufferGarbage{
-                    .buffer = dynamicBuffer,
-                    .frameCount = 0,
-                });
-            }
+        if (dynamicBuffer != nullptr && activeFrame == nullptr) {
+            garbage.push_back(BufferGarbage{
+                .buffer = dynamicBuffer,
+                .frameCount = 0,
+            });
         }
         dynamicBuffer = std::move(newBuffer);
+        dynamicHostAlignment = dynamicBuffer->hostWriteAlignment();
+        if (activeFrame) { uploadSlots[frameIndex].resources->buffers.push_back(dynamicBuffer); }
         dynamicBufferSizePerFrame = newSizePerFrame;
         return {};
+    }
+
+    uint64_t reserveDynamicOffset(uint64_t size, uint64_t alignment)
+    {
+        // Independently submitted batches must not share a non-coherent flush
+        // atom. Recheck after growth in case the allocation's memory type changes.
+        for (;;) {
+            alignment = std::max(alignment, dynamicHostAlignment);
+            if (dynamicBufferOffset > UINT64_MAX - (alignment - 1)) { return kInvalidStreamOffset; }
+            const uint64_t offset = alignUp(dynamicBufferOffset, alignment);
+            if (size > UINT64_MAX - offset || !ensureDynamicBuffer(offset + size)) { return kInvalidStreamOffset; }
+            if (dynamicHostAlignment == 1) { return offset; }
+            if (dynamicBufferSizePerFrame % dynamicHostAlignment) { return kInvalidStreamOffset; }
+            if (offset % dynamicHostAlignment == 0) { return offset; }
+        }
     }
 
     BufferOffset streamBufferData(const StreamBufferDataDesc& streamDesc)
@@ -209,6 +283,8 @@ struct StreamerImpl {
 
     BufferOffset stageBufferData(const StreamBufferDataDesc& streamDesc)
     {
+        auto* batch = findBatch(streamDesc.copyBatch);
+        if (!batch) { return {}; }
         if (completionTracked && (activeFrame == nullptr || !activeFrame->recording())) {
             return {};
         }
@@ -224,6 +300,7 @@ struct StreamerImpl {
             if (chunk.size > 0 && chunk.data == nullptr) {
                 return {};
             }
+            if (chunk.size > UINT64_MAX - dataSize) { return {}; }
             dataSize += chunk.size;
         }
         if (dataSize == 0 || dataSize > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
@@ -239,12 +316,9 @@ struct StreamerImpl {
         const uint64_t alignment = std::max<uint64_t>(
             std::max(streamDesc.placementAlignment, 1u),
             device != nullptr ? device->capabilities().bufferCopyOffsetAlignment : 1);
-        const uint64_t localOffset = alignUp(dynamicBufferOffset, alignment);
+        const uint64_t localOffset = reserveDynamicOffset(dataSize, alignment);
+        if (localOffset == kInvalidStreamOffset) { return {}; }
         const uint64_t requiredSizePerFrame = localOffset + dataSize;
-        Result<> result = ensureDynamicBuffer(requiredSizePerFrame);
-        if (!result || dynamicBuffer == nullptr) {
-            return {};
-        }
 
         const uint64_t bufferOffset =
             static_cast<uint64_t>(frameIndex) * dynamicBufferSizePerFrame + localOffset;
@@ -265,12 +339,8 @@ struct StreamerImpl {
         dynamicBuffer->flush({bufferOffset, dataSize});
         dynamicBuffer->unmap();
 
-        if (activeFrame != nullptr) {
-            activeFrame->retain(dynamicBuffer);
-        }
-
         if (streamDesc.dstBuffer != nullptr) {
-            bufferRequests.push_back(BufferCopyRequest{
+            batch->bufferRequests.push_back(BufferCopyRequest{
                 .destination = streamDesc.dstBuffer,
                 .destinationOffset = streamDesc.dstOffset,
                 .source = dynamicBuffer.get(),
@@ -291,6 +361,8 @@ struct StreamerImpl {
     BufferOffset streamTextureData(const StreamTextureDataDesc& streamDesc)
     {
         std::lock_guard lock(mutex);
+        auto* batch = findBatch(streamDesc.copyBatch);
+        if (!batch) { return {}; }
         if (completionTracked && (activeFrame == nullptr || !activeFrame->recording())) {
             return {};
         }
@@ -376,14 +448,11 @@ struct StreamerImpl {
             profiling::NsightCategory::ResourceUpload,
             dataSize);
 
-        const uint64_t localOffset = alignUp(
-            dynamicBufferOffset,
+        const uint64_t localOffset = reserveDynamicOffset(
+            dataSize,
             std::max<uint64_t>(capabilities.textureUploadBufferOffsetAlignment, bytesPerTexel));
+        if (localOffset == kInvalidStreamOffset) { return {}; }
         const uint64_t requiredSizePerFrame = localOffset + dataSize;
-        Result<> result = ensureDynamicBuffer(requiredSizePerFrame);
-        if (!result || dynamicBuffer == nullptr) {
-            return {};
-        }
 
         const uint64_t bufferOffset =
             static_cast<uint64_t>(frameIndex) * dynamicBufferSizePerFrame + localOffset;
@@ -405,12 +474,9 @@ struct StreamerImpl {
         dynamicBuffer->flush({bufferOffset, dataSize});
         dynamicBuffer->unmap();
 
-        if (activeFrame != nullptr) {
-            activeFrame->retain(dynamicBuffer);
-        }
         auto copySlice = dynamicBuffer->slice({bufferOffset, dataSize});
         if (!copySlice) { return {}; }
-        textureRequests.push_back(TextureCopyRequest{
+        batch->textureRequests.push_back(TextureCopyRequest{
             .copy = BufferTextureRegion{
                 .texture = streamDesc.dstTexture,
                 .buffer = *copySlice,
@@ -456,17 +522,17 @@ struct StreamerImpl {
             profiling::NsightCategory::ResourceUpload,
             byteSize);
 
-        const uint64_t alignment = device != nullptr
-            ? device->capabilities().constantBufferOffsetAlignment
-            : 1;
+        const uint64_t alignment = std::max(constantHostAlignment,
+            device->capabilities().constantBufferOffsetAlignment);
+        if (constantBufferOffset > UINT64_MAX - (alignment - 1)) { return kInvalidStreamOffset; }
         uint64_t offset = alignUp(constantBufferOffset, alignment);
-        if (offset + byteSize > desc.constantBufferSize) {
+        if (offset > desc.constantBufferSize || byteSize > desc.constantBufferSize - offset) {
             if (completionTracked) {
                 return kInvalidStreamOffset;
             }
             offset = 0;
         }
-        if (offset + byteSize > desc.constantBufferSize) {
+        if (byteSize > desc.constantBufferSize - offset) {
             return kInvalidStreamOffset;
         }
 
@@ -491,9 +557,11 @@ struct StreamerImpl {
     }
 
     bool streamDecompressedBufferData(std::span<const uint8_t> stored,
-        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset)
+        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset, StreamerCopyBatch copyBatch)
     {
         std::lock_guard lock(mutex);
+        auto* batch = findBatch(copyBatch);
+        if (!batch) { return false; }
         if (!activeFrame || !activeFrame->recording() || !device->capabilities().memoryDecompression ||
             !hasFlag(destination.desc().usage, BufferUsageBits::MemoryDecompression) ||
             !hasFlag(destination.desc().usage, BufferUsageBits::TransferDestination) || tiles.empty() || stored.empty()) { return false; }
@@ -522,6 +590,7 @@ struct StreamerImpl {
                     .usage = BufferUsageBits::TransferDestination | BufferUsageBits::MemoryDecompression,
                     .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); })) { return false; }
             slot.compressed = std::move(buffer);
+            slot.resources->buffers.push_back(slot.compressed);
         }
         std::vector<BufferDecompressionDesc> regions;
         for (const auto& tile : tiles) {
@@ -532,42 +601,41 @@ struct StreamerImpl {
             regions.push_back({*source, *target});
         }
         const StreamDataChunk chunk{stored.data(), stored.size()};
-        const auto staged = stageBufferData({.dataChunks = {&chunk, 1}, .placementAlignment = 16});
+        const auto staged = stageBufferData({.dataChunks = {&chunk, 1}, .placementAlignment = 16, .copyBatch = copyBatch});
         if (!staged.valid()) { return false; }
-        activeFrame->retain(slot.compressed);
         slot.compressedOffset = required;
         for (const auto& tile : tiles) {
             if (tile.compressed) {
-                bufferRequests.push_back({slot.compressed.get(), offset + tile.sourceOffset,
+                batch->bufferRequests.push_back({slot.compressed.get(), offset + tile.sourceOffset,
                     staged.buffer, staged.offset + tile.sourceOffset, tile.storedBytes});
-                decompressionCopyBarriers.push_back({
+                batch->decompressionCopyBarriers.push_back({
                     .buffer = slot.compressed.get(),
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                     .range = {.offset = offset + tile.sourceOffset, .size = tile.storedBytes},
                 });
-                decompressionInputBarriers.push_back({
+                batch->decompressionInputBarriers.push_back({
                     .buffer = slot.compressed.get(),
                     .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                     .after = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionRead},
                     .range = {offset + tile.sourceOffset, tile.storedBytes},
                 });
-                decompressionInputBarriers.push_back({
+                batch->decompressionInputBarriers.push_back({
                     .buffer = &destination,
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite},
                     .range = {destinationOffset + tile.destinationOffset, tile.decodedBytes},
                 });
-                decompressionOutputBarriers.push_back({
+                batch->decompressionOutputBarriers.push_back({
                     .buffer = &destination,
                     .before = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite},
                     .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .range = {destinationOffset + tile.destinationOffset, tile.decodedBytes},
                 });
             } else {
-                bufferRequests.push_back({&destination, destinationOffset + tile.destinationOffset,
+                batch->bufferRequests.push_back({&destination, destinationOffset + tile.destinationOffset,
                     staged.buffer, staged.offset + tile.sourceOffset, tile.decodedBytes});
-                decompressionCopyBarriers.push_back({
+                batch->decompressionCopyBarriers.push_back({
                     .buffer = &destination,
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
@@ -575,31 +643,92 @@ struct StreamerImpl {
                 });
             }
         }
-        decompressions.insert(decompressions.end(), regions.begin(), regions.end());
+        batch->decompressions.insert(batch->decompressions.end(), regions.begin(), regions.end());
         return true;
     }
 
-    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion()
+    CopyBatch* findBatch(StreamerCopyBatch batch)
     {
-        std::lock_guard lock(mutex);
-        if (activeFrame == nullptr || (bufferRequests.empty() && textureRequests.empty())) {
-            return {};
-        }
-        if (!pendingCompletion) {
-            pendingCompletion.reset(new StreamUploadCompletion(activeFrame->completion()));
-        }
-        return pendingCompletion;
+        if (!batch.valid()) { return &defaultBatch; }
+        auto found = batches.find(batch.id);
+        return found == batches.end() ? nullptr : &found->second;
     }
 
-    Result<> copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
+    CopyBatch acquireBatch()
+    {
+        if (recycledBatches.empty()) { return {}; }
+        auto batch = std::move(recycledBatches.back());
+        recycledBatches.pop_back();
+        return batch;
+    }
+
+    Result<StreamerCopyBatch> beginCopyBatch()
     {
         std::lock_guard lock(mutex);
-        const auto installation = pendingCompletion;
+        if (completionTracked && (!activeFrame || !activeFrame->recording())) { return makeError(Error::InvalidArgument); }
+        // Saturate instead of wrapping: stale/cross-Streamer IDs are never reused.
+        uint64_t id = nextCopyBatchId.load(std::memory_order_relaxed);
+        do {
+            if (id == UINT64_MAX) { return makeError(Error::OutOfMemory); }
+        } while (!nextCopyBatchId.compare_exchange_weak(id, id + 1, std::memory_order_relaxed));
+        batches.emplace(id, acquireBatch());
+        return StreamerCopyBatch{id};
+    }
+
+    Result<> cancelCopyBatch(StreamerCopyBatch batch)
+    {
+        std::lock_guard lock(mutex);
+        auto found = batches.find(batch.id);
+        if (found == batches.end()) { return makeError(Error::InvalidArgument); }
+        found->second.cancel();
+        if (recycledBatches.size() < 32) { recycledBatches.push_back(std::move(found->second)); }
+        batches.erase(found);
+        return {};
+    }
+
+    StreamerPendingCopyStats pendingCopyStats(StreamerCopyBatch batch) const
+    {
+        std::lock_guard lock(mutex);
+        StreamerPendingCopyStats result;
+        if (!batch.valid()) { defaultBatch.accumulate(result); }
+        else if (auto found = batches.find(batch.id); found != batches.end()) { found->second.accumulate(result); }
+        return result;
+    }
+
+    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion(StreamerCopyBatch copyBatch)
+    {
+        std::lock_guard lock(mutex);
+        auto* batch = findBatch(copyBatch);
+        if (!batch || !activeFrame || (batch->bufferRequests.empty() && batch->textureRequests.empty())) { return {}; }
+        if (!batch->pendingCompletion) { batch->pendingCompletion.reset(new StreamUploadCompletion(activeFrame->completion())); }
+        return batch->pendingCompletion;
+    }
+
+    Result<> copyStreamedData(CommandBuffer& commandBuffer, StreamerCopyBatch copyBatch, const StreamUploadPhaseCallback& phase)
+    {
+        CopyBatch batch;
+        {
+            std::lock_guard lock(mutex);
+            auto* pending = findBatch(copyBatch);
+            if (!pending) { return makeError(Error::InvalidArgument); }
+            if (activeFrame && !pending->pendingCompletion &&
+                (!pending->bufferRequests.empty() || !pending->textureRequests.empty())) {
+                pending->pendingCompletion.reset(new StreamUploadCompletion(activeFrame->completion()));
+            }
+            batch = std::move(*pending);
+            if (copyBatch.valid()) { batches.erase(copyBatch.id); }
+            else { defaultBatch = acquireBatch(); }
+        }
+        const auto installation = batch.pendingCompletion;
+        struct CancelOnFailure {
+            std::shared_ptr<SubmissionTransaction> transaction;
+            ~CancelOnFailure() { if (transaction) { transaction->cancel(); } }
+        } cancellation{installation ? installation->submission_ : nullptr};
         const auto result = [&]() -> Result<> {
             // Validate before recording writes; failed recordings cancel their
             // publication transaction so partial uploads cannot be submitted.
-            if (!decompressions.empty()) {
-                auto validated = commandBuffer.validateDecompressionBuffers(decompressions);
+            if (!batch.decompressions.empty()) {
+                auto validated = commandBuffer.validateDecompressionBuffers(batch.decompressions);
                 if (!validated) { return validated; }
             }
             if (installation) {
@@ -614,12 +743,12 @@ struct StreamerImpl {
                 profiling::NsightDomain::Render,
                 "Upload Copies",
                 profiling::NsightCategory::ResourceUpload,
-                bufferRequests.size() + textureRequests.size());
+                batch.bufferRequests.size() + batch.textureRequests.size());
             if (phase) { phase("Upload copies"); }
-            if (!decompressionCopyBarriers.empty()) {
-                if (auto commandResult = commandBuffer.synchronize({.buffers = decompressionCopyBarriers}); !commandResult) { return commandResult; }
+            if (!batch.decompressionCopyBarriers.empty()) {
+                if (auto commandResult = commandBuffer.synchronize({.buffers = batch.decompressionCopyBarriers}); !commandResult) { return commandResult; }
             }
-            for (const BufferCopyRequest& request : bufferRequests) {
+            for (const BufferCopyRequest& request : batch.bufferRequests) {
                 {
                     auto sourceSlice = request.source->slice({request.sourceOffset, request.size});
                     if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
@@ -629,49 +758,39 @@ struct StreamerImpl {
                 }
             }
 
-            for (const TextureCopyRequest& request : textureRequests) {
+            for (const TextureCopyRequest& request : batch.textureRequests) {
                 if (auto commandResult = commandBuffer.copyBufferToTexture(request.copy); !commandResult) { return commandResult; }
             }
-            if (!decompressions.empty()) {
+            if (!batch.decompressions.empty()) {
                 if (phase) { phase("Decompression input barrier"); }
-                if (auto result = commandBuffer.synchronize({.buffers = decompressionInputBarriers}); !result) { return result; }
+                if (auto result = commandBuffer.synchronize({.buffers = batch.decompressionInputBarriers}); !result) { return result; }
                 if (phase) { phase("GPU decompression"); }
-                if (auto result = commandBuffer.decompressBuffers(decompressions); !result) { return result; }
+                if (auto result = commandBuffer.decompressBuffers(batch.decompressions); !result) { return result; }
                 if (phase) { phase("Decompression publish barrier"); }
-                if (auto result = commandBuffer.synchronize({.buffers = decompressionOutputBarriers}); !result) { return result; }
+                if (auto result = commandBuffer.synchronize({.buffers = batch.decompressionOutputBarriers}); !result) { return result; }
             }
             return {};
         }();
-        if (!result && installation) { installation->submission_->cancel(); }
-        pendingCompletion.reset();
-        decompressions.clear();
-        decompressionInputBarriers.clear();
-        decompressionOutputBarriers.clear();
-        decompressionCopyBarriers.clear();
-        bufferRequests.clear();
-        textureRequests.clear();
+        if (result) { cancellation.transaction.reset(); }
+        batch.clear();
+        {
+            std::lock_guard lock(mutex);
+            if (recycledBatches.size() < 32) { recycledBatches.push_back(std::move(batch)); }
+        }
         return result;
     }
 
     void endFrame()
     {
         std::lock_guard lock(mutex);
-        if (pendingCompletion) {
-            pendingCompletion->submission_->cancel();
-            pendingCompletion.reset();
-        }
+        defaultBatch.cancel();
+        for (auto& [id, batch] : batches) { batch.cancel(); }
+        batches.clear();
         if (activeFrame != nullptr) {
             UploadSlot& slot = uploadSlots[frameIndex];
             slot.dynamicOffset = dynamicBufferOffset;
             slot.constantOffset = constantBufferOffset;
         }
-        bufferRequests.clear();
-        decompressions.clear();
-        decompressionInputBarriers.clear();
-        decompressionOutputBarriers.clear();
-        textureRequests.clear();
-
-        decompressionCopyBarriers.clear();
 
         for (size_t index = 0; index < garbage.size();) {
             BufferGarbage& entry = garbage[index];
@@ -712,14 +831,8 @@ struct StreamerImpl {
         std::lock_guard lock(mutex);
 
         StreamerPendingCopyStats pendingCopies;
-        pendingCopies.bufferCopyCount = static_cast<uint32_t>(bufferRequests.size());
-        pendingCopies.textureCopyCount = static_cast<uint32_t>(textureRequests.size());
-        for (const BufferCopyRequest& request : bufferRequests) {
-            pendingCopies.bufferCopyBytes += request.size;
-        }
-        for (const TextureCopyRequest& request : textureRequests) {
-            pendingCopies.textureCopyBytes += textureCopyByteSize(request.copy);
-        }
+        defaultBatch.accumulate(pendingCopies);
+        for (const auto& [id, batch] : batches) { batch.accumulate(pendingCopies); }
 
         return StreamerStats{
             .frameIndex = frameSerial,
@@ -752,15 +865,13 @@ struct StreamerImpl {
     std::vector<UploadSlot> uploadSlots;
     RenderFrameContext* activeFrame = nullptr;
     bool completionTracked = false;
-    std::shared_ptr<StreamUploadCompletion> pendingCompletion;
-    std::vector<BufferCopyRequest> bufferRequests;
-    std::vector<BufferDecompressionDesc> decompressions;
-    std::vector<BufferBarrierDesc> decompressionCopyBarriers;
-    std::vector<BufferBarrierDesc> decompressionInputBarriers;
-    std::vector<BufferBarrierDesc> decompressionOutputBarriers;
-    std::vector<TextureCopyRequest> textureRequests;
+    CopyBatch defaultBatch;
+    std::unordered_map<uint64_t, CopyBatch> batches;
+    std::vector<CopyBatch> recycledBatches;
     std::vector<BufferGarbage> garbage;
     uint64_t dynamicBufferOffset = 0;
+    uint64_t dynamicHostAlignment = 1;
+    uint64_t constantHostAlignment = 1;
     uint64_t dynamicBufferSizePerFrame = 0;
     uint64_t constantBufferOffset = 0;
     uint64_t constantBufferStride = 0;
@@ -807,9 +918,9 @@ BufferOffset Streamer::streamBufferData(const StreamBufferDataDesc& desc)
 }
 
 bool Streamer::streamDecompressedBufferData(std::span<const uint8_t> stored,
-    std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset)
+    std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset, StreamerCopyBatch batch)
 {
-    return impl_ && impl_->streamDecompressedBufferData(stored, tiles, destination, destinationOffset);
+    return impl_ && impl_->streamDecompressedBufferData(stored, tiles, destination, destinationOffset, batch);
 }
 
 BufferOffset Streamer::streamTextureData(const StreamTextureDataDesc& desc)
@@ -824,14 +935,35 @@ uint64_t Streamer::streamConstantData(const void* data, uint64_t byteSize)
         : kInvalidStreamOffset;
 }
 
-std::shared_ptr<StreamUploadCompletion> Streamer::pendingCopyCompletion()
+std::shared_ptr<StreamUploadCompletion> Streamer::pendingCopyCompletion(StreamerCopyBatch batch)
 {
-    return impl_ != nullptr ? impl_->pendingCopyCompletion() : nullptr;
+    return impl_ != nullptr ? impl_->pendingCopyCompletion(batch) : nullptr;
 }
 
 Result<> Streamer::copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
 {
-    return impl_ ? impl_->copyStreamedData(commandBuffer, phase) : makeError(Error::InvalidArgument);
+    return impl_ ? impl_->copyStreamedData(commandBuffer, {}, phase) : makeError(Error::InvalidArgument);
+}
+
+Result<StreamerCopyBatch> Streamer::beginCopyBatch()
+{
+    return impl_ ? impl_->beginCopyBatch() : makeError(Error::InvalidArgument);
+}
+
+Result<> Streamer::cancelCopyBatch(StreamerCopyBatch batch)
+{
+    return impl_ ? impl_->cancelCopyBatch(batch) : makeError(Error::InvalidArgument);
+}
+
+StreamerPendingCopyStats Streamer::pendingCopyStats(StreamerCopyBatch batch) const
+{
+    return impl_ ? impl_->pendingCopyStats(batch) : StreamerPendingCopyStats{};
+}
+
+Result<> Streamer::copyStreamedData(CommandBuffer& commandBuffer, StreamerCopyBatch batch,
+    const StreamUploadPhaseCallback& phase)
+{
+    return impl_ ? impl_->copyStreamedData(commandBuffer, batch, phase) : makeError(Error::InvalidArgument);
 }
 
 void Streamer::endFrame()

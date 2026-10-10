@@ -6,8 +6,10 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace metallic::render {
+struct DebugResourceBinding;
 
 GPUAtmosphereParameters buildGPUAtmosphereParameters(const environment::EnvironmentSnapshot& environment,
     const std::array<double, 3>& observerWorldMetres);
@@ -48,6 +50,7 @@ public:
     Buffer* aerialBuffer() const;
     Buffer* parametersBuffer() const;
     const GPUAtmosphereParameters& parameters() const;
+    void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const;
 
 private:
     struct Impl;

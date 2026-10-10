@@ -1713,6 +1713,12 @@ class GraphicsShaderObjectProgram {
     PreparedExecution execution(const RasterExecutionState& state = {}) const;
 };
 
+// A live heap supports concurrent allocate/release and writes to distinct slots.
+// Callers serialize writes/release of the same slot, release each handle once,
+// and wait for GPU users before overwriting or recycling their descriptors.
+// Heap moves/destruction require exclusive access; Device and input resources
+// must remain alive and unchanged during calls. Internal locks protect CPU state
+// and descriptor flushes, not GPU execution or resource lifetime.
 class BindlessHeap {
     METALLIC_RHI_HANDLE(BindlessHeap, unique_ptr,
         friend class Device;

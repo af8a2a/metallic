@@ -1,5 +1,20 @@
 include(GoogleTest)
 
+foreach(slang_case IN ITEMS existing custom disabled unsupported)
+    add_test(NAME MetallicSlangBootstrap.${slang_case} COMMAND ${CMAKE_COMMAND}
+        "-DCASE=${slang_case}" "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+        "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/slang-bootstrap"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SlangBootstrapTests.cmake")
+    set_tests_properties(MetallicSlangBootstrap.${slang_case} PROPERTIES LABELS "build" TIMEOUT 30)
+endforeach()
+if(WIN32)
+    add_test(NAME MetallicSlangBootstrap.partial COMMAND ${CMAKE_COMMAND}
+        -DCASE=partial "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+        "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/slang-bootstrap"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SlangBootstrapTests.cmake")
+    set_tests_properties(MetallicSlangBootstrap.partial PROPERTIES LABELS "build" TIMEOUT 30)
+endif()
+
 add_test(NAME MetallicWorkingColorAudit COMMAND ${CMAKE_COMMAND}
     "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckWorkingColor.cmake")
 set_tests_properties(MetallicWorkingColorAudit PROPERTIES LABELS "shader;color")
@@ -379,6 +394,7 @@ add_executable(MetallicRHITests
     rhi/NativeDescriptorHeapTests.cpp
     rhi/NativeDescriptorHeapSPIRVTests.cpp
     rhi/BindlessBufferTests.cpp
+    rhi/BindlessHeapConcurrencyTests.cpp
     rhi/DescriptorHeapCodePatternTests.cpp
     rhi/DLSSMotionVectorTests.cpp
     rhi/TextureFootprintTests.cpp
@@ -497,6 +513,7 @@ add_executable(MetallicRHITests
     rhi/RayTracingPositionFetchTests.cpp
     rhi/OpacityMicromapTests.cpp
     rhi/StreamerTests.cpp
+    rhi/StreamerConcurrencyTests.cpp
     rhi/StreamBLASAllocationTests.cpp
     rhi/GPUDecompressionTests.cpp
     rhi/TestOutput.cpp
@@ -627,6 +644,13 @@ set_tests_properties(MetallicRHITests PROPERTIES
     LABELS "rhi"
     SKIP_RETURN_CODE 77
 )
+
+add_test(NAME MetallicResourceInspectorSmoke
+    COMMAND ${CMAKE_COMMAND} -E env METALLIC_SMOKE_TEST_HIDDEN=1
+        $<TARGET_FILE:Metallic> --skip-shader-warmup
+        --resource-inspector-smoke "${CMAKE_CURRENT_BINARY_DIR}/resource-inspector-evidence")
+set_tests_properties(MetallicResourceInspectorSmoke PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "editor;rhi;resource-inspector" TIMEOUT 120)
 
 if(METALLIC_HAS_DLSS_NR)
     add_test(NAME MetallicDLSSNRRuntimeTests COMMAND MetallicRHITests

@@ -57,7 +57,6 @@ namespace {
 
 constexpr int kBaseWindowWidth = 1600;
 constexpr int kBaseWindowHeight = 900;
-constexpr uint32_t kMaxViewportPreviewSize = 2048;
 constexpr uint32_t kViewportResizeSettleFrames = 3;
 constexpr const char* kRenderPassDragPayload = "METALLIC_RENDER_PASS_TYPE";
 constexpr uint32_t kSwapchainImageCount = 3;
@@ -140,6 +139,12 @@ Pos=1591,28
 Size=809,1073
 Collapsed=0
 DockId=0x00000007,1
+
+[Window][Runtime Settings]
+Pos=1591,28
+Size=809,1073
+Collapsed=0
+DockId=0x00000007,2
 
 [Window][Inspector]
 Pos=1591,1104
@@ -2044,7 +2049,8 @@ int EditorApplication::run(
     bool enableDebugControl,
     bool gpuDrivenScenesOnly,
     bool skipShaderWarmup,
-    render::LookDevRenderPath lookDevRenderPath)
+    render::LookDevRenderPath lookDevRenderPath,
+    const char* resourceInspectorSmokeOutput)
 {
     lookDevRenderPath_ = lookDevRenderPath;
     gpuDrivenScenesOnly_ = gpuDrivenScenesOnly;
@@ -2203,6 +2209,11 @@ int EditorApplication::run(
             shutdown();
             return passed ? 0 : 1;
         }
+        if (resourceInspectorSmokeOutput || environmentFlagEnabled("METALLIC_SMOKE_TEST_RESOURCE_INSPECTOR")) {
+            const bool passed = runResourceInspectorSmokeTest(resourceInspectorSmokeOutput);
+            shutdown();
+            return passed ? 0 : 1;
+        }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_LOOKDEV_PATHS") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_PAINTER_SWITCH") ||
             environmentFlagEnabled("METALLIC_SMOKE_TEST_STUDIO_SWITCH") ||
@@ -2250,8 +2261,10 @@ int EditorApplication::run(
                 shutdown();
                 return 1;
             }
+            render::vulkan::StreamlineFrameBeginProfile frameBegin;
             const render::vulkan::StreamlineFrameScope streamlineFrame(
-                ImGui::GetPlatformIO().Viewports.Size <= 1);
+                ImGui::GetPlatformIO().Viewports.Size <= 1, &frameBegin);
+            if (frameBegin.sleepCalled) { profiler_.addIdleSample("Reflex Frame Pacing", frameBegin.sleepMs); }
             const render::profiling::NsightProfileRange frameMarker(
                 render::profiling::NsightDomain::Editor,
                 "Frame",
@@ -2315,9 +2328,11 @@ int EditorApplication::run(
         if (!waitForFrameSlotBeforeInput()) {
             break;
         }
+        render::vulkan::StreamlineFrameBeginProfile frameBegin;
         const render::vulkan::StreamlineFrameScope streamlineFrame(
             (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) == 0 &&
-            ImGui::GetPlatformIO().Viewports.Size <= 1);
+            ImGui::GetPlatformIO().Viewports.Size <= 1, &frameBegin);
+        if (frameBegin.sleepCalled) { profiler_.addIdleSample("Reflex Frame Pacing", frameBegin.sleepMs); }
         {
             auto profileScope = profiler_.scope("Poll Events");
             pollEvents();
@@ -2326,10 +2341,11 @@ int EditorApplication::run(
         if (debugRuntime_) {
             debugRuntime_->poll();
             debugRuntime_->core().setEngineState({{"state", (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) ? "Minimized" : "Running"},
-                {"editorSubmittedFrame", submittedFrameIndex_}, {"historyFrame", historyFrameIndex_}});
+                {"editorSubmittedFrame", submittedFrameIndex_}, {"historyFrame", historyFrameIndex_},
+                {"resourceInspector", resourceInspector_.diagnostics()}});
         }
         if ((SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0) {
-            auto profileScope = profiler_.scope("Minimized Wait");
+            auto profileScope = profiler_.idleScope("Minimized Wait");
             SDL_Delay(10);
             if (!renderGraphEditorOpen_ && ImGui::GetPlatformIO().Viewports.Size <= 1) {
                 continue;
@@ -2894,6 +2910,7 @@ void EditorApplication::shutdown()
     }
     (void)frameSubmissions_.reset();
     if (debugRuntime_) { debugRuntime_->drain(); }
+    resourceInspector_.shutdown(imguiBackend_);
 
     destroyViewportTexture();
     historyResources_.reset();
@@ -3046,7 +3063,7 @@ bool EditorApplication::waitForFrameSlotBeforeInput()
     // renderFrame still begins the context, including for direct smoke-test callers.
     const auto& frame = frameSlots_[submittedFrameIndex_ % kFrameSlotCount];
     const auto result = [&] {
-        auto profileScope = profiler_.scope("Wait Frame Slot Before Input");
+        auto profileScope = profiler_.idleScope("Wait Frame Slot Before Input");
         return frame.context.wait();
     }();
     if (!result) {
@@ -3080,6 +3097,7 @@ bool EditorApplication::renderFrame()
 {
     if (nsightGraphicsCapture_.replayTracePending()) {
         pollNsightGraphicsCapture();
+        auto profileScope = profiler_.idleScope("Wait Nsight Replay");
         SDL_Delay(10);
         return true;
     }
@@ -3100,6 +3118,7 @@ bool EditorApplication::renderFrame()
         pollNsightGraphicsCapture();
     }
     if (nsightGraphicsCapture_.replayTracePending()) {
+        auto profileScope = profiler_.idleScope("Wait Nsight Replay");
         SDL_Delay(10);
         return true;
     }
@@ -3110,12 +3129,15 @@ bool EditorApplication::renderFrame()
     }
 
     {
-        auto frameFenceScope = profiler_.scope("Wait Frame Slot");
+        auto frameFenceScope = profiler_.scope("Begin Frame Slot");
         render::Result<> result;
         {
-            auto profileScope = profiler_.scope("Wait Slot Completion");
-            result = frame.context.begin(submittedFrameIndex_);
+            auto profileScope = profiler_.idleScope("Wait Slot Completion");
+            result = frame.context.wait();
         }
+        // Keep resource retirement/reset out of the idle interval. begin() also
+        // checks completion, which is already satisfied after the explicit wait.
+        if (result) { result = frame.context.begin(submittedFrameIndex_); }
         if (!result) {
             spdlog::error("frame context begin failed with Result {}", render::resultToString(result));
             running_ = false;
@@ -3144,6 +3166,15 @@ bool EditorApplication::renderFrame()
     {
         auto profileScope = profiler_.scope("Shader Hot Reload");
         pollShaderHotReload();
+    }
+
+    resourceInspector_.runtime().poll();
+    if (!debugRuntime_ && graphExecutor_ && resourceInspectorAttached_ != resourceInspectorVisible_) {
+        resourceInspectorAttached_ = resourceInspectorVisible_;
+        graphExecutor_->setDebugObserver(resourceInspectorAttached_ ? &resourceInspector_.runtime() : nullptr);
+        // Recompile on both edges to update transfer usages and allocation policy.
+        // Keep transient observer switching in diagnostic benchmarks unchanged.
+        viewportPreviewValid_ = false;
     }
 
     if (renderMainViewport && (swapchainOutOfDate_ ||
@@ -3236,6 +3267,7 @@ void EditorApplication::setupDefaultDockLayout()
         &sideDockId);
 
     ImGui::DockBuilderDockWindow("Scene Browser", sideDockId);
+    ImGui::DockBuilderDockWindow("Runtime Settings", sideDockId);
     ImGui::DockBuilderDockWindow("Inspector", inspectorDockId);
     ImGui::DockBuilderDockWindow("Assets", bottomDockId);
     ImGui::DockBuilderDockWindow("Console", bottomDockId);
@@ -3415,6 +3447,7 @@ void EditorApplication::drawDockspace()
             }
             ImGui::Separator();
             ImGui::MenuItem("Scene Browser");
+            ImGui::MenuItem("Runtime Settings", nullptr, &runtimeSettingsOpen_);
             ImGui::MenuItem("Inspector", nullptr, &inspectorOpen_);
             ImGui::MenuItem("Statistics", nullptr, &statisticsOpen_);
             ImGui::MenuItem("Viewport");
@@ -3463,6 +3496,10 @@ void EditorApplication::drawPanels()
     {
         auto profileScope = profiler_.scope("Scene Panel");
         drawScenePanel();
+    }
+    {
+        auto profileScope = profiler_.scope("Runtime Settings Panel");
+        drawRuntimeSettingsPanel();
     }
     {
         auto profileScope = profiler_.scope("Inspector Panel");
@@ -3540,6 +3577,51 @@ void EditorApplication::drawPanels()
     }
 }
 
+void EditorApplication::drawRuntimeSettingsPanel()
+{
+    if (!runtimeSettingsOpen_) {
+        return;
+    }
+
+    // Place the new tab alongside Scene Browser when loading an older saved layout.
+    if (const ImGuiWindow* sceneWindow = ImGui::FindWindowByName("Scene Browser");
+        sceneWindow != nullptr && sceneWindow->DockId != 0) {
+        ImGui::SetNextWindowDockID(sceneWindow->DockId, ImGuiCond_FirstUseEver);
+    }
+    if (!ImGui::Begin("Runtime Settings", &runtimeSettingsOpen_)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::PushID("RenderPassRuntimeSettings");
+    ImGui::PushID(renderGraph_.name().c_str());
+    bool hasSettings = false;
+    for (const auto& graphNode : renderGraph_.nodes()) {
+        auto pass = render::createRenderGraphPass(graphNode.type);
+        if (pass == nullptr) { continue; }
+        pass->setProperties(effectiveNodeProperties(graphNode));
+        if (!hasVisibleRuntimeSettings(pass->runtimeSettings(), true)) { continue; }
+        hasSettings = true;
+        ImGui::PushID(static_cast<int>(graphNode.id));
+        if (ImGui::CollapsingHeader(graphNode.name.c_str())) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("%s", graphNode.type.c_str());
+            ImGui::PopTextWrapPos();
+            if (auto* node = renderGraph_.findNode(graphNode.id)) {
+                drawRuntimeSettingsForNode(*node, true, false);
+            }
+            ImGui::Spacing();
+        }
+        ImGui::PopID();
+    }
+    if (!hasSettings) {
+        ImGui::TextDisabled("No runtime settings in this graph.");
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+    ImGui::End();
+}
+
 void EditorApplication::drawScenePanel()
 {
     ImGui::Begin("Scene Browser");
@@ -3602,36 +3684,6 @@ void EditorApplication::drawScenePanel()
     }
     if (!loadResult.error.empty() && !loadResult.success) {
         ImGui::TextWrapped("Error: %s", loadResult.error.c_str());
-    }
-
-    ImGui::Separator();
-    if (ImGui::CollapsingHeader("Runtime Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::PushID("SceneRuntimeSettings");
-        ImGui::PushID(renderGraph_.name().c_str());
-        bool hasSettings = false;
-        for (const auto& graphNode : renderGraph_.nodes()) {
-            auto pass = render::createRenderGraphPass(graphNode.type);
-            if (pass == nullptr) { continue; }
-            pass->setProperties(effectiveNodeProperties(graphNode));
-            if (!hasVisibleRuntimeSettings(pass->runtimeSettings(), true)) { continue; }
-            hasSettings = true;
-            ImGui::PushID(static_cast<int>(graphNode.id));
-            if (ImGui::CollapsingHeader(graphNode.name.c_str())) {
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextDisabled("%s", graphNode.type.c_str());
-                ImGui::PopTextWrapPos();
-                if (auto* node = renderGraph_.findNode(graphNode.id)) {
-                    drawRuntimeSettingsForNode(*node, true, false);
-                }
-                ImGui::Spacing();
-            }
-            ImGui::PopID();
-        }
-        if (!hasSettings) {
-            ImGui::TextDisabled("No runtime settings in this graph.");
-        }
-        ImGui::PopID();
-        ImGui::PopID();
     }
 
     ImGui::Separator();
@@ -4332,6 +4384,11 @@ void EditorApplication::initializeViewportView()
         }
     }
     viewportView_.setCameraProperties(properties.value("camera", render::RenderGraphProperties::object()));
+    viewportView_.setRenderResolution(1920, 1080);
+    if (!viewportView_.setRenderResolutionProperties(
+            properties.value("renderResolution", render::RenderGraphProperties::object()))) {
+        spdlog::warn("Invalid view render resolution; using 1920x1080");
+    }
     viewportView_.setTemporalJitter(properties.value("temporalJitter", false));
     viewportView_.setTemporalJitterSuppressed(false);
     viewportView_.cameraCut();
@@ -6326,8 +6383,8 @@ void EditorApplication::drawViewportGizmo(const ImVec2& min, const ImVec2& max)
     ensureCameraProperties(properties, scene_.bounds());
     const ViewportCameraMatrices matrices = viewportCameraMatrices(
         properties["camera"],
-        max.x - min.x,
-        max.y - min.y);
+        static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
+        static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(min.x, min.y, max.x - min.x, max.y - min.y);
     ImGuizmo::SetOrthographic(matrices.orthographic);
@@ -6402,8 +6459,8 @@ void EditorApplication::drawViewportObjectHandles(const ImVec2& min, const ImVec
     ensureCameraProperties(properties, scene_.bounds());
     const ViewportCameraMatrices matrices = viewportCameraMatrices(
         properties["camera"],
-        max.x - min.x,
-        max.y - min.y);
+        static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
+        static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
     const scene::ConstSceneObject selectedObject = selectedSceneObject();
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const float radius = 9.0f * mainScale_;
@@ -6524,11 +6581,12 @@ void EditorApplication::selectViewportObject(const ImVec2& min, const ImVec2& ma
     const render::RenderGraphProperties& camera = properties["camera"];
     const ViewportCameraMatrices matrices = viewportCameraMatrices(
         camera,
-        max.x - min.x,
-        max.y - min.y);
+        static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_)),
+        static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_)));
     const float normalizedX = ((mouse.x - min.x) / std::max(max.x - min.x, 1.0f)) * 2.0f - 1.0f;
     const float normalizedY = 1.0f - ((mouse.y - min.y) / std::max(max.y - min.y, 1.0f)) * 2.0f;
-    const float aspect = std::max((max.x - min.x) / std::max(max.y - min.y, 1.0f), 0.001f);
+    const float aspect = float(viewportView_.renderWidth(viewportTextureWidth_)) /
+        float(viewportView_.renderHeight(viewportTextureHeight_));
     float3 rayOrigin = matrices.frame.eye;
     float3 rayDirection = matrices.frame.forward;
     if (matrices.orthographic) {
@@ -6644,6 +6702,59 @@ void EditorApplication::drawViewportPanel()
         ? &translateSnap_
         : (gizmoOperation_ == GizmoOperation::Rotate ? &rotateSnap_ : &scaleSnap_);
     ImGui::DragFloat("##SnapStep", snapValue, 0.05f, 0.001f, 1000.0f, "%.3f");
+    ImGui::SameLine();
+    const bool adaptiveResolution = viewportView_.adaptiveResolution();
+    const std::string resolutionLabel = std::string(adaptiveResolution ? "Render: Auto " : "Render: ") +
+        std::to_string(viewportView_.renderWidth(graphExecutor_ != nullptr ? graphExecutor_->width() : 0u)) + "x" +
+        std::to_string(viewportView_.renderHeight(graphExecutor_ != nullptr ? graphExecutor_->height() : 0u));
+    if (ImGui::Button(resolutionLabel.c_str())) {
+        customRenderResolution_[0] = static_cast<int>(viewportView_.renderWidth());
+        customRenderResolution_[1] = static_cast<int>(viewportView_.renderHeight());
+        ImGui::OpenPopup("Render Resolution");
+    }
+    ImGui::SetItemTooltip("Auto follows the viewport pixel size. Fixed resolutions are scaled by FinalBlit.");
+    if (ImGui::BeginPopup("Render Resolution")) {
+        const auto saveResolution = [this]() {
+            auto properties = renderGraph_.viewProperties();
+            properties["renderResolution"] = viewportView_.renderResolutionProperties();
+            renderGraph_.setViewProperties(std::move(properties));
+            ImGui::CloseCurrentPopup();
+        };
+        const auto applyResolution = [this, &saveResolution](uint32_t width, uint32_t height) {
+            if (viewportView_.setRenderResolution(width, height)) { saveResolution(); }
+        };
+        if (ImGui::Selectable("Auto (Viewport size)", adaptiveResolution)) {
+            viewportView_.setAdaptiveResolution(true);
+            saveResolution();
+        }
+        ImGui::Separator();
+        struct ResolutionPreset { const char* label; uint32_t width; uint32_t height; };
+        constexpr ResolutionPreset presets[] = {
+            {"1080P (1920 x 1080)", 1920, 1080},
+            {"2K (2560 x 1440)", 2560, 1440},
+            {"4K (3840 x 2160)", 3840, 2160},
+        };
+        for (const auto& preset : presets) {
+            if (ImGui::Selectable(preset.label, !adaptiveResolution && viewportView_.renderWidth() == preset.width &&
+                    viewportView_.renderHeight() == preset.height)) {
+                applyResolution(preset.width, preset.height);
+            }
+        }
+        ImGui::SeparatorText("Custom resolution");
+        ImGui::SetNextItemWidth(240.0f * mainScale_);
+        ImGui::InputInt2("Width / Height", customRenderResolution_);
+        const int limit = static_cast<int>(render::RenderView::kMaxRenderDimension);
+        const bool valid = customRenderResolution_[0] > 0 && customRenderResolution_[1] > 0 &&
+            customRenderResolution_[0] <= limit && customRenderResolution_[1] <= limit;
+        ImGui::TextDisabled("Each dimension: 1 - %d", limit);
+        ImGui::BeginDisabled(!valid);
+        if (ImGui::Button("Apply")) {
+            applyResolution(static_cast<uint32_t>(customRenderResolution_[0]),
+                static_cast<uint32_t>(customRenderResolution_[1]));
+        }
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
     drawSliderDebugControls();
     if (viewportCompileFailed_) {
         ImGui::SameLine();
@@ -6659,12 +6770,13 @@ void EditorApplication::drawViewportPanel()
     const float panelWidth = panelMax.x - panelMin.x;
     const float panelHeight = panelMax.y - panelMin.y;
     constexpr uint32_t kSmokeTestPreviewSize = 256;
+    const ImVec2 framebufferScale = ImGui::GetWindowViewport()->FramebufferScale;
     auto [previewWidth, previewHeight] = constrainedPreviewExtent(
-        panelWidth,
-        panelHeight,
+        panelWidth * framebufferScale.x,
+        panelHeight * framebufferScale.y,
         smokeTest_ && !environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH") &&
             !environmentFlagEnabled("METALLIC_SMOKE_TEST_NSIGHT_CAPTURE")
-            ? kSmokeTestPreviewSize : kMaxViewportPreviewSize);
+            ? kSmokeTestPreviewSize : std::numeric_limits<uint32_t>::max());
     if (smokeTest_ && environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH")) {
         previewWidth = 1564;
         previewHeight = 708;
@@ -6702,7 +6814,7 @@ void EditorApplication::drawViewportPanel()
     const bool loadingStream = !streamReadiness.ready;
     const bool loadingScene = pendingSceneLoad_.valid() || pendingSceneResourcePreparation_ || loadingStream;
     const bool previewMatchesRequestedExtent = hasRhiPreview &&
-        viewportTextureWidth_ == previewWidth && viewportTextureHeight_ == previewHeight;
+        graphExecutor_->width() == previewWidth && graphExecutor_->height() == previewHeight;
     const bool popupOpen = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
     viewportInteractionEnabled_ = previewMatchesRequestedExtent && !loadingScene && !popupOpen && !fullRoamActive_;
     const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -6932,7 +7044,10 @@ void EditorApplication::handleViewportCameraControls(const ImVec2& min, const Im
                     changed = true;
                 }
             } else if (viewportCameraDragButton_ == ImGuiMouseButton_Middle) {
-                changed = panCamera(delta.x, delta.y, size.x, size.y, camera) || changed;
+                const float renderWidth = static_cast<float>(viewportView_.renderWidth(viewportTextureWidth_));
+                const float renderHeight = static_cast<float>(viewportView_.renderHeight(viewportTextureHeight_));
+                changed = panCamera(delta.x * renderWidth / std::max(size.x, 1.0f),
+                    delta.y * renderHeight / std::max(size.y, 1.0f), renderWidth, renderHeight, camera) || changed;
             }
         }
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
@@ -6985,8 +7100,8 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 
     const bool textureSizeMatches =
         viewportDescriptor_ != 0 &&
-        viewportTextureWidth_ == width &&
-        viewportTextureHeight_ == height;
+        graphExecutor_->width() == width &&
+        graphExecutor_->height() == height;
     const bool previewResourceAvailable = graphExecutor_->compiled() &&
         graphExecutor_->isExportedOutput(previewOutput) &&
         graphExecutor_->outputResource(previewOutput) != nullptr;
@@ -7207,6 +7322,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
     }
 
     bool frameLabelOpen = true;
+    if (!resourceInspector_.upload(*frame.commandBuffer)) { return false; }
     frame.commandBuffer->beginDebugLabel(render::DebugLabelDesc{
         .name = "Metallic Editor Frame",
         .color = render::ColorValue{0.24f, 0.40f, 0.95f, 1.0f},
@@ -7580,6 +7696,7 @@ void EditorApplication::setLookDevRenderPath(render::LookDevRenderPath path)
         }
     }
     comparison.setViewProperties({{"camera", viewportView_.cameraProperties()},
+        {"renderResolution", viewportView_.renderResolutionProperties()},
         {"temporalJitter", viewportView_.temporalJitter()}});
     std::string message;
     if (!render::makeLookDevRenderGraph(comparison, path, renderGraph_, message)) {
@@ -7617,6 +7734,7 @@ void EditorApplication::saveRenderGraph()
     std::string message;
     const std::filesystem::path path = resolveGraphAssetPath(graphFilePath_);
     renderGraph_.setViewProperties({{"camera", viewportView_.cameraProperties()},
+        {"renderResolution", viewportView_.renderResolutionProperties()},
         {"temporalJitter", viewportView_.temporalJitter()}});
     if (!render::saveRenderGraphToFile(renderGraph_, path, message)) {
         renderGraphStatus_ = message;
@@ -8401,6 +8519,7 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
 
 void EditorApplication::drawRenderGraphEditorWindow()
 {
+    resourceInspectorVisible_ = false;
     if (graphExecutor_) { graphExecutor_->setExecutionCaptureEnabled(false); }
     if (!renderGraphEditorOpen_) {
         return;
@@ -8499,6 +8618,12 @@ void EditorApplication::drawRenderGraphEditorWindow()
             if (selectedPass != UINT32_MAX && selectedPass != previousSelection && renderGraph_.findNode(selectedPass)) {
                 selectedGraphNodeId_ = static_cast<int>(selectedPass);
             }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Resources", nullptr, resourceInspectorSelectTab_ ? ImGuiTabItemFlags_SetSelected : 0)) {
+            resourceInspectorVisible_ = true;
+            resourceInspectorSelectTab_ = false;
+            resourceInspector_.draw(debugRuntime_ ? *debugRuntime_ : resourceInspector_.runtime(), *device_, imguiBackend_, mainScale_);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -8614,6 +8739,10 @@ void EditorApplication::drawRenderGraphPanel()
     if (ImGui::BeginPopup("RenderGraphOutputPinMenu")) {
         ImGui::TextUnformatted(graphOutputBuffer_);
         ImGui::Separator();
+        if (ImGui::MenuItem("Inspect Resource")) {
+            resourceInspector_.select(graphOutputBuffer_);
+            resourceInspectorSelectTab_ = true;
+        }
         if (ImGui::MenuItem("Preview This Output")) {
             setActivePreviewOutput(graphOutputBuffer_);
         }

@@ -57,6 +57,14 @@ std::string textureLayout(Format format)
     case Format::BGRA8Unorm: case Format::BGRA8sRGB: return "BGRA8";
     case Format::RGBA16Sfloat: return "RGBA16F";
     case Format::RGBA32Sfloat: return "RGBA32F";
+    case Format::R16Sfloat: return "R16F";
+    case Format::RG16Sfloat: return "RG16F";
+    case Format::RG32Sfloat: return "RG32F";
+    case Format::RG32Uint: return "RG32U";
+    case Format::RGBA32Uint: return "RGBA32U";
+    case Format::R32Sint: return "i32";
+    case Format::RG32Sint: return "RG32I";
+    case Format::RGBA32Sint: return "RGBA32I";
     case Format::R32Uint: return "u32";
     case Format::R32Sfloat: case Format::D32Sfloat: return "f32";
     default: return {};
@@ -77,13 +85,29 @@ DebugValue resourceMetadata(const DebugResourceBinding& binding)
         value["width"] = desc.width; value["height"] = desc.height;
         value["format"] = static_cast<uint32_t>(desc.format);
         value["layout"] = textureLayout(desc.format);
+        value["textureType"] = static_cast<uint32_t>(desc.type);
+        value["depth"] = desc.depth; value["mipCount"] = desc.mipCount; value["layerCount"] = desc.layerCount;
+        if (value["layout"] == "" || (desc.type != TextureType::Texture2D && desc.type != TextureType::Texture3D) ||
+            (uint32_t(desc.usage) & uint32_t(TextureUsageBits::TransferSource)) == 0) {
+            value["captureSupported"] = false;
+            value["reason"] = "Texture inspection requires a supported uncompressed 2D or 3D transfer-source texture";
+        }
     } else if (binding.buffer) {
         value["kind"] = "buffer";
         value["size"] = binding.size ? binding.size : binding.buffer->desc().size - binding.offset;
         value["layout"] = binding.layout;
         value["structureStride"] = binding.buffer->desc().structureStride;
+        if (value.value("captureSupported", true) &&
+            !hasFlag(binding.buffer->desc().usage, BufferUsageBits::TransferSource)) {
+            value["captureSupported"] = false;
+            value["reason"] = "Buffer was not allocated for debug readback";
+        }
         value["probeSupported"] = binding.state != ResourceState::Undefined && binding.metadata.value("captureSupported", true) &&
             (uint32_t(binding.buffer->desc().usage) & uint32_t(BufferUsageBits::Storage)) != 0;
+    }
+    if (value.value("captureSupported", true) && binding.state == ResourceState::Undefined) {
+        value["captureSupported"] = false;
+        value["reason"] = "Resource has not been initialized at this boundary";
     }
     return value;
 }
@@ -300,7 +324,7 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
         const DebugResourceBinding* source;
         uint64_t offset = 0;
         uint64_t bytes = 0;
-        uint32_t x = 0, y = 0, width = 0, height = 0;
+        uint32_t x = 0, y = 0, z = 0, width = 0, height = 0, depth = 1;
     };
     auto readback = std::make_shared<Readback>();
     readback->job = request.id; readback->execution = current_;
@@ -351,23 +375,30 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
                 if ((!graphics && !compute) || (desc.format == Format::D32Sfloat && !graphics)) {
                     reject("Unsupported", "Texture ROI requires graphics/compute; depth capture requires a graphics-capable queue"); return;
                 }
-                if ((uint32_t(desc.usage) & uint32_t(TextureUsageBits::TransferSource)) == 0 || desc.type != TextureType::Texture2D) {
+                if ((uint32_t(desc.usage) & uint32_t(TextureUsageBits::TransferSource)) == 0 ||
+                    (desc.type != TextureType::Texture2D && desc.type != TextureType::Texture3D)) {
                     reject("Unsupported", "Texture does not support transfer-source capture"); return;
                 }
                 const auto roi = spec.value("roi", DebugValue{{"x", 0u}, {"y", 0u}, {"width", 1u}, {"height", 1u}});
                 copy.x = static_cast<uint32_t>(debug::debugUnsigned(roi.at("x"), INT32_MAX));
                 copy.y = static_cast<uint32_t>(debug::debugUnsigned(roi.at("y"), INT32_MAX));
+                copy.z = static_cast<uint32_t>(debug::debugUnsigned(spec.value("slice", DebugValue(0u)), INT32_MAX));
+                copy.depth = static_cast<uint32_t>(debug::debugUnsigned(spec.value("sliceCount", DebugValue(1u)), INT32_MAX));
                 copy.width = static_cast<uint32_t>(debug::debugUnsigned(roi.at("width"), INT32_MAX));
                 copy.height = static_cast<uint32_t>(debug::debugUnsigned(roi.at("height"), INT32_MAX));
-                if (!copy.width || !copy.height || copy.x >= desc.width || copy.y >= desc.height ||
+                const uint32_t depth = desc.type == TextureType::Texture3D ? desc.depth : 1u;
+                if (!copy.width || !copy.height || !copy.depth || copy.x >= desc.width || copy.y >= desc.height || copy.z >= depth ||
+                    copy.depth > depth - copy.z ||
                     copy.width > desc.width - copy.x || copy.height > desc.height - copy.y) {
                     reject("OutOfRange", "ROI outside texture"); return;
                 }
                 const uint64_t pixels = uint64_t(copy.width) * copy.height;
-                if (pixels > core_.limits().jobBytes / layout.stride) { reject("BudgetExceeded", "Texture ROI exceeds job budget"); return; }
-                copy.bytes = pixels * layout.stride;
+                if (pixels > core_.limits().jobBytes / layout.stride / copy.depth) { reject("BudgetExceeded", "Texture ROI exceeds job budget"); return; }
+                copy.bytes = pixels * layout.stride * copy.depth;
                 metadata["roi"] = roi;
-                metadata["completeCoverage"] = copy.width == desc.width && copy.height == desc.height;
+                metadata["slice"] = copy.z;
+                metadata["sliceCount"] = copy.depth;
+                metadata["completeCoverage"] = copy.width == desc.width && copy.height == desc.height && copy.depth == depth;
                 metadata["encoding"] = (layoutName == "RGBA8" || layoutName == "BGRA8") ? "unorm8-storage-values" : "native";
             } else {
                 const auto& desc = source.buffer->desc();
@@ -458,8 +489,10 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
             if (auto commandResult = commands.synchronize({.textures = {&barrier, 1}}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
             if (auto commandResult = (readback->buffers[i].get())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = copy.source->texture, .buffer = bufferSlice,
                 .bufferRowPitch = copy.width * readback->capture->artifacts[i].layout.stride,
-                .bufferSlicePitch = static_cast<uint32_t>(copy.bytes), .textureOffsetX = static_cast<int32_t>(copy.x), .textureOffsetY = static_cast<int32_t>(copy.y),
-                .width = copy.width, .height = copy.height}); }); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
+                .bufferSlicePitch = copy.width * copy.height * readback->capture->artifacts[i].layout.stride,
+                .textureOffsetX = static_cast<int32_t>(copy.x), .textureOffsetY = static_cast<int32_t>(copy.y),
+                .textureOffsetZ = static_cast<int32_t>(copy.z),
+                .width = copy.width, .height = copy.height, .depth = copy.depth}); }); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
             std::swap(barrier.before, barrier.after); std::swap(barrier.oldLayout, barrier.newLayout);
             if (auto commandResult = commands.synchronize({.textures = {&barrier, 1}}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
         } else {

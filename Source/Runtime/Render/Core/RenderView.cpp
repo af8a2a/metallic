@@ -6,6 +6,57 @@
 
 namespace metallic::render {
 
+bool RenderView::setRenderResolution(uint32_t width, uint32_t height)
+{
+    if (width == 0 || height == 0 || width > kMaxRenderDimension || height > kMaxRenderDimension) {
+        return false;
+    }
+    if (adaptiveResolution_ || renderWidth_ != width || renderHeight_ != height) {
+        renderWidth_ = width;
+        renderHeight_ = height;
+        adaptiveResolution_ = false;
+        ++revision_;
+        cameraCut();
+    }
+    return true;
+}
+
+void RenderView::setAdaptiveResolution(bool enabled)
+{
+    if (adaptiveResolution_ != enabled) {
+        adaptiveResolution_ = enabled;
+        ++revision_;
+        cameraCut();
+    }
+}
+
+bool RenderView::setRenderResolutionProperties(const nlohmann::json& properties)
+{
+    if (!properties.is_object()) { return false; }
+    const auto validDimension = [](const nlohmann::json& value) {
+        return value.is_number_integer() && value >= 1 && value <= kMaxRenderDimension;
+    };
+    const auto width = properties.value("width", nlohmann::json(1920));
+    const auto height = properties.value("height", nlohmann::json(1080));
+    const auto adaptive = properties.value("adaptive", nlohmann::json(false));
+    if (!validDimension(width) || !validDimension(height) || !adaptive.is_boolean()) { return false; }
+    // Apply atomically, without temporarily leaving adaptive mode on identical input.
+    if (renderWidth_ != width.get<uint32_t>() || renderHeight_ != height.get<uint32_t>() ||
+        adaptiveResolution_ != adaptive.get<bool>()) {
+        renderWidth_ = width.get<uint32_t>();
+        renderHeight_ = height.get<uint32_t>();
+        adaptiveResolution_ = adaptive.get<bool>();
+        ++revision_;
+        cameraCut();
+    }
+    return true;
+}
+
+nlohmann::json RenderView::renderResolutionProperties() const
+{
+    return {{"width", renderWidth_}, {"height", renderHeight_}, {"adaptive", adaptiveResolution_}};
+}
+
 bool RenderView::setCamera(const ViewCamera& camera)
 {
     const auto finite = [](const auto& values) {

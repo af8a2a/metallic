@@ -92,7 +92,10 @@ public:
         params.display = push;
         auto encoded = writer.encode(params, kColorGradingLUTABI);
         if (!encoded) { return makeError(encoded.error()); }
-        return program_.dispatch(commands, *encoded, 16, 16, 16);
+        // Match composeColorGradingLUT's 4x4x4 thread groups across the full volume.
+        const auto& size = lut.desc();
+        return program_.dispatch(commands, *encoded,
+            (size.width + 3) / 4, (size.height + 3) / 4, (size.depth + 3) / 4);
     }
 
 private:

@@ -56,6 +56,40 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         render::RenderView view;
+        if (view.adaptiveResolution() || view.renderWidth() != 1920 || view.renderHeight() != 1080) {
+            return RHITestResult::fail("RenderView must default to fixed 1080P");
+        }
+        const auto resolutionRevision = view.revision();
+        if (!view.setRenderResolution(1920, 1080) || view.revision() != resolutionRevision ||
+            view.setRenderResolution(0, 1080) || view.setRenderResolution(1920, 0) ||
+            view.setRenderResolution(render::RenderView::kMaxRenderDimension + 1, 1080)) {
+            return RHITestResult::fail("Reject invalid extents and retain identical resolution");
+        }
+        for (const auto& invalid : std::vector<nlohmann::json>{nullptr, 42,
+                {{"width", -1}}, {{"width", 1.5}}, {{"height", "1080"}}, {{"width", uint64_t(1) << 32}},
+                {{"adaptive", "true"}}}) {
+            if (view.setRenderResolutionProperties(invalid) || view.revision() != resolutionRevision) {
+                return RHITestResult::fail("Invalid serialized resolution must not mutate the view");
+            }
+        }
+        const auto beforeResize = view.constants(0, 1920, 1080, 1920, 1080);
+        if (!view.setRenderResolution(853, 479) || view.revision() == resolutionRevision ||
+            view.constants(1, 1920, 1080, 1920, 1080, &beforeResize).frame[1] ||
+            !view.setRenderResolutionProperties(nlohmann::json::object())) {
+            return RHITestResult::fail("Resolution change cuts history; absent dimensions restore 1080P");
+        }
+        view.setAdaptiveResolution(true);
+        const auto adaptiveRevision = view.revision();
+        const auto adaptiveCut = view.cutSerial();
+        view.setAdaptiveResolution(true);
+        if (!view.setRenderResolutionProperties(view.renderResolutionProperties()) ||
+            view.revision() != adaptiveRevision || view.cutSerial() != adaptiveCut ||
+            view.renderWidth(711) != 711 || view.renderHeight(397) != 397 ||
+            view.renderWidth(0) != 1 || view.renderHeight(0) != 1 ||
+            !view.setRenderResolution(1920, 1080) || view.adaptiveResolution() ||
+            view.renderWidth(711) != 1920 || view.cutSerial() == adaptiveCut) {
+            return RHITestResult::fail("Adaptive mode must resolve actual size, preserve identical settings and exit on a fixed preset");
+        }
         view.setTemporalJitter(true);
         auto first = view.constants(0, 320, 180, 640, 360);
         const auto initialRevision = view.revision();
@@ -128,7 +162,8 @@ public:
 
         render::registerRenderGraphPassType("ViewProbePass", "Shared view probe", [] { return std::make_unique<ViewProbePass>(); });
         render::RenderGraph graph;
-        graph.setViewProperties({{"camera", view.cameraProperties()}, {"temporalJitter", true}});
+        graph.setViewProperties({{"camera", view.cameraProperties()}, {"temporalJitter", true},
+            {"renderResolution", view.renderResolutionProperties()}});
         auto legacyView = graph.viewProperties();
         legacyView["camera"]["reversedZ"] = false;
         graph.clearDirty();
@@ -228,8 +263,40 @@ public:
         if (!execute(executor) || read(executor, "A.view").frame[1]) { return RHITestResult::fail("GPU camera cut history"); }
         if (!executor.compile(*device, restored, 321, 181, log) || !execute(executor)) { return RHITestResult::fail(log); }
         const auto resized = read(executor, "A.view");
-        if (resized.frame[1] || resized.current.viewport[1] != 321 || resized.current.center[0] != camera.center[0]) {
-            return RHITestResult::fail("Resize preserves authoring camera and discards temporal history");
+        if (resized.current.viewport[1] != 1920 || resized.current.viewport[2] != 1080 ||
+            resized.outputSize[0] != 1920 || resized.outputSize[1] != 1080 ||
+            resized.current.center[0] != camera.center[0]) {
+            return RHITestResult::fail("Presentation resize must preserve the fixed render extent and camera");
+        }
+        auto customView = restored.viewProperties();
+        customView["renderResolution"] = {{"width", 853}, {"height", 479}};
+        restored.setViewProperties(customView);
+        render::RenderGraph customRestored;
+        if (!render::deserializeRenderGraphFromString(render::serializeRenderGraphToString(restored), customRestored, log) ||
+            customRestored.viewProperties() != customView ||
+            !executor.compile(*device, customRestored, 211, 127, log) || !execute(executor)) {
+            return RHITestResult::fail("Custom resolution round trip: " + log);
+        }
+        const auto custom = read(executor, "A.view");
+        if (custom.frame[1] || custom.current.viewport[1] != 853 || custom.current.viewport[2] != 479) {
+            return RHITestResult::fail("Restored custom extent must reach GPU constants with fresh history");
+        }
+        customView["renderResolution"]["adaptive"] = true;
+        restored.setViewProperties(customView);
+        if (!render::deserializeRenderGraphFromString(render::serializeRenderGraphToString(restored), customRestored, log) ||
+            customRestored.viewProperties() != customView) {
+            return RHITestResult::fail("Adaptive resolution round trip: " + log);
+        }
+        for (const auto& extent : std::array<std::array<uint32_t, 2>, 2>{{{211, 127}, {319, 181}}}) {
+            if (!executor.compile(*device, customRestored, extent[0], extent[1], log) || !execute(executor)) {
+                return RHITestResult::fail("Adaptive view resize: " + log);
+            }
+            const auto adaptive = read(executor, "A.view");
+            if (adaptive.frame[1] || adaptive.current.viewport[1] != extent[0] ||
+                adaptive.current.viewport[2] != extent[1] || adaptive.outputSize[0] != extent[0] ||
+                adaptive.outputSize[1] != extent[1]) {
+                return RHITestResult::fail("Adaptive resize must update GPU dimensions and invalidate history");
+            }
         }
         return RHITestResult::pass("GPU shared view, rotation, camera cut, resize, graph serialization and independent views");
     }

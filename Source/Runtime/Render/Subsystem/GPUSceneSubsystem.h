@@ -107,6 +107,7 @@ public:
         const RenderSubsystemInitContext& context,
         std::string& log) override;
     void shutdown() override;
+    void appendDebugBindings(const RenderSubsystemFrameContext& context, std::vector<DebugResourceBinding>& bindings) override;
 
     GPUScene& scene() { return scene_; }
     const GPUScene& scene() const { return scene_; }

@@ -319,11 +319,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const auto draw = [&]() {
             auto frame = profiler_.beginFrame();
             if (!waitForFrameSlotBeforeInput()) { return false; }
-            const auto streamlineFrame = [&] {
-                auto scope = profiler_.scope("Streamline frame begin / Reflex pacing");
-                return render::vulkan::StreamlineFrameScope(
-                    (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1, &frameBegin);
-            }();
+            const render::vulkan::StreamlineFrameScope streamlineFrame(
+                (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1, &frameBegin);
+            if (frameBegin.sleepCalled) { profiler_.addIdleSample("Reflex Frame Pacing", frameBegin.sleepMs); }
             { auto scope = profiler_.scope("Poll Events"); pollEvents(); }
             if (!running_ || SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE]) { return false; }
             auto scope = profiler_.scope("Render Frame");
@@ -515,7 +513,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                 const std::string path=(n && node.parent<n ? paths[node.parent]+"/" : "")+node.name;
                 paths.push_back(path);
                 auto [it,inserted]=scopeIds.emplace(path,uint32_t(scopeIds.size()));
-                if (inserted) { definitions.push_back({{"id",it->second},{"path",path},{"cpuOnly",node.cpuOnly},
+                if (inserted) { definitions.push_back({{"id",it->second},{"path",path},{"cpuOnly",node.cpuOnly},{"cpuIdle",node.cpuIdle},
                     {"queue",(node.cpuOnly || node.renderGraphExecutionId==UINT64_MAX) ? "cpu" : node.queue==render::QueueType::Compute ? "compute" : node.queue==render::QueueType::Copy ? "copy" : "graphics"}}); }
                 row["scopes"].push_back({{"id",it->second},{"cpuMs",node.cpuMilliseconds},
                     {"gpuMs",node.gpuTimingAvailable ? Json(node.gpuMilliseconds) : Json(nullptr)},

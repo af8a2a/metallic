@@ -1,5 +1,6 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -315,6 +316,31 @@ Result<> RenderSubsystemHost::recordPostGraph(
         log = std::move(failures);
     }
     return firstFailure;
+}
+
+std::vector<std::string> RenderSubsystemHost::debugSubsystemIds(std::span<const RenderSubsystemId> requiredSubsystems) const
+{
+    std::vector<std::string> ids;
+    std::string log;
+    if (!dependencyClosure(requiredSubsystems, ids, log)) { ids.clear(); }
+    return ids;
+}
+
+void RenderSubsystemHost::publishDebugResources(CommandBuffer& commands, Streamer* streamer,
+    std::span<const RenderSubsystemId> requiredSubsystems, IRenderDebugObserver& observer)
+{
+    if (!frameActive_) { return; }
+    const auto context = frameContext(&commands, streamer);
+    for (const auto& id : debugSubsystemIds(requiredSubsystems)) {
+        std::vector<DebugResourceBinding> bindings;
+        records_.at(id)->instance->appendDebugBindings(context, bindings);
+        for (auto& binding : bindings) {
+            binding.metadata["subsystem"] = id;
+            binding.metadata["resourceName"] = binding.id;
+            binding.id = "subsystem." + id + "." + binding.id;
+        }
+        observer.boundary(commands, "AfterGraph", UINT32_MAX, "subsystem." + id, bindings, debug::DebugValue::object());
+    }
 }
 
 Result<> RenderSubsystemHost::reloadShaders(std::string& log)

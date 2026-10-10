@@ -2,6 +2,7 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ImportanceSampling.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -110,7 +111,7 @@ Result<> ImportancePdfTexture::initialize(
 
     Result<> result = device.createTexture(TextureDesc{
             .type = TextureType::Texture2D,
-            .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
+            .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage | TextureUsageBits::TransferSource,
             .format = Format::R32Sfloat,
             .width = impl_->textureWidth,
             .height = impl_->textureHeight,
@@ -221,6 +222,13 @@ bool ImportancePdfTexture::valid() const
         impl_->texture != nullptr &&
         impl_->view != nullptr &&
         impl_->ownedMipViews.size() == impl_->mipCount;
+}
+
+void ImportancePdfTexture::appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& name) const
+{
+    if (valid() && impl_->state != ResourceState::Undefined) {
+        bindings.push_back({.id = name, .texture = impl_->texture.get(), .state = impl_->state});
+    }
 }
 
 TextureView* ImportancePdfTexture::view() const

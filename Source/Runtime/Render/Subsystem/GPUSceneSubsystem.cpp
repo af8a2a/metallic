@@ -2,6 +2,7 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/SceneColorConversion.h"
 
 #include <algorithm>
@@ -1392,6 +1393,31 @@ Result<> GPUSceneSubsystem::recordPreGraph(
         pendingUpload_ = PendingUpload::None;
     }
     return result;
+}
+
+void GPUSceneSubsystem::appendDebugBindings(const RenderSubsystemFrameContext&, std::vector<DebugResourceBinding>& bindings)
+{
+    const auto& globals = globalBufferViews();
+    const auto add = [&](const char* name, const GPUSceneBufferView& buffer, const char* layout = "raw") {
+        if (!buffer.validFor(globals.drawSetGeneration, globals.drawSetRevision)) { return; }
+        bindings.push_back({.id = name, .buffer = buffer.buffer, .state = ResourceState::ShaderRead,
+            .offset = buffer.offset, .size = buffer.size, .layout = layout, .allocation = buffer.generation,
+            .metadata = {{"drawSetGeneration", buffer.generation}, {"drawSetRevision", buffer.revision},
+                {"validity", "Global upload tables; capacity may include sentinel records"}}});
+    };
+    add("instances", globals.instances, "GPUSceneGPUInstanceRecord");
+    add("geometries", globals.geometries, "GPUSceneGPUGeometryRecord");
+    add("materials", globals.materials);
+    add("drawKeys", globals.drawKeys);
+    add("drawInstanceIds", globals.drawInstanceIds, "u32");
+    add("vertices", globals.vertices);
+    add("indices", globals.indices, "u32");
+    add("meshlets", globals.meshlets, "GPUSceneGPUMeshletRecord");
+    add("meshletDraws", globals.meshletDraws, "VisibleClusterRecord");
+    add("meshletVertices", globals.meshletVertices, "u32");
+    add("meshletTriangleWords", globals.meshletTriangleWords, "u32");
+    add("descriptorRemap", globals.descriptorRemap, "u32");
+    add("lodGroups", globals.lodGroups, "MeshletLODGroupRecord");
 }
 
 Result<> GPUSceneSubsystem::uploadFullScene(
