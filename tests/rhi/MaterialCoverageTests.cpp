@@ -4,7 +4,7 @@
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderSample.h"
@@ -87,10 +87,10 @@ public:
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
         const ComputeResourceBindingDesc bindings[] = {
-            {0, ComputeResourceBindingKind::AccelerationStructure}, {1, ComputeResourceBindingKind::StorageImage}, {2}, {3}, {4}, {5}, {6},
-            {9, ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {97}};
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, output), ComputeResourceBindingKind::StorageImage}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, indices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, primitives)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, instances)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials)},
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues)}};
         return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = 8, .bindings = bindings,
-            .requiresRayQuery = true, .resourceParameters = kSceneProbeResourceLayout}, log);
+            .requiresRayQuery = true, .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>()}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
@@ -103,13 +103,13 @@ public:
         }
         if (auto* frame = RenderFrameContext::from(context.commandBuffer())) { frame->retain(inputs); }
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .accelerationStructure = geometry.accelerationStructure().accelerationStructure()},
-            {.binding = 1, .textureView = context.outputTexture("color").view()},
-            {.binding = 2, .buffer = geometry.shadingVertexBuffer()}, {.binding = 3, .buffer = geometry.indexBuffer()},
-            {.binding = 4, .buffer = geometry.primitiveBuffer()}, {.binding = 5, .buffer = geometry.instanceBuffer()},
-            {.binding = 6, .buffer = geometry.materialBuffer()},
-            {.binding = 9, .textureViews = geometry.materialTextureViews(), .sampledImages = geometry.materialTextureSnapshot()},
-            {.binding = 97, .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), .accelerationStructure = geometry.accelerationStructure().accelerationStructure()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, output), .textureView = context.outputTexture("color").view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices), .buffer = geometry.shadingVertexBuffer()}, {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, indices), .buffer = geometry.indexBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, primitives), .buffer = geometry.primitiveBuffer()}, {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, instances), .buffer = geometry.instanceBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials), .buffer = geometry.materialBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), .textureViews = geometry.materialTextureViews(), .sampledImages = geometry.materialTextureSnapshot()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues), .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()}};
         const uint32_t push[] = {geometry.materialTextureCount(), 0};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
             .pushData = push, .pushDataSize = sizeof(push), .groupCountX = 8, .groupCountY = 8});

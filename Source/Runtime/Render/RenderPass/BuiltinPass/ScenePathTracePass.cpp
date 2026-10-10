@@ -2,7 +2,7 @@
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -80,17 +80,30 @@ constexpr const char* toString(PathTracePermutation permutation)
     }
 }
 
-constexpr uint32_t kOpenPBRLut2DBinding = 11;
-constexpr uint32_t kOpenPBRLut3DBinding = 12;
-constexpr uint32_t kOpenPBRLutSamplerBinding = 98;
-constexpr uint32_t kEnvironmentImportancePdfBinding = 13;
-constexpr uint32_t kDLSSRRAlbedoBinding = 14;
-constexpr uint32_t kDLSSRRSpecularAlbedoBinding = 15;
-constexpr uint32_t kDLSSRRNormalRoughnessBinding = 16;
-constexpr uint32_t kDLSSRRMotionVectorsBinding = 17;
-constexpr uint32_t kDLSSRRLinearDepthBinding = 18;
-constexpr uint32_t kDLSSRRSpecularHitDistanceBinding = 19;
-constexpr uint32_t kDLSSDepthBinding = 20;
+constexpr uint32_t kLightGridMembers[] = {
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridParams),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridLights),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridCandidates),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridCells),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridIndices)
+};
+constexpr uint32_t kRasterGeometryMembers[] = {
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterVertices),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterMeshlets),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterRecords),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterVertexIndices),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterTriangles),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterGeometries),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterInstances),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterMaterials)
+};
+constexpr uint32_t kStreamGeometryMembers[] = {
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamRecords),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamGroups),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPages),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageTable),
+    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterFrameInfo)
+};
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 struct OpenPBRLutTexture {
@@ -741,178 +754,178 @@ public:
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeResourceBindingDesc> baseBindings{
-            ComputeResourceBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeResourceBindingDesc{.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeResourceBindingDesc{.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
-            ComputeResourceBindingDesc{.binding = 57, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            ComputeResourceBindingDesc{.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            ComputeResourceBindingDesc{.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            ComputeResourceBindingDesc{.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
-            ComputeResourceBindingDesc{.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lights), .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.celestialLights), .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.multiScattering), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.skyView), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.aerialPerspective), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
             ComputeResourceBindingDesc{
-                .binding = 0,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
             ComputeResourceBindingDesc{
-                .binding = 1,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output),
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
             ComputeResourceBindingDesc{
-                .binding = 2,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
             ComputeResourceBindingDesc{
-                .binding = 3,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
             ComputeResourceBindingDesc{
-                .binding = 4,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
             ComputeResourceBindingDesc{
-                .binding = 5,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
             ComputeResourceBindingDesc{
-                .binding = 6,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
             ComputeResourceBindingDesc{
-                .binding = 7,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, accumulationCurrent),
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
             ComputeResourceBindingDesc{
-                .binding = 8,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, accumulationPrevious),
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
             ComputeResourceBindingDesc{
-                .binding = 9,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = sceneResources_.materialTextureCount(),
             },
             ComputeResourceBindingDesc{
-                .binding = 10,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentMap),
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
             ComputeResourceBindingDesc{
-                .binding = kEnvironmentImportancePdfBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentPdf),
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
         if (!visibilityDeferred_ && !positionFetch && !streamMaterials_) {
-            baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .kind = ComputeResourceBindingKind::StorageBuffer});
         }
         if (realtime_) {
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer,
             });
         }
         if (!realtime_) {
-            baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .kind = ComputeResourceBindingKind::SampledImage});
         }
         if (visibilityDeferred_) {
-            for (uint32_t binding = 75; binding <= 79; ++binding) {
+            for (const uint32_t binding : kLightGridMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
-            if (globalView) { baseBindings.push_back({.binding = 80, .kind = ComputeResourceBindingKind::StorageBuffer}); }
-            baseBindings.push_back({.binding = 74, .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = 81, .kind = ComputeResourceBindingKind::SampledImage});
-            baseBindings.push_back({.binding = 82, .kind = ComputeResourceBindingKind::StorageBuffer});
+            if (globalView) { baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer}); }
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
             if (boolProperty(properties(), "exportUpscalerGuides", false)) {
-                baseBindings.push_back({.binding = 72, .kind = ComputeResourceBindingKind::StorageImage});
-                baseBindings.push_back({.binding = 73, .kind = ComputeResourceBindingKind::StorageImage});
+                baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage});
+                baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage});
             }
-            baseBindings.push_back({.binding = 60, .kind = ComputeResourceBindingKind::SampledImage});
-            baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
-            baseBindings.push_back({.binding = 88, .kind = ComputeResourceBindingKind::SampledImage});
-            for (uint32_t binding = 62; binding <= 69; ++binding) {
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .kind = ComputeResourceBindingKind::SampledImage});
+            for (const uint32_t binding : kRasterGeometryMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
-            baseBindings.push_back({.binding = 94, .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = 95, .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = 96, .kind = ComputeResourceBindingKind::Sampler});
-            for (uint32_t binding = 83; binding <= 87; ++binding) {
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialSampler), .kind = ComputeResourceBindingKind::Sampler});
+            for (const uint32_t binding : kStreamGeometryMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             if (materialBinningEnabled(properties())) {
-                baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
-                baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
+                baseBindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialBins), .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
+                baseBindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialTiles), .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
             }
         }
         if (useOpenPBR) {
-            baseBindings.push_back({.binding = kOpenPBRLutSamplerBinding, .kind = ComputeResourceBindingKind::Sampler});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLutSampler), .kind = ComputeResourceBindingKind::Sampler});
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kOpenPBRLut2DBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLut2D),
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut2DCount,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kOpenPBRLut3DBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLut3D),
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kOpenPBRLut3DCount,
             });
         }
         if (exportGuides) {
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kDLSSRRAlbedoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideAlbedo),
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kDLSSRRSpecularAlbedoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideSpecularAlbedo),
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kDLSSRRNormalRoughnessBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideNormalRoughness),
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kDLSSRRMotionVectorsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideMotion),
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kDLSSRRLinearDepthBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideLinearDepth),
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kDLSSRRSpecularHitDistanceBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideSpecularHitDistance),
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kDLSSDepthBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideDepth),
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
         }
         if (ntcActive) {
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureLatentsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kMaxNeuralTextureSets,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureConstantsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureWeightsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureSetInfoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureSamplerBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
                 .kind = ComputeResourceBindingKind::Sampler,
             });
         }
 
         if (visibilityDeferred_) {
             std::erase_if(baseBindings, [](const auto& binding) {
-                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
+                return binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances);
             });
         }
-        baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+        baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer});
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
@@ -927,7 +940,7 @@ public:
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
-                    .resourceParameters = exportGuides ? kPathTraceGuidesResourceLayout : kPathTraceResourceLayout},
+                    .resourceParameters = resourceParameterLayout<SceneResourceParameters>()},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
@@ -950,7 +963,7 @@ public:
         const std::vector<ComputeResourceBindingDesc> cacheBindings = [baseBindings]() {
             std::vector<ComputeResourceBindingDesc> bindings = baseBindings;
             bindings.push_back(ComputeResourceBindingDesc{
-                .binding = kScenePathTraceCacheParamsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, cacheParams),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             return bindings;
@@ -1000,15 +1013,15 @@ public:
             const std::vector<ComputeResourceBindingDesc> sharcBindings = [cacheBindings]() {
                 std::vector<ComputeResourceBindingDesc> bindings = cacheBindings;
                 bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceSharcHashEntriesBinding,
+                    .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, sharcHashEntries),
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceSharcAccumulationBinding,
+                    .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, sharcAccumulation),
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 bindings.push_back(ComputeResourceBindingDesc{
-                    .binding = kScenePathTraceSharcResolvedBinding,
+                    .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, sharcResolved),
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 return bindings;
@@ -1117,7 +1130,7 @@ public:
                 auto output = context.outputTexture(name);
                 if (!output.valid()) { continue; }
                 const uint32_t color = std::string_view(name) == "color";
-                const ComputeDispatchBinding binding{.binding = 0, .textureView = output.view()};
+                const ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(OutputImageResourceParameters, output), .textureView = output.view()};
                 auto result = dispatchResources(errorProgram_, errorEncoder_, {.commandBuffer = &context.commandBuffer(),
                     .bindings = {&binding, 1}, .pushData = &color, .pushDataSize = sizeof(color),
                     .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
@@ -1444,105 +1457,105 @@ public:
         TextureView* const atmosphereSkyViews[]{environment.skyView};
         TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         std::vector<ComputeDispatchBinding> bindings{
-            ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
-            ComputeDispatchBinding{.binding = 55, .buffer = celestial.buffer.get()},
+            ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lights), .buffer = lights_.buffer()},
+            ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.celestialLights), .buffer = celestial.buffer.get()},
             ComputeDispatchBinding{
-                .binding = 0,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
                 .accelerationStructure = visibilityDeferred_ ? nullptr :
                     (context.inputAccelerationStructure("accelerationStructure")
                         ? context.inputAccelerationStructure("accelerationStructure")
                         : sceneResources_.accelerationStructure().accelerationStructure()),
             },
             ComputeDispatchBinding{
-                .binding = 1,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output),
                 .textureView = color.view(),
             },
             ComputeDispatchBinding{
-                .binding = 2,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices),
                 .buffer = sceneResources_.shadingVertexBuffer(),
             },
             ComputeDispatchBinding{
-                .binding = 3,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices),
                 .buffer = sceneResources_.indexBuffer(),
             },
             ComputeDispatchBinding{
-                .binding = 4,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives),
                 .buffer = sceneResources_.primitiveBuffer(),
             },
             ComputeDispatchBinding{
-                .binding = 5,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances),
                 .buffer = sceneResources_.instanceBuffer(),
             },
             ComputeDispatchBinding{
-                .binding = 6,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
                 .buffer = sceneResources_.materialBuffer(),
             },
             ComputeDispatchBinding{
-                .binding = 7,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, accumulationCurrent),
                 .textureView = historyCurrentView,
             },
             ComputeDispatchBinding{
-                .binding = 8,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, accumulationPrevious),
                 .textureView = historyPreviousView,
             },
             ComputeDispatchBinding{
-                .binding = 9,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
                 .textureViews = materialTextureViews,
                 // Streaming publishes a new immutable snapshot after mip changes;
                 // completed descriptor tables reuse unchanged image bindings.
                 .sampledImages = visibilityDeferred_ ? sceneResources_.materialTextureSnapshot() : nullptr,
             },
             ComputeDispatchBinding{
-                .binding = 10,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentMap),
                 .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
             },
             ComputeDispatchBinding{
-                .binding = kEnvironmentImportancePdfBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentPdf),
                 .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
             },
         };
         if (environment.atmosphereParametersBuffer != nullptr) {
-            bindings.push_back({.binding = 56, .buffer = environment.atmosphereParametersBuffer});
-            bindings.push_back({.binding = 57, .textureViews = {atmosphereTransmittanceViews, 1}});
-            bindings.push_back({.binding = 58, .textureViews = {atmosphereMultiScatteringViews, 1}});
-            bindings.push_back({.binding = 59, .textureViews = {atmosphereSkyViews, 1}});
-            bindings.push_back({.binding = 99, .buffer = environment.aerialPerspectiveBuffer});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .textureViews = {atmosphereTransmittanceViews, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.multiScattering), .textureViews = {atmosphereMultiScatteringViews, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.skyView), .textureViews = {atmosphereSkyViews, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.aerialPerspective), .buffer = environment.aerialPerspectiveBuffer});
             if (environment.cloudShadowView != nullptr) {
-                bindings.push_back({.binding = 101, .textureViews = {atmosphereCloudShadowViews, 1}});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .textureViews = {atmosphereCloudShadowViews, 1}});
             }
         }
         if (!visibilityDeferred_ && sceneResources_.fallbackPositionBuffer() != nullptr) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .buffer = sceneResources_.fallbackPositionBuffer()});
         }
-        bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = sceneResources_.materialBinding()->valueBuffer()
             ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()});
         if (visibilityDeferred_) {
             std::erase_if(bindings, [](const auto& binding) {
-                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
+                return binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances);
             });
         }
         if (realtime_) {
             bindings.push_back(ComputeDispatchBinding{
-                .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentIrradianceSH), .buffer = environment.sphericalHarmonicsBuffer,
             });
         }
         if (!realtime_) {
-            bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
-            bindings.push_back({.binding = 53, .textureViews = {punctualPdfViews, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .buffer = lights_.reGIRBuffer()});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .textureViews = {punctualPdfViews, 1}});
         }
         MaterialBinningResult materialBins;
         ScreenSpaceShadowResult shadow;
         if (visibilityDeferred_) {
             if (context.viewConstantsBuffer() != nullptr) {
-                bindings.push_back({.binding = 80, .buffer = context.viewConstantsBuffer()});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .buffer = context.viewConstantsBuffer()});
             }
             const std::array<Buffer*, 5> gridBuffers{deferredGrid->parameters, deferredGrid->lights,
                 deferredGrid->candidates, deferredGrid->cells, deferredGrid->lightIndices};
             for (uint32_t i = 0; i < gridBuffers.size(); ++i) {
-                bindings.push_back({.binding = 75 + i, .buffer = gridBuffers[i]});
+                bindings.push_back({.binding = kLightGridMembers[i], .buffer = gridBuffers[i]});
             }
             {
-                bindings.push_back({.binding = 74, .buffer = environment.prefilteredSpecularBuffer});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .buffer = environment.prefilteredSpecularBuffer});
                 const auto externalShadow = context.inputTexture("shadow");
                 const auto externalParameters = context.inputBuffer("shadowParameters");
                 if (externalShadow.valid() != externalParameters.valid()) {
@@ -1574,38 +1587,38 @@ public:
                     }
                     shadow = {.shadow = visibilityDepthView, .parameters = unshadowedParameters_.get()};
                 }
-                bindings.push_back({.binding = 81, .textureViews = {&shadow.shadow, 1}});
-                bindings.push_back({.binding = 82, .buffer = shadow.parameters});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .textureViews = {&shadow.shadow, 1}});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .buffer = shadow.parameters});
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
-                bindings.push_back({.binding = 72, .textureView = context.outputTexture("motionVectors").view()});
-                bindings.push_back({.binding = 73, .textureView = context.outputTexture("deviceDepth").view()});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .textureView = context.outputTexture("motionVectors").view()});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .textureView = context.outputTexture("deviceDepth").view()});
             }
-            bindings.push_back({.binding = 60, .textureViews = {&visibilityView, 1}});
-            bindings.push_back({.binding = 61, .textureViews = {&visibilityDepthView, 1}});
-            bindings.push_back({.binding = 88, .textureViews = {&domainView, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .textureViews = {&visibilityView, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .textureViews = {&visibilityDepthView, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .textureViews = {&domainView, 1}});
             const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
                 &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
                 &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
             for (uint32_t i = 0; i < std::size(views); ++i) {
                 const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
                 bindings.push_back({
-                    .binding = 62 + i,
+                    .binding = kRasterGeometryMembers[i],
                     .buffer = view.buffer,
                     .range = {.offset = view.offset, .size = view.size},
                 });
             }
             Buffer* fallback = deferredViews->geometries.buffer;
-            bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
-            bindings.push_back({.binding = 95, .buffer = textureFeedback});
-            bindings.push_back({.binding = 96, .sampler = &materialSampler_});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = textureFeedback});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialSampler), .sampler = &materialSampler_});
             const std::array streamBuffers{
                 deferredStream ? deferredStream->visibleClusterBuffer : fallback,
                 deferredStream ? deferredStream->activeGroupBuffer : fallback,
                 deferredStream ? deferredStream->pageBuffer : fallback,
                 deferredStream ? deferredStream->pageTableBuffer : fallback, deferredFrameInfo};
             for (uint32_t i = 0; i < streamBuffers.size(); ++i) {
-                bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
+                bindings.push_back({.binding = kStreamGeometryMembers[i], .buffer = streamBuffers[i]});
             }
             if (materialBinningEnabled(context.properties())) {
                 CPUProfileScope binningProfile(profiler, "Record material binning");
@@ -1626,50 +1639,50 @@ public:
                     .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u},
                     binningLog).transform([&](auto value) { materialBins = std::move(value); });
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
-                bindings.push_back({.binding = 70, .buffer = materialBins.bins});
-                bindings.push_back({.binding = 71, .buffer = materialBins.tiles});
+                bindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialBins), .buffer = materialBins.bins});
+                bindings.push_back({.binding = METALLIC_DATA_MEMBER(SceneResourceParameters, materialTiles), .buffer = materialBins.tiles});
             }
         }
         if (useOpenPBR) {
-            bindings.push_back({.binding = kOpenPBRLutSamplerBinding, .sampler = &openPBRLutSampler_});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLutSampler), .sampler = &openPBRLutSampler_});
             const auto& lut2DViews = openPBRLuts_.lut2DViews();
             const auto& lut3DViews = openPBRLuts_.lut3DViews();
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kOpenPBRLut2DBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLut2D),
                 .textureViews = lut2DViews,
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kOpenPBRLut3DBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, openPBRLut3D),
                 .textureViews = lut3DViews,
             });
         }
         if (exportGuides) {
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRAlbedoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideAlbedo),
                 .textureView = albedo.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRSpecularAlbedoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideSpecularAlbedo),
                 .textureView = specularAlbedo.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRNormalRoughnessBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideNormalRoughness),
                 .textureView = normalRoughness.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRMotionVectorsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideMotion),
                 .textureView = motionVectors.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRLinearDepthBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideLinearDepth),
                 .textureView = linearDepth.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRSpecularHitDistanceBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideSpecularHitDistance),
                 .textureView = specularHitDistance.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSDepthBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideDepth),
                 .textureView = depth.view(),
             });
         }
@@ -1677,23 +1690,23 @@ public:
         if (neuralTextures.active()) {
             const auto& latentViews = neuralTextures.latentTextureViews();
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureLatentsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
                 .textureViews = latentViews,
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureConstantsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
                 .buffer = neuralTextures.constantsBuffer(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureWeightsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
                 .buffer = neuralTextures.weightsBuffer(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureSetInfoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
                 .buffer = neuralTextures.setInfoBuffer(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureSamplerBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
                 .sampler = &neuralTextures.latentSampler(),
             });
         }
@@ -2235,19 +2248,19 @@ private:
     void appendSharcDispatchBindings(std::vector<ComputeDispatchBinding>& bindings) const
     {
         bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceCacheParamsBinding,
+            .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, cacheParams),
             .buffer = cacheParamsBuffer_.get(),
         });
         bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceSharcHashEntriesBinding,
+            .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, sharcHashEntries),
             .buffer = sharcHashEntriesBuffer_.get(),
         });
         bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceSharcAccumulationBinding,
+            .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, sharcAccumulation),
             .buffer = sharcAccumulationBuffer_.get(),
         });
         bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceSharcResolvedBinding,
+            .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, sharcResolved),
             .buffer = sharcResolvedBuffer_.get(),
         });
     }

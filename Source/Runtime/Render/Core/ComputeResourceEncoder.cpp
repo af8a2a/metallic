@@ -1,6 +1,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeResourceEncoder.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 
 #include <algorithm>
@@ -103,17 +104,25 @@ Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComput
         }
         impl->bindings.push_back(binding);
     }
-    // CPU input IDs are independent of field offsets and descriptor allocation order.
+    // CPU member identities (or legacy input IDs) never depend on descriptor allocation order.
     std::ranges::sort(impl->bindings, {}, &ComputeResourceBindingDesc::binding);
     {
         const auto& layout = desc.resourceParameters;
-        if (!layout.size || layout.size > 65536 || (layout.size & 3u) || layout.fields.empty()) {
+        if (!layout.size || layout.size > 65536 || (layout.size & 3u)) {
             log = "ComputeResourceEncoder requires an explicit named resource layout";
             return makeError(Error::InvalidArgument);
         }
         impl->resourceParameterSize = layout.size;
         for (const auto& binding : impl->bindings) {
+            ComputeResourceField member;
             const ComputeResourceField* selected = nullptr;
+            if (binding.binding & kResourceMemberTag) {
+                if (!layout.fields.empty()) { log = "Named members cannot use a legacy field table"; return makeError(Error::InvalidArgument); }
+                member = {binding.binding, ComputeResourceBindingKind((binding.binding >> 16) & 0xffu),
+                    binding.binding & 0xffffu, ComputeResourceFieldFormat((binding.binding >> 24) & 0x7fu)};
+                if (member.kind != binding.kind) { log = "Named member resource kind mismatch"; return makeError(Error::InvalidArgument); }
+                selected = &member;
+            }
             for (const auto& field : layout.fields) {
                 if (field.binding != binding.binding || field.kind != binding.kind) { continue; }
                 if (selected) { log = "Duplicate named resource input " + std::to_string(binding.binding); return makeError(Error::InvalidArgument); }

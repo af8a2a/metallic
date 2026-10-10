@@ -131,13 +131,15 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 `resolveBuffer<StructuredBuffer<T>>(resources.indices)`，图像和 sampler 使用 `resolveUniform`，
 纹理数组使用 `resolveNonUniform(ResourceHandle<Texture2D<float4>>(resources.materialTextures.load(index)))`。
 [NamedResourceParameters.h](../Source/Runtime/Render/Core/NamedResourceParameters.h) 共用 C++/Slang 字段；
-CPU 初始化 `ComputeProgramDesc.resourceParameters`，使用
-[NamedResourceLayouts.h](../Source/Runtime/Render/Core/NamedResourceLayouts.h) 的对应布局（如 `kGPUProbeResourceLayout`）。
-编码器检查字段范围、对齐、重叠、资源类型和数组形式，并将 CPU 输入 ID 写入具名字段。
-生产 GPU 参数块没有逻辑 slot table；场景结构为 440 字节，buffer/image/sampler 字段为 4 字节，
+静态 pass 优先使用 `ParameterWriter` 直接构造具名参数。动态资源清单通过
+`METALLIC_RESOURCE_MEMBER(Params, member)` / `METALLIC_DATA_MEMBER(Params, member)`
+引用字段，并用 `resourceParameterLayout<Params>()` 声明参数类型。
+[ResourceMember.h](../Source/Runtime/Render/Core/ResourceMember.h) 从 C++ 成员类型和 `offsetof`
+推导资源类别、字段格式及偏移；不再维护数字 ID 到字段的独立布局表。
+编码器仍检查字段范围、对齐、重叠、资源类型和数组形式，保留可选资源与批量 dispatch 的契约。
+生产 GPU 参数块没有逻辑 slot table；场景结构为 456 字节，buffer/image/sampler 字段为 4 字节，
 数组和原始数据字段为 12 字节 span，AS 独立保留完整地址。常量仍通过 `getConstants<T>()` 读取。
-`getResource<T>(slot)` / `getResourceArray<T>(slot, index)` / `getData<T>(slot)` 仅用于未迁移的底层测试适配器，
-不要在 `Features`、`Interop` 或生成的材质代码中新增调用。
+旧数字输入 ID 和显式 `ComputeResourceField` 表仅保留给底层兼容性测试，生产代码不应新增。
 `Core` 导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。RHI 不在用户 push 数据前插入 heap header。
 
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；

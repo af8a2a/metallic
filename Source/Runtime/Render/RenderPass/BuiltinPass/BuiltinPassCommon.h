@@ -219,12 +219,6 @@ inline constexpr uint32_t kScenePathTraceDebugStochasticTextureFiltering = 1u <<
 // Radiance cache modes for the RTXGI SHaRC integration.
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
-// CPU input IDs for radiance-cache permutations. NamedResourceLayouts maps
-// these to direct SceneResourceParameters fields; shaders do not see these IDs.
-inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 24;
-inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
-inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;
-inline constexpr uint32_t kScenePathTraceSharcResolvedBinding = 23;
 inline constexpr uint32_t kNRDDenoiserModeReblur = 0;
 inline constexpr uint32_t kNRDDenoiserModeRelax = 1;
 inline constexpr uint32_t kNRDDenoiserModeReference = 2;
@@ -802,7 +796,7 @@ struct ScenePathTracePush {
 };
 
 // Per-frame parameters for the radiance-cache permutations of
-// ScenePathTrace.slang (binding kScenePathTraceCacheParamsBinding). Layout
+// ScenePathTrace.slang (SceneResourceParameters::cacheParams). Layout
 // must match struct ScenePathTraceCacheParams in the shader byte for byte.
 struct ScenePathTraceCacheParams {
     float sharcCameraPosition[4] = {};

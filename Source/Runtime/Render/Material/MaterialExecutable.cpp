@@ -1,4 +1,4 @@
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 
@@ -141,12 +141,12 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
 
 Result<> initializeMaterialErrorProgram(Device& device, ComputeKernel& program, ComputeResourceEncoder& encoder, std::string& log)
 {
-    const ComputeResourceBindingDesc output{.binding = 0, .kind = ComputeResourceBindingKind::StorageImage};
+    const ComputeResourceBindingDesc output{.binding = METALLIC_RESOURCE_MEMBER(OutputImageResourceParameters, output), .kind = ComputeResourceBindingKind::StorageImage};
     std::shared_ptr<const MaterialExecutableArtifact> artifact;
     auto result = compileMaterialExecutable(device,
         {.moduleName = "Features/Material/MaterialError", .entryPointName = "materialErrorMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-        {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false, .resourceParameters = kOutputImageResourceLayout},
+        {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false, .resourceParameters = resourceParameterLayout<OutputImageResourceParameters>()},
         program, artifact, log);
     if (result) { encoder = artifact->encoder; }
     return result;

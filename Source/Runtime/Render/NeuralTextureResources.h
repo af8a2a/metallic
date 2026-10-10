@@ -13,11 +13,6 @@ namespace metallic::render {
 
 inline constexpr uint32_t kMaxNeuralTextureSets = 64;
 inline constexpr uint32_t kInvalidNeuralTextureSetIndex = UINT32_MAX;
-inline constexpr uint32_t kNeuralTextureLatentsBinding = 29;
-inline constexpr uint32_t kNeuralTextureConstantsBinding = 30;
-inline constexpr uint32_t kNeuralTextureWeightsBinding = 31;
-inline constexpr uint32_t kNeuralTextureSetInfoBinding = 32;
-inline constexpr uint32_t kNeuralTextureSamplerBinding = 33;
 
 struct NeuralTextureMemoryStats {
     uint32_t textureSetCount = 0;

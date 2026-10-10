@@ -1,7 +1,7 @@
 #include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
@@ -267,68 +267,68 @@ public:
 
         // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeResourceBindingDesc> bindings{
-            {.binding = 0, .kind = ComputeResourceBindingKind::AccelerationStructure},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 2, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 3, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 4, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 5, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 6, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), .kind = ComputeResourceBindingKind::AccelerationStructure},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer},
             {
-                .binding = 7,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = sceneResources_.materialTextureCount(),
             },
-            {.binding = 8, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 9, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 10, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 11, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 12, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 13, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 14, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 15, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 16, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 17, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 18, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 19, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 20, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 21, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 23, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 55, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 56, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
-            {.binding = 57, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            {.binding = 58, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            {.binding = 59, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            {.binding = 99, .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
-            {.binding = 101, .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
-            {.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 53, .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, reservoirCurrent), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, reservoirPrevious), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positionCurrent), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positionPrevious), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, normalCurrent), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, normalPrevious), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, noisyDiffuse), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, noisySpecular), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, nrdNormalRoughness), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, nrdMotion), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, nrdViewZ), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, baseColorMetalness), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, emissive), .kind = ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentMap), .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentPdf), .kind = ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lights), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.celestialLights), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.multiScattering), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.skyView), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.aerialPerspective), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .kind = ComputeResourceBindingKind::SampledImage, .optional = true},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .kind = ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .kind = ComputeResourceBindingKind::SampledImage},
         };
         if (!positionFetch) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .kind = ComputeResourceBindingKind::StorageBuffer});
         }
         if (ntcActive) {
             bindings.push_back({
-                .binding = kNeuralTextureLatentsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = kMaxNeuralTextureSets,
             });
             bindings.push_back({
-                .binding = kNeuralTextureConstantsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             bindings.push_back({
-                .binding = kNeuralTextureWeightsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             bindings.push_back({
-                .binding = kNeuralTextureSetInfoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             });
             bindings.push_back({
-                .binding = kNeuralTextureSamplerBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
                 .kind = ComputeResourceBindingKind::Sampler,
             });
         }
@@ -340,7 +340,7 @@ public:
                 .pushConstantSize = sizeof(SceneRTXDIPush),
                 .bindings = bindings,
                 .debugName = "SceneRTXDIPass",
-                .resourceParameters = kRTXDIResourceLayout,
+                .resourceParameters = resourceParameterLayout<SceneResourceParameters>(),
             }, rayQueryProgram_, rayQueryProgramEncoder_,
             programLog);
         if (!programLog.empty()) {
@@ -555,87 +555,87 @@ public:
         TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
         std::vector<ComputeDispatchBinding> bindings{
             {
-                .binding = 0,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
                 .accelerationStructure =
                     context.inputAccelerationStructure("accelerationStructure")
                         ? context.inputAccelerationStructure("accelerationStructure")
                         : sceneResources_.accelerationStructure().accelerationStructure(),
             },
-            {.binding = 1, .textureView = color.view()},
-            {.binding = 2, .buffer = sceneResources_.shadingVertexBuffer()},
-            {.binding = 3, .buffer = sceneResources_.indexBuffer()},
-            {.binding = 4, .buffer = sceneResources_.primitiveBuffer()},
-            {.binding = 5, .buffer = sceneResources_.instanceBuffer()},
-            {.binding = 6, .buffer = sceneResources_.materialBuffer()},
-            {.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output), .textureView = color.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices), .buffer = sceneResources_.shadingVertexBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices), .buffer = sceneResources_.indexBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives), .buffer = sceneResources_.primitiveBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances), .buffer = sceneResources_.instanceBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .buffer = sceneResources_.materialBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = sceneResources_.materialBinding()->valueBuffer()
                 ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()},
             {
-                .binding = 7,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
                 .textureViews = materialTextureViews,
             },
-            {.binding = 8, .textureView = reservoirHistory.current},
-            {.binding = 9, .textureView = reservoirHistory.previous},
-            {.binding = 10, .textureView = positionHistory.current},
-            {.binding = 11, .textureView = positionHistory.previous},
-            {.binding = 12, .textureView = normalHistory.current},
-            {.binding = 13, .textureView = normalHistory.previous},
-            {.binding = 14, .textureView = noisyDiffuse.view()},
-            {.binding = 15, .textureView = noisySpecular.view()},
-            {.binding = 16, .textureView = normalRoughness.view()},
-            {.binding = 17, .textureView = motionVectors.view()},
-            {.binding = 18, .textureView = viewZ.view()},
-            {.binding = 19, .textureView = baseColorMetalness.view()},
-            {.binding = 20, .textureView = emissive.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, reservoirCurrent), .textureView = reservoirHistory.current},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, reservoirPrevious), .textureView = reservoirHistory.previous},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positionCurrent), .textureView = positionHistory.current},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positionPrevious), .textureView = positionHistory.previous},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, normalCurrent), .textureView = normalHistory.current},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, normalPrevious), .textureView = normalHistory.previous},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, noisyDiffuse), .textureView = noisyDiffuse.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, noisySpecular), .textureView = noisySpecular.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, nrdNormalRoughness), .textureView = normalRoughness.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, nrdMotion), .textureView = motionVectors.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, nrdViewZ), .textureView = viewZ.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, baseColorMetalness), .textureView = baseColorMetalness.view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, emissive), .textureView = emissive.view()},
             {
-                .binding = 21,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentMap),
                 .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
             },
             {
-                .binding = 53,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf),
                 .textureViews = {localLightPdfViews, static_cast<uint32_t>(std::size(localLightPdfViews))},
             },
             {
-                .binding = 23,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentPdf),
                 .textureViews = {environmentImportanceTextureViews, static_cast<uint32_t>(std::size(environmentImportanceTextureViews))},
             },
-            {.binding = 50, .buffer = lights_.buffer()},
-            {.binding = 55, .buffer = celestial.buffer.get()},
-            {.binding = 52, .buffer = lights_.reGIRBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lights), .buffer = lights_.buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.celestialLights), .buffer = celestial.buffer.get()},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .buffer = lights_.reGIRBuffer()},
         };
         if (environment.atmosphereParametersBuffer != nullptr) {
-            bindings.push_back({.binding = 56, .buffer = environment.atmosphereParametersBuffer});
-            bindings.push_back({.binding = 57, .textureViews = {atmosphereTransmittanceViews, 1}});
-            bindings.push_back({.binding = 58, .textureViews = {atmosphereMultiScatteringViews, 1}});
-            bindings.push_back({.binding = 59, .textureViews = {atmosphereSkyViews, 1}});
-            bindings.push_back({.binding = 99, .buffer = environment.aerialPerspectiveBuffer});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .textureViews = {atmosphereTransmittanceViews, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.multiScattering), .textureViews = {atmosphereMultiScatteringViews, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.skyView), .textureViews = {atmosphereSkyViews, 1}});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.aerialPerspective), .buffer = environment.aerialPerspectiveBuffer});
             if (environment.cloudShadowView != nullptr) {
-                bindings.push_back({.binding = 101, .textureViews = {atmosphereCloudShadowViews, 1}});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .textureViews = {atmosphereCloudShadowViews, 1}});
             }
         }
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
         if (sceneResources_.fallbackPositionBuffer() != nullptr) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .buffer = sceneResources_.fallbackPositionBuffer()});
         }
         if (neuralTextures.active()) {
             const auto& latentViews = neuralTextures.latentTextureViews();
             bindings.push_back({
-                .binding = kNeuralTextureLatentsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
                 .textureViews = latentViews,
             });
             bindings.push_back({
-                .binding = kNeuralTextureConstantsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
                 .buffer = neuralTextures.constantsBuffer(),
             });
             bindings.push_back({
-                .binding = kNeuralTextureWeightsBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
                 .buffer = neuralTextures.weightsBuffer(),
             });
             bindings.push_back({
-                .binding = kNeuralTextureSetInfoBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
                 .buffer = neuralTextures.setInfoBuffer(),
             });
             bindings.push_back({
-                .binding = kNeuralTextureSamplerBinding,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
                 .sampler = &neuralTextures.latentSampler(),
             });
         }

@@ -58,9 +58,12 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
 - Named-resource shaders read named resource structs through
   `getResourceParameters<T>()`, then resolve their explicit handles/spans. The
   shared `NamedResourceParameters.h` declares the CPU/Slang wire fields.
-  `NamedResourceLayouts.h` maps CPU input IDs to field offsets; those IDs never
-  reach the GPU packet. The scene block is 440 bytes, replacing the
-  sparse 24-byte-per-slot table. Scalar images no longer allocate index arrays.
+  Dynamic manifests reference members through `METALLIC_RESOURCE_MEMBER` or
+  `METALLIC_DATA_MEMBER` and `resourceParameterLayout<T>()`. The member type and
+  offset determine the CPU-only encoding contract; there is no separate numbered
+  input-to-field table. Static passes can directly use `ParameterWriter` instead.
+  The scene block is 456 bytes. Scalar images do not allocate index arrays.
+  Explicit numeric layouts remain only for low-level compatibility tests.
 - `ResourceComputeKernelDesc.resourceParameters` validates field type, bounds, alignment,
   overlap and array representation before pipeline creation. The encoder copies
   layout metadata and preserves immutable prepared dispatch/submission leases.

@@ -1,5 +1,5 @@
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "TestComputeProgram.h"
@@ -414,18 +414,15 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths = paths}, log)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const std::array bindings{ComputeResourceBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeResourceBindingDesc{.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer}};
-        const ComputeResourceField fields[] = {
-            {0, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, probeOutput)},
-            {kMaterialValueBinding, ComputeResourceBindingKind::StorageBuffer, offsetof(SceneResourceParameters, materialValues)}};
+        const std::array bindings{ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv, .bindings = bindings, .requiresRayQuery = false,
-            .resourceParameters = {sizeof(SceneResourceParameters), fields}}, log);
+            .resourceParameters = resourceParameterLayout<SceneResourceParameters>()}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
-        const std::array bindings{ComputeDispatchBinding{.binding = 0, .buffer = context.outputBuffer("result").buffer()},
-            ComputeDispatchBinding{.binding = kMaterialValueBinding, .buffer = input_.get()}};
+        const std::array bindings{ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = context.outputBuffer("result").buffer()},
+            ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = input_.get()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
     }
 private:

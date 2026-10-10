@@ -1,7 +1,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -829,10 +829,10 @@ public:
             .moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = kShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc binding{.binding = 0};
+        const render::ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
-            .requiresRayQuery = false, .resourceParameters = render::kTextureFeedbackResourceLayout}, log);
+            .requiresRayQuery = false, .resourceParameters = render::resourceParameterLayout<render::TextureFeedbackResourceParameters>()}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -852,7 +852,7 @@ public:
             state.resources = resources;
             state.feedback = prepared->textureFeedback;
         }
-        const render::ComputeDispatchBinding binding{.binding = 0, .buffer = prepared->textureFeedback};
+        const render::ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback), .buffer = prepared->textureFeedback};
         const uint32_t push[]{resources->logicalTextureIndices()[0], context.properties().value("wantedMip", 0u), 1u, 0u};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
             .pushData = push, .pushDataSize = sizeof(push)});

@@ -1,5 +1,5 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 
@@ -163,20 +163,20 @@ public:
             log = shader.diagnostics;
             FETCH_REQUIRE(compiled);
             std::vector<render::ComputeResourceBindingDesc> layout = {
-                {0, render::ComputeResourceBindingKind::AccelerationStructure},
-                {2}, {3}, {4}, {5}, {6},
-                {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()},
-                {63},
+                {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), render::ComputeResourceBindingKind::AccelerationStructure},
+                {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, indices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, primitives)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, instances)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials)},
+                {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()},
+                {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, probeOutput)},
             };
             if (!positionFetch) {
-                layout.push_back({render::kSceneFallbackPositionsBinding});
+                layout.push_back({METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, positions)});
             }
             render::ComputeProgram program;
             const auto initialized = program.initialize(*device, {
                 .spirv = shader.spirv,
                 .pushConstantSize = sizeof(float),
                 .bindings = {layout.data(), static_cast<uint32_t>(std::size(layout))},
-                .resourceParameters = render::kSceneProbeResourceLayout,
+                .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>(),
             }, log);
             if (native_ && render::hasError(initialized, render::Error::Unsupported)) {
                 return RHITestResult::skip("native descriptor heaps require KHR untyped pointers");
@@ -219,20 +219,20 @@ public:
                 FETCH_REQUIRE(commands->begin(frame.submissionContext()));
                 FETCH_REQUIRE(resources.uploadMaterialTextures(*commands));
                 std::vector<render::ComputeDispatchBinding> bindings = {
-                    {.binding = 0, .accelerationStructure = resources.accelerationStructure().accelerationStructure()},
-                    {.binding = 2, .buffer = resources.shadingVertexBuffer()},
-                    {.binding = 3, .buffer = resources.indexBuffer()},
-                    {.binding = 4, .buffer = resources.primitiveBuffer()},
-                    {.binding = 5, .buffer = resources.instanceBuffer()},
-                    {.binding = 6, .buffer = resources.materialBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), .accelerationStructure = resources.accelerationStructure().accelerationStructure()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices), .buffer = resources.shadingVertexBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, indices), .buffer = resources.indexBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, primitives), .buffer = resources.primitiveBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, instances), .buffer = resources.instanceBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials), .buffer = resources.materialBuffer()},
                     {
-                        .binding = 9,
+                        .binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures),
                         .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
                     },
-                    {.binding = 63, .buffer = output.get()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, probeOutput), .buffer = output.get()},
                 };
                 if (!positionFetch) {
-                    bindings.push_back({.binding = render::kSceneFallbackPositionsBinding,
+                    bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, positions),
                         .buffer = resources.fallbackPositionBuffer()});
                 }
                 FETCH_REQUIRE(program.dispatch({
@@ -359,13 +359,13 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         FETCH_REQUIRE(compiled);
-        const render::ComputeResourceBindingDesc layout[] = {{2}, {63}};
+        const render::ComputeResourceBindingDesc layout[] = {{METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, probeOutput)}};
         render::ComputeProgram program;
         FETCH_REQUIRE(program.initialize(*device, {
             .spirv = shader.spirv,
             .bindings = {layout, 2},
             .requiresRayQuery = false,
-            .resourceParameters = render::kSceneProbeResourceLayout,
+            .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>(),
         }, log));
         render::QueueSubmissionTracker tracker;
         FETCH_REQUIRE(tracker.initialize(*device, queue));
@@ -386,7 +386,7 @@ public:
         } drain{frame, *pool};
         FETCH_REQUIRE(frame.begin(0));
         FETCH_REQUIRE(commands->begin(frame.submissionContext()));
-        const render::ComputeDispatchBinding bindings[] = {{.binding = 2, .buffer = input.get()}, {.binding = 63, .buffer = output.get()}};
+        const render::ComputeDispatchBinding bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices), .buffer = input.get()}, {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, probeOutput), .buffer = output.get()}};
         FETCH_REQUIRE(program.dispatch({
             .commandBuffer = commands.get(),
             .bindings = {bindings, 2},

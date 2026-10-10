@@ -1,6 +1,6 @@
 #include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -153,10 +153,10 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),
             shader.diagnostics);
     const ComputeResourceBindingDesc layout[] = {
-        {.binding = 0,
+        {.binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, textures),
          .kind = ComputeResourceBindingKind::SampledImage,
          .descriptorCount = resources.materialTextureCount()},
-        {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        {.binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, output), .kind = ComputeResourceBindingKind::StorageBuffer}};
     ComputeProgram program;
     require(program.initialize(context.device,
                                {
@@ -164,7 +164,7 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                    .pushConstantSize = 16,
                                    .bindings = {layout, 2},
                                    .requiresRayQuery = false,
-                                   .resourceParameters = kTextureProbeResourceLayout,
+                                   .resourceParameters = render::resourceParameterLayout<render::TextureProbeResourceParameters>(),
                                },
                                log),
             log);
@@ -188,10 +188,10 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
     };
     if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
     const ComputeDispatchBinding bindings[] = {{
-        .binding = 0,
+        .binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, textures),
         .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
     },
-                                               {.binding = 1, .buffer = output.get()}};
+                                               {.binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, output), .buffer = output.get()}};
     const uint32_t push[] = {index, mip, flags, 0};
     require(program.dispatch({
         .commandBuffer = commands.get(),
@@ -581,13 +581,13 @@ public:
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
         ComputeProgram program;
-        const ComputeResourceBindingDesc binding{.binding=0};
+        const ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
         require(program.initialize(context.device,{
             .spirv = shader.spirv,
             .pushConstantSize = 16,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
-            .resourceParameters = kTextureFeedbackResourceLayout,
+            .resourceParameters = render::resourceParameterLayout<render::TextureFeedbackResourceParameters>(),
         },log),log);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -614,7 +614,7 @@ public:
                 sawTextureSchedule |= timing.name=="Candidates and allocation queries";
             }
             require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
-            ComputeDispatchBinding view{.binding=0,.buffer=feedback};
+            ComputeDispatchBinding view{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback),.buffer=feedback};
             const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
             require(program.dispatch({
                 .commandBuffer = commands.get(),
@@ -720,9 +720,9 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
         ComputeProgram program;
-        const ComputeResourceBindingDesc layout{.binding = 0};
+        const ComputeResourceBindingDesc layout{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameters = kTextureFeedbackResourceLayout}, log), log);
+            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameters = render::resourceParameterLayout<render::TextureFeedbackResourceParameters>()}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::array<std::unique_ptr<CommandBuffer>, 3> commands;
         QueueSubmissionTracker tracker;
@@ -741,7 +741,7 @@ public:
         } drain{context.graphicsQueue,frame};
         uint64_t frameIndex = 0;
         const auto dispatch = [&](CommandBuffer& command, Buffer& feedback, uint32_t mip, uint32_t samples) {
-            const ComputeDispatchBinding binding{.binding = 0, .buffer = &feedback};
+            const ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback), .buffer = &feedback};
             const uint32_t push[]{slot,mip,samples,0};
             require(program.dispatch({.commandBuffer = &command, .bindings = {&binding,1},
                 .pushData = push, .pushDataSize = sizeof(push)}), "feedback contract demand");

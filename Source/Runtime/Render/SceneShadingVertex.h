@@ -18,7 +18,6 @@ struct SceneShadingVertex {
 static_assert(sizeof(SceneShadingVertex) == 16);
 static_assert(offsetof(SceneShadingVertex, texcoord) == 8);
 
-inline constexpr uint32_t kSceneFallbackPositionsBinding = 54;
 
 using scene::packSceneNormal;
 using scene::packSceneTangent;

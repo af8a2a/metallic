@@ -156,7 +156,11 @@
 
 **但注意**：RHI 确实需要在提交路径上回调 renderer 的 `reserveResources`/`acceptResources`，抽象本身有理由。建议是**把接口具体化**，不是删除解耦。
 
-### R10 【代码量，未变】绑定号表按 Program 重复 5–6 份
+### R10 【已收敛】绑定号表按 Program 重复 5–6 份
+
+2026-10-10：中央布局表已删除。生产动态清单直接用 `ResourceMember.h` 引用共享参数结构成员，
+偏移、类别和字段格式由成员推导；不再维护手写编号到字段的映射。shader wire ABI 未变，
+原始数字 ID 不属于 CPU/Slang 共享 ABI。以下为改动前的审查快照。
 
 `Core/NamedResourceLayouts.h`（434 行，`6e7f9ab6a` 未触及）实测：377 个 `offsetof` 字段行，只有 **122** 个不同的 `(结构体, 字段)` 组合，即 **约 68% 重复**。重复形式是同一个 `SceneResourceParameters` 字段被声明 4–6 次：
 
@@ -170,7 +174,7 @@
 
 根因是**绑定号绑定在 Program 上而非参数结构体上**：12 张表是同一个 122 字段结构体的 12 个近似子集。可去掉约 255 行重复声明。
 
-**风险**：绑定号是 CPU 与 Slang 共享的 ABI，改动需与 shader 及测试同批。`6e7f9ab6a` 已移除数字 slot 上传路径，这项现在是该 ABI 收敛的自然下一步，但应独立成批。
+**风险（原审查表述修正）**：具名结构的字段布局才是 CPU 与 Slang 共享的 ABI；CPU 输入编号不是。修改字段布局仍需与 shader 及测试同批。`6e7f9ab6a` 已移除数字 slot 上传路径，这项现在是该 ABI 收敛的自然下一步，但应独立成批。
 
 ### R11 【代码量，未变】`friend` 密度与 `deviceIdentity()` 配对校验
 

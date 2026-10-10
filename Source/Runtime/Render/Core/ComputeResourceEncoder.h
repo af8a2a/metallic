@@ -20,7 +20,9 @@ enum class ComputeResourceBindingKind : uint8_t {
 };
 
 struct ComputeResourceBindingDesc {
-    // CPU input ID mapped to an explicit named field; never sent to the shader.
+    // Production manifests use METALLIC_RESOURCE_MEMBER / METALLIC_DATA_MEMBER.
+    // Numeric input IDs require an explicit table and are retained for legacy tests only.
+    // Neither form is sent to the shader.
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
@@ -45,6 +47,7 @@ struct ComputeResourceField {
 
 struct ComputeResourceLayout {
     uint32_t size = 0;
+    // Empty for member-based manifests. Explicit input-ID maps are a legacy test adapter.
     std::span<const ComputeResourceField> fields;
 };
 

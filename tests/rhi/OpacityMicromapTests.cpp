@@ -1,5 +1,5 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "harness/RayQueryFixture.h"
@@ -304,14 +304,14 @@ public:
             OMM_EXPECT(render::vulkan::enableOpacityMicromapSpirv(compiled.spirv, patched, true) && patched != compiled.spirv &&
                 render::vulkan::enableOpacityMicromapSpirv(patched, twice, true) && patched == twice, "RayQuery EXT OMM capability missing or not idempotent");
             const render::ComputeResourceBindingDesc layout[] = {
-                {0, render::ComputeResourceBindingKind::AccelerationStructure}, {2}, {3}, {4}, {5}, {6},
-                {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()}, {63}};
+                {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), render::ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, indices)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, primitives)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, instances)}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials)},
+                {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, probeOutput)}};
             render::ComputeProgram program;
             OMM_REQUIRE(program.initialize(*device, {
                 .spirv = compiled.spirv,
                 .pushConstantSize = 4,
                 .bindings = {layout, uint32_t(std::size(layout))},
-                .resourceParameters = render::kSceneProbeResourceLayout,
+                .resourceParameters = render::resourceParameterLayout<render::SceneResourceParameters>(),
             }, log));
             std::unique_ptr<render::Buffer> output;
             OMM_REQUIRE(device->createBuffer({.size = sizeof(Probe), .structureStride = 8,
@@ -390,12 +390,12 @@ public:
                 OMM_REQUIRE(commands->begin(frame.submissionContext()));
                 OMM_REQUIRE(resources.uploadMaterialTextures(*commands));
                 const render::ComputeDispatchBinding bindings[] = {
-                    {.binding = 0, .accelerationStructure = resources.accelerationStructure().accelerationStructure()},
-                    {.binding = 2, .buffer = resources.shadingVertexBuffer()}, {.binding = 3, .buffer = resources.indexBuffer()},
-                    {.binding = 4, .buffer = resources.primitiveBuffer()}, {.binding = 5, .buffer = resources.instanceBuffer()},
-                    {.binding = 6, .buffer = resources.materialBuffer()},
-                    {.binding = 9, .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()}},
-                    {.binding = 63, .buffer = output.get()}};
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), .accelerationStructure = resources.accelerationStructure().accelerationStructure()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, vertices), .buffer = resources.shadingVertexBuffer()}, {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, indices), .buffer = resources.indexBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, primitives), .buffer = resources.primitiveBuffer()}, {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, instances), .buffer = resources.instanceBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials), .buffer = resources.materialBuffer()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()}},
+                    {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, probeOutput), .buffer = output.get()}};
                 const uint32_t textureCount = uint32_t(resources.materialTextureViews().size());
                 OMM_REQUIRE(program.dispatch({
                     .commandBuffer = commands.get(),
