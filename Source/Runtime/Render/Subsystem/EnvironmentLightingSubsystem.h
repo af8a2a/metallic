@@ -89,6 +89,7 @@ public:
         const RenderSubsystemInitContext& context,
         std::string& log) override;
     void shutdown() override;
+    void appendDebugBindings(const RenderSubsystemFrameContext& context, std::vector<DebugResourceBinding>& bindings) override;
 
     const EnvironmentLightingSnapshot& snapshot() const { return snapshot_; }
     Result<CelestialLightingResources> updateCelestial(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
@@ -144,6 +145,7 @@ private:
     uint64_t requestedGeneration_ = 0;
     uint64_t resourceRevision_ = 0;
     uint64_t decodeCount_ = 0;
+    uint64_t frameSerial_ = 0;
     bool requestInitialized_ = false;
 };
 

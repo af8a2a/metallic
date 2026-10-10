@@ -65,6 +65,8 @@ public:
         lut.texture3D(0, 0, 0).sampledRead().setOptional();
         lut.format = Format::RGBA16Sfloat;
         auto& color = reflection.addTextureOutput("color", "Final image presented by the viewport to the swapchain");
+        color.texture2D(context.presentationWidth != 0 ? context.presentationWidth : context.width,
+            context.presentationHeight != 0 ? context.presentationHeight : context.height);
         color.storageWrite().transient(RenderGraphInitialization::FullOverwrite);
         // Both HDR profiles retain linear scRGB until UI composition is complete.
         const bool hdr = isHDROutput(context.displayOutput.mode);

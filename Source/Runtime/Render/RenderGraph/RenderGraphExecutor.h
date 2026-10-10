@@ -91,6 +91,9 @@ public:
     RenderGraphExecutor(const RenderGraphExecutor&) = delete;
     RenderGraphExecutor& operator=(const RenderGraphExecutor&) = delete;
 
+    // width/height specify presentation size. A bound or graph-owned RenderView
+    // supplies a fixed extent or follows presentation in adaptive mode;
+    // graphs without a view use these defaults.
     Result<> compile(
         Device& device,
         const RenderGraph& graph,
@@ -114,6 +117,7 @@ public:
     void bindRuntimeScene(const scene::Scene* scene);
     void bindRenderWorld(RenderWorld* world);
     // One view per executor; separate viewports/executors retain independent history.
+    // Resolution changes require compile() before the next execution.
     void bindRenderView(RenderView* view);
     RenderView* renderView();
     RenderSubsystemHost* subsystemHost();

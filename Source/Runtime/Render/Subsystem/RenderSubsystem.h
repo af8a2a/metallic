@@ -19,6 +19,8 @@ namespace metallic::render {
 
 class HistoryResourceManager;
 class RenderSubsystemHost;
+class IRenderDebugObserver;
+struct DebugResourceBinding;
 
 using RenderSubsystemId = std::string_view;
 
@@ -60,6 +62,10 @@ public:
     }
     virtual Result<> recordPreGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
     virtual Result<> recordPostGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
+    // Called after all post-graph hooks on the joined graph command stream, only
+    // when inspection is enabled. Publish local names and the owner's exact state;
+    // pointers are borrowed for this callback and never retained by the UI.
+    virtual void appendDebugBindings(const RenderSubsystemFrameContext&, std::vector<DebugResourceBinding>&) {}
     [[nodiscard]] virtual Result<std::unique_ptr<RenderSubsystemShaderReload>> prepareShaderReload(
         const RenderSubsystemInitContext&,
         std::string&)
@@ -155,6 +161,9 @@ public:
         std::span<const RenderSubsystemId> requiredSubsystems,
         std::string& log);
     Result<> reloadShaders(std::string& log);
+    std::vector<std::string> debugSubsystemIds(std::span<const RenderSubsystemId> requiredSubsystems) const;
+    void publishDebugResources(CommandBuffer& commands, Streamer* streamer,
+        std::span<const RenderSubsystemId> requiredSubsystems, IRenderDebugObserver& observer);
     void endFrame();
     void shutdown();
 

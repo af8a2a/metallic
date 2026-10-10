@@ -241,6 +241,11 @@ struct RenderGraphCompileContext {
     RenderView* renderView = nullptr;
     DisplayOutputParameters displayOutput;
 
+    // Actual viewport extent. width/height remain the fixed render/reconstruction
+    // target; only presentation passes resample to these dimensions.
+    uint32_t presentationWidth = 0;
+    uint32_t presentationHeight = 0;
+
     // Reload must keep the last successful graph instead of an initial error material.
     bool shaderReload = false;
 

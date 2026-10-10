@@ -1,6 +1,7 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 
 #include <algorithm>
 #include <chrono>
@@ -37,6 +38,7 @@ Result<> StreamerSubsystem::beginFrame(const RenderSubsystemFrameContext& contex
     const auto result = completeInitialLoads(log);
     if (!result) { return result; }
     textureFrames_.clear();
+    debugFrameStreams_.clear();
     if (context.frameResources) { return uploads_.beginFrame(*context.frameResources); }
     uploads_.beginFrame();
     return {};
@@ -73,11 +75,36 @@ void StreamerSubsystem::prepareBeforePacing(CPUProfileRecorder* profiler)
     }
 }
 
+void StreamerSubsystem::appendDebugBindings(const RenderSubsystemFrameContext&, std::vector<DebugResourceBinding>& bindings)
+{
+    std::erase_if(debugStreamIds_, [&](const auto& item) {
+        return item.second.owner.expired() ||
+            std::none_of(streams_.begin(), streams_.end(), [&](const auto& stream) { return stream.get() == item.first; });
+    });
+    for (const auto& stream : streams_) {
+        if (!stream->ready() || !debugFrameStreams_.contains(stream.get())) { continue; }
+        auto [identity, inserted] = debugStreamIds_.try_emplace(stream.get(), DebugStreamIdentity{stream, nextDebugStreamId_});
+        if (inserted) { ++nextDebugStreamId_; }
+        const size_t begin = bindings.size();
+        stream->appendDebugBindings(bindings, "stream" + std::to_string(identity->second.id) + ".");
+        for (size_t i = begin; i < bindings.size(); ++i) {
+            auto& binding = bindings[i];
+            binding.metadata["streamId"] = identity->second.id;
+            if (binding.layout == "CompactStreamVisibleRecord") {
+                binding.metadata["captureSupported"] = false;
+                binding.metadata["reason"] = "Inspect visible clusters at the producer's AfterPass checkpoint; sparse slots need its visibility evidence";
+            }
+        }
+    }
+}
+
 void StreamerSubsystem::shutdown()
 {
     // The host waits for submitted work and retires graph passes before this.
     initialLoads_.clear();
     streams_.clear();
+    debugStreamIds_.clear();
+    debugFrameStreams_.clear();
     textureFrames_.clear();
     resources_.clear();
     uploads_.reset();
@@ -229,6 +256,7 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         });
         context.publishCpuProfile(stream.beginFrameCpuProfile().sections);
         if (!result) { return result; }
+        if (context.debugEnabled()) { debugFrameStreams_.insert(prepared.geometry.get()); }
         if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(prepared.geometry); }
     }
     if (prepared.snapshot && prepared.snapshot->pathTraceResources) {

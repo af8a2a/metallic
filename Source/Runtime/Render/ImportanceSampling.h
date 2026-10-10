@@ -6,8 +6,10 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace metallic::render {
+struct DebugResourceBinding;
 
 inline constexpr uint32_t kImportancePdfMaxMipCount = 16;
 
@@ -51,6 +53,7 @@ public:
     uint32_t textureHeight() const;
     uint32_t mipCount() const;
     uint64_t byteSize() const;
+    void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& name) const;
 
 private:
     struct Impl;

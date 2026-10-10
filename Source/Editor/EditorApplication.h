@@ -76,6 +76,7 @@ private:
     void drawDockspace();
     void drawPanels();
     void drawScenePanel();
+    void drawRuntimeSettingsPanel();
     void drawInspectorPanel();
     void drawStatisticsPanel();
     void drawStreamlineDebugPanel();
@@ -287,6 +288,7 @@ private:
     render::RenderSubsystemHost subsystemHost_;
     render::RenderWorld renderWorld_;
     render::RenderView viewportView_;
+    int customRenderResolution_[2] = {1920, 1080};
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     std::unique_ptr<render::RenderDebugRuntime> debugRuntime_;
     std::unique_ptr<render::WorkControlShaderTrace> shaderTrace_;
@@ -354,6 +356,7 @@ private:
     bool nvmlMonitorOpen_ = true;
     bool streamlineDebugOpen_ = false;
     bool inspectorOpen_ = true;
+    bool runtimeSettingsOpen_ = true;
     bool statisticsOpen_ = true;
     bool graphEditorPositionsInitialized_ = false;
     bool snapEnabled_ = false;

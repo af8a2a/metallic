@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <set>
 
 namespace metallic {
 namespace {
@@ -83,6 +84,7 @@ void EditorResourceInspector::select(std::string resource)
     rawBuffer_ = false;
     fieldPage_ = 0;
     roi_ = {0, 0, 0, 0};
+    slice_ = 0;
     status_.clear();
 }
 
@@ -130,12 +132,18 @@ void EditorResourceInspector::request(render::RenderDebugRuntime& runtime,
         roi_[1] = std::clamp(roi_[1], 0, height - 1);
         const int w = roi_[2] > 0 ? std::min(roi_[2], width - roi_[0]) : width - roi_[0];
         const int h = roi_[3] > 0 ? std::min(roi_[3], height - roi_[1]) : height - roi_[1];
-        if (uint64_t(w) * h * stride > availableBytes) {
-            status_ = "Image exceeds the capture budget. Select a smaller ROI and Refresh.";
+        const bool volume = resource.value("textureType", 0u) == static_cast<uint32_t>(render::TextureType::Texture3D);
+        const int depth = std::max(1, resource.value("depth", 1));
+        const int slices = volume && cube_ ? depth : 1;
+        if (uint64_t(w) * h > availableBytes / stride / slices) {
+            status_ = "Image exceeds the capture budget. Select a smaller ROI or switch to Z slice, then Refresh.";
             live_ = false;
             return;
         }
         spec["roi"] = {{"x", roi_[0]}, {"y", roi_[1]}, {"width", w}, {"height", h}};
+        slice_ = std::clamp(slice_, 0, depth - 1);
+        spec["slice"] = volume && cube_ ? 0 : slice_;
+        spec["sliceCount"] = slices;
     } else {
         const uint64_t capacity = resource.value("size", uint64_t(0)) / stride;
         if (offset_ >= capacity || !availableBytes) { status_ = "Element offset is outside the buffer or capture budget."; live_ = false; return; }
@@ -174,34 +182,84 @@ void EditorResourceInspector::draw(render::RenderDebugRuntime& runtime, render::
         return;
     }
     const auto& resources = snapshot->values.at("resources");
-    ImGui::TextDisabled("Pass-boundary snapshots | async GPU readback | live refresh: 2 Hz");
+    ImGui::TextDisabled("Pass / subsystem snapshots | async GPU readback | live refresh: 2 Hz");
     ImGui::BeginChild("ResourceList", ImVec2(280 * scale, 0), true);
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##ResourceFilter", "Filter resource / pass", filter_, sizeof(filter_));
-    for (const auto* kind : {"texture", "buffer"}) {
-        if (!ImGui::CollapsingHeader(kind[0] == 't' ? "Textures" : "Buffers", ImGuiTreeNodeFlags_DefaultOpen)) { continue; }
-        for (auto it = resources.begin(); it != resources.end(); ++it) {
-            if (it.value().value("kind", "") != kind || (filter_[0] && it.key().find(filter_) == std::string::npos)) { continue; }
-            if (ImGui::Selectable(it.key().c_str(), selected_ == it.key())) { cancel(core); select(it.key()); }
-            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s / %s", it.value().value("pass", "").c_str(), it.value().value("checkpoint", "").c_str()); }
+    ImGui::InputTextWithHint("##ResourceFilter", "Filter resource / subsystem", filter_, sizeof(filter_));
+    ImGui::SetNextItemWidth(-1);
+    ImGui::Combo("##ResourceSource", &sourceFilter_, "All resources\0Render graph\0Subsystems\0");
+    std::set<std::string> owners;
+    for (const auto& resource : resources) { owners.insert(resource.value("subsystem", "")); }
+    for (const auto& owner : owners) {
+        if ((sourceFilter_ == 1 && !owner.empty()) || (sourceFilter_ == 2 && owner.empty())) { continue; }
+        if (!ImGui::TreeNodeEx(owner.empty() ? "Render graph" : owner.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) { continue; }
+        for (const auto* kind : {"texture", "buffer"}) {
+            if (std::none_of(resources.begin(), resources.end(), [&](const auto& resource) {
+                return resource.value("subsystem", "") == owner && resource.value("kind", "") == kind;
+            })) { continue; }
+            if (!ImGui::TreeNodeEx(kind[0] == 't' ? "Textures" : "Buffers", ImGuiTreeNodeFlags_DefaultOpen)) { continue; }
+            for (auto it = resources.begin(); it != resources.end(); ++it) {
+                const auto& resource = it.value();
+                if (resource.value("subsystem", "") != owner || resource.value("kind", "") != kind ||
+                    (filter_[0] && it.key().find(filter_) == std::string::npos && owner.find(filter_) == std::string::npos)) { continue; }
+                ImGui::PushID(it.key().c_str());
+                const auto label = resource.value("displayName", resource.value("resourceName", it.key()));
+                if (ImGui::Selectable(label.c_str(), selected_ == it.key())) { cancel(core); select(it.key()); }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s\n%s / %s", it.key().c_str(), resource.value("pass", "").c_str(), resource.value("checkpoint", "").c_str());
+                }
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
         }
+        ImGui::TreePop();
     }
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("ResourceDetail", ImVec2(0, 0));
     if (!resources.contains(selected_)) {
-        ImGui::TextWrapped("Select a Texture or Buffer. Only resources from executed passes are listed.");
+        cancel(core); capture_.reset(); refresh_ = true;
+        ImGui::TextWrapped("Select a Texture or Buffer from an executed pass or subsystem. Resources unavailable in this execution are omitted.");
         ImGui::EndChild();
         return;
     }
     if (refresh_) { cancel(core); }
     const auto& resource = resources.at(selected_);
-    ImGui::TextUnformatted(selected_.c_str());
+    if (capture_ && !capture_->artifacts.empty() &&
+        capture_->artifacts[0].metadata.value("allocation", uint64_t(0)) != resource.value("allocation", uint64_t(0))) {
+        cancel(core); capture_.reset(); refresh_ = true;
+        status_ = "Resource allocation changed; refreshing snapshot";
+    }
+    ImGui::TextWrapped("%s", selected_.c_str());
     ImGui::TextDisabled("%s / %s | layout: %s", resource.value("pass", "").c_str(),
         resource.value("checkpoint", "").c_str(), resource.value("layout", "").c_str());
+    if (resource.contains("subsystem")) { ImGui::TextDisabled("Subsystem: %s", resource.at("subsystem").get_ref<const std::string&>().c_str()); }
+    if (resource.contains("validity")) { ImGui::TextWrapped("%s", resource.at("validity").get_ref<const std::string&>().c_str()); }
+    if (resource.value("placeholder", false)) { ImGui::TextDisabled("Fallback environment: no HDRI map loaded"); }
+    if (!resource.value("captureSupported", true)) { ImGui::TextWrapped("%s", resource.value("reason", "Capture unavailable").c_str()); }
     const bool texture = resource.value("kind", "") == "texture";
     if (texture) {
-        ImGui::Text("%u x %u | mip 0, layer 0", resource.value("width", 0u), resource.value("height", 0u));
+        const bool volume = resource.value("textureType", 0u) == static_cast<uint32_t>(render::TextureType::Texture3D);
+        if (volume) {
+            const int depth = std::max(1, resource.value("depth", 1));
+            ImGui::Text("Texture3D | %u x %u x %d | mip 0", resource.value("width", 0u), resource.value("height", 0u), depth);
+            if (ImGui::RadioButton("Cube", cube_)) {
+                cube_ = true; cancel(core); capture_.reset(); refresh_ = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Z slice", !cube_)) {
+                cube_ = false; cancel(core); capture_.reset(); refresh_ = true;
+            }
+            slice_ = std::clamp(slice_, 0, depth - 1);
+            ImGui::SetNextItemWidth(320 * scale);
+            if (!cube_ && ImGui::SliderInt("Slice index", &slice_, 0, depth - 1)) {
+                cancel(core);
+                capture_.reset();
+                refresh_ = true;
+            }
+        } else {
+            ImGui::Text("%u x %u | mip 0, layer 0", resource.value("width", 0u), resource.value("height", 0u));
+        }
         ImGui::SetNextItemWidth(320 * scale);
         ImGui::InputInt4("ROI x/y/w/h", roi_.data());
         ImGui::TextDisabled("Width/height 0: remaining extent. Refresh applies the range.");
@@ -250,13 +308,16 @@ void EditorResourceInspector::draw(render::RenderDebugRuntime& runtime, render::
             status_ = job.value("state", "");
             if (status_ == "Ready") {
                 const auto completed = core.completedCapture(job_);
-                if (completed && !completed->artifacts.empty() && completed->artifacts[0].metadata.at("id") == selected_) {
+                if (completed && !completed->artifacts.empty() && completed->artifacts[0].metadata.at("id") == selected_ &&
+                    completed->artifacts[0].metadata.value("allocation", uint64_t(0)) == resource.value("allocation", uint64_t(0))) {
                     if (!capture_) {
                         const auto& layout = completed->artifacts[0].layout.name;
                         scalar_ = layout == "f32" ? 2 : layout == "i32" ? 1 : 0;
                     }
                     capture_ = completed;
                     imageDirty_ = texture;
+                } else {
+                    refresh_ = true;
                 }
                 job_.clear();
             } else if (status_ == "Failed" || status_ == "Cancelled") {
@@ -281,7 +342,10 @@ bool EditorResourceInspector::rebuildImage(render::Device& device, render::vulka
 {
     using namespace render;
     const auto& artifact = capture_->artifacts[0];
-    const uint32_t width = artifact.metadata.at("roi").at("width"), height = artifact.metadata.at("roi").at("height");
+    const uint32_t w = artifact.metadata.at("roi").at("width"), h = artifact.metadata.at("roi").at("height");
+    const uint32_t d = artifact.metadata.value("sliceCount", 1u);
+    const bool cube = cube_ && artifact.metadata.value("textureType", 0u) == static_cast<uint32_t>(TextureType::Texture3D);
+    const uint32_t width = cube ? d + 2 * w : w, height = cube ? 2 * std::max(h, d) : h;
     auto texture = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
         .format = Format::RGBA8Unorm, .width = width, .height = height});
     if (!texture) { status_ = resultToString(texture); return false; }
@@ -292,17 +356,37 @@ bool EditorResourceInspector::rebuildImage(render::Device& device, render::vulka
     if (!staging) { status_ = resultToString(staging); return false; }
     auto* bytes = static_cast<uint8_t*>((*staging)->map());
     if (!bytes) { status_ = "Could not map preview upload"; return false; }
+    std::memset(bytes, 0, size_t(width) * height * 4);
     const float gain = std::exp2(exposure_), span = std::max(rangeMax_ - rangeMin_, 1e-20f);
-    for (size_t i = 0; i < size_t(width) * height; ++i) {
-        const auto p = pixel(artifact, i);
+    const auto writePixel = [&](size_t destination, size_t source) {
+        const auto p = pixel(artifact, source);
         bool finite = true;
         for (size_t c = 0; c < 3; ++c) {
             const float value = (p[channel_ ? size_t(channel_ - 1) : c] * gain - rangeMin_) / span;
             finite &= std::isfinite(value);
-            bytes[i * 4 + c] = std::isfinite(value) ? uint8_t(std::clamp(value, 0.f, 1.f) * 255.f + 0.5f) : 0;
+            bytes[destination * 4 + c] = std::isfinite(value) ? uint8_t(std::clamp(value, 0.f, 1.f) * 255.f + 0.5f) : 0;
         }
-        if (!finite) { bytes[i * 4] = 255; bytes[i * 4 + 1] = 0; bytes[i * 4 + 2] = 255; }
-        bytes[i * 4 + 3] = 255;
+        if (!finite) { bytes[destination * 4] = 255; bytes[destination * 4 + 1] = 0; bytes[destination * 4 + 2] = 255; }
+        bytes[destination * 4 + 3] = 255;
+    };
+    if (cube) {
+        // Six boundary planes packed as X/Y/Z columns, negative/positive rows.
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            const uint32_t faceWidth = axis == 0 ? d : w, faceHeight = axis == 1 ? d : h;
+            const uint32_t left = axis == 0 ? 0 : d + (axis - 1) * w;
+            for (uint32_t side = 0; side < 2; ++side) {
+                for (uint32_t v = 0; v < faceHeight; ++v) {
+                    for (uint32_t u = 0; u < faceWidth; ++u) {
+                        const uint32_t x = axis == 0 ? side * (w - 1) : u;
+                        const uint32_t y = axis == 1 ? side * (h - 1) : v;
+                        const uint32_t z = axis == 2 ? side * (d - 1) : axis == 0 ? u : v;
+                        writePixel(size_t(side * std::max(h, d) + v) * width + left + u, (size_t(z) * h + y) * w + x);
+                    }
+                }
+            }
+        }
+    } else {
+        for (size_t i = 0; i < size_t(w) * h; ++i) { writePixel(i, i); }
     }
     (*staging)->flush(); (*staging)->unmap();
     auto descriptor = backend.addTexture(**view);
@@ -338,14 +422,18 @@ render::Result<> EditorResourceInspector::upload(render::CommandBuffer& commands
 
 void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan::VulkanImGuiBackend& backend)
 {
+    const bool cube = cube_ && capture_->artifacts[0].metadata.value("textureType", 0u) == static_cast<uint32_t>(render::TextureType::Texture3D);
     ImGui::SetNextItemWidth(100); imageDirty_ |= ImGui::Combo("Channel", &channel_, "RGB\0R\0G\0B\0A\0");
     ImGui::SameLine(); ImGui::SetNextItemWidth(130); imageDirty_ |= ImGui::SliderFloat("Exposure", &exposure_, -16, 16);
     ImGui::SetNextItemWidth(110); imageDirty_ |= ImGui::DragFloat("Min", &rangeMin_, 0.01f);
     ImGui::SameLine(); ImGui::SetNextItemWidth(110); imageDirty_ |= ImGui::DragFloat("Max", &rangeMax_, 0.01f);
-    ImGui::Checkbox("Fit", &fit_); ImGui::SameLine(); ImGui::SetNextItemWidth(130); ImGui::SliderFloat("Zoom", &zoom_, 0.1f, 16.f);
+    if (!cube) {
+        ImGui::Checkbox("Fit", &fit_); ImGui::SameLine(); ImGui::SetNextItemWidth(130); ImGui::SliderFloat("Zoom", &zoom_, 0.1f, 16.f);
+    }
     ImGui::TextDisabled("Display: range/exposure + clamp; magenta = non-finite. Hover for raw values.");
     if (imageDirty_ && !rebuildImage(device, backend)) { return; }
     if (!descriptor_) { return; }
+    if (cube) { drawCube(); return; }
     const auto& artifact = capture_->artifacts[0];
     const auto& roi = artifact.metadata.at("roi");
     const int width = roi.at("width"), height = roi.at("height");
@@ -361,15 +449,106 @@ void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan
         const auto index = size_t(y) * width + x;
         const auto values = debug::decodeBuffer(std::span(artifact.bytes).subspan(index * artifact.layout.stride, artifact.layout.stride), artifact.layout);
         ImGui::BeginTooltip();
-        ImGui::Text("Pixel (%d, %d)", x + roi.at("x").get<int>(), y + roi.at("y").get<int>());
+        if (artifact.metadata.value("textureType", 0u) == static_cast<uint32_t>(render::TextureType::Texture3D)) {
+            ImGui::Text("Voxel (%d, %d, %u)", x + roi.at("x").get<int>(), y + roi.at("y").get<int>(),
+                artifact.metadata.value("slice", 0u));
+        } else {
+            ImGui::Text("Pixel (%d, %d)", x + roi.at("x").get<int>(), y + roi.at("y").get<int>());
+        }
         if (values) {
             for (const auto& field : artifact.layout.fields) {
-                ImGui::Text("%s: %s", field.name.c_str(), displayValue(values->at(0).at(field.name)).c_str());
+                const auto& value = values->at(0);
+                ImGui::Text("%s: %s", field.name.c_str(), displayValue(value.is_object() ? value.at(field.name) : value).c_str());
             }
         }
         ImGui::Text("Bytes: %s", debug::hexEncode(std::span(artifact.bytes).subspan(index * artifact.layout.stride, artifact.layout.stride)).c_str());
         ImGui::EndTooltip();
     }
+    ImGui::EndChild();
+}
+
+void EditorResourceInspector::drawCube()
+{
+    ImGui::SetNextItemWidth(130); ImGui::SliderFloat("Zoom", &cubeZoom_, 0.25f, 2.f);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset view")) { cubeYaw_ = 0.65f; cubePitch_ = 0.45f; cubeZoom_ = 1.f; }
+    ImGui::TextDisabled("Drag to rotate | boundary slices of the captured ROI | hover for voxel values");
+    ImGui::BeginChild("TextureCube", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const auto origin = ImGui::GetCursorScreenPos();
+    const auto available = ImGui::GetContentRegionAvail();
+    const ImVec2 size(std::max(1.f, available.x), std::max(1.f, available.y));
+    ImGui::InvisibleButton("Cube rotation", size);
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        cubeYaw_ = std::remainder(cubeYaw_ + ImGui::GetIO().MouseDelta.x * 0.01f, 6.2831853f);
+        cubePitch_ = std::remainder(cubePitch_ + ImGui::GetIO().MouseDelta.y * 0.01f, 6.2831853f);
+    }
+    const bool hovered = ImGui::IsItemHovered();
+    const float cy = std::cos(cubeYaw_), sy = std::sin(cubeYaw_), cp = std::cos(cubePitch_), sp = std::sin(cubePitch_);
+    const auto rotate = [&](std::array<float, 3> p) {
+        const float x = cy * p[0] + sy * p[2], z = -sy * p[0] + cy * p[2];
+        return std::array<float, 3>{x, cp * p[1] - sp * z, sp * p[1] + cp * z};
+    };
+    const float scale = std::min(size.x, size.y) * 0.58f * cubeZoom_;
+    const auto project = [&](std::array<float, 3> p) {
+        const auto r = rotate(p);
+        return ImVec2(origin.x + size.x * 0.5f + r[0] * scale, origin.y + size.y * 0.5f - r[1] * scale);
+    };
+    const auto& artifact = capture_->artifacts[0];
+    const auto& roi = artifact.metadata.at("roi");
+    const uint32_t w = roi.at("width"), h = roi.at("height"), d = artifact.metadata.value("sliceCount", 1u);
+    const float atlasWidth = float(d + 2 * w), atlasHeight = float(2 * std::max(h, d));
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        for (uint32_t side = 0; side < 2; ++side) {
+            std::array<float, 3> normal{};
+            normal[axis] = side ? 1.f : -1.f;
+            if (rotate(normal)[2] <= 0.0001f) { continue; }
+            const auto position = [&](float u, float v) {
+                return std::array<float, 3>{axis == 0 ? float(side) - 0.5f : u - 0.5f,
+                    axis == 1 ? float(side) - 0.5f : v - 0.5f,
+                    axis == 2 ? float(side) - 0.5f : axis == 0 ? u - 0.5f : v - 0.5f};
+            };
+            const ImVec2 corners[] = {project(position(0, 0)), project(position(1, 0)), project(position(1, 1)), project(position(0, 1))};
+            const uint32_t fw = axis == 0 ? d : w, fh = axis == 1 ? d : h;
+            const float left = float(axis == 0 ? 0 : d + (axis - 1) * w), top = float(side * std::max(h, d));
+            const ImVec2 uv0((left + 0.5f) / atlasWidth, (top + 0.5f) / atlasHeight);
+            const ImVec2 uv1((left + fw - 0.5f) / atlasWidth, (top + fh - 0.5f) / atlasHeight);
+            draw->AddImageQuad(static_cast<ImTextureID>(descriptor_), corners[0], corners[1], corners[2], corners[3],
+                uv0, ImVec2(uv1.x, uv0.y), uv1, ImVec2(uv0.x, uv1.y));
+            draw->AddPolyline(corners, 4, IM_COL32(210, 220, 235, 255), ImDrawFlags_Closed, 1.5f);
+            const char* labels[] = {"X-", "X+", "Y-", "Y+", "Z-", "Z+"};
+            const auto center = project(position(0.5f, 0.5f));
+            const auto textSize = ImGui::CalcTextSize(labels[axis * 2 + side]);
+            const ImVec2 label(center.x - textSize.x * 0.5f, center.y - textSize.y * 0.5f);
+            draw->AddRectFilled(ImVec2(label.x - 3, label.y - 2), ImVec2(label.x + textSize.x + 3, label.y + textSize.y + 2), IM_COL32(0, 0, 0, 140), 3);
+            draw->AddText(label, IM_COL32_WHITE, labels[axis * 2 + side]);
+            const ImVec2 a(corners[1].x - corners[0].x, corners[1].y - corners[0].y);
+            const ImVec2 b(corners[3].x - corners[0].x, corners[3].y - corners[0].y);
+            const ImVec2 mouse(ImGui::GetMousePos().x - corners[0].x, ImGui::GetMousePos().y - corners[0].y);
+            const float determinant = a.x * b.y - a.y * b.x;
+            if (!hovered || std::abs(determinant) < 1e-5f) { continue; }
+            const float u = (mouse.x * b.y - mouse.y * b.x) / determinant, v = (a.x * mouse.y - a.y * mouse.x) / determinant;
+            if (u < 0 || u > 1 || v < 0 || v > 1) { continue; }
+            const uint32_t iu = uint32_t(u * (fw - 1) + 0.5f), iv = uint32_t(v * (fh - 1) + 0.5f);
+            const uint32_t x = axis == 0 ? side * (w - 1) : iu, y = axis == 1 ? side * (h - 1) : iv;
+            const uint32_t z = axis == 2 ? side * (d - 1) : axis == 0 ? iu : iv;
+            const auto bytes = std::span(artifact.bytes).subspan(((size_t(z) * h + y) * w + x) * artifact.layout.stride, artifact.layout.stride);
+            const auto values = debug::decodeBuffer(bytes, artifact.layout);
+            ImGui::BeginTooltip();
+            ImGui::Text("%s | Voxel (%u, %u, %u)", labels[axis * 2 + side], x + roi.at("x").get<uint32_t>(),
+                y + roi.at("y").get<uint32_t>(), z + artifact.metadata.value("slice", 0u));
+            if (values) {
+                for (const auto& field : artifact.layout.fields) {
+                    const auto& value = values->at(0);
+                    ImGui::Text("%s: %s", field.name.c_str(), displayValue(value.is_object() ? value.at(field.name) : value).c_str());
+                }
+            }
+            ImGui::Text("Bytes: %s", debug::hexEncode(bytes).c_str());
+            ImGui::EndTooltip();
+        }
+    }
+    draw->PopClipRect();
     ImGui::EndChild();
 }
 

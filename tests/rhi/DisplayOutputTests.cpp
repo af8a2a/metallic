@@ -101,6 +101,27 @@ public:
     }
 };
 
+class GradingLUTReadbackPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("lut").texture3D(64, 64, 64).transferRead().format = render::Format::RGBA16Sfloat;
+        reflection.addBufferOutput("pixels").buffer(64ull * 64 * 64 * 8).transferWrite();
+        return reflection;
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        const auto source = context.inputTexture("lut");
+        return context.outputBuffer("pixels").buffer()->slice().and_then([&](const auto& bufferSlice) {
+            return context.commandBuffer().copyTextureToBuffer({.texture = source.texture(),
+                .buffer = bufferSlice, .bufferRowPitch = 64 * 8, .bufferSlicePitch = 64 * 64 * 8,
+                .width = 64, .height = 64, .depth = 64});
+        });
+    }
+};
+
 class DisplaySourcePass final : public render::RasterPass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
@@ -427,6 +448,33 @@ public:
         const int neutral = channel();
         // UE Film's InMatch=OutMatch=0.18 anchor; exact sRGB gives 118/255.
         if (std::abs(neutral - 118) > 2) { return RHITestResult::fail("UE 18% gray Film anchor mismatch"); }
+        registerRenderGraphPassType("GradingLUTReadback", "Full grading volume readback",
+            [] { return std::make_unique<GradingLUTReadbackPass>(); });
+        RenderGraph volumeGraph;
+        volumeGraph.addNode("ColorGradingLUTPass", "Grading", {{"toneCurve", "unreal"}});
+        volumeGraph.addNode("GradingLUTReadback", "Readback");
+        volumeGraph.addEdge("Grading.lut", "Readback.lut");
+        volumeGraph.markOutput("Readback.pixels");
+        RenderGraphExecutor volumeExecutor;
+        // The viewport must not restrict any of the three LUT dimensions.
+        if (!volumeExecutor.compile(*device, volumeGraph, 7, 11, options, log) ||
+            !volumeExecutor.execute({.graphicsQueue = device->getQueue(QueueType::Graphics)}) ||
+            !volumeExecutor.waitForSubmittedWork()) {
+            return RHITestResult::fail("Full grading volume readback: " + log);
+        }
+        auto* volumeBuffer = volumeExecutor.outputResource("Readback.pixels")->buffer;
+        volumeBuffer->invalidate();
+        const auto* volumeData = static_cast<const uint16_t*>(volumeBuffer->map());
+        if (!volumeData) { return RHITestResult::fail("Grading volume mapping failed"); }
+        bool complete = true;
+        for (size_t i = 0; i < 64ull * 64 * 64; ++i) {
+            complete &= volumeData[i * 4 + 3] == 0x3c00;
+            for (size_t c = 0; c < 3; ++c) {
+                complete &= std::isfinite(halfToFloat(volumeData[i * 4 + c]));
+            }
+        }
+        volumeBuffer->unmap();
+        if (!complete) { return RHITestResult::fail("Grading must write finite RGB and alpha=1 to every 64-cubed voxel"); }
         std::vector<uint8_t> lut(256 * 16 * 4);
         const auto identityPath = context.outputDirectory / "UEIdentityLUT.png";
         const auto inversePath = context.outputDirectory / "UEInverseLUT.png";

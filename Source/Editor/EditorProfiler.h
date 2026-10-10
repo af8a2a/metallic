@@ -37,6 +37,7 @@ public:
         double gpuMilliseconds = 0.0;
         bool gpuTimingAvailable = false;
         bool cpuOnly = false;
+        bool cpuIdle = false;
         uint64_t renderGraphExecutionId = UINT64_MAX;
         uint32_t renderGraphNodeId = UINT32_MAX;
         uint32_t renderGraphSectionIndex = UINT32_MAX;
@@ -125,6 +126,9 @@ public:
     uint64_t nextFrameIndex() const { return frameIndex_; }
     FrameScope beginFrame();
     Scope scope(std::string_view name, uint32_t color = 0);
+    // CPU wall time spent waiting; retained in inclusive frame/parent timings.
+    Scope idleScope(std::string_view name);
+    void addIdleSample(std::string_view name, double milliseconds);
     void addCpuProfile(const std::vector<render::RenderGraphProfileSection>& sections);
     void addRenderGraphStats(const render::RenderGraphExecutionStats& stats);
     void updateRenderGraphGpuStats(const render::RenderGraphExecutionStats& stats);

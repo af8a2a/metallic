@@ -315,9 +315,11 @@ DebugValue DebugCore::enqueueCaptureLocked(const DebugValue& params, bool probe)
         const std::string pass = specification.at("pass").get<std::string>();
         const std::string checkpoint = specification.value("checkpoint", "AfterPass");
         bool valid = false;
-        for (const auto& node : graph_.value("passes", DebugValue::array())) {
-            if (node.at("name") != pass || !node.value("active", false)) { continue; }
-            for (const auto& point : node.value("checkpoints", DebugValue::array())) { if (point == checkpoint) { valid = true; } }
+        for (const char* group : {"passes", "subsystems"}) {
+            for (const auto& node : graph_.value(group, DebugValue::array())) {
+                if (node.at("name") != pass || !node.value("active", false)) { continue; }
+                for (const auto& point : node.value("checkpoints", DebugValue::array())) { if (point == checkpoint) { valid = true; } }
+            }
         }
         if (!valid) { reject("Unsupported", "Pass/checkpoint is not registered in the active graph"); }
         const auto generation = debugUnsigned(specification.value("generation", graph_.value("generation", DebugValue(0))));

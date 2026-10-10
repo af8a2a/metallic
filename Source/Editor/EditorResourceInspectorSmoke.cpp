@@ -1,5 +1,7 @@
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -11,8 +13,54 @@
 
 namespace metallic {
 namespace {
+class InspectorResourceSubsystem final : public render::IRenderSubsystem {
+public:
+    static constexpr render::RenderSubsystemId kSubsystemId = "test.inspector";
+    bool replace = false, visible = true;
+    render::Result<> initialize(const render::RenderSubsystemInitContext& context, std::string&) override
+    {
+        device_ = &context.device;
+        replace = true;
+        return {};
+    }
+    render::Result<> recordPreGraph(const render::RenderSubsystemFrameContext& context, std::string&) override
+    {
+        if (replace) {
+            auto buffer = device_->createBuffer({.size = 16, .structureStride = 4,
+                .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
+                .memoryLocation = render::MemoryLocation::HostUpload});
+            if (!buffer) { return render::makeError(buffer.error()); }
+            auto* words = static_cast<uint32_t*>((*buffer)->map());
+            if (!words) { return render::makeError(render::Error::Failure); }
+            ++revision_;
+            for (uint32_t i = 0; i < 4; ++i) { words[i] = uint32_t(revision_) * 100 + i; }
+            (*buffer)->flush(); (*buffer)->unmap();
+            buffer_ = std::move(*buffer);
+            replace = false;
+        }
+        context.commandBuffer->hostWriteBarrier();
+        return {};
+    }
+    void appendDebugBindings(const render::RenderSubsystemFrameContext&, std::vector<render::DebugResourceBinding>& bindings) override
+    {
+        if (visible) {
+            bindings.push_back({.id = "values", .buffer = buffer_.get(), .state = render::ResourceState::ShaderRead,
+                .layout = "u32", .allocation = revision_});
+        }
+    }
+private:
+    render::Device* device_ = nullptr;
+    std::unique_ptr<render::Buffer> buffer_;
+    uint64_t revision_ = 0;
+};
+
 class InspectorHDRPass final : public render::RasterPass {
 public:
+    std::span<const render::RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array ids{render::EnvironmentLightingSubsystem::kSubsystemId};
+        return ids;
+    }
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
@@ -23,14 +71,69 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
+        environment::EnvironmentSnapshot atmosphere;
+        atmosphere.source = environment::EnvironmentSource::PhysicalAtmosphere;
+        atmosphere.celestial[0].enabled = true;
+        std::string log;
+        auto result = context.subsystem<render::EnvironmentLightingSubsystem>()->resolveRadiance(
+            *context.subsystems()->device(), context.commandBuffer(), *context.subsystems(), atmosphere, {0.0, 2.0, 0.0}, log);
+        if (!result) { return render::makeError(result.error()); }
         return clear_->execute(context);
     }
 private:
     std::unique_ptr<render::RenderGraphPass> clear_ = render::builtin_pass::createClearColorPass();
 };
 
+class InspectorVolumePass final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        auto& volume = reflection.addTextureOutput("volume");
+        volume.format = render::Format::RGBA8Unorm;
+        volume.texture3D(8, 6, 4).transferWrite();
+        return reflection;
+    }
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string&) override
+    {
+        using namespace render;
+        auto result = context.device->createBuffer({.size = 8 * 6 * 4 * 4, .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto buffer) { upload_ = std::move(buffer); });
+        if (!result) { return result; }
+        auto* bytes = static_cast<uint8_t*>(upload_->map());
+        if (!bytes) { return makeError(Error::Failure); }
+        for (uint32_t z = 0; z < 4; ++z) {
+            for (uint32_t y = 0; y < 6; ++y) {
+                for (uint32_t x = 0; x < 8; ++x) {
+                    const auto i = ((z * 6 + y) * 8 + x) * 4;
+                    bytes[i] = uint8_t(x * 25); bytes[i + 1] = uint8_t(y * 35);
+                    bytes[i + 2] = uint8_t(z * 70); bytes[i + 3] = 255;
+                }
+            }
+        }
+        upload_->flush(); upload_->unmap();
+        return {};
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        return upload_->slice().and_then([&](const auto& source) {
+            return context.commandBuffer().copyBufferToTexture({.texture = context.output("volume")->texture, .buffer = source,
+                .bufferRowPitch = 8 * 4, .bufferSlicePitch = 8 * 6 * 4, .width = 8, .height = 6, .depth = 4});
+        });
+    }
+private:
+    std::unique_ptr<render::Buffer> upload_;
+};
+
 class InspectorBufferPass final : public render::ComputePass {
 public:
+    std::span<const render::RenderSubsystemId> requiredSubsystems() const override
+    {
+        if (!layout_.empty()) { return {}; }
+        static constexpr std::array ids{InspectorResourceSubsystem::kSubsystemId,
+            render::EnvironmentLightingSubsystem::kSubsystemId, render::GPUSceneSubsystem::kSubsystemId};
+        return ids;
+    }
     explicit InspectorBufferPass(std::string layout = {}, uint32_t stride = 16)
         : layout_(std::move(layout)), stride_(stride) {}
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
@@ -159,11 +262,15 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
     } report{output / "report.json"};
     const auto expect = [&](bool condition, const char* message) {
         report.value["checks"].push_back({{"check", message}, {"passed", condition}});
+        spdlog::info("[Smoke Resource Inspector] {}: {}", condition ? "PASS" : "FAIL", message);
         if (!condition) { spdlog::error("[Smoke Resource Inspector] {}", message); }
         return condition;
     };
     render::registerRenderGraphPassType("InspectorBufferFixture", "Inspector smoke fixture", [] { return std::make_unique<InspectorBufferPass>(); });
+    std::string subsystemLog;
+    if (!expect(subsystemHost_.registerSubsystem<InspectorResourceSubsystem>(subsystemLog), "Register independent resource inspection subsystem")) { return false; }
     render::registerRenderGraphPassType("InspectorHDRFixture", "Inspector HDR fixture", [] { return std::make_unique<InspectorHDRPass>(); });
+    render::registerRenderGraphPassType("InspectorVolumeFixture", "Inspector volume fixture", [] { return std::make_unique<InspectorVolumePass>(); });
     render::registerRenderGraphPassType("InspectorBadStride", "Invalid schema fixture", [] { return std::make_unique<InspectorBufferPass>("float4", 4); });
     render::registerRenderGraphPassType("InspectorBadType", "Invalid schema fixture", [] { return std::make_unique<InspectorBufferPass>("UnregisteredType"); });
     for (const char* type : {"InspectorBadStride", "InspectorBadType"}) {
@@ -183,12 +290,14 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
     renderGraph_ = render::RenderGraph{};
     renderGraph_.addNode("ClearColorPass", "Clear", {{"color", {0.25f, 0.5f, 0.75f, 1.f}}});
     renderGraph_.addNode("InspectorBufferFixture", "Data");
+    renderGraph_.addNode("InspectorVolumeFixture", "Volume");
     renderGraph_.addNode("InspectorHDRFixture", "HDR", {{"color", {0.5f, 0.5f, 0.5f, 1.f}}});
     renderGraph_.addNode("AutoExposurePass", "AutoExposure", {{"adaptationDeltaSeconds", 0.1f}});
     renderGraph_.addEdge("HDR.color", "AutoExposure.source");
     renderGraph_.addEdge("AutoExposure.exposure", "Data.exposure");
     renderGraph_.markOutput("Clear.color");
     renderGraph_.markOutput("Data.values");
+    renderGraph_.markOutput("Volume.volume");
     setActivePreviewOutput("Clear.color");
     renderGraphEditorOpen_ = true;
     resourceInspectorVisible_ = true;
@@ -260,6 +369,120 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
     inspector.live_ = false;
     inspector.roi_ = {2, 3, 8, 4}; inspector.refresh_ = true;
     if (!frames(5) || !expect(inspector.capture_->artifacts[0].bytes.size() == 8 * 4 * 4, "ROI copies the requested pixel rectangle")) { return false; }
+    inspector.select("Volume.volume");
+    inspector.cube_ = false;
+    for (const int slice : {0, 2, 3}) {
+        inspector.slice_ = slice; inspector.refresh_ = true;
+        if (!frames(5) || !expect(inspector.capture_ != nullptr, "Volume slice capture ready")) { return false; }
+        const auto& volume = inspector.capture_->artifacts[0];
+        bool matches = volume.bytes.size() == 8 * 6 * 4 && volume.metadata.at("slice") == slice &&
+            !volume.metadata.at("completeCoverage").get<bool>();
+        for (size_t y = 0; matches && y < 6; ++y) {
+            for (size_t x = 0; x < 8; ++x) {
+                const size_t i = (y * 8 + x) * 4;
+                matches &= volume.bytes[i] == x * 25 && volume.bytes[i + 1] == y * 35 &&
+                    volume.bytes[i + 2] == slice * 70 && volume.bytes[i + 3] == 255;
+            }
+        }
+        if (!expect(matches, "Volume first/middle/last slice preserves XYZ voxel values and partial coverage") ||
+            !expect(readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *inspector.image_, preview) &&
+                preview == volume.bytes, "Volume slice reaches the actual GPU preview")) { return false; }
+    }
+    if (!expect(exportCapture("volume") && exportUI("volume-ui"), "Export volume slice and native UI evidence")) { return false; }
+    inspector.roi_ = {2, 3, 3, 2}; inspector.refresh_ = true;
+    if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].bytes.size() == 24 &&
+        inspector.capture_->artifacts[0].bytes[0] == 50 && inspector.capture_->artifacts[0].bytes[1] == 105 &&
+        inspector.capture_->artifacts[0].bytes[2] == 210, "Volume ROI retains the selected Z slice")) { return false; }
+    inspector.cube_ = true; inspector.roi_ = {0, 0, 0, 0}; inspector.capture_.reset(); inspector.refresh_ = true;
+    if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].bytes.size() == 8 * 6 * 4 * 4 &&
+        inspector.capture_->artifacts[0].metadata.at("completeCoverage") == true, "Cube captures the full volume")) { return false; }
+    if (!expect(readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *inspector.image_, preview), "Read back cube face atlas")) { return false; }
+    bool atlasMatches = preview.size() == 20 * 12 * 4;
+    for (uint32_t axis = 0; atlasMatches && axis < 3; ++axis) {
+        const uint32_t width = axis == 0 ? 4 : 8, height = axis == 1 ? 4 : 6;
+        const uint32_t left = axis == 0 ? 0 : 4 + (axis - 1) * 8;
+        for (uint32_t side = 0; side < 2; ++side) {
+            for (uint32_t v = 0; v < height; ++v) {
+                for (uint32_t u = 0; u < width; ++u) {
+                    const auto i = ((side * 6 + v) * 20 + left + u) * 4;
+                    atlasMatches &= preview[i] == (axis == 0 ? side * 7 : u) * 25 &&
+                        preview[i + 1] == (axis == 1 ? side * 5 : v) * 35 &&
+                        preview[i + 2] == (axis == 2 ? side * 3 : axis == 0 ? u : v) * 70 && preview[i + 3] == 255;
+                }
+            }
+        }
+    }
+    if (!expect(atlasMatches, "All six GPU cube faces match their XYZ boundary slices") ||
+        !expect(exportCapture("cube") && exportUI("cube-ui"), "Export cube and native UI evidence")) { return false; }
+    const auto cubeCapture = inspector.capture_;
+    inspector.cubeYaw_ += 3.14159265f; inspector.cubePitch_ = -0.45f;
+    if (!frames(2) || !expect(inspector.capture_ == cubeCapture && exportUI("cube-rotated-ui"),
+        "Rotate to opposite cube faces without recapturing")) { return false; }
+    auto& captureRuntime = debugRuntime_ ? *debugRuntime_ : inspector.runtime();
+    for (const int invalidCount : {0, 5}) {
+        const auto queued = captureRuntime.core().dispatch({{"method", "capture.batch"}, {"params", {
+            {"pass", "Volume"}, {"resources", debug::DebugValue::array({{{"id", "Volume.volume"}, {"sliceCount", invalidCount}}})}}}});
+        if (!expect(queued.at("status") == "ok", "Queue invalid volume depth for validation") || !frames(3)) { return false; }
+        const auto job = captureRuntime.core().dispatch({{"method", "jobs.get"}, {"params", {{"job", queued.at("result").at("job")}}}});
+        if (!expect(job.at("result").at("state") == "Failed" && job.at("result").at("error").at("code") == "OutOfRange",
+            "Empty or oversized volume depth rejected before GPU copy")) { return false; }
+    }
+    for (const int invalidSlice : {-1, 4}) {
+        const auto queued = captureRuntime.core().dispatch({{"method", "capture.batch"}, {"params", {
+            {"pass", "Volume"}, {"resources", debug::DebugValue::array({{{"id", "Volume.volume"}, {"slice", invalidSlice}}})}}}});
+        if (!expect(queued.at("status") == "ok", "Queue invalid volume slice for preflight validation") || !frames(3)) { return false; }
+        const auto job = captureRuntime.core().dispatch({{"method", "jobs.get"}, {"params", {{"job", queued.at("result").at("job")}}}});
+        if (!expect(job.at("result").at("state") == "Failed" &&
+            job.at("result").at("error").at("code") == (invalidSlice < 0 ? "InvalidArgument" : "OutOfRange"),
+            "Invalid volume slice rejected before GPU copy")) { return false; }
+    }
+    inspector.select("subsystem.test.inspector.values");
+    inspector.sourceFilter_ = 2;
+    if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].metadata.at("subsystem") == "test.inspector" &&
+        inspector.capture_->artifacts[0].metadata.at("checkpoint") == "AfterGraph", "Subsystem buffer is captured at the joined AfterGraph boundary")) { return false; }
+    auto subsystemValues = debug::decodeBuffer(inspector.capture_->artifacts[0].bytes, inspector.capture_->artifacts[0].layout);
+    if (!expect(subsystemValues && subsystemValues->size() == 4 && subsystemValues->at(0) == 100 &&
+        subsystemValues->at(3) == 103, "Subsystem typed GPU values match the independent allocation") ||
+        !expect(exportCapture("subsystem-buffer") && exportUI("subsystem-buffer-ui"), "Export grouped subsystem buffer evidence")) { return false; }
+    auto* fixture = subsystemHost_.get<InspectorResourceSubsystem>();
+    const auto subsystemCapture = inspector.capture_;
+    fixture->replace = true;
+    if (!frames(7) || !expect(inspector.capture_ && inspector.capture_ != subsystemCapture &&
+        inspector.capture_->artifacts[0].metadata.at("allocation") == 2, "Subsystem allocation replacement refreshes frozen evidence")) { return false; }
+    subsystemValues = debug::decodeBuffer(inspector.capture_->artifacts[0].bytes, inspector.capture_->artifacts[0].layout);
+    if (!expect(subsystemValues && subsystemValues->at(0) == 200, "Replacement buffer captures new contents")) { return false; }
+    fixture->visible = false;
+    if (!frames(4) || !expect(!inspector.capture_ && inspector.job_.empty(), "Disappearing subsystem resources discard old evidence")) { return false; }
+    fixture->visible = true;
+    if (!frames(6) || !expect(inspector.capture_ != nullptr, "Returning subsystem resources can be captured again")) { return false; }
+    inspector.select("subsystem.render.environment.radiance");
+    if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].metadata.at("subsystem") == "render.environment" &&
+        inspector.capture_->artifacts[0].layout.name == "RGBA32F" && inspector.descriptor_, "Real environment radiance supports texture inspection") ||
+        !expect(exportCapture("subsystem-environment") && exportUI("subsystem-environment-ui"), "Export environment texture and subsystem UI")) { return false; }
+    inspector.select("subsystem.render.environment.sphericalHarmonics");
+    if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "float4" &&
+        inspector.capture_->artifacts[0].bytes.size() == 9 * 16, "Real environment SH supports typed buffer inspection")) { return false; }
+    inspector.select("subsystem.render.environment.pdf");
+    if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "f32" && inspector.descriptor_,
+        "Environment PDF supports single-channel texture inspection")) { return false; }
+    inspector.select("subsystem.render.gpu-scene.instances");
+    if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].layout.name == "GPUSceneGPUInstanceRecord" &&
+        inspector.capture_->artifacts[0].bytes.size() == sizeof(render::GPUSceneGPUInstanceRecord),
+        "GPUScene publishes its typed empty-scene sentinel independently of raster passes")) { return false; }
+    const auto subsystemSnapshot = captureRuntime.core().latestSnapshot();
+    std::string transmittance;
+    if (subsystemSnapshot) {
+        for (auto it = subsystemSnapshot->values.at("resources").begin(); it != subsystemSnapshot->values.at("resources").end(); ++it) {
+            if (it.key().starts_with("subsystem.render.environment.atmosphere.") && it.key().ends_with(".transmittance")) { transmittance = it.key(); break; }
+        }
+    }
+    if (!expect(!transmittance.empty(), "Current physical atmosphere publishes its LUT resources")) { return false; }
+    inspector.select(transmittance);
+    if (!frames(6) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].bytes.size() == 256 * 64 * 8 &&
+        inspector.capture_->artifacts[0].metadata.at("environmentSource") == "PhysicalAtmosphere",
+        "Physical atmosphere transmittance LUT supports GPU readback") ||
+        !expect(exportCapture("subsystem-atmosphere") && exportUI("subsystem-atmosphere-ui"), "Export physical atmosphere LUT and grouped UI")) { return false; }
+    inspector.sourceFilter_ = 0;
     inspector.select("Data.values");
     if (!frames(5) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].metadata.at("id") == "Data.values", "Buffer snapshot ready")) { return false; }
     const auto& buffer = inspector.capture_->artifacts[0];
@@ -331,6 +554,36 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
     if (!frames(3) || !expect(!resourceInspectorAttached_ || debugRuntime_, "Closing the inspector detaches local capture")) { return false; }
     renderGraphEditorOpen_ = true; resourceInspectorSelectTab_ = true;
     if (!frames(5)) { return false; }
+    // Cover the external-command recording path as well as the editor's usual
+    // self-submitted, multi-queue graph path.
+    {
+        auto& runtime = debugRuntime_ ? *debugRuntime_ : inspector.runtime();
+        const auto queued = runtime.core().dispatch({{"method", "capture.batch"}, {"params", {
+            {"pass", "subsystem.test.inspector"}, {"checkpoint", "AfterGraph"},
+            {"resources", debug::DebugValue::array({{{"id", "subsystem.test.inspector.values"}, {"count", 4}}})}}}});
+        if (!expect(queued.at("status") == "ok", "Queue external-command subsystem capture") || !graphExecutor_->waitForSubmittedWork()) { return false; }
+        render::RenderFrameContext externalFrame;
+        render::QueueSubmissionTracker tracker;
+        auto pool = device_->createCommandPool(*graphicsQueue_);
+        if (!pool || !tracker.initialize(*device_, *graphicsQueue_) || !externalFrame.begin(10000)) { return false; }
+        auto commands = (*pool)->createCommandBuffer();
+        if (!commands || !(*commands)->begin(externalFrame.submissionContext()) || !graphExecutor_->execute(**commands) || !(*commands)->end()) { return false; }
+        render::CommandBuffer* raw = commands->get();
+        if (!tracker.submit({.commandBuffers = {&raw, 1}}, externalFrame) || !externalFrame.wait()) { return false; }
+        runtime.poll();
+        const auto capture = runtime.core().completedCapture(queued.at("result").at("job").get<std::string>());
+        if (!expect(capture && capture->artifacts.size() == 1 && capture->artifacts[0].bytes.size() == 16,
+            "External command recording captures subsystem resources after graph completion")) { return false; }
+        const auto values = debug::decodeBuffer(capture->artifacts[0].bytes, capture->artifacts[0].layout);
+        if (!expect(values && values->at(0) == 200, "External capture preserves the subsystem's current allocation")) { return false; }
+        const auto unsupported = runtime.core().dispatch({{"method", "capture.batch"}, {"params", {
+            {"pass", "subsystem.test.inspector"}, {"checkpoint", "AfterPass"},
+            {"resources", debug::DebugValue::array({{{"id", "subsystem.test.inspector.values"}}})}}}});
+        if (!expect(unsupported.at("status") == "error" && unsupported.at("error").at("code") == "Unsupported",
+            "Subsystem capture rejects unregistered checkpoints")) { return false; }
+        (void)(*pool)->reset();
+        (void)externalFrame.reset();
+    }
     report.value["inspector"] = debug::encodeLossless(inspector.diagnostics());
     if (debugRuntime_) {
         const auto events = debugRuntime_->core().events("validation");

@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/Core/RenderView.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,10 +13,12 @@ namespace {
 
 class FinalBlitTestSource final : public render::RasterPass {
 public:
-    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").texture2D(17, 9).format =
+        const bool useViewExtent = properties().value("useViewExtent", false);
+        reflection.addTextureOutput("color").texture2D(
+            useViewExtent ? context.width : 17, useViewExtent ? context.height : 9).format =
             properties().value("integer", false) ? render::Format::R32Uint : render::Format::RGBA16Sfloat;
         return reflection;
     }
@@ -87,6 +90,47 @@ public:
             return RHITestResult::fail("Automatic presentation lacks display/readback access");
         }
         graph.markOutput("Source.color");
+        render::RenderView view;
+        executor.bindRenderView(&view);
+        for (const auto& extent : std::array<std::array<uint32_t, 2>, 4>{{
+                {1920, 1080}, {2560, 1440}, {3840, 2160}, {853, 479}}}) {
+            view.setRenderResolution(extent[0], extent[1]);
+            if (executor.compiled()) { return RHITestResult::fail("Resolution change must require compilation"); }
+            for (const auto& presentation : std::array<std::array<uint32_t, 2>, 2>{{{63, 37}, {91, 53}}}) {
+                if (!executor.compile(*device, graph, presentation[0], presentation[1], log)) {
+                    return RHITestResult::fail(log);
+                }
+                const auto& source = executor.outputResource("Source.color")->desc;
+                const auto& final = executor.outputResource("FinalBlit.color")->desc;
+                if (source.width != extent[0] || source.height != extent[1] ||
+                    final.width != presentation[0] || final.height != presentation[1] ||
+                    !executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
+                    !executor.waitForSubmittedWork()) {
+                    return RHITestResult::fail("Fixed render extent / actual FinalBlit extent or dispatch failed");
+                }
+            }
+        }
+        view.setAdaptiveResolution(true);
+        if (executor.compiled()) { return RHITestResult::fail("Switching to adaptive size requires compilation"); }
+        for (const auto& extent : std::array<std::array<uint32_t, 2>, 2>{{{317, 193}, {521, 299}}}) {
+            if (!executor.compile(*device, graph, extent[0], extent[1], log)) {
+                return RHITestResult::fail(log);
+            }
+            const auto& source = executor.outputResource("Source.color")->desc;
+            const auto& final = executor.outputResource("FinalBlit.color")->desc;
+            if (source.width != extent[0] || source.height != extent[1] ||
+                final.width != extent[0] || final.height != extent[1] ||
+                !executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
+                !executor.waitForSubmittedWork()) {
+                return RHITestResult::fail("Adaptive render and FinalBlit must follow the actual viewport");
+            }
+        }
+        view.setRenderResolution(1920, 1080);
+        if (!executor.compile(*device, graph, 521, 299, log) ||
+            executor.outputResource("Source.color")->desc.width != 1920 ||
+            executor.outputResource("FinalBlit.color")->desc.width != 521) {
+            return RHITestResult::fail("Switching back to fixed resolution must restore independent extents");
+        }
         if (graph.firstOutputName() != "FinalBlit.color") {
             return RHITestResult::fail("Legacy marked output overrides presentation");
         }
@@ -126,12 +170,14 @@ public:
         if (!result) { return RHITestResult::fail(std::string("Preview initialization: ") + toString(result)); }
         for (uint32_t frame = 0; frame < 12; ++frame) {
             preview.setRecordingWorkerLimit(frame < 6 ? 1 : 4);
-            result = preview.render(sample.graph, 640, 360, "FinalBlit.color");
+            const uint32_t width = frame >= 6 && frame < 10 ? 853 : 640;
+            const uint32_t height = frame >= 6 && frame < 10 ? 479 : 360;
+            result = preview.render(sample.graph, width, height, "FinalBlit.color");
             if (!result) {
                 return RHITestResult::fail("MiniZorah frame " + std::to_string(frame) + ": " + toString(result) + ": " + preview.lastLog());
             }
             const auto& pixels = preview.pixels();
-            if (pixels.size() != 640 * 360 || std::all_of(pixels.begin(), pixels.end(),
+            if (pixels.size() != static_cast<size_t>(width) * height || std::all_of(pixels.begin(), pixels.end(),
                     [&](uint32_t pixel) { return pixel == pixels.front(); })) {
                 return RHITestResult::fail("MiniZorah final display is empty or uniform");
             }
@@ -140,7 +186,7 @@ public:
                 reinterpret_cast<const uint8_t*>(preview.pixels().data()), 640, 360, log)) {
             return RHITestResult::fail(log);
         }
-        return RHITestResult::pass("12 MiniZorah final-display frames with 1/4 recording workers; sampled-image inline parameters");
+        return RHITestResult::pass("12 MiniZorah frames at fixed 1080P with presentation resize and 1/4 recording workers");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MiniZorahFinalBlitTest);
@@ -191,6 +237,21 @@ public:
             return RHITestResult::fail("Connected FinalBlit viewport resize failed: " + preview.lastLog());
         }
         const uint32_t sourceId = graph.findNode("Source")->id;
+        render::RenderView view;
+        view.setRenderResolution(53, 31);
+        preview.bindRenderView(&view);
+        graph.setNodeProperties(sourceId, {{"useViewExtent", true}});
+        for (const auto& presentation : std::array<std::array<uint32_t, 2>, 3>{{{29, 19}, {97, 61}, {1, 1}}}) {
+            result = preview.render(graph, presentation[0], presentation[1]);
+            if (!result || preview.width() != presentation[0] || preview.height() != presentation[1] || !isSolid(preview)) {
+                return RHITestResult::fail("Fixed-resolution FinalBlit down/up/single-pixel scaling failed: " + preview.lastLog());
+            }
+        }
+        // Changing a bound view alone must invalidate preview compilation.
+        view.setRenderResolution(71, 43);
+        result = preview.render(graph, 1, 1);
+        if (!result || !isSolid(preview)) { return RHITestResult::fail("Live resolution change failed"); }
+        preview.bindRenderView(nullptr);
         graph.setNodeProperties(sourceId, {{"integer", true}});
         result = preview.render(graph, 29, 19);
         if (!result || !isUv(preview)) {
@@ -206,6 +267,37 @@ public:
         if (!result || !isUv(preview)) {
             return RHITestResult::fail("Single-pixel UV fallback failed: " + preview.lastLog());
         }
+        graph.addNode("TriangleRasterPass", "Triangle");
+        graph.addEdge("Triangle.color", "FinalBlit.source");
+        view.setRenderResolution(1920, 1080);
+        preview.bindRenderView(&view);
+        result = preview.render(graph, 640, 360);
+        if (!result || std::all_of(preview.pixels().begin(), preview.pixels().end(),
+                [&](uint32_t pixel) { return pixel == preview.pixels().front(); })) {
+            return RHITestResult::fail("Fixed 1080P raster presentation is empty or uniform");
+        }
+        const auto reference = preview.pixels();
+        if (!preview.render(graph, 317, 193) || !preview.render(graph, 640, 360) ||
+            preview.pixels() != reference) {
+            return RHITestResult::fail("Presentation resize round trip changed the fixed-resolution raster image");
+        }
+        if (!saveRgba8Png(context.outputDirectory / "final_blit_fixed_1080p.png",
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), 640, 360, log)) {
+            return RHITestResult::fail(log);
+        }
+        view.setAdaptiveResolution(true);
+        if (!preview.render(graph, 640, 360)) { return RHITestResult::fail(preview.lastLog()); }
+        const auto adaptiveReference = preview.pixels();
+        if (adaptiveReference.size() != 640 * 360 ||
+            !preview.render(graph, 317, 193) || !preview.render(graph, 640, 360) ||
+            preview.pixels() != adaptiveReference) {
+            return RHITestResult::fail("Adaptive viewport resize round trip changed the raster image");
+        }
+        if (!saveRgba8Png(context.outputDirectory / "final_blit_adaptive.png",
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), 640, 360, log)) {
+            return RHITestResult::fail(log);
+        }
+        preview.bindRenderView(nullptr);
         return RHITestResult::pass();
     }
 

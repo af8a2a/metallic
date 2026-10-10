@@ -1,5 +1,20 @@
 include(GoogleTest)
 
+foreach(slang_case IN ITEMS existing custom disabled unsupported)
+    add_test(NAME MetallicSlangBootstrap.${slang_case} COMMAND ${CMAKE_COMMAND}
+        "-DCASE=${slang_case}" "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+        "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/slang-bootstrap"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SlangBootstrapTests.cmake")
+    set_tests_properties(MetallicSlangBootstrap.${slang_case} PROPERTIES LABELS "build" TIMEOUT 30)
+endforeach()
+if(WIN32)
+    add_test(NAME MetallicSlangBootstrap.partial COMMAND ${CMAKE_COMMAND}
+        -DCASE=partial "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
+        "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/slang-bootstrap"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SlangBootstrapTests.cmake")
+    set_tests_properties(MetallicSlangBootstrap.partial PROPERTIES LABELS "build" TIMEOUT 30)
+endif()
+
 add_test(NAME MetallicWorkingColorAudit COMMAND ${CMAKE_COMMAND}
     "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}" -P "${CMAKE_SOURCE_DIR}/Tools/CheckWorkingColor.cmake")
 set_tests_properties(MetallicWorkingColorAudit PROPERTIES LABELS "shader;color")

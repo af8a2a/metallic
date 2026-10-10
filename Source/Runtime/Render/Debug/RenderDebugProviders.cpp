@@ -184,6 +184,15 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
             context.properties().value("debugStreamingPages", true))})}};
         values["streaming"]["instances"][0]["pass"] = context.passName();
     }
+    for (auto& binding : bindings) {
+        if (binding.id.starts_with("gpuScene.")) {
+            binding.metadata["subsystem"] = std::string(GPUSceneSubsystem::kSubsystemId);
+            binding.metadata["resourceName"] = binding.id.substr(9);
+        } else if (binding.id.starts_with("streaming.")) {
+            binding.metadata["subsystem"] = "render.streamer";
+            binding.metadata["resourceName"] = binding.id.substr(10);
+        }
+    }
     context.debugCheckpoint(checkpoint, bindings, values);
 }
 

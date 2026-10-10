@@ -1,8 +1,4 @@
-set(METALLIC_SLANG_ROOT "${CMAKE_SOURCE_DIR}/External/slang")
 include(${CMAKE_SOURCE_DIR}/cmake/SetupGDeflate.cmake)
-if(DEFINED SLANG_ROOT)
-    set(METALLIC_SLANG_ROOT "${SLANG_ROOT}")
-endif()
 find_package(slang 2026.18.2 EXACT CONFIG REQUIRED PATHS "${METALLIC_SLANG_ROOT}" NO_DEFAULT_PATH)
 include("${CMAKE_SOURCE_DIR}/cmake/ShaderWarmup.cmake")
 

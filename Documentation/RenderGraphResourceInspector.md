@@ -5,6 +5,53 @@ Open **Render Graph Editor > Resources**, or right-click an output pin and choos
 passes, plus resources published by their registered debug checkpoints. Filter by
 resource or pass name. Input bindings are identified by the consuming pass name.
 
+The source selector offers **All resources**, **Render graph**, and **Subsystems**.
+Resources are grouped by owner, then Texture/Buffer; filtering also matches the
+subsystem name. Subsystem resources use the same texture (including Texture3D
+cube/slice) and typed-buffer viewers, Refresh/Live controls, and capture budget.
+The detail panel shows their owner, capture checkpoint and validity notes.
+
+Built-in subsystem publications include:
+
+- `render.gpu-scene`: global instance, geometry, material, vertex/index, meshlet,
+  draw and LOD tables. Known layouts are typed; other tables support manual raw
+  interpretation. Per-view culling resources retain their producer checkpoints.
+- `render.environment`: HDRI radiance/PDF, SH coefficients, prefiltered specular
+  and celestial records; physical-atmosphere publications used in this execution additionally
+  expose transmittance, multi-scattering, sky view, cloud shadow and aerial data.
+  Atmosphere publication revisions distinguish observer/parameter variants.
+- `render.streamer`: debug-enabled meshlet sessions, with request headers/lists,
+  page tables, active groups and LOD/demand state. Sparse visible-cluster records
+  require the original producer checkpoint and its visibility evidence.
+  Only sessions recorded in this execution are exposed, not sessions retained
+  by another view or executor.
+
+Only resources published by subsystems required by the current execution (and
+their dependencies) are listed. Uninitialized or non-readable resources explain
+why capture is unavailable. Disappearing resources clear old evidence; changing
+an allocation automatically replaces even a frozen capture. Freezing otherwise
+keeps the completed snapshot while the resource contents continue changing.
+
+## Publishing subsystem resources
+
+Override `IRenderSubsystem::appendDebugBindings(context, bindings)`. Supply local
+resource names, Buffer/Texture pointers, exact current states, buffer ranges,
+registered layouts (or `raw`) and allocation versions. Buffers/textures must have
+transfer-source usage to be readable. The host prefixes names with
+`subsystem.<subsystem-id>.` and supplies owner metadata. Borrowed GPU pointers stay
+within the callback; the inspector receives immutable capture metadata/bytes.
+
+The callback runs only with a debug observer, after successful graph execution
+and all post-graph hooks, before `endFrame`. Both externally recorded and
+self-submitted execution use this boundary; the latter joins every graph queue
+first. Existing state-restoring readback and submission tracking apply.
+Normal execution does not enumerate or copy debug resources.
+
+`rg.describe` lists these owners separately under `subsystems`, without adding
+synthetic graph passes. `capture.batch` routes via
+`pass: "subsystem.<subsystem-id>"`, `checkpoint: "AfterGraph"`; each resource uses
+its fully qualified ID. Unknown/inactive subsystem checkpoints are rejected.
+
 Select a resource to capture it on the next execution. **Refresh** captures once;
 **Live** refreshes at most twice per second, with one pending request. Disabling
 Live freezes the last completed snapshot. The displayed execution and generation
@@ -14,6 +61,12 @@ identify the data being shown; graph recompilation discards stale snapshots.
   scroll, ROI, and exact raw pixel fields/bytes on hover. Display values are
   mapped as `(value * exp2(exposure) - min) / (max - min)` and clamped; non-finite
   results are magenta. This is a diagnostic display, without scene tonemapping.
+  Texture3D resources default to **Cube**: drag to rotate a cube whose visible
+  faces show the corresponding X/Y/Z boundary slices of the captured ROI.
+  Face labels identify the axes; hover reports original voxel coordinates and
+  raw values. Rotation and zoom reuse the frozen capture. **Reset view** restores
+  the initial orientation. **Z slice** switches to a single XY plane with a slice
+  selector. Both modes support channel/exposure/range controls.
 - Buffers: first element/count, virtualized rows, hexadecimal values, and
   uint32/int32/float32 interpretation of raw 32-bit words. Producer-declared
   layouts open as named, typed columns. Arrays/vectors expand into component
@@ -84,12 +137,19 @@ schema or identify a RenderGraph field. A future automatic path needs:
 The explicit schema path supplies useful type viewing now and can also consume
 validated reflection-generated schemas later.
 
-The texture path currently captures mip 0 and layer 0 of uncompressed 2D images:
+The texture path captures mip 0 and layer 0 of uncompressed 2D images, or
+contiguous Z slices of mip 0 of uncompressed 3D images:
 RGBA/BGRA8 UNORM/sRGB, R/RG/RGBA16F, R/RG/RGBA32F, R/RG/RGBA32 uint/sint, and D32F.
-sRGB images expose their stored UNORM values. Compressed/packed formats and 3D
-images show an explicit unsupported reason. Oversized captures require a smaller
-ROI; the default runtime budget is 16 MiB including evidence metadata. Raw buffer
+sRGB images expose their stored UNORM values. Compressed/packed formats
+show an explicit unsupported reason. Cube mode reads the volume within the XY
+ROI; single-slice mode reads only one plane. Oversized captures require a smaller
+ROI or switching to Z slice; the default runtime budget is 16 MiB including evidence metadata. Raw buffer
 ranges are measured in 32-bit words, with at most 65,536 requested elements.
+For `capture.batch`, each texture resource accepts an optional zero-based `slice`
+(default 0) and `sliceCount` (default 1), alongside the existing XY `roi`. Captures
+record both in metadata; partial-volume captures have `completeCoverage: false`.
+The native bytes are tightly packed in X, then Y, then Z order. Out-of-range
+slices are rejected before recording a GPU copy.
 
 Inspection uses the existing RenderDebugRuntime pass-boundary copies and restores
 source resource synchronization state. CPU access waits for GPU completion through
@@ -115,6 +175,18 @@ Remove-Item Env:METALLIC_SMOKE_TEST_HIDDEN
 This uses the real editor and GPU. It verifies known texture/buffer values, preview
 GPU upload and display conversion, channel/exposure controls, live/frozen snapshots,
 ROI/ranges, invalid ranges, recompile, and close/reopen. Exit code 0 indicates success.
+It also checks the first, middle and last slices of a known 3D texture, volume ROI,
+invalid slice indices, GPU preview pixels, and exports `volume/` and `volume-ui.ppm`.
+Cube checks compare all six uploaded face images with known XYZ values and export
+`cube/`, `cube-ui.ppm` and `cube-rotated-ui.ppm`, including opposite-face rotation
+without recapturing the volume.
+Subsystem checks exercise an independently owned typed buffer, replacement and
+disappearance/reappearance, real environment radiance/PDF/SH and GPUScene sentinel
+readback, a real physical-atmosphere transmittance LUT, external command recording,
+and invalid checkpoint rejection.
+Evidence includes `subsystem-buffer/`, `subsystem-environment/` and their `-ui.ppm`
+images showing the native grouped Resources panel. `subsystem-atmosphere/` and
+`subsystem-atmosphere-ui.ppm` contain the physical-atmosphere LUT evidence.
 It also runs the real AutoExposure histogram/reduce/apply shaders on a known HDR
 input, verifies typed float fields and histogram weights, tests schema inheritance
 through a graph input, checks manual uint4 element offsets, and rejects invalid

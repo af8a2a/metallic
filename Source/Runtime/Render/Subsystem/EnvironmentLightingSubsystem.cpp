@@ -2,6 +2,7 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -255,6 +256,7 @@ struct EnvironmentLightingSubsystem::PhysicalPublication {
     std::unique_ptr<Buffer> partials;
     uint64_t revision = 0;
     bool cancelled = false;
+    uint64_t lastUsedFrame = 0;
 };
 
 EnvironmentLightingSubsystem::EnvironmentLightingSubsystem() = default;
@@ -417,6 +419,7 @@ Result<> EnvironmentLightingSubsystem::beginFrame(
     RenderChangeBits& changes,
     std::string& log)
 {
+    ++frameSerial_;
     if (world_ != nullptr) {
         requestEnvironment(world_->environment(), world_->environmentRevision());
     }
@@ -569,7 +572,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
 
     Result<> result = device_->createTexture(TextureDesc{
             .type = TextureType::Texture2D,
-            .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
+            .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
             .format = Format::RGBA32Sfloat,
             .width = next->width,
             .height = next->height,
@@ -595,14 +598,14 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     constexpr uint64_t kSphericalHarmonicsBytes =
         kEnvironmentSHCoefficientCount * sizeof(std::array<float, 4>);
     result = device_->createBuffer({.size = kEnvironmentSpecularBytes,
-        .structureStride = sizeof(std::array<float, 4>), .usage = BufferUsageBits::Storage,
+        .structureStride = sizeof(std::array<float, 4>), .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
         .memoryLocation = MemoryLocation::Device,
         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { next->prefilteredSpecularBuffer = std::move(rhiValue); });
     if (!result) { log = "Environment specular prefilter allocation failed"; return result; }
     result = device_->createBuffer(BufferDesc{
             .size = kSphericalHarmonicsBytes,
             .structureStride = sizeof(std::array<float, 4>),
-            .usage = BufferUsageBits::Storage,
+            .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
         }).transform([&](auto rhiValue) { next->sphericalHarmonicsBuffer = std::move(rhiValue); });
@@ -788,7 +791,7 @@ Result<CelestialLightingResources> EnvironmentLightingSubsystem::updateCelestial
         celestialPublications_.push_back(std::move(publication));
     } else {
         std::unique_ptr<Buffer> next;
-        auto result = device.createBuffer({.size = sizeof(records), .usage = BufferUsageBits::Storage,
+        auto result = device.createBuffer({.size = sizeof(records), .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::HostUpload})
             .transform([&](auto buffer) { next = std::move(buffer); });
         if (!result) { return makeError(result.error()); }
@@ -935,7 +938,47 @@ Result<EnvironmentLightingSnapshot> EnvironmentLightingSubsystem::resolveRadianc
     resolved.resourceRevision = publication->revision;
     resolved.mapAvailable = true;
     resolved.retainedResources = publication;
+    publication->lastUsedFrame = frameSerial_;
     return resolved;
+}
+
+void EnvironmentLightingSubsystem::appendDebugBindings(const RenderSubsystemFrameContext&, std::vector<DebugResourceBinding>& bindings)
+{
+    const auto addBuffer = [&](const std::string& name, Buffer* buffer, uint64_t revision, const char* layout = "float4") {
+        if (buffer) {
+            bindings.push_back({.id = name, .buffer = buffer, .state = ResourceState::ShaderRead,
+                .layout = layout, .allocation = revision});
+        }
+    };
+    if (resources_) {
+        const size_t begin = bindings.size();
+        bindings.push_back({.id = "radiance", .texture = resources_->radiance.get(), .state = ResourceState::ShaderRead});
+        resources_->pdf.appendDebugBindings(bindings, "pdf");
+        addBuffer("sphericalHarmonics", resources_->sphericalHarmonicsBuffer.get(), resourceRevision_);
+        addBuffer("prefilteredSpecular", resources_->prefilteredSpecularBuffer.get(), resourceRevision_);
+        for (size_t i = begin; i < bindings.size(); ++i) {
+            bindings[i].allocation = resourceRevision_;
+            bindings[i].metadata["environmentSource"] = "HDRI";
+            bindings[i].metadata["placeholder"] = !resources_->mapAvailable;
+        }
+    }
+    addBuffer("celestialLights", celestialLightsBuffer_.get(), celestialResourceRevision_, "raw");
+    std::scoped_lock lock(physicalMutex_);
+    for (const auto& publication : physicalPublications_) {
+        if (publication->cancelled || publication->lastUsedFrame != frameSerial_) { continue; }
+        const auto prefix = "atmosphere." + std::to_string(publication->revision) + ".";
+        const size_t begin = bindings.size();
+        publication->atmosphere.appendDebugBindings(bindings, prefix);
+        publication->pdf.appendDebugBindings(bindings, prefix + "pdf");
+        addBuffer(prefix + "sphericalHarmonics", publication->sphericalHarmonicsBuffer.get(), publication->revision);
+        addBuffer(prefix + "prefilteredSpecular", publication->prefilteredSpecularBuffer.get(), publication->revision);
+        for (size_t i = begin; i < bindings.size(); ++i) {
+            bindings[i].allocation = publication->revision;
+            bindings[i].metadata["environmentSource"] = "PhysicalAtmosphere";
+            bindings[i].metadata["displayName"] = bindings[i].id.substr(prefix.size()) + " (atmosphere " + std::to_string(publication->revision) + ")";
+            bindings[i].metadata["validity"] = "Immutable cached publication; revision identifies its atmosphere and observer parameters";
+        }
+    }
 }
 
 void EnvironmentLightingSubsystem::refreshSnapshot()

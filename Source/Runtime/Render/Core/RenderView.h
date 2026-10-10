@@ -52,6 +52,24 @@ void applyViewCamera(const ViewCameraConstants& view, T& target)
 
 class RenderView {
 public:
+    // Stored fixed extent, retained while adaptive resolution follows presentation.
+    static constexpr uint32_t kMaxRenderDimension = 8192;
+    uint32_t renderWidth() const { return renderWidth_; }
+    uint32_t renderHeight() const { return renderHeight_; }
+    // Resolve adaptive dimensions against the actual viewport pixel extent.
+    uint32_t renderWidth(uint32_t presentationWidth) const
+    {
+        return adaptiveResolution_ ? (presentationWidth != 0 ? presentationWidth : 1u) : renderWidth_;
+    }
+    uint32_t renderHeight(uint32_t presentationHeight) const
+    {
+        return adaptiveResolution_ ? (presentationHeight != 0 ? presentationHeight : 1u) : renderHeight_;
+    }
+    bool adaptiveResolution() const { return adaptiveResolution_; }
+    void setAdaptiveResolution(bool enabled);
+    bool setRenderResolution(uint32_t width, uint32_t height);
+    bool setRenderResolutionProperties(const nlohmann::json& properties);
+    nlohmann::json renderResolutionProperties() const;
     const ViewCamera& camera() const { return camera_; }
     bool setCamera(const ViewCamera& camera);
     bool setCameraProperties(const nlohmann::json& properties);
@@ -68,6 +86,9 @@ public:
         uint32_t outputWidth, uint32_t outputHeight, const ViewConstants* previous = nullptr) const;
 
 private:
+    uint32_t renderWidth_ = 1920;
+    uint32_t renderHeight_ = 1080;
+    bool adaptiveResolution_ = false;
     ViewCamera camera_;
     bool temporalJitter_ = false;
     bool temporalJitterSuppressed_ = false;

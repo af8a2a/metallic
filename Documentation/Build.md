@@ -2,8 +2,28 @@
 
 The normal CMake entry point keeps the existing feature defaults and source
 dependencies. The presets require CMake 3.27+, Ninja, and (on Windows) an x64
-Visual Studio Developer PowerShell/Command Prompt. Install Slang in
-`External/slang`, or pass `-DSLANG_ROOT=<path>` when configuring the application.
+Visual Studio Developer PowerShell/Command Prompt. During configuration, CMake
+automatically installs the missing Slang 2026.18.2 SDK into `External/slang` on
+native Windows x64 using PowerShell and the version- and SHA256-checked installer.
+The archive is cached in `.cache/slang` and reused by subsequent installations.
+Existing installations are not overwritten; `-DSLANG_ROOT=<path>` selects a
+user-managed Slang 2026.18.2 SDK and bypasses automatic installation.
+
+CMake also initializes missing required Git submodules (including OpenPBR LUTs,
+ImGui, SDL3 and the enabled source dependencies) at the repository's locked
+commits. Existing checkouts are preserved. Git and network access are required
+for the first download. Optional SDKs retain their own setup policies; licensed
+RTXCR reference assets are not downloaded by this bootstrap.
+
+For pre-provisioned/offline builds, set `METALLIC_SLANG_AUTO_DOWNLOAD=OFF` and
+`METALLIC_SUBMODULE_AUTO_DOWNLOAD=OFF`. Streamline has a separate
+`METALLIC_STREAMLINE_AUTO_DOWNLOAD` option. Missing required dependencies then
+produce an installation hint. Manual setup remains available:
+
+```powershell
+.\scripts\InstallSlang.ps1
+git submodule update --init --recursive -- External/openpbr-bsdf
+```
 
 The Vulkan backend requires `VK_KHR_device_address_commands` with
 `deviceAddressCommands` and `bufferDeviceAddress` enabled, independently of

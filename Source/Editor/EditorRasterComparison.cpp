@@ -287,8 +287,10 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             checkRaster(!viewportView_.temporalJitter(), "Raster comparison jitter was re-enabled");
             auto frame = profiler_.beginFrame();
             checkRaster(waitForFrameSlotBeforeInput(),"Frame slot wait failed");
+            vulkan::StreamlineFrameBeginProfile frameBegin;
             const vulkan::StreamlineFrameScope streamlineFrame(
-                (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1);
+                (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED)==0 && ImGui::GetPlatformIO().Viewports.Size<=1, &frameBegin);
+            if (frameBegin.sleepCalled) { profiler_.addIdleSample("Reflex Frame Pacing", frameBegin.sleepMs); }
             { auto scope = profiler_.scope("Poll Events"); pollEvents(); }
             checkRaster(running_ && !SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE],"Raster comparison cancelled");
             auto scope = profiler_.scope("Render Frame");

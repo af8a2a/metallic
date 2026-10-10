@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Environment/AtmosphereResources.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
@@ -196,7 +197,7 @@ Result<> AtmosphereResourcesGPU::initialize(Device& device, std::string& log, co
         .transform([&](auto value) { impl_->aerial = std::move(value); });
     if (!result) { return result; }
     return device.createBuffer(BufferDesc{.size = sizeof(GPUAtmosphereParameters), .structureStride = 16,
-        .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload,
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource, .memoryLocation = MemoryLocation::HostUpload,
         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute})
         .transform([&](auto value) { impl_->parameterBuffer = std::move(value); });
 }
@@ -277,6 +278,21 @@ Result<> AtmosphereResourcesGPU::record(CommandBuffer& commands, const environme
     if (auto result = commands.synchronize(BarrierDesc{.buffers = {&barrier, 1}}); !result) { return result; }
     impl_->recorded = true;
     return {};
+}
+
+void AtmosphereResourcesGPU::appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const
+{
+    if (!impl_->recorded) { return; }
+    const auto add = [&](const char* name, Texture* texture) {
+        bindings.push_back({.id = prefix + name, .texture = texture, .state = ResourceState::ShaderRead});
+    };
+    add("radiance", impl_->radiance.texture.get());
+    add("transmittance", impl_->transmittance->texture.get());
+    add("multiScattering", impl_->multiScattering->texture.get());
+    add("skyView", impl_->skyView.texture.get());
+    add("cloudShadow", impl_->cloudShadow.texture.get());
+    bindings.push_back({.id = prefix + "aerialPerspective", .buffer = impl_->aerial.get(), .state = ResourceState::ShaderRead, .layout = "float4"});
+    bindings.push_back({.id = prefix + "parameters", .buffer = impl_->parameterBuffer.get(), .state = ResourceState::ShaderRead, .layout = "raw"});
 }
 
 TextureView* AtmosphereResourcesGPU::radianceView() const { return impl_->radiance.view.get(); }

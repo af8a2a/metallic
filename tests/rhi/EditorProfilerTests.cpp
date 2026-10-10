@@ -91,6 +91,51 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerHistoryTest);
 
+class EditorProfilerIdleTest final : public RHITest {
+public:
+    EditorProfilerIdleTest() { type = RHITestType::Command; name = "editor_profiler_idle"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        try {
+            EditorProfiler profiler;
+            profiler.addIdleSample("Outside Frame", 10);
+            profiler.beginCapture();
+            {
+                auto frame = profiler.beginFrame();
+                profiler.addIdleSample("Reflex Frame Pacing", 8);
+                {
+                    auto render = profiler.scope("Render Frame");
+                    auto idle = profiler.idleScope("Wait Slot Completion");
+                }
+                profiler.addIdleSample("Invalid", -1);
+                profiler.addIdleSample("Invalid", std::numeric_limits<double>::quiet_NaN());
+            }
+            profiler.endCapture();
+            const auto& raw = profiler.history().back();
+            checkProfile(raw.nodes.size() == 4, "Idle samples escaped their frame or accepted invalid durations");
+            checkProfile(!raw.nodes[0].cpuIdle && !raw.nodes[2].cpuIdle && raw.nodes[3].parent == 2,
+                "Idle classification contaminated parent work or lost nesting");
+            for (const size_t index : {size_t(1), size_t(3)}) {
+                const auto& node = raw.nodes[index];
+                checkProfile(node.cpuOnly && node.cpuIdle && !node.gpuTimingAvailable && node.name.starts_with("Idle / "),
+                    "Idle scope is not explicitly identified as a CPU wait");
+                checkProfile(profiler.capturedFrames().front().nodes[index].cpuIdle,
+                    "Capture lost idle classification");
+            }
+            const size_t idleId = raw.nodes[1].scopeId;
+            checkProfile(profiler.historyStatistics(idleId).cpu.average == 8 &&
+                profiler.historyStatistics(idleId).gpu.count == 0, "Idle duration contaminated GPU statistics");
+            { auto frame = profiler.beginFrame(); }
+            const auto presentation = profiler.presentationFrame();
+            checkProfile(presentation.nodes[idleId].cpuIdle && std::isnan(presentation.nodes[idleId].cpuMilliseconds),
+                "Absent idle scope lost classification or injected a zero sample");
+            checkProfile(profiler.historyStatistics(idleId).cpu.count == 1, "Absent wait entered idle averages");
+            return RHITestResult::pass("CPU idle scopes retain hierarchy, capture metadata and intermittent history");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerIdleTest);
+
 EditorProfiler::Aggregate bruteProfilerAggregate(const EditorProfiler& profiler, size_t scopeId, bool gpu)
 {
     EditorProfiler::Aggregate result;
