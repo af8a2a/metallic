@@ -167,8 +167,16 @@ public:
                 const ShaderRequestView view(request);
                 PROGRAM_REQUIRE(compileSlangShaderToSpirv(view.desc(), log).transform([](auto) {}));
             }
+            for (const auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                for (const char* name : {"SHARC_UPDATE", "SHARC_QUERY"}) {
+                    const SlangMacroDefine define{name, "1"};
+                    const auto request = makeSceneShaderRequest(program, options, {&define, 1});
+                    const ShaderRequestView view(request);
+                    PROGRAM_REQUIRE(compileSlangShaderToSpirv(view.desc(), log).transform([](auto) {}));
+                }
+            }
         }
-        return RHITestResult::pass("Standard/OpenPBR guide entry points compile with hardware and fallback position fetch; compile-only");
+        return RHITestResult::pass("Standard/OpenPBR guides and OpenPBR SHaRC update/query compile with both position-fetch variants; compile-only");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialProgramGuideCompileTest);

@@ -351,6 +351,8 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
         for (const char* name : {"SHARC_UPDATE", "SHARC_QUERY"}) {
             const SlangMacroDefine define{name, "1"};
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1})));
+            EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, {&define, 1})));
+            EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, {&define, 1})));
         }
     }
     for (bool streamed : {false, true}) {

@@ -534,6 +534,7 @@ public:
                     {"Off", "off"},
                     {"SHaRC (RTXGI)", "sharc"},
                 },
+                true,
                 true),
             runtimeIntSetting(
                 "sharc.entriesLog2",
@@ -543,6 +544,9 @@ public:
                 static_cast<int32_t>(kSharcMaxEntriesLog2),
                 true),
             runtimeFloatSetting("sharc.sceneScale", "SHaRC Scene Scale", 0.0f, 0.0f, 1000.0f, true),
+            runtimeIntSetting("sharc.updateMaxDepth", "SHaRC Update Depth", 12, 1, 32, true),
+            runtimeIntSetting("sharc.queryMinDepth", "SHaRC First Query Depth", 1, 1, 32, false),
+            runtimeFloatSetting("sharc.minRoughness", "SHaRC Minimum Roughness", 0.5f, 0.0f, 1.0f, true),
             runtimeIntSetting(
                 "sharc.maxAccumulatedFrames",
                 "SHaRC Max Accumulated Frames",
@@ -575,6 +579,11 @@ public:
     }
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
+        uint32_t requestedCache = realtime_ ? kScenePathTraceCacheModeOff : cacheModeFromProperties(properties());
+        if (exportDenoiserGuides(properties()) && !useOpenPBRBsdf(properties())) {
+            requestedCache = kScenePathTraceCacheModeOff;
+        }
+        if (requestedCache != cacheMode_) { return compile(context, log); }
         // Resource-only graph rebuilds reuse compiled passes. Deferred compile-time
         // settings must rebuild their matching shader and descriptor variants.
         if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
@@ -650,10 +659,10 @@ public:
         uint32_t cacheMode = requestedCacheMode;
         std::string cacheWarning;
         if (cacheMode != kScenePathTraceCacheModeOff) {
-            if (useOpenPBR || exportGuides) {
+            if (exportGuides && !useOpenPBR) {
                 cacheMode = kScenePathTraceCacheModeOff;
                 cacheWarning =
-                    "ScenePathTracePass radiance cache requires the standard BSDF without denoiser guides; cache disabled\n";
+                    "ScenePathTracePass radiance cache with denoiser guides requires OpenPBR; cache disabled\n";
             }
         }
         cacheMode_ = cacheMode;
@@ -925,7 +934,7 @@ public:
             if (!compiled) {
                 // Reload creates replacement passes. Reject the entire transaction
                 // so a failure can never replace a previously successful graph.
-                if (context.shaderReload || outProgram.valid()) { return compiled; }
+                if (context.shaderReload || outProgram.valid() || permutation != PathTracePermutation::Base) { return compiled; }
                 log += "Initial material compilation failed; displaying the error material.\n";
                 std::string errorLog;
                 auto fallback = initializeMaterialErrorProgram(*context.device, errorProgram_, errorEncoder_, errorLog);
@@ -2079,7 +2088,7 @@ private:
         copyFloat4(push.eye, params.sharcCameraPosition);
         copyFloat4(push.previousEye, params.sharcCameraPositionPrev);
         params.sharcEntriesNum = sharcEntryCount_;
-        params.frameIndex = push.accumulationFrame;
+        params.frameIndex = push.sampleFrame;
         params.cacheMode = kScenePathTraceCacheModeSharc;
         params.width = push.width;
         params.height = push.height;
@@ -2088,6 +2097,24 @@ private:
         params.sharcSceneScale = sceneScaleSetting > 0.0f ? sceneScaleSetting : autoSceneScale;
         params.sharcUpdateStride = uintProperty(
             context.properties(), "sharc.updateStride", kSharcDefaultUpdateStride, 1, 16);
+        params.sharcQueryMinDepth = uintProperty(context.properties(), "sharc.queryMinDepth", 1, 1, 32);
+        params.sharcMinRoughness = std::clamp(floatProperty(context.properties(), "sharc.minRoughness", 0.5f), 0.0f, 1.0f);
+        ScenePathTracePush updatePush = push;
+        if (useOpenPBRBsdf(context.properties())) {
+            updatePush.maxDepth = uintProperty(context.properties(), "sharc.updateMaxDepth", 12, 1, 32);
+            updatePush.debugView = kScenePathTraceDebugViewFinal;
+            updatePush.enableAccumulation = 0;
+        }
+        if (sharcSceneScale_ != params.sharcSceneScale || sharcMinRoughness_ != params.sharcMinRoughness ||
+            sharcUpdateDepth_ != updatePush.maxDepth || sharcDebugFlags_ != push.debugFlags ||
+            sharcBitangentFlip_ != push.bitangentFlip) {
+            sharcClearPending_ = true;
+            sharcSceneScale_ = params.sharcSceneScale;
+            sharcMinRoughness_ = params.sharcMinRoughness;
+            sharcUpdateDepth_ = updatePush.maxDepth;
+            sharcDebugFlags_ = push.debugFlags;
+            sharcBitangentFlip_ = push.bitangentFlip;
+        }
 
         params.sharcAccumulationFrameNum = uintProperty(
             context.properties(),
@@ -2121,7 +2148,7 @@ private:
         resolvePush.entriesNum = sharcEntryCount_;
         resolvePush.accumulationFrameNum = params.sharcAccumulationFrameNum;
         resolvePush.staleFrameNumMax = params.sharcStaleFrameNumMax;
-        resolvePush.frameIndex = push.accumulationFrame;
+        resolvePush.frameIndex = push.sampleFrame;
         // SHaRC render/query at full resolution with early termination.
         std::vector<ComputeDispatchBinding> queryBindings = baseBindings;
         appendSharcDispatchBindings(queryBindings);
@@ -2152,8 +2179,8 @@ private:
             return dispatchResources(updateProgram, encoderFor(updateProgram), {
                 .commandBuffer = &commands,
                 .bindings = updateBindings,
-                .pushData = &push,
-                .pushDataSize = sizeof(push),
+                .pushData = &updatePush,
+                .pushDataSize = sizeof(updatePush),
                 .groupCountX = (updateWidth + 7) / 8,
                 .groupCountY = (updateHeight + 7) / 8,
                 .groupCountZ = 1,
@@ -2222,6 +2249,24 @@ private:
         });
     }
 
+    static const RenderGraphProperties* numericProperty(const RenderGraphProperties& properties, const char* key)
+    {
+        if (!properties.is_object()) { return nullptr; }
+        // Runtime dotted settings are nested objects; old graph assets may use
+        // literal dotted keys. A runtime override takes precedence.
+        const std::string_view path(key);
+        const auto dot = path.find('.');
+        if (dot != std::string_view::npos) {
+            const auto group = properties.find(std::string(path.substr(0, dot)));
+            if (group != properties.end() && group->is_object()) {
+                const auto value = group->find(std::string(path.substr(dot + 1)));
+                if (value != group->end() && value->is_number()) { return &*value; }
+            }
+        }
+        const auto value = properties.find(key);
+        return value != properties.end() && value->is_number() ? &*value : nullptr;
+    }
+
     static uint32_t uintProperty(
         const RenderGraphProperties& properties,
         const char* key,
@@ -2229,11 +2274,8 @@ private:
         uint32_t minimum,
         uint32_t maximum)
     {
-        if (!properties.is_object()) {
-            return fallback;
-        }
-        auto iter = properties.find(key);
-        if (iter == properties.end() || !iter->is_number()) {
+        const auto* iter = numericProperty(properties, key);
+        if (iter == nullptr) {
             return fallback;
         }
         uint32_t value = fallback;
@@ -2262,11 +2304,8 @@ private:
 
     static float floatProperty(const RenderGraphProperties& properties, const char* key, float fallback)
     {
-        if (!properties.is_object()) {
-            return fallback;
-        }
-        auto iter = properties.find(key);
-        if (iter == properties.end() || !iter->is_number()) {
+        const auto* iter = numericProperty(properties, key);
+        if (iter == nullptr) {
             return fallback;
         }
         return finiteOr(iter->get<float>(), fallback);
@@ -2682,6 +2721,11 @@ private:
     std::unique_ptr<Buffer> sharcResolvedBuffer_;
     uint32_t sharcEntryCount_ = 0;
     uint64_t sharcResourcesRevision_ = 0;
+    float sharcSceneScale_ = 0.0f;
+    float sharcMinRoughness_ = 0.0f;
+    float sharcBitangentFlip_ = 0.0f;
+    uint32_t sharcUpdateDepth_ = 0;
+    uint32_t sharcDebugFlags_ = 0;
     bool sharcClearPending_ = false;
     std::shared_ptr<bool> sharcDiscarded_ = std::make_shared<bool>(false);
     uint64_t sceneResourceRevision_ = 0;

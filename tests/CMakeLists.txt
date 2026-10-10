@@ -401,6 +401,7 @@ add_executable(MetallicRHITests
     rhi/DLSSNRTests.cpp
     rhi/AutoExposureTests.cpp
     rhi/OpenPBRLookDevTests.cpp
+    rhi/OpenPBRSharcTests.cpp
     rhi/SliderDebugTests.cpp
     rhi/VisibilityBufferDeferredTests.cpp
     rhi/StreamMaterialTests.cpp

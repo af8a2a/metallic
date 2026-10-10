@@ -101,6 +101,10 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
 [numthreads(8, 8, 1)]
 void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+#if SHARC_UPDATE
+    // Sparse cache training never touches the full-resolution RR inputs.
+    dispatchOpenPbrRayQueryPathTrace(dispatchThreadId);
+#else
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
@@ -128,12 +132,15 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
 
         if (sampleIndex == 0u) {
             firstSampleSpecularHitDistance = sampleSpecularHitDistance;
+            // Cache early-outs change path RNG consumption, not primary guides.
+            uint guideSeed = hash(pixel.x + pixel.y * max(push.width, 1u) +
+                (push.sampleFrame + 1u) * 0x85ebca6bu);
             guides = evaluateOpenPbrDlssRrGuides(
                 ray,
                 rayCone,
                 float2(pixel) + float2(0.5, 0.5),
                 push,
-                seed);
+                guideSeed);
             guides.specularHitDistance = firstSampleSpecularHitDistance;
         }
     }
@@ -152,4 +159,5 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
 
     gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
     writeDlssRrGuides(pixel, guides, push);
+#endif
 }

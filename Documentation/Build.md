@@ -123,6 +123,74 @@ runtime DLL is required. Select `cacheMode: "sharc"` in a `ScenePathTracePass`
 graph node, or run the `pathtracing-sharc-meet-mat` sample. `cacheMode: "off"`
 keeps uncached path tracing available.
 
+OpenPBR also supports SHaRC with `exportDenoiserGuides: true`, including the
+DLSS Ray Reconstruction F preset. Enable `cacheMode: "sharc"` on `PathTrace`;
+the RR mode and guide connections stay the same. Runtime controls include:
+
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `sharc.updateStride` | 5 | Trace one cache-training path per stride × stride pixel block per frame. |
+| `sharc.updateMaxDepth` | 12 | OpenPBR training-path depth, independent of the image path's `maxDepth`. |
+| `sharc.queryMinDepth` | 1 | Earliest cache query; primary surfaces are depth 0 and always shaded. |
+| `sharc.minRoughness` | 0.5 | Minimum specular roughness of a diffuse-like cache receiver. |
+| `sharc.sceneScale` | 0 | Hash-grid scale; 0 derives it from scene bounds. |
+
+The image path terminates when a mature cache entry can replace its indirect
+tail. A cache miss continues the reference integrator up to `maxDepth`; lowering
+that limit also truncates cold-cache and unsupported-material paths. Training
+uses independent frame-varying samples even when `accumulate` is false, as in
+RR graphs. The cache stores scene-linear radiance before exposure and primary
+aerial perspective. Camera motion retains history; scene/lighting changes,
+grid scale, training depth and material-debug policy changes invalidate it.
+
+This first OpenPBR integration conservatively caches opaque, rough, nonmetal
+surfaces outside participating media. Transmission, subsurface, coat, fuzz,
+thin film, anisotropy and emission remain on the reference transport path.
+Delta incoming rays, close contacts and footprints smaller than a voxel also
+continue tracing. These restrictions matter because the spatial cache has no
+outgoing-direction key. Primary RR guides and the first specular hit distance
+are evaluated from actual geometry, with guide sampling independent of path
+termination. This integration does not add previous-frame screen-space reuse.
+
+Build `MetallicRHITests` before running the focused checks:
+
+```powershell
+.\build-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.openpbr_sharc_guides_and_history --rhi-validation
+.\build-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.openpbr_sharc_dlss_rr_ab --rhi-streamline --rhi-no-validation
+```
+
+The first test checks cache-miss equivalence, seven RR guides, cache convergence
+and history invalidation. The second records matched 1080p DLSS Quality F
+far/near AB/BA runs, with 32 warmup and 32 measured frames per case. Its PT
+timings include cache update and resolve; they are not end-to-end frame times.
+Generated JSON and images remain in the test output directory.
+
+On 2026-10-10, RTX 5060 / NVIDIA 616.92 / Release, the chess sample at 1080p
+output, DLSS Quality F, 2 spp and depth 12 measured the following pooled medians
+(two runs per mode, 32 measured frames each, warm shaders/PSOs and cache,
+validation disabled, editor closed):
+
+| View | Cache off PT | SHaRC PT, including maintenance |
+| --- | ---: | ---: |
+| Far | 7.45 ms | 8.33 ms |
+| Near | 40.63 ms | 42.14 ms |
+
+RR itself remained approximately 3.5–3.6 ms. The rough-room correctness fixture
+did benefit from cache termination, but this glossy/transmissive chess workload
+did not; the production RR sample therefore still defaults to cache off. These
+results do not justify reducing the reference fallback depth or enabling the
+cache globally. Broader coverage requires separating diffuse and directional
+specular transport rather than simply relaxing the receiver restrictions.
+
+The RR A/B test rendered and passed its validation checks, but this SDK/driver
+combination stalled during Streamline shutdown after device idle. The existing
+cache-off `working_color_dlss_rr_history` test also reproduced that shutdown
+stall (and failed its frame execution check). Those processes were terminated
+after their logs and A/B measurements were saved; do not treat the RR runs as
+clean process-exit passes. The benchmark presents through a hidden swapchain
+each frame to run Streamline bookkeeping. The ordinary SHaRC/guide/history and
+shader-variant tests completed normally.
+
 ## Release and optimized debugging
 
 Native configure and build presets provide both optimized configurations:

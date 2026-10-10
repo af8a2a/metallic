@@ -221,7 +221,7 @@ inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
 // CPU input IDs for radiance-cache permutations. NamedResourceLayouts maps
 // these to direct SceneResourceParameters fields; shaders do not see these IDs.
-inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 20;
+inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 24;
 inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
 inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;
 inline constexpr uint32_t kScenePathTraceSharcResolvedBinding = 23;
@@ -816,10 +816,13 @@ struct ScenePathTraceCacheParams {
     uint32_t sharcUpdateStride = 5;
     uint32_t width = 1;
     uint32_t height = 1;
+    uint32_t sharcQueryMinDepth = 1;
+    float sharcMinRoughness = 0.5f;
 };
 
-static_assert(sizeof(ScenePathTraceCacheParams) == 68);
+static_assert(sizeof(ScenePathTraceCacheParams) == 76);
 static_assert(offsetof(ScenePathTraceCacheParams, height) == 64);
+static_assert(offsetof(ScenePathTraceCacheParams, sharcMinRoughness) == 72);
 static_assert(sizeof(ScenePathTracePush) == 256);
 
 struct SceneRTXDIPush {

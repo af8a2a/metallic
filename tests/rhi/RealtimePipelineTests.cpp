@@ -17,6 +17,7 @@
 #include "Runtime/Scene/SceneDocument.h"
 #include "stb/stb_image_write.h"
 #include <spdlog/spdlog.h>
+#include <SDL3/SDL.h>
 
 #include <algorithm>
 #include <array>
@@ -514,6 +515,175 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(WorkingColorDLSSRRTest);
+
+// Manual same-workload A/B: includes the production RR F preset and all cache
+// maintenance, with cold startup excluded from the reported steady-state median.
+class OpenPBRSharcDLSSRRTimingTest final : public RHITest
+{
+public:
+    OpenPBRSharcDLSSRRTimingTest() { type = RHITestType::Rendering; name = "openpbr_sharc_dlss_rr_ab"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        if (!vulkan::deviceCapabilities(context.device).streamlineDlssRr) {
+            return RHITestResult::skip("Requires --rhi-streamline and DLSS-RR support");
+        }
+        // Long RR runs need actual presents for Streamline's bookkeeping and
+        // garbage collection, even though image capture itself is offscreen.
+        std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window(
+            SDL_CreateWindow("SHaRC RR benchmark", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN), SDL_DestroyWindow);
+        if (!window) { return realtimeFailure(SDL_GetError()); }
+        auto swapchain = context.device.createSwapchain({.window = {.nativeWindow = window.get()},
+            .width = 64, .height = 64, .vsync = false});
+        auto available = context.device.createSwapchainSemaphore();
+        auto pool = context.device.createCommandPool(context.graphicsQueue);
+        if (!swapchain || !available || !pool) { return realtimeFailure("RR benchmark presentation setup failed"); }
+        auto commands = (*pool)->createCommandBuffer();
+        if (!commands) { return realtimeFailure("RR benchmark presentation command allocation failed"); }
+        std::vector<std::unique_ptr<SwapchainSemaphore>> finished;
+        for (uint32_t i = 0; i < (*swapchain)->imageCount(); ++i) {
+            auto semaphore = context.device.createSwapchainSemaphore();
+            if (!semaphore) { return realtimeFailure("RR benchmark presentation semaphore allocation failed"); }
+            finished.push_back(std::move(*semaphore));
+        }
+        const auto presentFrame = [&] {
+            SDL_PumpEvents();
+            auto acquired = (*swapchain)->acquireNextImage(**available);
+            if (!acquired || !(*pool)->reset() || !(*commands)->begin()) { return false; }
+            TextureBarrierDesc barrier{.texture = (*swapchain)->texture(*acquired),
+                .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::Present,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1}};
+            if (!(*commands)->synchronize({.textures = {&barrier, 1}}) || !(*commands)->end()) { return false; }
+            CommandBuffer* command = commands->get();
+            const SwapchainSemaphoreSubmitDesc wait{.semaphore = available->get()};
+            const SwapchainSemaphoreSubmitDesc signal{.semaphore = finished[*acquired].get()};
+            if (!context.graphicsQueue.submit({.waitSwapchainSemaphores = {&wait, 1}, .commandBuffers = {&command, 1},
+                    .signalSwapchainSemaphores = {&signal, 1}})) { return false; }
+            return bool((*swapchain)->present(context.graphicsQueue, *acquired, *finished[*acquired])) &&
+                bool(context.graphicsQueue.waitIdle());
+        };
+        RenderSampleLoadResult sample;
+        std::string log;
+        if (!loadBuiltInRenderSample("pathtracing-sample-dlss-rr", sample, log)) { return realtimeFailure(log); }
+        scene::SceneDocument document;
+        if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
+            return realtimeFailure(document.lastLoadResult().error);
+        }
+        RenderWorld world;
+        world.setScene(&document);
+        if (sample.desc.environment) {
+            world.setEnvironment({.path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
+        }
+        registerRenderGraphPassType("WorkingColorDisplayReadbackPass", "SDK color regression readback",
+            [] { return std::make_unique<WorkingColorDisplayReadbackPass>(); });
+        const auto root = context.outputDirectory / "OpenPBRSharcRR";
+        auto lighting = document.lighting();
+        lighting.autoExposure.enabled = false;
+        world.setLighting(lighting);
+        std::filesystem::create_directories(root);
+        auto report = RenderGraphProperties::array();
+        const auto validationStart = context.validationMessageCount ? context.validationMessageCount->load() : 0;
+        constexpr uint32_t kWidth = 1920, kHeight = 1080, kWarmup = 32, kMeasure = 32;
+        for (uint32_t cameraIndex = 0; cameraIndex < 2; ++cameraIndex) {
+            for (uint32_t repeat = 0; repeat < 2; ++repeat) {
+                for (uint32_t order = 0; order < 2; ++order) {
+                    const bool cache = (order ^ repeat) != 0;
+                    RenderSampleLoadResult current;
+                    if (!loadBuiltInRenderSample("pathtracing-sample-dlss-rr", current, log)) { return realtimeFailure(log); }
+                    auto& graph = current.graph;
+                    auto* pt = graph.findNode("PathTrace");
+                    auto camera = pt->properties.at("camera");
+                    if (cameraIndex != 0) {
+                        camera["eye"] = {-0.33131, 0.18461, -0.00551};
+                        camera["center"] = {1.693600, -1.037259, -1.479458};
+                    }
+                    graph.setViewProperties({{"camera", camera}, {"renderResolution", {{"width", kWidth}, {"height", kHeight}}}});
+                    pt->properties.erase("camera");
+                    graph.findNode("DLSSRR")->properties.erase("camera");
+                    pt->properties["cacheMode"] = cache ? "sharc" : "off";
+                    pt->properties["samples"] = 2;
+                    pt->properties["maxDepth"] = 12;
+                    pt->properties["sharc.updateMaxDepth"] = 12;
+                    pt->properties["sharc.updateStride"] = 5;
+                    graph.addNode("WorkingColorDisplayReadbackPass", "Readback");
+                    graph.addEdge("FinalBlit.color", "Readback.color");
+                    graph.markOutput("Readback.pixels");
+                    RenderGraphExecutor executor;
+                    executor.bindRenderWorld(&world);
+                    executor.setExecutionCaptureEnabled(true);
+                    if (!executor.compile(context.device, graph, kWidth, kHeight, log)) { return realtimeFailure(log); }
+                    std::vector<double> ptMs, rrMs;
+                    for (uint32_t frame = 0; frame < kWarmup + kMeasure; ++frame) {
+                        vulkan::StreamlineFrameScope sdkFrame(false);
+                        if (!executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
+                            return realtimeFailure("SHaRC RR A/B execute failed");
+                        }
+                        auto stats = executor.collectCompletedGpuExecutionStats();
+                        if (!stats) { return realtimeFailure("SHaRC RR A/B timing readback failed"); }
+                        if (!presentFrame()) { return realtimeFailure("SHaRC RR A/B presentation failed"); }
+                        if (frame >= kWarmup) {
+                            for (const auto& item : *stats) {
+                                for (const auto& pass : item.nodes) {
+                                    if (!pass.gpuTimingAvailable) { continue; }
+                                    if (pass.name == "PathTrace") { ptMs.push_back(pass.gpuMilliseconds); }
+                                    if (pass.name == "DLSSRR") { rrMs.push_back(pass.gpuMilliseconds); }
+                                }
+                            }
+                        }
+                    }
+                    if (cache) {
+                        const auto snapshot = executor.executionSnapshot();
+                        bool queried = false;
+                        if (snapshot) {
+                            for (const auto& pass : snapshot->passes) {
+                                for (const auto& stage : pass.stages) { queried |= stage.name == "SHaRC query"; }
+                            }
+                        }
+                        if (!queried) { return realtimeFailure("RR A/B silently disabled SHaRC"); }
+                    }
+                    const std::string label = std::string(cameraIndex ? "Near" : "Far") +
+                        (cache ? "Cache" : "Reference") + std::to_string(repeat);
+                    const auto saveFrame = [&](const std::string& suffix) {
+                        auto* buffer = executor.outputResource("Readback.pixels")->buffer;
+                        buffer->invalidate();
+                        const auto* pixels = static_cast<const uint8_t*>(buffer->map());
+                        if (!pixels) { log = "RR A/B pixels unavailable"; return false; }
+                        const bool saved = saveRgba8Png(root / (label + suffix + ".png"), pixels, kWidth, kHeight, log);
+                        buffer->unmap();
+                        return saved;
+                    };
+                    if (!saveFrame("")) { return realtimeFailure(log); }
+                    if (ptMs.empty() || rrMs.empty()) { return realtimeFailure("RR A/B has no GPU timestamps"); }
+                    auto median = [](std::vector<double> values) {
+                        std::sort(values.begin(), values.end()); return values[values.size() / 2];
+                    };
+                    report.push_back({{"case", label}, {"camera", camera}, {"cache", cache}, {"samples", 2},
+                        {"fallbackDepth", 12}, {"updateDepth", 12}, {"updateStride", 5},
+                        {"width", kWidth}, {"height", kHeight}, {"warmupFrames", kWarmup}, {"measuredFrames", kMeasure},
+                        {"pathTraceIncludingCacheMs", ptMs}, {"rrMs", rrMs},
+                        {"pathTraceIncludingCacheMedianMs", median(ptMs)}, {"rrMedianMs", median(rrMs)}});
+                    std::ofstream(root / "Report.json") << report.dump(2);
+                    // Exercise a moving camera using the same warmed cache and RR history.
+                    for (uint32_t frame = 0; frame < 12; ++frame) {
+                        vulkan::StreamlineFrameScope sdkFrame(false);
+                        auto moved = executor.renderView()->camera(); moved.eye[0] += 0.003f;
+                        executor.renderView()->setCamera(moved);
+                        if (!executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
+                            return realtimeFailure("SHaRC RR moving-camera execution failed");
+                        }
+                        if (!presentFrame()) { return realtimeFailure("SHaRC RR camera-motion presentation failed"); }
+                    }
+                    if (!saveFrame("Motion")) { return realtimeFailure(log); }
+                }
+            }
+        }
+        if (context.validationMessageCount && context.validationMessageCount->load() != validationStart) {
+            return realtimeFailure("SHaRC RR A/B produced validation messages");
+        }
+        return RHITestResult::pass("RR F preset 1080p far/near AB/BA, matched 2 spp, cache-inclusive PT GPU times and camera motion: " + root.string());
+    }
+};
+METALLIC_REGISTER_RHI_TEST(OpenPBRSharcDLSSRRTimingTest);
 
 class WorkingColorDLSSNonBindlessCompileTest final : public RHITest {
 public:

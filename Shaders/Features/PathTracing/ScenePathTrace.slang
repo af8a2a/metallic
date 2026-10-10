@@ -24,7 +24,7 @@ import Atmosphere;
 #define METALLIC_CACHE_MODE_OFF 0
 #define METALLIC_CACHE_MODE_SHARC 1
 
-// Per-frame radiance-cache parameters (binding 20). Layout must match
+// Per-frame radiance-cache parameters (binding 24). Layout must match
 // ScenePathTraceCacheParams in BuiltinPassCommon.h byte for byte.
 struct ScenePathTraceCacheParams
 {
@@ -39,9 +39,11 @@ struct ScenePathTraceCacheParams
     uint sharcUpdateStride;
     uint width;
     uint height;
+    uint sharcQueryMinDepth;
+    float sharcMinRoughness;
 };
 
-// Match the tightly packed 68-byte CPU constants.
+// Match the tightly packed 76-byte CPU constants.
 typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
 #define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameters<SceneResourceParameters>().cacheParams)
 

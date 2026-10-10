@@ -147,6 +147,11 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
             for (const char* cacheDefine : {"SHARC_UPDATE", "SHARC_QUERY"}) {
                 const SlangMacroDefine define{cacheDefine, "1"};
                 requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1}));
+                if (!streamed) {
+                    for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                        requests.push_back(makeSceneShaderRequest(program, options, {&define, 1}));
+                    }
+                }
             }
         }
     }
