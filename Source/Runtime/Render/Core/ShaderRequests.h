@@ -52,7 +52,7 @@ private:
 
 enum class SceneShaderProgram {
     PathTrace, PathTraceGuides, OpenPBRPathTrace, OpenPBRPathTraceGuides,
-    RealtimeLighting, Deferred, DeferredBinned, SharcClear, SharcResolve,
+    RealtimeLighting, Deferred, DeferredBinned, SharcClear, SharcResolve, OpenPBRSharcResolve,
 };
 
 struct ShaderProgramIdentity {
@@ -71,6 +71,7 @@ inline ShaderProgramIdentity sceneShaderIdentity(SceneShaderProgram program)
     case SceneShaderProgram::Deferred: return {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredMain"};
     case SceneShaderProgram::DeferredBinned: return {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredBinnedMain"};
     case SceneShaderProgram::SharcClear: return {"Features/PathTracing/SceneSharcMaintenance", "sharcClearMain"};
+    case SceneShaderProgram::OpenPBRSharcResolve:
     case SceneShaderProgram::SharcResolve: return {"Features/PathTracing/SceneSharcMaintenance", "sharcResolveMain"};
     }
     std::unreachable();
@@ -102,6 +103,11 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
     if (!deferred) { request.capabilities.insert(request.capabilities.begin(), "spvRayQueryKHR"); }
     if (!deferred && options.positionFetch) { request.capabilities.emplace_back("spvRayQueryPositionFetchKHR"); }
     if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
+    if (program == SceneShaderProgram::OpenPBRSharcResolve) {
+        // OpenPBR's lobe/direction keys cannot be decoded as SHaRC grid positions.
+        request.defines.emplace_back("SHARC_BLEND_ADJACENT_LEVELS", "0");
+        return request;
+    }
     if (program == SceneShaderProgram::SharcClear || program == SceneShaderProgram::SharcResolve) { return request; }
 
     const auto flag = [](bool value) { return value ? "1" : "0"; };

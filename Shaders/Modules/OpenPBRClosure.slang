@@ -24,8 +24,12 @@ public struct OpenPBRPreparedClosure<TContext : IOpenPBRContext> : IWeightedPrep
 
     public override float3 evalProjected(float3 wiWS)
     {
-        if (!validTransport) { return float3(0); }
-        return openPBRGetSumOfDiffuseSpecular(openPBREval(context, bsdf, wiWS));
+        return openPBRGetSumOfDiffuseSpecular(evalProjectedComponents(wiWS));
+    }
+
+    public OpenPBRDiffuseSpecular evalProjectedComponents(float3 wiWS)
+    {
+        return validTransport ? openPBREval(context, bsdf, wiWS) : openPBRMakeZeroDiffuseSpecular();
     }
 
     public override float pdf(float3 wiWS) { return validTransport ? openPBRPdf(context, bsdf, wiWS) : 0.0; }
@@ -47,7 +51,16 @@ public struct OpenPBRPreparedClosure<TContext : IOpenPBRContext> : IWeightedPrep
 
     public override BSDFWeightSample sampleWeighted(float3 random)
     {
+        OpenPBRDiffuseSpecular components;
+        return sampleWeightedComponents(random, components);
+    }
+
+    // Keep the vendor's mixture PDF and weights. A sampled event flag does not
+    // identify all contributing lobes: one direction can carry both components.
+    public BSDFWeightSample sampleWeightedComponents(float3 random, out OpenPBRDiffuseSpecular components)
+    {
         BSDFWeightSample result = (BSDFWeightSample)0;
+        components = openPBRMakeZeroDiffuseSpecular();
         result.eta = 1.0;
         if (!validTransport) { return result; }
         float3 direction;
@@ -57,6 +70,7 @@ public struct OpenPBRPreparedClosure<TContext : IOpenPBRContext> : IWeightedPrep
         openPBRSample(context, bsdf, random, direction, weight, density, eventType);
         // Vendor outputs other than pdf are undefined for a failed sample.
         if (density <= 0.0) { return result; }
+        components = weight;
         result.wiWS = direction;
         result.weight = openPBRGetSumOfDiffuseSpecular(weight);
         result.pdf = density;

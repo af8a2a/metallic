@@ -817,12 +817,14 @@ struct ScenePathTraceCacheParams {
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t sharcQueryMinDepth = 1;
-    float sharcMinRoughness = 0.5f;
+    float sharcMinRoughness = 0.25f;
+    uint32_t sharcLobeMask = 3;
 };
 
-static_assert(sizeof(ScenePathTraceCacheParams) == 76);
+static_assert(sizeof(ScenePathTraceCacheParams) == 80);
 static_assert(offsetof(ScenePathTraceCacheParams, height) == 64);
 static_assert(offsetof(ScenePathTraceCacheParams, sharcMinRoughness) == 72);
+static_assert(offsetof(ScenePathTraceCacheParams, sharcLobeMask) == 76);
 static_assert(sizeof(ScenePathTracePush) == 256);
 
 struct SceneRTXDIPush {

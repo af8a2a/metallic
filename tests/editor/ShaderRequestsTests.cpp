@@ -317,6 +317,15 @@ TEST(ShaderRequests, PreservesCustomMaterialAndSDKSearchPrecedence)
     EXPECT_EQ(maintenance.capabilities, request.capabilities);
 }
 
+TEST(ShaderRequests, DirectionalCacheNeverUsesSpatialKeyReprojection)
+{
+    const auto spatial = makeSceneShaderRequest(SceneShaderProgram::SharcResolve, {});
+    const auto directional = makeSceneShaderRequest(SceneShaderProgram::OpenPBRSharcResolve, {});
+    EXPECT_NE(spatial, directional);
+    EXPECT_TRUE(spatial.defines.empty());
+    EXPECT_EQ(directional.defines, (std::vector<std::pair<std::string, std::string>>{{"SHARC_BLEND_ADJACENT_LEVELS", "0"}}));
+}
+
 TEST(ShaderRequests, DeferredDoesNotRequestRayTracingCapabilities)
 {
     auto options = standardSceneOptions();
@@ -345,7 +354,7 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
                 SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides,
                 SceneShaderProgram::RealtimeLighting, SceneShaderProgram::SharcClear,
-                SceneShaderProgram::SharcResolve}) {
+                SceneShaderProgram::SharcResolve, SceneShaderProgram::OpenPBRSharcResolve}) {
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(program, options)));
         }
         for (const char* name : {"SHARC_UPDATE", "SHARC_QUERY"}) {

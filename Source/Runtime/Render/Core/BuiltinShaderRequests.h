@@ -138,7 +138,7 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
             if (streamed && positionFetch) { continue; }
             SceneShaderOptions options{.streamMaterials = streamed, .hasRTXCR = hasRtxcr,
                 .positionFetch = positionFetch, .rtxcrInclude = rtxcrInclude};
-            for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve,
+            for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve, SceneShaderProgram::OpenPBRSharcResolve,
                     SceneShaderProgram::RealtimeLighting, SceneShaderProgram::PathTraceGuides,
                     SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
                 requests.push_back(makeSceneShaderRequest(program, options));

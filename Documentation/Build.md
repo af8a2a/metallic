@@ -132,7 +132,9 @@ the RR mode and guide connections stay the same. Runtime controls include:
 | `sharc.updateStride` | 5 | Trace one cache-training path per stride × stride pixel block per frame. |
 | `sharc.updateMaxDepth` | 12 | OpenPBR training-path depth, independent of the image path's `maxDepth`. |
 | `sharc.queryMinDepth` | 1 | Earliest cache query; primary surfaces are depth 0 and always shaded. |
-| `sharc.minRoughness` | 0.5 | Minimum specular roughness of a diffuse-like cache receiver. |
+| `sharc.minRoughness` | 0.25 | Minimum roughness for directional specular caching (hard floor 0.2); diffuse caching is independent. |
+| `sharc.lobeMask` | 3 | 1 = diffuse only, 2 = directional specular only, 3 = both (OpenPBR). |
+| `sharc.entriesLog2` | 22 | Total entry budget, divided equally between the two OpenPBR caches. |
 | `sharc.sceneScale` | 0 | Hash-grid scale; 0 derives it from scene bounds. |
 
 The image path terminates when a mature cache entry can replace its indirect
@@ -141,55 +143,104 @@ that limit also truncates cold-cache and unsupported-material paths. Training
 uses independent frame-varying samples even when `accumulate` is false, as in
 RR graphs. The cache stores scene-linear radiance before exposure and primary
 aerial perspective. Camera motion retains history; scene/lighting changes,
-grid scale, training depth and material-debug policy changes invalidate it.
+grid scale, component selection, training depth and material-debug policy changes invalidate it.
 
-This first OpenPBR integration conservatively caches opaque, rough, nonmetal
-surfaces outside participating media. Transmission, subsurface, coat, fuzz,
-thin film, anisotropy and emission remain on the reference transport path.
-Delta incoming rays, close contacts and footprints smaller than a voxel also
-continue tracing. These restrictions matter because the spatial cache has no
-outgoing-direction key. Primary RR guides and the first specular hit distance
-are evaluated from actual geometry, with guide sampling independent of path
-termination. This integration does not add previous-frame screen-space reuse.
+OpenPBR stores the native BSDF's diffuse and specular outgoing radiance in
+independent hash-table partitions. Diffuse keys include world position, material,
+shading normal and quantized material parameters. Specular keys additionally
+include an octahedral outgoing-direction bin; angular cells become smaller as
+roughness decreases. Metal multiple scattering stays in the specular component,
+as defined by OpenPBR. The allocation remains 40 bytes per total entry: the
+default 2^22 entries consume 160 MiB, split into two 80 MiB partitions.
+
+Direct-light evaluation and BSDF sampling retain OpenPBR's two RGB weights and
+the complete mixture PDF. A partial hit replaces only that component's direct
+and indirect radiance; the missing component continues tracing with its original
+mixture weight. Both caches must be available (or a component physically absent)
+to terminate the whole path. Training registers two vertices and propagates the
+complete suffix to both; a full-cache bootstrap may shorten that suffix, but a
+miss or full tracking array never silently drops later contributions. Cached
+samples are normalized once per registered component, including sky misses.
+
+This is a spatial/angular approximation of outgoing radiance, not a universal
+irradiance field: diffuse view dependence and finite voxel/direction bins remain
+approximations. Metal and mixed diffuse/specular materials are supported; very
+sharp specular lobes, transmission, media, subsurface, coat, fuzz, thin film,
+anisotropy and emission retain reference transport. Delta incoming rays, close
+contacts and footprints smaller than a voxel also continue tracing. At least
+two diffuse or eight specular samples and two frame ages are required for reuse.
+Primary RR guides and first specular hit distance still use actual geometry.
+
+OpenPBR uses a separate resolve permutation with adjacent-level blending
+disabled: its opaque material/direction keys cannot be decoded as SHaRC spatial
+keys. Camera motion retains entries and naturally misses when grid levels or
+angular cells change; stale entries expire normally. The standard BSDF keeps
+the original SHaRC resolve. Neither path adds screen-space history reuse.
 
 Build `MetallicRHITests` before running the focused checks:
 
 ```powershell
-.\build-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.openpbr_sharc_guides_and_history --rhi-validation
+.\build-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.openpbr_sharc_guides_and_history:RHIRendering.openpbr_sharc_mixed_components:RHIRendering.openpbr_sharc_directional_metal --rhi-validation
 .\build-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.openpbr_sharc_dlss_rr_ab --rhi-streamline --rhi-no-validation
 ```
 
-The first test checks cache-miss equivalence, seven RR guides, cache convergence
-and history invalidation. The second records matched 1080p DLSS Quality F
+The room tests compare Off, NoQuery, both components, diffuse only and specular
+only on rough dielectric, mixed and metal materials. They check exact miss/guide
+equivalence, energy and image error, live camera motion and history invalidation.
+The BSDF closure probe independently checks both component weights against native
+OpenPBR evaluation and sampling. The RR test records matched 1080p DLSS Quality F
 far/near AB/BA runs, with 32 warmup and 32 measured frames per case. Its PT
 timings include cache update and resolve; they are not end-to-end frame times.
 Generated JSON and images remain in the test output directory.
 
-On 2026-10-10, RTX 5060 / NVIDIA 616.92 / Release, the chess sample at 1080p
-output, DLSS Quality F, 2 spp and depth 12 measured the following pooled medians
-(two runs per mode, 32 measured frames each, warm shaders/PSOs and cache,
-validation disabled, editor closed):
+The component-separated room checks on RTX 5060 / Release with Vulkan validation
+enabled used 96x96, 4 spp, depth 8, stride 2, 2^16 total entries, 32 warmup and
+64 averaged frames. Both components enabled gave the following HDR errors versus
+uncached tracing (these include Monte Carlo noise):
 
-| View | Cache off PT | SHaRC PT, including maintenance |
-| --- | ---: | ---: |
-| Far | 7.45 ms | 8.33 ms |
-| Near | 40.63 ms | 42.14 ms |
+| Room material | Relative RMSE | Cached/reference energy | Moving-camera relative RMSE |
+| --- | ---: | ---: | ---: |
+| Rough dielectric | 4.01% | 0.9957 | 10.71% |
+| Mixed diffuse/specular | 3.23% | 0.9938 | 9.42% |
+| Metal | 2.52% | 0.9981 | 7.99% |
 
-RR itself remained approximately 3.5–3.6 ms. The rough-room correctness fixture
-did benefit from cache termination, but this glossy/transmissive chess workload
-did not; the production RR sample therefore still defaults to cache off. These
-results do not justify reducing the reference fallback depth or enabling the
-cache globally. Broader coverage requires separating diffuse and directional
-specular transport rather than simply relaxing the receiver restrictions.
+All three also passed separate diffuse-only and specular-only comparisons,
+exact cache-miss and seven-guide equivalence, and scale/component/light history
+invalidation. Pure metal with diffuse-only caching matched the reference exactly.
+The moving check retained warmed caches over 32 frames while translating the
+camera laterally and toward the scene. This small fixture does not establish
+full-scene speedups or artifact-free motion for arbitrary materials.
 
-The RR A/B test rendered and passed its validation checks, but this SDK/driver
-combination stalled during Streamline shutdown after device idle. The existing
-cache-off `working_color_dlss_rr_history` test also reproduced that shutdown
-stall (and failed its frame execution check). Those processes were terminated
-after their logs and A/B measurements were saved; do not treat the RR runs as
-clean process-exit passes. The benchmark presents through a hidden swapchain
-each frame to run Streamline bookkeeping. The ordinary SHaRC/guide/history and
-shader-variant tests completed normally.
+On 2026-10-10, RTX 5060 / NVIDIA 616.92 / Release, the component-separated
+implementation on the chess sample at 1080p output, DLSS Quality F, 2 spp and
+depth 12 measured the following pooled medians. Each mode used two runs in
+AB/BA order, 32 warmup and 32 measured frames per run, warm shaders/PSOs/cache,
+validation disabled and the editor closed. PT includes update and resolve.
+
+| View | Cache off PT | Split-cache PT | PT time change |
+| --- | ---: | ---: | ---: |
+| Far | 7.75 ms | 8.32 ms | +7.3% |
+| Near | 41.80 ms | 42.02 ms | +0.5% |
+
+RR remained approximately 3.5-3.6 ms. The separate caches expand material
+coverage and pass correctness checks, but do not yet accelerate this workload.
+The production RR sample therefore still defaults to cache off; these results
+do not justify reducing reference fallback depth. Directional bins need more
+samples to become reusable, and lookup/training/resolve costs remain even when
+most tails must continue. Quantifying hit rates and the remaining material
+execution cost is necessary before claiming a speedup.
+
+The RR A/B body completed and saved static and moving-camera images and timing
+JSON. This run again stalled at global teardown, consistent with the previously
+isolated Streamline shutdown issue; its process was terminated after preserving
+evidence. It is not a clean process-exit pass. The prior cache-off
+`working_color_dlss_rr_history` test reproduced the same shutdown stall. The
+benchmark presents through a hidden swapchain each frame for SDK bookkeeping.
+Six GPU checks (three room fixtures, standard SHaRC lighting and history, and
+the OpenPBR component probe), one shader-variant compile check and nine
+shader-request checks completed normally. Generated evidence stays outside source control in
+`.cache/OpenPBRSplitAcceptance`, `.cache/OpenPBRSplitClosure` and
+`.cache/OpenPBRSplitRRPerf`.
 
 ## Release and optimized debugging
 

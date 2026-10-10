@@ -546,7 +546,8 @@ public:
             runtimeFloatSetting("sharc.sceneScale", "SHaRC Scene Scale", 0.0f, 0.0f, 1000.0f, true),
             runtimeIntSetting("sharc.updateMaxDepth", "SHaRC Update Depth", 12, 1, 32, true),
             runtimeIntSetting("sharc.queryMinDepth", "SHaRC First Query Depth", 1, 1, 32, false),
-            runtimeFloatSetting("sharc.minRoughness", "SHaRC Minimum Roughness", 0.5f, 0.0f, 1.0f, true),
+            runtimeFloatSetting("sharc.minRoughness", "SHaRC Specular Minimum Roughness", 0.25f, 0.2f, 1.0f, true),
+            runtimeIntSetting("sharc.lobeMask", "SHaRC Components (1 Diffuse, 2 Specular, 3 Both)", 3, 1, 3, true),
             runtimeIntSetting(
                 "sharc.maxAccumulatedFrames",
                 "SHaRC Max Accumulated Frames",
@@ -1093,7 +1094,7 @@ public:
                 }
             }
             if (!sharcResolveProgram_.valid()) {
-                result = compileMaintenance(SceneShaderProgram::SharcResolve, sharcResolveProgram_);
+                result = compileMaintenance(useOpenPBRBsdf(properties()) ? SceneShaderProgram::OpenPBRSharcResolve : SceneShaderProgram::SharcResolve, sharcResolveProgram_);
                 if (!result) {
                     return result;
                 }
@@ -2098,7 +2099,8 @@ private:
         params.sharcUpdateStride = uintProperty(
             context.properties(), "sharc.updateStride", kSharcDefaultUpdateStride, 1, 16);
         params.sharcQueryMinDepth = uintProperty(context.properties(), "sharc.queryMinDepth", 1, 1, 32);
-        params.sharcMinRoughness = std::clamp(floatProperty(context.properties(), "sharc.minRoughness", 0.5f), 0.0f, 1.0f);
+        params.sharcMinRoughness = std::clamp(floatProperty(context.properties(), "sharc.minRoughness", 0.25f), 0.2f, 1.0f);
+        params.sharcLobeMask = uintProperty(context.properties(), "sharc.lobeMask", 3, 1, 3);
         ScenePathTracePush updatePush = push;
         if (useOpenPBRBsdf(context.properties())) {
             updatePush.maxDepth = uintProperty(context.properties(), "sharc.updateMaxDepth", 12, 1, 32);
@@ -2106,11 +2108,12 @@ private:
             updatePush.enableAccumulation = 0;
         }
         if (sharcSceneScale_ != params.sharcSceneScale || sharcMinRoughness_ != params.sharcMinRoughness ||
-            sharcUpdateDepth_ != updatePush.maxDepth || sharcDebugFlags_ != push.debugFlags ||
+            sharcLobeMask_ != params.sharcLobeMask || sharcUpdateDepth_ != updatePush.maxDepth || sharcDebugFlags_ != push.debugFlags ||
             sharcBitangentFlip_ != push.bitangentFlip) {
             sharcClearPending_ = true;
             sharcSceneScale_ = params.sharcSceneScale;
             sharcMinRoughness_ = params.sharcMinRoughness;
+            sharcLobeMask_ = params.sharcLobeMask;
             sharcUpdateDepth_ = updatePush.maxDepth;
             sharcDebugFlags_ = push.debugFlags;
             sharcBitangentFlip_ = push.bitangentFlip;
@@ -2723,6 +2726,7 @@ private:
     uint64_t sharcResourcesRevision_ = 0;
     float sharcSceneScale_ = 0.0f;
     float sharcMinRoughness_ = 0.0f;
+    uint32_t sharcLobeMask_ = 0;
     float sharcBitangentFlip_ = 0.0f;
     uint32_t sharcUpdateDepth_ = 0;
     uint32_t sharcDebugFlags_ = 0;

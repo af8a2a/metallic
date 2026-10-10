@@ -41,9 +41,10 @@ struct ScenePathTraceCacheParams
     uint height;
     uint sharcQueryMinDepth;
     float sharcMinRoughness;
+    uint sharcLobeMask;
 };
 
-// Match the tightly packed 76-byte CPU constants.
+// Match the tightly packed 80-byte CPU constants.
 typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
 #define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameters<SceneResourceParameters>().cacheParams)
 
