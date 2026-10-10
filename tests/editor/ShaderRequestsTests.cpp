@@ -551,4 +551,18 @@ TEST(ShaderRequests, CoversStreamPrecisionViewAndDisplaySettings)
         false, false, std::to_string(80.0f))));
 }
 
+TEST(ShaderRequests, HDR10UsesDynamicResourcesOutsideImGuiABI)
+{
+    const auto imgui = makeEditorDisplayShaderRequest("editorDisplayFragment", true, false, false, "203.0");
+    EXPECT_EQ(imgui.module, "Features/PostProcess/EditorDisplay");
+    EXPECT_EQ(imgui.descriptorHeapMode, SlangDescriptorHeapMode::Mapped);
+    for (const char* entry : {"editorOutputVertex", "editorOutputPQFragment"}) {
+        const auto output = makeEditorDisplayShaderRequest(entry, true, false, false, "203.0");
+        EXPECT_EQ(output.module, "Features/PostProcess/EditorOutput");
+        EXPECT_EQ(output.descriptorHeapMode, SlangDescriptorHeapMode::Native);
+        // PQ encodes absolute scRGB nits; UI paper white is already composed.
+        EXPECT_EQ(output, makeEditorDisplayShaderRequest(entry, false, true, true, "80.0"));
+    }
+}
+
 } // namespace

@@ -231,9 +231,17 @@ evidence of non-DR resource access.
 
 - `Features/PostProcess/EditorDisplay.slang` is the only fixed image/sampler
   binding found under `Shaders/`. Its two sets match `VulkanImGuiBackend`'s
-  Vulkan layouts, ImGui draw callbacks and HDR10 output descriptor-set binding.
-  Migrating it requires a coordinated editor/ImGui binding change, including
-  detached windows; changing the shader declarations alone is insufficient.
+  Vulkan layouts and ImGui draw callbacks, including detached windows. This is
+  an explicit third-party ABI exception. HDR10 encoding is separate in
+  `EditorOutput.slang`: a DR sampled-image handle, shared ResourceRegistry lease,
+  and ordinary RHI graphics pipeline replace its former ImGui descriptor set.
+- `DescriptorHeapCodePattern.slang` and `GeneratedCommandsProbe.slang` also use
+  DR handles. The aggregate probe no longer requires adjacent descriptors or
+  custom binding-to-heap mappings; `VulkanPipelineDiagnostics.h` and its mapping
+  API are deleted. DGC retains pipeline-set/count/preprocess/rebind coverage,
+  using push-data tokens for index/value while retaining the DR output handle.
+  Low-level push data is still valid parameter transport; it is not an image or
+  buffer descriptor binding.
 - Production Features/Interop and generated material source have no legacy
   `getResource<T>`, `getResourceArray<T>` or `getData<T>` calls. Their Core
   definitions and all test call sites have also been removed. NRD's generated bindings resolve engine handles and its
@@ -459,3 +467,35 @@ Evidence is under `.cache/`: `compute-named-{mapped,native-final}.{xml,log}`,
 The exact main-suite filter is saved in `compute-named-filter.txt`. NRD and
 startup logs are `compute-nrd-{mapped,native}.{xml,log}` and
 `compute-smoke-{mapped,native}.log`.
+
+### Binding boundary retirement (2026-10-10)
+
+ImGui is the sole maintained shader source with explicit image/sampler bindings.
+HDR10 composition output uses the separate native-DR `EditorOutput` module;
+its source is retained through a shared ResourceRegistry lease, independently of
+ImGui texture registration. Both low-level aggregate and DGC probes now resolve
+DR handles, and the unused custom binding-mapping API has been removed.
+SDK-internal binding and the Streamline descriptor-state compatibility operation
+remain native interop responsibilities. NRD's maintained wrappers already replace
+the vendor binding macros with DR resolution.
+
+Validation on the final build:
+
+- `Metallic`, `MetallicRHITests`, and `MetallicShaderRequestsTests` built successfully.
+- 20 focused native RHI/ABI/HDR tests passed, including PQ pixel reference,
+  source-view lifetime, and independent ImGui/output pipeline cache reuse.
+- Five aggregate access patterns passed in native mode; the same five also
+  passed in mapped compilation during migration. Experimental internal pipeline
+  caching was disabled as required by the probe's existing run contract.
+- DGC reference and target passed and produced identical outputs for fixed
+  pipeline, pipeline-set, explicit preprocess, count and rebind cases. The final
+  native run enabled synchronization validation and recorded zero messages.
+- Two display shader request tests passed; native Editor one-frame smoke
+  submitted and presented successfully. This does not establish long-running
+  behavior or physical HDR monitor appearance.
+
+Evidence: `.cache/dr-binding-retirement/` contains `final-native.xml`,
+`pattern-native-*.xml`, `requests.xml`, `dgc-native-final/report.html` and
+`editor-smoke.log`. The initial DGC conformance run was blocked by two stale
+system layer manifests; the successful runs used the harness-supported SDK
+layer directory and isolated implicit-layer discovery, with validation enabled.

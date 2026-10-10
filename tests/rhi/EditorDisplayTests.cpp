@@ -49,13 +49,17 @@ public:
         }
         auto cacheStats = render::ShaderRegistry::instance().pipelineCacheStats(device);
         bool editorCacheHit = false;
+        bool outputCacheHit = false;
         if (cacheStats) {
             for (const auto& group : *cacheStats) {
-                if (group.group.starts_with("ShaderRegistry-EditorDisplay-") && group.cache.hitCount >= 3 &&
+                if (group.group.starts_with("ShaderRegistry-EditorDisplay-") && group.cache.hitCount >= 2 &&
                     group.cache.backendDataSize > 0) { editorCacheHit = true; }
+                if (group.group.starts_with("ShaderRegistry-EditorOutput-") && group.cache.hitCount >= 1 &&
+                    group.cache.backendDataSize > 0) { outputCacheHit = true; }
             }
         }
         if (!editorCacheHit) { return RHITestResult::fail("HDR ImGui bypassed the Registry's persistent native cache"); }
+        if (!outputCacheHit) { return RHITestResult::fail("HDR output bypassed the Registry's persistent DR cache"); }
         std::unique_ptr<render::Texture> output, source;
         std::unique_ptr<render::TextureView> outputView, sourceView;
         std::unique_ptr<render::Buffer> readback;
@@ -165,8 +169,6 @@ public:
             !pool->reset() || !fence->reset() || !commands->begin()) {
             return RHITestResult::fail("PQ fixture allocation failed");
         }
-        auto outputDescriptor = ui.display.addTexture(*outputView);
-        if (!outputDescriptor) { return RHITestResult::fail("PQ texture registration failed"); }
         const render::TextureBarrierDesc encodeBarriers[] = {
             {.texture = output.get(), .oldLayout = render::TextureLayout::TransferSource,
                 .newLayout = render::TextureLayout::ShaderRead,
@@ -181,9 +183,12 @@ public:
         if (!commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}})) {
             return RHITestResult::fail("PQ rendering failed");
         }
-        if (!ui.display.encodeHDR10(*commands, *outputDescriptor, 32, 32)) {
+        if (!render::encodeEditorHDR10(ui.display, device, *commands, *outputView, 32, 32)) {
             return RHITestResult::fail("PQ encoding failed");
         }
+        // The recording's DR lease must keep the source alive through submission.
+        outputView.reset();
+        output.reset();
         commands->endRendering();
         toReadback.texture = pq.get();
         if (!commands->synchronize({.textures = {&toReadback, 1}})) { return RHITestResult::fail("PQ readback barrier failed"); }
@@ -215,7 +220,6 @@ public:
             check(20, 28, 203 * alpha + 1000 * (1 - alpha), 203 * alpha + 400 * (1 - alpha),
                 203 * alpha + 80 * (1 - alpha));
         readback->unmap();
-        ui.display.removeTexture(*outputDescriptor);
         return pqCorrect ? RHITestResult::pass("FP16 UI composition, linear alpha blending, BT.2020/PQ and RGB10A2 pixels verified") :
             RHITestResult::fail("HDR10 conversion, absolute luminance or linear UI blending mismatch");
     }

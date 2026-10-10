@@ -2861,11 +2861,6 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
 
 void EditorApplication::destroySwapchainResources()
 {
-    for (auto& composition : displayCompositions_) {
-        if (composition.descriptor && imguiRendererInitialized_) {
-            imguiBackend_.removeTexture(composition.descriptor);
-        }
-    }
     displayCompositions_.clear();
     swapchainImageViews_.clear();
     swapchainImageStates_.clear();
@@ -7354,11 +7349,6 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
         const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
         auto* composition = pqOutput ? &displayCompositions_[imageIndex] : nullptr;
-        if (composition && !composition->descriptor) {
-            auto texture = imguiBackend_.addTexture(*composition->view);
-            if (!texture) { return false; }
-            composition->descriptor = *texture;
-        }
         render::TextureBarrierDesc toColor{
             .texture = composition ? composition->texture.get() : swapchainTexture,
             .oldLayout = metallic::render::textureLayoutForResourceState(composition ? composition->state : swapchainImageStates_[imageIndex]),
@@ -7429,7 +7419,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             colorAttachment.loadOp = render::LoadOp::DontCare;
             if (!frame.commandBuffer->beginRendering({.renderArea = renderArea,
                     .colorAttachments = {&colorAttachment, 1}})) { return false; }
-            if (!imguiBackend_.encodeHDR10(*frame.commandBuffer, composition->descriptor,
+            if (!render::encodeEditorHDR10(imguiBackend_, *device_, *frame.commandBuffer, *composition->view,
                     swapchainWidth_, swapchainHeight_)) { return false; }
             frame.commandBuffer->endRendering();
         }

@@ -1,5 +1,4 @@
 #include "Runtime/Render/GAPI/ShaderTarget.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanPipelineDiagnostics.h"
 #include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/GAPI/Vulkan/DescriptorHeapShaderABI.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
@@ -156,22 +155,6 @@ TEST(ShaderTargetPostprocess, FinalizationIsTransactionalAndIdempotent)
     EXPECT_FALSE(target.finalizeSpirv(malformed, diagnostics));
     EXPECT_FALSE(diagnostics.empty());
     EXPECT_EQ(malformed, original);
-}
-
-TEST(VulkanPipelineDiagnostics, CustomMappingsHaveIndependentCacheIdentity)
-{
-    using namespace render;
-    ComputePipelineDesc desc{.usesBindlessHeap = true, .bindlessUserPushDataSize = 40};
-    detail::ShaderBindingMappingDesc mapping{.pushDataOffset = 32};
-    const auto defaultHash = detail::computePipelineStateHash(desc);
-    EXPECT_EQ(detail::mappedComputePipelineStateHash(desc, {}), defaultHash);
-    const auto first = detail::mappedComputePipelineStateHash(desc, {&mapping, 1});
-    EXPECT_NE(first, defaultHash);
-    ++mapping.heapIndexOffset;
-    EXPECT_NE(detail::mappedComputePipelineStateHash(desc, {&mapping, 1}), first);
-    --mapping.heapIndexOffset;
-    mapping.pushDataOffset = 36;
-    EXPECT_NE(detail::mappedComputePipelineStateHash(desc, {&mapping, 1}), first);
 }
 
 TEST(NativeDescriptorHeapSPIRV, PreservesEntireUInt64ChainAndNormalizesUInt32)

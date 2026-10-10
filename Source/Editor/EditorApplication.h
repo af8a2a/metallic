@@ -268,7 +268,6 @@ private:
     struct DisplayComposition {
         std::unique_ptr<render::Texture> texture;
         std::unique_ptr<render::TextureView> view;
-        render::vulkan::ImGuiTexture descriptor = 0;
         render::ResourceState state = render::ResourceState::Undefined;
     };
     std::vector<DisplayComposition> displayCompositions_;

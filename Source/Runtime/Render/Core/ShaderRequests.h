@@ -169,6 +169,10 @@ inline ShaderRequest makeColorResizeShaderRequest()
 inline ShaderRequest makeEditorDisplayShaderRequest(const char* entry, bool hdr,
     bool scRgbImage, bool sRGBAttachment, const std::string& whiteNits)
 {
+    if (std::string_view(entry) == "editorOutputVertex" || std::string_view(entry) == "editorOutputPQFragment") {
+        return {.module = "Features/PostProcess/EditorOutput", .entry = entry,
+            .descriptorHeapMode = SlangDescriptorHeapMode::Native};
+    }
     return {.module = "Features/PostProcess/EditorDisplay", .entry = entry,
         .defines = {{"DISPLAY_HDR", hdr ? "1" : "0"},
             {"DISPLAY_SCRGB_IMAGE", scRgbImage ? "1" : "0"},

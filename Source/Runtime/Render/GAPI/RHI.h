@@ -1382,7 +1382,6 @@ struct ComputePipelineImpl;
 struct GraphicsShaderObjectProgramImpl;
 struct BindlessHeapImpl;
 struct VulkanNativeAccess;
-struct ShaderBindingMappingDesc;
 } // namespace detail
 
 class Queue {
@@ -1973,8 +1972,6 @@ class Device {
 
 private:
     bool validShaderStage(const ShaderStageDesc& stage) const;
-    Result<std::unique_ptr<ComputePipeline>> createComputePipelineImpl(const ComputePipelineDesc& desc,
-        std::span<const detail::ShaderBindingMappingDesc> mappings);
     static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
 };
 

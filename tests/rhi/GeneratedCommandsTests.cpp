@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 
 #include <gtest/gtest.h>
 #include <array>
@@ -67,27 +68,6 @@ TEST(DeviceGeneratedCommands, ProbeShaderCompiles)
     EXPECT_FALSE(shader.spirv.empty());
 }
 
-struct ProbeResources {
-    VkDevice device;
-    const VolkDeviceTable& functions;
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    std::array<VkPipeline, 2> pipelines{};
-    std::array<VkShaderModule, 2> shaders{};
-
-    ~ProbeResources()
-    {
-        // Also protect cleanup after a failed submission/wait assertion.
-        functions.vkDeviceWaitIdle(device);
-        for (auto pipeline : pipelines) { if (pipeline) { functions.vkDestroyPipeline(device, pipeline, nullptr); } }
-        for (auto shader : shaders) { if (shader) { functions.vkDestroyShaderModule(device, shader, nullptr); } }
-        if (layout) { functions.vkDestroyPipelineLayout(device, layout, nullptr); }
-        if (pool) { functions.vkDestroyDescriptorPool(device, pool, nullptr); }
-        if (setLayout) { functions.vkDestroyDescriptorSetLayout(device, setLayout, nullptr); }
-    }
-};
-
 class GeneratedCommandsComputeTest final : public RHITest {
 public:
     GeneratedCommandsComputeTest()
@@ -113,18 +93,11 @@ public:
             return RHITestResult::skip("DGC compute pipeline binding unsupported");
         }
         const auto native = rv::nativeDevice(device);
-        ProbeResources resources{native.device, *native.functions};
-#define DGC_VK(expr) if ((expr) != VK_SUCCESS) { return RHITestResult::fail(#expr); }
+        std::array<std::unique_ptr<render::ComputePipeline>, 2> pipelines;
+        std::array<VkPipeline, 2> nativePipelines{};
 #define DGC_RHI(expr) if (!(expr)) { return RHITestResult::fail(#expr); }
-        const VkDescriptorSetLayoutBinding binding{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
-        const VkDescriptorSetLayoutCreateInfo setInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = 1, .pBindings = &binding};
-        DGC_VK(native.functions->vkCreateDescriptorSetLayout(native.device, &setInfo, nullptr, &resources.setLayout));
-        const VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
-        const VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .setLayoutCount = 1, .pSetLayouts = &resources.setLayout, .pushConstantRangeCount = 1, .pPushConstantRanges = &push};
-        DGC_VK(native.functions->vkCreatePipelineLayout(native.device, &layoutInfo, nullptr, &resources.layout));
+        // DGC updates index/value only; the DR output handle stays at byte 8.
+        const VkPushConstantRange push{VK_SHADER_STAGE_ALL, 0, 8};
         for (uint32_t i = 0; i < 2; ++i) {
             const render::SlangMacroDefine macro{"DGC_ADD", i ? "1000" : "0"};
             render::ShaderCompileResult shader;
@@ -134,34 +107,22 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                 .macroDefines = {&macro, 1},
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
-            const VkShaderModuleCreateInfo shaderInfo{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                .codeSize = shader.spirv.size() * 4, .pCode = shader.spirv.data()};
-            DGC_VK(native.functions->vkCreateShaderModule(native.device, &shaderInfo, nullptr, &resources.shaders[i]));
-            const VkPipelineCreateFlags2CreateInfo flags{.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
-                .flags = useGenerated ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0u};
-            const VkComputePipelineCreateInfo pipelineInfo{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                .pNext = &flags, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                    .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = resources.shaders[i], .pName = "main"},
-                .layout = resources.layout};
-            DGC_VK(native.functions->vkCreateComputePipelines(native.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &resources.pipelines[i]));
+            auto module = device.createShaderModule({.spirv = shader.spirv});
+            DGC_RHI(module);
+            DGC_RHI(device.createComputePipeline({.computeShader = {module->get(), "main"},
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = 12, .indirectBindable = useGenerated})
+                .transform([&](auto value) { pipelines[i] = std::move(value); }));
+            nativePipelines[i] = rv::nativePipeline(*pipelines[i]).pipeline;
         }
         std::unique_ptr<render::Buffer> output, arguments;
         DGC_RHI(device.createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         DGC_RHI(device.createBuffer({.size = 80, .usage = render::BufferUsageBits::Indirect,
             .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
-        const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
-        const VkDescriptorPoolCreateInfo poolInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &poolSize};
-        DGC_VK(native.functions->vkCreateDescriptorPool(native.device, &poolInfo, nullptr, &resources.pool));
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        const VkDescriptorSetAllocateInfo setAllocation{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = resources.pool, .descriptorSetCount = 1, .pSetLayouts = &resources.setLayout};
-        DGC_VK(native.functions->vkAllocateDescriptorSets(native.device, &setAllocation, &set));
-        const VkDescriptorBufferInfo bufferInfo{rv::nativeBuffer(*output).buffer, 0, 16};
-        const VkWriteDescriptorSet write{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
-            .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bufferInfo};
-        native.functions->vkUpdateDescriptorSets(native.device, 1, &write, 0, nullptr);
+        auto registry = render::ResourceRegistry::forDevice(device);
+        DGC_RHI(registry);
+        auto outputLease = (*registry)->storageBuffer(*output);
+        DGC_RHI(outputLease);
 
         std::vector<uint32_t> observations;
         // Exercise fixed state, pipeline switching, and explicit preprocessing.
@@ -171,11 +132,11 @@ public:
             const VkIndirectCommandsLayoutTokenEXT tokens[] = {
                 {.sType = VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_TOKEN_EXT, .type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_EXECUTION_SET_EXT,
                     .data = {.pExecutionSet = &executionToken}, .offset = 0},
-                {.sType = VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_TOKEN_EXT, .type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT,
+                {.sType = VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_TOKEN_EXT, .type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_DATA_EXT,
                     .data = {.pPushConstant = &pushToken}, .offset = 4},
                 {.sType = VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_TOKEN_EXT, .type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_DISPATCH_EXT, .offset = 12}};
             const VkIndirectExecutionSetPipelineInfoEXT pipelineSet{.sType = VK_STRUCTURE_TYPE_INDIRECT_EXECUTION_SET_PIPELINE_INFO_EXT,
-                .initialPipeline = resources.pipelines[0], .maxPipelineCount = 2};
+                .initialPipeline = nativePipelines[0], .maxPipelineCount = 2};
             const VkIndirectExecutionSetCreateInfoEXT executionSet{.sType = VK_STRUCTURE_TYPE_INDIRECT_EXECUTION_SET_CREATE_INFO_EXT,
                 .type = VK_INDIRECT_EXECUTION_SET_INFO_TYPE_PIPELINES_EXT, .info = {.pPipelineInfo = &pipelineSet}};
             rv::GeneratedCommands generated;
@@ -183,13 +144,13 @@ public:
                 DGC_RHI(generated.initialize(device, {
                     .layout = {.sType = VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_CREATE_INFO_EXT,
                         .flags = mode == 2 ? VK_INDIRECT_COMMANDS_LAYOUT_USAGE_EXPLICIT_PREPROCESS_BIT_EXT : 0u,
-                        .shaderStages = VK_SHADER_STAGE_COMPUTE_BIT, .indirectStride = 24, .pipelineLayout = resources.layout,
+                        .shaderStages = VK_SHADER_STAGE_COMPUTE_BIT, .indirectStride = 24, .pipelineLayout = VK_NULL_HANDLE,
                         .tokenCount = mode ? 3u : 2u, .pTokens = mode ? tokens : tokens + 1},
-                    .executionSet = mode ? &executionSet : nullptr, .pipeline = mode ? VK_NULL_HANDLE : resources.pipelines[0],
+                    .executionSet = mode ? &executionSet : nullptr, .pipeline = mode ? VK_NULL_HANDLE : nativePipelines[0],
                     .maxSequenceCount = 3}));
                 if (mode) {
                     const VkWriteIndirectExecutionSetPipelineEXT update{.sType = VK_STRUCTURE_TYPE_WRITE_INDIRECT_EXECUTION_SET_PIPELINE_EXT,
-                        .index = 1, .pipeline = resources.pipelines[1]};
+                        .index = 1, .pipeline = nativePipelines[1]};
                     DGC_RHI(generated.updatePipelines(std::span(&update, 1)));
                     DGC_RHI(generated.prepare());
                 }
@@ -211,11 +172,12 @@ public:
             DGC_RHI(device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
             struct Drain { render::Queue& queue; ~Drain() { (void)queue.waitIdle(); } } drain{context.graphicsQueue};
             DGC_RHI(commands->begin());
+            DGC_RHI((*registry)->bind(*commands, std::span(&*outputLease, 1)));
+            const uint32_t initialPush[]{0, 0, outputLease->shaderIndex()};
+            DGC_RHI(commands->bindExecution(pipelines[0]->execution(), initialPush, sizeof(initialPush)));
             {
                 rv::ExternalCommandScope scope(*commands);
                 const auto cmd = scope.commandBuffer();
-                native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
-                native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
                 const rv::GeneratedCommandsArguments args{.commands = arguments.get(), .offset = 8, .sequenceCount = 3,
                     .countBuffer = arguments.get()};
                 if (useGenerated) {
@@ -231,24 +193,24 @@ public:
                     DGC_RHI(generated.execute(*commands, args, mode == 2));
                 } else {
                     for (uint32_t index = 0; index < 2; ++index) {
-                        native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[mode && index ? 1 : 0]);
+                        native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, nativePipelines[mode && index ? 1 : 0]);
                         const uint32_t pushValues[]{index, index ? 9u : 7u};
-                        native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushValues), pushValues);
+                        const VkPushDataInfoEXT pushInfo{.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
+                            .data = {.address = pushValues, .size = sizeof(pushValues)}};
+                        native.functions->vkCmdPushDataEXT(cmd, &pushInfo);
                         native.functions->vkCmdDispatch(cmd, 1, 1, 1);
                     }
                 }
-                // Generated execution invalidates native binding state; explicitly establish all state again.
-                native.functions->vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
-                native.functions->vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
-                const uint32_t rebound[]{3, 777};
-                native.functions->vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(rebound), rebound);
-                native.functions->vkCmdDispatch(cmd, 1, 1, 1);
-                const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                    .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
-                const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-                native.functions->vkCmdPipelineBarrier2(cmd, &dependency);
             }
+            // Re-establish all DR state through RHI after native generated execution.
+            DGC_RHI((*registry)->bind(*commands, std::span(&*outputLease, 1)));
+            const uint32_t rebound[]{3, 777, outputLease->shaderIndex()};
+            DGC_RHI(commands->bindExecution(pipelines[0]->execution(), rebound, sizeof(rebound)));
+            DGC_RHI(commands->dispatch(1, 1, 1));
+            const render::MemoryBarrierDesc barrier{
+                .before = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
+                .after = {render::PipelineStageBits::Host, render::AccessBits::HostRead}};
+            DGC_RHI(commands->synchronize({.memory = {&barrier, 1}}));
             DGC_RHI(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
             DGC_RHI(context.graphicsQueue.submit({.commandBuffers = {submitted, 1}, .signalFence = fence.get()}));
@@ -267,7 +229,6 @@ public:
         bench::comparisonEvidence(context, {{"modes", {"fixed", "pipelineSet", "preprocess"}}, {"count", 2},
             {"maximumCount", 3}, {"values", {7, 9, 999}}, {"rebind", 777}}, observations, useGenerated);
 #undef DGC_RHI
-#undef DGC_VK
         return RHITestResult::pass();
     }
 };
