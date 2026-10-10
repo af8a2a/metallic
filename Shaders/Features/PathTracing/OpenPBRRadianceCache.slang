@@ -7,8 +7,8 @@ OpenPBRDiffuseSpecular openPbrSelectComponents(OpenPBRDiffuseSpecular value, uin
     return value;
 }
 
-OpenPBRDiffuseSpecular openPbrDirectComponents<TContext : IOpenPBRContext, TLights : ISurfaceLightProvider>(
-    OpenPBRPreparedClosure<TContext> prepared, inout TLights lights, uint replacedMask)
+OpenPBRDiffuseSpecular openPbrDirectComponents<TLights : ISurfaceLightProvider>(
+    SceneSurfaceClosure.Prepared prepared, inout TLights lights, uint replacedMask)
 {
     OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
     uint count = lights.count();

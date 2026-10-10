@@ -400,7 +400,14 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
         uint replacedMask = 0u;
 #if METALLIC_PT_SHARC
-        OpenPBRCacheAddress cacheAddress = openPbrCacheAddress(cache, hit, materialEval.inputs, material, interiorStack, viewDirection);
+        OpenPBRCacheAddress cacheAddress = (OpenPBRCacheAddress)0;
+#if METALLIC_CUSTOM_MATERIALS
+        // Slab's OpenPBR inputs are guide summaries, not its scattering model.
+        if (materialEval.family == 0u)
+#endif
+        {
+            cacheAddress = openPbrCacheAddress(cache, hit, materialEval.inputs, material, interiorStack, viewDirection);
+        }
         float3 cachedRadiance;
         if (push.debugView == kOpenPBRDebugViewFinal) {
             uint queryMask = openPbrCacheQuery(cache, cacheAddress, hit, rayCone, depth, previousScatterDelta, cachedRadiance);

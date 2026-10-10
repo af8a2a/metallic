@@ -526,6 +526,19 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
         ASSERT_TRUE(reused) << diagnostics;
         EXPECT_TRUE(hit);
         EXPECT_EQ(compiled->spirv, reused->spirv);
+        if (program == SceneShaderProgram::OpenPBRPathTrace) {
+            // The custom-material wrapper must expose component evaluation and
+            // sampling in both SHaRC paths, including the guide entry point.
+            for (const char* mode : {"SHARC_QUERY", "SHARC_UPDATE"}) {
+                for (const auto entry : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                    const SlangMacroDefine define{mode, "1"};
+                    const auto request = makeSceneShaderRequest(entry, options, {&define, 1});
+                    const ShaderRequestView source(request);
+                    const auto cachedPath = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+                    ASSERT_TRUE(cachedPath) << mode << ": " << request.entry << '\n' << diagnostics;
+                }
+            }
+        }
     }
     std::filesystem::remove(root / "Sample/Scene.gltf");
     EXPECT_TRUE(metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR).empty());

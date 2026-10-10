@@ -23,6 +23,22 @@ struct ScenePreparedSurfaceClosure : IWeightedPreparedSurfaceClosure
     {
         return family == 0u ? openPBR.sampleWeighted(random) : slab.sampleWeighted(random);
     }
+    OpenPBRDiffuseSpecular evalProjectedComponents(float3 wi)
+    {
+        if (family == 0u) { return openPBR.evalProjectedComponents(wi); }
+        // Current single/mixed/layered Slab closures contain only diffuse scattering.
+        OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
+        result.diffuse = slab.evalProjected(wi);
+        return result;
+    }
+    BSDFWeightSample sampleWeightedComponents(float3 random, out OpenPBRDiffuseSpecular components)
+    {
+        if (family == 0u) { return openPBR.sampleWeightedComponents(random, components); }
+        BSDFWeightSample result = slab.sampleWeighted(random);
+        components = openPBRMakeZeroDiffuseSpecular();
+        components.diffuse = result.weight;
+        return result;
+    }
 };
 
 struct SceneSurfaceClosure : ISurfaceClosure
