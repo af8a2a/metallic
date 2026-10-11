@@ -81,13 +81,10 @@ struct SceneShaderOptions {
     bool customMaterials = false;
     bool globalView = false;
     bool hasRTXCR = false;
-    bool hasNTC = false;
-    bool cooperativeVector = false;
     bool deferredFloat16 = true;
     bool upscalerGuides = false;
     std::string materialInclude;
     std::string rtxcrInclude;
-    std::string ntcInclude;
 };
 
 inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const SceneShaderOptions& options,
@@ -101,7 +98,6 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
         request.capabilities.insert(request.capabilities.begin(),
             {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"});
     }
-    if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
     if (program == SceneShaderProgram::OpenPBRSharcResolve) {
         // OpenPBR's lobe/direction keys cannot be decoded as SHaRC grid positions.
         request.defines.emplace_back("SHARC_BLEND_ADJACENT_LEVELS", "0");
@@ -114,8 +110,6 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
         {"METALLIC_CUSTOM_MATERIALS", flag(options.customMaterials)},
         {"METALLIC_GLOBAL_VIEW", flag(options.globalView)},
         {"METALLIC_HAS_RTXCR", flag(!deferred && options.hasRTXCR)},
-        {"METALLIC_HAS_NTC", flag(options.hasNTC)},
-        {"METALLIC_NTC_COOPERATIVE_VECTOR", flag(options.cooperativeVector)},
         {"METALLIC_DEFERRED_LIGHT_GRID", flag(deferred)},
         {"METALLIC_REALTIME_DEFERRED", flag(deferred)},
     };
@@ -124,19 +118,12 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
     for (const auto& define : extraDefines) { request.defines.emplace_back(define.name, define.value); }
     if (options.customMaterials) { request.searchPaths.push_back(options.materialInclude); }
     if (!deferred && options.hasRTXCR) { request.searchPaths.push_back(options.rtxcrInclude); }
-    if (options.hasNTC) { request.searchPaths.push_back(options.ntcInclude); }
     return request;
 }
 
 enum class SceneRayQueryProgram { RTXDI, MaterialVisualization };
 
-struct SceneRayQueryOptions {
-    bool hasNTC = false;
-    bool cooperativeVector = false;
-    std::string ntcInclude;
-};
-
-inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program, const SceneRayQueryOptions& options)
+inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program)
 {
     ShaderRequest request;
     if (program == SceneRayQueryProgram::RTXDI) {
@@ -147,10 +134,6 @@ inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program, cons
         request.entry = "sceneMaterialVisualizeMain";
     }
     request.capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"};
-    if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
-    request.defines = {{"METALLIC_HAS_NTC", options.hasNTC ? "1" : "0"},
-        {"METALLIC_NTC_COOPERATIVE_VECTOR", options.cooperativeVector ? "1" : "0"}};
-    if (options.hasNTC) { request.searchPaths.push_back(options.ntcInclude); }
     return request;
 }
 
@@ -174,20 +157,10 @@ inline ShaderRequest makeEditorDisplayShaderRequest(const char* entry, bool hdr,
         .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
 }
 
-struct ShadowShaderOptions {
-    bool hasNTC = false;
-    bool cooperativeVector = false;
-    std::string ntcInclude;
-};
-
-inline ShaderRequest makeShadowShaderRequest(const ShadowShaderOptions& options)
+inline ShaderRequest makeShadowShaderRequest()
 {
     ShaderRequest request{.module = "Features/Lighting/ScreenSpaceShadows", .entry = "rayTracedShadowsMain",
-        .capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"},
-        .defines = {{"METALLIC_HAS_NTC", options.hasNTC ? "1" : "0"},
-            {"METALLIC_NTC_COOPERATIVE_VECTOR", options.cooperativeVector ? "1" : "0"}}};
-    if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
-    if (options.hasNTC) { request.searchPaths.push_back(options.ntcInclude); }
+        .capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"}};
     return request;
 }
 

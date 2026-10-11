@@ -149,7 +149,7 @@ The realtime deferred variants include upscaler guides and opaque/transmission
 StreamAsset paths. RTXCR sample requests are added only when its SDK is configured.
 
 This is a bounded warmup set, not every combination of runtime properties.
-Optional NTC and NRD SDK permutations, local-view deferred variants, and other
+Optional NRD SDK permutations, local-view deferred variants, and other
 unlisted combinations continue to compile on demand. No cache is required to run.
 
 When adding or changing requests, copy the owning runtime pass's module, entry,

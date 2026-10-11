@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/NeuralTextureResources.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
@@ -132,7 +131,6 @@ public:
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot() const;
     // Source-image indexed KTX tail selection; non-KTX entries are zero.
     const std::vector<uint32_t>& materialTextureFirstMips() const;
-    const NeuralTextureResources& neuralTextures() const;
 
 private:
     struct Impl;

@@ -8,8 +8,9 @@ public struct PathTraceTextureInfo
 {
     public uint textureIndex;
     public uint texCoord;
-    public uint ntcTextureSetIndex;
-    public uint ntcChannelMapping;
+    // Preserve the 48-byte texture descriptor ABI; ordinary materials use textureIndex only.
+    public uint reserved0;
+    public uint reserved1;
     public float4 transform0;
     public float4 transform1;
 };

@@ -92,10 +92,10 @@ public:
             return RHITestResult::fail("Recovery recompiled instance parameters or retained an error");
         }
         input[0].params[0] = 1;
-        input[0].metallicRoughnessTexture.ntcTextureSetIndex = 0;
-        auto neural = MaterialGeneration::create(input, 11, log);
-        if (!neural || neural->features()[0].surfaceProgram != material::SurfaceProgramClass::Opaque) {
-            return RHITestResult::fail("NTC metalness was incorrectly specialized as a constant conductor");
+        input[0].metallicRoughnessTexture.textureIndex = 0;
+        auto textured = MaterialGeneration::create(input, 11, log);
+        if (!textured || textured->features()[0].surfaceProgram != material::SurfaceProgramClass::Opaque) {
+            return RHITestResult::fail("Textured metalness was incorrectly specialized as a constant conductor");
         }
         const scene::RenderMaterial single;
         if (MaterialGeneration::create(input, 12, log, {&single, 1}) || log.empty()) {

@@ -95,12 +95,11 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
         shading.params.x = type == 1u ? 0.0 : (type == 2u ? 1.0 : 0.5);
         shading.glassParams.x = type == 4u ? 1.0 : 0.0;
         shading.metallicRoughnessTexture.textureIndex = 0xffffffffu;
-        shading.metallicRoughnessTexture.ntcTextureSetIndex = 0xffffffffu;
         if (i == 1u || i == 2u) {
             shading.params.x = 1.0;
             shading.glassParams.x = 0.0;
             if (i == 1u) { shading.metallicRoughnessTexture.textureIndex = 7u; }
-            else { shading.metallicRoughnessTexture.ntcTextureSetIndex = 0u; }
+            else { shading.metallicRoughnessTexture.textureIndex = 8u; }
         }
         gShadingMaterials[i] = shading;
     }

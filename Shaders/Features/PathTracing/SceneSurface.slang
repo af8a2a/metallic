@@ -27,8 +27,6 @@ using Metallic.Lighting;
 #define STF_ALLOW_WAVE_READ 0
 #endif
 #include "../../../External/Rtxtf/STFSamplerState.hlsli"
-import NeuralTextures;
-using Metallic.Interop.NeuralTextures;
 
 
 import RTXCRHair;
@@ -118,7 +116,7 @@ struct ScenePathTracePush
     uint environmentVisible;
     uint outputLinear;      // when set, write linear HDR for the downstream composite
     uint cacheMode;         // METALLIC_CACHE_MODE_*
-    uint ntcTextureSetCount;
+    uint reservedTextureData;
     uint debugView;
     uint debugFlags;
     float jitterOffsetX;
@@ -746,11 +744,6 @@ bool hasMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush pus
         textureInfo.textureIndex < push.materialTextureCount;
 }
 
-bool hasNeuralMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush push)
-{
-    return metallicHasNeuralTexture(textureInfo.ntcTextureSetIndex, push.ntcTextureSetCount);
-}
-
 float2 transformMaterialUv(PathTraceTextureInfo textureInfo, float2 uv)
 {
     return float2(
@@ -834,29 +827,6 @@ float4 loadMaterialTextureMip0(
     float4 fallback,
     ScenePathTracePush push)
 {
-    if (hasNeuralMaterialTexture(textureInfo, push)) {
-        uint2 dimensions;
-        uint mipCount;
-        if (!metallicNeuralTextureDimensions(
-                textureInfo.ntcTextureSetIndex,
-                push.ntcTextureSetCount,
-                0u,
-                dimensions,
-                mipCount)) {
-            return fallback;
-        }
-        float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
-        int2 texel = int2(min(
-            uint2(wrappedUv * float2(dimensions)),
-            dimensions - uint2(1u, 1u)));
-        return metallicSampleNeuralTexture(
-            textureInfo.ntcTextureSetIndex,
-            push.ntcTextureSetCount,
-            textureInfo.ntcChannelMapping,
-            texel,
-            0,
-            fallback);
-    }
     if (!hasMaterialTexture(textureInfo, push)) {
         return fallback;
     }
@@ -888,9 +858,6 @@ float4 loadMaterialTextureMip0(
 
 float loadMaterialAlphaCoverage(PathTraceTextureInfo textureInfo, float2 uv, ScenePathTracePush push)
 {
-    if (hasNeuralMaterialTexture(textureInfo, push)) {
-        return loadMaterialTextureMip0(textureInfo, uv, float4(1.0), push).a;
-    }
     if (!hasMaterialTexture(textureInfo, push)) { return 1.0; }
     requestStreamTextureMip0(textureInfo.textureIndex);
     return sampleAlphaCoverage(gMaterialTextures(textureInfo.textureIndex), transformMaterialUv(textureInfo, uv), uint(ceil(materialTextureSamplingFloor(textureInfo.textureIndex))));
@@ -907,57 +874,6 @@ float4 loadMaterialTexture(
     inout uint seed,
     TextureFootprint footprint = (TextureFootprint)0)
 {
-    if (hasNeuralMaterialTexture(textureInfo, push)) {
-        uint2 baseDimensions;
-        uint mipCount;
-        if (!metallicNeuralTextureDimensions(
-                textureInfo.ntcTextureSetIndex,
-                push.ntcTextureSetCount,
-                0u,
-                baseDimensions,
-                mipCount)) {
-            return fallback;
-        }
-
-        float mipLevel = rayConeTextureLod(
-            textureInfo,
-            rayCone,
-            hit,
-            rayDirection,
-            baseDimensions.x,
-            baseDimensions.y,
-            mipCount, footprint);
-        STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
-        float3 samplePosition = samplerState.Texture2DGetSamplePosLevel(
-            baseDimensions.x,
-            baseDimensions.y,
-            mipCount,
-            transformMaterialUv(textureInfo, uv),
-            mipLevel);
-        uint sampleMip = min(uint(max(samplePosition.z, 0.0)), mipCount - 1u);
-        uint2 mipDimensions;
-        uint ignoredMipCount;
-        metallicNeuralTextureDimensions(
-            textureInfo.ntcTextureSetIndex,
-            push.ntcTextureSetCount,
-            sampleMip,
-            mipDimensions,
-            ignoredMipCount);
-        bool border;
-        samplePosition.xy = STF_ApplyAddressingMode2D(
-            samplePosition.xy,
-            mipDimensions,
-            uint2(STF_ADDRESS_MODE_WRAP, STF_ADDRESS_MODE_WRAP),
-            border);
-        int2 texel = int2(floor(samplePosition.xy * float2(mipDimensions)));
-        return metallicSampleNeuralTexture(
-            textureInfo.ntcTextureSetIndex,
-            push.ntcTextureSetCount,
-            textureInfo.ntcChannelMapping,
-            texel,
-            int(sampleMip),
-            fallback);
-    }
     if (!hasMaterialTexture(textureInfo, push)) {
         return fallback;
     }

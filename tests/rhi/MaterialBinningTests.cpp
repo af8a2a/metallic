@@ -386,7 +386,7 @@ public:
                 }
             }
         }
-        return RHITestResult::pass("257 materials in five feature classes; exact wave32 tile masks, edges, background, texture/NTC conservatism, feature edits, resize/reuse and 2D indirect coverage");
+        return RHITestResult::pass("257 materials in five feature classes; exact wave32 tile masks, edges, background, texture conservatism, feature edits, resize/reuse and 2D indirect coverage");
     }
 private:
     bool typed_;

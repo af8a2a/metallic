@@ -796,33 +796,12 @@ uint32_t materialTextureIndex(
 
 ScenePathTraceGPUMaterial::TextureInfo makeGpuTextureInfo(
     const scene::RenderTextureInfo& textureInfo,
-    const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
-    const std::vector<uint32_t>& neuralTextureSetIndexMap,
     std::string& log,
     std::string_view textureLabel)
 {
     ScenePathTraceGPUMaterial::TextureInfo gpuTextureInfo;
     gpuTextureInfo.textureIndex = materialTextureIndex(textureInfo.textureIndex, textureIndexMap);
-    if (textureInfo.textureIndex >= 0 &&
-        static_cast<size_t>(textureInfo.textureIndex) < loadedScene.textures().size() &&
-        static_cast<size_t>(textureInfo.textureIndex) < neuralTextureSetIndexMap.size()) {
-        const scene::RenderTexture& logicalTexture =
-            loadedScene.textures()[static_cast<size_t>(textureInfo.textureIndex)];
-        gpuTextureInfo.ntcTextureSetIndex =
-            neuralTextureSetIndexMap[static_cast<size_t>(textureInfo.textureIndex)];
-        if (gpuTextureInfo.ntcTextureSetIndex != kInvalidNeuralTextureSetIndex) {
-            gpuTextureInfo.ntcChannelMapping = 0xffffffffu;
-            for (uint32_t channelIndex = 0; channelIndex < logicalTexture.ntcChannelCount;
-                 ++channelIndex) {
-                const uint32_t channel =
-                    static_cast<uint8_t>(logicalTexture.ntcChannels[channelIndex]);
-                gpuTextureInfo.ntcChannelMapping &= ~(0xffu << (channelIndex * 8u));
-                gpuTextureInfo.ntcChannelMapping |= channel << (channelIndex * 8u);
-            }
-            gpuTextureInfo.textureIndex = kInvalidMaterialTextureIndex;
-        }
-    }
     if (textureInfo.texCoord > 0) {
         if (gpuTextureInfo.textureIndex != kInvalidMaterialTextureIndex) {
             appendScenePathTraceWarning(
@@ -856,9 +835,7 @@ float alphaModeCode(const std::string& alphaMode)
 
 ScenePathTraceGPUMaterial makeMaterial(
     const scene::RenderMaterial& authoredMaterial,
-    const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
-    const std::vector<uint32_t>& neuralTextureSetIndexMap,
     std::string& log)
 {
     const auto material = resolveWorkingMaterial(authoredMaterial);
@@ -924,18 +901,14 @@ ScenePathTraceGPUMaterial makeMaterial(
                                      std::string_view label) {
         return makeGpuTextureInfo(
             info,
-            loadedScene,
             textureIndexMap,
-            neuralTextureSetIndexMap,
             log,
             label);
     };
     gpuMaterial.baseColorTexture = makeTextureInfo(material.baseColorTexture, "baseColorTexture");
     gpuMaterial.metallicRoughnessTexture = makeGpuTextureInfo(
         material.metallicRoughnessTexture,
-        loadedScene,
         textureIndexMap,
-        neuralTextureSetIndexMap,
         log,
         "metallicRoughnessTexture");
     gpuMaterial.normalTexture = makeTextureInfo(material.normalTexture, "normalTexture");
@@ -957,7 +930,6 @@ ScenePathTraceGPUMaterial makeMaterial(
 std::vector<ScenePathTraceGPUMaterial> buildGpuMaterials(
     const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
-    const std::vector<uint32_t>& neuralTextureSetIndexMap,
     std::string& log)
 {
     std::vector<ScenePathTraceGPUMaterial> materials;
@@ -968,9 +940,7 @@ std::vector<ScenePathTraceGPUMaterial> buildGpuMaterials(
         for (const scene::RenderMaterial& material : loadedScene.materials()) {
             materials.push_back(makeMaterial(
                 material,
-                loadedScene,
                 textureIndexMap,
-                neuralTextureSetIndexMap,
                 log));
         }
     }
@@ -1065,7 +1035,6 @@ struct ScenePathTraceResources::Impl {
         std::unique_ptr<CommandBuffer> acquireCommands;
         std::unique_ptr<Semaphore> timeline;
         uint64_t completionValue = 0;
-        bool includesNeuralUploads = false;
         SceneResourceLogClock::time_point copySubmitted{}, acquireSubmitted{};
         bool copyObserved = false, acquireObserved = false;
         uint64_t observedCompletionValue = 0;
@@ -1580,7 +1549,7 @@ struct ScenePathTraceResources::Impl {
 
     uint64_t pendingUploadByteSize() const
     {
-        uint64_t byteSize = neuralTextures.pendingUploadByteSize() + pendingTextureBytes;
+        uint64_t byteSize = pendingTextureBytes;
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
             byteSize += upload.byteSize;
         }
@@ -1589,8 +1558,7 @@ struct ScenePathTraceResources::Impl {
 
     uint32_t pendingUploadRegionCount() const
     {
-        uint64_t regionCount = bufferUploads.size() +
-            neuralTextures.pendingUploadRegionCount() + pendingTextureRegions;
+        uint64_t regionCount = bufferUploads.size() + pendingTextureRegions;
         return static_cast<uint32_t>(std::min<uint64_t>(regionCount, UINT32_MAX));
     }
 
@@ -1601,11 +1569,6 @@ struct ScenePathTraceResources::Impl {
         }
         if (asyncTextureCursor >= asyncReferencedTextures.size() ||
             !asyncReferencedTextures[asyncTextureCursor]) {
-            return 0;
-        }
-        if (neuralTextures.logicalTextureSetIndex(
-                static_cast<uint32_t>(asyncTextureCursor)) !=
-            kInvalidNeuralTextureSetIndex) {
             return 0;
         }
         const scene::RenderTexture& texture = loadedScene.textures()[asyncTextureCursor];
@@ -1636,11 +1599,6 @@ struct ScenePathTraceResources::Impl {
         }
         if (asyncTextureCursor >= asyncReferencedTextures.size() ||
             !asyncReferencedTextures[asyncTextureCursor]) {
-            return 0;
-        }
-        if (neuralTextures.logicalTextureSetIndex(
-                static_cast<uint32_t>(asyncTextureCursor)) !=
-            kInvalidNeuralTextureSetIndex) {
             return 0;
         }
         const scene::RenderTexture& texture = loadedScene.textures()[asyncTextureCursor];
@@ -1697,13 +1655,7 @@ struct ScenePathTraceResources::Impl {
         // creating or submitting the graphics acquire step subsequently fails.
         auto& batch = uploadBatches.emplace_back(std::make_unique<UploadBatch>());
         batch->staging = stagingArena.takeUsedPages();
-        batch->includesNeuralUploads = neuralTextures.pendingUploadRegionCount() != 0;
-        // vkCmdConvertCooperativeVectorMatrixNV requires a graphics or compute
-        // capable command buffer, so keep CoopVec weight conversion off a
-        // transfer-only queue.
-        Queue* uploadQueue = neuralTextures.cooperativeVectorActive()
-            ? &graphicsQueue
-            : device.getQueue(QueueType::Copy);
+        Queue* uploadQueue = device.getQueue(QueueType::Copy);
         if (uploadQueue == nullptr) {
             uploadQueue = &graphicsQueue;
         }
@@ -1737,10 +1689,6 @@ struct ScenePathTraceResources::Impl {
             if (!result) {
                 return result;
             }
-        }
-        result = neuralTextures.recordUploads(*batch->uploadCommands);
-        if (!result) {
-            return result;
         }
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
             {
@@ -1898,9 +1846,6 @@ struct ScenePathTraceResources::Impl {
         while (!uploadBatches.empty() && (uploadBatches.front()->completionValue == 0 ||
             uploadBatches.front()->observedCompletionValue >= uploadBatches.front()->completionValue)) {
             auto& batch = *uploadBatches.front();
-            if (batch.includesNeuralUploads) {
-                neuralTextures.releaseUploadBuffers();
-            }
             stagingArena.recycle(std::move(batch.staging));
             if (batch.completionValue != 0) {
                 ++uploadStats.completedBatches;
@@ -1959,7 +1904,7 @@ struct ScenePathTraceResources::Impl {
         std::vector<Probe> probes;
         std::vector<bool> visited(scene.images().size());
         for (size_t t = 0; t < scene.textures().size(); ++t) {
-            if (!referenced[t] || neuralTextures.logicalTextureSetIndex(uint32_t(t)) != kInvalidNeuralTextureSetIndex) { continue; }
+            if (!referenced[t]) { continue; }
             ++textureStats.logicalTextureCount;
             const auto imageIndex = scene.textures()[t].imageIndex;
             if (imageIndex < 0 || size_t(imageIndex) >= scene.images().size()) { continue; }
@@ -2119,10 +2064,6 @@ struct ScenePathTraceResources::Impl {
         lastUploadProgress = textureLoadBegin;
         ktxReader = std::make_unique<Ktx2MipReader>();
         decodedKtxScratch.clear();
-        Result<> result = neuralTextures.prepare(device, loadedScene, log);
-        if (!result) {
-            return result;
-        }
         materialTextures.clear();
         materialTextureViews.clear();
         materialTextureCount = 0;
@@ -2134,7 +2075,7 @@ struct ScenePathTraceResources::Impl {
             kInvalidMaterialTextureIndex);
         asyncReferencedTextures = referencedMaterialTextures(loadedScene);
         asyncTextureCursor = 0;
-        result = planTextureResources(device,loadedScene,log);
+        Result<> result = planTextureResources(device,loadedScene,log);
         if (!result) { return result; }
 
         std::vector<Ktx2PrefetchRequest> requests;
@@ -2142,7 +2083,7 @@ struct ScenePathTraceResources::Impl {
         // Admission follows logical texture order, so a later ready result can
         // never hold all credits ahead of an unscheduled earlier texture.
         for (size_t t = 0; t < loadedScene.textures().size(); ++t) {
-            if (!asyncReferencedTextures[t] || neuralTextures.logicalTextureSetIndex(uint32_t(t)) != kInvalidNeuralTextureSetIndex) { continue; }
+            if (!asyncReferencedTextures[t]) { continue; }
             const auto image = loadedScene.textures()[t].imageIndex;
             if (image < 0 || size_t(image) >= ktxImages.size() || !ktxImages[image] || prefetchedImages[image]) { continue; }
             if (Ktx2TexturePrefetch::requiredBytes(*ktxImages[image], ktxFirstMips[image]) > kTexturePrefetchBytes) { continue; }
@@ -2186,10 +2127,6 @@ struct ScenePathTraceResources::Impl {
             const scene::RenderTexture& logicalTexture = loadedScene.textures()[textureIndex];
             if (textureIndex >= asyncReferencedTextures.size() ||
                 !asyncReferencedTextures[textureIndex]) {
-                return {};
-            }
-            if (neuralTextures.logicalTextureSetIndex(textureIndex) !=
-                kInvalidNeuralTextureSetIndex) {
                 return {};
             }
             if (logicalTexture.imageIndex >= 0 &&
@@ -2423,7 +2360,6 @@ struct ScenePathTraceResources::Impl {
         pendingMaterialGeneration.reset();
         pendingMaterialValues.reset();
         pendingValueBuffer.reset();
-        neuralTextures.clear();
         materialTextures.clear();
         materialTextureViews.clear();
         materialTextureCount = 0;
@@ -2522,7 +2458,6 @@ struct ScenePathTraceResources::Impl {
     std::shared_ptr<const MaterialGeneration> pendingMaterialGeneration;
     std::shared_ptr<const MaterialValueProgramSet> pendingMaterialValues;
     std::unique_ptr<Buffer> pendingValueBuffer;
-    NeuralTextureResources neuralTextures;
     SceneUploadStagingArena stagingArena;
     std::vector<ScenePathTraceBufferUpload> bufferUploads;
     std::vector<ScenePathTraceMaterialTexture> materialTextures;
@@ -2735,7 +2670,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
         }
         case Impl::AsyncPrepareStage::GPUPayload:
             impl_->asyncGpuScene.materials = buildGpuMaterials(*impl_->asyncScene,
-                impl_->textureIndexMap, impl_->neuralTextures.logicalTextureSetIndices(), log);
+                impl_->textureIndexMap, log);
             impl_->asyncBufferStep = 0;
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
             continue;
@@ -2936,7 +2871,6 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         std::vector<ScenePathTraceGPUMaterial> materials = buildGpuMaterials(
             *boundScene,
             impl_->textureIndexMap,
-            impl_->neuralTextures.logicalTextureSetIndices(),
             log);
         stampTextureFormats(materials,impl_->materialTextures);
         std::string materialLog;
@@ -3060,11 +2994,6 @@ const std::vector<uint32_t>& ScenePathTraceResources::materialTextureFirstMips()
 uint32_t ScenePathTraceResources::materialTextureCount() const
 {
     return impl_->materialTextureCount;
-}
-
-const NeuralTextureResources& ScenePathTraceResources::neuralTextures() const
-{
-    return impl_->neuralTextures;
 }
 
 bool ScenePathTraceResources::textureUploadsReady() const

@@ -109,8 +109,8 @@ struct ScreenSpaceShadows::State {
 void ScreenSpaceShadows::clear()
 {
     state_.reset();
-    for (auto& trace : traces_) { trace.clear(); }
-    for (auto& encoder : traceEncoders_) { encoder.clear(); }
+    trace_.clear();
+    traceEncoder_.clear();
 }
 
 Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
@@ -157,11 +157,8 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         log = "Ray-traced shadows require the CLAS TLAS and geometry buffers from the same streaming session";
         return makeError(Error::InvalidArgument);
     }
-    const auto* neural = &geometry->neuralTextures();
-    const bool ntc = neural->active();
-    const bool coop = ntc && neural->cooperativeVectorActive();
     profile.next("Prepare trace pipeline");
-    auto& trace = traces_[ntc ? (coop ? 2 : 1) : 0];
+    auto& trace = trace_;
     constexpr ComputeResourceMember shadowOutputs[] = {
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, penumbra),
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowNormal),
@@ -169,22 +166,15 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowMotion),
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowOutput)
     };
-    const auto traceIndex = ntc ? (coop ? 2 : 1) : 0;
     const uint32_t textureCount = geometry->materialTextureCount();
-    if (trace.valid() && traceTextureCounts_[traceIndex] != textureCount) {
+    if (trace.valid() && traceTextureCount_ != textureCount) {
         if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ComputeKernel>(std::move(trace))); }
         else { (void)device.waitIdle(); trace.clear(); }
-        traceEncoders_[traceIndex].clear();
+        traceEncoder_.clear();
     }
-    traceTextureCounts_[traceIndex] = textureCount;
+    traceTextureCount_ = textureCount;
     if (!trace.valid()) {
-        ShadowShaderOptions shaderOptions{
-            .hasNTC = ntc, .cooperativeVector = coop,
-        };
-#if METALLIC_HAS_NTC
-        shaderOptions.ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR;
-#endif
-        const auto request = makeShadowShaderRequest(shaderOptions);
+        const auto request = makeShadowShaderRequest();
         const ShaderRequestView source(request);
         ShaderCompileResult shader;
         auto result = ShaderRegistry::instance().getShader(source.desc(), shader.diagnostics)
@@ -205,14 +195,6 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
             for (const auto member : {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount)}) { layout.push_back({.binding = member}); }
         }
-        if (ntc) {
-            layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents), .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kMaxNeuralTextureSets});
-            layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants)});
-            layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights)});
-            layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo)});
-            layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler), .kind = ComputeResourceBindingKind::Sampler});
-        }
         result = initializeResourceKernel(device, {
             .spirv = shader.spirv,
             .pushConstantSize = 8u,
@@ -220,7 +202,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             .debugName = "Ray-traced shadows",
             .requiresRayQuery = true,
             .resourceParameterSize = sizeof(SceneResourceParameters),
-        }, trace, traceEncoders_[traceIndex], log);
+        }, trace, traceEncoder_, log);
         if (!result) { return makeError(result.error()); }
     }
     profile.next("Prepare shadow images");
@@ -354,19 +336,9 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), .buffer = streamGeometry->activeHeaderBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = streamGeometry->paramsBuffer});
         geometryPush[0] = textureCount;
-        geometryPush[1] = ntc ? neural->textureSetCount() : 0u;
+        geometryPush[1] = 0u; // Reserved texture data.
     }
 
-    if (ntc) {
-        bindings.push_back({
-            .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
-            .textureViews = {neural->latentTextureViews().data(), kMaxNeuralTextureSets},
-        });
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants), .buffer = neural->constantsBuffer()});
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights), .buffer = neural->weightsBuffer()});
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo), .buffer = neural->setInfoBuffer()});
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler), .sampler = &neural->latentSampler()});
-    }
     profile.next("Record trace dispatch");
     if (geometry) {
         const auto inputs = geometry->materialBinding();
@@ -376,7 +348,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     result = enterStage(1);
     if (!result) { return makeError(result.error()); }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
-    result = dispatchResources(trace, traceEncoders_[traceIndex], {
+    result = dispatchResources(trace, traceEncoder_, {
         .commandBuffer = &commands,
         .bindings = bindings,
         .pushData = geometryPush,

@@ -1,6 +1,6 @@
 option(METALLIC_ENABLE_NTC
-    "Enable NVIDIA Neural Texture Compression inference-on-sample support"
-    ON)
+    "Build reserved NVIDIA Neural Texture Compression support for future VT work"
+    OFF)
 set(RTXNTC_ROOT "" CACHE PATH
     "RTXNTC checkout or RTXNTC-Library directory used by Metallic")
 
@@ -29,7 +29,7 @@ if(METALLIC_ENABLE_NTC)
 endif()
 
 if(METALLIC_NTC_LIBRARY_ROOT)
-    # Metallic performs inference directly in its Slang shaders. LibNTC's
+    # Reserved NTC experiments can perform inference in isolated Slang shaders. LibNTC's
     # Vulkan backend is used only to query and convert cooperative-vector
     # weights; CUDA, DX12, and precompiled decompression shaders remain unused.
     set(NTC_BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -53,7 +53,8 @@ if(METALLIC_NTC_LIBRARY_ROOT)
     endif()
     add_subdirectory(
         "${METALLIC_NTC_LIBRARY_ROOT}"
-        "${CMAKE_BINARY_DIR}/External/RTXNTC-Library")
+        "${CMAKE_BINARY_DIR}/External/RTXNTC-Library"
+        EXCLUDE_FROM_ALL)
     if(MSVC AND TARGET libntc)
         # Metallic uses the DLL CRT. LibNTC defaults its static-library target
         # to /MT, which otherwise produces LNK2038 in Debug configurations.
@@ -66,5 +67,5 @@ if(METALLIC_NTC_LIBRARY_ROOT)
 else()
     set(METALLIC_NTC_SHADER_INCLUDE_DIR "")
     message(STATUS
-        "RTXNTC Library was not found; Neural Texture Compression support is disabled")
+        "Reserved NTC support is disabled or RTXNTC Library was not found")
 endif()

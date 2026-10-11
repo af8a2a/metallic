@@ -13,8 +13,6 @@ using Metallic.Lighting;
 
 import NRDEncoding;
 using Metallic.Interop.NRDEncoding;
-import NeuralTextures;
-using Metallic.Interop.NeuralTextures;
 
 #define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
@@ -44,8 +42,8 @@ struct RTXDITextureInfo
 {
     uint textureIndex;
     uint texCoord;
-    uint ntcTextureSetIndex;
-    uint ntcChannelMapping;
+    uint reserved0;
+    uint reserved1;
     float4 transform0;
     float4 transform1;
 };
@@ -167,7 +165,7 @@ struct SceneRTXDIPush
     float exposure;
     float normalThreshold;
     float depthThreshold;
-    uint ntcTextureSetCount;
+    uint reservedTextureData;
     uint outputLinear;
 };
 
@@ -553,11 +551,6 @@ bool hasMaterialTexture(RTXDITextureInfo textureInfo, SceneRTXDIPush push)
         textureInfo.textureIndex < push.materialTextureCount;
 }
 
-bool hasNeuralMaterialTexture(RTXDITextureInfo textureInfo, SceneRTXDIPush push)
-{
-    return metallicHasNeuralTexture(textureInfo.ntcTextureSetIndex, push.ntcTextureSetCount);
-}
-
 float2 transformMaterialUv(RTXDITextureInfo textureInfo, float2 uv)
 {
     return float2(
@@ -573,29 +566,6 @@ float4 loadMaterialTexture(
     float4 fallback,
     SceneRTXDIPush push)
 {
-    if (hasNeuralMaterialTexture(textureInfo, push)) {
-        uint2 dimensions;
-        uint mipCount;
-        if (!metallicNeuralTextureDimensions(
-                textureInfo.ntcTextureSetIndex,
-                push.ntcTextureSetCount,
-                0u,
-                dimensions,
-                mipCount)) {
-            return fallback;
-        }
-        float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
-        int2 texel = int2(min(
-            uint2(wrappedUv * float2(dimensions)),
-            dimensions - uint2(1u, 1u)));
-        return metallicSampleNeuralTexture(
-            textureInfo.ntcTextureSetIndex,
-            push.ntcTextureSetCount,
-            textureInfo.ntcChannelMapping,
-            texel,
-            0,
-            fallback);
-    }
     if (!hasMaterialTexture(textureInfo, push)) {
         return fallback;
     }
@@ -635,9 +605,7 @@ bool alphaMaskAcceptsHit(HitInfo hit, SceneRTXDIPush push)
         needsAlpha = program.usesBaseAlpha(coverageInstanceRef(hit.materialIndex));
     }
     if (needsAlpha) {
-        if (hasNeuralMaterialTexture(material.baseColorTexture, push)) {
-            context.baseAlpha *= loadMaterialTexture(material.baseColorTexture, context.uv, float4(1.0), push).a;
-        } else if (hasMaterialTexture(material.baseColorTexture, push)) {
+        if (hasMaterialTexture(material.baseColorTexture, push)) {
             requestStreamTextureMip0(material.baseColorTexture.textureIndex);
             context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv), uint(ceil(streamTextureSamplingFloor(material.baseColorTexture.textureIndex))));
         }

@@ -29,7 +29,7 @@ angular disk. Point and spot rays end at a sampled emitter position, accounting
 for both source radius and origin offset, and cannot intersect past that endpoint.
 
 The ray query resolves the closest committed triangle distance for SIGMA, rather
-than accepting the first traversal hit. Alpha-mask and conventional/NTC texture
+than accepting the first traversal hit. Alpha-mask and conventional texture
 sampling reuse the scene shadow helpers. A miss uses NRD's FP16-max sentinel.
 The current integration uses `SIGMA_SHADOW`; the sample's optional translucent
 shadow variant is not enabled. Colored transmission is outside this shadow signal.

@@ -3541,6 +3541,7 @@ void testUnsupportedRequiredExtension(const std::filesystem::path& directory)
     };
 
     expectUnsupportedRequired("EXT_meshopt_compression");
+    expectUnsupportedRequired("NV_texture_swizzle");
     const std::vector<std::string> unsupportedMaterialExtensions{
         "KHR_materials_anisotropy",
         "KHR_materials_clearcoat",
@@ -5121,6 +5122,33 @@ TEST(SceneImport, Glb)
 TEST(SceneImport, FallbackCamera)
 {
     testFallbackCamera(prepareOutputDirectory());
+}
+
+TEST(SceneImport, OptionalNeuralTextureUsesConventionalSource)
+{
+    const auto directory = prepareOutputDirectory();
+    const auto path = writeFallbackScene(directory);
+    nlohmann::json root;
+    {
+        std::ifstream file(path);
+        file >> root;
+    }
+    root["extensionsUsed"] = {"NV_texture_swizzle"};
+    root["images"] = nlohmann::json::array({
+        {{"uri", "fallback.ktx2"}, {"mimeType", "image/ktx2"}},
+        {{"uri", "reserved.ntc"}, {"mimeType", "image/vnd-nvidia.ntc"}},
+    });
+    root["textures"] = nlohmann::json::array({{
+        {"source", 0},
+        {"extensions", {{"NV_texture_swizzle", {
+            {"options", nlohmann::json::array({{{"source", 1}, {"channels", {0, 1, 2, 3}}}})}
+        }}}}
+    }});
+    writeTextFile(path, root.dump());
+    metallic::scene::Scene scene;
+    ASSERT_TRUE(scene.load(path)) << scene.lastLoadResult().error;
+    ASSERT_EQ(scene.textures().size(), 1u);
+    EXPECT_EQ(scene.textures()[0].imageIndex, 0);
 }
 
 TEST(SceneImport, UnsupportedRequiredExtension)

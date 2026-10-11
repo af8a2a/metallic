@@ -2235,7 +2235,7 @@ public:
                 std::copy_n(mapped, actual.size(), actual.begin());
                 output->unmap();
                 evidence.insert(evidence.end(), actual.begin(), actual.end());
-                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 228, 40, 44, 48, 52, 56, 60, 64, 328, 332, 336, 412};
+                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 200, 40, 44, 48, 52, 56, 60, 64, 300, 304, 308, 388};
                 for (uint32_t i = 0; i < offsets.size(); ++i) {
                     REG_CHECK(actual[i] == (variant == 1 ? 0 : packet[offsets[i] / 4]));
                 }

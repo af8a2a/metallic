@@ -245,15 +245,14 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
         candidate->instances_.push_back({program, index});
         scene::RenderMaterial semantic;
         if (!authored.empty()) { semantic = authored[index]; }
-        // Use the actual uploaded texture presence (including NTC), while policy
+        // Use the actual uploaded texture presence, while policy
         // and structural source travel with this same immutable scene revision.
         semantic.metallicFactor = payload.params[0];
         semantic.transmissionFactor = payload.glassParams[0];
         semantic.alphaMode = payload.textureParams[3] > 1.5f ? "BLEND" : payload.textureParams[3] > 0.5f ? "MASK" : "OPAQUE";
         semantic.doubleSided = payload.params[3] > 0.5f;
         semantic.rtxcrHair = id == MaterialProgramId::RTXCRChiang;
-        semantic.metallicRoughnessTexture.textureIndex = payload.metallicRoughnessTexture.textureIndex != UINT32_MAX ||
-            payload.metallicRoughnessTexture.ntcTextureSetIndex != UINT32_MAX ? 0 : -1;
+        semantic.metallicRoughnessTexture.textureIndex = payload.metallicRoughnessTexture.textureIndex != UINT32_MAX ? 0 : -1;
         if (!material::validFeaturePolicies(semantic.featurePolicies)) {
             diagnostics = "Invalid material feature policy.";
             return {};

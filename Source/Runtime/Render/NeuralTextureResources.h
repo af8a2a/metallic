@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,13 @@ namespace metallic::render {
 
 inline constexpr uint32_t kMaxNeuralTextureSets = 64;
 inline constexpr uint32_t kInvalidNeuralTextureSetIndex = UINT32_MAX;
+
+// Explicit input for reserved NTC consumers. Ordinary scene textures carry no NTC metadata.
+// Channel selection belongs to the future consumer's decoding contract.
+struct NeuralTextureBinding {
+    uint32_t logicalTextureIndex = UINT32_MAX;
+    int32_t imageIndex = scene::kInvalidSceneIndex;
+};
 
 struct NeuralTextureMemoryStats {
     uint32_t textureSetCount = 0;
@@ -30,6 +38,8 @@ struct NeuralTextureMemoryStats {
     }
 };
 
+// Reserved NTC resource helper for future virtual-texture consumers.
+// Ordinary scene loading and material rendering do not instantiate this helper.
 class NeuralTextureResources final {
 public:
     NeuralTextureResources();
@@ -41,7 +51,11 @@ public:
     NeuralTextureResources(const NeuralTextureResources&) = delete;
     NeuralTextureResources& operator=(const NeuralTextureResources&) = delete;
 
-    Result<> prepare(Device& device, const scene::Scene& scene, std::string& log);
+    Result<> prepare(
+        Device& device,
+        const scene::Scene& scene,
+        std::span<const NeuralTextureBinding> bindings,
+        std::string& log);
     Result<> recordUploads(CommandBuffer& commandBuffer);
     void releaseUploadBuffers();
     void clear();

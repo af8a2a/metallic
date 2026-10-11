@@ -28,7 +28,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |
 | `Modules/ColorGrading.slang`、`Modules/ColorGrading/` | ACES 2.0 / UE Film、全局调色、custom LUT 与三维 LUT 编解码 |
-| `Interop/NeuralTextures.slang` | NTC 的唯一模块适配入口，封装 Generic/CoopVec 和无 NTC 的回退 |
+| `Interop/NeuralTextures.slang` | 未来 VT 的独立预留模块，封装 Generic/CoopVec；普通 shader 不导入 |
 | `Interop/NRDEncoding.slang` | NRD 前端编码的唯一模块适配入口 |
 | `Interop/Denoising/NRD/` | 已适配的 NRD pass、bindings、配置和算法快照；保留程序内 HLSL 宏 |
 | `Modules/SHARC.slang`、`Modules/SHARC/` | 原生 Slang HashGrid、SHARC update/query/resolve；见 [模块说明](Modules/SHARC/README.md) |
@@ -121,7 +121,7 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 [PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（80 字节）
 的共享 inline 参数。SHARC 模块需要 StructuredBuffer 对象进行原子操作，
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
-主追踪及其 OpenPBR、NTC、VisibilityBuffer 使用共享的 `SceneResourceParameters` 具名 DR 字段。
+主追踪及其 OpenPBR、VisibilityBuffer 使用共享的 `SceneResourceParameters` 具名 DR 字段。
 
 VisibilityBuffer Deferred 是纯光栅表面的实时 resolve，不包含 ray-query 积分器。
 材质的语义 Feature、作者策略和编译选择由 CPU [Feature System](../Documentation/MaterialSystemPhase7.md)
@@ -145,7 +145,7 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 [ResourceMember.h](../Source/Runtime/Render/Core/ResourceMember.h) 从 C++ 成员类型和 `offsetof`
 推导资源类别、字段格式及偏移；不再维护数字 ID 到字段的独立布局表。
 编码器仍检查字段范围、对齐、重叠、资源类型和数组形式，保留可选资源与批量 dispatch 的契约。
-生产 GPU 参数块没有逻辑 slot table；场景结构为 456 字节，buffer/image/sampler 字段为 4 字节，
+生产 GPU 参数块没有逻辑 slot table；场景结构为 392 字节，buffer/image/sampler 字段为 4 字节，
 数组和原始数据字段为 12 字节 span，AS 独立保留完整地址。常量仍通过 `getConstants<T>()` 读取。
 `ComputeResourceMember` 不接受整数 ID；测试与生产均使用成员引用，旧数字 ID 和显式字段表兼容路径已删除。
 `Core` 导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。RHI 不在用户 push 数据前插入 heap header。
@@ -156,8 +156,9 @@ Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `Punctua
 
 ## SDK 兼容边界
 
-- 固定功能经 adapter module 导入。`NRDEncoding` 固定前端编码配置，`NeuralTextures`
-  由编译 session 的 `METALLIC_HAS_NTC` / `METALLIC_NTC_COOPERATIVE_VECTOR` 选择实现。
+- 固定功能经 adapter module 导入。`NRDEncoding` 固定前端编码配置。
+  `NeuralTextures` 仅为未来 VT 预留，使用独立 `NeuralTextureResourceParameters`；
+  普通 shader 不导入、不携带 NTC 编译排列。
 - `#define` 不跨 `import` 或 `__include` 传播。消费者局部定义不能改变已导入模块；
   SDK 全局排列使用 `SlangShaderDesc::macroDefines`，它们也参与缓存键。
 - 同一程序中，每个 vendor header 有一个 canonical owner。其他模块导入 owner，

@@ -736,7 +736,7 @@ struct SceneMaterialVisualizationPush {
     uint32_t mode = kSceneMaterialVisualizationModeMaterial;
     uint32_t materialTextureCount = 0;
     float bitangentFlip = 1.0f;
-    uint32_t ntcTextureSetCount = 0;
+    uint32_t reservedTextureData = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
 };
@@ -769,7 +769,7 @@ struct ScenePathTracePush {
     // When set, the shader writes linear HDR for subsequent post-processing.
     uint32_t outputLinear = 0;
     uint32_t cacheMode = kScenePathTraceCacheModeOff;
-    uint32_t ntcTextureSetCount = 0;
+    uint32_t reservedTextureData = 0;
     uint32_t debugView = kScenePathTraceDebugViewFinal;
     uint32_t debugFlags = 0;
     float jitterOffsetX = 0.0f;
@@ -844,7 +844,7 @@ struct SceneRTXDIPush {
     float exposure = 1.0f;
     float normalThreshold = 0.6f;
     float depthThreshold = 0.08f;
-    uint32_t ntcTextureSetCount = 0;
+    uint32_t reservedTextureData = 0;
     uint32_t outputLinear = 0;
 };
 

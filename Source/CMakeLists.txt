@@ -82,7 +82,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/MeshletStreamPageLoader.cpp
     Runtime/Render/Streamer/MeshletStreamResidency.cpp
     Runtime/Render/Streamer/MeshletStreamRuntime.cpp
-    Runtime/Render/NeuralTextureResources.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
@@ -201,17 +200,12 @@ else()
     target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_TRACY=0)
 endif()
 
+# Reserved NTC resource preparation is opt-in and has no ordinary renderer callers.
 if(TARGET libntc)
-    target_link_libraries(MetallicRuntimeRender PRIVATE libntc)
-    target_compile_definitions(MetallicRuntimeRender PRIVATE
-        METALLIC_HAS_NTC=1
-        METALLIC_NTC_SHADER_INCLUDE_DIR="${METALLIC_NTC_SHADER_INCLUDE_DIR}"
-    )
-else()
-    target_compile_definitions(MetallicRuntimeRender PRIVATE
-        METALLIC_HAS_NTC=0
-        METALLIC_NTC_SHADER_INCLUDE_DIR=""
-    )
+    add_library(MetallicReservedNTC STATIC EXCLUDE_FROM_ALL
+        Runtime/Render/NeuralTextureResources.cpp)
+    target_link_libraries(MetallicReservedNTC PUBLIC MetallicRuntimeRender PRIVATE libntc)
+    target_compile_definitions(MetallicReservedNTC PRIVATE METALLIC_HAS_NTC=1)
 endif()
 
 if(METALLIC_ENABLE_NRD)

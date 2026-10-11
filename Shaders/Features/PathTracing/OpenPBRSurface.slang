@@ -134,7 +134,6 @@ SceneOpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     valueContext.normalizedRayLod = (footprint.flags & kTextureFootprintIsotropic0) != 0u
         ? footprint.isotropicLod0 : sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection).footprint.isotropicLod0;
     valueContext.textureCount = push.materialTextureCount;
-    valueContext.ntcCount = push.ntcTextureSetCount;
     MaterialValueOpenPBRInputs surface = defaultMaterialValueOpenPBRInputs();
     material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material, valueContext, surface);
     if (surface.hasNormal && !openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap) &&
@@ -350,7 +349,6 @@ struct OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> : ISurfaceMateri
             valueContext.normalizedRayLod = (context.footprint.flags & kTextureFootprintIsotropic0) != 0u
                 ? context.footprint.isotropicLod0 : sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection).footprint.isotropicLod0;
             valueContext.textureCount = push.materialTextureCount;
-            valueContext.ntcCount = push.ntcTextureSetCount;
             let values = evaluateMaterialSlab(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord,
                 material, valueContext, specializedProgramId);
             result.closure.family = family;

@@ -26,8 +26,8 @@ struct LegacyMaterialPayload
     {
         uint32_t textureIndex = UINT32_MAX;
         uint32_t texCoord = 0;
-        uint32_t ntcTextureSetIndex = UINT32_MAX;
-        uint32_t ntcChannelMapping = UINT32_MAX;
+        uint32_t reserved0 = 0;
+        uint32_t reserved1 = 0;
         float transform0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
         float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
     };

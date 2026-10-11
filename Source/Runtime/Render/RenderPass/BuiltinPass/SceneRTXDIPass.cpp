@@ -11,14 +11,6 @@
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
-#ifndef METALLIC_HAS_NTC
-#define METALLIC_HAS_NTC 0
-#endif
-
-#ifndef METALLIC_NTC_SHADER_INCLUDE_DIR
-#define METALLIC_NTC_SHADER_INCLUDE_DIR ""
-#endif
-
 namespace metallic::render::builtin_pass {
 namespace {
 
@@ -237,26 +229,15 @@ public:
             resetHistory_ = true;
             hasPreviousCamera_ = false;
         }
-        const bool ntcActive = sceneResources_.neuralTextures().active();
-        const bool ntcCooperativeVector =
-            sceneResources_.neuralTextures().cooperativeVectorActive();
         if (rayQueryProgram_.valid() &&
-            compiledTextureCount_ == sceneResources_.materialTextureCount() &&
-            compiledNtcActive_ == ntcActive &&
-            compiledNtcCooperativeVector_ == ntcCooperativeVector) {
+            compiledTextureCount_ == sceneResources_.materialTextureCount()) {
             return {};
         }
         rayQueryProgram_.clear();
         rayQueryProgramEncoder_.clear();
 
         ShaderCompileResult computeCompile;
-        SceneRayQueryOptions shaderOptions{
-            .hasNTC = ntcActive, .cooperativeVector = ntcCooperativeVector,
-        };
-#if METALLIC_HAS_NTC
-        shaderOptions.ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR;
-#endif
-        const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI, shaderOptions);
+        const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI);
         const ShaderRequestView source(request);
         result = ShaderRegistry::instance().getShader(source.desc(), computeCompile.diagnostics)
             .transform([&](auto value) { computeCompile = std::move(value); });
@@ -273,7 +254,6 @@ public:
             return result;
         }
 
-        // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeResourceBindingDesc> bindings{
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), .kind = ComputeResourceBindingKind::AccelerationStructure},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output), .kind = ComputeResourceBindingKind::StorageImage},
@@ -312,29 +292,6 @@ public:
         };
         appendStreamRayLayout(bindings);
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
-        if (ntcActive) {
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kMaxNeuralTextureSets,
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
-                .kind = ComputeResourceBindingKind::Sampler,
-            });
-        }
         std::string programLog;
         result = initializeResourceKernel(
             *context.device,
@@ -356,9 +313,7 @@ public:
             rayQueryProgram_.clear();
             rayQueryProgramEncoder_.clear();
         } else {
-            compiledNtcActive_ = ntcActive;
             compiledTextureCount_ = sceneResources_.materialTextureCount();
-            compiledNtcCooperativeVector_ = ntcCooperativeVector;
         }
         return result;
     }
@@ -500,7 +455,6 @@ public:
             push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.lightCount = lights_.lightCount();
-        push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         if (!environment.mapAvailable) {
             push.behaviorFlags &= ~kRTXDIBehaviorEnvironmentEnabled;
         }
@@ -614,30 +568,6 @@ public:
             if (environment.cloudShadowView != nullptr) {
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .textureViews = {atmosphereCloudShadowViews, 1}});
             }
-        }
-        const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
-        if (neuralTextures.active()) {
-            const auto& latentViews = neuralTextures.latentTextureViews();
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
-                .textureViews = latentViews,
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
-                .buffer = neuralTextures.constantsBuffer(),
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
-                .buffer = neuralTextures.weightsBuffer(),
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
-                .buffer = neuralTextures.setInfoBuffer(),
-            });
-            bindings.push_back({
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
-                .sampler = &neuralTextures.latentSampler(),
-            });
         }
         using Access = RenderGraphResourceAccess;
         const RenderGraphStageUse uses[] = {
@@ -1066,9 +996,7 @@ private:
     ScenePathTraceResources sceneResources_;
     ComputeKernel rayQueryProgram_;
     ComputeResourceEncoder rayQueryProgramEncoder_;
-    bool compiledNtcActive_ = false;
     uint32_t compiledTextureCount_ = 0;
-    bool compiledNtcCooperativeVector_ = false;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     SceneLightResources lights_;

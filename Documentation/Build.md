@@ -90,7 +90,7 @@ material compiler to generate the same content-keyed include, then their declare
 graph shader requests are appended, including custom Surface/Closure programs.
 This preparation loads no geometry or textures and requires no GPU. Optional
 catalogs that do not exist add no requests. Changing generated material source
-after warmup, a new external scene, SDK-specific NTC/NRD permutations or arbitrary
+after warmup, a new external scene, SDK-specific NRD permutations or arbitrary
 display reference whites can still require compilation on demand. Debug mode and
 mapped/native descriptor mode remain separate cache identities.
 
@@ -467,7 +467,7 @@ Installed packages live in `.cache/dependencies/<sha256>`, outside `build-full`.
 Deleting or cleaning the application build therefore keeps the dependency
 binaries. A clean full build imports those four libraries with `find_package`;
 their C/C++ sources do not enter its build graph. Smaller libraries, GoogleTest,
-and NTC when enabled still build from source. Streamline retains its existing
+and the explicitly requested reserved NTC target still build from source. Streamline retains its existing
 SDK binary integration.
 
 NRD now uses vendored shaders and Metallic-owned dispatch scheduling. Enabling

@@ -47,6 +47,19 @@ DR_PUBLIC struct EnvironmentResourceParameters
 static_assert(sizeof(EnvironmentResourceParameters) == 28);
 #endif
 
+// Reserved for explicit NTC/VT experiments; never embedded in ordinary scene packets.
+DR_PUBLIC struct NeuralTextureResourceParameters
+{
+    DR_PUBLIC DR_BUFFER ntcConstants;
+    DR_PUBLIC DR_BUFFER ntcInfo;
+    DR_PUBLIC DR_SPAN ntcLatents;
+    DR_PUBLIC DR_SAMPLER ntcSampler;
+    DR_PUBLIC DR_BUFFER ntcWeights;
+};
+#ifdef __cplusplus
+static_assert(sizeof(NeuralTextureResourceParameters) == 28);
+#endif
+
 DR_PUBLIC struct SceneResourceParameters
 {
     DR_PUBLIC uint64_t scene;
@@ -85,11 +98,6 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_STORAGE(2D<float4>) nrdMotion;
     DR_PUBLIC DR_STORAGE(2D<float4>) nrdNormalRoughness;
     DR_PUBLIC DR_STORAGE(2D<float>) nrdViewZ;
-    DR_PUBLIC DR_BUFFER ntcConstants;
-    DR_PUBLIC DR_BUFFER ntcInfo;
-    DR_PUBLIC DR_SPAN ntcLatents;
-    DR_PUBLIC DR_SAMPLER ntcSampler;
-    DR_PUBLIC DR_BUFFER ntcWeights;
     DR_PUBLIC DR_SPAN openPBRLut2D;
     DR_PUBLIC DR_SPAN openPBRLut3D;
     DR_PUBLIC DR_SAMPLER openPBRLutSampler;
@@ -134,10 +142,13 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_SAMPLED(2D<float>) visibilityDepth;
     DR_PUBLIC EnvironmentResourceParameters environment;
     DR_PUBLIC DR_PADDING reserved;
+    // Explicit tail word keeps Slang's serialized size equal to C++'s 8-byte alignment.
+    DR_PUBLIC DR_PADDING reservedAlignment;
 };
 #ifdef __cplusplus
-static_assert(sizeof(SceneResourceParameters) == 416);
-static_assert(offsetof(SceneResourceParameters, environment) == 384);
+static_assert(sizeof(SceneResourceParameters) == 392);
+static_assert(offsetof(SceneResourceParameters, environment) == 356);
+static_assert(offsetof(SceneResourceParameters, reservedAlignment) == 388);
 #endif
 
 // Read-only views of the existing scene packet; these do not change its wire layout.
@@ -170,9 +181,9 @@ DR_PUBLIC struct SceneSharcResourceParameters
 };
 #ifdef __cplusplus
 static_assert(sizeof(SceneSharcResourceParameters) == 12);
-static_assert(offsetof(SceneResourceParameters, sharcAccumulation) == 328 + offsetof(SceneSharcResourceParameters, sharcAccumulation));
-static_assert(offsetof(SceneResourceParameters, sharcHashEntries) == 328 + offsetof(SceneSharcResourceParameters, sharcHashEntries));
-static_assert(offsetof(SceneResourceParameters, sharcResolved) == 328 + offsetof(SceneSharcResourceParameters, sharcResolved));
+static_assert(offsetof(SceneResourceParameters, sharcAccumulation) == 300 + offsetof(SceneSharcResourceParameters, sharcAccumulation));
+static_assert(offsetof(SceneResourceParameters, sharcHashEntries) == 300 + offsetof(SceneSharcResourceParameters, sharcHashEntries));
+static_assert(offsetof(SceneResourceParameters, sharcResolved) == 300 + offsetof(SceneSharcResourceParameters, sharcResolved));
 #endif
 
 // Keep shader byte offsets checked against the CPU packet declaration.
@@ -185,8 +196,8 @@ DR_SCENE_OFFSET(kSceneAccumulationCurrentOffset, accumulationCurrent, 8);
 DR_SCENE_OFFSET(kSceneAccumulationPreviousOffset, accumulationPrevious, 12);
 DR_SCENE_OFFSET(kSceneCacheParamsOffset, cacheParams, 20);
 DR_SCENE_OFFSET(kSceneGuidesOffset, guideAlbedo, 40);
-DR_SCENE_OFFSET(kSceneSharcOffset, sharcAccumulation, 328);
-DR_SCENE_OFFSET(kSceneOutputOffset, output, 228);
+DR_SCENE_OFFSET(kSceneSharcOffset, sharcAccumulation, 300);
+DR_SCENE_OFFSET(kSceneOutputOffset, output, 200);
 #undef DR_SCENE_OFFSET
 
 DR_PUBLIC struct OutputImageResourceParameters

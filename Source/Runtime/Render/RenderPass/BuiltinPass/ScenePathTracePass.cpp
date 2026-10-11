@@ -34,14 +34,6 @@
 #define METALLIC_RTXCR_SHADER_INCLUDE_DIR ""
 #endif
 
-#ifndef METALLIC_HAS_NTC
-#define METALLIC_HAS_NTC 0
-#endif
-
-#ifndef METALLIC_NTC_SHADER_INCLUDE_DIR
-#define METALLIC_NTC_SHADER_INCLUDE_DIR ""
-#endif
-
 namespace metallic::render::builtin_pass {
 namespace {
 
@@ -656,9 +648,6 @@ public:
         const bool exportGuides = exportDenoiserGuides(properties());
         const bool singleSampleGuides = !realtime_ && !visibilityDeferred_ && useOpenPBR && exportGuides &&
             uintProperty(properties(), "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples) == 1;
-        const bool ntcActive = sceneResources_.neuralTextures().active();
-        const bool ntcCooperativeVector =
-            sceneResources_.neuralTextures().cooperativeVectorActive();
         SceneShaderProgram shaderProgram;
         if (visibilityDeferred_) {
             shaderProgram = materialBinningEnabled(properties())
@@ -696,8 +685,6 @@ public:
             "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
-            "|ntc=" + (ntcActive ? "1" : "0") +
-            "|coopvec=" + (ntcCooperativeVector ? "1" : "0") +
             "|singleSampleGuides=" + (singleSampleGuides ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
@@ -745,16 +732,12 @@ public:
             .customMaterials = hasValuePrograms(),
             .globalView = globalView,
             .hasRTXCR = METALLIC_HAS_RTXCR != 0,
-            .hasNTC = ntcActive,
-            .cooperativeVector = ntcCooperativeVector,
             .deferredFloat16 = boolProperty(properties(), "halfPrecision", true),
             .upscalerGuides = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false),
             .materialInclude = valueSearchPath,
             .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR,
-            .ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR,
         };
 
-        // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeResourceBindingDesc> baseBindings{
             ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lights), .kind = ComputeResourceBindingKind::StorageBuffer},
             ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.celestialLights), .kind = ComputeResourceBindingKind::StorageBuffer},
@@ -878,29 +861,6 @@ public:
             baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideDepth),
                 .kind = ComputeResourceBindingKind::StorageImage,
-            });
-        }
-        if (ntcActive) {
-            baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kMaxNeuralTextureSets,
-            });
-            baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            baseBindings.push_back(ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
-                .kind = ComputeResourceBindingKind::Sampler,
             });
         }
 
@@ -1313,7 +1273,6 @@ public:
                 1, kMaxRealtimeEnvironmentSamples);
         }
         push.materialTextureCount = sceneResources_.materialTextureCount();
-        push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
         push.outputLinear = 1u;
         TextureView* visibilityView = nullptr;
@@ -1668,30 +1627,6 @@ public:
             bindings.push_back(ComputeDispatchBinding{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, guideDepth),
                 .textureView = depth.view(),
-            });
-        }
-        const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
-        if (neuralTextures.active()) {
-            const auto& latentViews = neuralTextures.latentTextureViews();
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
-                .textureViews = latentViews,
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcConstants),
-                .buffer = neuralTextures.constantsBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcWeights),
-                .buffer = neuralTextures.weightsBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcInfo),
-                .buffer = neuralTextures.setInfoBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler),
-                .sampler = &neuralTextures.latentSampler(),
             });
         }
 

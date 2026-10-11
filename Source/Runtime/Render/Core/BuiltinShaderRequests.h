@@ -116,7 +116,7 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     // All ray-query programs consume streamed CLAS geometry. Optional SDK
     // permutations are compiled on demand; generated materials append requests.
     for (auto program : {SceneRayQueryProgram::RTXDI, SceneRayQueryProgram::MaterialVisualization}) {
-        requests.push_back(makeSceneRayQueryRequest(program, {}));
+        requests.push_back(makeSceneRayQueryRequest(program));
     }
     const SceneShaderOptions options{.hasRTXCR = hasRtxcr, .rtxcrInclude = rtxcrInclude};
     for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve,
@@ -146,7 +146,7 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
             }
         }
     }
-    requests.push_back(makeShadowShaderRequest({}));
+    requests.push_back(makeShadowShaderRequest());
     // Deduplicate complete requests, preserving macro/capability/search-path
     // order and the first occurrence. No compiler cache version change is needed.
     std::vector<ShaderRequest> unique;

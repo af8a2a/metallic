@@ -48,7 +48,7 @@ diffuse transmission color are Color; normal, ORM, displacement, weights and
 other scalar slots are Data. Transfer decoding and gamut conversion are separate.
 PNG color samples are decoded manually; compressed KTX2 transfer semantics keep
 the existing vkFormat contract. Hardware sRGB decoding is never repeated.
-NTC samples retain their source-space meaning and use the same color adapter.
+NTC is reserved for future VT work and is not sampled by ordinary material shaders.
 
 `TextureInfo.transform0.w` is a numeric mask shared with the shader:
 

@@ -80,9 +80,9 @@ public:
 private:
     struct State;
     std::shared_ptr<State> state_;
-    std::array<ComputeResourceEncoder, 3> traceEncoders_;
-    std::array<ComputeKernel, 3> traces_; // CLAS, CLAS NTC, CLAS NTC cooperative
-    std::array<uint32_t, 3> traceTextureCounts_{};
+    ComputeResourceEncoder traceEncoder_;
+    ComputeKernel trace_;
+    uint32_t traceTextureCount_ = 0;
 };
 
 } // namespace metallic::render
