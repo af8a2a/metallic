@@ -1,6 +1,9 @@
 import Core;
 using Metallic;
 
+#if !SHARC_UPDATE && !METALLIC_PT_SINGLE_SAMPLE
+#define METALLIC_PT_EARLY_PRIMARY_GUIDES 1
+#endif
 #include "OpenPBRRayQueryPathTrace.slang"
 
 struct DLSSRRGuideData
@@ -99,9 +102,21 @@ void writeDlssRrPrimaryGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTraceP
     resolveUniform(resources.guideDepth)[pixel] = cameraHardwareDepth(data.linearDepth, push);
 }
 
-// Consume fixed primary guides before entering the vertex transport body.
-// The returned authored hit belongs only to this iteration, never to a saved
-// primary-query payload spanning the continuation loop.
+#if METALLIC_PT_EARLY_PRIMARY_GUIDES
+void evaluateAndWriteOpenPbrPrimaryGuides(uint2 pixel, Ray ray, RayCone rayCone,
+    ScenePathTracePush push, bool found, HitInfo primaryHit)
+{
+    // This stream and material program belong to guides. Do not consume the
+    // path seed or reuse its closure: texture filtering and normal policies differ.
+    uint guideSeed = hash(pixel.x + pixel.y * max(push.width, 1u) +
+        (push.sampleFrame + 1u) * 0x85ebca6bu);
+    DLSSRRGuideData guides = evaluateOpenPbrDlssRrGuides(ray, rayCone,
+        float2(pixel) + float2(0.5), push, guideSeed, found, primaryHit);
+    writeDlssRrPrimaryGuides(pixel, guides, push);
+}
+#endif
+
+// Keep the established one-ray stage unchanged; only authored hit data escapes.
 bool queryOpenPbrPrimaryStage(uint2 pixel, Ray ray, RayCone rayCone,
     ScenePathTracePush push, out HitInfo primaryHit)
 {
@@ -174,33 +189,21 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
     {
         // Multi-sample pixels retain the general authored-primary reuse path.
         float3 color = float3(0.0);
-        DLSSRRGuideData guides = makeDefaultDlssRrGuideData(push);
         float firstSampleSpecularHitDistance = 0.0;
         OpenPBRPrimaryQuery primaryQuery = {};
         for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
             float sampleSpecularHitDistance;
             color += pathTraceOpenPBRWithPrimaryQuery(ray, rayCone, push, seed,
-                sampleSpecularHitDistance, primaryQuery);
+                sampleSpecularHitDistance, primaryQuery, pixel);
 
             if (sampleIndex == 0u) {
                 firstSampleSpecularHitDistance = sampleSpecularHitDistance;
-                // Cache early-outs change path RNG consumption, not primary guides.
-                uint guideSeed = hash(pixel.x + pixel.y * max(push.width, 1u) +
-                    (push.sampleFrame + 1u) * 0x85ebca6bu);
-                guides = evaluateOpenPbrDlssRrGuides(
-                    ray,
-                    rayCone,
-                    float2(pixel) + float2(0.5, 0.5),
-                    push,
-                    guideSeed,
-                    primaryQuery.found,
-                    primaryQuery.hit);
-                guides.specularHitDistance = firstSampleSpecularHitDistance;
             }
         }
         color /= float(samples);
         writeOpenPbrPathColor(pixel, color, push);
-        writeDlssRrGuides(pixel, guides, push);
+        let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+        resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(firstSampleSpecularHitDistance, 0.0);
     }
 #endif
 #endif

@@ -291,7 +291,11 @@ float3 pathTraceOpenPBRWithPrimaryQuery(
     ScenePathTracePush push,
     inout uint seed,
     out float specularHitDistance,
-    inout OpenPBRPrimaryQuery primaryQuery)
+    inout OpenPBRPrimaryQuery primaryQuery
+#if METALLIC_PT_EARLY_PRIMARY_GUIDES
+    , uint2 guidePixel = uint2(0xffffffffu)
+#endif
+)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -324,6 +328,14 @@ float3 pathTraceOpenPBRWithPrimaryQuery(
                 primaryQuery.hit = hit;
                 primaryQuery.found = found;
                 primaryQuery.queried = true;
+#if METALLIC_PT_EARLY_PRIMARY_GUIDES
+                // Keep reconstruction in the original loop. Consume only an
+                // independent guide evaluation here, before any path closure.
+                if (guidePixel.x < push.width && guidePixel.y < push.height) {
+                    evaluateAndWriteOpenPbrPrimaryGuides(guidePixel, ray, rayCone,
+                        push, found, hit);
+                }
+#endif
             }
         } else {
             found = traceClosest(ray, push, hit);

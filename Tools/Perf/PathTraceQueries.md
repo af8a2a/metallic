@@ -14,6 +14,16 @@ The first sample caches its raw hit inside the original path loop, before materi
 evaluation. Hoisting reconstruction outside that loop caused sparse floating-point
 drift in ABeautifulGame; that production scene and frame 96 are regression cases.
 
+The one-rpp guide variant writes fixed guides in its primary stage. Multi-sample
+guide variants do the same immediately after caching the first authored hit in
+the original loop, before evaluating the transport material. Their independent
+guide RNG, texture footprint and post-normal-map face-forward policy must remain
+unchanged; do not reuse the transport closure. Only the first sample's specular
+hit distance is written after continuation. SHARC Update never writes guides.
+Changes to this scheduling should cover multi-sample MASK/BLEND, glass, sky,
+history, and normal/texture debug overrides as well as the fixed production view.
+Source-level lifetime reduction is not proof of lower physical register usage.
+
 Boolean resident-scene shadows accept the first coverage-approved blocker. The
 OpenPBR transmittance query still finds the nearest surface: a non-BLEND material
 with an exactly zero transmission factor returns opaque before full attribute
