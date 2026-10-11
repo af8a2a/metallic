@@ -1,5 +1,9 @@
 # Shader cache warmup
 
+For isolated shader compilation and compute pipeline creation measurements, use
+the manual [ShaderPipelineBench harness](ShaderPipelineBench.md). It does not run
+startup warmup or render frames and reports compilation and pipeline timings separately.
+
 After configuring the project, run this target manually:
 
 ~~~powershell

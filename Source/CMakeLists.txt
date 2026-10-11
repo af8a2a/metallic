@@ -596,5 +596,33 @@ if(WIN32)
 endif()
 metallic_copy_spdlog_runtime(MetallicShaderPrintfProbe)
 
+# Explicit benchmark only: no editor/sample dependency or default warmup.
+add_executable(MetallicShaderPipelineBench EXCLUDE_FROM_ALL Tools/ShaderPipelineBench.cpp)
+target_link_libraries(MetallicShaderPipelineBench PRIVATE MetallicRuntimeRender)
+target_include_directories(MetallicShaderPipelineBench PRIVATE "${CMAKE_SOURCE_DIR}")
+target_include_directories(MetallicShaderPipelineBench BEFORE PRIVATE "${METALLIC_SLANG_ROOT}/include")
+target_compile_definitions(MetallicShaderPipelineBench PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(MetallicShaderPipelineBench PRIVATE NOMINMAX)
+    target_compile_options(MetallicShaderPipelineBench PRIVATE /EHsc /utf-8)
+    foreach(_dll IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
+        add_custom_command(TARGET MetallicShaderPipelineBench POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" "$<TARGET_FILE_DIR:MetallicShaderPipelineBench>")
+    endforeach()
+    if(TARGET SDL3-shared)
+        set(_bench_sdl SDL3-shared)
+    else()
+        set(_bench_sdl SDL3::SDL3-shared)
+    endif()
+    add_custom_command(TARGET MetallicShaderPipelineBench POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${_bench_sdl}>" "$<TARGET_FILE_DIR:MetallicShaderPipelineBench>")
+    metallic_copy_streamline_runtime(MetallicShaderPipelineBench)
+    metallic_copy_dlss_nr_runtime(MetallicShaderPipelineBench)
+    metallic_copy_aftermath_runtime(MetallicShaderPipelineBench)
+endif()
+metallic_copy_spdlog_runtime(MetallicShaderPipelineBench)
+
 # One definition for the runtime and every consumer; public RHI layouts are unchanged.
 target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_RHI_DIAGNOSTICS=$<BOOL:${METALLIC_RHI_DIAGNOSTICS}>)
