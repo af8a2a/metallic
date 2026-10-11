@@ -57,12 +57,13 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
     RayCone rayCone,
     float2 samplePixel,
     ScenePathTracePush push,
-    inout uint seed)
+    inout uint seed,
+    bool primaryFound,
+    HitInfo hit)
 {
     DLSSRRGuideData data = makeDefaultDlssRrGuideData(push);
 
-    HitInfo hit;
-    if (!traceClosest(ray, push, hit)) {
+    if (!primaryFound) {
         data.motionVector = skyMotionVectorToPrevious(
             ray.direction,
             samplePixel,
@@ -119,16 +120,20 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
     float3 color = float3(0.0, 0.0, 0.0);
     DLSSRRGuideData guides = makeDefaultDlssRrGuideData(push);
     float firstSampleSpecularHitDistance = 0.0;
+    // RR samples share the jittered camera ray, but retain independent BSDF,
+    // coverage and texture RNG consumption. Share only authored hit data;
+    // guides still evaluate their own material and face-forward policy.
+    float2 jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
+    float2 samplePixel = float2(pixel) + jitter;
+    Ray ray;
+    ray.origin = rayOriginFromPixel(samplePixel, push);
+    ray.direction = rayDirectionFromPixel(samplePixel, push);
+    RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
+    OpenPBRPrimaryQuery primaryQuery = {};
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
-        float2 jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
-        float2 samplePixel = float2(pixel) + jitter;
-
-        Ray ray;
-        ray.origin = rayOriginFromPixel(samplePixel, push);
-        ray.direction = rayDirectionFromPixel(samplePixel, push);
-        RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
         float sampleSpecularHitDistance;
-        color += pathTraceOpenPBR(ray, rayCone, push, seed, sampleSpecularHitDistance);
+        color += pathTraceOpenPBRWithPrimaryQuery(ray, rayCone, push, seed,
+            sampleSpecularHitDistance, primaryQuery);
 
         if (sampleIndex == 0u) {
             firstSampleSpecularHitDistance = sampleSpecularHitDistance;
@@ -140,7 +145,9 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
                 rayCone,
                 float2(pixel) + float2(0.5, 0.5),
                 push,
-                guideSeed);
+                guideSeed,
+                primaryQuery.found,
+                primaryQuery.hit);
             guides.specularHitDistance = firstSampleSpecularHitDistance;
         }
     }

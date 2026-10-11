@@ -77,7 +77,9 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTr
     ray.TMin = 0.001;
     ray.TMax = max(maxDistance, 0.001);
 
-    RayQuery<RAY_FLAG_NONE> query;
+    // This API returns only visibility, never an ordered hit distance.
+    // Keep alpha candidate evaluation before accepting the first blocker.
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
     query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
@@ -93,8 +95,10 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTr
 #endif
 }
 
-bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
+bool traceClosestImpl(Ray ray, ScenePathTracePush push, bool classifyShadow,
+    out bool opaqueShadow, out HitInfo hit)
 {
+    opaqueShadow = false;
 #if METALLIC_STREAM_RAY_QUERIES
     return traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
 #elif METALLIC_STREAM_MATERIALS
@@ -141,6 +145,19 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 
     uint instanceIndex = query.CommittedInstanceIndex();
     PathTraceInstance instance = gInstances[instanceIndex];
+    if (classifyShadow) {
+        PathTraceMaterial material = loadSceneMaterial(instance.materialIndex);
+        // A zero transmission factor is opaque regardless of texture values.
+        // BLEND must retain ordered alpha attenuation. MASK has already passed
+        // exactly the same coverage test as the full surface query above.
+        // All other materials retain complete OpenPBR shadow transport.
+        opaqueShadow = material.textureParams.w <= 1.5 && material.glassParams.x == 0.0;
+        if (opaqueShadow) {
+            hit.t = query.CommittedRayT();
+            hit.materialIndex = instance.materialIndex;
+            return true;
+        }
+    }
     PathTracePrimitive primitive = gPrimitives[instance.primitiveIndex];
     uint triangleIndex = query.CommittedPrimitiveIndex();
     uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
@@ -226,6 +243,19 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     hit.rayConeLodConstant = instance.rayConeLodConstant;
     return true;
 #endif
+}
+
+bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
+{
+    bool unusedOpaqueShadow;
+    return traceClosestImpl(ray, push, false, unusedOpaqueShadow, hit);
+}
+
+bool traceClosestShadow(Ray ray, ScenePathTracePush push, out bool opaqueShadow, out HitInfo hit)
+{
+    // Ordered traversal is essential for nested media and transparent layers.
+    // Streamed geometry deliberately retains its existing full decode path.
+    return traceClosestImpl(ray, push, true, opaqueShadow, hit);
 }
 
 // Per-path radiance-cache state. Members exist only in permutations that use

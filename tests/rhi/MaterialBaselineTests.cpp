@@ -1,13 +1,16 @@
 #include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
+#include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <stdexcept>
 
 namespace metallic::tests {
 namespace {
@@ -37,6 +40,14 @@ public:
         }
         Json report = {{"version", 1}, {"validation", context.enableValidation}, {"cases", Json::array()}};
         for (const auto& spec : cases.at("cases")) {
+            const uint32_t caseFrames = spec.value("frameCount", frames);
+            const auto captureFrames = spec.value("captureFrames", std::vector<uint32_t>{});
+            if (caseFrames <= uint64_t(warmup) + count ||
+                std::any_of(captureFrames.begin(), captureFrames.end(), [&](uint32_t frame) {
+                    return frame >= caseFrames || (frame >= warmup && frame < uint64_t(warmup) + count);
+                })) {
+                return RHITestResult::fail("Differential captures must be valid frames outside the timing window");
+            }
             const auto id = spec.at("id").get<std::string>();
             RenderGraph graph;
             std::string log;
@@ -44,6 +55,7 @@ public:
                 return RHITestResult::fail(log);
             }
             scene::SceneDocument document;
+            RenderView view;
             RenderGraphPreviewRenderer preview;
             if (!preview.subsystemHost()->configure<EnvironmentLightingSubsystem>(
                 {.initialDecodeTimeoutMilliseconds = 10000}, log)) { return RHITestResult::fail(log); }
@@ -93,6 +105,19 @@ public:
                 lighting.autoExposure.enabled = false;
                 if (!preview.setLighting(lighting)) { return RHITestResult::fail("Invalid fiber lighting"); }
             }
+            Json viewCamera;
+            const bool useView = spec.value("useRenderView", false);
+            if (useView) {
+                auto* node = graph.findNode("PathTrace");
+                if (!node || !node->properties.contains("camera")) {
+                    return RHITestResult::fail("Differential RenderView requires an explicit PathTrace camera");
+                }
+                viewCamera = node->properties.at("camera");
+                view.setRenderResolution(spec.at("width"), spec.at("height"));
+                if (!view.setCameraProperties(viewCamera)) { return RHITestResult::fail("Invalid RenderView camera"); }
+                node->properties.erase("camera");
+                preview.bindRenderView(&view);
+            }
             if (!preview.initialize(context.enableValidation, true, false)) {
                 return RHITestResult::fail("Baseline device initialization failed; no baseline produced");
             }
@@ -103,12 +128,39 @@ public:
             result["environmentTransitions"] = Json::array();
             Json previousEnvironment;
             result["resolvedGraph"] = Json::parse(serializeRenderGraphToString(graph));
-            for (uint32_t frame = 0; frame < frames; ++frame) {
-                const bool capture = frame + 1 == frames;
+            result["captures"] = Json::array();
+            const auto captureOutput = [&](const std::string& outputName, uint32_t frame) {
+                const auto& bytes = preview.readbackBytes();
+                if (bytes.empty()) { throw std::runtime_error("Empty differential capture: " + outputName); }
+                const auto filename = id + "-" + std::to_string(frame) + "-" + outputName + ".bin";
+                std::ofstream file(context.outputDirectory / filename, std::ios::binary);
+                file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+                if (!file) { throw std::runtime_error("Cannot write differential capture"); }
+                result["captures"].push_back({{"output", outputName}, {"frame", frame}, {"file", filename},
+                    {"bytes", bytes.size()}, {"format", static_cast<uint32_t>(preview.readbackFormat())}});
+            };
+            for (uint32_t frame = 0; frame < caseFrames; ++frame) {
+                if (spec.contains("cameraFrames")) {
+                    for (const auto& change : spec.at("cameraFrames")) {
+                        if (change.at("frame") == frame) {
+                            const auto* node = graph.findNode(change.at("node").get<std::string>());
+                            if (!node) { return RHITestResult::fail("Camera sequence node missing"); }
+                            if (useView) {
+                                viewCamera = change.at("camera");
+                                if (!view.setCameraProperties(viewCamera)) { return RHITestResult::fail("Invalid moving camera"); }
+                            } else {
+                                graph.setNodeRuntimeProperty(node->id, "camera", change.at("camera"));
+                            }
+                        }
+                    }
+                }
+                const bool differentialCapture = std::find(captureFrames.begin(), captureFrames.end(), frame) != captureFrames.end();
+                const bool capture = frame + 1 == caseFrames || differentialCapture;
                 preview.setRawReadbackEnabled(capture);
                 if (!preview.render(graph, width, height, spec.at("output").get<std::string>(), capture)) {
                     return RHITestResult::fail(id + ": " + preview.lastLog());
                 }
+                if (differentialCapture) { captureOutput(spec.at("output"), frame); }
                 const auto* environment = preview.subsystemHost()->get<EnvironmentLightingSubsystem>();
                 if (spec.value("requireEnvironment", true) && !environment) {
                     return RHITestResult::fail("Baseline environment subsystem missing");
@@ -175,6 +227,31 @@ public:
             result["format"] = half ? "RGBA16F" : "RGBA32F";
             result["nonfiniteComponents"] = nonfiniteComponents;
             result["validHDR"] = nonfiniteComponents == 0;
+            // Additional guides are captured after the timing window. Every arm
+            // executes the same frame sequence; no readback enters timed frames.
+            uint32_t captureFrame = caseFrames;
+            for (const auto& outputName : spec.value("captureOutputs", std::vector<std::string>{})) {
+                if (spec.contains("guideCameraStep")) {
+                    const auto& step = spec.at("guideCameraStep");
+                    const auto* node = graph.findNode(step.at("node").get<std::string>());
+                    if (!node) { return RHITestResult::fail("Guide camera node missing"); }
+                    auto camera = useView ? viewCamera : node->properties.at("camera");
+                    for (size_t axis = 0; axis < 3; ++axis) {
+                        camera["eye"][axis] = camera["eye"][axis].get<float>() + step.at("delta")[axis].get<float>();
+                    }
+                    if (useView) {
+                        viewCamera = camera;
+                        if (!view.setCameraProperties(camera)) { return RHITestResult::fail("Invalid guide camera"); }
+                    } else {
+                        graph.setNodeRuntimeProperty(node->id, "camera", camera);
+                    }
+                }
+                preview.setRawReadbackEnabled(true);
+                if (!preview.render(graph, width, height, outputName, true)) {
+                    return RHITestResult::fail(preview.lastLog());
+                }
+                captureOutput(outputName, captureFrame++);
+            }
             report["cases"].push_back(std::move(result));
             // Keep completed cases and invalid raw images even if a later case fails.
             std::ofstream(context.outputDirectory / "MaterialBaseline.json") << report.dump(2) << '\n';

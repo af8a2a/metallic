@@ -149,9 +149,11 @@ float3 openPbrShadowTransmittance(
         shadowPush.clipOrtho.x = 0.001;
         shadowPush.clipOrtho.y = remainingDistance;
         HitInfo shadowHit;
-        if (!traceClosest(ray, shadowPush, shadowHit) || shadowHit.t >= remainingDistance) {
+        bool opaqueShadow;
+        if (!traceClosestShadow(ray, shadowPush, opaqueShadow, shadowHit) || shadowHit.t >= remainingDistance) {
             return transmittance;
         }
+        if (opaqueShadow) { return float3(0.0); }
 
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
             transmittance *= openPbrVolumeTransmittance(interiorStack, shadowHit.t);
@@ -273,14 +275,23 @@ struct PathSurfaceLights : ISurfaceLightProvider
     }
 };
 
-float3 pathTraceOpenPBRWithPrimaryHit(
+// Keep the first authored hit separate from the mutable shading hit. The first
+// sample fills this cache at the normal path-query site; guides and subsequent
+// samples reuse it without moving hit reconstruction out of the path loop.
+struct OpenPBRPrimaryQuery
+{
+    HitInfo hit;
+    bool queried;
+    bool found;
+};
+
+float3 pathTraceOpenPBRWithPrimaryQuery(
     Ray ray,
     RayCone rayCone,
     ScenePathTracePush push,
     inout uint seed,
     out float specularHitDistance,
-    bool hasPrimaryHit,
-    HitInfo primaryHit)
+    inout OpenPBRPrimaryQuery primaryQuery)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -294,6 +305,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
     float3 primaryEndpoint = float3(0.0);
     float3 primaryOrigin = ray.origin;
     bool primarySurface = false;
+    bool primaryQueryConsumed = false;
 #if METALLIC_PT_SHARC
     OpenPBRCacheContext cache = makeOpenPbrCacheContext();
 #endif
@@ -301,9 +313,18 @@ float3 pathTraceOpenPBRWithPrimaryHit(
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         bool found;
-        if (depth == 0u && hasPrimaryHit) {
-            hit = primaryHit;
-            found = true;
+        if (!primaryQueryConsumed) {
+            // BLEND continuation can revisit depth zero from another origin.
+            primaryQueryConsumed = true;
+            if (primaryQuery.queried) {
+                hit = primaryQuery.hit;
+                found = primaryQuery.found;
+            } else {
+                found = traceClosest(ray, push, hit);
+                primaryQuery.hit = hit;
+                primaryQuery.found = found;
+                primaryQuery.queried = true;
+            }
         } else {
             found = traceClosest(ray, push, hit);
         }
@@ -368,7 +389,6 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             if (rand(seed) >= alpha) {
                 if (++alphaLayers >= 16u) { break; }
                 ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
-                hasPrimaryHit = false;
                 if (depth == 0u) { primarySurface = false; }
                 --depth;
                 continue;
@@ -571,6 +591,16 @@ float3 pathTraceOpenPBRWithPrimaryHit(
     return primarySurface && push.debugView == kOpenPBRDebugViewFinal
         ? applyPrimaryAerialPerspective(radiance, primaryEndpoint, primaryOrigin) : radiance;
 #endif
+}
+
+float3 pathTraceOpenPBRWithPrimaryHit(Ray ray, RayCone rayCone, ScenePathTracePush push,
+    inout uint seed, out float specularHitDistance, bool hasPrimaryHit, HitInfo primaryHit)
+{
+    OpenPBRPrimaryQuery primaryQuery;
+    primaryQuery.hit = primaryHit;
+    primaryQuery.queried = hasPrimaryHit;
+    primaryQuery.found = hasPrimaryHit;
+    return pathTraceOpenPBRWithPrimaryQuery(ray, rayCone, push, seed, specularHitDistance, primaryQuery);
 }
 
 // Preserve the ray-primary reference API; the raster path supplies an authored
