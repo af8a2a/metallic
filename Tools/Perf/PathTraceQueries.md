@@ -24,6 +24,13 @@ Changes to this scheduling should cover multi-sample MASK/BLEND, glass, sky,
 history, and normal/texture debug overrides as well as the fixed production view.
 Source-level lifetime reduction is not proof of lower physical register usage.
 
+The one-rpp SHARC Query variant finishes BSDF sampling after the environment
+proposal/PDF evaluation and before its visibility traversal. Visibility must not
+consume the path RNG. Keep light accumulation and invalid-sample termination at
+their original positions, and keep the primary shadow diagnostic free of BSDF
+random draws. This shortens prepared-closure lifetime without changing the
+eight-entry medium stack, its IOR precision, or independent shadow stack copies.
+
 Boolean resident-scene shadows accept the first coverage-approved blocker. The
 OpenPBR transmittance query still finds the nearest surface: a non-BLEND material
 with an exactly zero transmission factor returns opaque before full attribute

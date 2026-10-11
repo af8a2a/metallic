@@ -167,10 +167,30 @@ seed = lights.seed;
 EnvironmentLightSample lightSample;
 bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
 bool sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
+#if SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE
+// Visibility does not consume the path RNG. Finish all remaining BSDF work
+// after the environment proposal, so the prepared closure need not survive
+// its nested transparent-shadow traversal. Keep lighting/termination order.
+float lightBsdfPdf = 0.0;
+OpenPBRDiffuseSpecular lightComponents = openPBRMakeZeroDiffuseSpecular();
 if (sampledEnvironment) {
+    lightBsdfPdf = prepared.pdf(lightSample.direction);
+    lightComponents = openPbrSelectComponents(
+        prepared.evalProjectedComponents(lightSample.direction), replacedMask);
+}
+OpenPBRDiffuseSpecular scatterComponents;
+BSDFWeightSample scatter = (BSDFWeightSample)0;
+// This diagnostic returns before sampling in the general path as well.
+if (depth != 0u || push.debugView != kOpenPBRDebugViewShadowTransmittance) {
+    scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
+}
+#endif
+if (sampledEnvironment) {
+#if !(SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE)
     float lightBsdfPdf = prepared.pdf(lightSample.direction);
     OpenPBRDiffuseSpecular lightComponents = openPbrSelectComponents(
         prepared.evalProjectedComponents(lightSample.direction), replacedMask);
+#endif
     float3 lightWeight = openPBRGetSumOfDiffuseSpecular(lightComponents);
     float3 shadowTransmittance = float3(0.0, 0.0, 0.0);
     if (lightBsdfPdf > 0.0 && luminanceMax(lightWeight) > 0.0) {
@@ -231,8 +251,10 @@ radiance += throughput * localRadiance;
 bool cacheRegistered = openPbrCacheRecordHit(cache, cacheAddress, localComponents, emission);
 #endif
 
+#if !(SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE)
 OpenPBRDiffuseSpecular scatterComponents;
 BSDFWeightSample scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
+#endif
 scatterComponents = openPbrSelectComponents(scatterComponents, replacedMask);
 scatter.weight = openPBRGetSumOfDiffuseSpecular(scatterComponents);
 if (scatter.pdf <= 0.0 || scatter.flags == 0u) { OPENPBR_PATH_STOP; }
