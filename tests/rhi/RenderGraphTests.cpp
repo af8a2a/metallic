@@ -1774,6 +1774,18 @@ public:
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
             return RHITestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
         }
+        for (const auto* pass : {pathTrace.get(), materialVisualization.get(), rtxdi.get()}) {
+            for (const char* key : {"lodPixelError", "lodBias"}) {
+                const auto controls = pass->runtimeSettings();
+                const auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& control) {
+                    return control.key == key && control.type == render::RenderGraphRuntimeSettingType::Float &&
+                        !control.rebuildGraph && !control.invalidateHistory;
+                });
+                if (found == controls.end()) {
+                    return RHITestResult::fail(std::string("Ray passes must expose runtime-only LOD control ") + key);
+                }
+            }
+        }
         if (!hasRuntimeSetting(*gpuDrivenPreview, "visualization",
                 render::RenderGraphRuntimeSettingType::Enum, false, false)) {
             return RHITestResult::fail("VisibilityBufferPass must expose runtime-only visualization");

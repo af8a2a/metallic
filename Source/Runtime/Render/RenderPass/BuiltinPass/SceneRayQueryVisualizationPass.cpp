@@ -149,10 +149,7 @@ public:
     {
         SceneRayQueryVisualizationPush push;
         buildPush(context.width(), context.height(), context.properties(), geometry_->bounds(), push);
-        describeStreamRayView(push, view);
-        view.displayHeight = context.displayHeight();
-        view.lodPixelError = context.properties().value("lodPixelError", 1.5f);
-        view.lodBias = context.properties().value("lodBias", 0.0f);
+        describeStreamRayView(push, context.displayHeight(), context.properties(), view);
     }
 
 private:

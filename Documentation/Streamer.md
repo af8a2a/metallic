@@ -22,6 +22,12 @@ VisibilityBuffer 和保留的 StreamAsset 诊断 Pass 通过 `acquireStream()` �
 
 默认实时预算为 512 MiB 几何页、256 MiB CLAS、256 MiB 动态 BLAS，活动 group 上限 65,536。粗 LOD 回退页保持锁定；这些预算为后处理和 DLSS 留出显存。
 
+光追视图通过 `lodPixelError`（默认 1.5，显示像素）和 `lodBias`（默认 0）控制几何质量；降低误差或使用负 bias 会提高细节需求。路径追踪、材质可视化、光线查询可视化及 RTXDI 共用相机和质量参数传递，按显示高度换算到渲染像素，避免渲染比例改变几何细节标准。
+
+RT cut 的子级激活与父级替换使用同一就绪条件：几何页可用且 CLAS 页表已发布 Active。细页先到、CLAS 尚在构建时，保持完整的可用祖先覆盖，避免仅因 CLAS 延迟使整实例回退到根 BLAS。祖先页继续参与需求与预算；几何页和 CLAS 的实际分配不会因为切换 cut 而从统计中消失。几何页回收还要等待引用它的 GPU 提交完成或取消，等待期间仍占用页槽和字节预算。CLAS 页表通过 GPU 顺序发布，取消构建会撤销就绪状态并回收分配，允许原计划重试。
+
+`stream_clas_cut_readiness` 覆盖 compact/direct CLAS 池与 distributed/ordered 遍历的延迟细化、祖先覆盖和预算；`streamer_meshlet_geometry_retirement` 覆盖 GPU 未完成时禁止页面复用，以及取消与重置；`clas_compact_lifecycle` 同时验证直接构建的延迟发布、取消回滚和重试。
+
 2026-09-14 验证（RTX 5060 8 GiB，RelWithDebInfo，NRD 开启）：
 
 - `MetallicRHITests --rhi-no-validation --gtest_filter="*streamer*:*streaming_task_queue*:*meshlet_stream_page_load*:*gpu_scene*:*material_binning*:*stream_metadata*:*scene_upload_pipeline:*render_graph_sample*:*gpu_driven_sponza_culling_equivalence"`：39 项通过。

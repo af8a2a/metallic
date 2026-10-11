@@ -450,6 +450,7 @@ add_executable(MetallicRHITests
     rhi/GPUSceneSubsystemTests.cpp
     rhi/MeshletLODTests.cpp
     rhi/StreamMeshletLODTests.cpp
+    rhi/StreamCLASCutTests.cpp
     rhi/WaveWorkDistributionTests.cpp
     rhi/TessellationTests.cpp
     rhi/TessellationSplitTests.cpp

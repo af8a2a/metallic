@@ -30,7 +30,7 @@ public:
     {
         SceneMaterialVisualizationPush push{};
         buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), push);
-        describeStreamRayView(push, view);
+        describeStreamRayView(push, context.displayHeight(), context.properties(), view);
     }
 
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
@@ -58,6 +58,8 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{
+            runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f),
+            runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f),
             runtimeEnumSetting(
                 "mode",
                 "Mode",

@@ -79,6 +79,7 @@ public:
         graph.markOutput("VBuffer.depth");
         const auto node = graph.findNode("VBuffer")->id;
         RenderView renderView;
+        renderView.setRenderResolution(kWidth, kHeight);
         preview.bindRenderView(&renderView);
         const auto render = [&](const char* output = "VBuffer.visibility") {
             // Exercise the shared view used by the sample, including its Z
@@ -92,6 +93,10 @@ public:
             const auto result = preview.render(graph, kWidth, kHeight, output);
             debug.poll();
             if (!result) { throw std::runtime_error(preview.lastLog()); }
+            if (preview.width() != kWidth || preview.height() != kHeight ||
+                preview.pixels().size() != kWidth * kHeight) {
+                throw std::runtime_error("Stream LOD fixture rendered at an unexpected extent");
+            }
         };
         const auto call = [&](const char* method, DebugValue params) {
             auto response = debug.core().dispatch({{"id", "stream-lod-scene-test"}, {"method", method}, {"params", params}});

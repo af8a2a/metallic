@@ -2623,6 +2623,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         currentUploadSlot_ = uploadSlot;
     }
     nextUpload.completion = metallic::render::RenderFrameContext::from(commandBuffer) ? metallic::render::RenderFrameContext::from(commandBuffer)->completion() : GPUCompletionPoint{};
+    residency_.trackGeometryUse(nextUpload.completion);
     if (rasterSnapshotFrozen_) {
         // Rotate host-write frame slots, but do not publish completions, consume
         // requests, reclaim pages or enqueue new geometry/CLAS work.
@@ -2747,6 +2748,13 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
         if (!result) { return result; }
     }
     if (checkpoint) { checkpoint("AfterStreamPriorityClear"); }
+    // Publish completed CLAS work before selecting the ray-tracing cut. Both
+    // activation and parent replacement use this same published page table.
+    // Pending pages remain demanded, with their usable ancestors kept hot and
+    // charged to the existing geometry/CLAS budgets until refinement is ready.
+    result = transitionPageBufferForTraversal(commandBuffer);
+    if (result) { result = cmdBuildPendingClas(commandBuffer, checkpoint); }
+    if (!result) { return result; }
     result = buildActiveTable(commandBuffer, checkpoint);
     if (!result) {
         return result;
@@ -2763,8 +2771,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
         return result;
     }
 
-    result = cmdBuildPendingClas(commandBuffer, checkpoint);
-    if (!result || !clusterRtxEnabled_) { return result; }
+    if (!clusterRtxEnabled_) { return result; }
     result = buildBlasInputs(commandBuffer, checkpoint);
     if (!result) {
         return result;
@@ -2886,7 +2893,10 @@ Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
             return result;
         }
         for (const auto& build : clasBuilds) {
-            if (clasPool_->pageHasClas(build.pageIndex)) {
+            // Keep the source plan while a direct build is only recorded. A
+            // cancelled frame must be able to rebuild rather than reuse an
+            // address whose construction never reached the GPU.
+            if (clasPool_->pageHasClas(build.pageIndex) && !clasPool_->pageBuildPending(build.pageIndex)) {
                 pendingClasPlans_.erase(build.pageIndex);
                 queuedClasPages_.erase(build.pageIndex);
             } else {
@@ -3742,6 +3752,8 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
         ? kMeshletStreamNoDebugLODOverride
         : frame.selectedLodLevel;
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
+    params.rayClasPageTableBuffer = clusterRtxEnabled_ && clasPageTableHandle_.valid()
+        ? clasPageTableHandle_.shaderIndex() : UINT32_MAX;
     params.lodPixelError = meshletLodRenderPixelThreshold(
         std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
             std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f)),

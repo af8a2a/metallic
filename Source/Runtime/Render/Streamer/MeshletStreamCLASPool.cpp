@@ -3,6 +3,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamCompactCLASPool.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 
 #include <algorithm>
 #include <cstring>
@@ -59,6 +60,7 @@ struct MeshletStreamCLASPool::Impl {
         uint32_t clusterCount = 0;
         uint32_t generation = 0;
         PageState state = PageState::Empty;
+        std::shared_ptr<SubmissionTransaction> buildSubmission;
     };
 
     struct RetiredPage {
@@ -72,6 +74,7 @@ struct MeshletStreamCLASPool::Impl {
         std::unique_ptr<Buffer> destinationAddressBuffer;
     };
 
+    Device* device = nullptr;
     const scene::MeshletStreamAsset* asset = nullptr;
     MeshletStreamStorage storage;
     std::unique_ptr<Buffer> storageBuffer;
@@ -80,6 +83,7 @@ struct MeshletStreamCLASPool::Impl {
     std::unique_ptr<Buffer> pageTableBuffer;
     std::vector<FrameResources> frames;
     std::unordered_map<uint32_t, PageEntry> pages;
+    std::vector<uint32_t> pendingBuildPages;
     std::vector<RetiredPage> retiredPages;
     MeshletStreamCLASPoolStats stats;
     uint64_t frameIndex = 0;
@@ -89,6 +93,19 @@ struct MeshletStreamCLASPool::Impl {
     uint32_t clusterIdStride = 0;
     uint32_t maxBuildClusters = 0;
     uint32_t queuedFrameCount = 0;
+    struct Publication {
+        uint64_t revision = 0;
+        MeshletStreamCLASPageEntry entry;
+        uint32_t addressOffset = 0;
+        std::vector<uint64_t> addresses;
+    };
+    using Publications = std::unordered_map<uint32_t, Publication>;
+    struct PublicationJournal {
+        Publications pending;
+        std::unordered_map<uint32_t, uint64_t> latestRevision;
+    };
+    // Cancellation callbacks own only this journal, never the pool or Impl.
+    std::shared_ptr<PublicationJournal> publications = std::make_shared<PublicationJournal>();
 
     void writePageEntry(uint32_t pageIndex)
     {
@@ -96,7 +113,9 @@ struct MeshletStreamCLASPool::Impl {
         if (pageTableBuffer == nullptr || pageIndex >= pageCount) {
             return;
         }
-        MeshletStreamCLASPageEntry entry;
+        Publication update;
+        update.revision = stats.publicationRevision;
+        auto& entry = update.entry;
         entry.publicationGeneration = static_cast<uint32_t>(stats.publicationRevision);
         auto pageIter = pages.find(pageIndex);
         if (pageIter != pages.end()) {
@@ -107,17 +126,114 @@ struct MeshletStreamCLASPool::Impl {
                     page.state == PageState::Built
                         ? MeshletStreamCLASPageState::Active
                         : MeshletStreamCLASPageState::Retiring);
+                update.addressOffset = page.addressOffset;
+                for (uint32_t cluster = 0; cluster < page.clusterCount; ++cluster) {
+                    update.addresses.push_back(storageBuffer->deviceAddress() + page.allocation.offset +
+                        uint64_t(cluster) * clusterStride);
+                }
             }
         }
 
-        const uint64_t offset = static_cast<uint64_t>(pageIndex) * sizeof(entry);
-        void* mapped = pageTableBuffer->map();
-        if (mapped == nullptr) {
-            return;
+        publications->latestRevision[pageIndex] = update.revision;
+        publications->pending[pageIndex] = std::move(update);
+    }
+
+    Result<> flushPublications(CommandBuffer& commands, std::string& log)
+    {
+        if (publications->pending.empty()) { return {}; }
+        auto updates = std::make_shared<Publications>(publications->pending);
+        uint64_t bytes = 0;
+        for (const auto& [id, update] : *updates) { bytes += update.addresses.size() * 8u + sizeof(update.entry); }
+        std::unique_ptr<Buffer> staging;
+        auto result = device->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload, .memoryDomain = MemoryBudgetDomain::Upload})
+            .transform([&](auto value) { staging = std::move(value); });
+        if (!result) { log = "CLAS publication upload allocation failed: " + std::string(resultToString(result)); return result; }
+        auto upload = std::shared_ptr<Buffer>(std::move(staging));
+        auto* mapped = static_cast<uint8_t*>(upload->map());
+        if (!mapped) { return makeError(Error::Failure); }
+        uint64_t offset = 0;
+        for (const auto& [id, update] : *updates) {
+            const uint64_t size = update.addresses.size() * 8u;
+            if (size) { std::memcpy(mapped + offset, update.addresses.data(), size); }
+            std::memcpy(mapped + offset + size, &update.entry, sizeof(update.entry));
+            offset += size + sizeof(update.entry);
         }
-        std::memcpy(static_cast<uint8_t*>(mapped) + offset, &entry, sizeof(entry));
-        pageTableBuffer->flush({offset, sizeof(entry)});
-        pageTableBuffer->unmap();
+        upload->flush();
+        upload->unmap();
+        result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
+            [journal = publications, updates] {
+                for (const auto& [id, update] : *updates) {
+                    const auto latest = journal->latestRevision.find(id);
+                    if (latest == journal->latestRevision.end() || latest->second != update.revision) { continue; }
+                    auto it = journal->pending.find(id);
+                    if (it == journal->pending.end() || it->second.revision < update.revision) {
+                        journal->pending[id] = update;
+                    }
+                }
+            }));
+        if (!result) { return result; }
+        if (!(result = commands.retainResource(upload))) { return result; }
+        const auto barrier = [&](Buffer& buffer, ResourceState before, ResourceState after) {
+            const BufferBarrierDesc value{.buffer = &buffer,
+                .before = resourceSyncScope(before, PipelineStageBits::AllCommands),
+                .after = resourceSyncScope(after, PipelineStageBits::AllCommands)};
+            return commands.synchronize({.buffers = {&value, 1}});
+        };
+        for (Buffer* target : {addressBuffer.get(), pageTableBuffer.get()}) {
+            if (!(result = commands.retainResource(target->retainAllocation()))) { return result; }
+            if (!(result = barrier(*target, ResourceState::General, ResourceState::TransferDestination))) { return result; }
+        }
+        if (!(result = barrier(*upload, ResourceState::Undefined, ResourceState::TransferSource))) { return result; }
+        offset = 0;
+        for (const auto& [id, update] : *updates) {
+            const uint64_t size = update.addresses.size() * 8u;
+            if (size) {
+                auto source = upload->slice({offset, size});
+                auto destination = addressBuffer->slice({uint64_t(update.addressOffset) * 8u, size});
+                if (!source || !destination) { return makeError(Error::InvalidArgument); }
+                if (!(result = commands.copyBuffer(*source, *destination))) { return result; }
+            }
+            auto source = upload->slice({offset + size, sizeof(update.entry)});
+            auto destination = pageTableBuffer->slice({uint64_t(id) * sizeof(update.entry), sizeof(update.entry)});
+            if (!source || !destination) { return makeError(Error::InvalidArgument); }
+            if (!(result = commands.copyBuffer(*source, *destination))) { return result; }
+            offset += size + sizeof(update.entry);
+        }
+        for (Buffer* target : {addressBuffer.get(), pageTableBuffer.get()}) {
+            if (!(result = barrier(*target, ResourceState::TransferDestination, ResourceState::General))) { return result; }
+        }
+        publications->pending.clear();
+        return {};
+    }
+
+    void collectCancelledBuilds()
+    {
+        std::vector<uint32_t> cancelled;
+        for (auto pending = pendingBuildPages.begin(); pending != pendingBuildPages.end();) {
+            auto it = pages.find(*pending);
+            if (it == pages.end()) { pending = pendingBuildPages.erase(pending); continue; }
+            auto& page = it->second;
+            if (page.buildSubmission && page.buildSubmission->cancelled()) {
+                cancelled.push_back(it->first);
+                if (page.state == PageState::Built) { --stats.builtPageCount; stats.builtClusterCount -= page.clusterCount; }
+                else if (page.state == PageState::Retiring) { --stats.retiringPageCount; stats.retiringClusterCount -= page.clusterCount; }
+                releasePage(page);
+                writePageEntry(it->first);
+                pages.erase(it);
+                pending = pendingBuildPages.erase(pending);
+            } else {
+                if (!page.buildSubmission || page.buildSubmission->resolved()) {
+                    page.buildSubmission.reset();
+                    pending = pendingBuildPages.erase(pending);
+                } else { ++pending; }
+            }
+        }
+        if (!cancelled.empty()) {
+            std::erase_if(retiredPages, [&](const auto& retired) {
+                return std::find(cancelled.begin(), cancelled.end(), retired.pageIndex) != cancelled.end();
+            });
+        }
     }
 
     void releasePage(PageEntry& page)
@@ -128,18 +244,8 @@ struct MeshletStreamCLASPool::Impl {
             page.generation = generation;
             return;
         }
-        if (addressBuffer != nullptr && page.addressOffset != UINT32_MAX) {
-            void* mapped = addressBuffer->map();
-            if (mapped != nullptr) {
-                std::memset(
-                    static_cast<uint8_t*>(mapped) +
-                        static_cast<uint64_t>(page.addressOffset) * sizeof(uint64_t),
-                    0,
-                    static_cast<size_t>(page.clusterCount) * sizeof(uint64_t));
-                addressBuffer->flush({static_cast<uint64_t>(page.addressOffset) * sizeof(uint64_t), static_cast<uint64_t>(page.clusterCount) * sizeof(uint64_t)});
-                addressBuffer->unmap();
-            }
-        }
+        // The invalid page-table publication hides stale addresses. Reusing
+        // their slots writes fresh addresses in GPU order, never from the CPU.
         storage.release(page.allocation);
         page = {};
         page.generation = generation;
@@ -292,6 +398,7 @@ Result<> MeshletStreamCLASPool::initialize(
         device,
         clusterSlotCapacity * sizeof(uint64_t),
         BufferUsageBits::Storage |
+            BufferUsageBits::TransferDestination |
             BufferUsageBits::AccelerationStructureBuildInput |
             BufferUsageBits::ShaderDeviceAddress,
         MemoryLocation::HostUpload,
@@ -315,7 +422,7 @@ Result<> MeshletStreamCLASPool::initialize(
     result = createClasBuffer(
         device,
         static_cast<uint64_t>(desc.asset->pageCount()) * sizeof(MeshletStreamCLASPageEntry),
-        BufferUsageBits::Storage,
+        BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
         MemoryLocation::HostUpload,
         impl_->pageTableBuffer,
         "createBuffer(stream CLAS page table)",
@@ -405,6 +512,7 @@ Result<> MeshletStreamCLASPool::initialize(
         return makeError(Error::InvalidArgument);
     }
 
+    impl_->device = &device;
     impl_->asset = desc.asset;
     impl_->pages.reserve(std::min(desc.maxBuildClusters, desc.asset->pageCount()));
     impl_->scratchOffset = scratchOffset;
@@ -437,6 +545,9 @@ void MeshletStreamCLASPool::beginFrame(CPUProfileRecorder* profiler)
         return;
     }
     ++impl_->frameIndex;
+    // A cancelled build never produced a usable root reference. Its fallback
+    // BLAS recording is cancelled too; do not report a destructive root edit.
+    impl_->collectCancelledBuilds();
     impl_->stats.frameBuiltPageCount = 0;
     impl_->stats.frameBuiltClusterCount = 0;
     impl_->stats.frameRejectedPageCount = 0;
@@ -473,6 +584,7 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
+    impl_->collectCancelledBuilds();
     if (!hasFlag(pageBuffer.desc().usage, BufferUsageBits::ShaderDeviceAddress) ||
         !hasFlag(pageBuffer.desc().usage, BufferUsageBits::AccelerationStructureBuildInput) ||
         pageBuffer.deviceAddress() == 0) {
@@ -613,27 +725,17 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
     }
 
     if (buildInfos.empty()) {
-        return {};
+        return impl_->flushPublications(commandBuffer, log);
     }
-
-    void* mappedAddresses = impl_->addressBuffer->map();
-    if (mappedAddresses == nullptr) {
-        rollback();
-        log = "MeshletStreamCLASPool address buffer did not map";
-        return makeError(Error::Failure);
-    }
-    for (const PendingPage& pending : pendingPages) {
-        for (uint32_t index = 0; index < pending.clusterCount; ++index) {
-            const uint64_t address = buildInfos[pending.firstBuildInfo + index].destinationBuffer.deviceAddress();
-            std::memcpy(static_cast<uint8_t*>(mappedAddresses) +
-                (static_cast<uint64_t>(pending.addressOffset) + index) * sizeof(uint64_t),
-                &address, sizeof(address));
-        }
-    }
-    impl_->addressBuffer->flush();
-    impl_->addressBuffer->unmap();
 
     Impl::FrameResources& frame = impl_->frames[impl_->frameIndex % impl_->frames.size()];
+    auto buildSubmission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+    auto result = commandBuffer.addSubmissionTransaction(buildSubmission);
+    if (!result) { rollback(); return result; }
+    for (Buffer* buffer : {impl_->storageBuffer.get(), impl_->scratchBuffer.get(),
+             frame.buildInfoBuffer.get(), frame.destinationAddressBuffer.get(), &pageBuffer}) {
+        if (!(result = commandBuffer.retainResource(buffer->retainAllocation()))) { rollback(); return result; }
+    }
     auto scratch = impl_->scratchBuffer->slice({impl_->scratchOffset});
     auto infos = frame.buildInfoBuffer->slice();
     auto addresses = frame.destinationAddressBuffer->slice();
@@ -643,7 +745,7 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
         log = "MeshletStreamCLASPool build buffer range is invalid";
         return makeError(Error::InvalidArgument);
     }
-    Result<> result = commandBuffer.buildClusterAccelerationStructureTriangles(
+    result = commandBuffer.buildClusterAccelerationStructureTriangles(
         ClusterAccelerationStructureTriangleBuildDesc{
             .clusters = buildInfos,
             .maxClusterTriangleCount = impl_->asset->maxClusterTriangles(),
@@ -671,6 +773,8 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
         page.clusterCount = pending.clusterCount;
         ++page.generation;
         page.state = Impl::PageState::Built;
+        page.buildSubmission = buildSubmission;
+        impl_->pendingBuildPages.push_back(pending.pageIndex);
         impl_->writePageEntry(pending.pageIndex);
         ++impl_->stats.builtPageCount;
         impl_->stats.builtClusterCount += page.clusterCount;
@@ -679,7 +783,7 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
         ++impl_->stats.totalBuiltPageCount;
         impl_->stats.totalBuiltClusterCount += page.clusterCount;
     }
-    return {};
+    return impl_->flushPublications(commandBuffer, log);
 }
 
 void MeshletStreamCLASPool::retirePages(std::span<const uint32_t> pageIndices)
@@ -735,7 +839,8 @@ bool MeshletStreamCLASPool::pageHasClas(uint32_t pageIndex) const
         return false;
     }
     const auto pageIter = impl_->pages.find(pageIndex);
-    return pageIter != impl_->pages.end() && pageIter->second.state != Impl::PageState::Empty;
+    return pageIter != impl_->pages.end() && pageIter->second.state != Impl::PageState::Empty &&
+        (!pageIter->second.buildSubmission || !pageIter->second.buildSubmission->cancelled());
 }
 
 uint32_t MeshletStreamCLASPool::pageClasAddressOffset(uint32_t pageIndex) const
@@ -764,7 +869,9 @@ uint64_t MeshletStreamCLASPool::clusterAddress(uint32_t pageIndex, uint32_t clus
 bool MeshletStreamCLASPool::pageBuildPending(uint32_t pageIndex) const
 {
     if (compact_) { return compact_->pageBuildPending(pageIndex); }
-    return false;
+    const auto page = impl_->pages.find(pageIndex);
+    return page != impl_->pages.end() && page->second.buildSubmission &&
+        !page->second.buildSubmission->resolved();
 }
 uint64_t MeshletStreamCLASPool::pageStorageBytes(uint32_t pageIndex) const
 {

@@ -506,7 +506,8 @@ struct GPUDrivenStreamAssetParams
     float4 prefetchUp;
     uint enableLodTransitionTelemetry;
     float previousLodPixelError;
-    uint2 lodTelemetryPadding;
+    uint rayClasPageTableBuffer;
+    uint lodTelemetryPadding;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -1255,8 +1256,17 @@ bool groupPageDrawable(
         return false;
     }
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
-    return streamPageDrawable(streamPageState(pageEntry)) &&
-        streamPageDeviceOffset(pageEntry) != kInvalidStreamDeviceOffset;
+    if (!streamPageDrawable(streamPageState(pageEntry)) ||
+        streamPageDeviceOffset(pageEntry) == kInvalidStreamDeviceOffset) { return false; }
+    // The same predicate controls activation and complementary parent masks.
+    // Geometry arriving before its CLAS must leave the legal ancestor cut in
+    // place, rather than select a fine cut that sends the whole BLAS to its root.
+    if (params.rayClasPageTableBuffer != 0xffffffffu) {
+        StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry> clasPages =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry>>(params.rayClasPageTableBuffer));
+        if (clasPageState(clasPages[group.pageIndex]) != kCLASPageStateActive) { return false; }
+    }
+    return true;
 }
 
 uint buildGroupClusterSelectionMask(

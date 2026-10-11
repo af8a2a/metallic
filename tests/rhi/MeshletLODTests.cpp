@@ -3,6 +3,8 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/StreamRayTracingBindings.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -195,6 +197,80 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(MeshletLODDisplayPixelThresholdTest);
+
+class StreamRayQualityViewTest final : public RHITest {
+public:
+    StreamRayQualityViewTest()
+    {
+        type = RHITestType::Validation;
+        name = "stream_ray_quality_view_parameters";
+    }
+
+    RHITestResult run(RHITestContext&) override
+    {
+        using namespace builtin_pass;
+        const auto check = []<typename Push>() -> RHITestResult {
+            Push push{};
+            push.eye[0] = 2.f;
+            push.eye[1] = 3.f;
+            push.eye[2] = 4.f;
+            push.center[0] = -2.f;
+            push.center[1] = -3.f;
+            push.center[2] = -4.f;
+            push.upProjection[1] = 1.f;
+            push.viewport[3] = 1.0471975512f; // 60 degrees, as consumed by primary rays.
+            push.clipOrtho[0] = .01f;
+            push.clipOrtho[1] = 200.f;
+            push.clipOrtho[2] = 6.f;
+            for (bool orthographic : {false, true}) {
+                push.upProjection[3] = orthographic ? 1.f : 0.f;
+                for (uint32_t height : {1080u, 720u, 540u, 2160u}) {
+                    push.width = height * 16u / 9u;
+                    push.height = height;
+                    MeshletStreamFrameDesc view;
+                    describeStreamRayView(push, 1080, {{"lodPixelError", 2.25f}, {"lodBias", -1.f}}, view);
+                    if (view.width != push.width || view.height != height || view.displayHeight != 1080 ||
+                        view.lodPixelError != 2.25f || view.lodBias != -1.f) {
+                        return RHITestResult::fail("Ray view dropped quality properties or confused render/display extent");
+                    }
+                    const float error = meshletLodRenderPixelThreshold(
+                        view.lodPixelError * std::exp2(view.lodBias), view.height, view.displayHeight);
+                    if (std::abs(error / float(height) - 1.125f / 1080.f) > 1e-7f) {
+                        return RHITestResult::fail("Ray view quality changes with internal rendering scale");
+                    }
+                    const float eye[] = {view.camera.eye.x, view.camera.eye.y, view.camera.eye.z};
+                    const float center[] = {view.camera.center.x, view.camera.center.y, view.camera.center.z};
+                    const float up[] = {view.camera.up.x, view.camera.up.y, view.camera.up.z};
+                    for (int axis = 0; axis != 3; ++axis) {
+                        if (eye[axis] != push.eye[axis] || center[axis] != push.center[axis] ||
+                            up[axis] != push.upProjection[axis]) {
+                            return RHITestResult::fail("Streaming camera diverged from primary rays");
+                        }
+                    }
+                    if (std::abs(view.camera.fovDegrees - 60.f) > 1e-4f || view.camera.znear != .01f ||
+                        view.camera.zfar != 200.f || view.camera.orthoHeight != 6.f ||
+                        view.camera.orthographic != orthographic) {
+                        return RHITestResult::fail("Ray view projection parameters changed during quality binding");
+                    }
+                    // Missing properties must reset prior frame settings, and a missing
+                    // display extent deliberately falls back to the render extent.
+                    describeStreamRayView(push, 0, RenderGraphProperties::object(), view);
+                    if (view.displayHeight != 0 || view.lodPixelError != 1.5f || view.lodBias != 0.f ||
+                        meshletLodRenderPixelThreshold(view.lodPixelError, view.height, view.displayHeight) != 1.5f) {
+                        return RHITestResult::fail("Ray view quality defaults retained stale properties");
+                    }
+                }
+            }
+            return RHITestResult::pass();
+        };
+        for (auto result : {check.operator()<ScenePathTracePush>(), check.operator()<SceneMaterialVisualizationPush>(),
+                 check.operator()<SceneRTXDIPush>()}) {
+            if (!result.passed) { return result; }
+        }
+        return RHITestResult::pass("All ray push layouts preserve camera, display-scale invariant quality, overrides and defaults");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamRayQualityViewTest);
 
 } // namespace
 } // namespace metallic::tests

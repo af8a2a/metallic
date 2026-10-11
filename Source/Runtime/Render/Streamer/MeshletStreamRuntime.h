@@ -365,7 +365,9 @@ struct MeshletStreamGPUParams {
     float prefetchUp[4] = {};
     uint32_t enableLodTransitionTelemetry = 0;
     float previousLodPixelError = 1.5f;
-    uint32_t lodTelemetryPadding[2] = {};
+    // RT selection may replace an ancestor only after the finer CLAS is published.
+    uint32_t rayClasPageTableBuffer = UINT32_MAX;
+    uint32_t lodTelemetryPadding = 0;
 };
 
 struct MeshletStreamGPURasterBindings {

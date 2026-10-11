@@ -360,7 +360,7 @@ public:
     {
         ScenePathTracePush push{};
         buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), {}, false, push);
-        describeStreamRayView(push, view);
+        describeStreamRayView(push, context.displayHeight(), context.properties(), view);
     }
 
     RenderGraphSceneDependency sceneDependency() const override
@@ -481,6 +481,8 @@ public:
                         {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}, {"Material ID", "material"}}));
                 return settings; // Camera is supplied by rasterInfo, not a second editable camera.
             }
+            settings.push_back(runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f));
+            settings.push_back(runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f));
             appendCameraRuntimeSettings(settings, {0.0f, 0.2f, 2.5f}, {0.0f, 0.0f, 0.0f}, 50.0f, true);
             return settings;
         }
@@ -582,6 +584,8 @@ public:
                 if (setting.key == "samples") { setting.rebuildGraph = true; }
             }
         }
+        settings.push_back(runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f));
+        settings.push_back(runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f));
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.2f, 2.5f},
