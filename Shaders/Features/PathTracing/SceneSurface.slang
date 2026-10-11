@@ -37,7 +37,11 @@ using Metallic.Interop.NeuralTextures;
 import RTXCRHair;
 
 
+#if SHARC_UPDATE
 #define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
+#else
+#define gOutput resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float4>>>(kSceneOutputOffset))
+#endif
 
 struct PathTracePrimitive
 {
@@ -67,9 +71,17 @@ struct PathTraceInstance
 
 #define gMaterials resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
 
+#if SHARC_UPDATE
 #define gHistoryCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().accumulationCurrent)
+#else
+#define gHistoryCurrent resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float4>>>(kSceneAccumulationCurrentOffset))
+#endif
 
+#if SHARC_UPDATE
 #define gHistoryPrevious resolveUniform(getResourceParameters<SceneResourceParameters>().accumulationPrevious)
+#else
+#define gHistoryPrevious resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float4>>>(kSceneAccumulationPreviousOffset))
+#endif
 
 #define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
 

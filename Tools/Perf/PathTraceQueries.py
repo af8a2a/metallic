@@ -83,12 +83,14 @@ def compare_reports(a_path, b_path, expected):
 
 def restore(root):
     journal = mb.read(root / 'Transaction.json')
-    for name in FILES:
+    shader_root = Path(journal.get('source', SHADERS))
+    files = journal.get('files', FILES)
+    for name in files:
         known = {mb.digest(root / 'sources' / arm / name) for arm in 'ABC'}
-        if mb.digest(SHADERS / name) not in known:
+        if mb.digest(shader_root / name) not in known:
             raise RuntimeError(f"Concurrent shader edit preserved: {name}; manual reconciliation required")
-    for name in FILES:
-        shutil.copyfile(root/'sources/C'/name,SHADERS/name)
+    for name in files:
+        shutil.copyfile(root/'sources/C'/name,shader_root/name)
     journal['restored'] = True
     mb.save(root/'Transaction.json',journal)
 
@@ -100,11 +102,12 @@ def run(args):
     for arm, folder in source_dirs.items():
         (root/'sources'/arm).mkdir(parents=True)
         for name in FILES:
+            (root/'sources'/arm/name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(folder/name,root/'sources'/arm/name)
-    mb.save(root/'Transaction.json',dict(pid=os.getpid(),restored=False,source=str(SHADERS)))
+    mb.save(root/'Transaction.json',dict(pid=os.getpid(),restored=False,source=str(SHADERS),files=FILES))
     identity = mb.identity(exe,cases)
     identity.update(phase=args.phase,clocks='unaltered',orders=['ABC'] if args.phase=='correctness' else ORDERS,
-                    statisticalUnit='independent-process median; one A/B/C triplet per block',
+                    statisticalUnit='independent-process median; one comparison block per order',
                     scope='production PathTrace pass and render-graph GPU timestamps; excludes denoiser/upscaler/presentation',
                     thresholds=dict(hdrAbsolute=2e-5,hdrRelative=2e-5,guides='byte exact',gainLower=.03,graphGainLower=-.02))
     identity['gpu'] = subprocess.check_output(['nvidia-smi','--query-gpu=name,uuid,driver_version','--format=csv,noheader'],text=True).strip()
@@ -117,7 +120,7 @@ def run(args):
     env['METALLIC_SHADER_DEBUG_MODE'] = 'disabled'
     for name in ['PreparePathTraceQueries.py','PathTraceQueries.py','MaterialBaseline.py']:
         shutil.copyfile(Path(__file__).parent/name,root/name)
-    mutable = {'Shaders/Features/PathTracing/'+n for n in FILES}
+    mutable = {str((SHADERS/n).relative_to(ROOT)).replace('\\','/') for n in FILES}
     def check_identity():
         for path,digest in identity['sources'].items():
             if path not in mutable and mb.digest(ROOT/path)!=digest:
@@ -226,7 +229,7 @@ def verify(root):
     if identity['phase']=='performance':
         n=len(identity['orders'])
         for case in expected:
-            for a,b in [('A','B'),('B','C'),('A','C')]:
+            for a,b in itertools.combinations(sorted(set(''.join(identity['orders']))), 2):
                 values=[]
                 for metric in (0,1):
                     gains=[1-medians[(i,b,case)][metric]/medians[(i,a,case)][metric] for i in range(n)]

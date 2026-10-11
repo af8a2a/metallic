@@ -150,6 +150,55 @@ static_assert(sizeof(SceneResourceParameters) == 456);
 static_assert(offsetof(SceneResourceParameters, environment) == 424);
 #endif
 
+// Read-only views of the existing scene packet; these do not change its wire layout.
+DR_PUBLIC struct SceneGuideResourceParameters
+{
+    DR_PUBLIC DR_STORAGE(2D<float4>) guideAlbedo;
+    DR_PUBLIC DR_STORAGE(2D<float>) guideDepth;
+    DR_PUBLIC DR_STORAGE(2D<float>) guideLinearDepth;
+    DR_PUBLIC DR_STORAGE(2D<float2>) guideMotion;
+    DR_PUBLIC DR_STORAGE(2D<float4>) guideNormalRoughness;
+    DR_PUBLIC DR_STORAGE(2D<float4>) guideSpecularAlbedo;
+    DR_PUBLIC DR_STORAGE(2D<float>) guideSpecularHitDistance;
+};
+#ifdef __cplusplus
+static_assert(sizeof(SceneGuideResourceParameters) == 28);
+static_assert(offsetof(SceneResourceParameters, guideAlbedo) == 40 + offsetof(SceneGuideResourceParameters, guideAlbedo));
+static_assert(offsetof(SceneResourceParameters, guideDepth) == 40 + offsetof(SceneGuideResourceParameters, guideDepth));
+static_assert(offsetof(SceneResourceParameters, guideLinearDepth) == 40 + offsetof(SceneGuideResourceParameters, guideLinearDepth));
+static_assert(offsetof(SceneResourceParameters, guideMotion) == 40 + offsetof(SceneGuideResourceParameters, guideMotion));
+static_assert(offsetof(SceneResourceParameters, guideNormalRoughness) == 40 + offsetof(SceneGuideResourceParameters, guideNormalRoughness));
+static_assert(offsetof(SceneResourceParameters, guideSpecularAlbedo) == 40 + offsetof(SceneGuideResourceParameters, guideSpecularAlbedo));
+static_assert(offsetof(SceneResourceParameters, guideSpecularHitDistance) == 40 + offsetof(SceneGuideResourceParameters, guideSpecularHitDistance));
+#endif
+
+DR_PUBLIC struct SceneSharcResourceParameters
+{
+    DR_PUBLIC DR_BUFFER sharcAccumulation;
+    DR_PUBLIC DR_BUFFER sharcHashEntries;
+    DR_PUBLIC DR_BUFFER sharcResolved;
+};
+#ifdef __cplusplus
+static_assert(sizeof(SceneSharcResourceParameters) == 12);
+static_assert(offsetof(SceneResourceParameters, sharcAccumulation) == 364 + offsetof(SceneSharcResourceParameters, sharcAccumulation));
+static_assert(offsetof(SceneResourceParameters, sharcHashEntries) == 364 + offsetof(SceneSharcResourceParameters, sharcHashEntries));
+static_assert(offsetof(SceneResourceParameters, sharcResolved) == 364 + offsetof(SceneSharcResourceParameters, sharcResolved));
+#endif
+
+// Keep shader byte offsets checked against the CPU packet declaration.
+#ifdef __cplusplus
+#define DR_SCENE_OFFSET(Name, Field, Offset) inline constexpr uint32_t Name = Offset; static_assert(offsetof(SceneResourceParameters, Field) == Name)
+#else
+#define DR_SCENE_OFFSET(Name, Field, Offset) public static const uint Name = Offset
+#endif
+DR_SCENE_OFFSET(kSceneAccumulationCurrentOffset, accumulationCurrent, 8);
+DR_SCENE_OFFSET(kSceneAccumulationPreviousOffset, accumulationPrevious, 12);
+DR_SCENE_OFFSET(kSceneCacheParamsOffset, cacheParams, 20);
+DR_SCENE_OFFSET(kSceneGuidesOffset, guideAlbedo, 40);
+DR_SCENE_OFFSET(kSceneSharcOffset, sharcAccumulation, 364);
+DR_SCENE_OFFSET(kSceneOutputOffset, output, 236);
+#undef DR_SCENE_OFFSET
+
 DR_PUBLIC struct OutputImageResourceParameters
 {
     DR_PUBLIC DR_STORAGE(2D<float4>) output;

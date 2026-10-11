@@ -2150,6 +2150,87 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(ResourceMemberParametersTest);
 
+class ResourceParameterFieldTest final : public RHITest {
+public:
+    ResourceParameterFieldTest() { type = RHITestType::Resource; name = "named_resource_field_views_and_bounds"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"compute.named.fields.bounds"}, bench::Layer::Core, "binding", "binding",
+            {"resource-field-readback.bin"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice fixture;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Named resource field views",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { fixture = std::move(value); }));
+        auto& device = *fixture;
+        auto& queue = *device.getQueue(QueueType::Graphics);
+        constexpr uint64_t kFieldABI = 0x4649454c44530001ull;
+        std::unique_ptr<Buffer> output;
+        REG_REQUIRE(device.createBuffer({.size = 128, .structureStride = 4, .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::HostReadback, .queueAccess = QueueAccessBits::Graphics})
+            .transform([&](auto value) { output = std::move(value); }));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(device, queue));
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(device, queue));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{queue, *gate};
+        std::vector<uint32_t> evidence;
+        uint32_t frame = 0;
+        for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
+            ShaderCompileResult shader;
+            REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "ResourceParameterFieldProbe", .entryPointName = "main",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics)
+                .transform([&](auto value) { shader = std::move(value); }));
+            ComputeKernel kernel;
+            std::string log;
+            REG_REQUIRE(kernel.initialize(device, {.spirv = shader.spirv,
+                .parameters = parameterAbi<NamedComputeParameters>(kFieldABI)}, log));
+            for (uint32_t variant = 0; variant < 3; ++variant) {
+                // Arbitrary identities are read back, never resolved. All-ones
+                // also verifies that optional-resource sentinels survive slicing.
+                std::array<uint32_t, 114> packet;
+                for (uint32_t i = 0; i < packet.size(); ++i) { packet[i] = variant == 2 ? UINT32_MAX : 1000 + i; }
+                static_assert(sizeof(packet) == sizeof(SceneResourceParameters));
+                REG_REQUIRE(recording.begin(frame++));
+                auto registry = ResourceRegistry::forDevice(device);
+                REG_CHECK(registry);
+                ParameterWriter writer(device, **registry, &recording.frame);
+                const auto outputHandle = writer.buffer(output.get());
+                std::array<uint32_t, 113> shortPacket{};
+                std::copy_n(packet.begin(), shortPacket.size(), shortPacket.begin());
+                auto encoded = variant == 1 ? encodeNamedParameters(writer, shortPacket, outputHandle, kFieldABI) :
+                    encodeNamedParameters(writer, packet, outputHandle, kFieldABI);
+                REG_CHECK(encoded);
+                auto prepared = kernel.prepareDispatch(*encoded, 1);
+                REG_CHECK(prepared);
+                REG_REQUIRE(prepared->record(*recording.commands));
+                REG_REQUIRE(recording.submit(tracker, *gate));
+                REG_REQUIRE(recording.frame.wait());
+                output->invalidate();
+                const auto* mapped = static_cast<const uint32_t*>(output->map());
+                REG_CHECK(mapped);
+                std::array<uint32_t, 18> actual;
+                std::copy_n(mapped, actual.size(), actual.begin());
+                output->unmap();
+                evidence.insert(evidence.end(), actual.begin(), actual.end());
+                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 236, 40, 44, 48, 52, 56, 60, 64, 364, 368, 372, 452};
+                for (uint32_t i = 0; i < offsets.size(); ++i) {
+                    REG_CHECK(actual[i] == (variant == 1 ? 0 : packet[offsets[i] / 4]));
+                }
+                REG_CHECK(actual[15] == 0 && actual[16] == 0 && actual[17] == 0);
+            }
+        }
+        bench::readbackEvidence(context, "resource-field-readback.bin", std::span<const uint32_t>(evidence));
+        return RHITestResult::pass("Mapped/native scene field views preserve offsets, sentinels and full-packet bounds");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(ResourceParameterFieldTest);
+
 class TypedNamedKernelTest final : public RHITest {
 public:
     TypedNamedKernelTest() { type = RHITestType::Resource; name = "typed_named_kernel_parameters_and_lifetime"; }

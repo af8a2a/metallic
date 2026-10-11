@@ -3,20 +3,6 @@ using Metallic;
 
 #include "OpenPBRRayQueryPathTrace.slang"
 
-#define gDlssRrAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideAlbedo)
-
-#define gDlssRrSpecularAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularAlbedo)
-
-#define gDlssRrNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().guideNormalRoughness)
-
-#define gDlssRrMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().guideMotion)
-
-#define gDlssRrLinearDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideLinearDepth)
-
-#define gDlssRrSpecularHitDistance resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularHitDistance)
-
-#define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
-
 struct DLSSRRGuideData
 {
     float3 albedo;
@@ -43,13 +29,14 @@ DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
 
 void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
-    gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
-    gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
-    gDlssRrNormalRoughness[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
-    gDlssRrMotionVectors[pixel] = data.motionVector;
-    gDlssRrLinearDepth[pixel] = max(data.linearDepth, 0.0);
-    gDlssRrSpecularHitDistance[pixel] = max(data.specularHitDistance, 0.0);
-    gDlssDepth[pixel] = cameraHardwareDepth(data.linearDepth, push);
+    let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+    resolveUniform(resources.guideAlbedo)[pixel] = float4(saturate(data.albedo), 1.0);
+    resolveUniform(resources.guideSpecularAlbedo)[pixel] = float4(saturate(data.specularAlbedo), 1.0);
+    resolveUniform(resources.guideNormalRoughness)[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
+    resolveUniform(resources.guideMotion)[pixel] = data.motionVector;
+    resolveUniform(resources.guideLinearDepth)[pixel] = max(data.linearDepth, 0.0);
+    resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(data.specularHitDistance, 0.0);
+    resolveUniform(resources.guideDepth)[pixel] = cameraHardwareDepth(data.linearDepth, push);
 }
 
 DLSSRRGuideData evaluateOpenPbrDlssRrGuides(

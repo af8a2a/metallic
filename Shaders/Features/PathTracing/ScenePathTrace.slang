@@ -46,14 +46,12 @@ struct ScenePathTraceCacheParams
 
 // Match the tightly packed 80-byte CPU constants.
 typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
+// Keep sparse training code unchanged: hash insertion/atomic order can affect
+// temporal cache contents. Narrow resource reads are for the shading/query path.
+#if SHARC_UPDATE
 #define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameters<SceneResourceParameters>().cacheParams)
-
-#if METALLIC_PT_SHARC
-#define gSharcHashEntries resolveBuffer<RWStructuredBuffer<uint64_t>>(getResourceParameters<SceneResourceParameters>().sharcHashEntries)
-
-#define gSharcAccumulation resolveBuffer<RWStructuredBuffer<SharcAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation)
-
-#define gSharcResolved resolveBuffer<RWStructuredBuffer<SharcPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved)
+#else
+#define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneCacheParamsOffset))
 #endif
 
 #define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
@@ -666,15 +664,24 @@ PathTraceCacheContext makeCacheContext()
     PathTraceCacheContext cache;
     ScenePathTraceCacheParams params = gCacheParams[0];
 #if METALLIC_PT_SHARC
+#if !SHARC_UPDATE
+    let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+#endif
     cache.sharc.hashGridParameters.cameraPosition = params.sharcCameraPosition.xyz;
     cache.sharc.hashGridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
     cache.sharc.hashGridParameters.sceneScale = max(params.sharcSceneScale, 0.0001);
     cache.sharc.hashGridParameters.levelBias = SHARC_GRID_LEVEL_BIAS;
 
     cache.sharc.hashGridData.capacity = params.sharcEntriesNum;
-    cache.sharc.hashGridData.hashEntriesBuffer = gSharcHashEntries;
-    cache.sharc.accumulationBuffer = gSharcAccumulation;
-    cache.sharc.resolvedBuffer = gSharcResolved;
+#if SHARC_UPDATE
+    cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(getResourceParameters<SceneResourceParameters>().sharcHashEntries);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SharcAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SharcPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved);
+#else
+    cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(resources.sharcHashEntries);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SharcAccumulationData>>(resources.sharcAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SharcPackedData>>(resources.sharcResolved);
+#endif
     cache.sharc.radianceScale = 1.0e3;
     SharcInit(cache.sharcState);
 #endif
