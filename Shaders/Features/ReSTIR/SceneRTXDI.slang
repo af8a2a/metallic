@@ -649,7 +649,7 @@ float3 transformObjectNormalToWorld(float3 normal, float3x4 worldToObject)
 
 #include "../PathTracing/StreamRayGeometry.slang"
 
-bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit)
+bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit, bool occlusionOnly = false)
 {
     hit = (HitInfo)0;
     RayDesc desc;
@@ -667,8 +667,10 @@ bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit)
             query.CommitNonOpaqueTriangleHit();
         }
     }
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT &&
-        streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
+    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
+    // Coverage is already accepted; shadow callers need no committed surface.
+    if (occlusionOnly) { return true; }
+    return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
             query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray,
             query.CommittedRayT(), push.bitangentFlip, hit);
 }
@@ -721,7 +723,7 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, SceneRTXDIP
     push.clipOrtho.x = 0.001;
     push.clipOrtho.y = max(maxDistance, 0.001);
     HitInfo hit;
-    return traceClosest(ray, push, hit);
+    return traceClosest(ray, push, hit, true);
 }
 
 

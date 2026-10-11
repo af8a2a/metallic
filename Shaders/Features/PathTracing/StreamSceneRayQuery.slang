@@ -39,7 +39,8 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
     return evaluateSceneCoverage(materialIndex, material, hit.texcoord, push).accepted;
 }
 
-bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push, out HitInfo hit)
+bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,
+    out HitInfo hit, bool occlusionOnly = false)
 {
     hit = (HitInfo)0;
     RayDesc desc;
@@ -56,6 +57,8 @@ bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePat
         }
     }
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
+    // Coverage is already accepted; shadow callers need no committed surface.
+    if (occlusionOnly) { return true; }
     return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
         query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), push.bitangentFlip, hit);
 }

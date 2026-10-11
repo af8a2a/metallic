@@ -75,7 +75,7 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTr
 #else
     Ray ray; ray.origin = origin; ray.direction = direction;
     HitInfo hit;
-    return traceStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit);
+    return traceStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit, true);
 #endif
 }
 
