@@ -74,6 +74,26 @@ identify the data being shown; graph recompilation discards stale snapshots.
   than 32 component columns use field pages. **Raw 32-bit words** shows the same
   captured bytes without another GPU copy.
 
+**Auto range** is enabled by default. Each new texture snapshot (including Live
+refreshes) derives Min/Max from the finite values of the selected channels in the
+captured ROI. RGB excludes alpha and missing channels; selecting a single channel
+ranges it independently. Cube mode shares one range across the captured volume,
+while Z slice uses only the captured plane. A frozen snapshot keeps its range.
+Constant data is centered in a padded interval; all-non-finite captures use 0–1
+and show a notice. NaN/Inf remain magenta and never affect the bounds.
+
+**Trim flat extremes**, also enabled by default, excludes a repeated minimum or
+maximum plateau when it represents at least 1% of finite components (at least two
+values), using the next distinct value instead. This prevents depth's far-plane
+background from hiding foreground differences, even when foreground covers very
+few pixels. Trimming is skipped if it would collapse the interval, preserving
+binary masks. Clipped extrema are indicated next to the displayed bounds; disable
+this option to include every finite value. This is a display heuristic, not a
+semantic depth/background classification. Disable Auto range to edit Min/Max
+manually; subsequent captures preserve those manual bounds. Exposure applies
+after range measurement. None of these controls alter captured bytes or hover
+values. Ranges are computed on preview rebuilds, without additional GPU readbacks.
+
 ## Typed buffers and StructuredBuffer research
 
 `AutoExposure.exposure` now declares `AutoExposureState`: four `f32` fields named
@@ -191,6 +211,29 @@ It also runs the real AutoExposure histogram/reduce/apply shaders on a known HDR
 input, verifies typed float fields and histogram weights, tests schema inheritance
 through a graph input, checks manual uint4 element offsets, and rejects invalid
 producer schemas/strides. Histogram percentiles are fixed to 0–100% in this fixture.
+Automatic-range probes upload controlled scalar/RGBA snapshots through the real
+preview converter and verify GPU readback for narrow depth intervals, repeated
+far planes, constants, binary masks, NaN/Inf, extreme/subnormal floats and channel
+selection. Live/frozen tests additionally change a real GPU clear source and check
+automatic updates and manual-range retention.
+
+To also exercise the production PathTracingSample depth and linearDepth outputs:
+
+```powershell
+$env:METALLIC_SMOKE_TEST_HIDDEN = '1'
+$env:METALLIC_DEBUG_VALIDATION = '1'
+$env:METALLIC_INSPECTOR_SMOKE_SAMPLE = 'pathtracing-sample'
+.\build-release\Source\Metallic.exe --debug-control --skip-shader-warmup `
+    --resource-inspector-smoke .cache\InspectorDepthEvidence
+Remove-Item Env:METALLIC_SMOKE_TEST_HIDDEN, Env:METALLIC_DEBUG_VALIDATION, Env:METALLIC_INSPECTOR_SMOKE_SAMPLE
+```
+
+This optional path loads the sample, enables its guide outputs in memory and
+checks foreground contrast in both uploaded previews without manual bounds.
+`depthRanges` in the report records effective bounds and distinct gray levels.
+`depth/` and `linearDepth/` hold raw captures; each has a `-preview.ppm` GPU
+preview and a `-ui.ppm` native editor rendering alongside it.
+
 Evidence includes:
 
 - `report.json`: check results, artifact identities and capture provenance.
@@ -219,5 +262,7 @@ does not overwrite the user's ImGui layout. Artifacts belong in local output fol
 For a running editor started with `--debug-control`, `metallicctl --pid <pid> hello
 --json` exposes `result.engine.resourceInspector`, including the selected resource,
 pending job, status, live flag, preview readiness, and captured execution/generation.
+Texture diagnostics also expose `displayRange` with the mode, bounds, selected
+channel and automatic-range finite/trim statistics.
 Existing `capture.batch`, `jobs.get`, and `artifact.read` commands remain available
 for direct capture automation without opening the Resources page.

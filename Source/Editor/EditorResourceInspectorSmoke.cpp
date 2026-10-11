@@ -10,6 +10,8 @@
 #include <cstring>
 #include <fstream>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 
 namespace metallic {
 namespace {
@@ -169,7 +171,8 @@ private:
 };
 
 bool readInspectorImage(render::Device& device, render::Queue& queue, render::vulkan::VulkanImGuiBackend& backend,
-    render::Texture& texture, std::vector<uint8_t>& bytes, ImDrawData* drawData = nullptr)
+    render::Texture& texture, std::vector<uint8_t>& bytes, ImDrawData* drawData = nullptr,
+    EditorResourceInspector* pendingPreview = nullptr)
 {
     using namespace render;
     const uint32_t stride = texture.desc().format == Format::RGBA16Sfloat ? 8 : 4;
@@ -182,6 +185,7 @@ bool readInspectorImage(render::Device& device, render::Queue& queue, render::vu
     if (!readback || !pool || !fence) { return false; }
     auto commands = (*pool)->createCommandBuffer();
     if (!commands || !(*commands)->begin()) { return false; }
+    if (pendingPreview && !pendingPreview->upload(**commands)) { return false; }
     TextureBarrierDesc barrier{.texture = &texture, .oldLayout = TextureLayout::ShaderRead,
         .newLayout = TextureLayout::TransferSource, .before = {PipelineStageBits::FragmentShader, AccessBits::ShaderRead},
         .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
@@ -303,6 +307,68 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
     resourceInspectorVisible_ = true;
     resourceInspectorSelectTab_ = true;
     auto& inspector = resourceInspector_;
+    if (!expect(inspector.autoRange_, "Texture automatic range is enabled by default")) { return false; }
+    // Keep the existing exact-color/manual-exposure regression independent of auto contrast.
+    inspector.autoRange_ = false;
+    {
+        EditorResourceInspector probe;
+        struct Cleanup {
+            EditorResourceInspector& inspector;
+            render::vulkan::VulkanImGuiBackend& backend;
+            ~Cleanup() { inspector.shutdown(backend); }
+        } cleanup{probe, imguiBackend_};
+        std::vector<uint8_t> pixels;
+        const auto previewValues = [&](std::initializer_list<float> values, const char* layout = "f32") {
+            auto capture = std::make_shared<debug::DebugCapture>();
+            debug::DebugArtifact artifact;
+            artifact.layout = probe.runtime().layouts().at(layout);
+            artifact.bytes.resize(values.size() * sizeof(float));
+            std::memcpy(artifact.bytes.data(), values.begin(), artifact.bytes.size());
+            artifact.metadata = {{"kind", "texture"}, {"roi", {{"width", artifact.bytes.size() / artifact.layout.stride}, {"height", 1}}}};
+            capture->artifacts.push_back(std::move(artifact));
+            probe.capture_ = std::move(capture);
+            return probe.rebuildImage(*device_, imguiBackend_) &&
+                readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *probe.image_, pixels, nullptr, &probe);
+        };
+        const auto gray = [&](size_t i, uint8_t value) {
+            return pixels[i * 4] == value && pixels[i * 4 + 1] == value && pixels[i * 4 + 2] == value;
+        };
+        const auto magenta = [&](size_t i) { return pixels[i * 4] == 255 && pixels[i * 4 + 1] == 0 && pixels[i * 4 + 2] == 255; };
+        if (!expect(previewValues({0.999f, 0.9992f, 0.9994f, 1.f, 1.f, 1.f}) && probe.rangeTrimmed_ &&
+            gray(0, 0) && pixels[4] >= 127 && pixels[4] <= 128 && gray(2, 255), "Hardware depth expands a narrow finite interval on the GPU")) { return false; }
+        if (!expect(previewValues({2, 3, 4, 100, 100, 100}) && probe.rangeMin_ == 2 && probe.rangeMax_ == 4 &&
+            gray(0, 0) && gray(1, 128) && gray(2, 255), "Linear depth trims a repeated far plane without losing foreground contrast")) { return false; }
+        probe.trimRange_ = false;
+        if (!expect(previewValues({2, 3, 4, 100, 100, 100}) && probe.rangeMax_ == 100 && gray(3, 255) && pixels[8] < 10,
+            "Full finite range includes the far plane when trimming is disabled")) { return false; }
+        probe.trimRange_ = true;
+        if (!expect(previewValues({0, 0, 1, 1}) && probe.rangeMin_ == 0 && probe.rangeMax_ == 1 && gray(0, 0) && gray(2, 255),
+            "Two-valued masks keep both endpoints")) { return false; }
+        if (!expect(previewValues({7, 7, 7}) && probe.rangeMin_ < 7 && probe.rangeMax_ > 7 && gray(0, 128),
+            "Constant textures have a finite centered range")) { return false; }
+        const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+        if (!expect(previewValues({-2, 0, 2, nan, inf, -inf}) && probe.rangeFinite_ == 3 && probe.rangeMin_ == -2 && probe.rangeMax_ == 2 &&
+            gray(1, 128) && magenta(3) && magenta(4) && magenta(5), "NaN and infinity are excluded from bounds and remain magenta")) { return false; }
+        if (!expect(previewValues({nan, inf, -inf}) && probe.rangeFinite_ == 0 && probe.rangeMin_ == 0 && probe.rangeMax_ == 1 && magenta(0),
+            "All non-finite values reset the range instead of reusing stale bounds")) { return false; }
+        const float largest = std::numeric_limits<float>::max(), tiny = std::numeric_limits<float>::denorm_min();
+        if (!expect(previewValues({-largest, 0, largest}) && gray(0, 0) && gray(1, 128) && gray(2, 255),
+            "Extreme finite floats normalize without overflow") ||
+            !expect(previewValues({tiny, tiny * 2, tiny * 3}) && gray(0, 0) && gray(1, 128) && gray(2, 255),
+            "Subnormal intervals retain their contrast")) { return false; }
+        probe.trimRange_ = false;
+        if (!expect(previewValues({2, 100, 0, 1000, 4, 200, 0, 2000}, "RGBA32F") && probe.rangeMax_ == 200,
+            "RGB auto range excludes alpha")) { return false; }
+        probe.channel_ = 1;
+        if (!expect(previewValues({2, 100, 0, 1000, 4, 200, 0, 2000}, "RGBA32F") && probe.rangeMin_ == 2 && probe.rangeMax_ == 4,
+            "Channel changes compute their own range")) { return false; }
+        probe.channel_ = 4;
+        if (!expect(previewValues({2, 100, 0, 1000, 4, 200, 0, 2000}, "RGBA32F") && probe.rangeMin_ == 1000 && probe.rangeMax_ == 2000,
+            "Alpha can be ranged independently")) { return false; }
+        probe.channel_ = 0; probe.autoRange_ = false; probe.rangeMin_ = -5; probe.rangeMax_ = 5;
+        if (!expect(previewValues({-2, 0, 2}) && probe.rangeMin_ == -5 && probe.rangeMax_ == 5 && gray(1, 128),
+            "Manual bounds survive replacement capture data")) { return false; }
+    }
     const auto exportCapture = [&](const char* name) {
         const auto& capture = *inspector.capture_;
         const auto& artifact = capture.artifacts[0];
@@ -583,6 +649,61 @@ bool EditorApplication::runResourceInspectorSmokeTest(const char* outputDirector
             "Subsystem capture rejects unregistered checkpoints")) { return false; }
         (void)(*pool)->reset();
         (void)externalFrame.reset();
+    }
+    inspector.autoRange_ = true; inspector.trimRange_ = false;
+    inspector.channel_ = 0; inspector.exposure_ = 0;
+    inspector.select("Clear.color");
+    if (!frames(5) || !expect(inspector.capture_ && std::abs(inspector.rangeMin_ - 64.0 / 255) < 1e-6 &&
+        std::abs(inspector.rangeMax_ - 191.0 / 255) < 1e-6, "Auto range follows captured RGB values")) { return false; }
+    const auto autoFrozen = inspector.capture_;
+    const double frozenMin = inspector.rangeMin_, frozenMax = inspector.rangeMax_;
+    if (!renderGraph_.setNodeRuntimeProperty(renderGraph_.findNode("Clear")->id, "color", {0.125f, 0.25f, 0.5f, 1.f}) ||
+        !frames(3) || !expect(inspector.capture_ == autoFrozen && inspector.rangeMin_ == frozenMin && inspector.rangeMax_ == frozenMax,
+            "Frozen auto range stays with its snapshot while the source changes")) { return false; }
+    inspector.live_ = true; inspector.nextRefresh_ = 0;
+    if (!frames(5) || !expect(inspector.capture_ != autoFrozen && std::abs(inspector.rangeMin_ - 32.0 / 255) < 1e-6 &&
+        std::abs(inspector.rangeMax_ - 128.0 / 255) < 0.005, "Live capture recomputes automatic bounds") ||
+        !expect(readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *inspector.image_, preview) &&
+            preview[0] == 0 && preview[2] == 255, "Live auto contrast reaches the GPU preview")) { return false; }
+    inspector.autoRange_ = false; inspector.rangeMin_ = 0; inspector.rangeMax_ = 1;
+    inspector.imageDirty_ = true; inspector.nextRefresh_ = 0;
+    if (!frames(5) || !expect(inspector.rangeMin_ == 0 && inspector.rangeMax_ == 1,
+        "Live refresh preserves manual display bounds")) { return false; }
+    inspector.live_ = false;
+
+    // Optional production scene path, using native capture and offscreen ImGui
+    // rendering only. The default smoke remains independent of sample assets.
+    if (const char* sample = std::getenv("METALLIC_INSPECTOR_SMOKE_SAMPLE"); sample && *sample) {
+        scene_.setDirty(false);
+        loadBuiltInSample(sample);
+        if (!expect(waitForPendingSceneLoad(60000), "Inspector sample scene load completes")) { return false; }
+        auto* pathTrace = renderGraph_.findNode("PathTrace");
+        if (!expect(pathTrace != nullptr, "Inspector sample contains PathTrace")) { return false; }
+        auto properties = pathTrace->properties;
+        properties["exportDenoiserGuides"] = true;
+        renderGraph_.setNodeProperties(pathTrace->id, std::move(properties));
+        viewportPreviewValid_ = false;
+        inspector.autoRange_ = true; inspector.trimRange_ = true;
+        resourceInspectorVisible_ = true; resourceInspectorSelectTab_ = true;
+        for (const char* name : {"depth", "linearDepth"}) {
+            const std::string resource = std::string("PathTrace.") + name;
+            inspector.select(resource);
+            if (!frames(8) || !expect(inspector.capture_ && inspector.capture_->artifacts[0].metadata.at("id") == resource &&
+                inspector.capture_->artifacts[0].layout.name == "f32", "Real PathTrace depth capture is ready") ||
+                !expect(readInspectorImage(*device_, *graphicsQueue_, imguiBackend_, *inspector.image_, preview),
+                    "Read real PathTrace depth GPU preview")) { return false; }
+            std::array<bool, 256> levels{};
+            for (size_t i = 0; i < preview.size(); i += 4) { levels[preview[i]] = true; }
+            const auto distinct = std::count(levels.begin(), levels.end(), true);
+            report.value["depthRanges"][name] = inspector.diagnostics().at("displayRange");
+            report.value["depthRanges"][name]["previewGrayLevels"] = distinct;
+            if (!expect(inspector.rangeMin_ < inspector.rangeMax_ && inspector.rangeTrimmed_ && levels[0] && levels[255] && distinct > 8,
+                "Real PathTrace depth gets foreground contrast without manual Min/Max") ||
+                !expect(exportCapture(name) && exportUI((std::string(name) + "-ui").c_str()) &&
+                    writePPM(output / (std::string(name) + "-preview.ppm"), preview, inspector.image_->desc().width,
+                        inspector.image_->desc().height, render::Format::RGBA8Unorm, displayOutput_.paperWhiteNits),
+                    "Export real depth capture and native automatic-range preview")) { return false; }
+        }
     }
     report.value["inspector"] = debug::encodeLossless(inspector.diagnostics());
     if (debugRuntime_) {

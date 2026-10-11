@@ -27,6 +27,7 @@ private:
     void drawTexture(render::Device& device, render::vulkan::VulkanImGuiBackend& backend);
     void drawCube();
     void drawBuffer();
+    void updateAutoRange();
     bool rebuildImage(render::Device& device, render::vulkan::VulkanImGuiBackend& backend);
 
     render::RenderDebugRuntime runtime_;
@@ -40,7 +41,11 @@ private:
     int sourceFilter_ = 0;
     bool rawBuffer_ = false;
     int fieldPage_ = 0;
-    float exposure_ = 0, rangeMin_ = 0, rangeMax_ = 1, zoom_ = 1;
+    bool autoRange_ = true, trimRange_ = true;
+    uint64_t rangeFinite_ = 0;
+    bool rangeTrimmed_ = false;
+    double rangeMin_ = 0, rangeMax_ = 1;
+    float exposure_ = 0, zoom_ = 1;
     uint64_t offset_ = 0;
     int count_ = 256;
     std::array<int, 4> roi_ = {0, 0, 0, 0};
