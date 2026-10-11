@@ -160,5 +160,55 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(SlangShaderModuleTest);
 
+class SHARCModuleTest final : public RHITest
+{
+public:
+    SHARCModuleTest()
+    {
+        type = RHITestType::Resource;
+        name = "sharc_module_ownership_and_mode_isolation";
+    }
+
+    RHITestResult run(RHITestContext&) override
+    {
+        // Maintenance imports SHARC both directly and through its parameter ABI.
+        // Pass-mode defines must not change the library's types or resolve code.
+        const render::SlangShaderDesc desc{
+            .moduleName = "Features/PathTracing/SceneSharcMaintenance",
+            .entryPointName = "sharcResolveMain",
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+        };
+        std::string diagnostics;
+        auto baseline = render::compileSlangShaderToSpirv(desc, diagnostics);
+        if (!baseline) { return RHITestResult::fail(diagnostics); }
+        for (const char* file : {"SHARC.slang", "SHARC/Config.slang", "SHARC/Types.slang",
+                 "SHARC/HashGrid.slang", "SHARC/Cache.slang"}) {
+            const auto path = (std::filesystem::path(PROJECT_SOURCE_DIR) / "Shaders/Modules" / file)
+                                  .lexically_normal().generic_string();
+            if (std::count(baseline->dependencies.begin(), baseline->dependencies.end(), path) != 1) {
+                return RHITestResult::fail("missing or duplicate SHARC module dependency: " + path);
+            }
+        }
+        for (const auto& dependency : baseline->dependencies) {
+            if (dependency.find("ThirdParty/RadianceCache") != std::string::npos) {
+                return RHITestResult::fail("production SHARC still includes the legacy snapshot");
+            }
+        }
+        for (const char* mode : {"SHARC_UPDATE", "SHARC_QUERY"}) {
+            const render::SlangMacroDefine define{mode, "1"};
+            auto variantDesc = desc;
+            variantDesc.macroDefines = {&define, 1};
+            auto variant = render::compileSlangShaderToSpirv(variantDesc, diagnostics);
+            if (!variant) { return RHITestResult::fail(diagnostics); }
+            if (variant->spirv != baseline->spirv || variant->dependencies != baseline->dependencies) {
+                return RHITestResult::fail("pass-mode define changed SHARC module resolve code");
+            }
+        }
+        return RHITestResult::pass("SHARC module ownership, transitive dependencies and mode isolation");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(SHARCModuleTest);
+
 } // namespace
 } // namespace metallic::tests

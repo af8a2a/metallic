@@ -11,15 +11,16 @@ using SharcAccumulationHandle = ShaderBuffer;
 using SharcResolvedHandle = ShaderBuffer;
 #else
 import ShaderCore;
-#include "../../../../Shaders/ThirdParty/RadianceCache/Sharc/SharcTypes.h"
+import SHARC;
+using Metallic.SHARC;
 using Metallic;
 namespace Metallic {
 typealias PathTraceUInt = uint;
 typealias PathTraceFloat4 = float4;
-// The SHaRC SDK requires structured-buffer objects for its atomics and resolve.
+// The SHARC module requires structured-buffer objects for its atomics and resolve.
 typealias SharcHashHandle = ResourceHandle<RWStructuredBuffer<uint64_t>>;
-typealias SharcAccumulationHandle = ResourceHandle<RWStructuredBuffer<SharcAccumulationData>>;
-typealias SharcResolvedHandle = ResourceHandle<RWStructuredBuffer<SharcPackedData>>;
+typealias SharcAccumulationHandle = ResourceHandle<RWStructuredBuffer<SHARCAccumulationData>>;
+typealias SharcResolvedHandle = ResourceHandle<RWStructuredBuffer<SHARCPackedData>>;
 #endif
 
 #ifdef __cplusplus

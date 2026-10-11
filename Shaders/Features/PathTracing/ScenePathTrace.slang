@@ -1,3 +1,10 @@
+#ifndef SHARC_UPDATE
+#define SHARC_UPDATE 0
+#endif
+#ifndef SHARC_QUERY
+#define SHARC_QUERY 0
+#endif
+
 import Atmosphere;
 #include "SceneSurface.slang"
 #include "SceneFiberPath.slang"
@@ -10,14 +17,15 @@ import Atmosphere;
 //   SHARC_UPDATE=1    sparse SHaRC update pass (populates the hash-grid cache)
 //   SHARC_QUERY=1     full-resolution pass with SHaRC early termination
 // ---------------------------------------------------------------------------
-#if defined(SHARC_UPDATE) || defined(SHARC_QUERY)
+#if SHARC_UPDATE || SHARC_QUERY
 #define METALLIC_PT_SHARC 1
 #else
 #define METALLIC_PT_SHARC 0
 #endif
 
 #if METALLIC_PT_SHARC
-#include "../../ThirdParty/RadianceCache/Sharc/SharcCommon.h"
+import SHARC;
+using Metallic.SHARC;
 #endif
 
 // Cache mode pushed through the per-frame parameter buffer.
@@ -261,8 +269,10 @@ bool traceClosestShadow(Ray ray, ScenePathTracePush push, out bool opaqueShadow,
 struct PathTraceCacheContext
 {
 #if METALLIC_PT_SHARC
-    SharcParameters sharc;
-    SharcState sharcState;
+    SHARCParameters sharc;
+#if SHARC_UPDATE
+    SHARCState sharcState;
+#endif
 #endif
     float materialRoughnessPrev;
 };
@@ -306,8 +316,8 @@ float3 pathTrace(
                     ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
             }
             radiance += throughput * missRadiance;
-#if METALLIC_PT_SHARC
-            SharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+            sharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
 #endif
             break;
         }
@@ -481,7 +491,7 @@ float3 pathTrace(
         // mirroring the reference treatment of skipped delta vertices.
         // ------------------------------------------------------------------
 #if METALLIC_PT_SHARC
-        SharcHitData sharcHitData;
+        SHARCHitData sharcHitData;
         sharcHitData.positionWorld = hit.position;
         sharcHitData.normalWorld = hit.geometryNormal;
 
@@ -489,8 +499,8 @@ float3 pathTrace(
         // Camera hits must retain exact material/normal and direct-light detail.
         // The cache is only filtered enough to query after a surface bounce.
         if (depth >= max(gCacheParams[0].sharcQueryMinDepth, 1u)) {
-            uint gridLevel = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
-            float voxelSize = HashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
+            uint gridLevel = hashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
+            float voxelSize = hashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
             bool isValidHit = hit.t > voxelSize * sqrt(3.0);
 
             float roughnessPrev = min(cache.materialRoughnessPrev, 0.99);
@@ -499,7 +509,7 @@ float3 pathTrace(
             isValidHit &= footprint > voxelSize;
 
             float3 sharcRadiance;
-            if (isValidHit && SharcGetCachedRadiance(cache.sharc, sharcHitData, sharcRadiance)) {
+            if (isValidHit && sharcGetCachedRadiance(cache.sharc, sharcHitData, sharcRadiance)) {
                 radiance += sharcRadiance * throughput;
                 break; // Terminate the path once we've looked up into the cache
             }
@@ -586,7 +596,7 @@ float3 pathTrace(
 #if METALLIC_PT_SHARC && SHARC_UPDATE
         // Feed the signal accumulated for this segment (emissive + direct
         // lighting) into the cache. Returning false means the path must stop.
-        if (!SharcUpdateHit(cache.sharc, cache.sharcState, sharcHitData, radiance, rand(seed))) {
+        if (!sharcUpdateHit(cache.sharc, cache.sharcState, sharcHitData, radiance, rand(seed))) {
             break;
         }
 #endif
@@ -636,7 +646,7 @@ float3 pathTrace(
 #if METALLIC_PT_SHARC && SHARC_UPDATE
         // Hand the segment throughput to the cache; each segment is
         // accumulated independently afterwards.
-        SharcSetThroughput(cache.sharcState, throughput);
+        sharcSetThroughput(cache.sharcState, throughput);
 #endif
 
         if (depth >= 2u) {
@@ -668,22 +678,24 @@ PathTraceCacheContext makeCacheContext()
     let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
 #endif
     cache.sharc.hashGridParameters.cameraPosition = params.sharcCameraPosition.xyz;
-    cache.sharc.hashGridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    cache.sharc.hashGridParameters.logarithmBase = kSHARCGridLogarithmBase;
     cache.sharc.hashGridParameters.sceneScale = max(params.sharcSceneScale, 0.0001);
-    cache.sharc.hashGridParameters.levelBias = SHARC_GRID_LEVEL_BIAS;
+    cache.sharc.hashGridParameters.levelBias = kSHARCGridLevelBias;
 
     cache.sharc.hashGridData.capacity = params.sharcEntriesNum;
 #if SHARC_UPDATE
     cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(getResourceParameters<SceneResourceParameters>().sharcHashEntries);
-    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SharcAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation);
-    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SharcPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved);
 #else
     cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(resources.sharcHashEntries);
-    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SharcAccumulationData>>(resources.sharcAccumulation);
-    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SharcPackedData>>(resources.sharcResolved);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(resources.sharcAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(resources.sharcResolved);
 #endif
     cache.sharc.radianceScale = 1.0e3;
-    SharcInit(cache.sharcState);
+#if SHARC_UPDATE
+    sharcInit(cache.sharcState);
+#endif
 #endif
     cache.materialRoughnessPrev = 1.0;
     return cache;

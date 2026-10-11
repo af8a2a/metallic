@@ -41,7 +41,7 @@ struct OpenPBRCacheAddress
 
 struct OpenPBRCacheContext
 {
-    SharcParameters sharc;
+    SHARCParameters sharc;
 #if SHARC_UPDATE
     uint2 indices[kOpenPBRCacheTrackedVertices];
     OpenPBRDiffuseSpecular weights[kOpenPBRCacheTrackedVertices];
@@ -98,7 +98,7 @@ OpenPBRCacheAddress openPbrCacheAddress(OpenPBRCacheContext cache, HitInfo hit,
     }
     address.eligibleMask &= gCacheParams[0].sharcLobeMask;
     if (address.eligibleMask == 0u) { return address; }
-    uint64_t spatial = HashGridComputeSpatialHash(hit.position, hit.geometryNormal, cache.sharc.hashGridParameters);
+    uint64_t spatial = hashGridComputeSpatialHash(hit.position, hit.geometryNormal, cache.sharc.hashGridParameters);
     // Distinguish materials, shading normals and local textured parameters so
     // neighboring surfaces cannot share a bright lobe solely by voxel position.
     uint normal = openPbrCacheDirectionBin(inputs.geometry_basis.n, 64u);
@@ -122,16 +122,16 @@ OpenPBRCacheAddress openPbrCacheAddress(OpenPBRCacheContext cache, HitInfo hit,
 uint openPbrCacheBaseSlot(OpenPBRCacheContext cache, uint64_t key, uint component)
 {
     uint capacity = cache.sharc.hashGridData.capacity / 2u;
-    return component * capacity + HashGridGetBaseSlot(key, capacity);
+    return component * capacity + hashGridGetBaseSlot(key, capacity);
 }
 
 bool openPbrCacheFind(OpenPBRCacheContext cache, uint64_t key, uint component, out float3 radiance)
 {
     radiance = float3(0);
     uint index, bucketOffset;
-    if (!HashGridFind(cache.sharc.hashGridData, key, openPbrCacheBaseSlot(cache, key, component),
-        HASH_GRID_HASH_MAP_BUCKET_SIZE, index, bucketOffset)) { return false; }
-    SharcVoxelData_SharcCommon data = SharcGetVoxelData(cache.sharc.resolvedBuffer, index);
+    if (!hashGridFind(cache.sharc.hashGridData, key, openPbrCacheBaseSlot(cache, key, component),
+        kHashGridHashMapBucketSize, index, bucketOffset)) { return false; }
+    SHARCVoxelData data = sharcGetVoxelData(cache.sharc.resolvedBuffer, index);
     // A directional bin needs multiple independent samples before reuse.
     if (data.accumulatedSampleNum < (component == 0u ? 2.0 : 8.0) || data.accumulatedFrameNum < 2u) { return false; }
     radiance = data.accumulatedRadiance.radiance;
@@ -142,8 +142,8 @@ bool openPbrCacheCanQuery(OpenPBRCacheContext cache, HitInfo hit, RayCone cone,
     uint depth, bool previousScatterDelta)
 {
     if (depth < max(gCacheParams[0].sharcQueryMinDepth, 1u) || previousScatterDelta) { return false; }
-    uint level = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
-    float voxelSize = HashGridGetVoxelSize(level, cache.sharc.hashGridParameters);
+    uint level = hashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
+    float voxelSize = hashGridGetVoxelSize(level, cache.sharc.hashGridParameters);
     if (hit.t <= voxelSize * sqrt(3.0) || cone.width <= voxelSize) { return false; }
     return true;
 }
@@ -172,11 +172,11 @@ void openPbrCacheAddLighting(inout OpenPBRCacheContext cache, float3 lighting)
 {
 #if SHARC_UPDATE
     for (uint i = 0u; i < cache.count; ++i) {
-        if (cache.indices[i].x != HASH_GRID_INVALID_CACHE_INDEX) {
-            SharcAddVoxelData(cache.sharc, cache.indices[i].x, lighting, cache.weights[i].diffuse, 0u);
+        if (cache.indices[i].x != kHashGridInvalidCacheIndex) {
+            sharcAddVoxelData(cache.sharc, cache.indices[i].x, lighting, cache.weights[i].diffuse, 0u);
         }
-        if (cache.indices[i].y != HASH_GRID_INVALID_CACHE_INDEX) {
-            SharcAddVoxelData(cache.sharc, cache.indices[i].y, lighting, cache.weights[i].specular, 0u);
+        if (cache.indices[i].y != kHashGridInvalidCacheIndex) {
+            sharcAddVoxelData(cache.sharc, cache.indices[i].y, lighting, cache.weights[i].specular, 0u);
         }
     }
 #endif
@@ -197,17 +197,17 @@ bool openPbrCacheRecordHit(inout OpenPBRCacheContext cache, OpenPBRCacheAddress 
 #if SHARC_UPDATE
     openPbrCacheAddLighting(cache, openPBRGetSumOfDiffuseSpecular(lighting) + emission);
     if (cache.count >= kOpenPBRCacheTrackedVertices || address.eligibleMask == 0u) { return false; }
-    uint2 indices = uint2(HASH_GRID_INVALID_CACHE_INDEX);
+    uint2 indices = uint2(kHashGridInvalidCacheIndex);
     uint bucketOffset;
-    if ((address.eligibleMask & 1u) && HashGridInsert(cache.sharc.hashGridData, address.diffuse,
-        openPbrCacheBaseSlot(cache, address.diffuse, 0u), HASH_GRID_HASH_MAP_BUCKET_SIZE, indices.x, bucketOffset)) {
-        SharcAddVoxelData(cache.sharc, indices.x, lighting.diffuse, float3(1), 1u);
+    if ((address.eligibleMask & 1u) && hashGridInsert(cache.sharc.hashGridData, address.diffuse,
+        openPbrCacheBaseSlot(cache, address.diffuse, 0u), kHashGridHashMapBucketSize, indices.x, bucketOffset)) {
+        sharcAddVoxelData(cache.sharc, indices.x, lighting.diffuse, float3(1), 1u);
     }
-    if ((address.eligibleMask & 2u) && HashGridInsert(cache.sharc.hashGridData, address.specular,
-        openPbrCacheBaseSlot(cache, address.specular, 1u), HASH_GRID_HASH_MAP_BUCKET_SIZE, indices.y, bucketOffset)) {
-        SharcAddVoxelData(cache.sharc, indices.y, lighting.specular, float3(1), 1u);
+    if ((address.eligibleMask & 2u) && hashGridInsert(cache.sharc.hashGridData, address.specular,
+        openPbrCacheBaseSlot(cache, address.specular, 1u), kHashGridHashMapBucketSize, indices.y, bucketOffset)) {
+        sharcAddVoxelData(cache.sharc, indices.y, lighting.specular, float3(1), 1u);
     }
-    if (all(indices == uint2(HASH_GRID_INVALID_CACHE_INDEX))) { return false; }
+    if (all(indices == uint2(kHashGridInvalidCacheIndex))) { return false; }
     cache.indices[cache.count] = indices;
     cache.weights[cache.count] = openPBRMakeZeroDiffuseSpecular();
     ++cache.count;
