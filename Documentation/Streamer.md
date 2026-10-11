@@ -32,6 +32,10 @@ RT cut 的子级激活与父级替换使用同一就绪条件：几何页可用�
 
 `stream_clas_cut_readiness` 覆盖 compact/direct CLAS 池与 distributed/ordered 遍历的延迟细化、祖先覆盖和预算，并逐组对照 GPU 需求历史与 CPU RT 参考，验证旋转、屏外倍率、双阈值往返、取消帧、参数失效、渲染缩放和共享光栅质量。`meshlet_lod_ray_distance_and_hysteresis` 覆盖距离公式、剪切变换、正交与阈值边界；`streamer_meshlet_geometry_retirement` 覆盖 GPU 未完成时禁止页面复用，以及取消与重置；`clas_compact_lifecycle` 同时验证直接构建的延迟发布、取消回滚和重试。
 
+历史失效独立于加速结构地址维护：CLAS 发布代数变化、地址搬迁和 BLAS arena 重排仍触发必要的 AS 重建，但不清除 PT 累积或 SHaRC。GPU 按实际提交给 TLAS 的实例 cut 与回退状态生成 `semanticChangeCount`，PT 和 SHaRC 在同一帧使用此信号；CPU 延迟反馈只作统计，不再次推进着色版本。场景编辑仍由 CPU 内容版本触发失效。当前采用全局清理，包含屏外几何变化对反射、间接光和阴影的影响；局部失效尚未实现。
+
+`stream_blas_selected_allocation` 验证地址更新、重排和强制重建与内容变化的区分；`sharc_typed_maintenance_bounds_and_eviction` 验证生产 clear shader 只消费内容信号；`render_graph_sharc_stages_history_and_cancel` 读取真实累积纹理的采样计数，检查取消重试和稳定后的连续累积。漫游采集的 `blasSemanticChangeCount` 与 `blasPublicationInvalidated` 分别记录内容变化实例数和地址发布失配次数。
+
 2026-09-14 验证（RTX 5060 8 GiB，RelWithDebInfo，NRD 开启）：
 
 - `MetallicRHITests --rhi-no-validation --gtest_filter="*streamer*:*streaming_task_queue*:*meshlet_stream_page_load*:*gpu_scene*:*material_binning*:*stream_metadata*:*scene_upload_pipeline:*render_graph_sample*:*gpu_driven_sponza_culling_equivalence"`：39 项通过。

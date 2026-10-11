@@ -16,6 +16,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamPrefetch.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
+#include "../../../../Shaders/Interop/MeshletStreamBLAS.hlsli"
 
 #include <array>
 #include <cstddef>
@@ -256,7 +257,7 @@ struct MeshletStreamGPUBLASHeader {
     uint32_t frameIndex = 0;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
+    uint32_t semanticChangeCount = 0;
     uint32_t requestedClusterReferences = 0;
     uint32_t requestedInstances = 0;
     uint32_t referenceBudgetRejected = 0;
@@ -478,6 +479,8 @@ static_assert(sizeof(MeshletStreamGPUDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGPUTraversalHeader) == 32);
 static_assert(sizeof(MeshletStreamGPUTraversalWorkItem) == 16);
 static_assert(sizeof(MeshletStreamGPUBLASHeader) == 96);
+static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
+    METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD * sizeof(uint32_t));
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
@@ -613,8 +616,9 @@ public:
     // Cached for the root resource lifetime; loading progress refreshes per frame.
     bool sceneReady() const { return sceneReadiness().ready; }
     bool tlasReady() const { return tlasBuilt_; }
-    // CPU token includes delayed GPU cut feedback. Same-frame consumers read
-    // MeshletStreamGPUBLASHeader from shadingChangeBuffer() after traversal.
+    // CPU scene-content token (reset, transforms and visibility). Physical CLAS
+    // publication and delayed GPU feedback do not change it. Same-frame cut
+    // invalidation comes from shadingChangeBuffer() after traversal.
     uint64_t shadingRevision() const;
     Buffer* shadingChangeBuffer() const { return blasHeaderBuffer_.get(); }
     bool topLevelBuildPending() const { return topLevelBuildPending_; }
@@ -914,11 +918,10 @@ private:
     uint32_t maxBlasClustersPerBuild_ = 0;
     std::array<uint32_t, 32> blasSizeClasses_{};
     bool blasInstanceReuse_ = true;
-    uint32_t blasPublicationEpoch_ = 0;
+    std::shared_ptr<uint32_t> blasPublicationEpoch_ = std::make_shared<uint32_t>(0);
     ResourceState blasAddressBufferState_ = ResourceState::Undefined;
     uint64_t blasClusterReferenceAddress_ = 0;
     uint64_t shadingStateRevision_ = 0;
-    uint32_t shadingFeedbackFrame_ = UINT32_MAX;
     bool tlasBuilt_ = false;
     bool topLevelBuildPending_ = false;
     std::vector<FallbackBLASPrimitive> fallbackBlasPrimitives_;

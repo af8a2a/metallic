@@ -1,4 +1,5 @@
 #include "../../../Source/Runtime/Render/Core/PathTraceStageParameters.h"
+#include "../../Interop/MeshletStreamBLAS.hlsli"
 [[vk::push_constant]] ConstantBuffer<SharcMaintenanceParams> gStage;
 
 import ShaderCore;
@@ -33,7 +34,7 @@ void sharcClearMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint entryIndex = dispatchThreadId.x;
     SceneSharcMaintenancePush params = gStage.settings;
     StructuredBuffer<uint> changes = resolveUniform(gStage.geometryChanges);
-    if (params.forceClear == 0u && (changes[1] | changes[16] | changes[23]) == 0u) { return; }
+    if (params.forceClear == 0u && changes[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD] == 0u) { return; }
     if (entryIndex >= params.entriesNum) {
         return;
     }

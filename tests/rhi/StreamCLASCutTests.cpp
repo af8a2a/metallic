@@ -116,6 +116,7 @@ public:
                         .distributedDemandMinGroups = 0, .prefetchPages = false, .predictivePrefetch = false,
                         .enableLodTransitionTelemetry = compact && distributed};
                     require(bool(runtime.initialize(*device, desc, log)), log);
+                    const uint64_t initialShadingRevision = runtime.shadingRevision();
                     auto& queue = *device->getQueue(QueueType::Graphics);
                     QueueSubmissionTracker tracker;
                     RenderFrameContext frame;
@@ -163,6 +164,8 @@ public:
                     bool cancelledInitialFrame = false;
                     const auto record = [&](bool cancel = false) {
                         runtime.prepareMaintenance();
+                        require(runtime.shadingRevision() == initialShadingRevision,
+                            "Delayed CLAS publication/readback invalidated CPU shading history a second time");
                         require(bool(frame.begin(++frameIndex)) && bool(pool->reset()) &&
                             bool(commands->begin(frame.submissionContext())) && bool(streamer->beginFrame(frame)), "Cut frame begin failed");
                         require(bool(runtime.cmdBeginFrame(*commands, *streamer, view)) &&
@@ -271,6 +274,7 @@ public:
                         previousMasks = masks;
                     }
                     require(stable == 8, "Intermediate cut never settled");
+                    require(blas.semanticChangeCount == 0, "Settled intermediate cut repeatedly invalidated shading history");
                     require(cancelledInitialFallback && runtime.sceneReady(),
                         "Cancelled initial fallback did not retry and restore scene readiness");
                     const auto warmMasks = masks;
@@ -322,6 +326,7 @@ public:
                         fineFrames = fine ? fineFrames + 1 : 0;
                     }
                     require(fineFrames == 8, "Finer CLAS never replaced the retained cut");
+                    require(blas.semanticChangeCount == 0, "Settled fine cut repeatedly invalidated shading history");
                     require(pendingFrames != 0 && retainedFrames != 0,
                         "Fixture did not expose loaded finer geometry waiting for CLAS while retaining an ancestor");
 
@@ -466,14 +471,21 @@ public:
                         "RT distance cut changed after a 90-degree rotation with unit offscreen scale");
                     uint32_t reducedGroups = 0;
                     bool offscreenIntermediate = false;
+                    bool offscreenSemanticChange = false;
                     for (const float ratio : {1.5f, 2.5f, 4.f, 8.f, 16.f, 32.f}) {
                         view.rtOffscreenErrorScale = 1.f;
                         placeAtErrorRatio(ratio);
                         policyFrame();
                         const auto onScreen = wantedGroups();
+                        const auto onScreenMasks = masks;
                         view.camera.center = view.camera.eye + float3(0, 0, 1);
                         view.rtOffscreenErrorScale = 2.f;
                         policyFrame();
+                        if (masks != onScreenMasks) {
+                            require(blas.semanticChangeCount == 1,
+                                "Offscreen cut change omitted the global same-frame shading invalidation");
+                            offscreenSemanticChange = true;
+                        }
                         const auto offscreenDemand = wantedGroups();
                         reducedGroups = 0;
                         for (uint32_t group = 0; group < onScreen.size(); ++group) {
@@ -487,6 +499,9 @@ public:
                     }
                     require(reducedGroups != 0 && offscreenIntermediate,
                         "Offscreen policy failed to reduce demand while preserving non-root geometry");
+                    require(offscreenSemanticChange, "Offscreen fixture did not exercise a published semantic cut change");
+                    policyFrame();
+                    require(blas.semanticChangeCount == 0, "Offscreen semantic change invalidated another stable frame");
                     view.camera.center = targetCenter;
                     view.rtOffscreenErrorScale = 1.f;
                     policyFrame();

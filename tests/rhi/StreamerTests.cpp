@@ -986,9 +986,21 @@ public:
             record(true);
             view.selectedLodLevel = 0;
             record();
-            require(header.padding0 != 0 && header.blasBuildCount > 0, "Cancelled recording poisoned BLAS cache");
+            require(header.padding0 == 0 && header.blasBuildCount == 0 && header.semanticChangeCount == 0,
+                "Cancelled recording discarded the previously submitted BLAS cut/history");
             record();
             require(header.padding0 == 0, "Retry did not restore reuse");
+            view.selectedLodLevel = 2;
+            record(true);
+            record();
+            require(header.blasBuildCount > 0 && header.semanticChangeCount != 0,
+                "Retrying a cancelled new cut reused stale geometry/history");
+            record();
+            require(header.blasBuildCount == 0 && header.semanticChangeCount == 0,
+                "Accepted retry invalidated another stable frame");
+            view.selectedLodLevel = 0;
+            record();
+            record();
             const auto residents = runtime.residency().residentPages();
             const auto nonRoot = std::find_if(residents.begin(), residents.end(), [&](uint32_t page) {
                 return runtime.residency().pageState(page) == MeshletStreamPageResidencyState::Resident &&

@@ -1,14 +1,16 @@
 #include "StreamRayGeometry.slang"
+#include "../../Interop/MeshletStreamBLAS.hlsli"
 
 bool streamRayGeometryChanged()
 {
     StructuredBuffer<uint> changes = resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamChanges);
-    return (changes[1] | changes[16] | changes[23]) != 0u;
+    return changes[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD] != 0u;
 }
 
 float3 accumulateStreamPathTrace(uint2 pixel, float3 color, ScenePathTracePush push)
 {
-    // GPU cut changes are visible before the CPU's delayed streaming readback.
+    // Actual cut changes reset globally, including offscreen geometry that can
+    // affect reflections and shadows. AS address changes do not change radiance.
     // Store the effective frame count in history so a GPU reset remains valid
     // on the following frame, independently of the CPU accumulation counter.
     float count = 1.0;

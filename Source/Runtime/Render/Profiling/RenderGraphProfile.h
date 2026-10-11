@@ -108,6 +108,7 @@ struct SceneStreamingProfile {
     uint32_t blasArenaUsedBytes = 0;
     uint32_t blasArenaRepack = 0;
     uint32_t blasPublicationInvalidated = 0;
+    uint32_t blasSemanticChangeCount = 0;
 
 
     uint64_t geometryUsedBytes = 0;

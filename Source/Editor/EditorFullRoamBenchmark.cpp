@@ -94,6 +94,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"blasArenaUsedBytes",s.blasArenaUsedBytes},
         {"blasArenaRepack",s.blasArenaRepack},
         {"blasPublicationInvalidated",s.blasPublicationInvalidated},
+        {"blasSemanticChangeCount",s.blasSemanticChangeCount},
 
 
         {"textureStreaming",s.textureStreaming},

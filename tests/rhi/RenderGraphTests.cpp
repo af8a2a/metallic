@@ -3419,7 +3419,7 @@ public:
     {
         render::RenderPassReflection reflection;
         reflection.addTextureInput("color").transferRead().format = render::Format::RGBA32Sfloat;
-        reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 16)
+        reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 32)
             .transferWrite().hostReadback();
         return reflection;
     }
@@ -3427,6 +3427,24 @@ public:
     {
         if (auto commandResult = (context.outputBuffer("data").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
             .buffer = bufferSlice, .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
+        const auto current = context.historyResources()->texture(
+            "ScenePathTracePass.PathTrace.accumulation", render::HistorySlot::Current);
+        if (!current.texture) { return render::makeError(render::Error::InvalidArgument); }
+        render::TextureBarrierDesc historyBarrier{.texture = current.texture,
+            .oldLayout = render::TextureLayout::General, .newLayout = render::TextureLayout::TransferSource,
+            .before = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead}};
+        auto& commands = context.commandBuffer();
+        if (auto result = commands.synchronize({.textures = {&historyBarrier, 1}}); !result) { return result; }
+        const uint64_t pixelBytes = uint64_t(context.width()) * context.height() * 16;
+        auto destination = context.outputBuffer("data").buffer()->slice({pixelBytes, pixelBytes});
+        if (!destination) { return render::makeError(destination.error()); }
+        if (auto result = commands.copyTextureToBuffer({.texture = current.texture, .buffer = *destination,
+            .width = context.width(), .height = context.height()}); !result) { return result; }
+        std::swap(historyBarrier.oldLayout, historyBarrier.newLayout);
+        historyBarrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
+        historyBarrier.after = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderRead | render::AccessBits::ShaderWrite};
+        if (auto result = commands.synchronize({.textures = {&historyBarrier, 1}}); !result) { return result; }
         return {};
     }
 };
@@ -3498,6 +3516,7 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context)
             }
             return false;
         };
+        float accumulationCount = 0;
         const auto checkFrame = [&]() -> std::string {
             for (const char* stage : {"SHaRC update", "SHaRC resolve", "SHaRC query"}) {
                 if (!hasStage(stage)) { return std::string("cache did not execute stage ") + stage; }
@@ -3508,14 +3527,21 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context)
             }
             auto* output = executor.outputResource("Readback.data");
             if (!output || !output->buffer) { return "cache readback output missing"; }
-            std::array<std::array<float, 4>, kWidth * kHeight> pixels{};
+            std::array<std::array<float, 4>, kWidth * kHeight * 2> pixels{};
             if (!readHostBuffer(*output->buffer, pixels.data(), sizeof(pixels))) { return "cache readback map failed"; }
             bool visible = false;
-            for (const auto& pixel : pixels) {
+            for (uint32_t index = 0; index < kWidth * kHeight; ++index) {
+                const auto& pixel = pixels[index];
                 if (!std::all_of(pixel.begin(), pixel.end(), [](float value) { return std::isfinite(value); }) ||
                     pixel[3] != 1.0f) { return "cache stages left invalid or unwritten output pixels"; }
                 visible = visible || pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0;
+                const auto& accumulated = pixels[kWidth * kHeight + index];
+                if (!std::all_of(accumulated.begin(), accumulated.end(), [](float value) { return std::isfinite(value); }) ||
+                    accumulated[3] < 1.f || accumulated[3] != pixels[kWidth * kHeight][3]) {
+                    return "global path-trace history contains invalid or inconsistent accumulation counts";
+                }
             }
+            accumulationCount = pixels[kWidth * kHeight][3];
             return visible ? std::string{} : "cache output contains no visible light";
         };
         for (uint32_t frame = 0; frame < 2; ++frame) {
@@ -3554,7 +3580,28 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context)
         const auto failure = checkFrame();
         if (!failure.empty()) { return RHITestResult::fail(std::string(mode) + " cancelled retry: " + failure); }
         if (!hasStage("SHaRC clear")) { return RHITestResult::fail("cancelled SHaRC cache was not reset on retry"); }
-        return RHITestResult::pass(std::string(mode) + ": 64x48, two accepted frames, cancel and retry with history/pixel checks");
+        if (accumulationCount != 1.f) { return RHITestResult::fail("cancelled history retry retained previous samples"); }
+        // Let real streaming settle, then demand uninterrupted accumulation long
+        // enough to process delayed CPU telemetry. A stage name alone cannot
+        // prove whether the production shader actually reset history.
+        uint32_t consecutiveAccumulationFrames = 0;
+        for (uint32_t frame = 0; frame < 96 && consecutiveAccumulationFrames < 24; ++frame) {
+            const float previousCount = accumulationCount;
+            if (!executor.execute({.graphicsQueue = queue, .historyResources = &history, .recordingWorkerLimit = 1,
+                    .submissionMode = render::FrameSubmissionMode::Joined}) || !executor.waitForSubmittedWork(5'000'000'000ull)) {
+                return RHITestResult::fail("cache accumulation stability frame failed");
+            }
+            const auto accumulationFailure = checkFrame();
+            if (!accumulationFailure.empty()) { return RHITestResult::fail(accumulationFailure); }
+            if (accumulationCount == previousCount + 1.f && !hasStage("SHaRC clear")) {
+                ++consecutiveAccumulationFrames;
+            } else {
+                if (accumulationCount != 1.f) { return RHITestResult::fail("cache history did not reset or accumulate exactly once"); }
+                consecutiveAccumulationFrames = 0;
+            }
+        }
+        if (consecutiveAccumulationFrames != 24) { return RHITestResult::fail("settled cache history repeatedly reset during CPU feedback"); }
+        return RHITestResult::pass(std::string(mode) + ": 64x48, cancel/retry plus 24 consecutive accepted accumulation frames with real history alpha checks");
     }();
     // Include executor and device destruction in validation.
     device.reset();

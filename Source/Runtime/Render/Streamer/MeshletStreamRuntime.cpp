@@ -2114,7 +2114,6 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 void MeshletStreamRuntime::reset()
 {
     ++shadingStateRevision_;
-    shadingFeedbackFrame_ = UINT32_MAX;
     sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     rasterSnapshotFrozen_ = false;
     ++debugGeneration_;
@@ -2288,7 +2287,7 @@ void MeshletStreamRuntime::reset()
     blasBuildCapacity_ = 0;
     maxBlasClustersPerBuild_ = 0;
     blasSizeClasses_ = {};
-    blasPublicationEpoch_ = 0;
+    blasPublicationEpoch_ = std::make_shared<uint32_t>(0);
     blasAddressBufferState_ = ResourceState::Undefined;
     blasClusterReferenceAddress_ = 0;
     fallbackBlasPrimitives_.clear();
@@ -3071,7 +3070,9 @@ uint32_t MeshletStreamRuntime::drawTaskCount() const
 
 uint64_t MeshletStreamRuntime::shadingRevision() const
 {
-    return shadingStateRevision_ + (clasPool_ ? clasPool_->stats().publicationRevision : 0);
+    // Physical CLAS publication/relocation only invalidates acceleration-structure
+    // references. GPU cut changes invalidate shading in the frame they execute.
+    return shadingStateRevision_;
 }
 
 Result<> MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::string& log)
@@ -4003,20 +4004,17 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
         return makeError(Error::InvalidArgument);
     }
 
-    // The GPU page generation is 32-bit. A global wrap conservatively resets
-    // all instance caches, so an old generation can never compare equal again.
+    // A 32-bit page-generation wrap rebuilds physical references, while keeping
+    // the prior semantic cut. Commit the epoch only when the recording is accepted.
     const auto publicationEpoch = static_cast<uint32_t>(clasPool_->stats().publicationRevision >> 32u);
-    if (publicationEpoch != blasPublicationEpoch_) {
-        *blasCacheInitialized_ = false;
-        blasPublicationEpoch_ = publicationEpoch;
-    }
+    const bool publicationWrapped = publicationEpoch != *blasPublicationEpoch_;
     commandBuffer.hostWriteBarrier();
     if (auto r = transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true); !r) { return r; }
 
-    auto dispatchPhase = [this, &commandBuffer](uint32_t phase, uint32_t threadCount) {
+    auto dispatchPhase = [this, &commandBuffer, publicationWrapped](uint32_t phase, uint32_t threadCount) {
         MeshletStreamUserPush push = userPush();
         push.activeBuildPhase = phase;
-        push.traversalPhase = *blasCacheInitialized_ ? 0u : 1u;
+        push.traversalPhase = (*blasCacheInitialized_ ? 0u : 1u) | (publicationWrapped ? 2u : 0u);
         return blasInputPass_->dispatch(
             commandBuffer,
             *registry_->heap(),
@@ -4045,10 +4043,14 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     }
     result = dispatchPhase(5u, std::max(asset_.instanceCount(), 1u));
     if (!result) { return result; }
-    result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
-        [valid = blasCacheInitialized_] { *valid = false; }));
+    // Only an accepted recording initializes the GPU cache. Cancelling a later
+    // frame leaves its previous cut and semantic history intact on the GPU.
+    result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+        [valid = blasCacheInitialized_, epoch = blasPublicationEpoch_, publicationEpoch] {
+            *valid = true;
+            *epoch = publicationEpoch;
+        }, nullptr));
     if (!result) { return result; }
-    *blasCacheInitialized_ = true;
     if (checkpoint) { checkpoint("BeforeBlasCount"); }
     result = dispatchPhase(kMeshletStreamBLASInputCountPhase, maxActiveGroups_);
     if (!result) {
@@ -4081,7 +4083,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     if (checkpoint) { checkpoint("BeforeBlasInsert"); }
     result = dispatchPhase(kMeshletStreamBLASInputInsertPhase, maxActiveGroups_);
     if (!result) { return result; }
-    result = dispatchPhase(11u, maxActiveGroups_);
+    result = dispatchPhase(11u, std::max(maxActiveGroups_, asset_.instanceCount()));
     if (!result) { return result; }
     return transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true);
 }
@@ -4337,13 +4339,8 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profile
     if (clusterRtxEnabled_) {
         std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
             readback->desc().size - sizeof(MeshletStreamGPUBLASHeader), sizeof(recentBlasHeader_));
-        if (shadingFeedbackFrame_ != recentBlasHeader_.frameIndex) {
-            shadingFeedbackFrame_ = recentBlasHeader_.frameIndex;
-            if (recentBlasHeader_.blasBuildCount != 0 || recentBlasHeader_.dirtyInstances != 0 ||
-                recentBlasHeader_.publicationInvalidated != 0) {
-                ++shadingStateRevision_;
-            }
-        }
+        // Telemetry only: replaying this delayed feedback into shadingRevision()
+        // would clear PT/SHaRC a second time after the same-frame GPU invalidation.
     }
     recentGpuRequestCount_ = header->loadCounter;
     recentPrefetchGpuRequests_ = header->prefetchRequestCounter;
@@ -4509,6 +4506,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.blasArenaUsedBytes = recentBlasHeader_.arenaUsedBytes;
     result.blasArenaRepack = recentBlasHeader_.arenaRepack;
     result.blasPublicationInvalidated = recentBlasHeader_.publicationInvalidated;
+    result.blasSemanticChangeCount = recentBlasHeader_.semanticChangeCount;
 
 
     result.geometryUsedBytes = stats.usedResidentBytes;

@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "../../Shaders/Interop/MeshletStreamBLAS.hlsli"
 #include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ResourceMember.h"
@@ -344,7 +345,10 @@ public:
             auto* changed = static_cast<uint32_t*>(geometryChanges->map());
             REG_CHECK(changed);
             std::fill_n(changed, 24, 0u);
-            changed[16] = testCase == 3 ? 1u : 0u;
+            changed[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD] = testCase == 3 ? 1u : 0u;
+            // Rebuilding/repacking identical geometry must preserve SHaRC.
+            // Only the final TLAS semantic publication signal invalidates it.
+            if (testCase == 4) { changed[1] = changed[16] = changed[23] = 1u; }
             geometryChanges->flush();
             geometryChanges->unmap();
             REG_REQUIRE(recording.initialize(*device, queue));
@@ -393,7 +397,7 @@ public:
             }
         }
         REG_CHECK((*registry)->stats().parameterBytes == 0);
-        return RHITestResult::pass("Clear/resolve respect bounds and stale thresholds; GPU cut changes clear cache while a stable cut preserves it");
+        return RHITestResult::pass("Clear/resolve respect bounds and stale thresholds; semantic cut changes clear cache while AS rebuild/publication alone preserves it");
     }
 };
 METALLIC_REGISTER_RHI_TEST(SharcTypedMaintenanceTest);

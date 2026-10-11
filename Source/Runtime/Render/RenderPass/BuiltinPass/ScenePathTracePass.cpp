@@ -1239,6 +1239,9 @@ public:
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         const auto textureSnapshot = sceneResources_.materialTextureSnapshot();
         const auto* frameScene = context.preparedScene();
+        // CPU revisions cover scene edits only. Streaming cut changes are
+        // consumed on the GPU by PT and SHaRC in their producing frame; physical
+        // AS relocation and delayed readback must not trigger another reset.
         const uint64_t geometryRevision = frameScene && frameScene->geometry ? frameScene->geometry->shadingRevision() : 0;
         if (textureSnapshot != previousTextureSnapshot_ || geometryRevision != geometryShadingRevision_) {
             resetAccumulation_ = true;

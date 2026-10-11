@@ -268,19 +268,17 @@ without Nsight capture. Set `METALLIC_SHADER_CAPTURE_SYMBOLS=1` explicitly when
 source and function views are needed. `METALLIC_SHADER_CAPTURE_SYMBOLS=0` disables
 the RelWithDebInfo symbol default, including during capture.
 
-Runtime and manual warmup use direct SPIR-V generation with `-O0` and an explicit
-lightweight `spirv-opt` pass sequence: dead-function elimination, local single-block
-and single-store cleanup, instruction simplification, dead-branch elimination,
-CFG cleanup, aggressive dead-code elimination and ID compaction. This avoids the
-default preset's exhaustive entry-point inlining and its large debug-info cost.
+Runtime and manual warmup use direct SPIR-V generation with Slang's default
+`-O1` optimization policy. The backend uses its default optimization passes;
+Metallic does not override them with a custom `spirv-opt` sequence.
 Capture symbols retain embedded source and NonSemantic function/call-site records.
 The optimization level, backend and pass sequence are included in cache identity;
-old optimized cache entries are not reused. The Vulkan driver can still inline and
+old O0/custom-pass cache entries are not reused. The Vulkan driver can still inline and
 optimize during pipeline creation, so compare pipeline creation and GPU execution
 separately from Slang compilation. Use
-`--nsight-shader-debug` for shader debugging (`-g2 -O0`, without cleanup passes),
+`--nsight-shader-debug` for explicit shader debugging (`-g2 -O0`),
 not representative runtime profiling. Capture-symbol profiling uses the runtime
-cleanup policy; actual source/call-site correlation must be verified in Nsight.
+O1 policy; actual source/call-site correlation must be verified in Nsight.
 The former `-g1` mode only emitted paths/lines and was insufficient for Nsight's
 high-level source and function views. The cache request version has been bumped
 so those old binaries are not reused. Restart the rebuilt executable and make a

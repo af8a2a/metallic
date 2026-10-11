@@ -47,21 +47,10 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 27;
-// The default SPIR-V optimization preset exhaustively inlines entry points.
-// With NonSemantic debug records this dominates large scene-shader compiles.
-// Keep functions and run only local/dead-code cleanup; the driver still lowers
-// and optimizes SPIR-V when creating a pipeline.
-constexpr SlangOptimizationLevel kSlangOptimizationLevel = SLANG_OPTIMIZATION_LEVEL_NONE;
-constexpr const char* kSPIRVOptimizationPasses =
-    "--eliminate-dead-functions\n"
-    "--eliminate-local-single-block\n"
-    "--eliminate-local-single-store\n"
-    "--simplify-instructions\n"
-    "--eliminate-dead-branches\n"
-    "--cfg-cleanup\n"
-    "--eliminate-dead-code-aggressive\n"
-    "--compact-ids";
+constexpr uint32_t kShaderCacheRequestVersion = 28;
+// Use Slang's default O1 policy, including its default SPIR-V optimization
+// passes. Explicit shader debugging retains O0 for variable inspection.
+constexpr SlangOptimizationLevel kSlangOptimizationLevel = SLANG_OPTIMIZATION_LEVEL_DEFAULT;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -493,10 +482,10 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
     hash = hashValue(hash, target.revision);
     hash = hashValue(hash, static_cast<uint8_t>(sceneWorkingColorSpace()));
     hash = hashText(hash, SLANG_VERSION_NUMERIC);
-    hash = hashValue(hash, static_cast<int32_t>(kSlangOptimizationLevel));
+    hash = hashValue(hash, static_cast<int32_t>(debugMode == SlangShaderDebugMode::ShaderDebug
+        ? SLANG_OPTIMIZATION_LEVEL_NONE : kSlangOptimizationLevel));
     hash = hashText(hash, "spirv-direct");
-    hash = hashText(hash, debugMode == SlangShaderDebugMode::ShaderDebug
-        ? "" : kSPIRVOptimizationPasses);
+    hash = hashText(hash, "slang-default-optimization-passes");
     hash = hashValue(hash, nativeDescriptorHeapEnabled(desc));
     hash = hashValue(hash, desc.descriptorHeapStrides.resource);
     hash = hashValue(hash, desc.descriptorHeapStrides.sampler);
@@ -1030,19 +1019,10 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         .name = slang::CompilerOptionName::Optimization,
         .value = slang::CompilerOptionValue{
             .kind = slang::CompilerOptionValueKind::Int,
-            .intValue0 = static_cast<int32_t>(kSlangOptimizationLevel),
+            .intValue0 = static_cast<int32_t>(debugMode == SlangShaderDebugMode::ShaderDebug
+                ? SLANG_OPTIMIZATION_LEVEL_NONE : kSlangOptimizationLevel),
         },
     });
-    if (debugMode != SlangShaderDebugMode::ShaderDebug) {
-        compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::DownstreamArgs,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::String,
-                .stringValue0 = "spirv-opt",
-                .stringValue1 = kSPIRVOptimizationPasses,
-            },
-        });
-    }
     if (native) {
         // TO-REMOVE(VVL payload-size): retain literal ArrayStride until VVL correctly
         // sizes task/mesh payloads with unrelated opaque-size spec expressions.

@@ -89,6 +89,9 @@ cmake --build build-release --target MetallicShaderCompiler --config Release
 For multi-configuration generators the executable is under Source/<Config>/.
 The default shader debug mode is disabled, independently of C++ Debug/Release.
 capture corresponds to CaptureSymbols; debug corresponds to ShaderDebug.
+Disabled and capture modes use Slang O1 with default backend optimization passes.
+The explicit debug mode retains O0 for variable inspection. Runtime and warmup
+share this policy and its versioned cache identity.
 The tool also honors the runtime METALLIC_SLANG_DESCRIPTOR_MODE environment
 variable. Cache entries for different modes are separate.
 Native cache identity also includes the resource and sampler byte strides. The

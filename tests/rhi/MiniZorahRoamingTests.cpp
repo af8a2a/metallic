@@ -926,7 +926,7 @@ public:
                     if (realtime && observer.copies.contains("streaming.GPUDriven.blasHeader")) {
                         const auto blas = observer.read<MeshletStreamGPUBLASHeader>("streaming.GPUDriven.blasHeader").front();
                         entry["blas"] = {{"builds", blas.blasBuildCount}, {"references", blas.clusterReferenceCount},
-                            {"cacheDirty", blas.padding0}, {"activeGroups", blas.padding1}, {"clasRevision", blas.padding2}};
+                            {"cacheDirty", blas.padding0}, {"activeGroups", blas.padding1}, {"semanticChangeCount", blas.semanticChangeCount}};
                     }
                     for (uint32_t axis = 0; axis < 3; ++axis) {
                         checkRoam(std::abs(info.eye[axis] - camera["eye"][axis].get<float>()) < 1e-5f &&

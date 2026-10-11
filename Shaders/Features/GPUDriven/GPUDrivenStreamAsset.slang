@@ -8,6 +8,7 @@ import Material;
 using Metallic.Material;
 #include "WaveWorkDistribution.slang"
 #include "../../Interop/AlphaCoverage.hlsli"
+#include "../../Interop/MeshletStreamBLAS.hlsli"
 #define VISIBILITY_TESSELLATION_STREAM 1
 #include "../VisibilityBuffer/VisibilityTessellation.slang"
 
@@ -325,7 +326,7 @@ struct GPUDrivenStreamAssetBLASHeader
     uint frameIndex;
     uint padding0;
     uint padding1;
-    uint padding2;
+    uint semanticChangeCount;
     uint requestedClusterReferences;
     uint requestedInstances;
     uint referenceBudgetRejected;
@@ -3365,6 +3366,32 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
 }
 
 static const uint kBLASInstanceDirty = 8u;
+static const uint kBLASInstanceSemanticCutDirty = 1u << 4u;
+// Persist the representation actually published to the TLAS, including failed
+// admissions. Address relocations and requested cuts do not change this state.
+static const uint kBLASInstancePublishedFallback = 1u << 5u;
+static const uint kBLASInstancePublishedDynamic = 2u << 5u;
+static const uint kBLASInstancePublishedMask = 3u << 5u;
+
+bool streamBlasDynamicReady(GPUDrivenStreamAssetInstanceBLAS blas)
+{
+    return (blas.flags & kBLASInstanceDynamic) != 0u &&
+        (blas.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
+        blas.selectedClusterCount != 0u &&
+        blas.insertedClusterCount == blas.selectedClusterCount &&
+        blas.cachedValid != 0u && blas.storageCapacity != 0u;
+}
+
+uint2 streamPublishedBlasAddress(GPUDrivenStreamAssetInstanceBLAS blas,
+    GPUDrivenStreamAssetParams params, uint2 fallbackAddress)
+{
+    if (streamBlasDynamicReady(blas)) {
+        uint low = params.blasStorageAddressLow + blas.storageOffset;
+        return uint2(low, params.blasStorageAddressHigh +
+            (low < params.blasStorageAddressLow ? 1u : 0u));
+    }
+    return fallbackAddress;
+}
 groupshared uint4 g_StreamBlasStoragePrefix[64];
 
 uint blasInstanceStorageBytes(uint count, GPUDrivenStreamAssetParams params)
@@ -3416,7 +3443,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     if (push.activeBuildPhase == kBLASInputPhaseReset) {
         if (itemIndex == 0u) {
             GPUDrivenStreamAssetBLASHeader previous = (GPUDrivenStreamAssetBLASHeader)0;
-            if (push.traversalPhase == 0u) { previous = blasHeader[0]; }
+            if ((push.traversalPhase & 1u) == 0u) { previous = blasHeader[0]; }
             GPUDrivenStreamAssetBLASHeader header = (GPUDrivenStreamAssetBLASHeader)0;
             header.clusterReferenceCount = 0u;
             header.blasBuildCount = 0u;
@@ -3427,7 +3454,6 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             header.arenaUsedBytes = previous.arenaUsedBytes;
             header.arenaBase = previous.arenaUsedBytes;
             header.padding1 = activeCount;
-            header.padding2 = push.clasPublicationRevision;
             blasHeader[0] = header;
         }
         return;
@@ -3437,24 +3463,54 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
     RWStructuredBuffer<uint4> cache = cacheHandle;
     if (push.activeBuildPhase == 4u || push.activeBuildPhase == 11u) {
+        if (push.activeBuildPhase == 11u && itemIndex < params.sceneInstanceCount) {
+            // Finalize only after insertion/admission, using the same effective
+            // representation as TLAS input. Stable fallback is not a cut change.
+            StructuredBuffer<GPUDrivenStreamAssetInstance> instances =
+                resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
+            StructuredBuffer<uint2> fallbackAddresses =
+                resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.fallbackBlasAddressBuffer));
+            GPUDrivenStreamAssetInstance instance = instances[itemIndex];
+            GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
+            uint2 fallbackAddress = instance.primitiveIndex < params.scenePrimitiveCount
+                ? fallbackAddresses[instance.primitiveIndex] : uint2(0u, 0u);
+            uint2 address = streamPublishedBlasAddress(info, params, fallbackAddress);
+            bool visible = instance.visible != 0u && any(address != uint2(0u, 0u));
+            uint previousMode = info.flags & kBLASInstancePublishedMask;
+            uint publishedMode = !visible ? 0u : (streamBlasDynamicReady(info)
+                ? kBLASInstancePublishedDynamic : kBLASInstancePublishedFallback);
+            bool semanticChanged = publishedMode != previousMode ||
+                (publishedMode == kBLASInstancePublishedDynamic &&
+                    (info.flags & kBLASInstanceSemanticCutDirty) != 0u);
+            if (semanticChanged) {
+                // Global: an offscreen instance can affect reflections/shadows.
+                InterlockedAdd(blasHeader[0].semanticChangeCount, 1u);
+            }
+            instanceBlas[itemIndex].flags = (info.flags & ~kBLASInstancePublishedMask) | publishedMode;
+        }
         if (itemIndex < activeCount) {
             GPUDrivenStreamAssetActiveGroup group = activeGroups[itemIndex];
             if (group.instanceIndex >= params.sceneInstanceCount || group.pageIndex >= params.scenePageCount) { return; }
-            GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[group.instanceIndex];
             uint4 key = uint4(group.pageIndex, group.clusterSelectionMask, group.clusterCount,
                 clasPageTable[group.pageIndex].publicationGeneration);
             if (push.activeBuildPhase == 11u) {
                 cache[6u + itemIndex] = key;
             } else {
+                GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[group.instanceIndex];
                 // Compare by rank within the instance, independent of the
                 // compact offsets of other instances. Read all old keys before
                 // phase 11 publishes the next cache (including removed groups).
                 uint rank = itemIndex - info.firstGroup;
                 bool dirty = info.cachedValid == 0u || rank >= info.previousGroupCount;
+                bool semanticDirty = dirty;
                 if (!dirty) {
                     uint4 previous = cache[6u + info.previousFirstGroup + rank];
                     dirty = any(previous != key);
+                    semanticDirty = any(previous.xyz != key.xyz);
                     if (previous.w != key.w) { InterlockedAdd(blasHeader[0].publicationInvalidated, 1u); }
+                }
+                if (semanticDirty) {
+                    InterlockedOr(instanceBlas[group.instanceIndex].flags, kBLASInstanceSemanticCutDirty);
                 }
                 if (dirty) {
                     InterlockedOr(instanceBlas[group.instanceIndex].flags, kBLASInstanceDirty);
@@ -3467,11 +3523,14 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     if (push.activeBuildPhase == 5u) {
         if (itemIndex < params.sceneInstanceCount) {
             GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
-            if (push.traversalPhase != 0u) { info = (GPUDrivenStreamAssetInstanceBLAS)0; }
+            // Bit 0 initializes a new cache; bit 1 forces physical rebuilds
+            // (publication generation wrap) while preserving semantic history.
+            if ((push.traversalPhase & 1u) != 0u) { info = (GPUDrivenStreamAssetInstanceBLAS)0; }
             info.selectedClusterCount = 0u;
             info.insertedClusterCount = 0u;
             info.blasBuildIndex = kInvalidClusterIndex;
-            info.flags = 0u;
+            info.flags = (info.flags & kBLASInstancePublishedMask) |
+                ((push.traversalPhase & 2u) != 0u ? kBLASInstanceDirty : 0u);
             info.firstGroup = 0xffffffffu;
             info.groupCount = 0u;
             instanceBlas[itemIndex] = info;
@@ -3589,7 +3648,9 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         instanceBlas[itemIndex].blasBuildIndex = buildIndex;
         bool dirty = info.cachedValid == 0u || info.previousGroupCount != info.groupCount ||
             params.enableBlasInstanceReuse == 0u || (info.flags & kBLASInstanceDirty) != 0u;
-        InterlockedOr(instanceBlas[itemIndex].flags, kBLASInstanceDynamic | (dirty ? kBLASInstanceDirty : 0u));
+        bool semanticDirty = info.previousGroupCount != info.groupCount;
+        InterlockedOr(instanceBlas[itemIndex].flags, kBLASInstanceDynamic |
+            (dirty ? kBLASInstanceDirty : 0u) | (semanticDirty ? kBLASInstanceSemanticCutDirty : 0u));
         InterlockedAdd(blasHeader[0].admittedInstances, 1u);
         return;
     }
@@ -3655,7 +3716,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         growthOffset += min(blasHeader[0].arenaBase, 0xffffffffu - growthOffset);
         uint offset = repack ? packedOffset : grow ? growthOffset : info.storageOffset;
         if (size == 0u || offset >= params.blasStorageBytes || size > params.blasStorageBytes - offset) {
-            info.flags = kBLASInstanceFallback | kBLASInstanceOverflow;
+            info.flags = (info.flags & kBLASInstancePublishedMask) | kBLASInstanceFallback | kBLASInstanceOverflow;
             info.cachedValid = 0u;
             info.storageOffset = 0u; info.storageCapacity = 0u;
             instanceBlas[itemIndex] = info;
@@ -3779,20 +3840,9 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
 
     GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
     GPUDrivenStreamAssetInstanceBLAS blas = instanceBlas[instanceIndex];
-    uint2 accelerationStructureReference = uint2(0u, 0u);
-    bool dynamicReady =
-        (blas.flags & kBLASInstanceDynamic) != 0u &&
-        (blas.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
-        blas.selectedClusterCount != 0u &&
-        blas.insertedClusterCount == blas.selectedClusterCount &&
-        blas.cachedValid != 0u && blas.storageCapacity != 0u;
-    if (dynamicReady) {
-        uint low = params.blasStorageAddressLow + blas.storageOffset;
-        accelerationStructureReference = uint2(low, params.blasStorageAddressHigh +
-            (low < params.blasStorageAddressLow ? 1u : 0u));
-    } else if (instance.primitiveIndex < params.scenePrimitiveCount) {
-        accelerationStructureReference = fallbackBlasAddresses[instance.primitiveIndex];
-    }
+    uint2 fallbackAddress = instance.primitiveIndex < params.scenePrimitiveCount
+        ? fallbackBlasAddresses[instance.primitiveIndex] : uint2(0u, 0u);
+    uint2 accelerationStructureReference = streamPublishedBlasAddress(blas, params, fallbackAddress);
 
     bool addressValid =
         accelerationStructureReference.x != 0u ||
