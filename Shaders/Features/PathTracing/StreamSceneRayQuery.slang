@@ -1,5 +1,5 @@
 #include "StreamRayGeometry.slang"
-#include "../../Interop/MeshletStreamBLAS.hlsli"
+#include "../../Interop/MeshletStreamBLAS.h"
 
 bool streamRayGeometryChanged()
 {

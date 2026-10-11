@@ -5824,6 +5824,37 @@ public:
         // Keep the production exposure and ACES LUT chain: display/data diagnostics
         // must publish their encoding and bypass scene exposure/grading at runtime.
 
+        // Initial readiness publishes fallback geometry. Camera-dependent LOD
+        // feedback still refines it over subsequent frames, so one-frame debug
+        // captures can otherwise compare different silhouettes and normals.
+        if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "debugView", "geometryNormal")) {
+            return RHITestResult::fail("failed to configure OpenPBR geometry warmup");
+        }
+        std::vector<uint32_t> previousGeometryPixels;
+        uint32_t stableGeometryFrames = 0;
+        bool geometrySettled = false;
+        for (uint32_t frame = 0; frame < 256; ++frame) {
+            result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
+            if (!result) {
+                if (render::hasError(result, render::Error::Unsupported)) {
+                    return RHITestResult::skip("OpenPBR debug warmup is unsupported: " + preview.lastLog());
+                }
+                return RHITestResult::fail("OpenPBR debug warmup failed: " + preview.lastLog());
+            }
+            const auto* streamer = preview.subsystemHost()->get<render::StreamerSubsystem>();
+            const bool sceneReady = streamer != nullptr && streamer->sceneReadiness().ready;
+            stableGeometryFrames = sceneReady && previousGeometryPixels == preview.pixels()
+                ? stableGeometryFrames + 1 : 0;
+            previousGeometryPixels = preview.pixels();
+            if (frame >= 31 && stableGeometryFrames >= 8) {
+                geometrySettled = true;
+                break;
+            }
+        }
+        if (!geometrySettled) {
+            return RHITestResult::fail("OpenPBR debug geometry did not stabilize within 256 frames");
+        }
+
         struct DebugCase {
             const char* name;
             const char* view;

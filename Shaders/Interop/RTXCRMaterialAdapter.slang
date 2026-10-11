@@ -1,8 +1,20 @@
-#ifndef METALLIC_RTXCR_MATERIAL_ADAPTER
-#define METALLIC_RTXCR_MATERIAL_ADAPTER
+#language slang 2026
+module RTXCRMaterialAdapter;
 
-// Program-owned interop: vendor types and safeNormalize are provided by the owner.
-Metallic.RTXCR.HairMaterialData makeRTXCRHairMaterial(PathTraceMaterial material)
+
+import Material;
+import RTXCRHair;
+import MaterialProgram;
+import FiberMaterial;
+import RTXCRFiber;
+using Metallic.Material;
+
+internal float3 normalizeHairVector(float3 value, float3 fallback, float minimumLengthSquared)
+{
+    float lengthSquared = dot(value, value);
+    return lengthSquared > minimumLengthSquared ? value * rsqrt(lengthSquared) : fallback;
+}
+public Metallic.RTXCR.HairMaterialData makeRTXCRHairMaterial(PathTraceMaterial material)
 {
     Metallic.RTXCR.HairMaterialData hair;
     hair.baseColor = saturate(material.rtxcrHairBaseColor.rgb);
@@ -18,43 +30,39 @@ Metallic.RTXCR.HairMaterialData makeRTXCRHairMaterial(PathTraceMaterial material
     return hair;
 }
 
-Metallic.RTXCR.HairInteractionSurface makeRTXCRHairSurface(
+public Metallic.RTXCR.HairInteractionSurface makeRTXCRHairSurface(
     float3 stableNormal,
     float3 tangent,
-    float3 viewDirection)
+    float3 viewDirection,
+    float minimumLengthSquared = 1e-8)
 {
     Metallic.RTXCR.HairInteractionSurface surface;
-    surface.shadingNormal = safeNormalize(stableNormal, float3(0.0, 0.0, 1.0));
+    surface.shadingNormal = normalizeHairVector(stableNormal, float3(0.0, 0.0, 1.0), minimumLengthSquared);
     float3 tangentFallback = abs(surface.shadingNormal.y) < 0.99
         ? cross(float3(0.0, 1.0, 0.0), surface.shadingNormal)
         : cross(float3(1.0, 0.0, 0.0), surface.shadingNormal);
-    surface.tangent = safeNormalize(
+    surface.tangent = normalizeHairVector(
         tangent - surface.shadingNormal * dot(surface.shadingNormal, tangent),
-        tangentFallback);
-    surface.incidentRayDirection = safeNormalize(viewDirection, -surface.shadingNormal);
+        tangentFallback, minimumLengthSquared);
+    surface.incidentRayDirection = normalizeHairVector(viewDirection, -surface.shadingNormal, minimumLengthSquared);
     return surface;
 }
 
-import MaterialProgram;
-import FiberMaterial;
-import RTXCRFiber;
-using Metallic.Material;
-
-struct SceneRTXCRHairParameters : IRTXCRHairParameterProvider
+public struct SceneRTXCRHairParameters : IRTXCRHairParameterProvider
 {
-    PathTraceMaterial value;
+    public PathTraceMaterial value;
     // The scene has already selected this immutable instance record. Offset 0
     // is relative to that record, as required by MaterialInstanceRef.
-    [mutating] Metallic.RTXCR.HairMaterialData load(MaterialInstanceRef instance)
+    [mutating] public Metallic.RTXCR.HairMaterialData load(MaterialInstanceRef instance)
     {
         return makeRTXCRHairMaterial(value);
     }
 };
 
-FiberMaterialResult<RTXCRChiangClosure> evaluateSceneFiberMaterial(
-    PathTraceMaterial parameters, FiberMaterialContext context)
+public FiberMaterialResult<RTXCRChiangClosure> evaluateSceneFiberMaterial(
+    PathTraceMaterial parameters, FiberMaterialContext context, float minimumLengthSquared = 1e-8)
 {
-    let surface = makeRTXCRHairSurface(context.normalWS, context.tangentWS, context.normalWS);
+    let surface = makeRTXCRHairSurface(context.normalWS, context.tangentWS, context.normalWS, minimumLengthSquared);
     context.normalWS = surface.shadingNormal;
     context.tangentWS = surface.tangent;
     context.bitangentWS = cross(context.normalWS, context.tangentWS);
@@ -63,9 +71,8 @@ FiberMaterialResult<RTXCRChiangClosure> evaluateSceneFiberMaterial(
     return program.evaluate(context, (MaterialInstanceRef)0);
 }
 
-float sceneFiberMISRoughness(PathTraceMaterial parameters)
+public float sceneFiberMISRoughness(PathTraceMaterial parameters)
 {
     return clamp(parameters.rtxcrHairParams0.x, 0.02, 1.0);
 }
 
-#endif

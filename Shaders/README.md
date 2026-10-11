@@ -145,7 +145,7 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 [ResourceMember.h](../Source/Runtime/Render/Core/ResourceMember.h) 从 C++ 成员类型和 `offsetof`
 推导资源类别、字段格式及偏移；不再维护数字 ID 到字段的独立布局表。
 编码器仍检查字段范围、对齐、重叠、资源类型和数组形式，保留可选资源与批量 dispatch 的契约。
-生产 GPU 参数块没有逻辑 slot table；场景结构为 392 字节，buffer/image/sampler 字段为 4 字节，
+生产 GPU 参数块没有逻辑 slot table；场景结构为 384 字节，buffer/image/sampler 字段为 4 字节，
 数组和原始数据字段为 12 字节 span，AS 独立保留完整地址。常量仍通过 `getConstants<T>()` 读取。
 `ComputeResourceMember` 不接受整数 ID；测试与生产均使用成员引用，旧数字 ID 和显式字段表兼容路径已删除。
 `Core` 导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。RHI 不在用户 push 数据前插入 heap header。
@@ -153,6 +153,21 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；
 光追顶点属性统一从 CLAS 对应的流送页解码，不再提供 position-fetch/fallback 分支。着色法线、几何法线和 TBN 的求值顺序保持原有语义。
+
+## 项目自有 Slang 实现
+
+`AlphaCoverage`、`MaterialTextureDecode` 和 `RTXCRMaterialAdapter` 使用独立 Slang
+module，通过 `import` 显式共享。依赖调用程序类型和编译配置的
+`SceneSurfaceClosure.slang` 保留程序内 `#include`；这些入口没有统一命名 module，
+不能使用要求 `implementing` 命名模块的 `__include`。
+`OpenPBRPathVertex.slang` 提供显式状态参数和控制结果的顶点处理函数，通用路径循环与
+单样本 continuation 共同调用，不再通过 HLSL 文本宏注入 `break`、`continue` 或 `return`。
+`MeshletStreamBLAS.h` 是 C++/Slang 共享常量契约，使用普通头文件。
+第三方 SDK 和 NRD 快照保留其原始 HLSL 适配边界及许可证。
+
+材质 `TextureInfo` 为 48 字节，`LegacyMaterialPayload` 为 720 字节。两个索引后只保留
+8 字节对齐 padding，使 StructuredBuffer 的两个 float4 位于偏移 16/32；不保留 NTC 字段。
+Slang `sizeof` 与 SPIR-V StructuredBuffer 布局不能混为一谈；GPU 字段/数组步长探针验证两端契约。
 
 ## SDK 兼容边界
 

@@ -53,7 +53,7 @@ typealias SceneOpenPBRPreparedClosure = OpenPBRPreparedClosure<SceneOpenPBRConte
 import SurfaceLighting;
 using Metallic.Lighting;
 #include "SceneSurface.slang"
-#include "../../Interop/SceneSurfaceClosure.hlsli"
+#include "../../Interop/SceneSurfaceClosure.slang"
 
 static const uint kOpenPBRDebugViewFinal = 0u;
 static const uint kOpenPBRDebugViewGeometryNormal = 1u;

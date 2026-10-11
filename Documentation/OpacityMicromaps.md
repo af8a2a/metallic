@@ -16,7 +16,7 @@ shader alpha traversal.
 
 `RayTracingCoverageDesc` describes MASK/BLEND mode, alpha factor/cutoff, CPU RGBA8
 pixels and transformed UVs in original BLAS triangle order. Its sampling contract
-matches `AlphaCoverage.hlsli`: four-tap bilinear, repeat wrapping and the supplied
+matches `AlphaCoverage.slang`: four-tap bilinear, repeat wrapping and the supplied
 finest-resident image. Empty pixels mean constant texture alpha one. Missing,
 dynamic or otherwise unavailable coverage is represented by a null geometry
 `coverage` pointer.

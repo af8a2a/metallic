@@ -7,7 +7,6 @@
 #include <cstddef>
 namespace metallic::render {
 #define DR_PUBLIC
-#define DR_PADDING uint32_t
 #define DR_BUFFER GPUResourceHandle<ResourceViewKind::RawBuffer>
 #define DR_SAMPLED(T) GPUResourceHandle<ResourceViewKind::SampledImage>
 #define DR_STORAGE(T) GPUResourceHandle<ResourceViewKind::StorageImage>
@@ -15,7 +14,6 @@ namespace metallic::render {
 #define DR_SPAN GPUBufferSpan
 #else
 #define DR_PUBLIC public
-#define DR_PADDING uint
 #define DR_BUFFER ResourceHandle<ByteAddressBuffer>
 #define DR_SAMPLED(T) ResourceHandle<Texture##T>
 #define DR_STORAGE(T) ResourceHandle<RWTexture##T>
@@ -141,14 +139,12 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_SAMPLED(2D<uint>) visibility;
     DR_PUBLIC DR_SAMPLED(2D<float>) visibilityDepth;
     DR_PUBLIC EnvironmentResourceParameters environment;
-    DR_PUBLIC DR_PADDING reserved;
-    // Explicit tail word keeps Slang's serialized size equal to C++'s 8-byte alignment.
-    DR_PUBLIC DR_PADDING reservedAlignment;
 };
 #ifdef __cplusplus
-static_assert(sizeof(SceneResourceParameters) == 392);
+static_assert(sizeof(SceneResourceParameters) == 384);
 static_assert(offsetof(SceneResourceParameters, environment) == 356);
-static_assert(offsetof(SceneResourceParameters, reservedAlignment) == 388);
+static_assert(offsetof(SceneResourceParameters, environment) + sizeof(EnvironmentResourceParameters) ==
+    sizeof(SceneResourceParameters));
 #endif
 
 // Read-only views of the existing scene packet; these do not change its wire layout.
@@ -253,7 +249,6 @@ static_assert(sizeof(VisibilityMaterialResourceParameters) == 36);
 #endif
 
 #undef DR_PUBLIC
-#undef DR_PADDING
 #undef DR_BUFFER
 #undef DR_SAMPLED
 #undef DR_STORAGE

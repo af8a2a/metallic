@@ -1,7 +1,8 @@
-#ifndef METALLIC_ALPHA_COVERAGE
-#define METALLIC_ALPHA_COVERAGE
+#language slang 2026
+module AlphaCoverage;
+
 // Deterministic coverage at the finest resident mip; shared by raster and RT.
-float sampleAlphaCoverage(Texture2D<float4> texture, float2 uv, uint mip = 0u)
+public float sampleAlphaCoverage(Texture2D<float4> texture, float2 uv, uint mip = 0u)
 {
     uint width = 1u;
     uint height = 1u;
@@ -21,4 +22,3 @@ float sampleAlphaCoverage(Texture2D<float4> texture, float2 uv, uint mip = 0u)
     return lerp(lerp(v00, v10, fraction.x), lerp(v01, v11, fraction.x), fraction.y).a;
 }
 
-#endif

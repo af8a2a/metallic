@@ -16,7 +16,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamPrefetch.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
-#include "../../../../Shaders/Interop/MeshletStreamBLAS.hlsli"
+#include "../../../../Shaders/Interop/MeshletStreamBLAS.h"
 
 #include <array>
 #include <cstddef>

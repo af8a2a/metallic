@@ -49,7 +49,7 @@ Python runner 依赖 NumPy；绘图额外使用 Matplotlib/Pillow，不进入默
 | 契约 | 生产者 | 消费者与约束 |
 | --- | --- | --- |
 | CPU payload | `ScenePathTraceResources.cpp` 从 scene 材质生成 `LegacyMaterialPayload`；`MaterialGeneration` 发布 | `SceneMaterial.slang::PathTraceMaterial`；720 bytes，不能把 C++ 对齐假设当作 Slang 自动匹配 |
-| TextureInfo | `ScenePathTraceResources.cpp` 解析纹理索引、UV 与 NTC 映射 | `PathTraceTextureInfo`；48 bytes：4×uint（textureIndex/texCoord/ntcTextureSetIndex/ntcChannelMapping）+ 2×float4 UV transform；无效资源 UINT32_MAX |
+| TextureInfo | `ScenePathTraceResources.cpp` 解析纹理索引与 UV | `PathTraceTextureInfo`；48 bytes：2×uint（textureIndex/texCoord）+ 8-byte 对齐 padding + 2×float4 UV transform；无效资源 UINT32_MAX |
 | 参数布局 | 11×float4 = 176 bytes，随后 9×TextureInfo，offset 608 的 specular float4，再 2×TextureInfo | CPU static_assert 与 `material_runtime_gpu_abi` GPU probe 保持一致 |
 | Program 身份 | `MaterialRuntime`：OpenPBR=1，RTXCR=2，payload `textureParams.z` | shader material runtime；0 为 legacy 推导。Program ID 不等于场景材质索引或 bin index |
 | 材质 ID | 导入 scene 索引→GPUScene material；instance.identity.y 指向 GPUScene material；material.identity.z 指向 shading material | VBuffer 用 visibility record→instance→material→source material 查找；ray-hit 用命中几何的 materialIndex。resident/stream 解码及越界策略以对应 shader 为准 |
@@ -59,7 +59,7 @@ Python runner 依赖 NumPy；绘图额外使用 Matplotlib/Pillow，不进入默
 | RTXCR | NV_materials_hair→payload；groom→DOTS triangle geometry；RTXCRMaterialAdapter | Chiang prepare/eval/sample；保留 authored normal/tangent，不套 Surface N·L；现有环境 NEE PDF 近似保持 |
 | 生命周期 | MaterialBindingGeneration 保留 CPU snapshot 和 GPU 参数 buffer | RenderFrameContext/PreparedComputeDispatch 保留至提交完成；revision 变化重置相关历史；失败发布保留旧 generation |
 
-关键源码：[LegacyMaterialPayload](../Source/Runtime/Render/Material/LegacyMaterialPayload.h)、[Slang payload](../Shaders/Modules/Material/SceneMaterial.slang)、[上传](../Source/Runtime/Render/Streamer/ScenePathTraceResources.cpp)、[VBuffer resolve](../Shaders/Features/VisibilityBuffer/VisibilityBufferDeferred.slang)、[分类](../Shaders/Features/VisibilityBuffer/VisibilityMaterialBinning.slang)、[OpenPBR Slang closure](../Shaders/Modules/OpenPBRClosure.slang)、[RTXCR adapter](../Shaders/Interop/RTXCRMaterialAdapter.hlsli)。
+关键源码：[LegacyMaterialPayload](../Source/Runtime/Render/Material/LegacyMaterialPayload.h)、[Slang payload](../Shaders/Modules/Material/SceneMaterial.slang)、[上传](../Source/Runtime/Render/Streamer/ScenePathTraceResources.cpp)、[VBuffer resolve](../Shaders/Features/VisibilityBuffer/VisibilityBufferDeferred.slang)、[分类](../Shaders/Features/VisibilityBuffer/VisibilityMaterialBinning.slang)、[OpenPBR Slang closure](../Shaders/Modules/OpenPBRClosure.slang)、[RTXCR adapter](../Shaders/Interop/RTXCRMaterialAdapter.slang)。
 
 依赖边界：visibility/depth/rasterInfo/domain 必须来自同一 VBuffer；shading material generation 与 GPUScene source-index 映射必须一致；OpenPBR LUT、环境 SH/prefilter、light grid、阴影/RTAS 和纹理资源均影响结果。固定当前 TBN 规则：normal/geometryNormal 在法线贴图前不得按观察射线翻转，只能对最终 shading normal 单独 face-forward。
 

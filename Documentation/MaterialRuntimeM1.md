@@ -34,7 +34,7 @@
 
 [OpenPBR Slang closure](../Shaders/Modules/OpenPBRClosure.slang) 提供 Prepare、Projected Eval、Sample、Pdf。Vendor Eval 已含投影余弦，消费者不再乘一次 cosine；保留 diffuse/specular 分解、Sample 权重、eta 和积分器运算顺序。
 
-[RTXCR adapter](../Shaders/Interop/RTXCRMaterialAdapter.hlsli) 提供 Prepare / Eval / Sample。FiberInteraction 只包含现有 DOTS 路径能提供的 authored normal、tangent、outgoing direction，不虚构 strand ID、半径或横截面坐标。法线/TBN 构建顺序保持原样，Fiber 不套用 Surface 的 N·L。现有环境 NEE 近似 PDF 明确列入模型近似，不宣称精确独立 Chiang PDF 或外部 Layer 能力。
+[RTXCR adapter](../Shaders/Interop/RTXCRMaterialAdapter.slang) 提供 Prepare / Eval / Sample。FiberInteraction 只包含现有 DOTS 路径能提供的 authored normal、tangent、outgoing direction，不虚构 strand ID、半径或横截面坐标。法线/TBN 构建顺序保持原样，Fiber 不套用 Surface 的 N·L。现有环境 NEE 近似 PDF 明确列入模型近似，不宣称精确独立 Chiang PDF 或外部 Layer 能力。
 
 第三方源码保持原样。view-dependent prepared BSDF 是求值临时状态，不存入实例代际。旧 standard Surface 着色入口继续作为兼容路径保留；其 executable 内容身份与 OpenPBR 入口分开，不能把两种估计器的结果当作同一路径比较。
 

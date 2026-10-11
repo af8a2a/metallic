@@ -7,8 +7,8 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 #include "WaveWorkDistribution.slang"
-#include "../../Interop/AlphaCoverage.hlsli"
-#include "../../Interop/MeshletStreamBLAS.hlsli"
+import AlphaCoverage;
+#include "../../Interop/MeshletStreamBLAS.h"
 #define VISIBILITY_TESSELLATION_STREAM 1
 #include "../VisibilityBuffer/VisibilityTessellation.slang"
 

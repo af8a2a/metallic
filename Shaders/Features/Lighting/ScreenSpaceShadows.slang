@@ -20,7 +20,6 @@ using Metallic.Interop.NRDEncoding;
 struct ShadowGeometryPush
 {
     uint materialTextureCount;
-    uint reservedTextureData;
 };
 
 float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
@@ -28,7 +27,6 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
     ShadowGeometryPush geometry = getConstants<ShadowGeometryPush>();
     ScenePathTracePush push = (ScenePathTracePush)0;
     push.materialTextureCount = geometry.materialTextureCount;
-    push.reservedTextureData = geometry.reservedTextureData;
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;

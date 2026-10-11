@@ -285,6 +285,8 @@ struct OpenPBRPrimaryQuery
     bool found;
 };
 
+#include "OpenPBRPathVertex.slang"
+
 float3 pathTraceOpenPBRWithPrimaryQuery(
     Ray ray,
     RayCone rayCone,
@@ -340,13 +342,17 @@ float3 pathTraceOpenPBRWithPrimaryQuery(
         } else {
             found = traceClosest(ray, push, hit);
         }
-#define OPENPBR_PATH_STOP break
-#define OPENPBR_PATH_NEXT continue
-#define OPENPBR_PATH_RETURN(value) return value
-#include "OpenPBRPathVertex.hlsli"
-#undef OPENPBR_PATH_STOP
-#undef OPENPBR_PATH_NEXT
-#undef OPENPBR_PATH_RETURN
+        let control = shadeOpenPBRPathVertex(found, hit, push,
+            ray, rayCone, seed, depth, radiance, throughput,
+            previousBsdfPdf, previousScatterDelta, interiorStack,
+            specularHitDistance, captureSpecularHitDistance,
+            alphaLayers, primaryEndpoint, primaryOrigin, primarySurface
+#if METALLIC_PT_SHARC
+            , cache
+#endif
+        );
+        if (control == OpenPBRPathControl.Return) { return radiance; }
+        if (control == OpenPBRPathControl.Stop) { break; }
     }
 
 #if SHARC_UPDATE

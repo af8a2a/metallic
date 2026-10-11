@@ -1,6 +1,7 @@
 // Program-independent fiber path integration. Geometry, visibility, RNG and
 // continuation stay in the renderer; projected scattering belongs to Prepared.
 import FiberMaterial;
+import RTXCRFiber;
 import FiberLighting;
 using Metallic.Material;
 

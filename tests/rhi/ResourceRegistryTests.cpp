@@ -1,5 +1,5 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
-#include "../../Shaders/Interop/MeshletStreamBLAS.hlsli"
+#include "../../Shaders/Interop/MeshletStreamBLAS.h"
 #include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ResourceMember.h"
@@ -2235,7 +2235,8 @@ public:
                 std::copy_n(mapped, actual.size(), actual.begin());
                 output->unmap();
                 evidence.insert(evidence.end(), actual.begin(), actual.end());
-                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 200, 40, 44, 48, 52, 56, 60, 64, 300, 304, 308, 388};
+                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 200, 40, 44, 48, 52, 56, 60, 64, 300, 304, 308,
+                    sizeof(SceneResourceParameters) - sizeof(uint32_t)};
                 for (uint32_t i = 0; i < offsets.size(); ++i) {
                     REG_CHECK(actual[i] == (variant == 1 ? 0 : packet[offsets[i] / 4]));
                 }

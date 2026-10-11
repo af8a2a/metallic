@@ -197,7 +197,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         }
         result = initializeResourceKernel(device, {
             .spirv = shader.spirv,
-            .pushConstantSize = 8u,
+            .pushConstantSize = sizeof(uint32_t),
             .bindings = layout,
             .debugName = "Ray-traced shadows",
             .requiresRayQuery = true,
@@ -322,7 +322,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     for (uint32_t i = 0; i < 5; ++i) {
         bindings.push_back({.binding = shadowOutputs[i], .textureView = state->views[i].get()});
     }
-    uint32_t geometryPush[2]{};
+    uint32_t geometryPush = 0;
     {
         CPUProfileScope resources(profiler, "Prepare material textures");
         if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
@@ -335,8 +335,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), .buffer = streamGeometry->instanceBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), .buffer = streamGeometry->activeHeaderBuffer});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = streamGeometry->paramsBuffer});
-        geometryPush[0] = textureCount;
-        geometryPush[1] = 0u; // Reserved texture data.
+        geometryPush = textureCount;
     }
 
     profile.next("Record trace dispatch");
@@ -351,7 +350,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     result = dispatchResources(trace, traceEncoder_, {
         .commandBuffer = &commands,
         .bindings = bindings,
-        .pushData = geometryPush,
+        .pushData = &geometryPush,
         .pushDataSize = sizeof(geometryPush),
         .groupCountX = (width + 7) / 8,
         .groupCountY = (height + 7) / 8,

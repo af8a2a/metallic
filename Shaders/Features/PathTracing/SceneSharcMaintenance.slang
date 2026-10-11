@@ -1,5 +1,5 @@
 #include "../../../Source/Runtime/Render/Core/PathTraceStageParameters.h"
-#include "../../Interop/MeshletStreamBLAS.hlsli"
+#include "../../Interop/MeshletStreamBLAS.h"
 [[vk::push_constant]] ConstantBuffer<SharcMaintenanceParams> gStage;
 
 import ShaderCore;

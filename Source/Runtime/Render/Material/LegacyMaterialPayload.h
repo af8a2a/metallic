@@ -26,8 +26,8 @@ struct LegacyMaterialPayload
     {
         uint32_t textureIndex = UINT32_MAX;
         uint32_t texCoord = 0;
-        uint32_t reserved0 = 0;
-        uint32_t reserved1 = 0;
+        // StructuredBuffer std430 layout aligns each float4 transform to 16 bytes.
+        uint32_t alignmentPadding[2] = {};
         float transform0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
         float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
     };
@@ -46,7 +46,10 @@ struct LegacyMaterialPayload
 };
 
 static_assert(std::is_trivially_copyable_v<LegacyMaterialPayload>);
+// Match Slang StructuredBuffer std430 offsets, including required float4 alignment.
 static_assert(sizeof(LegacyMaterialPayload::TextureInfo) == 48);
+static_assert(offsetof(LegacyMaterialPayload::TextureInfo, transform0) == 16);
+static_assert(offsetof(LegacyMaterialPayload::TextureInfo, transform1) == 32);
 static_assert(sizeof(LegacyMaterialPayload) == 720);
 static_assert(offsetof(LegacyMaterialPayload, baseColorTexture) == 176);
 static_assert(offsetof(LegacyMaterialPayload, specular) == 608);

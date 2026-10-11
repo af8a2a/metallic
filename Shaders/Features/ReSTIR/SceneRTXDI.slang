@@ -1,5 +1,5 @@
-#include "../../Interop/MaterialTextureDecode.hlsli"
-#include "../../Interop/AlphaCoverage.hlsli"
+import MaterialTextureDecode;
+import AlphaCoverage;
 import Material;
 using Metallic.Material;
 
@@ -42,8 +42,8 @@ struct RTXDITextureInfo
 {
     uint textureIndex;
     uint texCoord;
-    uint reserved0;
-    uint reserved1;
+    // Required for float4 alignment in StructuredBuffer std430 layout.
+    uint2 alignmentPadding;
     float4 transform0;
     float4 transform1;
 };
@@ -165,7 +165,6 @@ struct SceneRTXDIPush
     float exposure;
     float normalThreshold;
     float depthThreshold;
-    uint reservedTextureData;
     uint outputLinear;
 };
 

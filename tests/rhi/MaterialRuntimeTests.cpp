@@ -23,6 +23,9 @@
 namespace metallic::tests {
 namespace {
 
+constexpr size_t kMaterialWords = sizeof(render::LegacyMaterialPayload) / sizeof(uint32_t);
+constexpr size_t kProbeWords = kMaterialWords + 1;
+
 class MaterialRuntimeTest final : public RHITest
 {
 public:
@@ -49,7 +52,7 @@ public:
             }
             end += field.size;
         }
-        if (end != 720 || program->schema->abi != kLegacyMaterialABI) {
+        if (end != sizeof(LegacyMaterialPayload) || program->schema->abi != kLegacyMaterialABI) {
             return RHITestResult::fail("Material schema size/version mismatch");
         }
         for (uint32_t index = 0; index < input.size(); ++index) {
@@ -155,7 +158,7 @@ std::array<render::LegacyMaterialPayload, 3> probeMaterials()
     for (uint32_t index = 0; index < values.size(); ++index) {
         // Every word is distinct; the shader reads each named field into a flat
         // uint stream so this tests Slang offsets and stride against CPU offsets.
-        std::array<uint32_t, 180> words;
+        std::array<uint32_t, kMaterialWords> words;
         for (uint32_t word = 0; word < words.size(); ++word) {
             words[word] = 0x3f000000u + index * 256u + word;
         }
@@ -172,7 +175,7 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        auto& result = reflection.addBufferOutput("result").buffer(3 * 181 * 4, 4).storageWrite();
+        auto& result = reflection.addBufferOutput("result").buffer(3 * kProbeWords * 4, 4).storageWrite();
         result.memoryLocation = render::MemoryLocation::HostReadback;
         return reflection;
     }
@@ -241,17 +244,17 @@ public:
         buffer->invalidate();
         const void* mapped = buffer->map();
         if (!mapped) { return RHITestResult::fail("ABI probe readback failed"); }
-        std::array<uint32_t, 3 * 181> output{};
+        std::array<uint32_t, 3 * kProbeWords> output{};
         std::memcpy(output.data(), mapped, sizeof(output));
         buffer->unmap();
         const auto expected = probeMaterials();
         for (uint32_t index = 0; index < expected.size(); ++index) {
-            if (std::memcmp(output.data() + index * 181, &expected[index], 720) != 0 ||
-                output[index * 181 + 180] != (index == 0 ? 1u : 2u)) {
+            if (std::memcmp(output.data() + index * kProbeWords, &expected[index], sizeof(LegacyMaterialPayload)) != 0 ||
+                output[index * kProbeWords + kMaterialWords] != (index == 0 ? 1u : 2u)) {
                 return RHITestResult::fail("CPU/Slang field offsets, stride or program identity mismatch");
             }
         }
-        return RHITestResult::pass("All 720 bytes, array stride, explicit IDs and legacy hair identity agree on GPU");
+        return RHITestResult::pass("All 720 bytes (including alignment padding), array stride, explicit IDs and legacy hair identity agree on GPU");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialRuntimeABITest);
@@ -387,7 +390,7 @@ public:
         } drain{queue, *gate};
         if (!device->createCommandPool(queue).transform([&](auto v) { pool = std::move(v); }) ||
             !pool->createCommandBuffer().transform([&](auto v) { commands = std::move(v); }) ||
-            !device->createBuffer({.size = 3 * 181 * 4, .structureStride = 4,
+            !device->createBuffer({.size = 3 * kProbeWords * 4, .structureStride = 4,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
                 .transform([&](auto v) { output = std::move(v); })) { return RHITestResult::fail("Resources failed"); }
         std::string log;
@@ -498,8 +501,8 @@ public:
         auto* mapped = static_cast<const uint32_t*>(output->map());
         bool correct = mapped != nullptr;
         for (size_t index = 0; correct && index < 3; ++index) {
-            correct = std::memcmp(mapped + index * 181, &originalParameters->parameters()[index], 720) == 0 &&
-                mapped[index * 181 + 180] == 1;
+            correct = std::memcmp(mapped + index * kProbeWords, &originalParameters->parameters()[index], sizeof(LegacyMaterialPayload)) == 0 &&
+                mapped[index * kProbeWords + kMaterialWords] == 1;
         }
         if (mapped) { output->unmap(); }
         if (!correct) { return RHITestResult::fail("Old submission observed mixed code/parameters/descriptors"); }
@@ -516,7 +519,7 @@ public:
             return RHITestResult::fail("Recovered dispatch failed");
         }
         output->invalidate(); mapped = static_cast<const uint32_t*>(output->map());
-        correct = mapped && std::memcmp(mapped, &published->generation()->parameters()[0], 720) == 0 && mapped[180] == 11;
+        correct = mapped && std::memcmp(mapped, &published->generation()->parameters()[0], sizeof(LegacyMaterialPayload)) == 0 && mapped[kMaterialWords] == 11;
         if (mapped) { output->unmap(); }
         (void)pool->reset(); (void)frame.reset();
         return correct ? RHITestResult::pass("Gated old submission retained code/data/descriptors; failed compile/manifest preserved state; recovery and retirement verified")

@@ -2,7 +2,7 @@
 import GPUDriven;
 using Metallic.GPUDriven;
 import Core;
-#include "../../Interop/MaterialTextureDecode.hlsli"
+import MaterialTextureDecode;
 using Metallic;
 import Material;
 using Metallic.Material;

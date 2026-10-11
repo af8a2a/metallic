@@ -1,5 +1,3 @@
-#ifndef METALLIC_SCENE_SURFACE_CLOSURE
-#define METALLIC_SCENE_SURFACE_CLOSURE
 
 // Closed scene family dispatch, compiled away in statically binned primary hits.
 // No resources or material evaluation live in these resolved/prepared values.
@@ -82,5 +80,4 @@ struct SceneSurfaceClosure : ISurfaceClosure
 };
 #else
 typealias SceneSurfaceClosure = SceneOpenPBRClosure;
-#endif
 #endif

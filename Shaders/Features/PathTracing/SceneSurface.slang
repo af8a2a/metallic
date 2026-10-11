@@ -1,8 +1,8 @@
 #ifndef METALLIC_SCENE_SURFACE
 #define METALLIC_SCENE_SURFACE
 
-#include "../../Interop/MaterialTextureDecode.hlsli"
-#include "../../Interop/AlphaCoverage.hlsli"
+import MaterialTextureDecode;
+import AlphaCoverage;
 import Core;
 using Metallic;
 import Material;
@@ -116,7 +116,6 @@ struct ScenePathTracePush
     uint environmentVisible;
     uint outputLinear;      // when set, write linear HDR for the downstream composite
     uint cacheMode;         // METALLIC_CACHE_MODE_*
-    uint reservedTextureData;
     uint debugView;
     uint debugFlags;
     float jitterOffsetX;
@@ -216,7 +215,7 @@ float rand(inout uint state)
     return float(state & 0x00ffffffu) / 16777216.0;
 }
 
-#include "../../Interop/RTXCRMaterialAdapter.hlsli"
+import RTXCRMaterialAdapter;
 
 float4 rand4(inout uint state)
 {

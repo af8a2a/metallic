@@ -108,7 +108,7 @@ public:
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues)},
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureFeedback)}};
         builtin_pass::appendStreamRayLayout(bindings);
-        return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = 8, .bindings = bindings,
+        return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = sizeof(uint32_t), .bindings = bindings,
             .requiresRayQuery = true, .resourceParameterSize = sizeof(render::SceneResourceParameters)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -133,9 +133,9 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues), .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()}};
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback});
         builtin_pass::appendStreamRayBindings(bindings, stream, prepared->geometry->shadingChangeBuffer());
-        const uint32_t push[] = {geometry.materialTextureCount(), 0};
+        const uint32_t push = geometry.materialTextureCount();
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
-            .pushData = push, .pushDataSize = sizeof(push), .groupCountX = 8, .groupCountY = 8});
+            .pushData = &push, .pushDataSize = sizeof(push), .groupCountX = 8, .groupCountY = 8});
     }
 private:
     ComputeProgram program_;
