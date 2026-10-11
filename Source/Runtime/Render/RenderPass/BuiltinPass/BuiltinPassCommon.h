@@ -158,8 +158,12 @@ inline constexpr uint32_t kSceneMaterialVisualizationModeTangent = 9;
 inline constexpr uint32_t kSceneMaterialVisualizationModeBitangent = 10;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNRDNormalRoughness = 11;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNormalDeviation = 12;
-inline constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
-inline constexpr uint32_t kDefaultPathTraceSamples = 2;
+// Camera hit is depth zero. SHaRC takes over after one indirect hit when
+// eligible; this larger hard limit retains cache-miss and specular transport.
+inline constexpr uint32_t kDefaultPathTraceMaxDepth = 12;
+inline constexpr uint32_t kDefaultPathTraceSamples = 1;
+inline constexpr uint32_t kDefaultSharcUpdateMaxDepth = 12;
+inline constexpr uint32_t kDefaultSharcQueryMinDepth = 1;
 inline constexpr uint32_t kMaxPathTraceMaxDepth = 32;
 inline constexpr uint32_t kMaxPathTraceSamples = 16;
 inline constexpr uint32_t kDefaultRTXDILightCount = 256;

@@ -65,6 +65,7 @@
                     "zfar": 10000.0,
                     "znear": 0.0010000000474974513
                 },
+                "cacheMode": "off",
                 "maxDepth": 3,
                 "path": "Asset/meet_mat.glb",
                 "samples": 2,

@@ -494,14 +494,14 @@ public:
         std::vector<RenderGraphRuntimeSetting> settings{
             runtimeIntSetting(
                 "maxDepth",
-                "Max Depth",
+                "Path Depth Limit (Including Fallback)",
                 static_cast<int32_t>(kDefaultPathTraceMaxDepth),
                 1,
                 static_cast<int32_t>(kMaxPathTraceMaxDepth),
                 true),
             runtimeIntSetting(
                 "samples",
-                "Samples",
+                "Camera Rays Per Pixel",
                 static_cast<int32_t>(kDefaultPathTraceSamples),
                 1,
                 static_cast<int32_t>(kMaxPathTraceSamples),
@@ -542,7 +542,7 @@ public:
             runtimeEnumSetting(
                 "cacheMode",
                 "Radiance Cache",
-                "off",
+                "sharc",
                 {
                     {"Off", "off"},
                     {"SHaRC (RTXGI)", "sharc"},
@@ -557,8 +557,8 @@ public:
                 static_cast<int32_t>(kSharcMaxEntriesLog2),
                 true),
             runtimeFloatSetting("sharc.sceneScale", "SHaRC Scene Scale", 0.0f, 0.0f, 1000.0f, true),
-            runtimeIntSetting("sharc.updateMaxDepth", "SHaRC Update Depth", 12, 1, 32, true),
-            runtimeIntSetting("sharc.queryMinDepth", "SHaRC First Query Depth", 1, 1, 32, false),
+            runtimeIntSetting("sharc.updateMaxDepth", "SHaRC Training Depth Limit", kDefaultSharcUpdateMaxDepth, 1, 32, true),
+            runtimeIntSetting("sharc.queryMinDepth", "SHaRC First Indirect Query", kDefaultSharcQueryMinDepth, 1, 32, true),
             runtimeFloatSetting("sharc.minRoughness", "SHaRC Specular Minimum Roughness", 0.25f, 0.2f, 1.0f, true),
             runtimeIntSetting("sharc.lobeMask", "SHaRC Components (1 Diffuse, 2 Specular, 3 Both)", 3, 1, 3, true),
             runtimeIntSetting(
@@ -1944,7 +1944,7 @@ private:
 
     static uint32_t cacheModeFromProperties(const RenderGraphProperties& properties)
     {
-        const std::string mode = stringProperty(properties, "cacheMode", "off");
+        const std::string mode = stringProperty(properties, "cacheMode", "sharc");
         if (mode == "sharc" || mode == "SHaRC") {
             return kScenePathTraceCacheModeSharc;
         }
@@ -2111,12 +2111,14 @@ private:
         params.sharcSceneScale = sceneScaleSetting > 0.0f ? sceneScaleSetting : autoSceneScale;
         params.sharcUpdateStride = uintProperty(
             context.properties(), "sharc.updateStride", kSharcDefaultUpdateStride, 1, 16);
-        params.sharcQueryMinDepth = uintProperty(context.properties(), "sharc.queryMinDepth", 1, 1, 32);
+        params.sharcQueryMinDepth = uintProperty(context.properties(), "sharc.queryMinDepth", kDefaultSharcQueryMinDepth, 1, 32);
         params.sharcMinRoughness = std::clamp(floatProperty(context.properties(), "sharc.minRoughness", 0.25f), 0.2f, 1.0f);
         params.sharcLobeMask = uintProperty(context.properties(), "sharc.lobeMask", 3, 1, 3);
         ScenePathTracePush updatePush = push;
+        // Training estimates complete multi-bounce suffixes independently of
+        // the full-resolution path's query point and fallback limit.
+        updatePush.maxDepth = uintProperty(context.properties(), "sharc.updateMaxDepth", kDefaultSharcUpdateMaxDepth, 1, 32);
         if (useOpenPBRBsdf(context.properties())) {
-            updatePush.maxDepth = uintProperty(context.properties(), "sharc.updateMaxDepth", 12, 1, 32);
             updatePush.debugView = kScenePathTraceDebugViewFinal;
             updatePush.enableAccumulation = 0;
         }

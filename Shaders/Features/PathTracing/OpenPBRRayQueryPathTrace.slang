@@ -421,16 +421,30 @@ float3 pathTraceOpenPBRWithPrimaryQuery(
         uint replacedMask = 0u;
 #if METALLIC_PT_SHARC
         OpenPBRCacheAddress cacheAddress = (OpenPBRCacheAddress)0;
-#if METALLIC_CUSTOM_MATERIALS
-        // Slab's OpenPBR inputs are guide summaries, not its scattering model.
-        if (materialEval.family == 0u)
+#if SHARC_UPDATE
+        // Training registers hits even when depth, delta or footprint rejects reuse.
+        bool queryAllowed = false;
+#else
+        bool queryAllowed = push.debugView == kOpenPBRDebugViewFinal &&
+            openPbrCacheCanQuery(cache, hit, rayCone, depth, previousScatterDelta);
+        if (queryAllowed)
 #endif
         {
-            cacheAddress = openPbrCacheAddress(cache, hit, materialEval.inputs, material, interiorStack, viewDirection);
+#if METALLIC_CUSTOM_MATERIALS
+            // Slab's OpenPBR inputs are guide summaries, not its scattering model.
+            if (materialEval.family == 0u)
+#endif
+            {
+                cacheAddress = openPbrCacheAddress(cache, hit, materialEval.inputs, material, interiorStack, viewDirection);
+            }
         }
+#if SHARC_UPDATE
+        queryAllowed = push.debugView == kOpenPBRDebugViewFinal && cacheAddress.eligibleMask != 0u &&
+            openPbrCacheCanQuery(cache, hit, rayCone, depth, previousScatterDelta);
+#endif
         float3 cachedRadiance;
-        if (push.debugView == kOpenPBRDebugViewFinal) {
-            uint queryMask = openPbrCacheQuery(cache, cacheAddress, hit, rayCone, depth, previousScatterDelta, cachedRadiance);
+        if (queryAllowed) {
+            uint queryMask = openPbrCacheQuery(cache, cacheAddress, cachedRadiance);
 #if SHARC_UPDATE
             // Bootstrap only a complete suffix, after at least one exact bounce.
             if (cache.count > 0u && depth >= 2u && (queryMask | cacheAddress.absentMask) == 3u) {

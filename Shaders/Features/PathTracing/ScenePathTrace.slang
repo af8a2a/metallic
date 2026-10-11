@@ -490,7 +490,7 @@ float3 pathTrace(
 #if SHARC_QUERY
         // Camera hits must retain exact material/normal and direct-light detail.
         // The cache is only filtered enough to query after a surface bounce.
-        if (depth > 0u) {
+        if (depth >= max(gCacheParams[0].sharcQueryMinDepth, 1u)) {
             uint gridLevel = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
             float voxelSize = HashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
             bool isValidHit = hit.t > voxelSize * sqrt(3.0);

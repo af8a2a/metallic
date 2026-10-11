@@ -35,6 +35,7 @@
                 },
                 "samples": 4,
                 "bsdf": "openpbr",
+                "cacheMode": "off",
                 "maxDepth": 12,
                 "accumulate": true,
                 "outputLinear": true

@@ -1727,6 +1727,18 @@ public:
         if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
             return RHITestResult::fail("ScenePathTracePass missing Bool runtime setting flipBitangent");
         }
+        const auto pathControls = pathTrace->runtimeSettings();
+        const render::RenderGraphProperties expectedPathDefaults{
+                 {"samples", 1}, {"maxDepth", 12}, {"cacheMode", "sharc"},
+                 {"sharc.queryMinDepth", 1}, {"sharc.updateMaxDepth", 12}};
+        for (const auto& [key, value] : expectedPathDefaults.items()) {
+            const auto setting = std::find_if(pathControls.begin(), pathControls.end(), [&](const auto& control) {
+                return control.key == key && control.defaultValue == value;
+            });
+            if (setting == pathControls.end()) {
+                return RHITestResult::fail("Path tracing default budget mismatch: " + key);
+            }
+        }
         if (!hasRuntimeSetting(
                 *pathTrace,
                 "debugView",

@@ -138,14 +138,21 @@ bool openPbrCacheFind(OpenPBRCacheContext cache, uint64_t key, uint component, o
     return true;
 }
 
-uint openPbrCacheQuery(OpenPBRCacheContext cache, OpenPBRCacheAddress address, HitInfo hit, RayCone cone,
-    uint depth, bool previousScatterDelta, out float3 radiance)
+bool openPbrCacheCanQuery(OpenPBRCacheContext cache, HitInfo hit, RayCone cone,
+    uint depth, bool previousScatterDelta)
 {
-    radiance = float3(0);
-    if (address.eligibleMask == 0u || depth < max(gCacheParams[0].sharcQueryMinDepth, 1u) || previousScatterDelta) { return 0u; }
+    if (depth < max(gCacheParams[0].sharcQueryMinDepth, 1u) || previousScatterDelta) { return false; }
     uint level = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
     float voxelSize = HashGridGetVoxelSize(level, cache.sharc.hashGridParameters);
-    if (hit.t <= voxelSize * sqrt(3.0) || cone.width <= voxelSize) { return 0u; }
+    if (hit.t <= voxelSize * sqrt(3.0) || cone.width <= voxelSize) { return false; }
+    return true;
+}
+
+// Call only after openPbrCacheCanQuery; rejected query paths need no address.
+uint openPbrCacheQuery(OpenPBRCacheContext cache, OpenPBRCacheAddress address, out float3 radiance)
+{
+    radiance = float3(0);
+    if (address.eligibleMask == 0u) { return 0u; }
     uint mask = 0u;
     float3 value;
     if ((address.eligibleMask & 1u) && openPbrCacheFind(cache, address.diffuse, 0u, value)) {

@@ -61,9 +61,11 @@ std::filesystem::path writeSharcRoom(const std::filesystem::path& root, float me
 class OpenPBRSharcTest : public RHITest
 {
 public:
-    explicit OpenPBRSharcTest(uint32_t material = 0) : material_(material)
+    explicit OpenPBRSharcTest(uint32_t material = 0, bool defaultBudget = false)
+        : material_(material), defaultBudget_(defaultBudget)
     {
-        name = std::array{"openpbr_sharc_guides_and_history", "openpbr_sharc_mixed_components", "openpbr_sharc_directional_metal"}[material];
+        name = defaultBudget ? "openpbr_sharc_default_budget"
+            : std::array{"openpbr_sharc_guides_and_history", "openpbr_sharc_mixed_components", "openpbr_sharc_directional_metal"}[material];
         type = RHITestType::Rendering;
     }
 
@@ -92,13 +94,17 @@ public:
             scene::SceneDocument document;
             requireSharc(document.load(scenePath), document.lastLoadResult().error);
             constexpr uint32_t kSize = 96, kFrames = 96;
-            std::array<std::vector<double>, 5> averages, movingAverages;
-            std::array<std::vector<std::vector<std::byte>>, 5> guides;
+            const uint32_t modeCount = defaultBudget_ ? 7u : 5u;
+            std::vector<std::vector<double>> averages(modeCount), movingAverages(modeCount);
+            std::vector<std::vector<std::vector<std::byte>>> guides(modeCount);
+            const std::array labels{"Off", "NoQuery", "Query", "DiffuseOnly", "SpecularOnly",
+                "OneBounceNoCache", "OneBounceCached"};
             const std::array guideNames{"albedo", "specularAlbedo", "normalRoughness", "linearDepth",
                 "motionVectors", "specularHitDistance", "depth"};
             Json report = Json::object();
             for (uint32_t mode = 0; mode < averages.size(); ++mode) {
-                const std::string label = std::array{"Off", "NoQuery", "Query", "DiffuseOnly", "SpecularOnly"}[mode];
+                const std::string label = labels[mode];
+                const bool cacheEnabled = mode != 0 && mode != 5;
                 RenderGraph graph;
                 auto* node = graph.addNode("ScenePathTracePass", "PathTrace");
                 requireSharc(node != nullptr, "Create path tracer");
@@ -110,6 +116,28 @@ public:
                     {"sharc.lobeMask", mode == 3 ? 1 : mode == 4 ? 2 : 3},
                     {"camera", {{"eye", {0,0,3.8}}, {"center", {0,0,-1}}, {"up", {0,1,0}},
                         {"fovDegrees", 40}, {"znear", 0.001}, {"zfar", 100}}}};
+                if (defaultBudget_) {
+                    // Off is the explicit 1-rpp, deep-path oracle. NoQuery must
+                    // match it exactly using implicit sample/fallback defaults.
+                    // Query additionally exercises the default depth-one lookup
+                    // and independent deep training without selecting them here.
+                    if (mode == 0) {
+                        node->properties["samples"] = 1;
+                        node->properties["maxDepth"] = 12;
+                    } else {
+                        for (const char* key : {"samples", "maxDepth", "cacheMode", "sharc.updateMaxDepth"}) {
+                            node->properties.erase(key);
+                        }
+                        if (mode != 1) { node->properties.erase("sharc.queryMinDepth"); }
+                    }
+                    if (mode >= 5) {
+                        // Both controls have only one indirect surface. Any
+                        // recovered tail in mode 6 must come from deep training,
+                        // because the full-resolution path cannot trace it.
+                        node->properties["maxDepth"] = 2;
+                        if (mode == 5) { node->properties["cacheMode"] = "off"; }
+                    }
+                }
                 const uint32_t nodeId = node->id;
                 graph.markOutput("PathTrace.color");
                 for (const char* name : guideNames) { graph.markOutput("PathTrace." + std::string(name)); }
@@ -159,7 +187,7 @@ public:
                 };
                 for (uint32_t frame = 0; frame < kFrames; ++frame) {
                     const auto values = renderColor();
-                    if (mode != 0) {
+                    if (cacheEnabled) {
                         requireSharc(hasStage("SHaRC update") && hasStage("SHaRC resolve") && hasStage("SHaRC query"), "Missing cache stages: " + preview.lastLog());
                         requireSharc(hasStage("SHaRC clear") == (frame == 0), "Cache unexpectedly cleared while RR accumulation is off");
                     }
@@ -193,15 +221,15 @@ public:
                     camera.eye[2] = 3.8f - 0.02f * float(frame + 1);
                     view.setCamera(camera);
                     const auto values = renderColor();
-                    if (mode != 0) { requireSharc(!hasStage("SHaRC clear"), "Camera motion discarded cache history"); }
+                    if (cacheEnabled) { requireSharc(!hasStage("SHaRC clear"), "Camera motion discarded cache history"); }
                     for (size_t i = 0; i < values.size(); ++i) { movingMean[i] += values[i] / 32.0; }
                 }
                 requireSharc(saveRgba8Png(root / (label + "Moving.png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()), kSize, kSize, log), log);
-                if (mode != 0) {
+                if (cacheEnabled) {
                     // Switching components invalidates both cache partitions.
                     requireSharc(graph.setNodeRuntimeProperty(nodeId, "sharc.lobeMask", 3), "Change cached components");
                     renderColor();
-                    if (mode >= 3) { requireSharc(hasStage("SHaRC clear"), "Component change retained stale cache"); }
+                    if (mode == 3 || mode == 4) { requireSharc(hasStage("SHaRC clear"), "Component change retained stale cache"); }
                     // Changing the voxel scale must invalidate even with accumulate=false.
                     requireSharc(graph.setNodeRuntimeProperty(nodeId, "sharc.sceneScale", 24.0f), "Change grid scale");
                     renderColor();
@@ -232,7 +260,7 @@ public:
                 }
             }
             bool accurate = true, queried = true;
-            for (uint32_t mode = 2; mode < averages.size(); ++mode) {
+            for (uint32_t mode = 2; mode < 5; ++mode) {
                 double error = 0, magnitude = 0, referenceEnergy = 0, cacheEnergy = 0;
                 for (size_t i = 0; i < averages[0].size(); ++i) {
                     if (i % 4 == 3) { continue; }
@@ -242,7 +270,7 @@ public:
                 }
                 const double relativeRMSE = std::sqrt(error / std::max(magnitude, 1e-12));
                 const double energyRatio = cacheEnergy / std::max(referenceEnergy, 1e-12);
-                const char* label = std::array{"Off", "NoQuery", "Query", "DiffuseOnly", "SpecularOnly"}[mode];
+                const char* label = labels[mode];
                 report[label]["relativeRMSE"] = relativeRMSE;
                 report[label]["energyRatio"] = energyRatio;
                 double movingError = 0, movingMagnitude = 0;
@@ -264,7 +292,22 @@ public:
             report["frames"] = kFrames; report["warmupFrames"] = 32;
             report["width"] = kSize; report["height"] = kSize;
             report["guidesByteIdentical"] = true; report["cacheMissByteIdentical"] = true;
+            report["defaultBudget"] = defaultBudget_;
+            bool recoveredTail = true;
+            if (defaultBudget_) {
+                double shortEnergy = 0, cachedEnergy = 0, referenceEnergy = 0;
+                for (size_t i = 0; i < averages[0].size(); ++i) {
+                    if (i % 4 == 3) { continue; }
+                    referenceEnergy += averages[0][i];
+                    shortEnergy += averages[5][i];
+                    cachedEnergy += averages[6][i];
+                }
+                report["oneBounceNoCacheEnergyRatio"] = shortEnergy / std::max(referenceEnergy, 1e-12);
+                report["oneBounceCachedEnergyRatio"] = cachedEnergy / std::max(referenceEnergy, 1e-12);
+                recoveredTail = cachedEnergy > shortEnergy * 1.01;
+            }
             std::ofstream(root / "Report.json") << report.dump(2);
+            requireSharc(recoveredTail, "One-bounce render did not recover a multi-bounce cache tail");
             requireSharc(queried, "No observable cache queries; test did not exercise early termination");
             requireSharc(accurate, "Cache radiance deviates from reference; see Report.json");
             return RHITestResult::pass("OpenPBR SHaRC GPU transport, cache-miss equivalence, seven exact RR guides, scale/environment invalidation; " + (root / "Report.json").string());
@@ -274,6 +317,7 @@ public:
     }
 private:
     uint32_t material_;
+    bool defaultBudget_;
 };
 
 class OpenPBRMixedSharcTest final : public OpenPBRSharcTest
@@ -286,9 +330,15 @@ class OpenPBRMetalSharcTest final : public OpenPBRSharcTest
 public:
     OpenPBRMetalSharcTest() : OpenPBRSharcTest(2) {}
 };
+class OpenPBRSharcDefaultBudgetTest final : public OpenPBRSharcTest
+{
+public:
+    OpenPBRSharcDefaultBudgetTest() : OpenPBRSharcTest(0, true) {}
+};
 METALLIC_REGISTER_RHI_TEST(OpenPBRSharcTest);
 METALLIC_REGISTER_RHI_TEST(OpenPBRMixedSharcTest);
 METALLIC_REGISTER_RHI_TEST(OpenPBRMetalSharcTest);
+METALLIC_REGISTER_RHI_TEST(OpenPBRSharcDefaultBudgetTest);
 
 } // namespace
 } // namespace metallic::tests

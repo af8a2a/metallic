@@ -136,6 +136,8 @@ def prepare(output):
     perf = [case("OpaquePerf",opaque,size=512,perf=True), case("MixedPerf",mixed,size=512,perf=True)]
     original = json.loads((ROOT / "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json").read_text())
     node = next(n for n in original["nodes"] if n["name"]=="PathTrace")
+    # Query-implementation A/B keeps its original workload as sample defaults evolve.
+    node["properties"].update(samples=2, maxDepth=12, cacheMode="off")
     graph = dict(version=1,name="ABeautifulGamePerf", nodes=[node], edges=[],outputs=["PathTrace.color"])
     save(output / "ABeautifulGamePerf.json",graph)
     game = ROOT / node["properties"]["path"]
