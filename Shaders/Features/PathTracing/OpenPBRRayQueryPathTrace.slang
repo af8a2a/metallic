@@ -319,14 +319,16 @@ float3 pathTraceOpenPBRWithPrimaryQuery(
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         bool found;
+        if (primaryQueryConsumed || !primaryQuery.queried) {
+            found = traceClosest(ray, push, hit);
+        } else {
+            hit = primaryQuery.hit;
+            found = primaryQuery.found;
+        }
         if (!primaryQueryConsumed) {
             // BLEND continuation can revisit depth zero from another origin.
             primaryQueryConsumed = true;
-            if (primaryQuery.queried) {
-                hit = primaryQuery.hit;
-                found = primaryQuery.found;
-            } else {
-                found = traceClosest(ray, push, hit);
+            if (!primaryQuery.queried) {
                 primaryQuery.hit = hit;
                 primaryQuery.found = found;
                 primaryQuery.queried = true;
@@ -339,8 +341,6 @@ float3 pathTraceOpenPBRWithPrimaryQuery(
                 }
 #endif
             }
-        } else {
-            found = traceClosest(ray, push, hit);
         }
         let control = shadeOpenPBRPathVertex(found, hit, push,
             ray, rayCone, seed, depth, radiance, throughput,
