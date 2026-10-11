@@ -21,22 +21,15 @@ void appendPNext(void**& tail, T& value)
 
 struct VulkanExtensionSet {
     std::vector<VkExtensionProperties> properties;
-    bool opacityMicromap = false;
-    bool opacityMicromapExt = false;
 #define MT_VK_EXTENSION(id, name, enabled) bool id = false;
 #include "VulkanDeviceFeatureCatalog.inl"
 
-    static VulkanExtensionSet from(std::vector<VkExtensionProperties> properties, bool nsightInjection)
+    static VulkanExtensionSet from(std::vector<VkExtensionProperties> properties)
     {
         VulkanExtensionSet result;
         result.properties = std::move(properties);
 #define MT_VK_EXTENSION(id, name, enabled) result.id = result.has(name);
 #include "VulkanDeviceFeatureCatalog.inl"
-        // TODO(Nsight KHR OMM): retain the EXT route until injected build, capture
-        // and replay pass; see NsightKhrOpacityMicromapInvestigation.md.
-        result.opacityMicromapExt = nsightInjection;
-        result.opacityMicromap = nsightInjection ? result.extOpacityMicromap
-            : result.khrOpacityMicromap && result.deviceAddressCommands;
         return result;
     }
 
@@ -59,6 +52,8 @@ struct VulkanDeviceFeatureRequest {
         VulkanDeviceFeatureRequest result;
 #define MT_VK_FEATURE(id, requested, preferred, support, score, enable, publish) result.id = (requested);
 #include "VulkanDeviceFeatureCatalog.inl"
+        // Ray-query workloads can only obtain geometry through CLAS.
+        result.clusterAccelerationStructure |= result.rayQuery;
         result.preferredTaskSubgroupSize = desc.preferredTaskSubgroupSize;
         return result;
     }

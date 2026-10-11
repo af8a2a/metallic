@@ -288,24 +288,6 @@ struct GPUSceneDrawSet {
     std::span<const GPUSceneInstanceId> instancesForBucket(GPUSceneDrawBucket bucket) const;
 };
 
-struct GPUSceneRasterDrawRange {
-    uint32_t offset = 0;
-    uint32_t count = 0;
-
-    auto operator<=>(const GPUSceneRasterDrawRange&) const = default;
-};
-
-struct GPUSceneRasterDrawLayout {
-    GPUSceneRasterDrawRange baseRange;
-    std::vector<GPUSceneRasterDrawRange> lodRanges;
-    GPUSceneRasterDrawRange adaptiveRange;
-    uint32_t maxRangeCount = 0;
-    uint32_t drawSetGeneration = 0;
-    uint64_t drawSetRevision = 0;
-
-    bool validFor(uint32_t generation, uint64_t revision) const;
-};
-
 struct GPUSceneBufferView {
     Buffer* buffer = nullptr;
     ResourceLease resource;
@@ -325,14 +307,7 @@ struct GPUSceneGlobalBufferViews {
     GPUSceneBufferView instances;
     GPUSceneBufferView drawKeys;
     GPUSceneBufferView drawInstanceIds;
-    GPUSceneBufferView vertices;
-    GPUSceneBufferView indices;
-    GPUSceneBufferView meshlets;
-    GPUSceneBufferView meshletDraws;
-    GPUSceneBufferView meshletVertices;
-    GPUSceneBufferView meshletTriangleWords;
     GPUSceneBufferView descriptorRemap;
-    GPUSceneBufferView lodGroups;
     uint32_t drawSetGeneration = 0;
     uint64_t drawSetRevision = 0;
 
@@ -345,14 +320,7 @@ enum class GPUSceneGlobalBufferKind : uint8_t {
     Instances,
     DrawKeys,
     DrawInstanceIds,
-    Vertices,
-    Indices,
-    Meshlets,
-    MeshletDraws,
-    MeshletVertices,
-    MeshletTriangleWords,
     DescriptorRemap,
-    LODGroups,
     Count,
 };
 
@@ -558,7 +526,6 @@ public:
     const GPUSceneStats& stats() const { return stats_; }
 
     const GPUSceneGeometryRecord* geometry(GPUSceneGeometryId id) const;
-    const scene::RenderPrimitive* geometrySourcePrimitive(GPUSceneGeometryId id) const;
     const GPUSceneMaterialRecord* material(GPUSceneMaterialId id) const;
     const GPUSceneInstanceRecord* instance(GPUSceneInstanceId id) const;
     const GPUSceneLightRecord* light(GPUSceneLightId id) const;
@@ -631,9 +598,6 @@ private:
     uint64_t nextLightRevision_ = 1;
     uint64_t temporalHistoryEpoch_ = 1;
     std::vector<GPUSceneGeometryRecord> geometries_;
-    // Canonical, deduplicated CPU backing for persistent raster uploads.
-    // Entries are aligned one-to-one with geometries_.
-    std::vector<scene::RenderPrimitive> geometrySourcePrimitives_;
     std::vector<GPUSceneMaterialRecord> materials_;
     std::vector<GPUSceneInstanceRecord> instances_;
     std::vector<GPUSceneLightRecord> lights_;

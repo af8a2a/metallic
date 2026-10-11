@@ -32,14 +32,18 @@ array 的字面量 stride；旧 sizeof、ID-based
 stride 或与设备不匹配的字面量会明确拒绝，并输出需要用于重新编译的
 resource/sampler stride，不修改传入 SPIR-V。上游正确解析 native opaque-size/unified-stride
 表达式后，应移除该策略、查询入口和设备相关 cache 输入。typed/untyped 指针
-normalizer、AS resolver、OMM 与其他 SDK workaround 沿用当前行为。
+normalizer、AS resolver 与其他 SDK workaround 沿用当前行为；OMM 路径已移除，历史调查见下节。
 
 详见 [ResourceAccessABI](ResourceAccessABI.md) 和
 [临时 stride 策略的移除条件](NativeDescriptorHeapStrideWorkaround.md)。独立证据保留在
 `.tmp/spirv-removal-research/vvl/`；生产 GPU 回归结果另行记录，不能以
 create-only A/B 或 `spirv-val` 代替真实读回和图像验证。
 
-### OMM SPIR-V 临时方案（2026-10-07）
+### OMM SPIR-V 临时方案（2026-10-07，历史归档）
+
+> 2026-10-11：光追已统一为流送 CLAS，传统 triangle BLAS、OMM 后端及
+> `OpacityMicromapSPIRV.h` 已移除。以下保留当时的调查和移除条件，
+> 不再描述当前 API，也不要求恢复已删除的 OMM 路径。
 
 **TO-REMOVE(Slang#13438)：** 跟踪 Slang 官方
 [issue #13438](https://github.com/shader-slang/slang/issues/13438)。本次核对时 issue

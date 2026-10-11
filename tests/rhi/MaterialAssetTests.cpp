@@ -98,11 +98,11 @@ public:
             return RHITestResult::fail("Material asset device failed");
         }
         auto& queue = *device->getQueue(QueueType::Graphics);
-        for (bool materialsOnly : {false, true}) {
+        {
             scene::SceneDocument document;
             if (!document.load(path)) { return RHITestResult::fail("Material fixture failed"); }
             ScenePathTraceResources resources;
-            if (!resources.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log, materialsOnly)) {
+            if (!resources.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log)) {
                 return RHITestResult::fail(log);
             }
             bool complete = false;
@@ -159,7 +159,7 @@ public:
             if (!library.save("asset://Textured.material", texturedAsset, log) ||
                 !document.setMaterialAsset(0, "asset://Textured.material", root, log)) { return RHITestResult::fail(log); }
             ScenePathTraceResources textured;
-            if (!textured.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log, materialsOnly)) { return RHITestResult::fail(log); }
+            if (!textured.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log)) { return RHITestResult::fail(log); }
             complete = false;
             const auto textureDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (!complete && std::chrono::steady_clock::now() < textureDeadline) {

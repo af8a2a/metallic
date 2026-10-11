@@ -5,6 +5,8 @@
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/MeshletStreamInitialLoader.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Scene/SceneLoader.h"
@@ -281,23 +283,23 @@ public:
                 {"payloadBytes", textures.residentPayloadBytes}, {"allocationBytes", textures.residentAllocationBytes},
                 {"peakLiveBytes", textures.peakLiveAllocationBytes}, {"budgetBytes", textures.budgetBytes},
                 {"peakStagingBytes", textures.peakStagingBytes}, {"submittedUploadBytes", stats.submittedBytes}}.dump(2) << '\n';
-        spdlog::info("[SceneUploadSmoke] GPU preparation including AS: {:.2f} ms, batches={}, peakInFlight={}, bytes={}",
+        spdlog::info("[SceneUploadSmoke] Material GPU preparation: {:.2f} ms, batches={}, peakInFlight={}, bytes={}",
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(),
             stats.completedBatches, stats.peakInFlightBatches, stats.submittedBytes);
-        return RHITestResult::pass("Super Sponza CPU decode, material uploads, and acceleration structures completed");
+        return RHITestResult::pass("Super Sponza CPU decode and material uploads completed");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(SuperSponzaUploadSmokeTest);
 
-class SponzaAsyncRtasTest final : public RHITest {
+class SponzaStreamingCLASUploadTest final : public RHITest {
 public:
-    SponzaAsyncRtasTest() { type = RHITestType::Resource; name = "sponza_async_scene_rtas"; }
+    SponzaStreamingCLASUploadTest() { type = RHITestType::Resource; name = "sponza_streaming_clas_upload"; }
     RHITestResult run(RHITestContext& context) override
     {
         if (!context.device.capabilities().rayTracingAccelerationStructure ||
-            !render::vulkan::deviceCapabilities(context.device).opacityMicromap) {
-            return RHITestResult::skip("Requires --rhi-realtime with OMM enabled");
+            !context.device.capabilities().clusterAccelerationStructure) {
+            return RHITestResult::skip("Requires CLAS support");
         }
         const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf";
         std::string log;
@@ -322,16 +324,31 @@ public:
         if (!complete || !resources.valid() || !resources.gpuWorkComplete()) {
             return RHITestResult::fail("Sponza GPU preparation timed out: " + log);
         }
-        const auto& stats = resources.accelerationStructure().stats();
-        if (stats.blasCount != 103 || stats.coverageAccelerationCount != 10 ||
-            stats.coverageAcceleratedTriangleCount != 34908 || stats.compactionSavedBytes == 0) {
-            return RHITestResult::fail("Sponza did not exercise OMM and BLAS compaction");
+        const auto assetPath = context.outputDirectory / "SponzaUpload.streamasset";
+        if (!scene::buildMeshletStreamAsset({.scene = loaded.get(), .sourcePath = path,
+                .outputPath = assetPath}, log)) {
+            return RHITestResult::fail("Streaming cook failed: " + log);
         }
-        return RHITestResult::pass("Sponza async upload, 10 OMMs, 103 BLASes, compaction and TLAS completed");
+        render::MeshletStreamRuntime stream;
+        UPLOAD_REQUIRE(stream.initialize(context.device, {.sourcePath = path,
+            .streamAssetPath = assetPath, .enableClusterRtx = true, .enableClas = true,
+            .initialLoad = true}, log));
+        render::MeshletStreamInitialLoader initialLoader;
+        UPLOAD_REQUIRE(initialLoader.initialize(context.device, log));
+        complete = false;
+        const auto streamDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (!complete && std::chrono::steady_clock::now() < streamDeadline) {
+            UPLOAD_REQUIRE(initialLoader.pump(stream, 8.0, complete, log));
+        }
+        UPLOAD_REQUIRE(initialLoader.reset());
+        if (!complete || !stream.sceneReadiness().ready || stream.asset().instanceCount() != loaded->renderNodes().size()) {
+            return RHITestResult::fail("Sponza streaming CLAS roots did not become ready: " + log);
+        }
+        return RHITestResult::pass("Sponza asynchronous material uploads and mandatory streaming CLAS roots completed");
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(SponzaAsyncRtasTest);
+METALLIC_REGISTER_RHI_TEST(SponzaStreamingCLASUploadTest);
 
 #undef UPLOAD_REQUIRE
 } // namespace

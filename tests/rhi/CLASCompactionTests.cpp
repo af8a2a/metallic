@@ -8,7 +8,6 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/HistoryResources.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -696,10 +695,6 @@ class MiniZorahCLASInFlightTest final : public RHITest {
             if (!runtimeScene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / previous.desc.scenePath)) {
                 return RHITestResult::fail("Sponza load failed");
             }
-            SceneAccelerationStructureBuilder staticRtas;
-            if (!(result = staticRtas.build(*device, *device->getQueue(QueueType::Compute), runtimeScene, log))) {
-                return RHITestResult::fail(log);
-            }
             (void)view.setCameraProperties(previous.graph.viewProperties().at("camera"));
             if (!(result = executor.compile(*device, previous.graph, 1564, 708, log))) { return RHITestResult::fail(log); }
             for (uint32_t f = 0; f < 60; ++f) {
@@ -707,7 +702,6 @@ class MiniZorahCLASInFlightTest final : public RHITest {
                     .computeQueue = device->getQueue(QueueType::Compute), .historyResources = &history});
                 if (!result) { return RHITestResult::fail(toString(result)); }
             }
-            staticRtas.clear();
             runtimeScene.clear();
             history.invalidateAll();
             (void)view.setCameraProperties(original);

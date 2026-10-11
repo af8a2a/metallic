@@ -88,7 +88,7 @@ scene::Bounds computeDrawBounds(const scene::MeshletStreamAsset& asset)
     scene::Bounds bounds;
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset.primitives();
     for (const scene::MeshletStreamInstanceInfo& instance : asset.instances()) {
-        if (instance.visible == 0 || instance.primitiveIndex >= primitives.size()) {
+        if (instance.primitiveIndex >= primitives.size()) {
             continue;
         }
         includeTransformedBounds(bounds, primitives[instance.primitiveIndex].bounds, instance.worldMatrix);
@@ -838,6 +838,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (deviceImmutableMetadata_) {
         immutableMetadataUpload_ = std::make_shared<ImmutableMetadataUpload>();
     }
+    if (desc.enableClusterRtx && (!desc.enableClas || !device.capabilities().clusterAccelerationStructure)) {
+        log = "MeshletStreamRuntime ray tracing requires CLAS support and enableClas";
+        return makeError(Error::Unsupported);
+    }
     const bool enableClas = desc.enableClas && device.capabilities().clusterAccelerationStructure;
     clusterRtxEnabled_ = desc.enableClusterRtx;
     maxResidentPages_ = desc.maxResidentPages;
@@ -1244,17 +1248,15 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             maximumPrimitiveClusters = std::max(maximumPrimitiveClusters,
                 static_cast<uint32_t>(std::min<uint64_t>(count, blasClusterReferenceCapacity_)));
         }
-        const uint32_t visibleInstances = static_cast<uint32_t>(std::count_if(
-            asset_.instances().begin(), asset_.instances().end(), [this](const auto& instance) {
-                return instance.visible != 0 && instance.primitiveIndex < asset_.primitiveCount();
-            }));
+        // Hidden instances may become visible without recreating this session.
+        const uint32_t instanceCapacity = asset_.instanceCount();
         if (desc.maxBlasBytes == 0 || desc.maxBlasBuilds == 0 ||
-            visibleInstances == 0 || maximumPrimitiveClusters == 0) {
+            instanceCapacity == 0 || maximumPrimitiveClusters == 0) {
             log = "MeshletStreamRuntime cluster RTX requires non-zero BLAS budgets and geometry";
             return makeError(Error::InvalidArgument);
         }
         uint32_t referenceLimit = blasClusterReferenceCapacity_;
-        const uint32_t buildLimit = std::min(desc.maxBlasBuilds, visibleInstances);
+        const uint32_t buildLimit = std::min(desc.maxBlasBuilds, instanceCapacity);
         ClusterAccelerationStructureBuildSizes blasSizes;
         for (;;) {
             // Every admitted build has at least one reference. Preserve instance
@@ -2111,6 +2113,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
 void MeshletStreamRuntime::reset()
 {
+    ++shadingStateRevision_;
+    shadingFeedbackFrame_ = UINT32_MAX;
     sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     rasterSnapshotFrozen_ = false;
     ++debugGeneration_;
@@ -3051,6 +3055,11 @@ uint32_t MeshletStreamRuntime::drawTaskCount() const
     return count > std::numeric_limits<uint32_t>::max() ? 0u : static_cast<uint32_t>(count);
 }
 
+uint64_t MeshletStreamRuntime::shadingRevision() const
+{
+    return shadingStateRevision_ + (clasPool_ ? clasPool_->stats().publicationRevision : 0);
+}
+
 Result<> MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::string& log)
 {
     const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
@@ -3148,6 +3157,7 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
     if (updatedBounds.valid) {
         drawBounds_ = updatedBounds;
     }
+    ++shadingStateRevision_;
     sceneTransformRevision_ = scene.transformRevision();
     sceneVisibilityRevision_ = scene.visibilityRevision();
     sceneResourceIdentity_ = scene.resourceIdentity();
@@ -4281,6 +4291,13 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profile
     if (clusterRtxEnabled_) {
         std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
             readback->desc().size - sizeof(MeshletStreamGPUBLASHeader), sizeof(recentBlasHeader_));
+        if (shadingFeedbackFrame_ != recentBlasHeader_.frameIndex) {
+            shadingFeedbackFrame_ = recentBlasHeader_.frameIndex;
+            if (recentBlasHeader_.blasBuildCount != 0 || recentBlasHeader_.dirtyInstances != 0 ||
+                recentBlasHeader_.publicationInvalidated != 0) {
+                ++shadingStateRevision_;
+            }
+        }
     }
     recentGpuRequestCount_ = header->loadCounter;
     recentPrefetchGpuRequests_ = header->prefetchRequestCounter;

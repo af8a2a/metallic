@@ -1,7 +1,7 @@
 import ShaderCore;
 using Metallic;
 
-// Shared domain evaluation for resident and streamed patches. The table and
+// Domain evaluation for streamed patches. The table and
 // material descriptors are immutable for the lifetime of the graph bindings.
 struct TessMaterial
 {

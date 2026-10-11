@@ -12,7 +12,6 @@ using Metallic.Material;
 struct MaterialBinningParams
 {
     ResourceHandle<Texture2D<uint>> visibility;
-    RWBufferSpan<VisibleClusterRecord> records;
     RWBufferSpan<GPUDrivenPreviewInstance> instances;
     RWBufferSpan<GPUDrivenPreviewMaterial> materials;
     RWBufferSpan<PathTraceMaterial> shadingMaterials;
@@ -24,13 +23,11 @@ struct MaterialBinningParams
     uint width;
     uint height;
     uint tileCount;
-    uint residentRecordCount;
     BufferSpan<uint> materialProgramBins;
     uint programBinCount;
 };
 
 #define gVisibility resolveUniform(getParameters<MaterialBinningParams>().visibility)
-#define gRecords getParameters<MaterialBinningParams>().records
 #define gInstances getParameters<MaterialBinningParams>().instances
 #define gMaterials getParameters<MaterialBinningParams>().materials
 #define gShadingMaterials getParameters<MaterialBinningParams>().shadingMaterials
@@ -46,20 +43,12 @@ uint materialClassForPixel(uint2 pixel)
     uint count;
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
     VisibleClusterRecord record;
-    if (recordIndex < push.residentRecordCount) {
-        count = push.records.length();
-        if (recordIndex >= count) { return kMaterialClassBackground; }
-        record = gRecords[recordIndex];
-        if (visibleClusterSource(record) != kVisibleClusterSourceResident) { return kMaterialClassBackground; }
-    } else {
-        recordIndex -= push.residentRecordCount;
-        count = push.streamRecords.length();
-        if (recordIndex >= count) { return kMaterialClassBackground; }
-        record = unpackStreamVisibleRecord(gStreamRecords[recordIndex]);
-        if (record.dataIndex >= push.streamGroups.length()) { return kMaterialClassBackground; }
-        record.instanceIndex = push.streamGroups[record.dataIndex].gpuSceneInstanceIndex;
-        if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return kMaterialClassBackground; }
-    }
+    count = push.streamRecords.length();
+    if (recordIndex >= count) { return kMaterialClassBackground; }
+    record = unpackStreamVisibleRecord(gStreamRecords[recordIndex]);
+    if (record.dataIndex >= push.streamGroups.length()) { return kMaterialClassBackground; }
+    record.instanceIndex = push.streamGroups[record.dataIndex].gpuSceneInstanceIndex;
+    if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return kMaterialClassBackground; }
     count = push.instances.length();
     if (record.instanceIndex >= count) { return kMaterialClassBackground; }
     uint material = gInstances[record.instanceIndex].identity.y;

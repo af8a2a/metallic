@@ -56,8 +56,8 @@ Result<MaterialBinningResult> MaterialBinning::record(
         return makeError(Error::InvalidArgument);
     }
     if (frame == nullptr || !frame->recording() || !commands.recording() || desc.visibility == nullptr ||
-        (desc.streamRecords != nullptr && desc.streamGroups == nullptr) ||
-        desc.records == nullptr || desc.instances == nullptr || desc.materials == nullptr ||
+        (desc.streamRecords == nullptr || desc.streamGroups == nullptr) ||
+        desc.instances == nullptr || desc.materials == nullptr ||
         desc.shadingMaterials == nullptr || desc.shadingMaterials->desc().size == 0 ||
         tileCount == 0 || tileCount > UINT32_MAX / (sparse ? 32u : kMaterialClassCount) ||
         uint64_t(desc.width) * desc.height > UINT32_MAX || columns > 65535 || rows > 65535) {
@@ -168,14 +168,13 @@ Result<MaterialBinningResult> MaterialBinning::record(
     ParameterWriter writer(device, *frame, *registry);
     const MaterialBinningParams params{
         .visibility = writer.sampledImage(desc.visibility),
-        .records = writer.bufferSpan(desc.records, 16, 16), .instances = writer.bufferSpan(desc.instances, 160, 16),
+        .instances = writer.bufferSpan(desc.instances, 160, 16),
         .materials = writer.bufferSpan(desc.materials, 560, 16), .shadingMaterials = writer.bufferSpan(desc.shadingMaterials, 720, 16),
         .bins = writer.bufferSpan(buffers[0].get(), 8, 8), .tiles = writer.bufferSpan(buffers[1].get(), 8, 8),
         .arguments = writer.bufferSpan(buffers[2].get(), 4, 4),
         .streamRecords = desc.streamRecords ? writer.bufferSpan(desc.streamRecords, 4, 4) : GPUBufferSpan{},
         .streamGroups = desc.streamGroups ? writer.bufferSpan(desc.streamGroups, 112, 16) : GPUBufferSpan{},
         .width = desc.width, .height = desc.height, .tileCount = static_cast<uint32_t>(tileCount),
-        .residentRecordCount = desc.residentRecordCount,
         .materialProgramBins = sparse ? writer.bufferSpan(allocation->programBins.get(), 4, 4) : GPUBufferSpan{},
         .programBinCount = desc.programBinCount,
     };

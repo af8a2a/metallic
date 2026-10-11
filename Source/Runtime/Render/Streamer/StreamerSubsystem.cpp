@@ -8,7 +8,8 @@
 #include <numeric>
 #include <thread>
 #include <spdlog/spdlog.h>
-#include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
+#include "Runtime/Scene/SceneDocument.h"
+#include <fstream>
 #include "Runtime/Render/Streamer/MeshletStreamInitialLoader.h"
 #include "Runtime/Render/Streamer/StreamedImage.h"
 #include "Runtime/Render/Streamer/SceneStreamingConfig.h"
@@ -18,7 +19,6 @@
 namespace metallic::render {
 struct SceneStreamingState {
     MeshletStreamRuntimeDesc desc;
-    SceneStreamKind kind = SceneStreamKind::None;
     uint64_t sceneIdentity = 0;
     uint64_t structuralRevision = 0;
     bool debugReadback = false;
@@ -116,7 +116,7 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     std::shared_ptr<PreparedSceneResources>& prepared, std::string& log, bool debugReadback)
 {
     if (!device_) { return makeError(Error::InvalidArgument); }
-    if (requirements.features == SceneResourceFeatureBits::None && requirements.geometry == SceneStreamKind::None && !requirements.sampledImage) {
+    if (requirements.features == SceneResourceFeatureBits::None && !requirements.geometry && !requirements.sampledImage) {
         prepared.reset();
         return {};
     }
@@ -134,53 +134,113 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
     }
     if (requirements.features != SceneResourceFeatureBits::None) {
         auto resourceProperties = properties;
-        if (requirements.graphManagedAccelerationStructure) { resourceProperties["graphManagedAccelerationStructure"] = true; }
         const auto result = resources_.acquire(*device_, *device_->getQueue(QueueType::Graphics), resourceProperties, scene, requirements.features, log).transform([&](auto value) { prepared->snapshot = std::move(value); });
         if (!result) { return result; }
     }
-    if ((uint32_t(requirements.features) & uint32_t(SceneResourceFeatureBits::ClusterAccelerationStructure)) != 0) {
-        if (!scene) { return makeError(Error::InvalidArgument); }
-        const std::array stamp{scene->resourceIdentity(), scene->sceneGraph().structuralRevision(),
-            scene->transformRevision(), scene->visibilityRevision()};
-        if (!prepared->clusterAccelerationStructure || prepared->clusterRevision != stamp) {
-            auto cluster = std::make_shared<SceneClusterAccelerationStructureBuilder>();
-            auto* queue = device_->getQueue(QueueType::Compute);
-            if (!queue) { queue = device_->getQueue(QueueType::Graphics); }
-            std::string clusterLog;
-            const auto result = cluster->build(*device_, *queue, *scene, clusterLog);
-            if (!result && !requirements.optionalClusterAccelerationStructure) { log = clusterLog; return result; }
-            if (!result) { cluster->clear(); }
-            prepared->clusterAccelerationStructure = std::move(cluster);
-            prepared->clusterRevision = stamp;
-        }
-    }
     using namespace streaming_detail;
-    const bool wantsGeometry = requirements.geometry == SceneStreamKind::Asset ||
-        (requirements.geometry == SceneStreamKind::Visibility && previewStreamEnabled(properties));
+    constexpr auto geometryFeatures = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Meshlets |
+        SceneResourceFeatureBits::AccelerationStructure;
+    const bool wantsGeometry = requirements.geometry ||
+        (uint32_t(requirements.features) & uint32_t(geometryFeatures)) != 0;
     if (!wantsGeometry) { prepared->geometry.reset(); prepared->state.reset(); return {}; }
-    PreviewStreamSourceSelection source;
-    MeshletStreamRuntimeDesc desc;
-    if (requirements.geometry == SceneStreamKind::Visibility) {
-        if (!resolvePreviewStreamSource(properties, scene,
-                normalizedScenePath(properties.value("path", std::string{})), source, log)) {
-            return makeError(Error::InvalidArgument);
-        }
-        desc = previewStreamRuntimeDesc(properties, source.sourcePath, uint32_t(scene->textures().size()) + 1);
-    } else {
-        desc = assetStreamRuntimeDesc(properties);
-        source.sourcePath = desc.sourcePath;
+    if (!scene) {
+        const auto resolved = resources_.resolveScene(properties, scene, log);
+        if (!resolved) { return makeError(resolved.error()); }
+        scene = *resolved;
     }
-    const uint64_t identity = scene ? scene->resourceIdentity() : 0;
-    const uint64_t structural = scene ? scene->sceneGraph().structuralRevision() : 0;
+    prepared->sourceScene = scene;
+    auto sourcePath = scene->filename().empty() ? std::filesystem::path{} : normalizedScenePath(scene->filename());
+    auto desc = sceneStreamRuntimeDesc(properties, sourcePath, uint32_t(scene->textures().size()) + 1);
+    const bool rayTracing = (uint32_t(requirements.features) &
+        uint32_t(SceneResourceFeatureBits::AccelerationStructure)) != 0 ||
+        properties.value("enableClusterRtx", false);
+    desc.enableClusterRtx = rayTracing;
+    desc.enableClas = rayTracing;
+    if (rayTracing && (!device_->capabilities().clusterAccelerationStructure ||
+        !device_->capabilities().rayTracingAccelerationStructure)) {
+        log = "Scene ray tracing requires CLAS support";
+        return makeError(Error::Unsupported);
+    }
+    const uint64_t identity = scene->resourceIdentity();
+    const uint64_t structural = scene->sceneGraph().structuralRevision();
+    // A session rebuild uses a unique cache for runtime instance edits and
+    // composed scenes. Never overwrite an asset still mapped by in-flight work.
+    const bool runtimeCook = !scene->sources().empty() ||
+        (prepared->state && (prepared->state->sceneIdentity != identity ||
+         prepared->state->structuralRevision != structural));
+    const auto selectRuntimeCache = [&]() -> Result<> {
+        const auto directory = std::filesystem::path(PROJECT_SOURCE_DIR) / ".cache" / "scene-streams";
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        if (error) { log = "Cannot create scene streaming cache: " + error.message(); return makeError(Error::Failure); }
+        static const auto sessionId = std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto key = std::to_string(sessionId) + "-" + std::to_string(identity) + "-" + std::to_string(structural);
+        sourcePath = directory / (key + ".source");
+        if (!std::filesystem::exists(sourcePath)) {
+            std::ofstream marker(sourcePath);
+            marker << scene->filename().generic_string() << '\n' << key;
+            if (!marker) { log = "Cannot write scene streaming source identity"; return makeError(Error::Failure); }
+        }
+        desc.sourcePath = sourcePath;
+        desc.streamAssetPath = directory / (key + ".streamasset");
+        return {};
+    };
+    if (runtimeCook || sourcePath.empty()) {
+        const auto result = selectRuntimeCache();
+        if (!result) { return result; }
+    }
+    if (prepared->state && prepared->state->sceneIdentity == identity &&
+        prepared->state->structuralRevision == structural) {
+        // Preserve the temporary cache chosen for the current runtime topology.
+        desc.sourcePath = prepared->state->desc.sourcePath;
+        desc.streamAssetPath = prepared->state->desc.streamAssetPath;
+    }
     if (!prepared->state || prepared->state->desc != desc || prepared->state->sceneIdentity != identity ||
-        prepared->state->structuralRevision != structural || prepared->state->debugReadback != debugReadback || prepared->streamSourceId != source.sourceId) {
+        prepared->state->structuralRevision != structural || prepared->state->debugReadback != debugReadback) {
+        scene::MeshletStreamAsset asset;
+        std::string reason;
+        bool compatible = asset.open(desc.streamAssetPath, reason) &&
+            asset.isRuntimeCompatibleForSource(desc.sourcePath, reason);
+        if (compatible) {
+            // Node edits can change instances without changing the source file.
+            compatible = asset.instanceCount() == scene->renderNodes().size();
+            for (const auto& instance : asset.instances()) {
+                if (!compatible) { break; }
+                compatible = instance.renderNodeIndex < scene->renderNodes().size() &&
+                    instance.primitiveIndex < asset.primitives().size() &&
+                    asset.primitives()[instance.primitiveIndex].renderPrimitiveIndex ==
+                        uint32_t(scene->renderNodes()[instance.renderNodeIndex].renderPrimitiveIndex);
+            }
+        }
+        asset.close();
+        if (!compatible) {
+            // A previous session can still map this file. Cook replacements to
+            // a separate identity rather than truncating its live backing file.
+            if (std::filesystem::exists(desc.streamAssetPath)) {
+                const auto result = selectRuntimeCache();
+                if (!result) { return result; }
+            }
+            const scene::Scene* geometryScene = scene;
+            scene::SceneDocument importedGeometry;
+            if (scene->hasStreamGeometry()) {
+                if (!importedGeometry.load(scene->filename())) {
+                    log = "Cannot import geometry for scene streaming: " + importedGeometry.lastLoadResult().error;
+                    return makeError(Error::Failure);
+                }
+                geometryScene = &importedGeometry;
+            }
+            if (!scene::buildMeshletStreamAsset({.scene = geometryScene, .instanceScene = scene,
+                    .sourcePath = desc.sourcePath, .outputPath = desc.streamAssetPath}, reason)) {
+                log = "Cannot cook scene streaming geometry: " + reason;
+                return makeError(Error::Failure);
+            }
+        }
         std::shared_ptr<MeshletStreamRuntime> stream;
         auto result = acquireStream(desc, debugReadback, log).transform([&](auto value) { stream = std::move(value); });
         if (!result) { return result; }
         prepared->geometry = std::move(stream);
-        prepared->state = std::make_shared<SceneStreamingState>(SceneStreamingState{desc, requirements.geometry, identity, structural, debugReadback});
-        prepared->streamSourceId = source.sourceId;
-        prepared->streamSourcePath = source.sourcePath;
+        prepared->state = std::make_shared<SceneStreamingState>(SceneStreamingState{desc, identity, structural, debugReadback});
+        prepared->streamSourcePath = desc.sourcePath;
         prepared->streamAssetPath = desc.streamAssetPath;
     }
     return {};
@@ -207,30 +267,21 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         if (!result) { return result; }
         if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(prepared.image); }
     }
-    if (prepared.clusterAccelerationStructure) {
-        if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(prepared.clusterAccelerationStructure); }
-    }
     prepared.textureFeedback = nullptr;
     if (prepared.geometry) {
         auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
         if (!gpuScene) { return makeError(Error::InvalidArgument); }
         auto& stream = *prepared.geometry;
-        auto* scene = context.runtimeScene();
-        const bool cacheOnly = context.properties().value("streamAssetOnly", false) &&
-            prepared.state->kind == SceneStreamKind::Asset;
+        const auto* scene = prepared.sourceScene;
         std::vector<uint32_t> renderNodes(stream.asset().instanceCount(), UINT32_MAX);
         std::vector<uint32_t> mapping(renderNodes.size(), UINT32_MAX);
         prepared.geometryOwnerMask.assign(std::max<size_t>(gpuScene->instances().size(), 1), 0);
         prepared.mappedInstanceCount = 0;
-        if (cacheOnly) {
-            gpuScene->scene().ensureDrawSet();
-            std::iota(mapping.begin(), mapping.end(), 0u);
-        } else {
+        {
             if (!scene) { return makeError(Error::InvalidArgument); }
             for (size_t i = 0; i < renderNodes.size(); ++i) {
                 const auto local = stream.asset().instances()[i].renderNodeIndex;
-                renderNodes[i] = prepared.streamSourceId.empty() ? local :
-                    uint32_t(scene->renderNodeIndexForSource(prepared.streamSourceId, int32_t(local)));
+                renderNodes[i] = local;
                 if (renderNodes[i] == UINT32_MAX) { log = "Stream source has no matching render node"; return makeError(Error::InvalidArgument); }
                 const auto instance = gpuScene->instanceForRenderNode(renderNodes[i]);
                 if (instance.valid() && instance.index < prepared.geometryOwnerMask.size()) {
@@ -241,11 +292,7 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
             }
             auto result = stream.syncRuntimeScene(*scene, renderNodes, log);
             if (!result) { return result; }
-            if (scene->hasStreamGeometry() && prepared.state->kind == SceneStreamKind::Visibility &&
-                prepared.mappedInstanceCount != gpuScene->instances().size()) {
-                log = "Stream metadata contains instances without cooked geometry";
-                return makeError(Error::InvalidArgument);
-            }
+
         }
         auto result = stream.syncGPUSceneInstanceMapping(mapping);
         if (!result) { return result; }

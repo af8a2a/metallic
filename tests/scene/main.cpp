@@ -6514,7 +6514,9 @@ TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)
     auto missing = loader.request(source, {.streamAssetPath = directory / "missing.meshstream.bin"});
     waitForSceneLoad(missing);
     EXPECT_EQ(missing.progress().status, scene::SceneLoadStatus::Failed);
-    EXPECT_NE(missing.progress().error.find("MetallicMeshletCook --source"), std::string::npos);
+    // Missing caches fall back to the CPU cook input importer. This compressed
+    // fixture has no CPU fallback and must report the actual import limitation.
+    EXPECT_NE(missing.progress().error.find("EXT_meshopt_compression"), std::string::npos);
     EXPECT_EQ(missing.progress().error.find("'uri' is missing"), std::string::npos);
     EXPECT_EQ(missing.takeResult(), nullptr);
 
@@ -6544,7 +6546,7 @@ TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)
     auto stale = loader.request(source, {.streamAssetPath = cache});
     waitForSceneLoad(stale);
     EXPECT_EQ(stale.progress().status, scene::SceneLoadStatus::Failed);
-    EXPECT_NE(stale.progress().error.find("dependencies"), std::string::npos);
+    EXPECT_NE(stale.progress().error.find("EXT_meshopt_compression"), std::string::npos);
     EXPECT_EQ(stale.takeResult(), nullptr);
     EXPECT_TRUE(loaded->valid());
     EXPECT_EQ(loaded->renderNodes().size(), 1u);
@@ -6553,6 +6555,28 @@ TEST(SceneLoading, StreamedOpenValidatesCookAndSkipsResidentPayloads)
     waitForSceneLoad(resident);
     EXPECT_EQ(resident.progress().status, scene::SceneLoadStatus::Failed);
     EXPECT_NE(resident.progress().error.find("EXT_meshopt_compression in resident import"), std::string::npos);
+
+    // Ordinary source geometry remains usable when its cache is absent/stale.
+    // Once a required external buffer disappears, reject the source instead of
+    // using an obsolete cache or publishing a partial scene.
+    const auto cookSource = writeFallbackScene(directory);
+    const auto cookCache = directory / "fallback.meshstream.bin";
+    auto uncached = loader.request(cookSource, {.streamAssetPath = directory / "missing-fallback.meshstream.bin"});
+    waitForSceneLoad(uncached);
+    ASSERT_EQ(uncached.progress().status, scene::SceneLoadStatus::Succeeded) << uncached.progress().error;
+    auto cookInput = uncached.takeResult();
+    ASSERT_NE(cookInput, nullptr);
+    ASSERT_FALSE(cookInput->renderPrimitives().front().positions.empty());
+    ASSERT_TRUE(scene::buildMeshletStreamAsset({.scene = cookInput.get(), .sourcePath = cookSource,
+        .outputPath = cookCache}, reason)) << reason;
+    ASSERT_TRUE(std::filesystem::remove(directory / "fallback.bin"));
+    auto missingDependency = loader.request(cookSource, {.streamAssetPath = cookCache});
+    waitForSceneLoad(missingDependency);
+    EXPECT_EQ(missingDependency.progress().status, scene::SceneLoadStatus::Failed);
+    EXPECT_FALSE(missingDependency.progress().error.empty());
+    EXPECT_NE(missingDependency.progress().error.find("fallback.bin"), std::string::npos);
+    EXPECT_EQ(missingDependency.takeResult(), nullptr);
+    EXPECT_TRUE(cookInput->valid());
 }
 
 TEST(SceneLoading, ZorahFullOpenReportsMissingCook)

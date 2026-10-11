@@ -604,6 +604,10 @@ public:
     // Cached for the root resource lifetime; loading progress refreshes per frame.
     bool sceneReady() const { return sceneReadiness().ready; }
     bool tlasReady() const { return tlasBuilt_; }
+    // CPU token includes delayed GPU cut feedback. Same-frame consumers read
+    // MeshletStreamGPUBLASHeader from shadingChangeBuffer() after traversal.
+    uint64_t shadingRevision() const;
+    Buffer* shadingChangeBuffer() const { return blasHeaderBuffer_.get(); }
     bool topLevelBuildPending() const { return topLevelBuildPending_; }
     RayTracingAccelerationStructure* accelerationStructure() const;
 
@@ -900,6 +904,8 @@ private:
     uint32_t blasPublicationEpoch_ = 0;
     ResourceState blasAddressBufferState_ = ResourceState::Undefined;
     uint64_t blasClusterReferenceAddress_ = 0;
+    uint64_t shadingStateRevision_ = 0;
+    uint32_t shadingFeedbackFrame_ = UINT32_MAX;
     bool tlasBuilt_ = false;
     bool topLevelBuildPending_ = false;
     std::vector<FallbackBLASPrimitive> fallbackBlasPrimitives_;

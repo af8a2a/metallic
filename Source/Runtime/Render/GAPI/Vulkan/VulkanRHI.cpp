@@ -18,9 +18,6 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "VulkanDeviceFeatures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
-#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
-#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.h"
 #include "Runtime/Render/GAPI/Vulkan/DescriptorHeapShaderABI.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/GAPI/CommandSubmission.h"
@@ -68,16 +65,6 @@
 namespace metallic::render {
 namespace {
 
-using detail::OpacityMicromapFormat;
-using detail::OpacityMicromapTriangle;
-using detail::OpacityMicromapUsage;
-
-struct OpacityMicromapBuildInput {
-    std::span<const OpacityMicromapUsage> usages;
-    BufferSlice dataBuffer;
-    BufferSlice triangleBuffer;
-    uint64_t triangleStride = sizeof(OpacityMicromapTriangle);
-};
 
 constexpr uint32_t kVulkanAPIVersion = VK_API_VERSION_1_4;
 constexpr uint64_t kAcquireTimeoutNanoseconds = std::numeric_limits<uint64_t>::max();
@@ -562,139 +549,9 @@ VkSamplerAddressMode toVkSamplerAddressMode(SamplerAddressMode mode)
     return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 }
 
-VkAccelerationStructureTypeKHR toVkAccelerationStructureType(
-    RayTracingAccelerationStructureType type)
+VkAccelerationStructureTypeKHR toVkAccelerationStructureType(RayTracingAccelerationStructureType)
 {
-    return type == RayTracingAccelerationStructureType::TopLevel
-        ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
-        : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-}
-
-Result<> makeOpacityMicromapGeometry(
-    const VkPhysicalDeviceOpacityMicromapPropertiesKHR& properties,
-    bool enabled,
-    bool useExt,
-    const OpacityMicromapBuildInput* input,
-    RayTracingAccelerationStructureBuildFlags flags,
-    bool requireBuffers,
-    std::vector<VkMicromapUsageKHR>& usages,
-    VkAccelerationStructureGeometryMicromapDataKHR& data,
-    VkAccelerationStructureGeometryKHR& geometry)
-{
-    if (!enabled) {
-        return makeError(Error::Unsupported);
-    }
-    if (input == nullptr || input->usages.empty() || input->usages.size() > UINT32_MAX ||
-        input->triangleStride < sizeof(OpacityMicromapTriangle) || input->triangleStride % 4 != 0 ||
-        hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowUpdate) ||
-        hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess)) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (useExt && hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
-        // The public compaction query pool holds AS queries, not EXT micromap queries.
-        return makeError(Error::Unsupported);
-    }
-    uint64_t count = 0;
-    usages.reserve(input->usages.size());
-    for (uint32_t i = 0; i < input->usages.size(); ++i) {
-        const OpacityMicromapUsage& usage = input->usages[i];
-        if ((usage.format != OpacityMicromapFormat::TwoState && usage.format != OpacityMicromapFormat::FourState) ||
-            usage.count == 0 || usage.subdivisionLevel > (usage.format == OpacityMicromapFormat::TwoState
-                ? properties.maxOpacity2StateSubdivisionLevel : properties.maxOpacity4StateSubdivisionLevel)) {
-            return makeError(Error::InvalidArgument);
-        }
-        count += usage.count;
-        usages.push_back({usage.count, usage.subdivisionLevel, static_cast<VkOpacityMicromapFormatKHR>(usage.format)});
-    }
-    if (count > properties.maxMicromapTriangles) {
-        return makeError(Error::InvalidArgument);
-    }
-    data = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_MICROMAP_DATA_KHR,
-        .usageCountsCount = static_cast<uint32_t>(usages.size()), .pUsageCounts = usages.data(),
-        .triangleArrayStride = input->triangleStride};
-    if (requireBuffers) {
-        const auto owner = input->dataBuffer.deviceIdentity();
-        if (!input->dataBuffer.validate(owner, BufferUsageBits::AccelerationStructureBuildInput, 128) ||
-            !input->triangleBuffer.validate(owner, BufferUsageBits::AccelerationStructureBuildInput, 128) ||
-            count > input->triangleBuffer.size() / input->triangleStride) {
-            return makeError(Error::InvalidArgument);
-        }
-        data.data = input->dataBuffer.deviceAddress();
-        data.triangleArray = input->triangleBuffer.deviceAddress();
-    }
-    geometry = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-        .pNext = &data, .geometryType = VK_GEOMETRY_TYPE_MICROMAP_KHR};
-    return {};
-}
-
-VkMicromapBuildInfoEXT makeExtMicromapBuildInfo(
-    const VkAccelerationStructureGeometryMicromapDataKHR& data,
-    RayTracingAccelerationStructureBuildFlags flags,
-    std::vector<VkMicromapUsageEXT>& usages)
-{
-    usages.reserve(data.usageCountsCount);
-    for (uint32_t i = 0; i < data.usageCountsCount; ++i) {
-        const auto& usage = data.pUsageCounts[i];
-        usages.push_back({usage.count, usage.subdivisionLevel, static_cast<uint32_t>(usage.format)});
-    }
-    VkBuildMicromapFlagsEXT extFlags = 0;
-    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::PreferFastTrace)) {
-        extFlags |= VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT;
-    }
-    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::PreferFastBuild)) {
-        extFlags |= VK_BUILD_MICROMAP_PREFER_FAST_BUILD_BIT_EXT;
-    }
-    return {
-        .sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT,
-        .type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT,
-        .flags = extFlags,
-        .mode = VK_BUILD_MICROMAP_MODE_BUILD_EXT,
-        .usageCountsCount = static_cast<uint32_t>(usages.size()),
-        .pUsageCounts = usages.data(),
-        .data = {.deviceAddress = data.data},
-        .triangleArray = {.deviceAddress = data.triangleArray},
-        .triangleArrayStride = data.triangleArrayStride,
-    };
-}
-
-Result<> makeExtMicromapAttachment(
-    uint32_t primitiveCount,
-    std::span<const OpacityMicromapUsage> sourceUsages,
-    VkMicromapEXT micromap,
-    std::vector<VkMicromapUsageEXT>& usages,
-    VkAccelerationStructureTrianglesOpacityMicromapEXT& attachment,
-    VkDeviceAddress identityIndexAddress = 0)
-{
-    if (micromap == VK_NULL_HANDLE || sourceUsages.empty() ||
-        sourceUsages.size() > UINT32_MAX) {
-        return makeError(Error::InvalidArgument);
-    }
-    uint64_t triangleCount = 0;
-    usages.reserve(sourceUsages.size());
-    for (uint32_t i = 0; i < sourceUsages.size(); ++i) {
-        const auto& usage = sourceUsages[i];
-        if (usage.count == 0 || (usage.format != OpacityMicromapFormat::TwoState &&
-            usage.format != OpacityMicromapFormat::FourState)) {
-            return makeError(Error::InvalidArgument);
-        }
-        triangleCount += usage.count;
-        usages.push_back({usage.count, usage.subdivisionLevel, static_cast<uint32_t>(usage.format)});
-    }
-    if (triangleCount != primitiveCount) {
-        return makeError(Error::InvalidArgument);
-    }
-    attachment = {
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_EXT,
-        // Size queries use the same index type/stride as builds, without reading
-        // the address. Builds supply the retained identity buffer below.
-        .indexType = VK_INDEX_TYPE_UINT32,
-        .indexBuffer = {.deviceAddress = identityIndexAddress},
-        .indexStride = sizeof(uint32_t),
-        .usageCountsCount = static_cast<uint32_t>(usages.size()),
-        .pUsageCounts = usages.data(),
-        .micromap = micromap,
-    };
-    return {};
+    return VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
 }
 
 VkBuildAccelerationStructureFlagsKHR toVkAccelerationStructureBuildFlags(
@@ -712,21 +569,6 @@ VkBuildAccelerationStructureFlagsKHR toVkAccelerationStructureBuildFlags(
     }
     if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
         result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
-    }
-    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess)) {
-        result |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_BIT_KHR;
-    }
-    return result;
-}
-
-VkGeometryFlagsKHR toVkGeometryFlags(RayTracingGeometryFlags flags)
-{
-    VkGeometryFlagsKHR result = 0;
-    if (hasFlag(flags, RayTracingGeometryFlags::Opaque)) {
-        result |= VK_GEOMETRY_OPAQUE_BIT_KHR;
-    }
-    if (hasFlag(flags, RayTracingGeometryFlags::NoDuplicateAnyHitInvocation)) {
-        result |= VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
     }
     return result;
 }
@@ -747,19 +589,6 @@ VkGeometryInstanceFlagsKHR toVkInstanceFlags(RayTracingInstanceFlags flags)
         result |= VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR;
     }
     return result;
-}
-
-VkIndexType toVkRayTracingIndexType(RayTracingIndexType type)
-{
-    switch (type) {
-    case RayTracingIndexType::None:
-        return VK_INDEX_TYPE_NONE_KHR;
-    case RayTracingIndexType::Uint16:
-        return VK_INDEX_TYPE_UINT16;
-    case RayTracingIndexType::Uint32:
-        return VK_INDEX_TYPE_UINT32;
-    }
-    return VK_INDEX_TYPE_NONE_KHR;
 }
 
 #ifdef VK_NV_cluster_acceleration_structure
@@ -1363,8 +1192,7 @@ using vulkan::negotiation::enabledDeviceExtensions;
 
 VulkanExtensionSet queryDeviceExtensions(VkPhysicalDevice physicalDevice)
 {
-    return VulkanExtensionSet::from(enumerateDeviceExtensions(physicalDevice),
-        vulkan::toolingHooks().captureInjected());
+    return VulkanExtensionSet::from(enumerateDeviceExtensions(physicalDevice));
 }
 
 void configureAftermathDiagnostics(VulkanEnabledFeatureChain& chain, const VulkanDeviceFeatureSelection& selection)
@@ -1977,21 +1805,6 @@ private:
     }
 };
 
-struct MicromapBufferAllocation {
-    DeviceImpl* device = nullptr;
-    VmaAllocator allocator = VK_NULL_HANDLE;
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    VkDeviceAddress address = 0;
-    uint32_t triangleCount = 0;
-    uint64_t allocationBytes = 0;
-    bool deviceLocal = false;
-    MemoryBudgetDomain domain = MemoryBudgetDomain::RayTracing;
-    uint64_t dataOffset = 0;
-    uint64_t triangleOffset = 0;
-    ~MicromapBufferAllocation();
-};
-
 struct PartitionedTopLevelState {
     PartitionedAccelerationStructureDesc desc;
 };
@@ -2001,42 +1814,11 @@ struct RayTracingAccelerationStructureImpl {
     RayTracingAccelerationStructureDesc desc;
     std::unique_ptr<Buffer> storage;
     VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
-    VkMicromapEXT micromap = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
-    std::mutex micromapIndexMutex;
-    std::vector<std::unique_ptr<MicromapBufferAllocation>> micromapIndexBuffers;
-    std::vector<std::shared_ptr<RayTracingAccelerationStructureImpl>> coverageDependencies;
-    std::shared_ptr<void> coverageBuildIdentity;
-    RayTracingCoverageAccelerationStats coverageStats;
 
     std::unique_ptr<PartitionedTopLevelState> partitioned;
 
     ~RayTracingAccelerationStructureImpl();
-};
-
-struct PreparedGeometryCoverage {
-    std::shared_ptr<RayTracingAccelerationStructureImpl> resource;
-    BakedOpacityMicromap baked;
-    RayTracingAccelerationStructureBuildSizes sizes;
-};
-
-struct RayTracingBottomLevelBuildPlanImpl {
-    DeviceImpl* device = nullptr;
-    RayTracingAccelerationStructureBuildFlags flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
-    std::vector<RayTracingTriangleGeometryDesc> geometries;
-    std::vector<PreparedGeometryCoverage> coverage;
-    RayTracingAccelerationStructureBuildSizes sizes;
-    RayTracingCoverageAccelerationStats coverageStats;
-    std::shared_ptr<void> identity = std::make_shared<uint8_t>(0);
-    std::atomic_bool recorded{false};
-    std::shared_ptr<std::atomic_uint64_t> bakeBudget;
-    uint64_t bakeBytes = 0;
-
-    ~RayTracingBottomLevelBuildPlanImpl()
-    {
-        coverage.clear();
-        if (bakeBudget && bakeBytes != 0) { bakeBudget->fetch_sub(bakeBytes, std::memory_order_relaxed); }
-    }
 };
 
 struct BufferViewImpl {
@@ -2276,7 +2058,6 @@ struct DeviceImpl {
     void trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add);
     DeviceCapabilities capabilities;
     vulkan::VulkanDeviceCapabilities vulkanCapabilities;
-    std::shared_ptr<std::atomic_uint64_t> coverageBakeBytes = std::make_shared<std::atomic_uint64_t>(0);
     PipelineCacheFileIdentity pipelineCacheFileIdentity;
     DescriptorHeapWriter descriptorHeapWriter;
     uint32_t graphicsFamily = 0;
@@ -2295,7 +2076,6 @@ struct DeviceImpl {
     bool logPipelineKeys = false;
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingPipelineEnabled = false;
-    bool opacityMicromapExt = false;
     bool streamlineInitialized = false;
     PFN_vkSetDebugUtilsObjectNameEXT setDebugUtilsObjectName = nullptr;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
@@ -2490,14 +2270,6 @@ CommandPoolImpl::~CommandPoolImpl()
     }
 }
 
-MicromapBufferAllocation::~MicromapBufferAllocation()
-{
-    if (!device || buffer == VK_NULL_HANDLE) { return; }
-    std::lock_guard lock(device->memoryBudgetState->mutex);
-    vmaDestroyBuffer(allocator, buffer, allocation);
-    device->trackMemoryLocked(domain, allocationBytes, deviceLocal, false);
-}
-
 BufferImpl::~BufferImpl()
 {
     if (!device || buffer == VK_NULL_HANDLE) { return; }
@@ -2579,11 +2351,6 @@ TextureViewImpl::~TextureViewImpl()
 
 RayTracingAccelerationStructureImpl::~RayTracingAccelerationStructureImpl()
 {
-    if (device != nullptr && micromap != VK_NULL_HANDLE) {
-
-        device->functions.vkDestroyMicromapEXT(device->device, micromap, nullptr);
-        micromap = VK_NULL_HANDLE;
-    }
     if (device != nullptr && accelerationStructure != VK_NULL_HANDLE) {
 
         device->functions.vkDestroyAccelerationStructureKHR(device->device, accelerationStructure, nullptr);
@@ -2957,87 +2724,6 @@ std::vector<uint32_t> queueFamiliesForAccess(const DeviceImpl& device, QueueAcce
             : device.graphicsFamily);
     }
     return families;
-}
-
-Result<> ensureMicromapIdentityIndices(
-    RayTracingAccelerationStructureImpl& micromap,
-    uint32_t triangleCount,
-    VkDeviceAddress& address)
-{
-    address = 0;
-    if (triangleCount == 0 || micromap.micromap == VK_NULL_HANDLE) {
-        return makeError(Error::InvalidArgument);
-    }
-    // TODO(Nsight OMM replay): Remove explicit identity indices once Nsight
-    // restores VK_INDEX_TYPE_NONE_KHR attachments correctly. 2026.3.1 reads a
-    // null index-buffer record in both ngfx-replay and ngfx-rpc. See
-    // Documentation/NsightCaptureReplayInvestigation.md for removal criteria.
-    // EXT is selected only for capture injection. Keep each immutable allocation
-    // with the OMM, including older capacities used by in-flight BLAS builds.
-    std::scoped_lock lock(micromap.micromapIndexMutex);
-    for (const auto& indices : micromap.micromapIndexBuffers) {
-        if (indices->triangleCount >= triangleCount) {
-            address = indices->address;
-            return {};
-        }
-    }
-    DeviceImpl& device = *micromap.device;
-    const auto families = queueFamiliesForAccess(device, QueueAccessBits::Graphics | QueueAccessBits::Compute);
-    const VkBufferCreateInfo bufferInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = uint64_t(triangleCount) * sizeof(uint32_t),
-        .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-            VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT,
-        .sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0,
-        .pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr,
-    };
-    auto allocationInfo = allocationInfoForMemory(MemoryLocation::HostUpload);
-    auto indices = std::make_unique<MicromapBufferAllocation>();
-    std::unique_lock budgetLock(device.memoryBudgetState->mutex);
-    const Result<> admitted = device.prepareBufferAllocationLocked(bufferInfo, allocationInfo, MemoryBudgetDomain::RayTracing);
-    if (!admitted) { return admitted; }
-    indices->device = &device;
-    indices->allocator = device.allocator;
-    VmaAllocationInfo allocatedInfo{};
-    VkResult result = vmaCreateBuffer(device.allocator, &bufferInfo, &allocationInfo,
-        &indices->buffer, &indices->allocation, &allocatedInfo);
-    if (result != VK_SUCCESS) {
-        return resultFromVk(result);
-    }
-    indices->allocationBytes = allocatedInfo.size;
-    indices->deviceLocal = (device.memoryProperties.memoryHeaps[device.memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
-    device.trackMemoryLocked(MemoryBudgetDomain::RayTracing, indices->allocationBytes, indices->deviceLocal, true);
-    budgetLock.unlock();
-    void* mapped = nullptr;
-    result = vmaMapMemory(device.allocator, indices->allocation, &mapped);
-    if (result != VK_SUCCESS) {
-        return resultFromVk(result);
-    }
-    auto* values = static_cast<uint32_t*>(mapped);
-    for (uint32_t i = 0; i < triangleCount; ++i) {
-        values[i] = i;
-    }
-    result = vmaFlushAllocation(device.allocator, indices->allocation, 0, bufferInfo.size);
-    vmaUnmapMemory(device.allocator, indices->allocation);
-    if (result != VK_SUCCESS) {
-        return resultFromVk(result);
-    }
-    // Flushed host writes precede submission of the recorded BLAS build; the
-    // queue submit performs the host-to-device domain operation.
-    const VkBufferDeviceAddressInfo addressInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = indices->buffer,
-    };
-    indices->address = device.functions.vkGetBufferDeviceAddress(device.device, &addressInfo);
-    if (indices->address == 0) {
-        return makeError(Error::Failure);
-    }
-    indices->triangleCount = triangleCount;
-    address = indices->address;
-    micromap.micromapIndexBuffers.push_back(std::move(indices));
-    return {};
 }
 
 BindlessHeapImpl::~BindlessHeapImpl()
@@ -3924,23 +3610,6 @@ Result<> BufferSlice::validate(
 
 METALLIC_RHI_HANDLE_DEFINITIONS(RayTracingAccelerationStructure)
 
-METALLIC_RHI_HANDLE_DEFINITIONS(RayTracingBottomLevelBuildPlan)
-
-bool RayTracingBottomLevelBuildPlan::valid() const
-{
-    return impl_ && impl_->device && !impl_->geometries.empty() && impl_->sizes.accelerationStructureSize != 0;
-}
-
-const RayTracingAccelerationStructureBuildSizes& RayTracingBottomLevelBuildPlan::sizes() const
-{
-    static const RayTracingAccelerationStructureBuildSizes empty;
-    return impl_ ? impl_->sizes : empty;
-}
-
-RayTracingCoverageAccelerationStats RayTracingBottomLevelBuildPlan::coverageStats() const
-{
-    return impl_ ? impl_->coverageStats : RayTracingCoverageAccelerationStats{};
-}
 
 const RayTracingAccelerationStructureDesc& RayTracingAccelerationStructure::desc() const
 {
@@ -3953,11 +3622,6 @@ ResourceMemoryInfo RayTracingAccelerationStructure::memoryInfo() const
     return impl_ && impl_->storage ? impl_->storage->memoryInfo() : ResourceMemoryInfo{};
 }
 
-RayTracingCoverageAccelerationStats RayTracingAccelerationStructure::coverageStats() const
-{
-    return impl_ ? impl_->coverageStats : RayTracingCoverageAccelerationStats{};
-}
-
 bool RayTracingAccelerationStructure::valid() const
 {
     if (impl_ && impl_->desc.topLevelBackend == RayTracingTopLevelBackend::Partitioned) {
@@ -3965,8 +3629,7 @@ bool RayTracingAccelerationStructure::valid() const
             impl_->partitioned && impl_->storage && impl_->address != 0;
     }
     return impl_ != nullptr &&
-        (impl_->micromap != VK_NULL_HANDLE ||
-            (impl_->accelerationStructure != VK_NULL_HANDLE && impl_->address != 0));
+        (impl_->accelerationStructure != VK_NULL_HANDLE && impl_->address != 0);
 }
 
 uint64_t RayTracingAccelerationStructure::deviceAddress() const
@@ -4917,28 +4580,10 @@ bool validCommandSlice(const detail::CommandBufferImpl& commands, const BufferSl
         queueCanAccessBuffer(commands, slice.allocationDesc());
 }
 
-bool validTriangleGeometry(const detail::DeviceImpl* device, const RayTracingTriangleGeometryDesc& source)
-{
-    const auto info = formatInfo(source.vertexFormat);
-    if (!source.vertexCount || !source.vertexStride || !source.primitiveCount ||
-        info.blockExtent != 1 || !info.bytesPerBlock || source.vertexStride < info.bytesPerBlock ||
-        uint64_t(source.vertexCount - 1) > (UINT64_MAX - info.bytesPerBlock) / source.vertexStride ||
-        !source.vertexBuffer.validate(device, BufferUsageBits::AccelerationStructureBuildInput, 1,
-            uint64_t(source.vertexCount - 1) * source.vertexStride + info.bytesPerBlock)) {
-        return false;
-    }
-    if (source.indexType == RayTracingIndexType::None) { return uint64_t(source.primitiveCount) * 3 <= source.vertexCount; }
-    const uint64_t indexBytes = source.indexType == RayTracingIndexType::Uint16 ? 2 :
-        source.indexType == RayTracingIndexType::Uint32 ? 4 : 0;
-    return indexBytes && source.indexBuffer.validate(device, BufferUsageBits::AccelerationStructureBuildInput,
-        indexBytes, uint64_t(source.primitiveCount) * 3 * indexBytes).has_value();
-}
-
 uint64_t rayTracingScratchAlignment(const detail::DeviceImpl& device)
 {
     return std::max<uint64_t>({device.physicalProperties.accelerationStructure.minAccelerationStructureScratchOffsetAlignment,
-        device.capabilities.partitionedAccelerationStructure ? 256ull : 1ull,
-        device.vulkanCapabilities.opacityMicromap ? (device.opacityMicromapExt ? 128ull : 256ull) : 1ull});
+        device.capabilities.partitionedAccelerationStructure ? 256ull : 1ull});
 }
 
 Result<BufferSlice> alignedBuildScratch(const detail::CommandBufferImpl& commands,
@@ -4952,192 +4597,6 @@ Result<BufferSlice> alignedBuildScratch(const detail::CommandBufferImpl& command
         return makeError(Error::InvalidArgument);
     }
     return aligned;
-}
-
-Result<RayTracingAccelerationStructureBuildSizes> queryBottomLevelBuildSizes(
-    const detail::DeviceImpl& device,
-    std::span<const RayTracingTriangleGeometryDesc> sources,
-    std::span<const detail::PreparedGeometryCoverage> coverage,
-    RayTracingAccelerationStructureBuildFlags flags)
-{
-    if (sources.empty() || sources.size() > UINT32_MAX ||
-        (!coverage.empty() && coverage.size() != sources.size())) {
-        return makeError(Error::InvalidArgument);
-    }
-    std::vector<VkAccelerationStructureGeometryKHR> geometries(sources.size());
-    std::vector<uint32_t> primitiveCounts(sources.size());
-    std::vector<VkAccelerationStructureTrianglesOpacityMicromapKHR> attachments(sources.size());
-    std::vector<VkAccelerationStructureTrianglesOpacityMicromapEXT> extAttachments(sources.size());
-    std::vector<std::vector<VkMicromapUsageEXT>> extUsages(sources.size());
-    for (size_t index = 0; index < sources.size(); ++index) {
-        const auto& source = sources[index];
-        if (!validTriangleGeometry(&device, source)) { return makeError(Error::InvalidArgument); }
-        const void* attachment = nullptr;
-        if (!coverage.empty() && coverage[index].resource) {
-            const auto& resource = *coverage[index].resource;
-            if (resource.micromap != VK_NULL_HANDLE) {
-                const auto attached = makeExtMicromapAttachment(source.primitiveCount,
-                    coverage[index].baked.usages, resource.micromap, extUsages[index], extAttachments[index]);
-                if (!attached) { return makeError(attached.error()); }
-                attachment = &extAttachments[index];
-            } else {
-                attachments[index] = {
-                    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_KHR,
-                    .indexType = VK_INDEX_TYPE_NONE_KHR,
-                    .micromap = resource.accelerationStructure,
-                };
-                attachment = &attachments[index];
-            }
-        }
-        geometries[index] = {
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-            .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
-            .flags = toVkGeometryFlags(source.flags),
-        };
-        geometries[index].geometry.triangles = {
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
-            .pNext = attachment,
-            .vertexFormat = toVkFormat(source.vertexFormat),
-            .vertexData = {.deviceAddress = source.vertexBuffer.deviceAddress()},
-            .vertexStride = source.vertexStride,
-            .maxVertex = source.vertexCount - 1,
-            .indexType = toVkRayTracingIndexType(source.indexType),
-            .indexData = {.deviceAddress = source.indexType == RayTracingIndexType::None ? 0 : source.indexBuffer.deviceAddress()},
-        };
-        primitiveCounts[index] = source.primitiveCount;
-    }
-    const VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-        .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-        .flags = toVkAccelerationStructureBuildFlags(flags),
-        .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-        .geometryCount = static_cast<uint32_t>(geometries.size()),
-        .pGeometries = geometries.data(),
-    };
-    VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-    device.functions.vkGetAccelerationStructureBuildSizesKHR(device.device,
-        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, primitiveCounts.data(), &sizes);
-    if (!sizes.accelerationStructureSize || !sizes.buildScratchSize) { return makeError(Error::Failure); }
-    return RayTracingAccelerationStructureBuildSizes{sizes.accelerationStructureSize, sizes.buildScratchSize, sizes.updateScratchSize};
-}
-
-Result<std::shared_ptr<detail::MicromapBufferAllocation>> createMicromapBuildUpload(
-    detail::DeviceImpl& device, const detail::BakedOpacityMicromap& baked)
-{
-    const uint64_t triangleBytes = baked.triangles.size() * sizeof(OpacityMicromapTriangle);
-    const uint64_t bytes = 127 + ((uint64_t(baked.data.size()) + 127) & ~uint64_t(127)) + triangleBytes;
-    const auto families = detail::queueFamiliesForAccess(device, QueueAccessBits::Graphics | QueueAccessBits::Compute);
-    const VkBufferCreateInfo info{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = bytes,
-        .usage = VkBufferUsageFlags(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-            (device.opacityMicromapExt ? VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT : 0)),
-        .sharingMode = families.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = families.size() > 1 ? static_cast<uint32_t>(families.size()) : 0,
-        .pQueueFamilyIndices = families.size() > 1 ? families.data() : nullptr,
-    };
-    auto allocationInfo = allocationInfoForMemory(MemoryLocation::HostUpload);
-    auto upload = std::make_shared<detail::MicromapBufferAllocation>();
-    std::unique_lock budgetLock(device.memoryBudgetState->mutex);
-    const auto admitted = device.prepareBufferAllocationLocked(info, allocationInfo, MemoryBudgetDomain::Upload);
-    if (!admitted) { return makeError(admitted.error()); }
-    upload->device = &device;
-    upload->allocator = device.allocator;
-    upload->domain = MemoryBudgetDomain::Upload;
-    VmaAllocationInfo allocatedInfo{};
-    VkResult result = vmaCreateBuffer(device.allocator, &info, &allocationInfo, &upload->buffer, &upload->allocation, &allocatedInfo);
-    if (result != VK_SUCCESS) { return makeError(resultFromVk(result).error()); }
-    upload->allocationBytes = allocatedInfo.size;
-    upload->deviceLocal = (device.memoryProperties.memoryHeaps[device.memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
-    device.trackMemoryLocked(upload->domain, upload->allocationBytes, upload->deviceLocal, true);
-    budgetLock.unlock();
-    const VkBufferDeviceAddressInfo addressInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = upload->buffer};
-    upload->address = device.functions.vkGetBufferDeviceAddress(device.device, &addressInfo);
-    if (!upload->address) { return makeError(Error::Failure); }
-    upload->dataOffset = (0 - upload->address) & 127;
-    upload->triangleOffset = upload->dataOffset + ((uint64_t(baked.data.size()) + 127) & ~uint64_t(127));
-    void* mapped = nullptr;
-    result = vmaMapMemory(device.allocator, upload->allocation, &mapped);
-    if (result != VK_SUCCESS) { return makeError(resultFromVk(result).error()); }
-    std::memcpy(static_cast<uint8_t*>(mapped) + upload->dataOffset, baked.data.data(), baked.data.size());
-    std::memcpy(static_cast<uint8_t*>(mapped) + upload->triangleOffset, baked.triangles.data(), triangleBytes);
-    result = vmaFlushAllocation(device.allocator, upload->allocation, 0, bytes);
-    vmaUnmapMemory(device.allocator, upload->allocation);
-    if (result != VK_SUCCESS) { return makeError(resultFromVk(result).error()); }
-    return upload;
-}
-
-struct NativeMicromapBuild {
-    std::vector<VkMicromapUsageKHR> usages;
-    std::vector<VkMicromapUsageEXT> extUsages;
-    VkAccelerationStructureGeometryMicromapDataKHR data{};
-    VkAccelerationStructureGeometryKHR geometry{};
-    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
-    VkMicromapBuildInfoEXT extBuildInfo{};
-};
-
-void prepareNativeMicromapBuild(NativeMicromapBuild& native, bool ext,
-    const detail::PreparedGeometryCoverage& coverage, const detail::MicromapBufferAllocation& upload,
-    VkDeviceAddress scratchAddress)
-{
-    native.usages.reserve(coverage.baked.usages.size());
-    for (const auto& usage : coverage.baked.usages) {
-        native.usages.push_back({usage.count, usage.subdivisionLevel, static_cast<VkOpacityMicromapFormatKHR>(usage.format)});
-    }
-    native.data = {
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_MICROMAP_DATA_KHR,
-        .usageCountsCount = static_cast<uint32_t>(native.usages.size()),
-        .pUsageCounts = native.usages.data(),
-        .data = upload.address + upload.dataOffset,
-        .triangleArray = upload.address + upload.triangleOffset,
-        .triangleArrayStride = sizeof(OpacityMicromapTriangle),
-    };
-    if (ext) {
-        native.extBuildInfo = makeExtMicromapBuildInfo(native.data,
-            RayTracingAccelerationStructureBuildFlags::PreferFastTrace, native.extUsages);
-        native.extBuildInfo.dstMicromap = coverage.resource->micromap;
-        native.extBuildInfo.scratchData.deviceAddress = scratchAddress;
-    } else {
-        native.geometry = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-            .pNext = &native.data, .geometryType = VK_GEOMETRY_TYPE_MICROMAP_KHR};
-        native.buildInfo = {
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-            .type = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR,
-            .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-            .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-            .dstAccelerationStructure = coverage.resource->accelerationStructure,
-            .geometryCount = 1, .pGeometries = &native.geometry, .scratchData = {.deviceAddress = scratchAddress},
-        };
-    }
-}
-
-void recordPreparedMicromapBuild(detail::CommandBufferImpl& commands, const NativeMicromapBuild& native)
-{
-    const bool ext = commands.device->opacityMicromapExt;
-    VkMemoryBarrier2 barrier{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .dstStageMask = ext ? VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT : VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT |
-            (ext ? VK_ACCESS_2_MICROMAP_READ_BIT_EXT | VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT :
-                VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR),
-    };
-    const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-    vulkan::recordBarrier(commands.device->functions, commands.device->device, commands.commandBuffer, dependency);
-    if (ext) {
-        commands.device->functions.vkCmdBuildMicromapsEXT(commands.commandBuffer, 1, &native.extBuildInfo);
-    } else {
-        const VkAccelerationStructureBuildRangeInfoKHR* ranges = nullptr;
-        commands.device->functions.vkCmdBuildAccelerationStructuresKHR(commands.commandBuffer, 1, &native.buildInfo, &ranges);
-    }
-    barrier.srcStageMask = barrier.dstStageMask;
-    barrier.srcAccessMask = ext ? VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT : VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-        (ext ? VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT : 0);
-    barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-        (ext ? VK_ACCESS_2_MICROMAP_READ_BIT_EXT | VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT : 0);
-    vulkan::recordBarrier(commands.device->functions, commands.device->device, commands.commandBuffer, dependency);
 }
 
 Result<> retainBufferSlices(CommandBuffer& commands, std::initializer_list<BufferSlice> slices)
@@ -6028,112 +5487,28 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         return makeError(Error::InvalidArgument);
     }
 
-    auto* plan = desc.plan ? desc.plan->impl_.get() : nullptr;
-    if (desc.plan && (!desc.plan->valid() || plan->device != impl_->device ||
-            desc.mode != RayTracingAccelerationStructureBuildMode::Build ||
-            destinationDesc.type != RayTracingAccelerationStructureType::BottomLevel ||
-            plan->flags != destinationDesc.buildFlags ||
-            desc.destination->impl_->coverageBuildIdentity != plan->identity ||
-            plan->recorded.load(std::memory_order_acquire) || !desc.geometries.empty())) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (!plan && (!desc.destination->impl_->coverageDependencies.empty() ||
-            (desc.source && !desc.source->impl_->coverageDependencies.empty()))) {
-        return makeError(Error::Unsupported);
-    }
-    const std::span<const RayTracingTriangleGeometryDesc> sourceGeometries =
-        plan ? std::span<const RayTracingTriangleGeometryDesc>(plan->geometries) : desc.geometries;
-    if (sourceGeometries.size() > UINT32_MAX || std::any_of(sourceGeometries.begin(), sourceGeometries.end(),
-            [](const auto& geometry) { return geometry.coverage != nullptr; })) { return makeError(Error::InvalidArgument); }
-    std::vector<VkAccelerationStructureTrianglesOpacityMicromapKHR> attachments(sourceGeometries.size());
-    std::vector<VkAccelerationStructureTrianglesOpacityMicromapEXT> extAttachments(sourceGeometries.size());
-    std::vector<std::vector<VkMicromapUsageEXT>> extAttachmentUsages(sourceGeometries.size());
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> ranges;
-    if (destinationDesc.type == RayTracingAccelerationStructureType::BottomLevel) {
-        if (sourceGeometries.empty() || sourceGeometries.size() > UINT32_MAX ||
-            desc.instanceBuffer.valid() || desc.instanceCount != 0) {
-            return makeError(Error::InvalidArgument);
-        }
-        geometries.reserve(sourceGeometries.size());
-        ranges.reserve(sourceGeometries.size());
-        for (uint32_t index = 0; index < sourceGeometries.size(); ++index) {
-            const RayTracingTriangleGeometryDesc& source = sourceGeometries[index];
-            if (!validTriangleGeometry(impl_->device, source) ||
-                !queueCanAccessBuffer(*impl_, source.vertexBuffer.allocationDesc()) ||
-                (source.indexType != RayTracingIndexType::None && !queueCanAccessBuffer(*impl_, source.indexBuffer.allocationDesc()))) {
-                return makeError(Error::InvalidArgument);
-            }
-            const VkDeviceAddress vertexAddress = source.vertexBuffer.deviceAddress();
-            const VkFormat vertexFormat = toVkFormat(source.vertexFormat);
-            const VkDeviceAddress indexAddress = source.indexType == RayTracingIndexType::None ? 0 : source.indexBuffer.deviceAddress();
-
-            const void* opacityAttachment = nullptr;
-            if (plan && plan->coverage[index].resource) {
-                const auto& coverage = plan->coverage[index];
-                if (coverage.resource->micromap != VK_NULL_HANDLE) {
-                    VkDeviceAddress identityIndexAddress = 0;
-                    const auto indices = detail::ensureMicromapIdentityIndices(*coverage.resource,
-                        source.primitiveCount, identityIndexAddress);
-                    if (!indices) { return indices; }
-                    const auto attached = makeExtMicromapAttachment(source.primitiveCount,
-                        coverage.baked.usages, coverage.resource->micromap,
-                        extAttachmentUsages[index], extAttachments[index], identityIndexAddress);
-                    if (!attached) { return attached; }
-                    opacityAttachment = &extAttachments[index];
-                } else {
-                    attachments[index] = {
-                        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_KHR,
-                        .indexType = VK_INDEX_TYPE_NONE_KHR,
-                        .micromap = coverage.resource->accelerationStructure,
-                    };
-                    opacityAttachment = &attachments[index];
-                }
-            }
-            VkAccelerationStructureGeometryTrianglesDataKHR triangles{
-                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
-                .pNext = opacityAttachment,
-                .vertexFormat = vertexFormat,
-                .vertexData = {.deviceAddress = vertexAddress},
-                .vertexStride = source.vertexStride,
-                .maxVertex = source.vertexCount - 1,
-                .indexType = toVkRayTracingIndexType(source.indexType),
-                .indexData = {.deviceAddress = indexAddress},
-            };
-            VkAccelerationStructureGeometryKHR geometry{
-                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-                .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
-                .flags = toVkGeometryFlags(source.flags),
-            };
-            geometry.geometry.triangles = triangles;
-            geometries.push_back(geometry);
-            ranges.push_back(VkAccelerationStructureBuildRangeInfoKHR{
-                .primitiveCount = source.primitiveCount,
-            });
-        }
-    } else {
-        if (destinationDesc.type != RayTracingAccelerationStructureType::TopLevel || !sourceGeometries.empty() ||
-            !desc.instanceCount || !validCommandSlice(*impl_, desc.instanceBuffer,
-                BufferUsageBits::AccelerationStructureBuildInput, uint64_t(desc.instanceCount) * sizeof(VkAccelerationStructureInstanceKHR), 16)) {
-            return makeError(Error::InvalidArgument);
-        }
-        const VkDeviceAddress instanceAddress = desc.instanceBuffer.deviceAddress();
-        VkAccelerationStructureGeometryInstancesDataKHR instances{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
-            .arrayOfPointers = VK_FALSE,
-            .data = {.deviceAddress = instanceAddress},
-        };
-        VkAccelerationStructureGeometryKHR geometry{
-            .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-            .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
-        };
-        geometry.geometry.instances = instances;
-        geometries.push_back(geometry);
-        ranges.push_back(VkAccelerationStructureBuildRangeInfoKHR{
-            .primitiveCount = desc.instanceCount,
-        });
+    if (destinationDesc.type != RayTracingAccelerationStructureType::TopLevel ||
+        !desc.instanceCount || !validCommandSlice(*impl_, desc.instanceBuffer,
+            BufferUsageBits::AccelerationStructureBuildInput, uint64_t(desc.instanceCount) * sizeof(VkAccelerationStructureInstanceKHR), 16)) {
+        return makeError(Error::InvalidArgument);
     }
-
+    const VkDeviceAddress instanceAddress = desc.instanceBuffer.deviceAddress();
+    VkAccelerationStructureGeometryInstancesDataKHR instances{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+        .arrayOfPointers = VK_FALSE,
+        .data = {.deviceAddress = instanceAddress},
+    };
+    VkAccelerationStructureGeometryKHR geometry{
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+        .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR,
+    };
+    geometry.geometry.instances = instances;
+    geometries.push_back(geometry);
+    ranges.push_back(VkAccelerationStructureBuildRangeInfoKHR{
+        .primitiveCount = desc.instanceCount,
+    });
     const uint64_t scratchAlignment = rayTracingScratchAlignment(*impl_->device);
     auto scratch = alignedBuildScratch(*impl_, desc.scratchBuffer, scratchAlignment, 1);
     if (!scratch) { return makeError(scratch.error()); }
@@ -6144,12 +5519,6 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         if (result) { result = retainResource(desc.scratchBuffer.retainAllocation()); }
         if (result && desc.source) { result = retainResource(desc.source->retainAllocation()); }
         if (result && desc.instanceBuffer.valid()) { result = retainResource(desc.instanceBuffer.retainAllocation()); }
-        for (const auto& geometry : sourceGeometries) {
-            if (result) { result = retainResource(geometry.vertexBuffer.retainAllocation()); }
-            if (result && geometry.indexType != RayTracingIndexType::None) {
-                result = retainResource(geometry.indexBuffer.retainAllocation());
-            }
-        }
         return result;
     };
 
@@ -6188,7 +5557,6 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         : sizes.buildScratchSize;
     if (requiredScratchSize == 0 ||
         requiredScratchSize > scratch->size() ||
-        (plan && plan->sizes.buildScratchSize > scratch->size()) ||
         sizes.accelerationStructureSize > destinationDesc.size) {
         return makeError(Error::InvalidArgument);
     }
@@ -6200,35 +5568,6 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     }
     const auto retained = retainBuildResources();
     if (!retained) { return retained; }
-    std::vector<std::shared_ptr<detail::MicromapBufferAllocation>> uploads;
-    std::vector<NativeMicromapBuild> nativeMicromapBuilds;
-    if (plan) {
-        uploads.resize(plan->coverage.size());
-        nativeMicromapBuilds.resize(plan->coverage.size());
-        for (size_t index = 0; index < plan->coverage.size(); ++index) {
-            const auto& coverage = plan->coverage[index];
-            if (!coverage.resource) { continue; }
-            auto upload = createMicromapBuildUpload(*impl_->device, coverage.baked);
-            if (!upload) { return makeError(upload.error()); }
-            uploads[index] = std::move(*upload);
-            prepareNativeMicromapBuild(nativeMicromapBuilds[index], impl_->device->opacityMicromapExt,
-                coverage, *uploads[index], scratchAddress);
-        }
-        for (const auto& upload : uploads) {
-            if (!upload) { continue; }
-            const auto retainedUpload = retainResource(upload);
-            if (!retainedUpload) { return retainedUpload; }
-        }
-        bool expected = false;
-        if (!plan->recorded.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            return makeError(Error::InvalidArgument);
-        }
-        // All validation, allocation and retention precede the first native command.
-        // The plan is consumed even if its containing recording is later abandoned.
-        for (size_t index = 0; index < plan->coverage.size(); ++index) {
-            if (uploads[index]) { recordPreparedMicromapBuild(*impl_, nativeMicromapBuilds[index]); }
-        }
-    }
     impl_->device->functions.vkCmdBuildAccelerationStructuresKHR(
         impl_->commandBuffer,
         1,
@@ -6260,8 +5599,6 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
     RayTracingAccelerationStructure& source,
     RayTracingAccelerationStructure& destination)
 {
-    // Coverage dependencies are published during recording. A fresh raw
-    // destination prevents replacement of owners needed by prior GPU work.
     if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
         source.impl_ == nullptr || destination.impl_ == nullptr ||
         source.impl_.get() == destination.impl_.get() ||
@@ -6269,8 +5606,6 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         !source.valid() || !destination.valid() ||
         source.impl_->accelerationStructure == VK_NULL_HANDLE ||
         destination.impl_->accelerationStructure == VK_NULL_HANDLE ||
-        destination.impl_->coverageBuildIdentity ||
-        !destination.impl_->coverageDependencies.empty() ||
         source.impl_->desc.type != destination.impl_->desc.type ||
         source.impl_->desc.buildFlags != destination.impl_->desc.buildFlags ||
         !hasFlag(
@@ -6285,9 +5620,6 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
     auto retained = retainResource(source.retainAllocation());
     if (retained) { retained = retainResource(destination.retainAllocation()); }
     if (!retained) { return retained; }
-    destination.impl_->coverageDependencies = source.impl_->coverageDependencies;
-    destination.impl_->coverageBuildIdentity = source.impl_->coverageBuildIdentity;
-    destination.impl_->coverageStats = source.impl_->coverageStats;
 
     const VkMemoryBarrier2 beforeCopyBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -7154,17 +6486,8 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
 {
     if (!impl_) { return makeError(Error::InvalidArgument); }
     if (!impl_->capabilities.rayTracingAccelerationStructure) { return makeError(Error::Unsupported); }
-    if (hasFlag(inputs.flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
-        !impl_->capabilities.rayTracingPositionFetch) { return makeError(Error::Unsupported); }
-    if (inputs.type == RayTracingAccelerationStructureType::BottomLevel) {
-        if (inputs.instanceCount != 0 || std::any_of(inputs.geometries.begin(), inputs.geometries.end(),
-                [](const auto& geometry) { return geometry.coverage != nullptr; })) {
-            return makeError(Error::InvalidArgument);
-        }
-        return queryBottomLevelBuildSizes(*impl_, inputs.geometries, {}, inputs.flags);
-    }
     if (inputs.type != RayTracingAccelerationStructureType::TopLevel ||
-        !inputs.geometries.empty() || !inputs.instanceCount) { return makeError(Error::InvalidArgument); }
+        !inputs.instanceCount) { return makeError(Error::InvalidArgument); }
     VkAccelerationStructureGeometryKHR geometry{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
         .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR};
     geometry.geometry.instances = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
@@ -7182,177 +6505,14 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
     return RayTracingAccelerationStructureBuildSizes{sizes.accelerationStructureSize, sizes.buildScratchSize, sizes.updateScratchSize};
 }
 
-Result<std::unique_ptr<RayTracingBottomLevelBuildPlan>> Device::prepareRayTracingBottomLevelBuild(
-    std::span<const RayTracingTriangleGeometryDesc> geometries,
-    RayTracingAccelerationStructureBuildFlags flags)
-{
-    if (!impl_ || geometries.empty() || geometries.size() > UINT32_MAX) { return makeError(Error::InvalidArgument); }
-    if (!impl_->capabilities.rayTracingAccelerationStructure) { return makeError(Error::Unsupported); }
-    if (hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
-        !impl_->capabilities.rayTracingPositionFetch) { return makeError(Error::Unsupported); }
-    for (const auto& geometry : geometries) {
-        if (!validTriangleGeometry(impl_.get(), geometry)) { return makeError(Error::InvalidArgument); }
-        if (geometry.coverage && (geometry.coverage->triangles.size() != geometry.primitiveCount ||
-                hasFlag(geometry.flags, RayTracingGeometryFlags::Opaque))) { return makeError(Error::InvalidArgument); }
-    }
-    auto plan = std::make_unique<detail::RayTracingBottomLevelBuildPlanImpl>();
-    plan->device = impl_.get();
-    plan->flags = flags;
-    plan->geometries.assign(geometries.begin(), geometries.end());
-    plan->coverage.resize(geometries.size());
-    plan->bakeBudget = impl_->coverageBakeBytes;
-    constexpr uint64_t kMaxPreparedBakeBytes = 256ull * 1024 * 1024;
-    const auto prepareCoverage = [&](const RayTracingCoverageDesc& coverage,
-                                     detail::PreparedGeometryCoverage& prepared) -> Result<> {
-        if (coverage.mode != RayTracingCoverageMode::Mask && coverage.mode != RayTracingCoverageMode::Blend) {
-            return makeError(Error::InvalidArgument);
-        }
-        if (!impl_->vulkanCapabilities.opacityMicromap ||
-            hasFlag(flags, RayTracingAccelerationStructureBuildFlags::AllowUpdate)) { return {}; }
-        const auto& properties = impl_->physicalProperties.opacityMicromap;
-        if (coverage.triangles.size() > properties.maxMicromapTriangles) { return {}; }
-        if (!detail::OpacityMicromapBaker(coverage).bake(std::min(4u, properties.maxOpacity4StateSubdivisionLevel), prepared.baked)) { return {}; }
-        if (prepared.baked.stateCounts[0] + prepared.baked.stateCounts[1] == 0) {
-            prepared.baked = {};
-            return {};
-        }
-        const uint64_t packedBytes = prepared.baked.data.size() + prepared.baked.triangles.size() * sizeof(OpacityMicromapTriangle);
-        auto liveBytes = plan->bakeBudget->load(std::memory_order_relaxed);
-        for (;;) {
-            if (liveBytes > kMaxPreparedBakeBytes || packedBytes > kMaxPreparedBakeBytes - liveBytes) {
-                prepared.baked = {};
-                return {};
-            }
-            if (plan->bakeBudget->compare_exchange_weak(liveBytes, liveBytes + packedBytes, std::memory_order_relaxed)) { break; }
-        }
-        plan->bakeBytes += packedBytes;
-        const auto fallback = [&]() {
-            plan->bakeBudget->fetch_sub(packedBytes, std::memory_order_relaxed);
-            plan->bakeBytes -= packedBytes;
-            prepared = {};
-        };
-        const auto micromapFlags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
-        const OpacityMicromapBuildInput input{.usages = prepared.baked.usages};
-        std::vector<VkMicromapUsageKHR> usages;
-        VkAccelerationStructureGeometryMicromapDataKHR data{};
-        VkAccelerationStructureGeometryKHR geometry{};
-        const auto valid = makeOpacityMicromapGeometry(properties, true, impl_->opacityMicromapExt,
-            &input, micromapFlags, false, usages, data, geometry);
-        if (!valid) { fallback(); return {}; }
-        if (impl_->opacityMicromapExt) {
-            std::vector<VkMicromapUsageEXT> extUsages;
-            const auto info = makeExtMicromapBuildInfo(data, micromapFlags, extUsages);
-            VkMicromapBuildSizesInfoEXT sizes{.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT};
-            impl_->functions.vkGetMicromapBuildSizesEXT(impl_->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &sizes);
-            prepared.sizes = {sizes.micromapSize, sizes.buildScratchSize, 0};
-        } else {
-            const VkAccelerationStructureBuildGeometryInfoKHR info{
-                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-                .type = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR,
-                .flags = toVkAccelerationStructureBuildFlags(micromapFlags),
-                .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-                .geometryCount = 1, .pGeometries = &geometry,
-            };
-            VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-            impl_->functions.vkGetAccelerationStructureBuildSizesKHR(impl_->device,
-                VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, nullptr, &sizes);
-            prepared.sizes = {sizes.accelerationStructureSize, sizes.buildScratchSize, 0};
-        }
-        if (!prepared.sizes.accelerationStructureSize || prepared.sizes.accelerationStructureSize > UINT64_MAX - 255) {
-            fallback(); return {};
-        }
-        auto storage = createBuffer({
-            .size = prepared.sizes.accelerationStructureSize + 255,
-            .usage = BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::ShaderDeviceAddress,
-            .memoryLocation = MemoryLocation::Device,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        });
-        if (!storage) {
-            const auto error = storage.error();
-            fallback();
-            return error == Error::DeviceLost ? Result<>(makeError(error)) : Result<>();
-        }
-        auto resource = std::make_shared<detail::RayTracingAccelerationStructureImpl>();
-        resource->device = impl_.get();
-        resource->desc = {.buildFlags = micromapFlags, .size = prepared.sizes.accelerationStructureSize};
-        resource->storage = std::move(*storage);
-        VkResult result;
-        if (impl_->opacityMicromapExt) {
-            const VkMicromapCreateInfoEXT info{
-                .sType = VK_STRUCTURE_TYPE_MICROMAP_CREATE_INFO_EXT,
-                .buffer = resource->storage->impl_->buffer,
-                .offset = (0 - resource->storage->deviceAddress()) & 255,
-                .size = prepared.sizes.accelerationStructureSize,
-                .type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT,
-            };
-            result = impl_->functions.vkCreateMicromapEXT(impl_->device, &info, nullptr, &resource->micromap);
-        } else {
-            const auto create = reinterpret_cast<PFN_vkCreateAccelerationStructure2KHR>(
-                impl_->instanceFunctions.vkGetDeviceProcAddr(impl_->device, "vkCreateAccelerationStructure2KHR"));
-            if (!create) { fallback(); return {}; }
-            const VkAccelerationStructureCreateInfo2KHR info{
-                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_2_KHR,
-                .addressRange = {.address = (resource->storage->deviceAddress() + 255) & ~uint64_t(255),
-                    .size = prepared.sizes.accelerationStructureSize},
-                .type = VK_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_KHR,
-            };
-            result = create(impl_->device, &info, nullptr, &resource->accelerationStructure);
-        }
-        if (result != VK_SUCCESS) {
-            const auto error = resultFromVk(result).error();
-            fallback();
-            return error == Error::DeviceLost ? Result<>(makeError(error)) : Result<>();
-        }
-        prepared.resource = std::move(resource);
-        return {};
-    };
-    for (size_t index = 0; index < geometries.size(); ++index) {
-        plan->geometries[index].coverage = nullptr;
-        if (!geometries[index].coverage) { continue; }
-        const auto prepared = prepareCoverage(*geometries[index].coverage, plan->coverage[index]);
-        if (!prepared) { return makeError(prepared.error()); }
-        const auto& coverage = plan->coverage[index];
-        if (!coverage.resource) { continue; }
-        ++plan->coverageStats.geometryCount;
-        plan->coverageStats.triangleCount += geometries[index].primitiveCount;
-        plan->coverageStats.storageBytes += coverage.resource->storage->memoryInfo().sizeBytes;
-    }
-    auto sizes = queryBottomLevelBuildSizes(*impl_, plan->geometries, plan->coverage, flags);
-    if (!sizes) { return makeError(sizes.error()); }
-    plan->sizes = *sizes;
-    for (const auto& coverage : plan->coverage) {
-        plan->sizes.buildScratchSize = std::max(plan->sizes.buildScratchSize, coverage.sizes.buildScratchSize);
-    }
-    return std::unique_ptr<RayTracingBottomLevelBuildPlan>(new RayTracingBottomLevelBuildPlan(std::move(plan)));
-}
-
-Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracingAccelerationStructure(
-    const RayTracingBottomLevelBuildPlan& plan)
-{
-    if (!plan.valid() || plan.impl_->device != impl_.get() || plan.impl_->recorded.load()) { return makeError(Error::InvalidArgument); }
-    auto resource = createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{
-        .type = RayTracingAccelerationStructureType::BottomLevel,
-        .buildFlags = plan.impl_->flags, .size = plan.impl_->sizes.accelerationStructureSize,
-    });
-    if (!resource) { return makeError(resource.error()); }
-    (*resource)->impl_->coverageBuildIdentity = plan.impl_->identity;
-    (*resource)->impl_->coverageStats = plan.impl_->coverageStats;
-    for (const auto& coverage : plan.impl_->coverage) {
-        if (coverage.resource) { (*resource)->impl_->coverageDependencies.push_back(coverage.resource); }
-    }
-    return resource;
-}
-
 Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracingAccelerationStructure(
     const RayTracingAccelerationStructureDesc& desc)
 {
     if (!impl_ || !desc.size || desc.topLevelBackend != RayTracingTopLevelBackend::Standard ||
-        (desc.type != RayTracingAccelerationStructureType::BottomLevel && desc.type != RayTracingAccelerationStructureType::TopLevel)) {
+        desc.type != RayTracingAccelerationStructureType::TopLevel) {
         return makeError(Error::InvalidArgument);
     }
     if (!impl_->capabilities.rayTracingAccelerationStructure) { return makeError(Error::Unsupported); }
-    if (hasFlag(desc.buildFlags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
-        !impl_->capabilities.rayTracingPositionFetch) { return makeError(Error::Unsupported); }
     auto storage = createBuffer({.size = desc.size,
         .usage = BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::ShaderDeviceAddress,
         .memoryLocation = MemoryLocation::Device, .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
@@ -7415,11 +6575,8 @@ Result<> Device::writeRayTracingInstances(
     std::vector<RayTracingGPUInstance> encoded(instances.size());
     for (uint32_t index = 0; index < instances.size(); ++index) {
         const RayTracingInstanceDesc& source = instances[index];
-        if (source.bottomLevel == nullptr || source.bottomLevel->impl_ == nullptr ||
-            source.bottomLevel->impl_->device != impl_.get() ||
-            source.bottomLevel->impl_->desc.type !=
-                RayTracingAccelerationStructureType::BottomLevel ||
-            !source.bottomLevel->valid() || source.customIndex > 0x00ffffffu ||
+        if (!source.clusterBottomLevel.validate(impl_.get(), BufferUsageBits::AccelerationStructureStorage,
+                impl_->physicalProperties.cluster.clusterBottomLevelByteAlignment) || source.customIndex > 0x00ffffffu ||
             source.shaderBindingTableRecordOffset > 0x00ffffffu) {
             return makeError(Error::InvalidArgument);
         }
@@ -7434,7 +6591,7 @@ Result<> Device::writeRayTracingInstances(
         destination.shaderBindingTableRecordOffsetAndFlags =
             (source.shaderBindingTableRecordOffset & 0x00ffffffu) |
             (static_cast<uint32_t>(toVkInstanceFlags(source.flags)) << 24u);
-        destination.accelerationStructureReference = source.bottomLevel->impl_->address;
+        destination.accelerationStructureReference = source.clusterBottomLevel.deviceAddress();
     }
 
     void* mapped = buffer.map();
@@ -7708,11 +6865,8 @@ Result<std::unique_ptr<Buffer>> Device::createPartitionedAccelerationStructureIn
     std::vector<VkPartitionedAccelerationStructureWriteInstanceDataNV> encoded(instances.size());
     for (uint32_t index = 0; index < instances.size(); ++index) {
         const PartitionedAccelerationStructureInstanceDesc& source = instances[index];
-        if (source.bottomLevel == nullptr || source.bottomLevel->impl_ == nullptr ||
-            source.bottomLevel->impl_->device != impl_.get() ||
-            source.bottomLevel->desc().type !=
-                RayTracingAccelerationStructureType::BottomLevel ||
-            !source.bottomLevel->valid() || source.customIndex > 0x00ffffffu ||
+        if (!source.clusterBottomLevel.validate(impl_.get(), BufferUsageBits::AccelerationStructureStorage,
+                impl_->physicalProperties.cluster.clusterBottomLevelByteAlignment) || source.customIndex > 0x00ffffffu ||
             source.shaderBindingTableRecordOffset > 0x00ffffffu) {
             return makeError(Error::InvalidArgument);
         }
@@ -7726,7 +6880,7 @@ Result<std::unique_ptr<Buffer>> Device::createPartitionedAccelerationStructureIn
             toVkInstanceFlags(source.flags));
         destination.instanceIndex = source.instanceIndex;
         destination.partitionIndex = source.partitionIndex;
-        destination.accelerationStructure = source.bottomLevel->impl_->address;
+        destination.accelerationStructure = source.clusterBottomLevel.deviceAddress();
     }
     Result<> result = createBuffer(BufferDesc{
             .size = static_cast<uint64_t>(encoded.size()) * sizeof(encoded[0]),
@@ -8018,14 +7172,6 @@ Result<VkBufferUsageFlags2> nativeBufferUsage(const detail::DeviceImpl& device, 
         return makeError(Error::Unsupported);
     }
     VkBufferUsageFlags2 usage = toVkBufferUsage(bufferUsage);
-    if (device.opacityMicromapExt) {
-        if (hasFlag(bufferUsage, BufferUsageBits::AccelerationStructureBuildInput)) {
-            usage |= VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT;
-        }
-        if (hasFlag(bufferUsage, BufferUsageBits::AccelerationStructureStorage)) {
-            usage |= VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT;
-        }
-    }
     if (device.bufferDeviceAddressEnabled &&
         (usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
@@ -8718,18 +7864,7 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
         spdlog::error("Shader '{}' rejected: {}", desc.debugName ? desc.debugName : "<unnamed>", strideDiagnostics);
         return makeError(Error::InvalidArgument);
     }
-    std::vector<uint32_t> opacityCode;
-    ShaderModuleDesc deviceDesc = desc;
-    if (impl_->vulkanCapabilities.opacityMicromap) {
-        // TO-REMOVE(Slang#13438): KHR injection awaits native Slang ray-query OMM
-        // opt-in plus raw-output/GPU verification. EXT capture policy is separate.
-        // https://github.com/shader-slang/slang/issues/13438
-        if (!vulkan::enableOpacityMicromapSpirv(
-                deviceDesc.spirv, opacityCode, impl_->opacityMicromapExt)) {
-            return makeError(Error::InvalidArgument);
-        }
-        deviceDesc.spirv = opacityCode;
-    }
+    const ShaderModuleDesc& deviceDesc = desc;
     VkShaderModuleCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = deviceDesc.spirv.size_bytes(),
@@ -9900,20 +9035,6 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
     const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc, vulkanOptions, vulkan::toolingHooks().diagnosticsInitialized());
-    bool validationSupportsOpacityMicromap = true;
-    if (deviceImpl->validationEnabled && !vulkan::toolingHooks().captureInjected()) {
-        for (const auto& layer : availableLayers) {
-            if (std::strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0 &&
-                layer.specVersion < VK_MAKE_API_VERSION(0, 1, 4, 357)) {
-                validationSupportsOpacityMicromap = false;
-            }
-        }
-        if (!validationSupportsOpacityMicromap && requestedFeatures.opacityMicromap &&
-            (requestedFeatures.rayTracingAccelerationStructure || requestedFeatures.rayQuery || requestedFeatures.streamline)) {
-            spdlog::warn("[Vulkan] KHR OMM needs validation layers 1.4.357 or newer. "
-                "Keeping shader alpha traversal while this older validation layer is enabled.");
-        }
-    }
     VulkanPhysicalDeviceCandidate bestCandidate;
     VulkanDeviceFeatureSelection selectedFeatures;
 
@@ -9925,9 +9046,6 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         }
 
         VulkanExtensionSet extensions = queryDeviceExtensions(physicalDevice);
-        if (!extensions.opacityMicromapExt) {
-            extensions.opacityMicromap &= validationSupportsOpacityMicromap;
-        }
         if (!extensions.deviceAddressCommands) {
             spdlog::warn("Skipping Vulkan device '{}': VK_KHR_device_address_commands is unavailable.",
                 properties.deviceName);
@@ -10381,15 +9499,6 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
     deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline;
-    deviceImpl->opacityMicromapExt = selectedFeatures.opacityMicromapExt;
-    if (selectedFeatures.opacityMicromap) {
-        spdlog::info("[Vulkan] {} enabled{}",
-            selectedFeatures.opacityMicromapExt ? VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME : VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME,
-            selectedFeatures.opacityMicromapExt ? " (Nsight Graphics workaround)" : "");
-    }
-    if (selectedFeatures.rayTracingPositionFetch) {
-        spdlog::info("[Vulkan] VK_KHR_ray_tracing_position_fetch enabled");
-    }
     deviceImpl->capabilities.subPixelPrecisionBits = selectedProperties.limits.subPixelPrecisionBits;
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
 

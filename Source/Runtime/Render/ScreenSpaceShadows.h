@@ -55,7 +55,8 @@ std::vector<ScreenSpaceShadowLightRecord> buildScreenSpaceShadowLightRecords(
 // Invalid/disabled requested slots use the same automatic selection as -1.
 uint32_t selectScreenSpaceShadowLight(std::span<const ScreenSpaceShadowLightRecord> lights, int32_t requestedIndex);
 
-// Full TLAS shadow tracing; the legacy C++ name is retained for existing callers.
+// CLAS shadow tracing; the TLAS and attributes must share one streaming session.
+// The legacy C++ name is retained for existing callers.
 // One shadow history for the selected celestial/local light. The owner serializes frames.
 class ScreenSpaceShadows {
 public:
@@ -73,15 +74,15 @@ public:
         ScenePathTraceResources* geometry,
         const MeshletStreamDeferredGPUResourcesView* streamGeometry = nullptr,
         CPUProfileRecorder* profiler = nullptr,
-        RayTracingAccelerationStructure* accelerationStructure = nullptr);
+        RayTracingAccelerationStructure* accelerationStructure = nullptr); // Optional identity check for a graph publication.
     void clear();
 
 private:
     struct State;
     std::shared_ptr<State> state_;
-    std::array<ComputeResourceEncoder, 5> traceEncoders_;
-    std::array<ComputeKernel, 5> traces_; // conventional, NTC, NTC cooperative, streamed TLAS, stream pending
-    std::array<uint32_t, 5> traceTextureCounts_{};
+    std::array<ComputeResourceEncoder, 3> traceEncoders_;
+    std::array<ComputeKernel, 3> traces_; // CLAS, CLAS NTC, CLAS NTC cooperative
+    std::array<uint32_t, 3> traceTextureCounts_{};
 };
 
 } // namespace metallic::render

@@ -433,12 +433,7 @@ void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
     }
 
     if (push.enableAccumulation != 0u && !debugViewEnabled) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
-        }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
+        color = accumulateStreamPathTrace(pixel, color, push);
     }
 
     gOutput[pixel] = float4(color, 1.0);

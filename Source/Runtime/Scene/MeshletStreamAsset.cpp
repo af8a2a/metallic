@@ -5103,7 +5103,6 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
                     referencePrimitive.meshIndex = primitive->meshIndex;
                     referencePrimitive.primitiveIndex = primitive->primitiveIndex;
                     referencePrimitive.materialIndex = primitive->materialIndex;
-                    referencePrimitive.storage = primitive->storage;
                     preparedFromSource = true;
                 }
             }
@@ -5148,8 +5147,9 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
         primitiveMap[renderPrimitiveIndex] = primitiveIndex;
     }
 
-    for (size_t renderNodeIndex = 0; renderNodeIndex < desc.scene->renderNodes().size(); ++renderNodeIndex) {
-        const RenderNode& renderNode = desc.scene->renderNodes()[renderNodeIndex];
+    const Scene& instanceScene = desc.instanceScene ? *desc.instanceScene : *desc.scene;
+    for (size_t renderNodeIndex = 0; renderNodeIndex < instanceScene.renderNodes().size(); ++renderNodeIndex) {
+        const RenderNode& renderNode = instanceScene.renderNodes()[renderNodeIndex];
         if (renderNode.renderPrimitiveIndex < 0 ||
             static_cast<size_t>(renderNode.renderPrimitiveIndex) >= primitiveMap.size()) {
             continue;

@@ -189,7 +189,13 @@ public:
                     const auto values = renderColor();
                     if (cacheEnabled) {
                         requireSharc(hasStage("SHaRC update") && hasStage("SHaRC resolve") && hasStage("SHaRC query"), "Missing cache stages: " + preview.lastLog());
-                        requireSharc(hasStage("SHaRC clear") == (frame == 0), "Cache unexpectedly cleared while RR accumulation is off");
+                        // Initial page publication and its delayed CPU feedback
+                        // may invalidate cache history during streaming warmup.
+                        // Once stable, only the GPU-gated invalidation remains.
+                        requireSharc(hasStage("SHaRC clear") || hasStage("SHaRC stream invalidation"), "Missing streaming cache invalidation");
+                        if (frame >= 32) {
+                            requireSharc(!hasStage("SHaRC clear"), "Stable cache unexpectedly cleared while RR accumulation is off");
+                        }
                     }
                     const auto completed = preview.collectCompletedGpuExecutionStats();
                     requireSharc(bool(completed), "Read GPU timestamps");

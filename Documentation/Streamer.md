@@ -2,7 +2,7 @@
 
 `StreamerSubsystem`（`render.streamer`）统一管理场景资源和流送，代码集中在 `Source/Runtime/Render/Streamer/`：
 
-- `SceneResourceManager`：场景元数据与 GPU 材质/常驻资源快照。
+- `SceneResourceManager`：场景元数据与 GPU 材质、纹理快照。
 - `StreamingUploads`、`UploadStreamer`：按提交帧管理上传环、传输与完成状态。
 - `MeshletStreamRuntime`：按视图分配的流式会话，包含页表、GPU 反馈、LOD 遍历及活动 cluster。
 - `MeshletStreamResidency`、`MeshletStreamPageLoader`：预算内驻留、异步页面读取、上传与回收。
@@ -10,15 +10,15 @@
 
 VisibilityBuffer 和保留的 StreamAsset 诊断 Pass 通过 `acquireStream()` 借用会话。子系统拥有会话；提交帧保留强引用以保护 GPU 使用中的资源。借用结束且提交帧释放引用后，子系统回收会话。不同视图使用独立遍历反馈；GPUScene 继续负责稳定的场景身份和绘制索引。应用关机仍须先等待 GPU 完成。
 
-默认 `MetallicGPUDrivenSample` 使用 `gpu_driven_realtime.metallic_graph.json`，加载 `Asset/MiniZorah/zorah_main_public.v2.gltf` 的元数据及 `Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin`。`streamAssetOnly=true`、`enableMeshletStreaming=true`、`autoBuildStreamAsset=false` 强制该入口使用匹配的预构建缓存。未找到缓存、缓存过期或元数据格式不支持时返回错误。
+默认 `MetallicGPUDrivenSample` 使用 `gpu_driven_realtime.metallic_graph.json`，加载 `Asset/MiniZorah/zorah_main_public.v2.gltf` 的元数据及 `Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin`。场景统一进入几何流送，不再提供 resident/streaming 模式开关。匹配的缓存通过元数据加载；普通可导入场景缺少有效缓存时，CPU 导入结果作为流送烘焙输入。缺少源依赖或格式无法导入时明确失败。
 
-实时链路共用 VisibilityBuffer、LightGrid、OpenPBR Deferred、光追阴影/SIGMA、DLSS-SR、自动曝光及可选 DLSS-NR。默认图不包含路径追踪 Pass。Deferred 的首个交点来自可见性记录，不发射主相机射线查询；stream 记录从 Streamer 页池解码，resident 记录从 GPUScene 读取。两种记录共享材质分箱和照明实现。主光源阴影使用同一帧发布的流式 TLAS；尚未就绪时禁用该帧阴影，TLAS 就绪后重置 SIGMA 历史。
+实时链路共用 VisibilityBuffer、LightGrid、OpenPBR Deferred、光追阴影/SIGMA、DLSS-SR、自动曝光及可选 DLSS-NR。默认图不包含路径追踪 Pass。Deferred 的首个交点来自可见性记录，不发射主相机射线查询；所有可见性记录均从 Streamer 页池解码，GPUScene 只保存身份、变换、bounds 和材质映射。主光源阴影必须连接同一可见性 producer 发布的 CLAS TLAS；缺失或不匹配时明确失败。
 
-当前 position-only StreamAsset 格式提供位置与标量材质，流式法线由三角形恢复。此路径要求不透明材质；纹理、真实透明或体积透射不能由该缓存表达，会明确拒绝。材质资源可独立于常驻几何和 RTAS 准备，避免加载 MiniZorah 的全量源几何。流式阴影精度随驻留 LOD 变化；当前流式着色使用主光源阴影信号，其余灯光仍参与 LightGrid 照明。
+当前 position-only StreamAsset 格式提供位置与标量材质，流式法线由三角形恢复。此路径要求不透明材质；纹理、真实透明或体积透射不能由该缓存表达，会明确拒绝。材质资源可独立于几何流送会话准备，避免加载 MiniZorah 的全量源几何。流式阴影精度随驻留 LOD 变化；当前流式着色使用主光源阴影信号，其余灯光仍参与 LightGrid 照明。
 
 `MetallicGPUDrivenSample` 仅提供 MiniZorah 与 ZorahFull 两个正式场景；默认 MiniZorah，`--zorah-full` 加载 Full，`--list-scenes` 列出入口。File 菜单直接切换场景；File/Open 或拖入这两个源文件会加载对应的完整预设，包括相机、缓存与预算。保留 `--streamasset-path`、`--smoke-test`、`--debug-control`；`--sample` 仅接受这两个场景的 ID，不再支持任意 `--scene` 覆盖。其他诊断样例仍可在通用 `Metallic` 编辑器的 Built-in Sample 中选择。用法见 [GPUDrivenSample](GPUDrivenSample.md)。
 
-相关回归：`streamed_realtime_pipeline` 覆盖独立材质资源、禁止 resident 回退、流式 TLAS、材质分箱一致性、相机 guides、resize 和会话回收；`minizorah_realtime_pipeline` 在 `METALLIC_TEST_MINIZORAH=1` 下验证完整默认场景及 DLSS-SR。两者使用 `--rhi-realtime` 设备。原有 `stream_metadata_contract`、`stream_metadata_vbuffer` 与 Sponza 剔除测试保留。
+相关回归：`streamed_realtime_pipeline` 覆盖独立材质资源、统一流送资源契约、流式 TLAS、材质分箱一致性、相机 guides、resize 和会话回收；`minizorah_realtime_pipeline` 在 `METALLIC_TEST_MINIZORAH=1` 下验证完整默认场景及 DLSS-SR。两者使用 `--rhi-realtime` 设备。原有 `stream_metadata_contract`、`stream_metadata_vbuffer` 与 Sponza 剔除测试保留。
 
 默认实时预算为 512 MiB 几何页、256 MiB CLAS、256 MiB 动态 BLAS，活动 group 上限 65,536。粗 LOD 回退页保持锁定；这些预算为后处理和 DLSS 留出显存。
 

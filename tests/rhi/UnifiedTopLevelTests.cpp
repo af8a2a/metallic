@@ -2,7 +2,7 @@
 #include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
-#include "harness/RayQueryFixture.h"
+#include "harness/CLASRayFixture.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -46,7 +46,7 @@ public:
         auto created = bench::createTestDevice(context, {.applicationName = "Unified TLAS test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
-            .enablePartitionedAccelerationStructure = usePartitioned,
+            .enableClusterAccelerationStructure = true, .enablePartitionedAccelerationStructure = usePartitioned,
             .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
                 if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
                     ++*static_cast<std::atomic_uint*>(data);
@@ -61,24 +61,10 @@ public:
             return RHITestResult::skip("PTLAS unavailable");
         }
         auto& queue = *device.getQueue(QueueType::Graphics);
-        const auto& vertices = bench::kRayVertices;
-        auto vertex = device.createBuffer({.size = sizeof(vertices) + 32,
-            .usage = BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
-            .memoryLocation = MemoryLocation::HostUpload});
-        TLAS_REQUIRE(vertex);
-        void* mapped = (*vertex)->map();
-        TLAS_CHECK(mapped);
-        std::memcpy(static_cast<uint8_t*>(mapped) + 32, vertices.data(), sizeof(vertices));
-        (*vertex)->flush();
-        (*vertex)->unmap();
-        auto vertexSlice = (*vertex)->slice({32, sizeof(vertices)});
-        TLAS_REQUIRE(vertexSlice);
-        const RayTracingTriangleGeometryDesc geometry{.vertexBuffer = *vertexSlice, .vertexStride = 12,
-            .vertexCount = 3, .indexType = RayTracingIndexType::None, .primitiveCount = 1};
-        auto blasSizes = device.queryRayTracingAccelerationStructureBuildSizes({.geometries = {&geometry, 1}});
-        TLAS_REQUIRE(blasSizes);
-        auto blas = device.createRayTracingAccelerationStructure({.size = blasSizes->accelerationStructureSize});
-        TLAS_REQUIRE(blas);
+        bench::CLASRayFixture geometry;
+        TLAS_REQUIRE(geometry.initialize(device));
+        auto bottomLevel = geometry.bottomLevel();
+        TLAS_REQUIRE(bottomLevel);
         const auto flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
             RayTracingAccelerationStructureBuildFlags::AllowUpdate | RayTracingAccelerationStructureBuildFlags::AllowCompaction;
         auto standardSizes = device.queryRayTracingAccelerationStructureBuildSizes({
@@ -89,7 +75,7 @@ public:
         TLAS_REQUIRE(standard);
         TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure({.type = RayTracingAccelerationStructureType::TopLevel,
             .size = standardSizes->accelerationStructureSize, .topLevelBackend = RayTracingTopLevelBackend::Partitioned}), Error::InvalidArgument));
-        const RayTracingInstanceDesc instance{.bottomLevel = blas->get(), .customIndex = 37, .mask = 1};
+        const RayTracingInstanceDesc instance{.clusterBottomLevel = *bottomLevel, .customIndex = 37, .mask = 1};
         auto instances = device.createRayTracingInstanceBuffer({&instance, 1});
         TLAS_REQUIRE(instances);
         auto instanceSlice = (*instances)->slice();
@@ -97,7 +83,7 @@ public:
         Result<BufferSlice> partitionedSlice = BufferSlice{};
         std::unique_ptr<RayTracingAccelerationStructure> partitioned;
         std::unique_ptr<Buffer> partitionedInstances;
-        uint64_t scratchSize = std::max({blasSizes->buildScratchSize, standardSizes->buildScratchSize, standardSizes->updateScratchSize});
+        uint64_t scratchSize = std::max(standardSizes->buildScratchSize, standardSizes->updateScratchSize);
         if (usePartitioned) {
             const PartitionedAccelerationStructureBuildInputs inputs{.instanceCount = 1,
                 .partitionCount = 1, .maxInstancePerPartitionCount = 1};
@@ -111,7 +97,7 @@ public:
             TLAS_REQUIRE(resource);
             partitioned = std::move(*resource);
             const PartitionedAccelerationStructureInstanceDesc partitionedInstance{
-                .bottomLevel = blas->get(), .customIndex = 37, .mask = 1};
+                .clusterBottomLevel = *bottomLevel, .customIndex = 37, .mask = 1};
             auto encoded = device.createPartitionedAccelerationStructureInstanceBuffer({&partitionedInstance, 1});
             TLAS_REQUIRE(encoded);
             partitionedInstances = std::move(*encoded);
@@ -158,8 +144,6 @@ public:
         TLAS_REQUIRE(handle);
         TLAS_CHECK(handle->kind == BindlessHandleKind::AccelerationStructure);
         ResourceLease lease;
-        TLAS_CHECK(hasError(registry.accelerationStructure(**blas).transform([&](auto value) { lease = std::move(value); }), Error::InvalidArgument));
-        TLAS_CHECK(hasError((*heap)->writeAccelerationStructure(*handle, **blas), Error::InvalidArgument));
         auto queries = device.createRayTracingAccelerationStructureCompactionQueryPool({.queryCount = 1});
         TLAS_REQUIRE(queries);
         QueueSubmissionTracker tracker;
@@ -181,23 +165,14 @@ public:
         } drain{frame, **pool};
         TLAS_REQUIRE(frame.begin(0));
         TLAS_REQUIRE((*commands)->begin(frame.submissionContext()));
-        auto shortVertices = vertexSlice->subslice({0, sizeof(vertices) - 1});
         auto shortInstances = instanceSlice->subslice({0, sizeof(RayTracingGPUInstance) - 1});
         auto shortScratch = scratchSlice->subslice({0, 1});
-        TLAS_REQUIRE(shortVertices); TLAS_REQUIRE(shortInstances); TLAS_REQUIRE(shortScratch);
-        auto invalidGeometry = geometry;
-        invalidGeometry.vertexBuffer = *shortVertices;
-        TLAS_CHECK(hasError((*commands)->buildRayTracingAccelerationStructure({.destination = blas->get(),
-            .geometries = {&invalidGeometry, 1}, .scratchBuffer = *scratchSlice}), Error::InvalidArgument));
-        TLAS_CHECK(hasError((*commands)->buildRayTracingAccelerationStructure({.destination = blas->get(),
-            .geometries = {&geometry, 1}, .scratchBuffer = *shortScratch}), Error::InvalidArgument));
+        TLAS_REQUIRE(shortInstances); TLAS_REQUIRE(shortScratch);
+        TLAS_CHECK(hasError((*commands)->buildRayTracingAccelerationStructure({.destination = standard->get(),
+            .instanceBuffer = *instanceSlice, .instanceCount = 1, .scratchBuffer = *shortScratch}), Error::InvalidArgument));
         TLAS_CHECK(hasError((*commands)->buildRayTracingAccelerationStructure({.destination = standard->get(),
             .instanceBuffer = *shortInstances, .instanceCount = 1, .scratchBuffer = *scratchSlice}), Error::InvalidArgument));
-        TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({
-            .destination = blas->get(),
-            .geometries = {&geometry, 1},
-            .scratchBuffer = *scratchSlice,
-        }));
+        TLAS_REQUIRE(geometry.record(**commands));
         TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({.destination = standard->get(),
             .instanceBuffer = *instanceSlice, .instanceCount = 1, .scratchBuffer = *scratchSlice}));
         if (usePartitioned) {
@@ -245,7 +220,7 @@ public:
                             .mode = RayTracingAccelerationStructureBuildMode::Update, .instanceBuffer = *instanceSlice,
                             .instanceCount = 1, .scratchBuffer = *scratchSlice}));
                     } else {
-                        PartitionedAccelerationStructureInstanceDesc changed{.bottomLevel = blas->get(), .customIndex = 37, .mask = 1};
+                        PartitionedAccelerationStructureInstanceDesc changed{.clusterBottomLevel = *bottomLevel, .customIndex = 37, .mask = 1};
                         changed.transform[0][3] = translationX;
                         TLAS_REQUIRE(device.createPartitionedAccelerationStructureInstanceBuffer({&changed, 1}).transform([&](auto value) { partitionedInstances = std::move(value); }));
                         partitionedSlice = partitionedInstances->slice(); TLAS_REQUIRE(partitionedSlice);

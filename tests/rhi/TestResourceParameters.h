@@ -151,6 +151,7 @@ TEST_PUBLIC struct MaterialBinningProbeResources
 {
     TEST_PUBLIC TEST_STORAGE(uint) visibility;
     TEST_PUBLIC TEST_BUFFER records;
+    TEST_PUBLIC TEST_BUFFER groups;
     TEST_PUBLIC TEST_BUFFER instances;
     TEST_PUBLIC TEST_BUFFER materials;
     TEST_PUBLIC TEST_BUFFER shadingMaterials;
@@ -160,7 +161,7 @@ TEST_PUBLIC struct MaterialBinningProbeResources
     TEST_PUBLIC TEST_BUFFER output;
 };
 #ifdef __cplusplus
-static_assert(sizeof(MaterialBinningProbeResources) == 36);
+static_assert(sizeof(MaterialBinningProbeResources) == 40);
 #endif
 
 TEST_PUBLIC struct MaterialRuntimeProbeResources

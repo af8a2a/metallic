@@ -54,6 +54,8 @@ public struct SHARCResolveParameters
     public uint accumulationFrameNum;      // maximum number of frames for the temporal accumulation window
     public uint staleFrameNumMax;          // maximum number of frames without new samples before the cache entry is evicted
     public uint frameIndex;
+    // Direction/lobe-encoded keys cannot be reprojected as spatial grid keys.
+    public bool blendAdjacentLevels;
 };
 
 internal SHARCRadianceData sharcZeroRadianceData()
@@ -398,7 +400,7 @@ public void sharcResolveEntry(uint entryIndex, SHARCParameters sharcParameters, 
 
     // Reproject sample from adjacent level
     float3 cameraOffset = sharcParameters.hashGridParameters.cameraPosition.xyz - resolveParameters.cameraPositionPrev.xyz;
-    if ((dot(cameraOffset, cameraOffset) > 1e-6f) && (accumulatedFrameNum <= 2)) {
+    if (resolveParameters.blendAdjacentLevels && (dot(cameraOffset, cameraOffset) > 1e-6f) && (accumulatedFrameNum <= 2)) {
         HashGridKey adjacentLevelHashKey = sharcGetAdjacentLevelHashKey(hashGridKey, sharcParameters.hashGridParameters, resolveParameters.cameraPositionPrev);
 
         HashGridIndex hashGridIndex;

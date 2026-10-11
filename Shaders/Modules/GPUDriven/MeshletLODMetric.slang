@@ -3,7 +3,7 @@ implementing GPUDriven;
 
 namespace Metallic.GPUDriven
 {
-// Shared by resident and streamed selection. Camera encoding is independent of
+// Used by streamed selection. Camera encoding is independent of
 // either geometry payload: eye.w = near, forward.w = orthographic, and projection
 // stores render height, tan(half FOV), ortho height, and the biased render-pixel
 // threshold. CPU callers convert the display-pixel budget using render/display height.

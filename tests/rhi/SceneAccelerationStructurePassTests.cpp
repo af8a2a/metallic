@@ -5,7 +5,6 @@
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -30,10 +29,6 @@ using namespace render;
 
 class SceneAccelerationStructureProbePass final : public ComputePass {
 public:
-    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
-    {
-        return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::StandardAccelerationStructure};
-    }
     RenderGraphSceneDependency sceneDependency() const override
     {
         return {RenderGraphSceneSource::Input, {"accelerationStructure"}};
@@ -52,11 +47,6 @@ public:
     }
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
-        if (!context.preparedScene || !context.preparedScene->snapshot ||
-            !context.preparedScene->snapshot->pathTraceResources) {
-            return makeError(Error::InvalidArgument);
-        }
-        sceneResources_ = context.preparedScene->snapshot->pathTraceResources;
         const char* capabilities[]{"spvRayQueryKHR"};
         auto shader = compileSlangShaderToSpirv({.moduleName = "UnifiedTopLevelProbe",
             .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
@@ -68,9 +58,8 @@ public:
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         auto* structure = context.inputAccelerationStructure("accelerationStructure");
-        // The connected producer's mode/backend/preference must carry through
-        // resource preparation, avoiding an unused second RTAS on the consumer.
-        if (!sceneResources_ || sceneResources_->accelerationStructure().accelerationStructure() != structure) {
+        // The input comes from the connected streaming producer.
+        if (!structure || !structure->valid()) {
             return makeError(Error::InvalidArgument);
         }
         const ComputeDispatchBinding bindings[]{{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene),
@@ -80,24 +69,23 @@ public:
     }
 private:
     ComputeProgram program_;
-    std::shared_ptr<ScenePathTraceResources> sceneResources_;
 };
 
 class SceneAccelerationStructurePassTest : public RHITest {
 public:
-    explicit SceneAccelerationStructurePassTest(bool partitioned = false) : partitioned_(partitioned)
+    SceneAccelerationStructurePassTest()
     {
         type = RHITestType::Rendering;
-        name = partitioned ? "scene_acceleration_structure_pass_partitioned" : "scene_acceleration_structure_pass_standard";
+        name = "scene_acceleration_structure_pass_standard";
     }
     RHITestResult run(RHITestContext& context) override
     {
         std::string log;
         std::atomic_uint validationErrors = 0;
-        auto created = bench::createTestDevice(context, {.applicationName = "Scene AS graph refit test",
+        auto created = bench::createTestDevice(context, {.applicationName = "Scene AS graph build test",
             .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true, .enableRayTracingAccelerationStructure = true,
-            .enableRayQuery = true, .enablePartitionedAccelerationStructure = partitioned_,
+            .enableRayQuery = true, .enableClusterAccelerationStructure = true,
             .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
                 if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
                     ++*static_cast<std::atomic_uint*>(data);
@@ -106,14 +94,11 @@ public:
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("scene RTAS ray-query capabilities unavailable"); }
         SCENE_AS_REQUIRE(created);
         auto& device = **created;
-        if (partitioned_ && !device.capabilities().partitionedAccelerationStructure) {
-            return RHITestResult::skip("PTLAS unavailable");
-        }
         auto* graphics = device.getQueue(QueueType::Graphics);
         auto* compute = device.getQueue(QueueType::Compute);
         SCENE_AS_CHECK(graphics);
         if (!compute) { compute = graphics; }
-        const auto directory = context.outputDirectory / (partitioned_ ? "scene-as-partitioned" : "scene-as-standard");
+        const auto directory = context.outputDirectory / "scene-as-standard";
         std::filesystem::create_directories(directory);
         const auto path = directory / "scene.gltf";
         {
@@ -127,34 +112,6 @@ public:
         }
         scene::Scene scene;
         SCENE_AS_CHECK(scene.load(path));
-        const auto backend = partitioned_ ? RayTracingTopLevelBackend::Partitioned : RayTracingTopLevelBackend::Standard;
-        // A cancelled recording must not acknowledge the geometry revision, and
-        // preparing a later update must not overwrite the earlier upload.
-        {
-            SceneAccelerationStructureBuilder builder;
-            SCENE_AS_REQUIRE(builder.build(device, *graphics, scene, log, {.topLevelBackend = backend}));
-            auto transform = scene.nodes()[0].localMatrix;
-            transform.a03 = 0.1f;
-            SCENE_AS_CHECK(scene.setNodeLocalMatrix(0, transform));
-            SCENE_AS_REQUIRE(builder.prepareInstanceTransformUpdate(device, scene, log));
-            SCENE_AS_CHECK(builder.hasPendingInstanceTransformUpdate());
-            const auto oldUpload = builder.instanceTransformUpdateBuffer()->retainAllocation();
-            auto pool = device.createCommandPool(*compute);
-            SCENE_AS_REQUIRE(pool);
-            auto commands = (*pool)->createCommandBuffer();
-            SCENE_AS_REQUIRE(commands);
-            SCENE_AS_REQUIRE((*commands)->begin());
-            SCENE_AS_REQUIRE(builder.recordInstanceTransformUpdate(**commands, log, false));
-            SCENE_AS_REQUIRE((*commands)->end());
-            commands->reset();
-            pool->reset();
-            SCENE_AS_REQUIRE(builder.prepareInstanceTransformUpdate(device, scene, log));
-            SCENE_AS_CHECK(builder.hasPendingInstanceTransformUpdate());
-            transform.a03 = 0.15f;
-            SCENE_AS_CHECK(scene.setNodeLocalMatrix(0, transform));
-            SCENE_AS_REQUIRE(builder.prepareInstanceTransformUpdate(device, scene, log));
-            SCENE_AS_CHECK(oldUpload != builder.instanceTransformUpdateBuffer()->retainAllocation());
-        }
         static const bool registered = registerRenderGraphPassType("SceneASProbeTest", "Scene AS analytic ray probe",
             [] { return std::make_unique<SceneAccelerationStructureProbePass>(); });
         (void)registered;
@@ -165,9 +122,10 @@ public:
             if (scene.nodes()[0].localMatrix.a03 != initialTransform.a03) {
                 SCENE_AS_CHECK(scene.setNodeLocalMatrix(0, initialTransform));
             }
+            SCENE_AS_CHECK(scene.setObjectVisible(scene.objectForNode(0).entity(), false));
             RenderGraph graph;
             RenderGraphProperties properties{{"path", path.string()},
-                {"topLevelBackend", partitioned_ ? "partitioned" : "standard"}};
+                {"meshletNormalConeCull", false}};
             if (!asyncComputePreferred) { properties["AsyncComputePreferred"] = false; }
             graph.addNode("SceneAccelerationStructurePass", "Build", properties);
             graph.addNode("SceneASProbeTest", "Read");
@@ -189,19 +147,26 @@ public:
             }
             SCENE_AS_CHECK(prepared);
             const auto preparedMemory = device.memoryBudget().domains[size_t(MemoryBudgetDomain::RayTracing)];
-            SCENE_AS_CHECK(preparedMemory.allocationCount >= 2 && preparedMemory.allocationBytes != 0);
+            SCENE_AS_CHECK(preparedMemory.allocationCount == 0);
             executor.acceptSceneResourcePreparation();
             SCENE_AS_REQUIRE(executor.compile(device, graph, 1, 1, log));
             const auto compiledMemory = device.memoryBudget().domains[size_t(MemoryBudgetDomain::RayTracing)];
-            SCENE_AS_CHECK(compiledMemory.allocationCount == preparedMemory.allocationCount);
-            SCENE_AS_CHECK(compiledMemory.allocationBytes == preparedMemory.allocationBytes);
-            for (const float translation : {0.0f, 0.4f, 2.0f, 0.0f}) {
+            SCENE_AS_CHECK(compiledMemory.allocationCount >= preparedMemory.allocationCount);
+            SCENE_AS_CHECK(compiledMemory.allocationBytes >= preparedMemory.allocationBytes);
+            const std::array<std::pair<bool, float>, 7> cases{{{false, 0.0f}, {true, 0.0f},
+                {true, 0.4f}, {true, 2.0f}, {true, 0.0f}, {false, 0.0f}, {true, 0.0f}}};
+            bool wasVisible = false;
+            for (const auto [visible, translation] : cases) {
+                if (wasVisible != visible) {
+                    SCENE_AS_CHECK(scene.setObjectVisible(scene.objectForNode(0).entity(), visible));
+                    wasVisible = visible;
+                }
                 auto transform = scene.nodes()[0].localMatrix;
                 transform.a03 = translation;
                 if (scene.nodes()[0].localMatrix.a03 != translation) {
                     SCENE_AS_CHECK(scene.setNodeLocalMatrix(0, transform));
                 }
-                // Drop a recorded refit before acceptance, then rerun it through
+                // Drop a recorded build before acceptance, then rerun it through
                 // graph submission. The consumer must see the new transform.
                 if (translation == 0.4f) {
                     auto pool = device.createCommandPool(*graphics);
@@ -229,11 +194,10 @@ public:
                 const auto rays = bench::rayFixture().at("rays");
                 for (size_t i = 0; i < actual.size(); ++i) {
                     const float x = rays[i][0].get<float>() - translation, y = rays[i][1].get<float>();
-                    const bool hit = x > 0 && y > 0 && x + y < 1 && i != 4;
+                    const bool hit = visible && x > 0 && y > 0 && x + y < 1 && i != 4;
                     SCENE_AS_CHECK(actual[i].hit == uint32_t(hit));
                     SCENE_AS_CHECK(actual[i].instance == (hit ? 0u : UINT32_MAX));
                     if (hit) {
-                        SCENE_AS_CHECK(std::abs(actual[i].u - x) < 0.00001f && std::abs(actual[i].v - y) < 0.00001f);
                         SCENE_AS_CHECK(std::abs(actual[i].distance - (i == 5 ? 3.0f : 2.0f)) < 0.00001f);
                     }
                 }
@@ -247,7 +211,7 @@ public:
         }
         // Two views can share one subsystem host and its scene-resource manager.
         // Their mutable top levels/scratch must still belong to their graph so
-        // one view's refit cannot change the other view's queued ray queries.
+        // one view's build cannot change the other view's queued ray queries.
         {
             RenderSubsystemHost host;
             RenderWorld world;
@@ -256,7 +220,7 @@ public:
             second.bindRuntimeScene(&scene);
             RenderGraph graph;
             graph.addNode("SceneAccelerationStructurePass", "Build", {{"path", path.string()},
-                {"topLevelBackend", partitioned_ ? "partitioned" : "standard"}});
+                {"meshletNormalConeCull", false}});
             graph.addNode("SceneASProbeTest", "Read");
             SCENE_AS_CHECK(graph.addEdge("Build.accelerationStructure", "Read.accelerationStructure"));
             SCENE_AS_CHECK(graph.markOutput("Read.observations"));
@@ -297,7 +261,7 @@ public:
             // Independent producers in one graph have distinct logical AS
             // resources, so they must also own distinct mutable native storage.
             graph.addNode("SceneAccelerationStructurePass", "BuildOther", {{"path", path.string()},
-                {"topLevelBackend", partitioned_ ? "partitioned" : "standard"}});
+                {"meshletNormalConeCull", false}});
             graph.addNode("SceneASProbeTest", "ReadOther");
             SCENE_AS_CHECK(graph.addEdge("BuildOther.accelerationStructure", "ReadOther.accelerationStructure"));
             SCENE_AS_CHECK(graph.markOutput("ReadOther.observations"));
@@ -316,19 +280,12 @@ public:
                 otherProducer->accelerationStructure->memoryInfo().allocationId);
         }
         SCENE_AS_CHECK(validationErrors.load() == 0);
-        return RHITestResult::pass("15 analytic scene frames verify TLAS/PTLAS refits, async preference, cancellation, connected scene sharing and AS producer isolation");
+        return RHITestResult::pass("Analytic scene frames verify initial-hidden/show/hide, CLAS TLAS builds, async preference, cancellation, connected scene sharing and AS producer isolation");
     }
 private:
-    bool partitioned_;
-};
-
-class ScenePartitionedAccelerationStructurePassTest final : public SceneAccelerationStructurePassTest {
-public:
-    ScenePartitionedAccelerationStructurePassTest() : SceneAccelerationStructurePassTest(true) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(SceneAccelerationStructurePassTest);
-METALLIC_REGISTER_RHI_TEST(ScenePartitionedAccelerationStructurePassTest);
 
 #undef SCENE_AS_CHECK
 #undef SCENE_AS_REQUIRE

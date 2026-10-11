@@ -18,7 +18,9 @@ source retains its NVIDIA notice. Production shaders do not include that snapsho
 The supported configuration matches the existing renderer: 64-bit keys and atomic
 compare-exchange, normal bits, 16-slot buckets, the existing empty-slot termination
 rule, depth-two update propagation with cache resampling, and adjacent-level resolve
-blending. Radiance/sample count remain fp16 halves packed in `uint2`; both cache
+blending controlled by `SHARCResolveParameters.blendAdjacentLevels`. OpenPBR's
+direction/lobe keys disable spatial reprojection through that typed parameter.
+Radiance/sample count remain fp16 halves packed in `uint2`; both cache
 records stay 16 bytes. Responsive lighting and SH encoding remain unsupported.
 Unused compact-key and lock-buffer branches are not part of this module.
 
@@ -34,6 +36,11 @@ hash-grid and radiance helpers without depending on pass-local macro propagation
 lower-camel function names, types preserve the SHARC acronym, and implementation
 helpers are internal. The compiler tracks the module and its `__include` files as
 transitive cache/hot-reload dependencies.
+
+The streaming path clears the cache on the GPU before update/resolve when the
+current CLAS cut changes. Texture publications and CPU scene changes also
+invalidate cache/history. Path-tracing history stores its effective frame count
+in alpha so a GPU cut reset survives independently of the CPU frame counter.
 
 Validation: compile clear/resolve plus plain/update/query paths, including guides
 and custom materials; run `MetallicRHITests --filter sharc` with mapped and

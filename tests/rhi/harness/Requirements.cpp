@@ -15,8 +15,6 @@ const char* name(Capability value)
     case Capability::IndependentCopy: return "independentCopyQueue";
     case Capability::IndependentCompute: return "independentComputeQueue";
     case Capability::RayQuery: return "rayQuery";
-    case Capability::PositionFetch: return "positionFetch";
-    case Capability::OpacityMicromap: return "opacityMicromap";
     case Capability::UnifiedLayouts: return "unifiedLayouts";
     case Capability::PartitionedAS: return "partitionedAS";
     case Capability::ClusterAS: return "clusterAS";
@@ -81,7 +79,7 @@ bool failed(Status value)
 render::Result<Profile> profile(std::string id, Validation validation)
 {
     if (id != "core" && id != "binding" && id != "async" && id != "core-unified" &&
-        id != "ray-query" && id != "ray-query-position" && id != "ray-query-omm" &&
+        id != "ray-query" &&
         id != "ray-query-ptlas" && id != "ray-query-clas" && id != "binding-dgc" && id != "decompression") {
         return render::makeError(render::Error::InvalidArgument);
     }
@@ -92,16 +90,12 @@ render::Result<Profile> profile(std::string id, Validation validation)
     value.desc.enableSynchronizationValidation = validation == Validation::Synchronization;
     value.desc.enableBindlessDescriptorHeap = value.id != "core" && value.id != "core-unified";
     value.desc.enableAsyncCompute = value.id == "async";
-    metallic::render::vulkan::deviceExtensions(value.desc).enableOpacityMicromap = false;
-    value.desc.enableRayTracingPositionFetch = false;
     value.desc.enableDeviceGeneratedCommands = false;
     metallic::render::vulkan::deviceExtensions(value.desc).preferUnifiedImageLayouts = value.id == "core-unified";
     value.desc.enableRayTracingAccelerationStructure = value.id.starts_with("ray-query");
     value.desc.enableRayQuery = value.desc.enableRayTracingAccelerationStructure;
-    value.desc.enableRayTracingPositionFetch = value.id == "ray-query-position";
-    metallic::render::vulkan::deviceExtensions(value.desc).enableOpacityMicromap = value.id == "ray-query-omm";
     value.desc.enablePartitionedAccelerationStructure = value.id == "ray-query-ptlas";
-    value.desc.enableClusterAccelerationStructure = value.id == "ray-query-clas";
+    value.desc.enableClusterAccelerationStructure = value.id.starts_with("ray-query");
     value.desc.enableDeviceGeneratedCommands = value.id == "binding-dgc";
     return value;
 }
@@ -116,8 +110,6 @@ bool enabled(Capability capability, const render::DeviceCapabilities& caps,
     case Capability::IndependentCopy: return caps.independentCopyQueue;
     case Capability::IndependentCompute: return caps.independentComputeQueue;
     case Capability::RayQuery: return caps.rayQuery;
-    case Capability::PositionFetch: return caps.rayTracingPositionFetch;
-    case Capability::OpacityMicromap: return backendCaps.opacityMicromap;
     case Capability::UnifiedLayouts: return backendCaps.unifiedImageLayouts;
     case Capability::PartitionedAS: return caps.partitionedAccelerationStructure;
     case Capability::ClusterAS: return caps.clusterAccelerationStructure;
@@ -134,8 +126,6 @@ bool requested(Capability capability, const Profile& value)
     case Capability::Bindless: return value.desc.enableBindlessDescriptorHeap;
     case Capability::IndependentCompute: return value.desc.enableAsyncCompute;
     case Capability::RayQuery: return value.desc.enableRayQuery;
-    case Capability::PositionFetch: return value.desc.enableRayTracingPositionFetch;
-    case Capability::OpacityMicromap: return metallic::render::vulkan::deviceExtensions(value.desc).enableOpacityMicromap;
     case Capability::UnifiedLayouts: return metallic::render::vulkan::deviceExtensions(value.desc).preferUnifiedImageLayouts;
     case Capability::PartitionedAS: return value.desc.enablePartitionedAccelerationStructure;
     case Capability::ClusterAS: return value.desc.enableClusterAccelerationStructure;

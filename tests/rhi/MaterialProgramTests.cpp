@@ -159,8 +159,8 @@ public:
     {
         using namespace render;
         std::string log;
-        for (const bool positionFetch : {false, true}) {
-            const SceneShaderOptions options{.hasRTXCR = METALLIC_HAS_RTXCR != 0, .positionFetch = positionFetch,
+        {
+            const SceneShaderOptions options{.hasRTXCR = METALLIC_HAS_RTXCR != 0,
                 .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR};
             for (const auto program : {SceneShaderProgram::PathTraceGuides, SceneShaderProgram::OpenPBRPathTraceGuides}) {
                 const auto request = makeSceneShaderRequest(program, options);
@@ -176,7 +176,7 @@ public:
                 }
             }
         }
-        return RHITestResult::pass("Standard/OpenPBR guides and OpenPBR SHaRC update/query compile with both position-fetch variants; compile-only");
+        return RHITestResult::pass("Standard/OpenPBR guides and OpenPBR SHaRC update/query compile with streamed CLAS geometry; compile-only");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialProgramGuideCompileTest);

@@ -1,3 +1,5 @@
+#include "StreamRayTracingBindings.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
@@ -41,7 +43,14 @@ public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
         return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure};
+            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::AccelerationStructure, .geometry = true, .textureFeedback = true};
+    }
+
+    void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
+    {
+        SceneRTXDIPush push{};
+        buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), {}, push);
+        describeStreamRayView(push, view);
     }
 
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
@@ -51,7 +60,7 @@ public:
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
         static constexpr std::array required{
-            EnvironmentLightingSubsystem::kSubsystemId,
+            EnvironmentLightingSubsystem::kSubsystemId, GPUSceneSubsystem::kSubsystemId,
         };
         return required;
     }
@@ -59,8 +68,6 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
-            .accelerationStructureRead().setOptional();
         auto& color = reflection.addTextureOutput("color", "ReSTIR DI many-light direct illumination")
             .storageWrite();
         color.format = Format::RGBA32Sfloat;
@@ -228,12 +235,10 @@ public:
             hasPreviousCamera_ = false;
         }
         const bool ntcActive = sceneResources_.neuralTextures().active();
-        const bool positionFetch = context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         if (rayQueryProgram_.valid() &&
             compiledTextureCount_ == sceneResources_.materialTextureCount() &&
-            compiledPositionFetch_ == positionFetch &&
             compiledNtcActive_ == ntcActive &&
             compiledNtcCooperativeVector_ == ntcCooperativeVector) {
             return {};
@@ -243,7 +248,7 @@ public:
 
         ShaderCompileResult computeCompile;
         SceneRayQueryOptions shaderOptions{
-            .positionFetch = positionFetch, .hasNTC = ntcActive, .cooperativeVector = ntcCooperativeVector,
+            .hasNTC = ntcActive, .cooperativeVector = ntcCooperativeVector,
         };
 #if METALLIC_HAS_NTC
         shaderOptions.ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR;
@@ -269,10 +274,6 @@ public:
         std::vector<ComputeResourceBindingDesc> bindings{
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), .kind = ComputeResourceBindingKind::AccelerationStructure},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output), .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices), .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices), .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives), .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances), .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer},
             {
@@ -306,9 +307,8 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .kind = ComputeResourceBindingKind::StorageBuffer},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .kind = ComputeResourceBindingKind::SampledImage},
         };
-        if (!positionFetch) {
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .kind = ComputeResourceBindingKind::StorageBuffer});
-        }
+        appendStreamRayLayout(bindings);
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
         if (ntcActive) {
             bindings.push_back({
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
@@ -355,7 +355,6 @@ public:
         } else {
             compiledNtcActive_ = ntcActive;
             compiledTextureCount_ = sceneResources_.materialTextureCount();
-            compiledPositionFetch_ = positionFetch;
             compiledNtcCooperativeVector_ = ntcCooperativeVector;
         }
         return result;
@@ -553,25 +552,24 @@ public:
         TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
         TextureView* const localLightPdfViews[] = {lights_.lightPdfView()};
         TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
+        const auto* prepared = context.preparedScene();
+        if (!prepared || !prepared->geometry) { return makeError(Error::InvalidArgument); }
+        const auto streamGeometry = prepared->geometry->deferredGpuResources();
+        if (!streamGeometry.valid() || !streamGeometry.accelerationStructure) { return makeError(Error::InvalidArgument); }
         std::vector<ComputeDispatchBinding> bindings{
             {
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
                 .accelerationStructure =
-                    context.inputAccelerationStructure("accelerationStructure")
-                        ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure(),
+                    streamGeometry.accelerationStructure,
             },
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output), .textureView = color.view()},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices), .buffer = sceneResources_.shadingVertexBuffer()},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices), .buffer = sceneResources_.indexBuffer()},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives), .buffer = sceneResources_.primitiveBuffer()},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances), .buffer = sceneResources_.instanceBuffer()},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .buffer = sceneResources_.materialBuffer()},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = sceneResources_.materialBinding()->valueBuffer()
                 ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()},
             {
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
                 .textureViews = materialTextureViews,
+                .sampledImages = sceneResources_.materialTextureSnapshot(),
             },
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, reservoirCurrent), .textureView = reservoirHistory.current},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, reservoirPrevious), .textureView = reservoirHistory.previous},
@@ -602,6 +600,8 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.celestialLights), .buffer = celestial.buffer.get()},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .buffer = lights_.reGIRBuffer()},
         };
+        appendStreamRayBindings(bindings, streamGeometry, prepared->geometry->shadingChangeBuffer());
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback});
         if (environment.atmosphereParametersBuffer != nullptr) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .textureViews = {atmosphereTransmittanceViews, 1}});
@@ -613,9 +613,6 @@ public:
             }
         }
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
-        if (sceneResources_.fallbackPositionBuffer() != nullptr) {
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .buffer = sceneResources_.fallbackPositionBuffer()});
-        }
         if (neuralTextures.active()) {
             const auto& latentViews = neuralTextures.latentTextureViews();
             bindings.push_back({
@@ -1068,7 +1065,6 @@ private:
     ComputeResourceEncoder rayQueryProgramEncoder_;
     bool compiledNtcActive_ = false;
     uint32_t compiledTextureCount_ = 0;
-    bool compiledPositionFetch_ = false;
     bool compiledNtcCooperativeVector_ = false;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;

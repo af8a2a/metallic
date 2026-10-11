@@ -262,7 +262,8 @@ class GPUDrivenStreamAssetPass final : public UnsafePass {
 public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
-        return {.geometry = SceneStreamKind::Asset};
+        return {.features = properties().value("enableClusterRtx", false) || properties().value("rtasVisualization", false)
+            ? SceneResourceFeatureBits::AccelerationStructure : SceneResourceFeatureBits::None, .geometry = true};
     }
     void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
     {
@@ -271,8 +272,7 @@ public:
 
     RenderGraphSceneDependency sceneDependency() const override
     {
-        return {boolProperty(properties(), "streamAssetOnly", false)
-            ? RenderGraphSceneSource::None : RenderGraphSceneSource::World};
+        return {RenderGraphSceneSource::World};
     }
 
     ~GPUDrivenStreamAssetPass() override
@@ -406,9 +406,7 @@ public:
             gpuSceneView_ = {};
         }
 
-        const bool streamAssetOnly = boolProperty(properties(), "streamAssetOnly", false);
-        const scene::Scene* runtimeScene = streamAssetOnly ? nullptr : runtimeSceneForPath(
-            context.runtimeScene, scenePathFromProperties(properties()));
+        const scene::Scene* runtimeScene = context.preparedScene ? context.preparedScene->sourceScene : nullptr;
 
         if (gpuSceneSource_ != runtimeScene) {
             releaseGPUSceneSourceLease();
@@ -428,10 +426,6 @@ public:
         const uint64_t sourceContentRevision = runtimeScene != nullptr ? runtimeScene->contentRevision() : 0;
         const bool rtasVisualization = boolProperty(properties(), "rtasVisualization", false);
         if (rtasVisualization) {
-            if (!boolProperty(properties(), "enableClusterRtx", false)) {
-                log = "GPUDrivenStreamAssetPass RTAS visualization requires enableClusterRtx=true";
-                return makeError(Error::InvalidArgument);
-            }
             if (!context.device->capabilities().rayQuery ||
                 !context.device->capabilities().clusterAccelerationStructure) {
                 log = "GPUDrivenStreamAssetPass RTAS visualization requires rayQuery and clusterAccelerationStructure";
@@ -447,7 +441,6 @@ public:
             (streamRuntime_ && streamRuntime_->ready()) && streamRuntime_ == preparedStream &&
             compiledSourceIdentity_ == sourceIdentity &&
             compiledSourceContentRevision_ == sourceContentRevision &&
-            compiledStreamAssetOnly_ == streamAssetOnly &&
             compiledDebugReadback_ == context.debugReadback &&
             compiledColorFormat_ == context.defaultFormat &&
             rtasVisualization_ == rtasVisualization) {
@@ -710,7 +703,6 @@ public:
         device_ = context.device;
         compiledSourceIdentity_ = sourceIdentity;
         compiledSourceContentRevision_ = sourceContentRevision;
-        compiledStreamAssetOnly_ = streamAssetOnly;
         compiledDebugReadback_ = context.debugReadback;
         compiledColorFormat_ = context.defaultFormat;
         compiled_ = true;
@@ -1560,7 +1552,6 @@ private:
     uint64_t compiledSourceContentRevision_ = 0;
     Format compiledColorFormat_ = Format::RGBA8Unorm;
     bool compiledDebugReadback_ = false;
-    bool compiledStreamAssetOnly_ = false;
     bool compiled_ = false;
 };
 

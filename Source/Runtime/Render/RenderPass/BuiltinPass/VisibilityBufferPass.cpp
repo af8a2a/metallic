@@ -9,7 +9,6 @@
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
-#include "Runtime/Render/ResidentMeshletLOD.h"
 #include "Runtime/Render/HZBSPD.h"
 #include "Runtime/Render/GPUDrivenTessellation.h"
 #include "Runtime/Render/ClusterLightGrid.h"
@@ -94,10 +93,6 @@ constexpr uint32_t kVisibilityModeTessellatedTriangle = 7;
 constexpr uint32_t kGPUDrivenInvalidBindlessIndex =
     std::numeric_limits<uint32_t>::max();
 
-struct GPUDrivenPreviewMeshletRange {
-    uint32_t offset = 0;
-    uint32_t count = 0;
-};
 
 struct GPUDrivenPreviewCullingTargets {
     std::unique_ptr<Texture> visibility;
@@ -114,9 +109,6 @@ struct GPUDrivenPreviewFrameSlotResources {
     std::array<Buffer*, 2> visibleMeshletBuffers{};
     std::array<Buffer*, 2> indirectBuffers{};
     ResourceLease paramsHandle;
-    ResourceLease lodSelectionHandle;
-    ResourceLease lodArgumentsHandle;
-    ResourceLease lodScratchHandle;
     ResourceLease instanceVisibilityHandle;
     ResourceLease visibleInstanceIdsHandle;
     ResourceLease visibleInstanceCounterHandle;
@@ -126,9 +118,6 @@ struct GPUDrivenPreviewFrameSlotResources {
 
 struct GPUDrivenPreviewFrameSlotBindings {
     ResourceLease paramsHandle;
-    ResourceLease lodSelectionHandle;
-    ResourceLease lodArgumentsHandle;
-    ResourceLease lodScratchHandle;
     ResourceLease instanceVisibilityHandle;
     ResourceLease visibleInstanceIdsHandle;
     ResourceLease visibleInstanceCounterHandle;
@@ -137,7 +126,6 @@ struct GPUDrivenPreviewFrameSlotBindings {
 };
 
 struct GPUDrivenPreviewBindingBundle {
-    std::vector<std::shared_ptr<ResidentMeshletLOD>> residentLods;
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer;
     ResourceLease hybridQueueHandle;
     ResourceLease hybridClusterHandle;
@@ -165,7 +153,6 @@ struct GPUDrivenPreviewBindingBundle {
 };
 
 struct GPUDrivenPreviewRetiredViewResources {
-    std::vector<std::shared_ptr<ResidentMeshletLOD>> residentLods;
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer;
     GPUDrivenPreviewCullingTargets cullingTargets;
     std::unique_ptr<Buffer> materialTextureRemapBuffer;
@@ -181,7 +168,7 @@ public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
         return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures,
-            .geometry = SceneStreamKind::Visibility};
+            .geometry = true};
     }
 
     bool supportsFrameOverlap() const override
@@ -211,8 +198,7 @@ public:
 
     std::vector<std::string> debugCheckpoints() const override
     {
-        std::vector<std::string> points{"AfterEarlyCull", "AfterLateCull", "AfterPass",
-            "AfterResidentLod", "AfterResidentEarlyBins", "AfterResidentLateBins"};
+        std::vector<std::string> points{"AfterEarlyCull", "AfterLateCull", "AfterPass"};
         if (streamEnabled_) { points.insert(points.end(), {"AfterStreamEarlyCandidates", "AfterStreamEarlyClusterCull", "AfterStreamEarlyClassify", "AfterStreamEarlyBins", "AfterStreamEarlyRaster", "AfterStreamEarlyResolve",
             "AfterStreamLateCandidates", "AfterStreamLateClusterCull", "AfterStreamLateClassify", "AfterStreamLateBins", "AfterStreamLateRaster", "AfterStreamLateResolve"}); }
         if (streamEnabled_) { points.insert(points.begin(), {"BeforeStreamUpdates", "AfterStreamUpdates",
@@ -245,13 +231,13 @@ public:
         auto& domain = reflection.addTextureOutput("domain", "Displaced domain barycentrics and geometric normal");
         domain.colorWrite();
         // Active attachments are cleared by the first raster, including empty
-        // resident geometry. The inactive dummy domain is never initialized.
+        // empty geometry. The inactive dummy domain is never initialized.
         if (tessellationEnabled()) { domain.transient(RenderGraphInitialization::Clear); }
         // Inactive consumers are gated by rasterInfo; keep the graph port cheap
         // without changing the viewport extent shared by this pass's outputs.
         domain.format = tessellationEnabled() ? Format::RGBA32Sfloat : Format::R8Unorm;
         domain.usage = domain.usage | TextureUsageBits::Sampled;
-        auto& rasterInfo = reflection.addBufferOutput("rasterInfo", "Raster camera and resident GPUScene identity")
+        auto& rasterInfo = reflection.addBufferOutput("rasterInfo", "Raster camera and GPUScene identity")
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         rasterInfo.memoryLocation = MemoryLocation::HostUpload;
         return reflection;
@@ -323,7 +309,7 @@ public:
         // lease, identity and geometry revisions before publishing rasterInfo.
         // compile() keeps scene resources and streaming progress across viewport
         // resizes; execute() updates screen resources at the actual render extent.
-        return visibilityPipelines_[0] != nullptr ? compile(context, log) : Result<>{};
+        return streamVisibilityPipeline_ != nullptr ? compile(context, log) : Result<>{};
     }
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
@@ -396,14 +382,8 @@ public:
         const scene::Scene* runtimeScene = runtimeSceneForPath(
             context.runtimeScene,
             scenePathFromProperties(properties()));
-        if (runtimeScene != nullptr && boolProperty(&properties(), "streamAssetOnly", false) &&
-            !runtimeScene->hasStreamGeometry()) {
-            log = "VisibilityBufferPass streamAssetOnly requires a metadata scene; select sceneBinding=asset to load it";
-            return makeError(Error::InvalidArgument);
-        }
-
         preparedScene_ = context.preparedScene;
-        if (!preparedScene_) { return makeError(Error::InvalidArgument); }
+        if (!preparedScene_ || !preparedScene_->geometry) { return makeError(Error::InvalidArgument); }
         const bool requestedStreamEnabled = bool(preparedScene_->geometry);
         const auto& requestedStreamAssetPath = preparedScene_->streamAssetPath;
         if (gpuSceneSource_ != runtimeScene) {
@@ -436,12 +416,11 @@ public:
         // ensureFrameResources() resizes the raster/HZB resources in execute().
         // Material revisions are consumed by syncRuntimeGeometry/GPUScene. They
         // must not reopen Streamer and discard the currently resident safe cut.
-        if (visibilityPipelines_[0] != nullptr &&
-            (drawTaskCount_ > 0 || streamEnabled_) &&
+        if (streamVisibilityPipeline_ != nullptr &&
+            streamEnabled_ &&
             compiledTessellationKey_ == tessellationKey() &&
             compiledTextureMaxDimension_ == properties().value("materialTextureMaxDimension", 512) &&
             compiledTextureBudgetMiB_ == properties().value("materialTextureBudgetMiB", 2048) &&
-            compiledTextureStreaming_ == properties().value("materialTextureStreaming", false) &&
             compiledTextureRefineDimension_ == properties().value("materialTextureRefineDimension", 512) &&
             compiledTextureColdFrames_ == properties().value("materialTextureColdFrames", 180) &&
             compiledTextureMaskMaxDimension_ == properties().value("materialTextureMaskMaxDimension", 0) &&
@@ -455,56 +434,22 @@ public:
             streamRuntime_ == preparedScene_->geometry &&
             (!requestedStreamEnabled ||
                 (compiledStreamAssetPath_ == requestedStreamAssetPath &&
-                    compiledStreamSourceId_ == preparedScene_->streamSourceId &&
                     compiledStreamSourcePath_ == preparedScene_->streamSourcePath))) {
             return {};
         }
 
-        std::vector<GPUDrivenPreviewGPUVertex> vertices;
-        std::vector<GPUDrivenPreviewGPUMeshlet> meshlets;
-        std::vector<GPUDrivenPreviewGPUMeshletDraw> meshletDraws;
-        std::vector<uint32_t> meshletVertices;
-        std::vector<uint32_t> meshletTriangles;
-        std::vector<SceneGPUTransform> transforms;
-        std::vector<GPUDrivenPreviewGPUInstance> instances;
-        std::vector<uint32_t> instanceRenderNodeIndices;
-        std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges;
-        GPUDrivenPreviewMeshletRange baseMeshletRange;
         auto compileStageBegin = GPUDrivenCompileClock::now();
-        if (!buildMeshletScene(
-                properties(),
-                runtimeScene,
-                vertices,
-                meshlets,
-                meshletDraws,
-                meshletVertices,
-                meshletTriangles,
-                transforms,
-                instances,
-                instanceRenderNodeIndices,
-                drawBounds_,
-                baseMeshletRange,
-                lodLevelRanges,
-                log)) {
-            return makeError(Error::Failure);
-        }
-        spdlog::info(
-            "[VisibilityBufferPass] CPU raster plan vertices={} uniqueMeshlets={} meshletDraws={} instances={}; GPU payload is owned by GPUScene",
-            vertices.size(),
-            meshlets.size(),
-            meshletDraws.size(),
-            instances.size());
-        logGPUDrivenCompileStage("meshlet scene", compileStageBegin);
-        if (runtimeScene == nullptr) {
-            log = "VisibilityBufferPass alpha testing requires a runtime scene";
+        if (!runtimeScene || !runtimeScene->bounds().valid) {
+            log = "VisibilityBufferPass requires scene metadata and bounds";
             return makeError(Error::InvalidArgument);
         }
+        drawBounds_ = runtimeScene->bounds();
+        instanceCount_ = static_cast<uint32_t>(runtimeScene->renderNodes().size());
         if (requestedStreamEnabled) {
             resetStreamIntegration();
             streamRuntime_ = preparedScene_->geometry;
             streamEnabled_ = true;
             compiledStreamAssetPath_ = requestedStreamAssetPath;
-            compiledStreamSourceId_ = preparedScene_->streamSourceId;
             compiledStreamSourcePath_ = preparedScene_->streamSourcePath;
         } else {
             resetStreamIntegration();
@@ -523,20 +468,15 @@ public:
         materialCount_ = static_cast<uint32_t>(std::max<size_t>(runtimeScene->materials().size(), 1u));
         materialTextureCount_ = materialCount_ * kGPUSceneMaterialTextureSlotCount;
 
-        baseMeshletRange_ = baseMeshletRange;
-        lodLevelRanges_ = std::move(lodLevelRanges);
-        drawTaskCount_ = maxMeshletRangeCount(baseMeshletRange_, lodLevelRanges_);
-        instanceCount_ = static_cast<uint32_t>(instances.size());
-        if ((drawTaskCount_ == 0 && !streamEnabled_) || instanceCount_ == 0) {
-            log = "VisibilityBufferPass found no drawable meshlet instances";
+        if (!streamEnabled_ || instanceCount_ == 0) {
+            log = "VisibilityBufferPass found no streamed instances";
             return makeError(Error::Failure);
         }
-        residentRecordCapacity_ = static_cast<uint32_t>(meshletDraws.size());
         streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
         if (streamEnabled_ && !visibilityRecordRangeFitsId(
-                residentRecordCapacity_,
+                0u,
                 streamRuntime_->visibleClusterCapacity())) {
-            log = "VisibilityBufferPass resident + stream records exceed the visibility ID range";
+            log = "VisibilityBufferPass stream records exceed the visibility ID range";
             return makeError(Error::InvalidArgument);
         }
 
@@ -561,7 +501,6 @@ public:
             context.height,
             properties(),
             drawBounds_,
-            baseMeshletRange_,
             instanceCount_,
             hzbMipCount_,
             frameIndex_,
@@ -616,51 +555,6 @@ public:
         }
         logGPUDrivenCompileStage("shader and compute pipelines", compileStageBegin);
         compileStageBegin = GPUDrivenCompileClock::now();
-        for (uint32_t bucketIndex = 0;
-             bucketIndex < kGPUDrivenPreviewDrawBucketCount;
-             ++bucketIndex) {
-            const bool masked = bucketIndex >= 2u;
-            const bool doubleSided = (bucketIndex & 1u) != 0u;
-            GraphicsPipelineDesc pipelineDesc{
-                .taskShader = {amplificationShader_.get()},
-                .meshShader = {masked ? maskedMeshShader_.get() : meshShader_.get()},
-                .fragmentShader = {masked ? maskedFragmentShader_.get() : fragmentShader_.get()},
-                .taskRequiredSubgroupSize = amplificationWave32_
-                    ? kGPUDrivenPreviewAmplificationGroupSize
-                    : 0u,
-                .taskRequireFullSubgroups = amplificationWave32_,
-                .colorFormats = {Format::R32Uint, Format::RGBA32Sfloat, Format::RGBA8Unorm},
-                .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
-                .depthStencilFormat = Format::D32Sfloat,
-                .rasterization = RasterizationState{
-                    .cullMode = doubleSided ? CullMode::None : CullMode::Back,
-                    // visibilityBufferMeshMain flips clip-space Y while the
-                    // positive-height Vulkan viewport flips winding again.
-                    .frontFace = FrontFace::CounterClockwise,
-                },
-                .depthStencil = DepthStencilState{
-                    .depthTestEnable = true,
-                    .depthWriteEnable = true,
-                    .depthCompareOp = depthCompareOp(),
-                },
-                .usesBindlessHeap = true,
-            };
-            result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { visibilityPipelines_[bucketIndex] = std::move(rhiValue); });
-            // Frozen HZB raster needs only visibility/depth. Use a matching
-            // single-target PSO so it cannot overwrite viewport domain/colors.
-            if (result && tessellationEnabled()) {
-                pipelineDesc.fragmentShader.module = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
-                pipelineDesc.colorAttachmentCount = 1;
-                result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, pipelineDesc).transform([&](auto rhiValue) { frozenVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
-            }
-            if (!result || visibilityPipelines_[bucketIndex] == nullptr) {
-                log += resultMessage(
-                    "createGraphicsPipeline(VisibilityBufferPass visibility bucket)",
-                    result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
-        }
         result = ShaderRegistry::instance().getGraphicsPipeline(*context.device, GraphicsPipelineDesc{
             .vertexShader = {compositeVertexShader_.get()},
             .fragmentShader = {compositeFragmentShader_.get()},
@@ -678,7 +572,6 @@ public:
         compiledTessellationKey_ = tessellationKey();
         compiledTextureMaxDimension_ = properties().value("materialTextureMaxDimension", 512);
         compiledTextureBudgetMiB_ = properties().value("materialTextureBudgetMiB", 2048);
-        compiledTextureStreaming_ = properties().value("materialTextureStreaming", false);
         compiledTextureRefineDimension_ = properties().value("materialTextureRefineDimension", 512);
         compiledTextureColdFrames_ = properties().value("materialTextureColdFrames", 180);
         compiledTextureMaskMaxDimension_ = properties().value("materialTextureMaskMaxDimension", 0);
@@ -720,11 +613,11 @@ public:
             !visibility.valid() ||
             !depth.valid() ||
             registry_ == nullptr ||
-            visibilityPipelines_[0] == nullptr ||
+            streamVisibilityPipeline_ == nullptr ||
             compositePipeline_ == nullptr ||
             cullingTargets_.visibilityView == nullptr ||
             cullingTargets_.depthView == nullptr ||
-            (drawTaskCount_ == 0 && !streamEnabled_) ||
+            !streamEnabled_ ||
             (streamEnabled_ &&
                 (context.streamer() == nullptr ||
                     !(streamRuntime_ && streamRuntime_->ready()) ||
@@ -811,8 +704,6 @@ public:
         std::memcpy(info.clipOrtho, previousParams_.renderClipOrtho, sizeof(info.clipOrtho));
         info.width = context.width();
         info.height = context.height();
-        info.residentRecordCount = residentRecordCapacity_;
-        info.hasStreamGeometry = streamEnabled_ ? 1u : 0u;
         info.sceneIdentity = sceneResourceIdentity_;
         info.reserved = tessellationEnabled() ? 1u : 0u;
         info.lightGridViewIndex = gpuSceneView_.index;
@@ -863,7 +754,7 @@ public:
     void sceneTraversalCheckpoint(RenderGraphExecutionContext& context, std::string_view checkpoint) const override
     {
         gpuDrivenDebugCheckpoint(context, checkpoint, gpuSceneSubsystem_, gpuSceneView_, activeFrameSlot_,
-            streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
+            streamRuntime_.get(), UINT32_MAX, 0u);
     }
 
     struct PreparedBindings {
@@ -878,7 +769,6 @@ public:
         packet.owners.push_back(streamRuntime_);
         packet.owners.push_back(hybridRasterizer_);
         packet.owners.push_back(coverageBinding_);
-        for (const auto& lod : residentLods_) { packet.owners.push_back(lod); }
         auto retain = [&](const ResourceLease& lease) {
             if (lease.valid()) { packet.leases.push_back(lease); }
         };
@@ -899,8 +789,7 @@ public:
             retain(lease);
         }
         const auto& slot = frameSlotResources_[activeFrameSlot_];
-        for (const auto& lease : {slot.paramsHandle, slot.lodSelectionHandle, slot.lodArgumentsHandle,
-             slot.lodScratchHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
+        for (const auto& lease : {slot.paramsHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
              slot.visibleInstanceCounterHandle, slot.visibleMeshletHandles[0], slot.visibleMeshletHandles[1],
              slot.indirectHandles[0], slot.indirectHandles[1]}) {
             retain(lease);
@@ -933,20 +822,6 @@ public:
         result = context.commandBuffer().retainResource(std::const_pointer_cast<PreparedBindings>(preparedBindings_));
         if (result) { result = preparedBindings_->registry->bind(context.commandBuffer()); }
         if (!result) { return result; }
-        MeshletLODView lodView;
-        std::copy_n(previousParams_.eye, 4, lodView.eye.begin());
-        lodView.eye[3] = previousParams_.clipOrtho[0];
-        float3 lodForward(previousParams_.center[0] - previousParams_.eye[0],
-            previousParams_.center[1] - previousParams_.eye[1], previousParams_.center[2] - previousParams_.eye[2]);
-        lodForward = length(lodForward) > 1e-6f ? normalize(lodForward) : float3(0, 0, -1);
-        lodView.forward = {lodForward.x, lodForward.y, lodForward.z, previousParams_.upProjection[3]};
-        const float error = std::clamp(finiteOr(cameraFloat(&properties(), "lodPixelError", 1.5f), 1.5f), 0.05f, 16.0f);
-        const float bias = std::clamp(finiteOr(cameraFloat(&properties(), "lodBias", 0.0f), 0.0f), -4.0f, 4.0f);
-        const float displayPixelError = error * std::exp2(bias);
-        lodView.projection = {previousParams_.viewport[2], std::tan(previousParams_.viewport[3] * 0.5f),
-            previousParams_.clipOrtho[2], meshletLodRenderPixelThreshold(displayPixelError,
-                static_cast<uint32_t>(previousParams_.viewport[2]), context.displayHeight())};
-        const auto& slot = activeFrameResources();
         using Access = RenderGraphResourceAccess;
         std::vector<RenderGraphStageUse> rasterUses{
             {"visibility", Access::TextureColorWrite}, {"depth", Access::TextureDepthStencilWrite}};
@@ -966,39 +841,11 @@ public:
         stages.push_back({"Initialize / light grid", {}, [&](CommandBuffer& commands) {
             return initializeInternalBuffers(commands);
         }});
-        stages.push_back({"Resident LOD", {}, [&](CommandBuffer& commands) -> Result<> {
-            auto lodResult = residentLods_[activeFrameSlot_]->record(commands, *registry_,
-                gpuSceneBindings_, lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
-                slot.lodSelectionHandle, slot.lodArgumentsHandle, slot.lodScratchHandle,
-                autoLodFromProperties(properties()) ? UINT32_MAX : lodLevelFromProperties(properties()));
-            if (!lodResult) { return lodResult; }
-            if (context.debugEnabled()) {
-                const std::string prefix = "lod." + context.passName() + ".";
-                auto& selection = *residentLods_[activeFrameSlot_];
-                const DebugResourceBinding resources[] = {
-                    {.id = prefix + "header", .buffer = &selection.selections(), .state = ResourceState::ShaderRead,
-                        .size = 16, .layout = "MeshletLODSelectionHeader"},
-                    {.id = prefix + "selections", .buffer = &selection.selections(), .state = ResourceState::ShaderRead,
-                        .offset = 16, .size = uint64_t(selection.capacity()) * sizeof(MeshletLODSelection),
-                        .layout = "MeshletLODSelection", .metadata = {{"validity", "First header.count entries are live; stable original record order"}}},
-                    {.id = prefix + "arguments", .buffer = &selection.arguments(), .state = ResourceState::IndirectArgument,
-                        .size = selection.arguments().desc().size}};
-                context.debugCheckpoint("AfterResidentLod", resources, {{"lod", {{"frameSlot", activeFrameSlot_},
-                    {"targetPixels", displayPixelError}, {"pixelSpace", "display"},
-                    {"renderTargetPixels", lodView.projection[3]}, {"displayHeight", context.displayHeight()},
-                    {"renderHeight", lodView.projection[0]}, {"candidateCount", adaptiveMeshletRange_.count}}}});
-            }
-            return {};
-        }});
         const auto addHzb = [&](std::string_view name) {
             stages.push_back({name, hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }});
         };
-        const auto addResidentRaster = [&](uint32_t passIndex, bool frozen) {
-            // The compound operation owns private hybrid resources and keeps its
-            // software/hardware fork and complete join. Only graph attachments
-            // cross this stage boundary; helper-internal synchronization remains.
-            stages.push_back({frozen ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late")
-                : (passIndex == 0 ? "Resident early" : "Resident late"),
+        const auto addClearRaster = [&](uint32_t passIndex, bool frozen) {
+            stages.push_back({frozen ? "Clear frozen visibility" : "Clear visibility",
                 frozen ? std::span<const RenderGraphStageUse>(frozenRasterUses)
                        : std::span<const RenderGraphStageUse>(rasterUses),
                 [&, passIndex, frozen](CommandBuffer&) {
@@ -1034,14 +881,14 @@ public:
                     if (!cullResult) { return cullResult; }
                     gpuDrivenDebugCheckpoint(context, passIndex == 0 ? "AfterEarlyCull" : "AfterLateCull",
                         gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
-                        streamEnabled_ ? streamRuntime_.get() : nullptr, passIndex, residentRecordCapacity_);
+                        streamEnabled_ ? streamRuntime_.get() : nullptr, passIndex, 0u);
                     return {};
                 }, RenderGraphPassKind::Unsafe, true});
             if (freezeCullingCamera_) {
-                addResidentRaster(passIndex, true);
+                addClearRaster(passIndex, true);
                 if (passIndex == 0) { addHzb("Early HZB"); }
             }
-            addResidentRaster(passIndex, false);
+            addClearRaster(passIndex, false);
             if (streamEnabled_) {
                 stages.push_back({passIndex == 0 ? "Stream early" : "Stream late", rasterUses,
                     [&, passIndex](CommandBuffer&) {
@@ -1099,7 +946,7 @@ public:
         gpuSceneSubsystem->publishVisibilityStream(gpuSceneView_, context.frameIndex(), sceneResourceIdentity_,
             streamEnabled_ ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGPUResourcesView{});
         ++frameIndex_;
-        gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 1, residentRecordCapacity_);
+        gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 1, 0u);
         return {};
     }
 
@@ -1247,7 +1094,6 @@ private:
         streamOwnerMaskBuffer_.reset();
         streamEnabled_ = false;
         compiledStreamAssetPath_.clear();
-        compiledStreamSourceId_.clear();
         compiledStreamSourcePath_.clear();
         streamOwnerMask_.clear();
         streamMappedInstanceCount_ = 0;
@@ -1441,17 +1287,12 @@ private:
     Result<> createPipelines(Device& device, std::string& log)
     {
         struct ShaderRequest {
-            const char* moduleName = kVisibilityBufferShaderModuleName;
+            const char* moduleName = kMeshletStreamShaderModuleName;
             const char* entryPoint = nullptr;
             bool meshShadingShader = false;
             std::unique_ptr<ShaderModule>* shader = nullptr;
         };
-        const std::array<ShaderRequest, 11> requests{
-            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationTask" : kVisibilityBufferAmplificationEntryPoint, true, &amplificationShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationMesh" : kVisibilityBufferMeshEntryPoint, true, &meshShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationMesh" : kVisibilityBufferMeshEntryPoint, true, &maskedMeshShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationFragment" : kVisibilityBufferFragmentEntryPoint, false, &fragmentShader_},
-            ShaderRequest{kVisibilityBufferShaderModuleName, tessellationEnabled() ? "visibilityTessellationFragment" : kVisibilityBufferMaskedFragmentEntryPoint, false, &maskedFragmentShader_},
+        const std::array<ShaderRequest, 6> requests{
             ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewResetEntryPoint, false, &resetShader_},
             ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewInstanceCullEntryPoint, false, &instanceCullShader_},
             ShaderRequest{kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewHZBEntryPoint, false, &hzbShader_},
@@ -1463,17 +1304,11 @@ private:
             "GPU_DRIVEN_AMPLIFICATION_WAVE_OPS",
             amplificationWaveOps_ ? "1" : "0",
         };
-        const SlangMacroDefine maskedMeshDefine{"VISIBILITY_BUFFER_ALPHA_MASKED", "1"};
         const SlangMacroDefine spdLdsDefine{kHZBSPDWaveOpsDefine, "0"};
         for (const ShaderRequest& request : requests) {
-            const bool isAmplification = request.shader == &amplificationShader_;
-            std::array<SlangMacroDefine, 2> macroDefines;
+            std::array<SlangMacroDefine, 1> macroDefines;
             uint32_t macroDefineCount = 0;
-            if (isAmplification) {
-                macroDefines[macroDefineCount++] = amplificationDefine;
-            } else if (request.shader == &maskedMeshShader_ || (tessellationEnabled() && request.shader == &maskedFragmentShader_)) {
-                macroDefines[macroDefineCount++] = maskedMeshDefine;
-            } else if (request.shader == &hzbSpdShader_) {
+            if (request.shader == &hzbSpdShader_) {
                 macroDefines[macroDefineCount++] = spdLdsDefine;
             }
             const auto shaderCompileBegin = GPUDrivenCompileClock::now();
@@ -1492,14 +1327,6 @@ private:
             logGPUDrivenCompileStage(
                 std::string("Slang ") + request.entryPoint,
                 shaderCompileBegin);
-        }
-        if (tessellationEnabled()) {
-            Result<> result = createShader(device, kVisibilityBufferShaderModuleName, "visibilityTessellationCullingFragment",
-                false, frozenFragmentShader_, log);
-            if (!result) { return result; }
-            result = createShader(device, kVisibilityBufferShaderModuleName, "visibilityTessellationCullingFragment",
-                false, frozenMaskedFragmentShader_, log, &maskedMeshDefine, 1u);
-            if (!result) { return result; }
         }
         if (streamEnabled_) {
             if (tessellationEnabled()) {
@@ -1573,23 +1400,6 @@ private:
             result = createCompute(*hzbSpdWaveShader_, hzbSpdWavePipeline_, "SPD HZB wave ops");
             if (!result) { return result; }
         }
-        if (hybridRasterizer_) {
-            result = createShader(device, kVisibilityBufferShaderModuleName,
-                "visibilityClusterCountMain", false, clusterCountShader_, log);
-            if (result) { result = createCompute(*clusterCountShader_, clusterCountPipeline_, "cluster count"); }
-            if (!result) { return result; }
-            result = createShader(device, kVisibilityBufferShaderModuleName,
-                "visibilityClusterBinMain", false, clusterBinShader_, log);
-            if (result) { result = createCompute(*clusterBinShader_, clusterBinPipeline_, "cluster bin"); }
-            if (result) { result = createShader(device, kVisibilityBufferShaderModuleName,
-                "visibilityClusterRasterMain", false, clusterRasterShader_, log); }
-            if (result) { result = createCompute(*clusterRasterShader_, clusterRasterPipeline_, "cluster raster"); }
-            if (!result) { return result; }
-        }
-        if (!streamEnabled_) {
-            return result;
-        }
-
         auto createStreamCompute = [&](ShaderModule& shader,
                                        std::unique_ptr<ComputePipeline>& pipeline,
                                        const char* label) -> Result<> {
@@ -1806,41 +1616,18 @@ private:
     {
         const GPUSceneDrawSet& drawSet = subsystem.drawSet();
         const GPUSceneGlobalBufferViews& views = subsystem.globalBufferViews();
-        const GPUSceneRasterDrawLayout& layout = subsystem.rasterDrawLayout();
         if (drawSet.generation == 0 || drawSet.revision == 0 ||
-            !views.validFor(drawSet.generation, drawSet.revision) ||
-            !layout.validFor(drawSet.generation, drawSet.revision)) {
-            log = "VisibilityBufferPass requires current GPUScene raster buffers and layout";
+            !views.validFor(drawSet.generation, drawSet.revision)) {
+            log = "VisibilityBufferPass requires current GPUScene metadata buffers";
             return makeError(Error::InvalidArgument);
         }
-        if ((layout.maxRangeCount == 0 && !streamEnabled_) || subsystem.instances().empty() ||
+        if (!streamEnabled_ || subsystem.instances().empty() ||
             subsystem.materials().empty()) {
-            log = "VisibilityBufferPass GPUScene raster layout has no drawable instances";
+            log = "VisibilityBufferPass GPUScene has no drawable streamed instances";
             return makeError(Error::Failure);
         }
-        if ((views.meshletDraws.size != 0 && views.meshletDraws.structureStride != sizeof(VisibleClusterRecord)) ||
-            views.meshletDraws.size % sizeof(VisibleClusterRecord) != 0 ||
-            views.meshletDraws.size / sizeof(VisibleClusterRecord) >
-                std::numeric_limits<uint32_t>::max()) {
-            log = "VisibilityBufferPass received an invalid resident visible-record buffer";
-            return makeError(Error::Failure);
-        }
-        const uint32_t residentRecordCapacity = static_cast<uint32_t>(
-            views.meshletDraws.size / sizeof(VisibleClusterRecord));
-        if (!visibilityRecordRangeFitsId(
-                residentRecordCapacity,
-                streamEnabled_ ? streamRuntime_->visibleClusterCapacity() : 0u)) {
-            log = "VisibilityBufferPass resident + stream records exceed the visibility ID range";
-            return makeError(Error::Failure);
-        }
-        residentRecordCapacity_ = residentRecordCapacity;
-        const auto encodedRangeValid = [](const GPUSceneRasterDrawRange& range) {
-            return visibilityRecordCapacityFitsId(
-                static_cast<uint64_t>(range.offset) + range.count);
-        };
-        if (!encodedRangeValid(layout.baseRange) || !encodedRangeValid(layout.adaptiveRange) ||
-            !std::ranges::all_of(layout.lodRanges, encodedRangeValid)) {
-            log = "VisibilityBufferPass GPUScene raster layout exceeds the visibility ID range";
+        if (!visibilityRecordCapacityFitsId(streamRuntime_->visibleClusterCapacity())) {
+            log = "VisibilityBufferPass stream records exceed the visibility ID range";
             return makeError(Error::Failure);
         }
         if (subsystem.materials().size() >
@@ -1850,21 +1637,6 @@ private:
             return makeError(Error::Failure);
         }
 
-        baseMeshletRange_ = GPUDrivenPreviewMeshletRange{
-            .offset = layout.baseRange.offset,
-            .count = layout.baseRange.count,
-        };
-        adaptiveMeshletRange_ = layout.adaptiveRange;
-        lodGroupCount_ = static_cast<uint32_t>(views.lodGroups.size / sizeof(MeshletLODGroupRecord));
-        lodLevelRanges_.clear();
-        lodLevelRanges_.reserve(layout.lodRanges.size());
-        for (const GPUSceneRasterDrawRange& range : layout.lodRanges) {
-            lodLevelRanges_.push_back(GPUDrivenPreviewMeshletRange{
-                .offset = range.offset,
-                .count = range.count,
-            });
-        }
-        drawTaskCount_ = layout.maxRangeCount;
         instanceCount_ = static_cast<uint32_t>(subsystem.instances().size());
         if (streamOwnerMask_.size() != std::max(instanceCount_, 1u)) {
             streamOwnerMask_.assign(std::max(instanceCount_, 1u), 0u);
@@ -1940,8 +1712,7 @@ private:
             (streamOwnerMaskBuffer_ == nullptr ||
                 streamOwnerMaskBuffer_->desc().size != expectedOwnerMaskBytes);
         const bool clusterCapacityChanged = (hybridRasterizer_ && hybridRasterizer_->clusterCapacity() !=
-            std::max({1u, residentRecordCapacity_, streamEnabled_ ? streamRuntime_->rasterCandidateCapacity() : 0u})) ||
-            residentLods_.empty() || residentLods_.front()->capacity() < std::max(adaptiveMeshletRange_.count, 1u);
+            std::max(1u, streamRuntime_->rasterCandidateCapacity()));
         if (!gpuSceneBindings_.drawSetGeneration &&
             !materialBindingsDirty_ &&
             bindingViewAllocationId_ == gpuSceneViewAllocationId_ &&
@@ -1978,7 +1749,6 @@ private:
             invalidateHzbHistory();
         }
         auto retired = std::make_shared<GPUDrivenPreviewRetiredViewResources>();
-        retired->residentLods = residentLods_;
         retired->hybridRasterizer = hybridRasterizer_;
         retired->registry = std::move(registry_);
         retired->tessellationBuffer = std::move(tessellationBuffer_);
@@ -1999,14 +1769,6 @@ private:
     {
         const GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
         return GPUDrivenPreviewUserPush{
-            .positionBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Vertices].shaderIndex(),
-            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
-            .meshletDrawBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
-            .meshletVertexBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletVertices].shaderIndex(),
-            .meshletTriangleBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletTriangleWords].shaderIndex(),
             .paramsBuffer = slot.paramsHandle.shaderIndex(),
             .transformBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Geometries].shaderIndex(),
             .instanceBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Instances].shaderIndex(),
@@ -2035,7 +1797,7 @@ private:
             .environmentSHBuffer = clusterPrebinEnabled()
                 ? hybridClusterHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .streamDeferredBindingsBuffer = kGPUDrivenInvalidBindlessIndex,
-            .residentRecordCapacity = residentRecordCapacity_,
+
             .streamOwnerMaskBuffer =
                 streamEnabled_ && streamOwnerMaskHandle_.valid()
                 ? streamOwnerMaskHandle_.shaderIndex()
@@ -2119,16 +1881,8 @@ private:
         LoadOp loadOp,
         bool projectWithCullingCamera = false)
     {
-        // Streaming metadata still has instances, but no resident draw records.
-        // Do not fork queues, classify empty bins or merge a full-screen software
-        // buffer for that producer. The first raster must still clear both
-        // attachments, including the separate frozen-camera HZB targets.
-        const bool hasResidentGeometry = activeMeshletCount_ != 0;
-        if (!hasResidentGeometry && loadOp == LoadOp::Load) { return {}; }
-        auto rasterProfile = context.profileScope(!hasResidentGeometry
-            ? (projectWithCullingCamera ? "Clear frozen visibility" : "Clear visibility")
-            : projectWithCullingCamera ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late")
-            : (passIndex == 0 ? "Resident early" : "Resident late"));
+        if (loadOp == LoadOp::Load) { return {}; }
+        auto rasterProfile = context.profileScope(projectWithCullingCamera ? "Clear frozen visibility" : "Clear visibility");
         CommandBuffer& commandBuffer = context.commandBuffer();
         const Rect renderArea{
             .x = 0,
@@ -2157,110 +1911,13 @@ private:
             .storeOp = StoreOp::Store,
             .clearDepth = depthClearValue(),
         };
-        if (!hasResidentGeometry) {
-            if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
-                .renderArea = renderArea,
-                .colorAttachments = {colors, tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u},
-                .depthStencilAttachment = &depthAttachment,
-            }); !rendering) { return rendering; }
-            commandBuffer.endRendering();
-            return {};
-        }
-        const bool prebin = clusterPrebinEnabled();
-        if (prebin) {
-            auto binProfile = context.profileScope("Soft/hard classification");
-            Result<> result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), hybridPixelHandle_.shaderIndex(), activeMeshletCount_, false, false, tessellationEnabled());
-            if (!result) { return result; }
-            if (auto commandResult = commandBuffer.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
-            commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
-            const auto push = makePush(passIndex, 0, projectWithCullingCamera);
-            const PrivateBufferComputeStage classification[] = {
-                {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() -> Result<> {
-                    if (auto commandResult = commandBuffer.bindExecution((clusterCountPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
-                    if (auto commandResult = commandBuffer.dispatch(1); !commandResult) { return commandResult; }
-                    return {};
-                }},
-                {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
-                    if (auto commandResult = commandBuffer.bindExecution((clusterBinPipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
-                    return (residentLods_[activeFrameSlot_]->arguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
-                }},
-            };
-            result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->clusterBuffer(), classification);
-            if (!result) { commandBuffer.endDebugLabel(); return result; }
-            commandBuffer.endDebugLabel();
-            binProfile.next("Stable bins");
-            result = hybridRasterizer_->finishClusterBins(commandBuffer);
-            if (!result) { return result; }
-            if (!projectWithCullingCamera) {
-                debugClusterBins(context, passIndex == 0 ? "AfterResidentEarlyBins" : "AfterResidentLateBins");
-            }
-        } else if (hybridRasterEnabled()) {
-            if (auto commandResult = beginHybridRaster(commandBuffer); !commandResult) { return commandResult; }
-        }
-        const bool async = !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
-            context.supportsParallelCompute();
-        const auto software = [&](CommandBuffer& commands) -> Result<> {
-            if (!prebin || tessellationEnabled()) { return {}; }
-            auto profile = context.profileScope(commands, "Software raster");
-            // The fork semaphore makes the producer's private cluster/argument
-            // and pixel writes visible to this compute branch.
-            commands.beginDebugLabel({.name = "Hybrid raster: resident software clusters"});
-            if (auto commandResult = commands.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
-            if (auto commandResult = commands.bindExecution((clusterRasterPipeline_)->execution()); !commandResult) { return commandResult; }
-            const auto push = makePush(passIndex, 0, projectWithCullingCamera);
-            if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
-            const Result<> result = (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
-            commands.endDebugLabel();
-            return result;
-        };
-        const auto hardware = [&](CommandBuffer& commands) -> Result<> {
-            auto profile = context.profileScope(commands, "Hardware raster");
-            commands.beginDebugLabel({.name = "Hybrid raster: resident hardware clusters"});
-            if (auto rendering = commands.beginRendering(RenderingDesc{
-                .renderArea = renderArea,
-                .colorAttachments = {colors, tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u},
-                .depthStencilAttachment = &depthAttachment,
-            }); !rendering) { return rendering; }
-            if (auto commandResult = commands.setViewport(Viewport{
-                .x = 0.0f,
-                .y = 0.0f,
-                .width = static_cast<float>(frameWidth_),
-                .height = static_cast<float>(frameHeight_),
-                .minDepth = 0.0f,
-                .maxDepth = 1.0f,
-            }); !commandResult) { return commandResult; }
-            commands.setScissor(renderArea);
-            if (auto commandResult = commands.bindBindlessHeap(*registry_->heap()); !commandResult) { return commandResult; }
-            for (uint32_t bucketIndex = 0;
-                 bucketIndex < kGPUDrivenPreviewDrawBucketCount;
-                 ++bucketIndex) {
-                const auto& pipelines = tessellationEnabled() && projectWithCullingCamera
-                    ? frozenVisibilityPipelines_
-                    : visibilityPipelines_;
-                if (auto commandResult = commands.bindExecution((pipelines[bucketIndex])->execution()); !commandResult) { return commandResult; }
-                const GPUDrivenPreviewUserPush push =
-                    makePush(passIndex, bucketIndex, projectWithCullingCamera);
-                if (auto commandResult = commands.pushBindlessData(&push, sizeof(push)); !commandResult) { return commandResult; }
-                if (prebin) {
-                    if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({bucketIndex * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
-                } else {
-                    if (auto commandResult = (residentLods_[activeFrameSlot_]->arguments()).slice({tessellationEnabled() ? 24u : 12u, 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
-                }
-            }
-            commands.endRendering();
-            commands.endDebugLabel();
-            return {};
-        };
-        Result<> rasterResult;
-        if (async) { rasterResult = context.parallelCompute(software, hardware); }
-        else {
-            rasterResult = software(commandBuffer);
-            if (rasterResult) { rasterResult = hardware(commandBuffer); }
-        }
-        if (!rasterResult) { return rasterResult; }
-        auto mergeProfile = context.profileScope("Raster merge");
-        return hybridRasterEnabled() ? hybridRasterizer_->resolve(context.commandBuffer(), visibilityTexture, visibility, depthTexture, depth, prebin) : Result<>{};
+        if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
+            .renderArea = renderArea,
+            .colorAttachments = {colors, tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u},
+            .depthStencilAttachment = &depthAttachment,
+        }); !rendering) { return rendering; }
+        commandBuffer.endRendering();
+        return {};
     }
 
     Result<> buildHzb(CommandBuffer& commandBuffer)
@@ -2369,9 +2026,8 @@ private:
             .visibilityImage = visibilityImageHandle_.shaderIndex(),
             // Frozen HZB depth belongs to the culling camera, not the debug viewport.
             .depthImage = depthImageHandle_.shaderIndex(),
-            .residentRecords = gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex(),
-            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex(),
-            .residentRecordCapacity = residentRecordCapacity_,
+
+
             .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.shaderIndex() : kGPUDrivenInvalidBindlessIndex,
             .shadedColors = boolProperty(&properties(), "shadedDebugColors", true) ? 1u : 0u,
@@ -2402,7 +2058,7 @@ private:
         GPUDrivenPreviewGPUParams camera;
         // Light visibility follows the render camera even while geometry culling is frozen.
         buildParams(frameWidth_, frameHeight_, frameProperties, drawBounds_,
-            baseMeshletRange_, instanceCount_, hzbMipCount_,
+            instanceCount_, hzbMipCount_,
             frameIndex_, hzbValid_, nullptr, materialTextureCount_, materialCount_, camera);
         if (view != nullptr) { applyViewCamera(view->current, camera); }
         lightGridDesc_ = ClusterLightGridDesc{
@@ -2473,7 +2129,7 @@ private:
 
     Result<> syncRuntimeGeometry(const scene::Scene* runtimeScene)
     {
-        if (compiledScene_ != nullptr && compiledScene_->hasStreamGeometry()) {
+        if (compiledScene_ != nullptr) {
             runtimeScene = compiledScene_;
         }
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
@@ -2620,7 +2276,7 @@ private:
         const uint32_t streamRecordCapacity =
             streamRuntime_->visibleClusterCapacity();
         if (!visibilityRecordRangeFitsId(
-                residentRecordCapacity_,
+                0u,
                 streamRecordCapacity)) {
             return makeError(Error::InvalidArgument);
         }
@@ -2634,7 +2290,7 @@ private:
                 .visibilityImage = streamVisibilityImageHandle_.shaderIndex(),
                 .visibleInstanceIdsBuffer =
                     streamVisibleInstanceIdsHandle_.shaderIndex(),
-                .visibleRecordBase = residentRecordCapacity_,
+                .visibleRecordBase = 0u,
                 .visibleRecordCapacity = streamRecordCapacity,
                 .hzbMipCount = hzbMipCount_,
                 .hzbValid = hzbValid_ ? 1u : 0u,
@@ -3000,7 +2656,7 @@ private:
         for (const auto& view : materialSnapshot_->views) { materialViews_.push_back(view.get()); }
         const auto indices = sharedTextureResources_->logicalTextureIndices();
         logicalTextureToMaterialTexture_.assign(indices.begin(), indices.end());
-        if (properties().value("materialTextureStreaming", false)) {
+        {
             // Raster descriptors only sample alpha/displacement. Never leave an
             // unused descriptor pointing at a reclaimable shading texture.
             std::vector<bool> pinned(materialViews_.size());
@@ -3110,7 +2766,7 @@ private:
         width = width != 0 ? width : frameWidth_;
         height = height != 0 ? height : frameHeight_;
         GPUDrivenPreviewBindingBundle bundle;
-        const uint32_t clusterCapacity = std::max({1u, residentRecordCapacity_,
+        const uint32_t clusterCapacity = std::max({1u, 0u,
             streamEnabled_ ? streamRuntime_->rasterCandidateCapacity() : 0u});
         if (device_->capabilities().shaderBufferInt64Atomics &&
             device_->capabilities().subPixelPrecisionBits >= 1 &&
@@ -3151,22 +2807,9 @@ private:
             if (!result) { return result; }
         }
         bundle.frameSlots.resize(frameSlotResources_.size());
-        bundle.residentLods.resize(frameSlotResources_.size());
         for (size_t frameSlot = 0; frameSlot < frameSlotResources_.size(); ++frameSlot) {
             const GPUDrivenPreviewFrameSlotResources& resources = frameSlotResources_[frameSlot];
             GPUDrivenPreviewFrameSlotBindings& bindings = bundle.frameSlots[frameSlot];
-            const uint32_t lodCapacity = std::max(adaptiveMeshletRange_.count, 1u);
-            if (includeGPUSceneBindings && frameSlot < residentLods_.size() && residentLods_[frameSlot]->capacity() >= lodCapacity) {
-                bundle.residentLods[frameSlot] = residentLods_[frameSlot];
-            } else {
-                bundle.residentLods[frameSlot] = std::make_shared<ResidentMeshletLOD>();
-                result = bundle.residentLods[frameSlot]->initialize(*device_, lodCapacity, log);
-                if (!result) { return result; }
-            }
-            result = bindBuffer(bundle.residentLods[frameSlot]->selections(), bindings.lodSelectionHandle, "resident LOD selections");
-            if (result) { result = bindBuffer(bundle.residentLods[frameSlot]->arguments(), bindings.lodArgumentsHandle, "resident LOD arguments"); }
-            if (result) { result = bindBuffer(bundle.residentLods[frameSlot]->scratch(), bindings.lodScratchHandle, "resident LOD scratch"); }
-            if (!result) { return result; }
             if (resources.paramsBuffer == nullptr ||
                 resources.instanceVisibilityBuffer == nullptr ||
                 resources.visibleInstanceIdsBuffer == nullptr ||
@@ -3418,7 +3061,6 @@ private:
 
     void installBindingBundle(GPUDrivenPreviewBindingBundle&& bundle)
     {
-        residentLods_ = std::move(bundle.residentLods);
         hybridRasterizer_ = std::move(bundle.hybridRasterizer);
         hybridQueueHandle_ = bundle.hybridQueueHandle;
         hybridClusterHandle_ = bundle.hybridClusterHandle;
@@ -3446,9 +3088,6 @@ private:
             GPUDrivenPreviewFrameSlotResources& resources = frameSlotResources_[frameSlot];
             const GPUDrivenPreviewFrameSlotBindings& bindings = bundle.frameSlots[frameSlot];
             resources.paramsHandle = bindings.paramsHandle;
-            resources.lodSelectionHandle = bindings.lodSelectionHandle;
-            resources.lodArgumentsHandle = bindings.lodArgumentsHandle;
-            resources.lodScratchHandle = bindings.lodScratchHandle;
             resources.instanceVisibilityHandle = bindings.instanceVisibilityHandle;
             resources.visibleInstanceIdsHandle = bindings.visibleInstanceIdsHandle;
             resources.visibleInstanceCounterHandle = bindings.visibleInstanceCounterHandle;
@@ -3516,7 +3155,6 @@ private:
         auto retired = std::make_shared<GPUDrivenPreviewRetiredViewResources>();
         retired->hybridRasterizer = hybridRasterizer_;
         retired->cullingTargets = std::move(cullingTargets_);
-        retired->residentLods = residentLods_;
         retired->registry = std::move(registry_);
         retired->tessellationBuffer = std::move(tessellationBuffer_);
         retired->materialTextureRemapBuffer = std::move(materialTextureRemapBuffer_);
@@ -3538,7 +3176,7 @@ private:
         frameIndex_ = 0;
         invalidateHzbHistory();
         previousCameraValid_ = false;
-        // Recapture a frozen camera at the new viewport dimensions so resident
+        // Recapture a frozen camera at the new viewport dimensions so raster
         // and streamed LOD use the same aspect ratio and pixel-error scale.
         frozenCullingCameraValid_ = false;
         cullingTargetsInitialized_ = std::make_shared<bool>(false);
@@ -3684,17 +3322,6 @@ private:
         return static_cast<uint32_t>(std::clamp<int64_t>(iter->get<int64_t>(), 0, 31));
     }
 
-    static uint32_t maxMeshletRangeCount(
-        const GPUDrivenPreviewMeshletRange& baseRange,
-        const std::vector<GPUDrivenPreviewMeshletRange>& lodLevelRanges)
-    {
-        uint32_t result = baseRange.count;
-        for (const GPUDrivenPreviewMeshletRange& range : lodLevelRanges) {
-            result = std::max(result, range.count);
-        }
-        return result;
-    }
-
     static void writeParamVec3(const float3& value, float out[4], float w)
     {
         out[0] = value.x;
@@ -3734,454 +3361,11 @@ private:
         std::memcpy(params.renderClipOrtho, params.clipOrtho, sizeof(params.renderClipOrtho));
     }
 
-    struct PrimitiveInstanceRef {
-        uint32_t geometryIndex = 0;
-        uint32_t primitiveIndex = 0;
-        uint32_t materialIndex = 0;
-        uint32_t transformIndex = 0;
-        uint32_t instanceIndex = 0;
-        uint32_t meshletFlags = 0;
-    };
-
-    static bool appendPrimitiveVertices(
-        const scene::RenderPrimitive& primitive,
-        std::vector<GPUDrivenPreviewGPUVertex>& outVertices,
-        uint32_t& outPositionBase,
-        std::string& log)
-    {
-        if (outVertices.size() + primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
-            log = "VisibilityBufferPass scene is too large to address with uint32 vertex indices";
-            return false;
-        }
-
-        outPositionBase = static_cast<uint32_t>(outVertices.size());
-        for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
-            const float3& localPosition = primitive.positions[vertexIndex];
-            const float3 localNormal = vertexIndex < primitive.normals.size()
-                ? primitive.normals[vertexIndex]
-                : float3(0.0f, 0.0f, 1.0f);
-            const float4 localTangent = vertexIndex < primitive.tangents.size()
-                ? primitive.tangents[vertexIndex]
-                : float4(1.0f, 0.0f, 0.0f, 1.0f);
-            const float2 texcoord = vertexIndex < primitive.texcoords0.size()
-                ? primitive.texcoords0[vertexIndex]
-                : float2(0.0f, 0.0f);
-            GPUDrivenPreviewGPUVertex vertex;
-            vertex.position[0] = localPosition.x;
-            vertex.position[1] = localPosition.y;
-            vertex.position[2] = localPosition.z;
-            vertex.normal[0] = localNormal.x;
-            vertex.normal[1] = localNormal.y;
-            vertex.normal[2] = localNormal.z;
-            vertex.tangent[0] = localTangent.x;
-            vertex.tangent[1] = localTangent.y;
-            vertex.tangent[2] = localTangent.z;
-            vertex.tangent[3] = localTangent.w;
-            vertex.texcoord[0] = texcoord.x;
-            vertex.texcoord[1] = texcoord.y;
-            outVertices.push_back(vertex);
-        }
-        return true;
-    }
-
-    static bool appendPrimitiveClusters(
-        const scene::RenderPrimitive& primitive,
-        const std::vector<scene::MeshletCluster>& clusters,
-        const std::vector<uint32_t>& clusterVertices,
-        const std::vector<uint8_t>& clusterTriangles,
-        uint32_t firstCluster,
-        uint32_t clusterCount,
-        uint32_t positionBase,
-        std::vector<GPUDrivenPreviewGPUMeshlet>& outMeshlets,
-        std::vector<uint32_t>& outMeshletVertices,
-        std::vector<uint32_t>& outMeshletTriangles,
-        std::string& log)
-    {
-        if (static_cast<size_t>(firstCluster) + clusterCount > clusters.size()) {
-            log = "VisibilityBufferPass found invalid meshlet cluster range";
-            return false;
-        }
-
-        for (uint32_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
-            const scene::MeshletCluster& cluster = clusters[static_cast<size_t>(firstCluster) + clusterIndex];
-            if (cluster.vertexCount == 0 ||
-                cluster.triangleCount == 0 ||
-                cluster.vertexCount > 128 ||
-                cluster.triangleCount > 128 ||
-                static_cast<size_t>(cluster.vertexOffset) + cluster.vertexCount > clusterVertices.size() ||
-                static_cast<size_t>(cluster.triangleOffset) + static_cast<size_t>(cluster.triangleCount) * 3u >
-                    clusterTriangles.size()) {
-                log = "VisibilityBufferPass found invalid meshlet cluster data";
-                return false;
-            }
-
-            const uint32_t meshletVertexOffset = static_cast<uint32_t>(outMeshletVertices.size());
-            const uint32_t meshletTriangleOffset = static_cast<uint32_t>(outMeshletTriangles.size());
-
-            for (uint32_t vertexIndex = 0; vertexIndex < cluster.vertexCount; ++vertexIndex) {
-                const uint32_t localVertex =
-                    clusterVertices[static_cast<size_t>(cluster.vertexOffset) + vertexIndex];
-                if (localVertex >= primitive.positions.size()) {
-                    log = "VisibilityBufferPass found out-of-range meshlet vertex reference";
-                    return false;
-                }
-                outMeshletVertices.push_back(positionBase + localVertex);
-            }
-
-            for (uint32_t triangleIndex = 0; triangleIndex < cluster.triangleCount * 3u; ++triangleIndex) {
-                const uint32_t localVertex =
-                    clusterTriangles[static_cast<size_t>(cluster.triangleOffset) + triangleIndex];
-                if (localVertex >= cluster.vertexCount) {
-                    log = "VisibilityBufferPass found out-of-range meshlet triangle index";
-                    return false;
-                }
-                outMeshletTriangles.push_back(localVertex);
-            }
-
-            outMeshlets.push_back(GPUDrivenPreviewGPUMeshlet{
-                .vertexOffset = meshletVertexOffset,
-                .vertexCount = cluster.vertexCount,
-                .triangleOffset = meshletTriangleOffset,
-                .triangleCount = cluster.triangleCount,
-                .lodLevel = cluster.lodLevel,
-                .lodGroupIndex = static_cast<uint32_t>(std::max(cluster.lodGroupIndex, 0)),
-                .boundingSphere = {
-                    cluster.boundingSphereCenter.x,
-                    cluster.boundingSphereCenter.y,
-                    cluster.boundingSphereCenter.z,
-                    std::max(cluster.boundingSphereRadius, 0.0f),
-                },
-                .coneApexCutoff = {
-                    cluster.coneApex.x,
-                    cluster.coneApex.y,
-                    cluster.coneApex.z,
-                    cluster.coneCutoff,
-                },
-                .coneAxis = {
-                    cluster.coneAxis.x,
-                    cluster.coneAxis.y,
-                    cluster.coneAxis.z,
-                    0.0f,
-                },
-            });
-        }
-
-        return true;
-    }
-
-    static bool buildMeshletScene(
-        const RenderGraphProperties& properties,
-        const scene::Scene* runtimeScene,
-        std::vector<GPUDrivenPreviewGPUVertex>& outVertices,
-        std::vector<GPUDrivenPreviewGPUMeshlet>& outMeshlets,
-        std::vector<GPUDrivenPreviewGPUMeshletDraw>& outMeshletDraws,
-        std::vector<uint32_t>& outMeshletVertices,
-        std::vector<uint32_t>& outMeshletTriangles,
-        std::vector<SceneGPUTransform>& outTransforms,
-        std::vector<GPUDrivenPreviewGPUInstance>& outInstances,
-        std::vector<uint32_t>& outInstanceRenderNodeIndices,
-        scene::Bounds& outBounds,
-        GPUDrivenPreviewMeshletRange& outBaseMeshletRange,
-        std::vector<GPUDrivenPreviewMeshletRange>& outLodLevelRanges,
-        std::string& log)
-    {
-        const std::filesystem::path path = scenePathFromProperties(properties);
-        if (runtimeScene == nullptr) {
-            log = "VisibilityBufferPass requires a runtime scene resource provider";
-            return false;
-        }
-        const scene::Scene& loadedScene = *runtimeScene;
-        if (!loadedScene.bounds().valid) {
-            log = "VisibilityBufferPass scene bounds are unavailable";
-            return false;
-        }
-
-        outVertices.clear();
-        outMeshlets.clear();
-        outMeshletDraws.clear();
-        outMeshletVertices.clear();
-        outMeshletTriangles.clear();
-        outInstances.clear();
-        outInstanceRenderNodeIndices.clear();
-        outBaseMeshletRange = GPUDrivenPreviewMeshletRange{};
-        outLodLevelRanges.clear();
-        outBounds = loadedScene.bounds();
-        outTransforms = buildSceneGpuTransforms(loadedScene);
-        if (loadedScene.hasStreamGeometry()) {
-            if (!properties.value("enableMeshletStreaming", properties.contains("streamAssetPath"))) {
-                log = "VisibilityBufferPass stream metadata requires a cooked StreamAsset";
-                return false;
-            }
-            // Global instance and material tables are uploaded by GPUScene.
-            // A stream-only scene has no resident raster records or LOD copies.
-            outInstances.resize(loadedScene.renderNodes().size());
-            return !outInstances.empty();
-        }
-
-        struct DrawableSource {
-            const scene::RenderPrimitive* primitive = nullptr;
-            const scene::RenderNode* renderNode = nullptr;
-            uint32_t renderNodeIndex = 0;
-            uint32_t renderPrimitiveIndex = 0;
-        };
-        std::vector<DrawableSource> drawableSources;
-        std::vector<GPUDrivenPreviewGeometrySource> geometrySources;
-        drawableSources.reserve(loadedScene.renderNodes().size());
-        geometrySources.reserve(loadedScene.renderNodes().size());
-        const auto resolveMaterialIndex = [&](const scene::RenderNode& node,
-                                              const scene::RenderPrimitive& primitive) {
-            const int32_t materialIndex = node.materialIndex >= 0
-                ? node.materialIndex
-                : primitive.materialIndex;
-            return materialIndex >= 0 &&
-                    static_cast<size_t>(materialIndex) < loadedScene.materials().size()
-                ? static_cast<uint32_t>(materialIndex)
-                : 0u;
-        };
-        for (size_t renderNodeIndex = 0; renderNodeIndex < loadedScene.renderNodes().size(); ++renderNodeIndex) {
-            const scene::RenderNode& renderNode = loadedScene.renderNodes()[renderNodeIndex];
-            if (renderNode.renderPrimitiveIndex < 0 ||
-                static_cast<size_t>(renderNode.renderPrimitiveIndex) >= loadedScene.renderPrimitives().size()) {
-                continue;
-            }
-
-            const scene::RenderPrimitive& primitive =
-                loadedScene.renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
-            if (primitive.mode != kglTFTriangleListMode ||
-                primitive.positions.empty() ||
-                primitive.meshletClusters.empty()) {
-                continue;
-            }
-            if (!primitive.localBounds.valid ||
-                drawableSources.size() >= std::numeric_limits<uint32_t>::max()) {
-                log = "VisibilityBufferPass found invalid or unaddressable instance bounds";
-                return false;
-            }
-
-            drawableSources.push_back(DrawableSource{
-                .primitive = &primitive,
-                .renderNode = &renderNode,
-                .renderNodeIndex = static_cast<uint32_t>(renderNodeIndex),
-                .renderPrimitiveIndex = static_cast<uint32_t>(renderNode.renderPrimitiveIndex),
-            });
-            geometrySources.push_back(GPUDrivenPreviewGeometrySource{
-                .primitive = &primitive,
-                .renderPrimitiveIndex = static_cast<uint32_t>(renderNode.renderPrimitiveIndex),
-            });
-        }
-
-        const GPUDrivenPreviewGeometryDedupPlan geometryPlan =
-            buildGPUDrivenPreviewGeometryDedupPlan(geometrySources);
-        if (geometryPlan.conflictingPayloadCount != 0) {
-            spdlog::warn(
-                "[VisibilityBufferPass] {} geometry key payload conflict(s); preserving independent payloads",
-                geometryPlan.conflictingPayloadCount);
-        }
-
-        // Reserve once for unique geometry; per-primitive reserve repeatedly relocates earlier vertices.
-        std::vector<bool> countedGeometries(geometryPlan.geometryCount, false);
-        size_t totalVertexCount = 0;
-        for (size_t sourceIndex = 0; sourceIndex < drawableSources.size(); ++sourceIndex) {
-            const uint32_t geometryIndex = geometryPlan.geometryIndices[sourceIndex];
-            if (geometryIndex >= countedGeometries.size()) {
-                log = "VisibilityBufferPass produced an invalid geometry dedup assignment";
-                return false;
-            }
-            if (countedGeometries[geometryIndex]) {
-                continue;
-            }
-            const size_t vertexCount = drawableSources[sourceIndex].primitive->positions.size();
-            if (vertexCount > std::numeric_limits<uint32_t>::max() - totalVertexCount) {
-                log = "VisibilityBufferPass scene is too large to address with uint32 vertex indices";
-                return false;
-            }
-            totalVertexCount += vertexCount;
-            countedGeometries[geometryIndex] = true;
-        }
-        outVertices.reserve(totalVertexCount);
-
-        struct GeometryPayload {
-            const scene::RenderPrimitive* primitive = nullptr;
-            uint32_t positionBase = 0;
-            GPUDrivenPreviewMeshletRange baseRange;
-            std::vector<GPUDrivenPreviewMeshletRange> lodRanges;
-        };
-        std::vector<GeometryPayload> geometryPayloads(geometryPlan.geometryCount);
-        std::vector<PrimitiveInstanceRef> primitiveInstances;
-        primitiveInstances.reserve(drawableSources.size());
-        size_t maxLodLevelCount = 0;
-        for (size_t sourceIndex = 0; sourceIndex < drawableSources.size(); ++sourceIndex) {
-            const DrawableSource& source = drawableSources[sourceIndex];
-            const scene::RenderPrimitive& primitive = *source.primitive;
-            const scene::RenderNode& renderNode = *source.renderNode;
-            const uint32_t geometryIndex = geometryPlan.geometryIndices[sourceIndex];
-            if (geometryIndex >= geometryPayloads.size()) {
-                log = "VisibilityBufferPass produced an invalid geometry dedup assignment";
-                return false;
-            }
-            GeometryPayload& geometry = geometryPayloads[geometryIndex];
-            if (geometry.primitive == nullptr) {
-                geometry.primitive = &primitive;
-                if (!appendPrimitiveVertices(primitive, outVertices, geometry.positionBase, log)) {
-                    return false;
-                }
-
-                geometry.baseRange.offset = static_cast<uint32_t>(outMeshlets.size());
-                if (!appendPrimitiveClusters(
-                        primitive,
-                        primitive.meshletClusters,
-                        primitive.meshletVertices,
-                        primitive.meshletTriangles,
-                        0,
-                        static_cast<uint32_t>(primitive.meshletClusters.size()),
-                        geometry.positionBase,
-                        outMeshlets,
-                        outMeshletVertices,
-                        outMeshletTriangles,
-                        log)) {
-                    return false;
-                }
-                geometry.baseRange.count =
-                    static_cast<uint32_t>(outMeshlets.size()) - geometry.baseRange.offset;
-
-                geometry.lodRanges.resize(primitive.meshletLodLevels.size());
-                for (uint32_t lodLevel = 0;
-                     lodLevel < primitive.meshletLodLevels.size();
-                     ++lodLevel) {
-                    const scene::MeshletLODLevel& level = primitive.meshletLodLevels[lodLevel];
-                    GPUDrivenPreviewMeshletRange& lodRange = geometry.lodRanges[lodLevel];
-                    lodRange.offset = static_cast<uint32_t>(outMeshlets.size());
-                    if (!appendPrimitiveClusters(
-                            primitive,
-                            primitive.meshletLodClusters,
-                            primitive.meshletLodVertices,
-                            primitive.meshletLodTriangles,
-                            level.clusterOffset,
-                            level.clusterCount,
-                            geometry.positionBase,
-                            outMeshlets,
-                            outMeshletVertices,
-                            outMeshletTriangles,
-                            log)) {
-                        return false;
-                    }
-                    lodRange.count = static_cast<uint32_t>(outMeshlets.size()) - lodRange.offset;
-                }
-            }
-
-            const uint32_t materialIndex = resolveMaterialIndex(renderNode, primitive);
-            const uint32_t instanceIndex = static_cast<uint32_t>(outInstances.size());
-            const float3 instanceCenter = primitive.localBounds.center();
-            outInstances.push_back(GPUDrivenPreviewGPUInstance{
-                .boundingSphere = {
-                    instanceCenter.x,
-                    instanceCenter.y,
-                    instanceCenter.z,
-                    std::max(primitive.localBounds.radius(), 0.000001f),
-                },
-                .transformIndex = source.renderNodeIndex,
-                .primitiveIndex = source.renderPrimitiveIndex,
-                .flags = renderNode.visible ? kGPUDrivenPreviewInstanceVisible : 0u,
-            });
-            outInstanceRenderNodeIndices.push_back(source.renderNodeIndex);
-            const scene::RenderMaterial* material =
-                materialIndex < loadedScene.materials().size()
-                ? &loadedScene.materials()[materialIndex]
-                : nullptr;
-            uint32_t meshletFlags = 0;
-            if (material != nullptr && material->doubleSided) {
-                meshletFlags |= kGPUDrivenPreviewMeshletDoubleSided;
-            }
-            if (material != nullptr && material->alphaMode == "MASK") {
-                meshletFlags |= kGPUDrivenPreviewMeshletAlphaMasked;
-            } else if (material != nullptr && material->alphaMode == "BLEND") {
-                meshletFlags |= kGPUDrivenPreviewMeshletAlphaBlend;
-            }
-            primitiveInstances.push_back(PrimitiveInstanceRef{
-                .geometryIndex = geometryIndex,
-                .primitiveIndex = source.renderPrimitiveIndex,
-                .materialIndex = materialIndex,
-                .transformIndex = source.renderNodeIndex,
-                .instanceIndex = instanceIndex,
-                .meshletFlags = meshletFlags,
-            });
-            maxLodLevelCount = std::max(maxLodLevelCount, primitive.meshletLodLevels.size());
-        }
-
-        const auto appendDrawRange = [&](const PrimitiveInstanceRef& instance,
-                                         const GPUDrivenPreviewMeshletRange& geometryRange) {
-            if (static_cast<uint64_t>(outMeshletDraws.size()) + geometryRange.count >
-                std::numeric_limits<uint32_t>::max()) {
-                log = "VisibilityBufferPass scene is too large to address meshlet draws";
-                return false;
-            }
-            for (uint32_t meshletOffset = 0; meshletOffset < geometryRange.count; ++meshletOffset) {
-                outMeshletDraws.push_back(GPUDrivenPreviewGPUMeshletDraw{
-                    .geometryMeshletIndex = geometryRange.offset + meshletOffset,
-                    .primitiveIndex = instance.primitiveIndex,
-                    .materialIndex = instance.materialIndex,
-                    .transformIndex = instance.transformIndex,
-                    .instanceIndex = instance.instanceIndex,
-                    .flags = instance.meshletFlags,
-                });
-            }
-            return true;
-        };
-
-        outBaseMeshletRange.offset = static_cast<uint32_t>(outMeshletDraws.size());
-        for (const PrimitiveInstanceRef& instance : primitiveInstances) {
-            if (!appendDrawRange(instance, geometryPayloads[instance.geometryIndex].baseRange)) {
-                return false;
-            }
-        }
-        outBaseMeshletRange.count =
-            static_cast<uint32_t>(outMeshletDraws.size()) - outBaseMeshletRange.offset;
-
-        outLodLevelRanges.resize(maxLodLevelCount);
-        for (uint32_t lodLevel = 0; lodLevel < maxLodLevelCount; ++lodLevel) {
-            GPUDrivenPreviewMeshletRange range;
-            range.offset = static_cast<uint32_t>(outMeshletDraws.size());
-
-            for (const PrimitiveInstanceRef& instance : primitiveInstances) {
-                const GeometryPayload& geometry = geometryPayloads[instance.geometryIndex];
-                if (lodLevel >= geometry.lodRanges.size()) {
-                    continue;
-                }
-                if (!appendDrawRange(instance, geometry.lodRanges[lodLevel])) {
-                    return false;
-                }
-            }
-
-            range.count = static_cast<uint32_t>(outMeshletDraws.size()) - range.offset;
-            outLodLevelRanges[lodLevel] = range;
-        }
-
-        if (outVertices.empty() ||
-            outMeshlets.empty() ||
-            outMeshletDraws.empty() ||
-            outMeshletVertices.empty() ||
-            outMeshletTriangles.empty() ||
-            outInstances.empty()) {
-            log = "VisibilityBufferPass found no drawable meshlet geometry in " + path.string();
-            return false;
-        }
-        if (!visibilityRecordCapacityFitsId(outMeshletDraws.size())) {
-            log = "VisibilityBufferPass scene has too many meshlets for the packed visibility format";
-            return false;
-        }
-        if (outBaseMeshletRange.count == 0) {
-            log = "VisibilityBufferPass found no base meshlet geometry in " + path.string();
-            return false;
-        }
-        return true;
-    }
-
     static void buildParams(
         uint32_t width,
         uint32_t height,
         const RenderGraphProperties& properties,
         const scene::Bounds& drawBounds,
-        const GPUDrivenPreviewMeshletRange& baseMeshletRange,
         uint32_t instanceCount,
         uint32_t hzbMipCount,
         uint32_t frameIndex,
@@ -4241,8 +3425,6 @@ private:
         outParams.clearColor[3] = 1.0f;
         const uint32_t mode = previewModeFromProperties(properties);
         outParams.mode = mode;
-        outParams.meshletOffset = baseMeshletRange.offset;
-        outParams.meshletCount = baseMeshletRange.count;
         outParams.selectedLodLevel = lodLevelFromProperties(properties);
         outParams.instanceCount = instanceCount;
         outParams.width = std::max(width, 1u);
@@ -4281,12 +3463,10 @@ private:
         RenderGraphProperties properties;
         ViewConstants view;
         scene::Bounds bounds;
-        GPUDrivenPreviewMeshletRange baseRange;
-        GPUSceneRasterDrawRange adaptiveRange;
         GPUDrivenPreviewGPUParams previous, frozen;
         uint64_t temporalFrameIndex = 0;
         uint32_t width = 1, height = 1, instanceCount = 0, hzbMipCount = 1, frameIndex = 0;
-        uint32_t textureCount = 1, materialCount = 1, lodSelection = UINT32_MAX, tessellation = UINT32_MAX;
+        uint32_t textureCount = 1, materialCount = 1, tessellation = UINT32_MAX;
         float displacementBound = 0;
         bool hasView = false, hzbValid = false, previousValid = false, frozenValid = false;
         bool freeze = false, freezeChanged = false;
@@ -4306,7 +3486,6 @@ private:
             input.height,
             input.properties,
             input.bounds,
-            input.baseRange,
             input.instanceCount,
             input.hzbMipCount,
             input.frameIndex,
@@ -4342,10 +3521,6 @@ private:
         params.renderEye[3] = jitter[0];
         params.renderCenter[3] = jitter[1];
 
-        params.meshletOffset = input.adaptiveRange.offset;
-        params.meshletCount = input.adaptiveRange.count;
-        params.lodSelectionBuffer = input.lodSelection;
-        params.lodSelectionEnabled = 1u;
         params.tessellationBuffer = input.tessellation;
         params.displacementBound = input.displacementBound;
         output.params = params;
@@ -4362,7 +3537,7 @@ private:
         if (input.hasView) { input.view = *context.viewConstants(); }
         input.width = context.width(); input.height = context.height();
         input.temporalFrameIndex = context.frameIndex();
-        input.bounds = drawBounds_; input.baseRange = baseMeshletRange_; input.adaptiveRange = adaptiveMeshletRange_;
+        input.bounds = drawBounds_;
         input.instanceCount = instanceCount_; input.hzbMipCount = hzbMipCount_; input.frameIndex = frameIndex_;
         input.textureCount = materialTextureCount_; input.materialCount = materialCount_;
         input.previous = previousParams_; input.frozen = frozenCullingCamera_;
@@ -4371,7 +3546,7 @@ private:
         input.hzbValid = hzbValid_ && !input.freezeChanged;
         input.previousValid = previousCameraValid_ && !input.freezeChanged;
         input.frozenValid = frozenCullingCameraValid_ && !(input.freezeChanged && !input.freeze);
-        input.lodSelection = slot.lodSelectionHandle.shaderIndex();
+
         input.tessellation = tessellationEnabled() ? tessellationHandle_.shaderIndex() : UINT32_MAX;
         input.displacementBound = tessellationEnabled() && gpuSceneSource_
             ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
@@ -4393,7 +3568,6 @@ private:
         if (input.hasView && input.view.frame[1] == 0) { invalidateHzbHistory(); }
         previousParams_ = camera.params;
         previousCameraValid_ = true;
-        activeMeshletCount_ = camera.params.meshletCount;
         frozenCullingCamera_ = camera.frozen;
         frozenCullingCameraValid_ = camera.frozenValid;
         freezeCullingCamera_ = input.freeze;
@@ -4402,9 +3576,6 @@ private:
     }
 
     std::shared_ptr<const PreparedBindings> preparedBindings_;
-    std::vector<std::shared_ptr<ResidentMeshletLOD>> residentLods_;
-    GPUSceneRasterDrawRange adaptiveMeshletRange_;
-    uint32_t lodGroupCount_ = 0;
     std::shared_ptr<VisibilityHybridRasterizer> hybridRasterizer_;
     ResourceLease hybridQueueHandle_;
     ResourceLease hybridClusterHandle_;
@@ -4418,17 +3589,11 @@ private:
     ResourceLease streamCandidateArgumentsHandle_;
     std::unique_ptr<ShaderModule> streamClusterPrepareShader_;
     std::unique_ptr<ComputePipeline> streamClusterPreparePipeline_;
-    std::unique_ptr<ShaderModule> clusterBinShader_;
-    std::unique_ptr<ShaderModule> clusterCountShader_;
-    std::unique_ptr<ShaderModule> clusterRasterShader_;
     std::unique_ptr<ShaderModule> streamClusterBinShader_;
     std::unique_ptr<ShaderModule> streamClusterBinP0Shader_;
     std::unique_ptr<ShaderModule> streamClusterCullShader_;
     std::unique_ptr<ShaderModule> streamClusterCullP0Shader_;
     std::array<std::unique_ptr<ShaderModule>, 9> streamClusterRasterShaders_;
-    std::unique_ptr<ComputePipeline> clusterBinPipeline_;
-    std::unique_ptr<ComputePipeline> clusterCountPipeline_;
-    std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterBinPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterBinP0Pipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
@@ -4443,7 +3608,6 @@ private:
     std::string compiledTessellationKey_;
     int compiledTextureMaxDimension_ = 512;
     int compiledTextureBudgetMiB_ = 2048;
-    bool compiledTextureStreaming_ = false;
     int compiledTextureRefineDimension_ = 512, compiledTextureColdFrames_ = 180;
     int compiledTextureMaskMaxDimension_ = 0;
     std::unique_ptr<Buffer> streamOwnerMaskBuffer_;
@@ -4488,13 +3652,6 @@ private:
     ResourceLease streamVisibleInstanceIdsHandle_;
     ResourceLease streamVisibleInstanceCounterHandle_;
     std::array<ResourceLease, 2> streamHzbHandles_;
-    std::unique_ptr<ShaderModule> amplificationShader_;
-    std::unique_ptr<ShaderModule> meshShader_;
-    std::unique_ptr<ShaderModule> maskedMeshShader_;
-    std::unique_ptr<ShaderModule> fragmentShader_;
-    std::unique_ptr<ShaderModule> maskedFragmentShader_;
-    std::unique_ptr<ShaderModule> frozenFragmentShader_;
-    std::unique_ptr<ShaderModule> frozenMaskedFragmentShader_;
     std::unique_ptr<ShaderModule> resetShader_;
     std::unique_ptr<ShaderModule> instanceCullShader_;
     std::unique_ptr<ShaderModule> hzbShader_;
@@ -4506,8 +3663,6 @@ private:
     std::unique_ptr<ShaderModule> streamFragmentShader_;
     std::unique_ptr<ShaderModule> streamCullResetShader_;
     std::unique_ptr<ShaderModule> streamInstanceCullShader_;
-    std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> visibilityPipelines_;
-    std::array<std::unique_ptr<GraphicsPipeline>, kGPUDrivenPreviewDrawBucketCount> frozenVisibilityPipelines_;
     std::unique_ptr<GraphicsPipeline> compositePipeline_;
     std::unique_ptr<ComputePipeline> resetPipeline_;
     std::unique_ptr<ComputePipeline> instanceCullPipeline_;
@@ -4531,24 +3686,18 @@ private:
     uint64_t bindingViewAllocationId_ = 0;
     bool materialBindingsDirty_ = false;
     uint32_t gpuSceneDrawSetGeneration_ = 0;
-    GPUDrivenPreviewMeshletRange baseMeshletRange_;
-    std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
     std::vector<uint32_t> logicalTextureToMaterialTexture_;
     std::vector<uint32_t> streamOwnerMask_;
     std::filesystem::path compiledStreamAssetPath_;
-    std::string compiledStreamSourceId_;
     std::filesystem::path compiledStreamSourcePath_;
     GPUDrivenPreviewGPUParams previousParams_;
     RenderGraphProperties rasterHistoryProperties_;
     uint64_t rasterSettingsRevision_ = 0;
     GPUDrivenPreviewGPUParams frozenCullingCamera_;
     ClusterLightGridDesc lightGridDesc_;
-    uint32_t drawTaskCount_ = 0;
-    uint32_t activeMeshletCount_ = 0;
     uint32_t instanceCount_ = 0;
     uint32_t materialCount_ = 1;
     uint32_t materialTextureCount_ = 1;
-    uint32_t residentRecordCapacity_ = 0;
     uint32_t streamMappedInstanceCount_ = 0;
     uint32_t frameWidth_ = 1;
     uint32_t frameHeight_ = 1;

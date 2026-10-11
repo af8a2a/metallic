@@ -11,12 +11,14 @@ void materialCoverageProbeMain(uint3 id : SV_DispatchThreadID)
     ray.TMin = 0.001; ray.TMax = 4;
     ScenePathTracePush push = (ScenePathTracePush)0;
     push.materialTextureCount = getConstants<ShadowGeometryPush>().materialTextureCount;
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);
+    Ray surfaceRay; surfaceRay.origin = ray.Origin; surfaceRay.direction = ray.Direction;
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+    query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, ray);
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            alphaMaskAcceptsHit(query.CandidateInstanceIndex(), query.CandidatePrimitiveIndex(),
-                query.CandidateTriangleBarycentrics(), push)) { query.CommitNonOpaqueTriangleHit(); }
+            streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
+                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), surfaceRay,
+                query.CandidateTriangleRayT(), push)) { query.CommitNonOpaqueTriangleHit(); }
     }
     float t = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? query.CommittedRayT() : 0.0;
     float shadow = traceGeometryShadow(ray.Origin, ray.Direction, 4.0);

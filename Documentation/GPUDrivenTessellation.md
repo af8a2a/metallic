@@ -4,15 +4,15 @@ This implements recursive GPU tessellation in the existing visibility pipeline. 
 
 ## Try it
 
-Select **GPU Driven / Material Displacement** in the editor's sample menu. The repository contains an original procedural plane and height image in `Asset/Tessellation/DisplacedPlane.gltf`. The example uses the real-time deferred graph, DLSS-SR, automatic exposure and optional DLSS-NR. Its initial resident mode allows it to open without a generated stream cache.
+Select **GPU Driven / Material Displacement** in the editor's sample menu. The repository contains an original procedural plane and height image in `Asset/Tessellation/DisplacedPlane.gltf`. The example uses the real-time deferred graph, DLSS-SR, automatic exposure and optional DLSS-NR. Geometry uses streaming throughout; missing caches for importable assets are cooked from the imported scene.
 
-To use exactly the same asset through Streamer, cook once from the repository root:
+To prebuild its streaming cache, run from the repository root:
 
 ```powershell
 build-release/Source/Metallic.exe --build-meshstream Asset/Tessellation/DisplacedPlane.gltf --output Asset/MeshletCache/Tessellation/DisplacedPlane.meshstream.bin
 ```
 
-Then set `VBuffer.enableMeshletStreaming=true` in the example graph. The stream path is already configured. Cooked pages must carry position, normal and UV0 streams; position-only pages cannot evaluate authored height displacement.
+The example graph already specifies the streaming cache path; no mode switch is needed. Cooked pages must carry position, normal and UV0 streams; position-only pages cannot evaluate authored height displacement.
 
 For an existing graph, connect `VBuffer.domain` to `Deferred.domain` in addition to visibility, depth and rasterInfo. The shipped real-time and VBuffer comparison graphs already have that connection. A displaced VBuffer without its matching domain input fails explicitly instead of shading the base triangle by accident.
 

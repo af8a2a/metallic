@@ -47,7 +47,6 @@ using namespace detail;
 namespace {
 std::atomic<uint64_t> nextDebugGraphId{1};
 std::atomic<uint64_t> nextAccelerationStructureResourceId{1};
-std::atomic<uint64_t> nextSceneAccelerationStructureCacheOwner{1};
 struct DebugExecutionScope {
     IRenderDebugObserver* observer = nullptr;
     bool success = false;
@@ -310,7 +309,6 @@ struct RenderGraphExecutor::Impl {
         RenderGraphProperties runtimeProperties = RenderGraphProperties::object();
         RenderGraphProperties effectiveProperties = RenderGraphProperties::object();
         RenderGraphProperties sceneProperties = RenderGraphProperties::object();
-        uint64_t sceneAccelerationStructureCacheOwner = 0;
         std::unique_ptr<RenderGraphPass> pass;
         RenderPassReflection reflection;
         RenderGraphSceneDependency sceneDependency;
@@ -439,7 +437,6 @@ struct RenderGraphExecutor::Impl {
     std::vector<CompiledNode> executionList;
     // Shared subsystem hosts may serve independent executors. Their completion
     // trackers cannot protect a shared mutable graph-managed TLAS allocation.
-    std::unordered_map<uint32_t, uint64_t> sceneAccelerationStructureCacheOwners;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
     GraphResourceAliasPlan textureAliasPlan;
@@ -736,51 +733,10 @@ struct RenderGraphExecutor::Impl {
         return result;
     }
 
-    uint64_t sceneAccelerationStructureOwnerForNode(uint32_t id)
-    {
-        const auto [entry, inserted] = sceneAccelerationStructureCacheOwners.try_emplace(id, 0);
-        if (inserted) { entry->second = nextSceneAccelerationStructureCacheOwner.fetch_add(1); }
-        return entry->second;
-    }
-
     Result<> prepareNodeScene(CompiledNode& node, RenderGraphCompileContext& context, std::string& log)
     {
         node.sceneRequirements = node.pass->sceneResourcesRequired(context);
-        auto sceneProperties = node.effectiveProperties;
-        uint64_t accelerationStructureCacheOwner = sceneAccelerationStructureOwnerForNode(node.id);
-        bool graphManagedAccelerationStructure = node.sceneRequirements.graphManagedAccelerationStructure ||
-            sceneProperties.value("graphManagedAccelerationStructure", false);
-        // Reflection is valid before scene acquisition, as in graph validation.
-        // Resolve AS edges before resources are allocated on an initial compile.
-        const auto reflection = node.pass->reflect(context);
-        for (const auto& field : reflection.fields()) {
-            if (field.visibility != RenderGraphFieldVisibility::Input ||
-                field.resourceType != RenderGraphResourceType::AccelerationStructure) { continue; }
-            const auto alias = inputAliases.find(makeRenderGraphFieldName(node.name, field.name));
-            if (alias == inputAliases.end()) { continue; }
-            graphManagedAccelerationStructure = true;
-            std::string producerName, producerField;
-            if (!splitRenderGraphFieldName(alias->second, producerName, producerField)) {
-                return makeError(Error::InvalidArgument);
-            }
-            const auto producer = std::find_if(executionList.begin(), executionList.end(),
-                [&](const auto& candidate) { return candidate.name == producerName; });
-            if (producer == executionList.end()) { return makeError(Error::InvalidArgument); }
-            const auto& producerProperties = producer->sceneProperties.empty()
-                ? producer->effectiveProperties : producer->sceneProperties;
-            accelerationStructureCacheOwner = producer->sceneAccelerationStructureCacheOwner
-                ? producer->sceneAccelerationStructureCacheOwner : sceneAccelerationStructureOwnerForNode(producer->id);
-            // The graph AS owner controls its backend and build queue. Consumer
-            // shading options remain local while acquisition uses that policy.
-            sceneProperties["topLevelBackend"] = producerProperties.value("topLevelBackend", RenderGraphProperties("standard"));
-            sceneProperties["AsyncComputePreferred"] = producerProperties.value("AsyncComputePreferred", true);
-        }
-        if (graphManagedAccelerationStructure) {
-            sceneProperties["graphManagedAccelerationStructure"] = true;
-            sceneProperties["_renderGraphAccelerationStructureOwner"] = accelerationStructureCacheOwner;
-        }
-        node.sceneAccelerationStructureCacheOwner = graphManagedAccelerationStructure ? accelerationStructureCacheOwner : 0;
-        node.sceneProperties = std::move(sceneProperties);
+        node.sceneProperties = node.effectiveProperties;
         auto result = streamerSubsystem()->prepareScene(node.sceneRequirements, node.sceneProperties,
             context.runtimeScene, node.preparedScene, log, context.debugReadback);
         context.preparedScene = node.preparedScene;
@@ -3464,25 +3420,21 @@ Result<> RenderGraphExecutor::beginSceneResourcePreparation(
             return makeError(Error::InvalidArgument);
         }
         const auto producer = std::find_if(graph->nodes().begin(), graph->nodes().end(), [&](const auto& node) {
-            return node.type == "SceneAccelerationStructurePass" &&
+            return (node.type == "ScenePathTracePass" || node.type == "SceneRealtimePass" ||
+                node.type == "SceneDeferredPass" || node.type == "SceneRTXDIPass" ||
+                node.type == "SceneMaterialVisualizationPass") &&
                 (activeGraph.activePasses.empty() || activeGraph.activePasses.contains(node.name));
         });
         if (producer != graph->nodes().end()) {
-            // Reuse the same scene bundle the AS producer acquires on compile.
+            // Reuse the material settings of the scene consumer on compile.
             // The incoming path names the scene currently being opened.
             sceneProperties = mergeRenderGraphProperties(
                 mergeRenderGraphProperties(producer->properties, producer->runtimeProperties), properties);
-            sceneProperties["graphManagedAccelerationStructure"] = true;
-            sceneProperties["_renderGraphAccelerationStructureOwner"] =
-                impl_->sceneAccelerationStructureOwnerForNode(producer->id);
         }
     }
     cancelSceneResourcePreparation();
-    return sceneResources->manager().beginAcquireAsync(device, *graphicsQueue, sceneProperties, scene, SceneResourceFeatureBits::Geometry |
-            SceneResourceFeatureBits::Materials |
-            SceneResourceFeatureBits::MaterialTextures |
-            SceneResourceFeatureBits::Meshlets |
-            SceneResourceFeatureBits::StandardAccelerationStructure, log).transform([&](auto value) { impl_->pendingSceneResourceSnapshot = std::move(value); });
+    return sceneResources->manager().beginAcquireAsync(device, *graphicsQueue, sceneProperties, scene, SceneResourceFeatureBits::Materials |
+            SceneResourceFeatureBits::MaterialTextures, log).transform([&](auto value) { impl_->pendingSceneResourceSnapshot = std::move(value); });
 }
 
 Result<bool> RenderGraphExecutor::pumpSceneResourcePreparation(

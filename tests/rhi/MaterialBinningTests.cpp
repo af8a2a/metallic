@@ -39,13 +39,14 @@ public:
         render::RenderPassReflection reflection;
         if (fixture_) {
             reflection.addTextureOutput("visibility").storageReadWrite().format = render::Format::R32Uint;
-            reflection.addBufferOutput("records").buffer((materialCount_ + 3) * 16, 16).storageReadWrite();
+            reflection.addBufferOutput("records").buffer((materialCount_ + 3) * 4, 4).storageReadWrite();
+            reflection.addBufferOutput("groups").buffer((materialCount_ + 3) * 112, 112).storageReadWrite();
             reflection.addBufferOutput("instances").buffer((materialCount_ + 3) * 160, 160).storageReadWrite();
             reflection.addBufferOutput("materials").buffer(materialCount_ * 560, 560).storageReadWrite();
             reflection.addBufferOutput("shadingMaterials").buffer(materialCount_ * 720, 720).storageReadWrite();
         } else {
             reflection.addTextureInput("visibility").sampledRead();
-            for (const char* name : {"records", "instances", "materials", "shadingMaterials"}) {
+            for (const char* name : {"records", "groups", "instances", "materials", "shadingMaterials"}) {
                 reflection.addBufferInput(name).shaderRead();
             }
             reflection.addBufferOutput("data").buffer(
@@ -78,7 +79,7 @@ public:
         const render::ComputeResourceBindingDesc layout[] = {
             {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, visibility), .kind = render::ComputeResourceBindingKind::StorageImage},
             {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, records)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, instances)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, materials)},
-            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output)}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, groups)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output)}};
         const char* entries[] = {fixture_ ? "materialFixtureMain" : "materialReadbackResetMain",
             "materialIndirectProbeMain", "materialIndirectProbeMain"};
         for (uint32_t i = 0; i < (fixture_ ? 1u : 3u); ++i) {
@@ -95,7 +96,7 @@ public:
             result = programs_[i].initialize(*device_, {
                 .spirv = shader.spirv,
                 .pushConstantSize = 16,
-                .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
+                .bindings = {fixture_ ? layout : layout + 6, fixture_ ? 6u : 4u},
                 .requiresRayQuery = false,
                 .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources),
             }, log);
@@ -104,7 +105,7 @@ public:
                 // Constant layout, rather than obsolete table counts, defines ABI compatibility.
                 result = incompatibleProgram_.initialize(*device_, {
                     .spirv = shader.spirv, .pushConstantSize = 20,
-                    .bindings = {layout + 5, 4}, .requiresRayQuery = false,
+                    .bindings = {layout + 6, 4}, .requiresRayQuery = false,
                     .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources),
                 }, log);
                 if (!result) { return result; }
@@ -126,10 +127,11 @@ public:
                 {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, records), .buffer = context.outputBuffer("records").buffer()},
                 {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, instances), .buffer = context.outputBuffer("instances").buffer()},
                 {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, materials), .buffer = context.outputBuffer("materials").buffer()},
-                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials), .buffer = context.outputBuffer("shadingMaterials").buffer()}};
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials), .buffer = context.outputBuffer("shadingMaterials").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, groups), .buffer = context.outputBuffer("groups").buffer()}};
             return programs_[0].dispatch({
                 .commandBuffer = &commands,
-                .bindings = {bindings, 5},
+                .bindings = {bindings, 6},
                 .pushData = push,
                 .pushDataSize = sizeof(push),
                 .groupCountX = std::min(fixtureGroups, 65535u),
@@ -140,7 +142,7 @@ public:
         std::string log;
         auto result = binning_.record(*device_, commands, {
             .visibility = context.inputTexture("visibility").view(),
-            .records = context.inputBuffer("records").buffer(),
+            .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
             .instances = context.inputBuffer("instances").buffer(),
             .materials = context.inputBuffer("materials").buffer(),
             .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
@@ -328,7 +330,7 @@ public:
         render::RenderGraph graph;
         graph.addNode("MaterialBinFixture", "Fixture");
         graph.addNode("MaterialBinProbe", "Probe");
-        for (const char* field : {"visibility", "records", "instances", "materials", "shadingMaterials"}) {
+        for (const char* field : {"visibility", "records", "groups", "instances", "materials", "shadingMaterials"}) {
             graph.addEdge(std::string("Fixture.") + field, std::string("Probe.") + field);
         }
         graph.addNode("MaterialBinReadback", "Readback");
@@ -413,7 +415,7 @@ public:
     {
         render::RenderPassReflection reflection;
         reflection.addTextureInput("visibility").sampledRead();
-        for (const char* name : {"records", "instances", "materials", "shadingMaterials"}) {
+        for (const char* name : {"records", "groups", "instances", "materials", "shadingMaterials"}) {
             reflection.addBufferInput(name).shaderRead();
         }
         reflection.addBufferOutput("data").buffer(
@@ -459,7 +461,7 @@ public:
             auto invalid = mapping;
             invalid[0] = count_;
             auto rejected = binning_.record(*device_, commands, {
-                .visibility = context.inputTexture("visibility").view(), .records = context.inputBuffer("records").buffer(),
+                .visibility = context.inputTexture("visibility").view(), .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
                 .instances = context.inputBuffer("instances").buffer(), .materials = context.inputBuffer("materials").buffer(),
                 .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
                 .width = context.width(), .height = context.height(), .materialProgramBins = invalid, .programBinCount = count_}, log);
@@ -468,7 +470,7 @@ public:
         {
             auto timing = context.profileScope("Program classification");
             auto result = binning_.record(*device_, commands, {
-                .visibility = context.inputTexture("visibility").view(), .records = context.inputBuffer("records").buffer(),
+                .visibility = context.inputTexture("visibility").view(), .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
                 .instances = context.inputBuffer("instances").buffer(), .materials = context.inputBuffer("materials").buffer(),
                 .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
                 .width = context.width(), .height = context.height(),
@@ -546,7 +548,7 @@ public:
                 return std::make_unique<MaterialBinningProbePass>(true); });
             RenderGraph graph;
             graph.addNode("ProgramBinFixture", "Fixture"); graph.addNode("ProgramBinProbe", "Probe");
-            for (const char* field : {"visibility", "records", "instances", "materials", "shadingMaterials"}) {
+            for (const char* field : {"visibility", "records", "groups", "instances", "materials", "shadingMaterials"}) {
                 graph.addEdge(std::string("Fixture.") + field, std::string("Probe.") + field);
             }
             graph.addNode("ProgramBinReadback", "Readback"); graph.addEdge("Probe.data", "Readback.source");

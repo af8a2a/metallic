@@ -5,9 +5,11 @@ import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
+#include "../../../Shaders/Features/VisibilityBuffer/VisibilityStreamDecode.slang"
 
 #define gVisibility resolveUniform(getResourceParameters<MaterialBinningProbeResources>().visibility)
-#define gRecords resolveBuffer<RWStructuredBuffer<VisibleClusterRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)
+#define gRecords resolveBuffer<RWStructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)
+#define gGroups resolveBuffer<RWStructuredBuffer<StreamActiveGroup>>(getResourceParameters<MaterialBinningProbeResources>().groups)
 #define gInstances resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<MaterialBinningProbeResources>().instances)
 #define gMaterials resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<MaterialBinningProbeResources>().materials)
 #define gShadingMaterials resolveBuffer<RWStructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
@@ -73,10 +75,12 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
     ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i < (PROBE_MATERIAL_COUNT + 3u)) {
-        VisibleClusterRecord record = {0u, i, 0u, 0u};
-        if (i == PROBE_MATERIAL_COUNT) { record.flags = 1u << 28u; }
-        if (i == (PROBE_MATERIAL_COUNT + 1u)) { record.instanceIndex = 10000u; }
+        CompactStreamVisibleRecord record = packStreamVisibleRecord(i, 0u, 0u);
+        if (i == PROBE_MATERIAL_COUNT) { record = (CompactStreamVisibleRecord)0; }
         gRecords[i] = record;
+        StreamActiveGroup group = (StreamActiveGroup)0;
+        group.gpuSceneInstanceIndex = i == (PROBE_MATERIAL_COUNT + 1u) ? 10000u : i;
+        gGroups[i] = group;
         GPUDrivenPreviewInstance instance = {};
         instance.identity.y = i == (PROBE_MATERIAL_COUNT + 2u) ? 10000u : (i * 17u) % PROBE_MATERIAL_COUNT;
         gInstances[i] = instance;

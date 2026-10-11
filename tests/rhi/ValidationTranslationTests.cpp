@@ -39,7 +39,6 @@ TEST(ValidationTranslation, ObjectsUseResourceKindsAndUnknownFallback)
     EXPECT_EQ(vulkan::validationObjectType(VK_OBJECT_TYPE_PHYSICAL_DEVICE), ValidationObjectType::Adapter);
     EXPECT_EQ(vulkan::validationObjectType(VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR), ValidationObjectType::AccelerationStructure);
     EXPECT_EQ(vulkan::validationObjectType(VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_NV), ValidationObjectType::AccelerationStructure);
-    EXPECT_EQ(vulkan::validationObjectType(VK_OBJECT_TYPE_MICROMAP_EXT), ValidationObjectType::Micromap);
     EXPECT_EQ(vulkan::validationObjectType(VK_OBJECT_TYPE_DESCRIPTOR_POOL), ValidationObjectType::DescriptorHeap);
     EXPECT_EQ(vulkan::validationObjectType(VK_OBJECT_TYPE_UNKNOWN), ValidationObjectType::Unknown);
     EXPECT_EQ(vulkan::validationObjectType(static_cast<VkObjectType>(0x7ffffffe)), ValidationObjectType::Unknown);

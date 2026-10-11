@@ -30,9 +30,6 @@ using Metallic.Lighting;
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
 
-#ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
-#define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
-#endif
 
 import RTXCRHair;
 
@@ -63,11 +60,8 @@ struct PathTraceInstance
     float rayConeLodConstant;
 };
 
-#define gIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().indices)
 
-#define gPrimitives resolveBuffer<StructuredBuffer<PathTracePrimitive>>(getResourceParameters<SceneResourceParameters>().primitives)
 
-#define gInstances resolveBuffer<StructuredBuffer<PathTraceInstance>>(getResourceParameters<SceneResourceParameters>().instances)
 
 #define gMaterials resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
 
@@ -826,18 +820,12 @@ STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed
     return samplerState;
 }
 
+
+#include "StreamTextureSampling.slang"
+
 float materialTextureSamplingFloor(uint textureIndex)
 {
-#if METALLIC_DEFERRED_LIGHT_GRID
-    RWStructuredBuffer<uint> metadata = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback);
-    uint count, stride;
-    metadata.GetDimensions(count, stride);
-    uint offset = textureIndex * 8u;
-    // A frozen/full feedback queue disables source-dimension demand, but still
-    // supplies the sampling floor associated with this frame's resident tail.
-    if (offset + 6u < count) { return max(asfloat(metadata[offset + 6u]), 0.0); }
-#endif
-    return 0.0;
+    return streamTextureSamplingFloor(textureIndex);
 }
 
 float4 loadMaterialTextureMip0(
@@ -889,8 +877,12 @@ float4 loadMaterialTextureMip0(
         resolveUniform(getResourceParameters<SceneResourceParameters>().materialSampler), wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
         textureInfo.transform0.w);
 #else
+    requestStreamTextureMip0(textureIndex);
+    uint mip = uint(ceil(materialTextureSamplingFloor(textureIndex)));
+    uint mipCount;
+    gMaterialTextures(textureIndex).GetDimensions(mip, width, height, mipCount);
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
+    return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, mip)), textureInfo.transform0.w);
 #endif
 }
 
@@ -900,7 +892,8 @@ float loadMaterialAlphaCoverage(PathTraceTextureInfo textureInfo, float2 uv, Sce
         return loadMaterialTextureMip0(textureInfo, uv, float4(1.0), push).a;
     }
     if (!hasMaterialTexture(textureInfo, push)) { return 1.0; }
-    return sampleAlphaCoverage(gMaterialTextures(textureInfo.textureIndex), transformMaterialUv(textureInfo, uv));
+    requestStreamTextureMip0(textureInfo.textureIndex);
+    return sampleAlphaCoverage(gMaterialTextures(textureInfo.textureIndex), transformMaterialUv(textureInfo, uv), uint(ceil(materialTextureSamplingFloor(textureInfo.textureIndex))));
 }
 
 float4 loadMaterialTexture(
@@ -1009,7 +1002,6 @@ float4 loadMaterialTextureForMaterial(
     inout uint seed,
     TextureFootprint footprint = (TextureFootprint)0)
 {
-#if METALLIC_DEFERRED_LIGHT_GRID
     // Demand uses the source dimensions, never the currently coarse resident tail.
     // The same UV transform and ray-cone footprint drive sampling and residency.
     if (hasMaterialTexture(textureInfo, push) && (seed & 7u) == 0u) {
@@ -1025,7 +1017,6 @@ float4 loadMaterialTextureForMaterial(
             InterlockedAdd(feedback[offset + 5u], 1u, ignored);
         }
     }
-#endif
     if (deterministicMip0) {
         return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
     }
@@ -1040,19 +1031,7 @@ bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)
     return material.glassParams.x > 0.01;
 }
 
-float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
-{
-    PathTraceInstance instance = gInstances[instanceIndex];
-    PathTracePrimitive primitive = gPrimitives[instance.primitiveIndex];
-    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
-    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
-    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    return resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0].texcoord.xy * weights.x +
-        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1].texcoord.xy * weights.y +
-        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2].texcoord.xy * weights.z;
-}
+
 
 CoverageResult evaluateSceneCoverage(uint materialIndex, PathTraceMaterial material, float2 uv, ScenePathTracePush push)
 {
@@ -1074,18 +1053,7 @@ CoverageResult evaluateSceneCoverage(uint materialIndex, PathTraceMaterial mater
     return legacy.evaluateCoverage(context, coverageInstanceRef(materialIndex));
 }
 
-bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, ScenePathTracePush push)
-{
-    PathTraceInstance instance = gInstances[instanceIndex];
-    PathTraceMaterial material = loadSceneMaterial(instance.materialIndex);
-    bool blend = abs(material.textureParams.w - 2.0) < 0.25;
-    if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
-        return true;
-    }
 
-    float2 uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
-    return evaluateSceneCoverage(instance.materialIndex, material, uv, push).accepted;
-}
 
 void computeTriangleTangentSpace(
     float3 p0,

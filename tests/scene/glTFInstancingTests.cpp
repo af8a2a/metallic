@@ -91,7 +91,7 @@ TEST(glTFInstancing, MetadataReadsOnlyInstanceRangesAndPreservesHierarchy)
     for (size_t i = 0; i < scene.renderNodes().size(); ++i) {
         EXPECT_EQ(scene.renderNodes()[i].materialIndex, int(i % 2));
         EXPECT_TRUE(scene.renderPrimitives()[i].positions.empty());
-        EXPECT_EQ(scene.renderPrimitives()[i].storage, GeometryStorage::StreamAsset);
+        EXPECT_TRUE(scene.renderPrimitives()[i].positions.empty());
     }
     ASSERT_EQ(scene.images().size(), 1u);
     EXPECT_EQ(scene.images()[0].uri, "does-not-exist.ktx2");

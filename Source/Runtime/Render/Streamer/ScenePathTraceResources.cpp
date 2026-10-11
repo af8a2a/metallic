@@ -39,10 +39,7 @@
 namespace metallic::render {
 namespace {
 
-constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
-constexpr int32_t kglTFTriangleListMode = 4;
 constexpr uint32_t kInvalidMaterialTextureIndex = std::numeric_limits<uint32_t>::max();
-constexpr uint32_t kPrimitiveHasAuthoredTangents = 1u << 0u;
 
 using SceneResourceLogClock = std::chrono::steady_clock;
 
@@ -75,32 +72,9 @@ private:
     SceneResourceLogClock::time_point begin_ = SceneResourceLogClock::now();
 };
 
-struct ScenePathTraceGPUPrimitive {
-    uint32_t firstVertex = 0;
-    uint32_t vertexCount = 0;
-    uint32_t firstIndex = 0;
-    uint32_t indexCount = 0;
-    uint32_t flags = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
-};
-
-struct ScenePathTraceGPUInstance {
-    uint32_t primitiveIndex = 0;
-    uint32_t materialIndex = 0;
-    uint32_t flags = 0;
-    float rayConeLodConstant = 0.0f;
-};
-
 using ScenePathTraceGPUMaterial = LegacyMaterialPayload;
 
 struct ScenePathTraceGPUScene {
-    std::vector<SceneShadingVertex> vertices;
-    std::vector<std::array<float, 3>> positions;
-    std::vector<uint32_t> indices;
-    std::vector<ScenePathTraceGPUPrimitive> primitives;
-    std::vector<ScenePathTraceGPUInstance> instances;
     std::vector<ScenePathTraceGPUMaterial> materials;
 };
 
@@ -328,17 +302,7 @@ private:
     std::vector<std::unique_ptr<Page>> pages_;
 };
 
-std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
-{
-    if (props.contains("path") && props["path"].is_string()) {
-        std::filesystem::path path = props["path"].get<std::string>();
-        if (path.is_relative()) {
-            path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
-        }
-        return path;
-    }
-    return kDefaultPathTraceScenePath;
-}
+
 
 void appendScenePathTraceWarning(std::string& log, std::string_view message)
 {
@@ -990,170 +954,6 @@ ScenePathTraceGPUMaterial makeMaterial(
     return gpuMaterial;
 }
 
-uint32_t materialIndexForNode(const scene::RenderNode& renderNode, uint32_t materialCount)
-{
-    if (renderNode.materialIndex >= 0 &&
-        static_cast<uint32_t>(renderNode.materialIndex) < materialCount) {
-        return static_cast<uint32_t>(renderNode.materialIndex);
-    }
-    return 0;
-}
-
-float safeLog2(float value)
-{
-    return std::log2(std::max(value, 0.0000001f));
-}
-
-float3 transformPointForLod(const float4x4& matrix, const float3& point)
-{
-    return matrix * point;
-}
-
-bool primitiveTriangleVertexIndex(
-    const scene::RenderPrimitive& primitive,
-    uint64_t sourceIndex,
-    uint32_t& outVertexIndex)
-{
-    if (primitive.indices.empty()) {
-        if (sourceIndex >= primitive.positions.size()) {
-            return false;
-        }
-        outVertexIndex = static_cast<uint32_t>(sourceIndex);
-        return true;
-    }
-
-    if (sourceIndex >= primitive.indices.size()) {
-        return false;
-    }
-    const uint32_t vertexIndex = primitive.indices[static_cast<size_t>(sourceIndex)];
-    if (vertexIndex >= primitive.positions.size()) {
-        return false;
-    }
-    outVertexIndex = vertexIndex;
-    return true;
-}
-
-float rayConeLodConstantForPrimitive(
-    const scene::RenderPrimitive& primitive,
-    const float4x4& worldMatrix)
-{
-    const uint64_t sourceIndexCount = primitive.indices.empty()
-        ? (primitive.positions.size() / 3) * 3
-        : (primitive.indices.size() / 3) * 3;
-    if (primitive.mode != kglTFTriangleListMode ||
-        primitive.positions.size() < 3 ||
-        primitive.texcoords0.empty() ||
-        sourceIndexCount < 3) {
-        return 0.0f;
-    }
-
-    double weightedLod = 0.0;
-    double totalWeight = 0.0;
-    for (uint64_t sourceIndex = 0; sourceIndex + 2 < sourceIndexCount; sourceIndex += 3) {
-        uint32_t i0 = 0;
-        uint32_t i1 = 0;
-        uint32_t i2 = 0;
-        if (!primitiveTriangleVertexIndex(primitive, sourceIndex + 0, i0) ||
-            !primitiveTriangleVertexIndex(primitive, sourceIndex + 1, i1) ||
-            !primitiveTriangleVertexIndex(primitive, sourceIndex + 2, i2) ||
-            i0 >= primitive.texcoords0.size() ||
-            i1 >= primitive.texcoords0.size() ||
-            i2 >= primitive.texcoords0.size()) {
-            continue;
-        }
-
-        const float3 p0 = transformPointForLod(worldMatrix, primitive.positions[i0]);
-        const float3 p1 = transformPointForLod(worldMatrix, primitive.positions[i1]);
-        const float3 p2 = transformPointForLod(worldMatrix, primitive.positions[i2]);
-        const float2 uv0 = primitive.texcoords0[i0];
-        const float2 uv1 = primitive.texcoords0[i1];
-        const float2 uv2 = primitive.texcoords0[i2];
-
-        const float3 worldEdge0 = p1 - p0;
-        const float3 worldEdge1 = p2 - p0;
-        const float worldArea2 = length(cross(worldEdge0, worldEdge1));
-        const float2 uvEdge0 = uv1 - uv0;
-        const float2 uvEdge1 = uv2 - uv0;
-        const float texcoordArea2 = std::abs(uvEdge0.x * uvEdge1.y - uvEdge0.y * uvEdge1.x);
-        if (worldArea2 <= 0.0000001f || texcoordArea2 <= 0.0000001f) {
-            continue;
-        }
-
-        const float lodConstant = 0.5f * safeLog2(texcoordArea2 / worldArea2);
-        if (!std::isfinite(lodConstant)) {
-            continue;
-        }
-        weightedLod += static_cast<double>(lodConstant) * static_cast<double>(worldArea2);
-        totalWeight += static_cast<double>(worldArea2);
-    }
-
-    return totalWeight > 0.0 ? static_cast<float>(weightedLod / totalWeight) : 0.0f;
-}
-
-bool appendPrimitiveGeometry(
-    const scene::RenderPrimitive& primitive,
-    bool includePositions,
-    ScenePathTraceGPUScene& outScene,
-    ScenePathTraceGPUPrimitive& outPrimitive)
-{
-    const uint64_t sourceIndexCount = primitive.indices.empty()
-        ? (primitive.positions.size() / 3) * 3
-        : (primitive.indices.size() / 3) * 3;
-    if (primitive.mode != kglTFTriangleListMode ||
-        primitive.positions.size() < 3 ||
-        sourceIndexCount < 3 ||
-        sourceIndexCount > std::numeric_limits<uint32_t>::max() ||
-        primitive.positions.size() > std::numeric_limits<uint32_t>::max()) {
-        return false;
-    }
-
-    outPrimitive = ScenePathTraceGPUPrimitive{
-        .firstVertex = static_cast<uint32_t>(outScene.vertices.size()),
-        .vertexCount = static_cast<uint32_t>(primitive.positions.size()),
-        .firstIndex = static_cast<uint32_t>(outScene.indices.size()),
-        .indexCount = static_cast<uint32_t>(sourceIndexCount),
-        .flags = primitive.hasAuthoredTangents ? kPrimitiveHasAuthoredTangents : 0u,
-    };
-
-    for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
-        const float3 position = primitive.positions[vertexIndex];
-        const float3 normal = vertexIndex < primitive.normals.size()
-            ? primitive.normals[vertexIndex]
-            : float3(0.0f, 0.0f, 0.0f);
-        const float4 tangent = vertexIndex < primitive.tangents.size()
-            ? primitive.tangents[vertexIndex]
-            : float4(1.0f, 0.0f, 0.0f, 1.0f);
-        const float2 texcoord = vertexIndex < primitive.texcoords0.size()
-            ? primitive.texcoords0[vertexIndex]
-            : float2(0.0f, 0.0f);
-        outScene.vertices.push_back(SceneShadingVertex{
-            .normal = packSceneNormal(normal.x, normal.y, normal.z),
-            .tangent = packSceneTangent(tangent.x, tangent.y, tangent.z, tangent.w),
-            .texcoord = {texcoord.x, texcoord.y},
-        });
-        if (includePositions) { outScene.positions.push_back({position.x, position.y, position.z}); }
-    }
-
-    if (primitive.indices.empty()) {
-        for (uint32_t index = 0; index < outPrimitive.indexCount; ++index) {
-            outScene.indices.push_back(index);
-        }
-        return true;
-    }
-
-    for (uint32_t index = 0; index < outPrimitive.indexCount; ++index) {
-        const uint32_t sourceIndex = primitive.indices[index];
-        if (sourceIndex >= outPrimitive.vertexCount) {
-            outScene.vertices.resize(outPrimitive.firstVertex);
-            if (includePositions) { outScene.positions.resize(outPrimitive.firstVertex); }
-            outScene.indices.resize(outPrimitive.firstIndex);
-            return false;
-        }
-        outScene.indices.push_back(sourceIndex);
-    }
-    return true;
-}
-
 std::vector<ScenePathTraceGPUMaterial> buildGpuMaterials(
     const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
@@ -1176,97 +976,6 @@ std::vector<ScenePathTraceGPUMaterial> buildGpuMaterials(
     }
 
     return materials;
-}
-
-bool buildGpuScene(
-    const scene::Scene& loadedScene,
-    bool includePositions,
-    const std::vector<uint32_t>& textureIndexMap,
-    const std::vector<uint32_t>& neuralTextureSetIndexMap,
-    ScenePathTraceGPUScene& outScene,
-    std::string& log,
-    bool materialsOnly = false)
-{
-    outScene = ScenePathTraceGPUScene{};
-    outScene.materials = buildGpuMaterials(
-        loadedScene, textureIndexMap, neuralTextureSetIndexMap, log);
-    if (materialsOnly || loadedScene.hasStreamGeometry()) {
-        // Geometry stays in the Streamer page pool. Deferred only needs the
-        // same OpenPBR material table and textures as resident shading.
-        return !outScene.materials.empty();
-    }
-
-    constexpr uint32_t kInvalidPrimitiveIndex = std::numeric_limits<uint32_t>::max();
-    std::vector<uint32_t> primitiveToGpuPrimitive(
-        loadedScene.renderPrimitives().size(),
-        kInvalidPrimitiveIndex);
-    for (uint32_t primitiveIndex = 0; primitiveIndex < loadedScene.renderPrimitives().size(); ++primitiveIndex) {
-        ScenePathTraceGPUPrimitive gpuPrimitive;
-        if (!appendPrimitiveGeometry(loadedScene.renderPrimitives()[primitiveIndex], includePositions, outScene, gpuPrimitive)) {
-            continue;
-        }
-        primitiveToGpuPrimitive[primitiveIndex] = static_cast<uint32_t>(outScene.primitives.size());
-        outScene.primitives.push_back(gpuPrimitive);
-    }
-
-    for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
-        if (!renderNode.visible ||
-            renderNode.renderPrimitiveIndex < 0 ||
-            static_cast<size_t>(renderNode.renderPrimitiveIndex) >= primitiveToGpuPrimitive.size()) {
-            continue;
-        }
-        const uint32_t primitiveIndex =
-            primitiveToGpuPrimitive[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
-        if (primitiveIndex == kInvalidPrimitiveIndex) {
-            continue;
-        }
-
-        outScene.instances.push_back(ScenePathTraceGPUInstance{
-            .primitiveIndex = primitiveIndex,
-            .materialIndex = materialIndexForNode(
-                renderNode,
-                static_cast<uint32_t>(outScene.materials.size())),
-            .flags = 0,
-            .rayConeLodConstant = rayConeLodConstantForPrimitive(
-                loadedScene.renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)],
-                renderNode.worldMatrix),
-        });
-    }
-
-    if (outScene.vertices.empty() ||
-        outScene.indices.empty() ||
-        outScene.primitives.empty() ||
-        outScene.materials.empty()) {
-        log = "ScenePathTracePass found no triangle geometry suitable for path tracing";
-        return false;
-    }
-    if (outScene.instances.empty()) {
-        // Storage buffers cannot be empty, while an empty TLAS guarantees that
-        // this placeholder is never addressed by a committed ray-query hit.
-        outScene.instances.push_back(ScenePathTraceGPUInstance{});
-    }
-    return true;
-}
-
-Result<SceneAccelerationStructureBuildOptions> sceneAccelerationStructureOptions(
-    const RenderGraphProperties& properties)
-{
-    SceneAccelerationStructureBuildOptions options;
-    const auto preference = properties.find("AsyncComputePreferred");
-    if (preference != properties.end()) {
-        if (!preference->is_boolean()) { return makeError(Error::InvalidArgument); }
-        options.asyncComputePreferred = preference->get<bool>();
-    }
-    const auto value = properties.find("topLevelBackend");
-    if (value == properties.end()) { return options; }
-    if (!value->is_string()) { return makeError(Error::InvalidArgument); }
-    const auto backend = value->get<std::string>();
-    if (backend == "standard") { return options; }
-    if (backend == "partitioned") {
-        options.topLevelBackend = RayTracingTopLevelBackend::Partitioned;
-        return options;
-    }
-    return makeError(Error::InvalidArgument);
 }
 
 std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
@@ -1299,8 +1008,8 @@ std::vector<std::array<int32_t, 22>> materialResourceLayout(const scene::Scene& 
     std::vector<std::array<int32_t, 22>> layout;
     layout.reserve(loadedScene.materials().size());
     for (const scene::RenderMaterial& material : loadedScene.materials()) {
-        // Immutable geometry coverage changes invalidate prepared BLAS inputs.
-        // Color/roughness still update only the material buffer.
+        // Resource binding changes require a fresh texture/material snapshot.
+        // Factor-only changes update the material generation in place.
         layout.push_back({
             material.baseColorTexture.textureIndex,
             material.metallicRoughnessTexture.textureIndex,
@@ -1336,7 +1045,6 @@ struct ScenePathTraceResources::Impl {
         Idle,
         MaterialTextures,
         GPUPayload,
-        AccelerationStructure,
         Buffers,
         SubmitPartialUploads,
         SubmitUploads,
@@ -1457,7 +1165,7 @@ struct ScenePathTraceResources::Impl {
         textureTransitionLastTime = {};
         textureTransitionSeconds = 0.0;
         textureTransitionsFrozen = false;
-        textureStats.streamingEnabled = textureStreaming;
+        textureStats.streamingEnabled = true;
         textureStats.peakLiveAllocationBytes = textureStats.residentAllocationBytes;
         refreshTextureGeneration();
     }
@@ -1722,7 +1430,7 @@ struct ScenePathTraceResources::Impl {
         auto* frame = metallic::render::RenderFrameContext::from(commands);
         if (!frame) { return {}; }
         frame->retain(emptyTextureFeedback);
-        if (!textureStreaming || baseTextureMips.empty()) { return {}; }
+        if (baseTextureMips.empty()) { return {}; }
         // Multiple consumers share one immutable metadata seed and one demand
         // accumulation for this frame. Never reset demand after another
         // consumer has already recorded writes to the same shared resources.
@@ -2710,11 +2418,6 @@ struct ScenePathTraceResources::Impl {
         waitForTextureUploads();
         bufferUploads.clear();
         stagingArena.clear();
-        shadingVertexBuffer.reset();
-        fallbackPositionBuffer.reset();
-        indexBuffer.reset();
-        primitiveBuffer.reset();
-        instanceBuffer.reset();
         materialBuffer.reset();
         materialBinding.reset();
         pendingMaterialGeneration.reset();
@@ -2738,13 +2441,9 @@ struct ScenePathTraceResources::Impl {
         ktxReader.reset();
         decodedKtxScratch = {};
         textureStats = {};
-        rtxBuilder.clear();
-        accelerationOptions = {};
-        graphManagedAccelerationStructure = false;
         drawBounds = scene::Bounds{};
         scenePath.clear();
         prepared = false;
-        materialOnly = false;
         uploadStats = {};
         uploadProfileReported = false;
         backpressureBegin.reset();
@@ -2774,9 +2473,6 @@ struct ScenePathTraceResources::Impl {
     {
         return prepared &&
             drawBounds.valid &&
-            (materialOnly || (rtxBuilder.valid() && shadingVertexBuffer != nullptr &&
-                (device->capabilities().rayTracingPositionFetch || fallbackPositionBuffer != nullptr) &&
-                indexBuffer != nullptr && primitiveBuffer != nullptr && instanceBuffer != nullptr)) &&
             materialBinding != nullptr && materialBinding->buffer() != nullptr &&
             !materialTextures.empty() &&
             !materialTextureViews.empty() && materialTextureViews[0] != nullptr;
@@ -2785,17 +2481,13 @@ struct ScenePathTraceResources::Impl {
     bool sourceTopologyMatches(const scene::Scene& sourceScene) const
     {
         return sourceResourceIdentity == sourceScene.resourceIdentity() &&
-            sourceStructuralRevision ==
-                sourceScene.sceneGraph().structuralRevision() &&
-            sourceVisibilityRevision == sourceScene.visibilityRevision() &&
             (sourceMaterialRevision == sourceScene.materialRevision() ||
              sourceMaterialResourceLayout == materialResourceLayout(sourceScene));
     }
 
     bool textureSettingsMatch(const RenderGraphProperties& properties) const
     {
-        return textureStreaming == properties.value("materialTextureStreaming", false) &&
-            textureRefineDimension == uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096)) &&
+        return textureRefineDimension == uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096)) &&
             textureColdFrames == uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000)) &&
             textureMaskMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768)) &&
             textureMaxDimension == uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768)) &&
@@ -2813,10 +2505,6 @@ struct ScenePathTraceResources::Impl {
         sourceMaterialResourceLayout = materialResourceLayout(sourceScene);
     }
 
-    SceneAccelerationStructureBuilder rtxBuilder;
-    SceneAccelerationStructureBuildOptions accelerationOptions;
-    bool graphManagedAccelerationStructure = false;
-    bool materialOnly = false;
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
     scene::Bounds drawBounds;
@@ -2829,11 +2517,6 @@ struct ScenePathTraceResources::Impl {
     uint64_t sourceVisibilityRevision = 0;
     uint64_t sourceMaterialRevision = 0;
     std::vector<std::array<int32_t, 22>> sourceMaterialResourceLayout;
-    std::unique_ptr<Buffer> shadingVertexBuffer;
-    std::unique_ptr<Buffer> fallbackPositionBuffer;
-    std::unique_ptr<Buffer> indexBuffer;
-    std::unique_ptr<Buffer> primitiveBuffer;
-    std::unique_ptr<Buffer> instanceBuffer;
     std::unique_ptr<Buffer> materialBuffer;
     std::shared_ptr<MaterialBindingGeneration> materialBinding;
     std::shared_ptr<const MaterialGeneration> pendingMaterialGeneration;
@@ -2867,7 +2550,6 @@ struct ScenePathTraceResources::Impl {
     uint64_t textureBudgetBytes = 2048ull * 1024 * 1024;
     uint32_t textureMaxDimension = 512;
     uint32_t textureMaskMaxDimension = 0;
-    bool textureStreaming = false;
     uint32_t textureRefineDimension = 512, textureColdFrames = 180;
     SceneTextureStats textureStats;
     uint32_t materialTextureCount = 0;
@@ -2897,256 +2579,19 @@ ScenePathTraceResources::ScenePathTraceResources(ScenePathTraceResources&&) noex
 ScenePathTraceResources& ScenePathTraceResources::operator=(ScenePathTraceResources&&) noexcept = default;
 
 Result<> ScenePathTraceResources::prepare(
-    Device& device,
-    Queue& graphicsQueue,
-    const RenderGraphProperties& properties,
-    const scene::Scene* runtimeScene,
-    std::string& log)
+    Device& device, Queue& graphicsQueue, const RenderGraphProperties& properties,
+    const scene::Scene* runtimeScene, std::string& log)
 {
-    if (runtimeScene && runtimeScene->hasStreamGeometry()) {
-        Result<> result = beginPrepareAsync(device, graphicsQueue, properties, *runtimeScene, log);
-        bool complete = false;
-        scene::SceneLoadProgress progress;
-        while (result && !complete) {
-            result = pumpPrepareAsync(std::numeric_limits<double>::max(), progress, log).transform([&](auto value) { complete = std::move(value); });
-            if (result && !complete) {
-                if (impl_->textureDecodePending) { impl_->ktxPrefetch->wait(); }
-                else { std::this_thread::yield(); }
-            }
-        }
-        return result;
+    if (!runtimeScene) { log = "Scene preparation requires a runtime scene"; return makeError(Error::InvalidArgument); }
+    auto result = beginPrepareAsync(device, graphicsQueue, properties, *runtimeScene, log);
+    bool complete = false;
+    scene::SceneLoadProgress progress;
+    while (result && !complete) {
+        result = pumpPrepareAsync(std::numeric_limits<double>::max(), progress, log)
+            .transform([&](bool value) { complete = value; });
+        if (result && !complete) { std::this_thread::yield(); }
     }
-    impl_->device = &device;
-    impl_->graphicsQueue = &graphicsQueue;
-    const auto accelerationOptions = sceneAccelerationStructureOptions(properties);
-    if (!accelerationOptions) {
-        log = "topLevelBackend must be standard or partitioned; AsyncComputePreferred must be a boolean.";
-        return std::unexpected(accelerationOptions.error());
-    }
-    const std::filesystem::path path = scenePathFromProperties(properties);
-    const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
-    if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
-        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
-        impl_->accelerationOptions.asyncComputePreferred == accelerationOptions->asyncComputePreferred &&
-        impl_->graphManagedAccelerationStructure == properties.value("graphManagedAccelerationStructure", false) &&
-        boundScene != nullptr && impl_->sourceTopologyMatches(*boundScene) &&
-        (impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision() ||
-         impl_->sourceMaterialRevision != boundScene->materialRevision())) {
-        return syncRuntimeScene(boundScene, log);
-    }
-    if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
-        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
-        impl_->accelerationOptions.asyncComputePreferred == accelerationOptions->asyncComputePreferred &&
-        impl_->graphManagedAccelerationStructure == properties.value("graphManagedAccelerationStructure", false) &&
-        (boundScene == nullptr ||
-         (impl_->sourceTopologyMatches(*boundScene) &&
-          impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision() &&
-          impl_->sourceMaterialRevision == boundScene->materialRevision()))) {
-        spdlog::info("[SceneResources] Reuse prepared scene='{}'", path.string());
-        return {};
-    }
-
-    SceneResourceLogScope prepareScope("prepare scene='" + path.string() + "'");
-    impl_->clear();
-
-    impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
-    impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
-    impl_->textureMaskMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768));
-    impl_->textureStreaming = properties.value("materialTextureStreaming",false);
-    impl_->textureRefineDimension = uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096));
-    impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
-    impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
-    impl_->accelerationOptions = *accelerationOptions;
-    impl_->graphManagedAccelerationStructure = properties.value("graphManagedAccelerationStructure", false);
-    scene::SceneDocument fallbackScene;
-    if (boundScene == nullptr) {
-        SceneResourceLogScope scope("load scene for render pass resources");
-        if (!fallbackScene.load(path)) {
-            log = "ScenePathTracePass failed to load scene: " +
-                fallbackScene.lastLoadResult().error;
-            return makeError(Error::Failure);
-        }
-        boundScene = &fallbackScene;
-    }
-    const scene::Scene& loadedScene = *boundScene;
-    if (!loadedScene.bounds().valid) {
-        log = "ScenePathTracePass scene bounds are unavailable";
-        return makeError(Error::Failure);
-    }
-    const scene::SceneStats& sceneStats = loadedScene.stats();
-    spdlog::info(
-        "[SceneResources] Loaded scene stats nodes={} renderNodes={} primitives={} triangles={} images={} textures={}",
-        loadedScene.nodes().size(),
-        sceneStats.renderNodeCount,
-        sceneStats.primitiveCount,
-        sceneStats.triangleCount,
-        sceneStats.imageCount,
-        sceneStats.textureCount);
-
-    std::vector<uint32_t> textureIndexMap;
-    Result<> result;
-    result = buildMaterialValues(device, loadedScene, impl_->pendingMaterialValues, impl_->pendingValueBuffer, log);
-    if (!result) { impl_->clear(); return result; }
-    {
-        SceneResourceLogScope scope("build material textures");
-        result = impl_->buildMaterialTextures(device, loadedScene, textureIndexMap, log);
-    }
-    if (!result) {
-        impl_->clear();
-        return result;
-    }
-    impl_->textureIndexMap = textureIndexMap;
-    ScenePathTraceGPUScene gpuScene;
-    {
-        SceneResourceLogScope scope("build GPU scene payload");
-        if (!buildGpuScene(
-                loadedScene,
-                !device.capabilities().rayTracingPositionFetch,
-                textureIndexMap,
-                impl_->neuralTextures.logicalTextureSetIndices(),
-                gpuScene,
-                log)) {
-            impl_->clear();
-            return makeError(Error::Failure);
-        }
-    }
-    spdlog::info(
-        "[SceneResources] GPU scene payload vertices={} indices={} primitives={} instances={} materials={}",
-        gpuScene.vertices.size(),
-        gpuScene.indices.size(),
-        gpuScene.primitives.size(),
-        gpuScene.instances.size(),
-        gpuScene.materials.size());
-
-    std::string rtxLog;
-    {
-        SceneResourceLogScope scope("build ray tracing acceleration structures for render pass");
-        Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
-            ? device.getQueue(QueueType::Compute) : nullptr;
-        if (accelerationQueue == nullptr) {
-            accelerationQueue = &graphicsQueue;
-        }
-        result = impl_->rtxBuilder.beginBuild(device, *accelerationQueue, loadedScene, rtxLog, impl_->accelerationOptions);
-    }
-    if (!result) {
-        appendLogBlock(log, rtxLog);
-        impl_->clear();
-        return result;
-    }
-    appendLogBlock(log, rtxLog);
-
-    {
-        SceneResourceLogScope scope("upload GPU scene storage buffers");
-        if (!gpuScene.positions.empty()) {
-            result = uploadStorageBuffer(
-                device, gpuScene.positions.data(), gpuScene.positions.size() * sizeof(std::array<float, 3>),
-                sizeof(std::array<float, 3>), impl_->fallbackPositionBuffer, log,
-                "ScenePathTracePass fallback positions", &impl_->bufferUploads, &impl_->stagingArena);
-            if (!result) { impl_->clear(); return result; }
-        }
-        result = uploadStorageBuffer(
-            device,
-            gpuScene.vertices.data(),
-            static_cast<uint64_t>(gpuScene.vertices.size() * sizeof(SceneShadingVertex)),
-            sizeof(SceneShadingVertex),
-            impl_->shadingVertexBuffer,
-            log,
-            "ScenePathTracePass shading vertices",
-            &impl_->bufferUploads,
-            &impl_->stagingArena);
-        if (!result) {
-            impl_->clear();
-            return result;
-        }
-        result = uploadStorageBuffer(
-            device,
-            gpuScene.indices.data(),
-            static_cast<uint64_t>(gpuScene.indices.size() * sizeof(uint32_t)),
-            sizeof(uint32_t),
-            impl_->indexBuffer,
-            log,
-            "ScenePathTracePass indices",
-            &impl_->bufferUploads,
-            &impl_->stagingArena);
-        if (!result) {
-            impl_->clear();
-            return result;
-        }
-        result = uploadStorageBuffer(
-            device,
-            gpuScene.primitives.data(),
-            static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGPUPrimitive)),
-            sizeof(ScenePathTraceGPUPrimitive),
-            impl_->primitiveBuffer,
-            log,
-            "ScenePathTracePass primitives",
-            &impl_->bufferUploads,
-            &impl_->stagingArena);
-        if (!result) {
-            impl_->clear();
-            return result;
-        }
-        result = uploadStorageBuffer(
-            device,
-            gpuScene.instances.data(),
-            static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGPUInstance)),
-            sizeof(ScenePathTraceGPUInstance),
-            impl_->instanceBuffer,
-            log,
-            "ScenePathTracePass instances",
-            &impl_->bufferUploads,
-            &impl_->stagingArena);
-        if (!result) {
-            impl_->clear();
-            return result;
-        }
-        stampTextureFormats(gpuScene.materials,impl_->materialTextures);
-        std::string materialLog;
-        impl_->pendingMaterialGeneration = MaterialGeneration::create(
-            gpuScene.materials, loadedScene.materialRevision(), materialLog, loadedScene.materials());
-        if (!impl_->pendingMaterialGeneration) {
-            appendLogBlock(log, materialLog);
-            impl_->clear();
-            return makeError(Error::InvalidArgument);
-        }
-        result = uploadStorageBuffer(
-            device,
-            impl_->pendingMaterialGeneration->parameters().data(),
-            static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGPUMaterial)),
-            sizeof(ScenePathTraceGPUMaterial),
-            impl_->materialBuffer,
-            log,
-            "ScenePathTracePass materials",
-            &impl_->bufferUploads,
-            &impl_->stagingArena);
-        if (!result) {
-            impl_->clear();
-            return result;
-        }
-    }
-
-    {
-        SceneResourceLogScope scope("submit asynchronous scene uploads");
-        result = impl_->submitTextureUploads(device, graphicsQueue, log);
-    }
-    if (!result) {
-        impl_->clear();
-        return result;
-    }
-
-    impl_->drawBounds = loadedScene.bounds();
-    impl_->scenePath = path;
-    impl_->stampSource(loadedScene);
-    impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
-        std::move(impl_->pendingMaterialGeneration), std::move(impl_->materialBuffer),
-        std::move(impl_->pendingMaterialValues), std::move(impl_->pendingValueBuffer));
-    impl_->prepared = true;
-    ++impl_->revision;
-    spdlog::info(
-        "[SceneResources] Prepared scene resources revision={} materialTextures={}",
-        impl_->revision,
-        impl_->materialTextureCount);
-    return {};
+    return result;
 }
 
 Result<> ScenePathTraceResources::beginPrepareAsync(
@@ -3154,25 +2599,17 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
     const scene::Scene& runtimeScene,
-    std::string& log,
-    bool materialsOnly)
+    std::string& log)
 {
-    const auto accelerationOptions = sceneAccelerationStructureOptions(properties);
-    if (!accelerationOptions) {
-        log = "topLevelBackend must be standard or partitioned; AsyncComputePreferred must be a boolean.";
-        return std::unexpected(accelerationOptions.error());
-    }
-    const std::filesystem::path path = scenePathFromProperties(properties);
-    const scene::Scene* boundScene = runtimeSceneForPath(&runtimeScene, path);
-    if (boundScene == nullptr || !boundScene->bounds().valid) {
+    const std::filesystem::path path = runtimeScene.filename();
+    const scene::Scene* boundScene = &runtimeScene;
+    if (!boundScene->valid() || !boundScene->bounds().valid) {
         log = "Asynchronous scene preparation requires a matching valid runtime scene";
         return makeError(Error::InvalidArgument);
     }
-    if (impl_->valid() && impl_->materialOnly == (materialsOnly || boundScene->hasStreamGeometry()) &&
+    if (impl_->valid() &&
         impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
-        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
-        impl_->accelerationOptions.asyncComputePreferred == accelerationOptions->asyncComputePreferred &&
-        impl_->graphManagedAccelerationStructure == properties.value("graphManagedAccelerationStructure", false) && impl_->sourceTopologyMatches(*boundScene)) {
+        impl_->sourceTopologyMatches(*boundScene)) {
         return syncRuntimeScene(boundScene, log);
     }
 
@@ -3183,13 +2620,9 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     impl_->textureBudgetBytes = uint64_t(std::clamp(properties.value("materialTextureBudgetMiB",2048),1,65536)) * 1024 * 1024;
     impl_->textureMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaxDimension",512),1,32768));
     impl_->textureMaskMaxDimension = uint32_t(std::clamp(properties.value("materialTextureMaskMaxDimension",0),0,32768));
-    impl_->textureStreaming = properties.value("materialTextureStreaming",false);
     impl_->textureRefineDimension = uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096));
     impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
-    impl_->accelerationOptions = *accelerationOptions;
-    impl_->graphManagedAccelerationStructure = properties.value("graphManagedAccelerationStructure", false);
-    impl_->materialOnly = materialsOnly || boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
     impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
     impl_->asyncSourceStructuralRevision =
@@ -3301,46 +2734,11 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
             continue;
         }
         case Impl::AsyncPrepareStage::GPUPayload:
-            if (!buildGpuScene(
-                    *impl_->asyncScene,
-                    !impl_->device->capabilities().rayTracingPositionFetch,
-                    impl_->textureIndexMap,
-                    impl_->neuralTextures.logicalTextureSetIndices(),
-                    impl_->asyncGpuScene,
-                    log, impl_->materialOnly)) {
-                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return makeError(Error::Failure);
-            }
-            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::AccelerationStructure;
-            progress.phase = scene::SceneLoadPhase::GPUUpload;
-            progress.fraction = 0.82f;
-            return complete;
-        case Impl::AsyncPrepareStage::AccelerationStructure: {
-            if (impl_->materialOnly) {
-                impl_->asyncBufferStep = 4; // Only material payload; no resident buffers or RTAS.
-                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
-                continue;
-            }
-            Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
-                ? impl_->device->getQueue(QueueType::Compute) : nullptr;
-            if (accelerationQueue == nullptr) {
-                accelerationQueue = impl_->graphicsQueue;
-            }
-            result = impl_->rtxBuilder.beginBuild(
-                *impl_->device,
-                *accelerationQueue,
-                *impl_->asyncScene,
-                log, impl_->accelerationOptions);
-            if (!result) {
-                impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return result.transform([&] { return std::move(complete); });
-            }
+            impl_->asyncGpuScene.materials = buildGpuMaterials(*impl_->asyncScene,
+                impl_->textureIndexMap, impl_->neuralTextures.logicalTextureSetIndices(), log);
             impl_->asyncBufferStep = 0;
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
-            progress.phase = scene::SceneLoadPhase::AccelerationStructures;
-            progress.fraction = 0.87f;
-            return complete;
-        }
+            continue;
         case Impl::AsyncPrepareStage::Buffers: {
             if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
                 return complete;
@@ -3351,35 +2749,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
             std::unique_ptr<Buffer>* destination = nullptr;
             const char* label = nullptr;
             switch (impl_->asyncBufferStep) {
-            case 0:
-                data = impl_->asyncGpuScene.vertices.data();
-                byteSize = impl_->asyncGpuScene.vertices.size() * sizeof(SceneShadingVertex);
-                stride = sizeof(SceneShadingVertex);
-                destination = &impl_->shadingVertexBuffer;
-                label = "ScenePathTracePass shading vertices";
-                break;
-            case 1:
-                data = impl_->asyncGpuScene.indices.data();
-                byteSize = impl_->asyncGpuScene.indices.size() * sizeof(uint32_t);
-                stride = sizeof(uint32_t);
-                destination = &impl_->indexBuffer;
-                label = "ScenePathTracePass indices";
-                break;
-            case 2:
-                data = impl_->asyncGpuScene.primitives.data();
-                byteSize = impl_->asyncGpuScene.primitives.size() * sizeof(ScenePathTraceGPUPrimitive);
-                stride = sizeof(ScenePathTraceGPUPrimitive);
-                destination = &impl_->primitiveBuffer;
-                label = "ScenePathTracePass primitives";
-                break;
-            case 3:
-                data = impl_->asyncGpuScene.instances.data();
-                byteSize = impl_->asyncGpuScene.instances.size() * sizeof(ScenePathTraceGPUInstance);
-                stride = sizeof(ScenePathTraceGPUInstance);
-                destination = &impl_->instanceBuffer;
-                label = "ScenePathTracePass instances";
-                break;
-            case 4: {
+            case 0: {
                 stampTextureFormats(impl_->asyncGpuScene.materials,impl_->materialTextures);
                 std::string materialLog;
                 impl_->pendingMaterialGeneration = MaterialGeneration::create(
@@ -3396,17 +2766,6 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 label = "ScenePathTracePass materials";
                 break;
             }
-            case 5:
-                if (impl_->asyncGpuScene.positions.empty()) {
-                    ++impl_->asyncBufferStep;
-                    continue;
-                }
-                data = impl_->asyncGpuScene.positions.data();
-                stride = sizeof(std::array<float, 3>);
-                byteSize = impl_->asyncGpuScene.positions.size() * stride;
-                destination = &impl_->fallbackPositionBuffer;
-                label = "ScenePathTracePass fallback positions";
-                break;
             default:
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitUploads;
                 continue;
@@ -3432,7 +2791,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
             }
             ++impl_->asyncBufferStep;
             progress.phase = scene::SceneLoadPhase::GPUUpload;
-            progress.fraction = 0.88f + 0.03f * static_cast<float>(impl_->asyncBufferStep) / 5.0f;
+            progress.fraction = 0.88f + 0.03f * static_cast<float>(impl_->asyncBufferStep);
             if (impl_->uploadBatchLimitReached()) {
                 impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Buffers;
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
@@ -3476,24 +2835,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
         case Impl::AsyncPrepareStage::WaitForGPU:
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.97f;
-            {
-                bool accelerationStructuresComplete = impl_->materialOnly;
-                std::string rtxLog;
-                result = impl_->materialOnly ? Result<>{} : impl_->rtxBuilder.pollBuild(rtxLog).transform([&](auto value) { accelerationStructuresComplete = std::move(value); });
-                appendLogBlock(log, rtxLog);
-                if (!result) {
-                    impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                    progress.status = scene::SceneLoadStatus::Failed;
-                    progress.phase = scene::SceneLoadPhase::Failed;
-                    progress.error = rtxLog.empty()
-                        ? "Scene acceleration-structure build failed."
-                        : rtxLog;
-                    return result.transform([&] { return std::move(complete); });
-                }
-                if (!impl_->textureUploadsReady() || !accelerationStructuresComplete) {
-                    return complete;
-                }
-            }
+            if (!impl_->textureUploadsReady()) { return complete; }
             impl_->retireCompletedTextureUploads();
             // All copy/acquire work has completed; keep no large idle staging
             // pages attached to the prepared scene during normal rendering.
@@ -3562,14 +2904,9 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             {"path", impl_->scenePath.string()},
             {"materialTextureMaxDimension", impl_->textureMaxDimension},
             {"materialTextureMaskMaxDimension", impl_->textureMaskMaxDimension},
-            {"materialTextureStreaming", impl_->textureStreaming},
             {"materialTextureRefineDimension", impl_->textureRefineDimension},
             {"materialTextureColdFrames", impl_->textureColdFrames},
             {"materialTextureBudgetMiB", impl_->textureBudgetBytes / (1024 * 1024)},
-            {"topLevelBackend", impl_->accelerationOptions.topLevelBackend == RayTracingTopLevelBackend::Partitioned
-                ? "partitioned" : "standard"},
-            {"AsyncComputePreferred", impl_->accelerationOptions.asyncComputePreferred},
-            {"graphManagedAccelerationStructure", impl_->graphManagedAccelerationStructure},
         };
         Result<> result = prepare(
             device,
@@ -3581,35 +2918,6 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             return result;
         }
 
-        // prepare() deliberately submits its acceleration-structure build
-        // asynchronously. A direct runtime sync, however, has no async pump
-        // to advance that build, so complete it before reporting success.
-        Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
-            ? device.getQueue(QueueType::Compute) : nullptr;
-        if (accelerationQueue == nullptr) {
-            accelerationQueue = &graphicsQueue;
-        }
-        while (impl_->rtxBuilder.buildState() ==
-            SceneAccelerationStructureBuildState::Building) {
-            result = accelerationQueue->waitIdle();
-            if (!result) {
-                appendLogBlock(
-                    log,
-                    resultMessage(
-                        "Queue::waitIdle(runtime scene topology rebuild)",
-                        result));
-                impl_->clear();
-                return result;
-            }
-            bool accelerationStructuresComplete = false;
-            std::string rtxLog;
-            result = impl_->rtxBuilder.pollBuild(rtxLog).transform([&](auto value) { accelerationStructuresComplete = std::move(value); });
-            appendLogBlock(log, rtxLog);
-            if (!result) {
-                impl_->clear();
-                return result;
-            }
-        }
         if (!impl_->valid()) {
             appendLogBlock(
                 log,
@@ -3653,64 +2961,15 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         }
         impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
             std::move(candidate), std::move(candidateBuffer), std::move(candidateValues), std::move(candidateValueBuffer));
-        // Do not stamp geometry revisions here: a simultaneous transform edit
-        // still needs the instance upload and TLAS refit below.
+        // Stream geometry independently observes transform and visibility revisions.
         impl_->sourceMaterialRevision = boundScene->materialRevision();
         ++impl_->revision;
     }
-    // A transform edit on a light/camera must not repack every vertex/index,
-    // recalculate per-triangle ray-cone LOD, replace the instance buffer, or
-    // submit a synchronous TLAS update when no render instance moved.
-    if (impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision()) {
-        return {};
-    }
-
-    if (impl_->materialOnly) {
+    if (impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision()) {
         impl_->drawBounds = boundScene->bounds();
         impl_->stampSource(*boundScene);
         ++impl_->revision;
-        return {};
     }
-    ScenePathTraceGPUScene gpuScene;
-    if (!buildGpuScene(
-            *boundScene,
-            false, // Only the instance payload is uploaded during a transform edit.
-            impl_->textureIndexMap,
-            impl_->neuralTextures.logicalTextureSetIndices(),
-            gpuScene,
-            log)) {
-        return makeError(Error::Failure);
-    }
-    std::string rtxLog;
-    Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
-        ? impl_->device->getQueue(QueueType::Compute) : nullptr;
-    if (accelerationQueue == nullptr) {
-        accelerationQueue = impl_->graphicsQueue;
-    }
-    Result<> result = impl_->graphManagedAccelerationStructure
-        ? impl_->rtxBuilder.prepareInstanceTransformUpdate(*impl_->device, *boundScene, rtxLog)
-        : impl_->rtxBuilder.updateInstanceTransforms(*impl_->device, *accelerationQueue, *boundScene, rtxLog);
-    appendLogBlock(log, rtxLog);
-    if (!result) {
-        return result;
-    }
-    result = uploadStorageBuffer(
-        *impl_->device,
-        gpuScene.instances.data(),
-        static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGPUInstance)),
-        sizeof(ScenePathTraceGPUInstance),
-        impl_->instanceBuffer,
-        log,
-        "ScenePathTracePass updated instances");
-    if (!result) {
-        return result;
-    }
-    impl_->drawBounds = boundScene->bounds();
-    impl_->stampSource(*boundScene);
-    ++impl_->revision;
-    spdlog::info(
-        "[SceneResources] Updated instance transforms and refit TLAS revision={}",
-        impl_->revision);
     return {};
 }
 
@@ -3773,41 +3032,6 @@ const scene::Bounds& ScenePathTraceResources::bounds() const
     return impl_->drawBounds;
 }
 
-SceneAccelerationStructureBuilder& ScenePathTraceResources::accelerationStructure()
-{
-    return impl_->rtxBuilder;
-}
-
-const SceneAccelerationStructureBuilder& ScenePathTraceResources::accelerationStructure() const
-{
-    return impl_->rtxBuilder;
-}
-
-Buffer* ScenePathTraceResources::shadingVertexBuffer() const
-{
-    return impl_->shadingVertexBuffer.get();
-}
-
-Buffer* ScenePathTraceResources::fallbackPositionBuffer() const
-{
-    return impl_->fallbackPositionBuffer.get();
-}
-
-Buffer* ScenePathTraceResources::indexBuffer() const
-{
-    return impl_->indexBuffer.get();
-}
-
-Buffer* ScenePathTraceResources::primitiveBuffer() const
-{
-    return impl_->primitiveBuffer.get();
-}
-
-Buffer* ScenePathTraceResources::instanceBuffer() const
-{
-    return impl_->instanceBuffer.get();
-}
-
 std::shared_ptr<const MaterialGeneration> ScenePathTraceResources::materialGeneration() const
 {
     return impl_->materialBinding ? impl_->materialBinding->generation() : nullptr;
@@ -3858,19 +3082,9 @@ std::span<const uint32_t> ScenePathTraceResources::logicalTextureIndices() const
 
 bool ScenePathTraceResources::gpuWorkComplete()
 {
-    bool accelerationStructureComplete =
-        impl_->rtxBuilder.buildState() != SceneAccelerationStructureBuildState::Building;
-    Result<> result;
-    if (!accelerationStructureComplete) {
-        std::string log;
-        result = impl_->rtxBuilder.pollBuild(log).transform([&](auto value) { accelerationStructureComplete = std::move(value); });
-        if (!result && !log.empty()) {
-            spdlog::error("[SceneResources] {}", log);
-        }
-    }
     const bool migrationComplete = !impl_->textureMigration || !impl_->textureMigration->submitted ||
         impl_->textureMigration->frame.completion().isComplete();
-    return migrationComplete && impl_->textureUploadsReady() && (accelerationStructureComplete || !result);
+    return migrationComplete && impl_->textureUploadsReady();
 }
 
 } // namespace metallic::render

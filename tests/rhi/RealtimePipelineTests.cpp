@@ -1406,17 +1406,13 @@ public:
             require(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties, nullptr, log).transform([&](auto value) { metadata = std::move(value); })), log);
             require(metadata && metadata->hasStreamGeometry(), "Default producer must resolve streaming metadata");
             for (const auto& primitive : metadata->renderPrimitives()) {
-                require(primitive.positions.empty() && primitive.indices.empty(), "Full source geometry became resident");
+                require(primitive.positions.empty() && primitive.indices.empty(), "Metadata scene unexpectedly retained decoded geometry");
             }
             std::shared_ptr<SceneResourceSnapshot> materials;
             require(bool(streamer->manager().acquire(context.device, context.graphicsQueue, graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Materials, log).transform([&](auto value) { materials = std::move(value); })), log);
-            require(materials->pathTraceResources->valid() && materials->pathTraceResources->materialBuffer() != nullptr &&
-                materials->pathTraceResources->shadingVertexBuffer() == nullptr &&
-                materials->pathTraceResources->indexBuffer() == nullptr &&
-                !materials->pathTraceResources->accelerationStructure().valid(), "Material acquisition imported resident geometry/RTAS");
-            std::shared_ptr<SceneResourceSnapshot> rejected;
-            require(!streamer->manager().acquire(context.device, context.graphicsQueue, graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Geometry, log).transform([&](auto value) { rejected = std::move(value); }),
-                "Metadata must not silently fall back to resident import");
+            require(materials->pathTraceResources->valid() &&
+                materials->pathTraceResources->materialBuffer() != nullptr,
+                "Material acquisition did not provide the streamed scene material table");
             const auto draw = [&]() {
                 require(bool(executor.execute({.graphicsQueue = &context.graphicsQueue,
                     .computeQueue = context.device.getQueue(QueueType::Compute)})), "Streamed realtime execution failed");
@@ -1475,9 +1471,10 @@ public:
             executor.outputResource("VBuffer.rasterInfo")->buffer->unmap();
             auto* gpuScene = executor.subsystemHost()->get<GPUSceneSubsystem>();
             const auto* stream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration}, info.frameIndex, info.sceneIdentity);
-            require(stream && stream->accelerationStructure && info.hasStreamGeometry && info.residentRecordCount == 0,
+            require(stream && stream->accelerationStructure,
                 "Streamed raster did not publish its TLAS and visibility namespace");
-            require(gpuScene->globalBufferViews().vertices.buffer == nullptr, "GPUScene uploaded resident vertices");
+            require(gpuScene->globalBufferViews().geometries.valid() &&
+                gpuScene->globalBufferViews().instances.valid(), "Streamed GPUScene metadata is missing");
             require(saveRgba8Png(context.outputDirectory / (miniZorah_ ? "MiniZorahRealtime.png" : "StreamedRealtime.png"),
                 reinterpret_cast<const uint8_t*>(shaded.data()), width, height, log), log);
             if (captureGraph) {

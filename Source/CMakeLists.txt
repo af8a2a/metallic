@@ -57,7 +57,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
     Runtime/Render/MeshletLOD.cpp
-    Runtime/Render/ResidentMeshletLOD.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp
     Runtime/Render/Core/RenderFrameContext.cpp
@@ -84,9 +83,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/MeshletStreamResidency.cpp
     Runtime/Render/Streamer/MeshletStreamRuntime.cpp
     Runtime/Render/NeuralTextureResources.cpp
-    Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
-    Runtime/Render/RayTracing/SceneCoverage.cpp
-    Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
@@ -156,7 +152,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/Vulkan/VulkanDeviceProperties.cpp
     Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.cpp
-    Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
     Runtime/Render/GAPI/Vulkan/VulkanDLSSNR.cpp
 )

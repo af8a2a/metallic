@@ -12,7 +12,6 @@ public static const uint kVisibilityMaxRecordIndex = kVisibilityMaxRecordCount -
 public static const uint kVisibleClusterDrawBucketMask = 0x0fu;
 public static const uint kVisibleClusterSourceShift = 28u;
 public static const uint kVisibleClusterSourceMask = 0x3u << kVisibleClusterSourceShift;
-public static const uint kVisibleClusterSourceResident = 0u;
 public static const uint kVisibleClusterSourceStreamPage = 1u;
 
 public struct VisibleClusterRecord

@@ -61,8 +61,6 @@ constexpr uint32_t kSPIRVVersion16 = 0x00010600u;
 constexpr uint16_t kSPIRVOpExtension = 10u;
 constexpr uint16_t kSPIRVOpExtInstImport = 11u;
 constexpr uint16_t kSPIRVOpCapability = 17u;
-constexpr uint16_t kSPIRVOpRayQueryGetIntersectionTriangleVertexPositionsKhr = 5340u;
-constexpr uint32_t kSPIRVRayQueryPositionFetchKhr = 5391u;
 constexpr uint16_t kSPIRVOpRayQueryGetIntersectionClusterIdNv = 5345u;
 constexpr uint32_t kSPIRVRayTracingClusterAccelerationStructureNv = 5437u;
 
@@ -1797,7 +1795,7 @@ public:
                 !hasRuntimeSetting(*pass, "lodPixelError", render::RenderGraphRuntimeSettingType::Float, false, false) ||
                 !hasRuntimeSetting(*pass, "lodBias", render::RenderGraphRuntimeSettingType::Float, false, false) ||
                 !hasRuntimeSetting(*pass, "lodLevel", render::RenderGraphRuntimeSettingType::Int, false, false)) {
-                return RHITestResult::fail("Resident and stream passes must expose the shared runtime-only LOD controls");
+                return RHITestResult::fail("Visibility and stream asset passes must expose the shared runtime-only LOD controls");
             }
         }
         if (!hasRuntimeSetting(
@@ -2246,7 +2244,6 @@ public:
             const auto* vbuffer = loaded.graph.findNode("VBuffer");
             if (!vbuffer || loaded.desc.loadSceneInEditor ||
                 vbuffer->properties.value("path", "") != scene.scenePath ||
-                !vbuffer->properties.value("streamAssetOnly", false) ||
                 vbuffer->properties.value("autoBuildStreamAsset", true) ||
                 !loaded.graph.viewProperties().contains("camera")) {
                 return RHITestResult::fail("Scene preset must select metadata streaming, its own source and camera");
@@ -2534,19 +2531,17 @@ public:
         }
         const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("VBuffer");
         const render::RenderGraphNode* gpuDrivenDeferred = gpuDrivenSample.graph.findNode("Deferred");
-        if (gpuDrivenSample.graph.nodes().size() != 7u ||
+        if (gpuDrivenSample.graph.nodes().size() != 8u ||
+            gpuDrivenSample.graph.findNode("ColorGrading") == nullptr ||
             gpuDriven == nullptr ||
             gpuDriven->type != "VisibilityBufferPass" ||
             !gpuDriven->properties.is_object() ||
             gpuDriven->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
             gpuDriven->properties.value("visualization", "") != "none" ||
-            !gpuDriven->properties.value("streamAssetOnly", false) ||
-            !gpuDriven->properties.value("enableMeshletStreaming", false) ||
             gpuDriven->properties.value("autoBuildStreamAsset", true) ||
             gpuDrivenDeferred == nullptr ||
             gpuDrivenDeferred->type != "VisibilityBufferDeferredPass" ||
             gpuDrivenDeferred->properties.value("path", "") != gpuDrivenSample.desc.scenePath ||
-            gpuDrivenDeferred->properties.value("lightingMode", "") != "realtime" ||
             gpuDrivenSample.graph.findNode("Shadows") == nullptr ||
             gpuDrivenSample.graph.findNode("Shadows")->type != "RayTracedShadowPass" ||
             !gpuDrivenSample.graph.findNode("Shadows")->properties.value("sigmaDenoise", false) ||
@@ -2556,6 +2551,16 @@ public:
         for (const char* type : {"RayTracedShadowPass", "ScreenSpaceShadowPass"}) {
             auto shadow = render::createRenderGraphPass(type);
             if (shadow == nullptr) { return RHITestResult::fail("Ray-traced shadow node or legacy alias unavailable"); }
+            const auto requirements = shadow->sceneResourcesRequired({});
+            const auto reflection = shadow->reflect({});
+            const auto* acceleration = reflection.findField("accelerationStructure", render::RenderGraphFieldVisibility::Input);
+            const auto dependency = shadow->sceneDependency();
+            if (requirements.geometry ||
+                (uint32_t(requirements.features) & uint32_t(render::SceneResourceFeatureBits::AccelerationStructure)) != 0 ||
+                acceleration == nullptr || acceleration->optional ||
+                std::find(dependency.inputs.begin(), dependency.inputs.end(), "accelerationStructure") == dependency.inputs.end()) {
+                return RHITestResult::fail("Shadows must consume the visibility producer CLAS publication without a separate geometry session");
+            }
             const auto controls = shadow->runtimeSettings();
             bool enabledControl = false;
             for (const auto& control : controls) {
@@ -2721,7 +2726,6 @@ public:
                 gpuDrivenTerrainP1Sample.desc.scenePath ||
             gpuDrivenTerrainP1->properties.value("streamAssetPath", "") !=
                 "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin" ||
-            !gpuDrivenTerrainP1->properties.value("enableMeshletStreaming", false) ||
             !gpuDrivenTerrainP1->properties.value("instanceHzbCull", false) ||
             !gpuDrivenTerrainP1->properties.value("meshletFrustumCull", false) ||
             gpuDrivenTerrainP1->properties.value("visualization", "") != "meshlet" ||
@@ -3884,185 +3888,36 @@ public:
 
     RHITestResult run(RHITestContext&) override
     {
-        render::ShaderCompileResult amplificationCompile;
-        const char* capabilities[] = {
-            "spvMeshShadingEXT",
-            "spvGroupNonUniformBallot",
+        const char* capabilities[] = {"spvMeshShadingEXT", "spvGroupNonUniformBallot"};
+        struct Entry { const char* module; const char* entry; bool mesh; };
+        constexpr Entry entries[] = {
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamTessellationTask", true},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamTessellationMesh", true},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamTessellationFragment", false},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetMeshMain", true},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetFragmentMain", false},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetCullResetMain", false},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetInstanceCullMain", false},
+            {"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewHzbMain", false},
+            {"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeVertexMain", false},
+            {"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeFragmentMain", false},
         };
-        render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-            .entryPointName = "visibilityBufferAmplificationMain",
-            .searchPath = kShaderSearchPath,
-            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
-        }, amplificationCompile.diagnostics).transform([&](auto value) { amplificationCompile = std::move(value); });
-        if (!result) {
-            return RHITestResult::fail(
-                std::string("VisibilityBuffer amplification shader compile returned ") +
-                toString(result) +
-                ": " +
-                amplificationCompile.diagnostics);
-        }
-        if (amplificationCompile.spirv.empty()) {
-            return RHITestResult::fail(
-                "VisibilityBuffer amplification shader produced empty SPIR-V");
-        }
-
-        const render::SlangMacroDefine atomicFallbackDefine{
-            "GPU_DRIVEN_AMPLIFICATION_WAVE_OPS",
-            "0",
-        };
-        const char* atomicFallbackCapabilities[] = {
-            "spvMeshShadingEXT",
-        };
-        render::ShaderCompileResult atomicFallbackCompile;
-        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-            .entryPointName = "visibilityBufferAmplificationMain",
-            .searchPath = kShaderSearchPath,
-            .capabilities = {atomicFallbackCapabilities, static_cast<uint32_t>(
-                    std::size(atomicFallbackCapabilities))},
-            .macroDefines = {&atomicFallbackDefine, 1u},
-        }, atomicFallbackCompile.diagnostics).transform([&](auto value) { atomicFallbackCompile = std::move(value); });
-        if (!result) {
-            return RHITestResult::fail(
-                std::string("VisibilityBuffer atomic amplification fallback compile returned ") +
-                toString(result) +
-                ": " +
-                atomicFallbackCompile.diagnostics);
-        }
-        if (atomicFallbackCompile.spirv.empty()) {
-            return RHITestResult::fail(
-                "VisibilityBuffer atomic amplification fallback produced empty SPIR-V");
-        }
-
-        render::ShaderCompileResult meshCompile;
-        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-            .entryPointName = "visibilityBufferMeshMain",
-            .searchPath = kShaderSearchPath,
-            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
-        }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
-        if (!result) {
-            return RHITestResult::fail(
-                std::string("VisibilityBuffer mesh shader compile returned ") +
-                toString(result) +
-                ": " +
-                meshCompile.diagnostics);
-        }
-        if (meshCompile.spirv.empty()) {
-            return RHITestResult::fail("VisibilityBuffer mesh shader produced empty SPIR-V");
-        }
-
-        const render::SlangMacroDefine maskedMeshDefine{
-            "VISIBILITY_BUFFER_ALPHA_MASKED", "1",
-        };
-        render::ShaderCompileResult maskedMeshCompile;
-        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-            .entryPointName = "visibilityBufferMeshMain",
-            .searchPath = kShaderSearchPath,
-            .capabilities = {atomicFallbackCapabilities, static_cast<uint32_t>(
-                    std::size(atomicFallbackCapabilities))},
-            .macroDefines = {&maskedMeshDefine, 1u},
-        }, maskedMeshCompile.diagnostics).transform([&](auto value) { maskedMeshCompile = std::move(value); });
-        if (!result || maskedMeshCompile.spirv.empty()) {
-            return RHITestResult::fail(
-                "VisibilityBuffer masked mesh compile failed: " +
-                maskedMeshCompile.diagnostics);
-        }
-
-        // No vertex attributes in opaque visibility rasterization. Only the
-        // masked variant may export UV and material index as user locations.
-        auto countLocations = [](const std::vector<uint32_t>& spirv) -> uint32_t {
-            constexpr uint16_t kOpDecorate = 71;
-            constexpr uint16_t kOpMemberDecorate = 72;
-            constexpr uint32_t kDecorationLocation = 30;
-            uint32_t count = 0;
-            for (size_t offset = 5; offset < spirv.size();) {
-                const uint32_t words = spirv[offset] >> 16u;
-                const uint16_t opcode = static_cast<uint16_t>(spirv[offset]);
-                if (words == 0 || offset + words > spirv.size()) {
-                    return UINT32_MAX;
-                }
-                if ((opcode == kOpDecorate && words >= 4 &&
-                        spirv[offset + 2] == kDecorationLocation) ||
-                    (opcode == kOpMemberDecorate && words >= 5 &&
-                        spirv[offset + 3] == kDecorationLocation)) {
-                    ++count;
-                }
-                offset += words;
-            }
-            return count;
-        };
-        if (countLocations(meshCompile.spirv) != 0u ||
-            countLocations(maskedMeshCompile.spirv) != 2u) {
-            return RHITestResult::fail(
-                "VisibilityBuffer mesh interfaces must be position-only for opaque and UV/material for masked");
-        }
-
-        render::ShaderCompileResult fragmentCompile;
-        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-                .entryPointName = "visibilityBufferFragmentMain",
-                .searchPath = kShaderSearchPath,
-            }, fragmentCompile.diagnostics).transform([&](auto value) { fragmentCompile = std::move(value); });
-        if (!result) {
-            return RHITestResult::fail(
-                std::string("VisibilityBuffer fragment shader compile returned ") +
-                toString(result) +
-                ": " +
-                fragmentCompile.diagnostics);
-        }
-        if (fragmentCompile.spirv.empty()) {
-            return RHITestResult::fail("VisibilityBuffer fragment shader produced empty SPIR-V");
-        }
-
-        struct ShaderEntry {
-            const char* module;
-            const char* entry;
-        };
-        constexpr std::array<ShaderEntry, 6> additionalEntryPoints{
-            ShaderEntry{"Features/VisibilityBuffer/VisibilityBuffer", "visibilityBufferMaskedFragmentMain"},
-            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewResetMain"},
-            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain"},
-            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewHzbMain"},
-            ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeVertexMain"},
-            ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeFragmentMain"},
-        };
-        size_t additionalWordCount = maskedMeshCompile.spirv.size();
-        for (const ShaderEntry& shaderEntry : additionalEntryPoints) {
-            const char* entryPoint = shaderEntry.entry;
-            render::ShaderCompileResult compile;
-            result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                    .moduleName = shaderEntry.module,
-                    .entryPointName = entryPoint,
+        for (const auto& entry : entries) {
+            for (const char* wave : {"0", "1"}) {
+                const render::SlangMacroDefine define{"GPU_DRIVEN_AMPLIFICATION_WAVE_OPS", wave};
+                render::ShaderCompileResult compiled;
+                auto result = render::compileSlangShaderToSpirv({
+                    .moduleName = entry.module, .entryPointName = entry.entry,
                     .searchPath = kShaderSearchPath,
-                }, compile.diagnostics).transform([&](auto value) { compile = std::move(value); });
-            if (!result) {
-                return RHITestResult::fail(
-                    std::string("VisibilityBuffer shader compile returned ") +
-                    toString(result) +
-                    " for " +
-                    entryPoint +
-                    ": " +
-                    compile.diagnostics);
+                    .capabilities = {entry.mesh ? capabilities : nullptr, entry.mesh ? 2u : 0u},
+                    .macroDefines = {&define, 1u},
+                }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
+                if (!result || compiled.spirv.empty()) {
+                    return RHITestResult::fail(std::string(entry.entry) + " wave=" + wave + ": " + compiled.diagnostics);
+                }
             }
-            if (compile.spirv.empty()) {
-                return RHITestResult::fail(
-                    std::string("VisibilityBuffer shader produced empty SPIR-V for ") + entryPoint);
-            }
-            additionalWordCount += compile.spirv.size();
         }
-
-        return RHITestResult::pass(
-            std::string("compiled VisibilityBuffer shaders, amplification words=") +
-            std::to_string(amplificationCompile.spirv.size()) +
-            ", mesh words=" +
-            std::to_string(meshCompile.spirv.size()) +
-            ", fragment words=" +
-            std::to_string(fragmentCompile.spirv.size()) +
-            ", additional words=" +
-            std::to_string(additionalWordCount));
+        return RHITestResult::pass("Stream mesh/task/tessellation/culling and visibility composite shaders compile with wave and atomic task variants");
     }
 };
 
@@ -5621,7 +5476,7 @@ public:
 
     RHITestResult run(RHITestContext&) override
     {
-        const char* capabilities[] = {"spvRayQueryKHR", "spvRayQueryPositionFetchKHR"};
+        const char* capabilities[] = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"};
         const struct ShaderEntry {
             const char* moduleName;
             const char* entryPointName;
@@ -5632,18 +5487,14 @@ public:
             {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain"},
         };
 
-        for (uint32_t positionFetch : {0u, 1u}) {
-            const render::SlangMacroDefine defines[] = {
-                {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", positionFetch != 0 ? "1" : "0"},
-            };
+        {
             for (const ShaderEntry& entry : entries) {
                 render::ShaderCompileResult compileResult;
                 render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                     .moduleName = entry.moduleName,
                     .entryPointName = entry.entryPointName,
                     .searchPath = kShaderSearchPath,
-                    .capabilities = {capabilities, 1u + positionFetch},
-                    .macroDefines = {defines, static_cast<uint32_t>(std::size(defines))},
+                    .capabilities = capabilities,
                     .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
                     .descriptorHeapStrides = kOfflineNativeShaderStrides,
                 }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
@@ -5654,20 +5505,16 @@ public:
                         toString(result) + " " + compileResult.diagnostics);
                 }
                 if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
-                    return RHITestResult::fail(std::string(entry.moduleName) + " must use native compute resources in both position-fetch variants");
+                    return RHITestResult::fail(std::string(entry.moduleName) + " must use native compute resources on the CLAS path");
                 }
-                if (spirvContainsOpcode(compileResult.spirv,
-                        kSPIRVOpRayQueryGetIntersectionTriangleVertexPositionsKhr) != (positionFetch != 0) ||
-                    spirvContainsCapability(compileResult.spirv,
-                        kSPIRVRayQueryPositionFetchKhr) != (positionFetch != 0) ||
-                    spirvContainsExtension(compileResult.spirv,
-                        "SPV_KHR_ray_tracing_position_fetch") != (positionFetch != 0)) {
-                    return RHITestResult::fail("guide shader position-fetch instruction/capability mismatch");
+                if (!spirvContainsExtension(compileResult.spirv, "SPV_NV_cluster_acceleration_structure") ||
+                    spirvContainsExtension(compileResult.spirv, "SPV_KHR_ray_tracing_position_fetch")) {
+                    return RHITestResult::fail("guide shader must use CLAS page decoding without position fetch");
                 }
             }
         }
 
-        return RHITestResult::pass("compiled Standard/OpenPBR guides, material visualization and RTXDI with position fetch enabled and disabled");
+        return RHITestResult::pass("compiled Standard/OpenPBR guides, material visualization and RTXDI with CLAS-only scene traversal");
     }
 };
 
@@ -7644,8 +7491,8 @@ public:
         for (bool externalCommands : {false, true}) {
             testTextureFeedbackState() = {};
             RenderGraph graph;
-            const RenderGraphProperties properties{{"path", scenePath.generic_string()}, {"streamAssetOnly", true},
-                {"materialTextureStreaming", true}, {"materialTextureMaxDimension", 16},
+            const RenderGraphProperties properties{{"path", scenePath.generic_string()},
+                {"materialTextureMaxDimension", 16},
                 {"materialTextureRefineDimension", 64}, {"materialTextureBudgetMiB", 8}, {"wantedMip", 2}};
             graph.addNode("TestTextureFeedbackPass", "Coarse", properties);
             auto fineProperties = properties;
@@ -8629,16 +8476,16 @@ public:
     }
 };
 
-class RenderGraphGPUDrivenMixedProducerRenderTest : public RHITest {
+class RenderGraphGPUDrivenComposedStreamRenderTest : public RHITest {
     int rasterMode_ = -1;
 public:
-    explicit RenderGraphGPUDrivenMixedProducerRenderTest(int rasterMode = -1) : rasterMode_(rasterMode)
+    explicit RenderGraphGPUDrivenComposedStreamRenderTest(int rasterMode = -1) : rasterMode_(rasterMode)
     {
         type = RHITestType::Rendering;
         static constexpr const char* names[] = {
-            "mixed_producer_raster_prepared", "mixed_producer_raster_legacy", "mixed_producer_raster_plane",
-            "mixed_producer_raster_cooperative", "mixed_producer_raster_work_bins"};
-        name = rasterMode < 0 ? "render_graph_gpu_driven_mixed_producer_render" : names[rasterMode];
+            "composed_stream_raster_prepared", "composed_stream_raster_legacy", "composed_stream_raster_plane",
+            "composed_stream_raster_cooperative", "composed_stream_raster_work_bins"};
+        name = rasterMode < 0 ? "render_graph_gpu_driven_composed_stream_render" : names[rasterMode];
     }
 
     RHITestResult run(RHITestContext& context) override
@@ -8647,7 +8494,7 @@ public:
         constexpr uint32_t kHeight = 192;
         constexpr uint32_t kMaxActiveGroups = 64;
         // Reach the finest cut through all dependency levels before asserting
-        // that both producers contain clusters eligible for software raster.
+        // that the composed scene contains clusters eligible for software raster.
         constexpr uint32_t kWarmupFrameCount = 128;
         constexpr uint64_t kPixelByteSize =
             static_cast<uint64_t>(kWidth) * kHeight * sizeof(uint32_t);
@@ -8656,7 +8503,7 @@ public:
             std::filesystem::path(PROJECT_SOURCE_DIR) /
             "Asset/StandfordBunny/scene.gltf";
         const std::filesystem::path streamAssetPath =
-            context.outputDirectory / "gpu_driven_mixed_producer.meshstream.bin";
+            context.outputDirectory / "gpu_driven_composed_stream.meshstream.bin";
         std::string reason;
         if (!scene::buildMeshletStreamAssetOffline(
                 scene::MeshletStreamAssetOfflineBuildDesc{
@@ -8665,46 +8512,46 @@ public:
                 },
                 reason)) {
             return RHITestResult::fail(
-                "mixed-producer streamasset build failed: " + reason);
+                "composed-stream streamasset build failed: " + reason);
         }
 
         scene::MeshletStreamAsset streamAsset;
         if (!streamAsset.open(streamAssetPath, reason) ||
             !streamAsset.isCurrentForSource(sourcePath)) {
             return RHITestResult::fail(
-                "mixed-producer streamasset open failed: " + reason);
+                "composed-stream streamasset open failed: " + reason);
         }
 
-        float4x4 streamMount = float4x4::Identity();
-        float4x4 residentMount = float4x4::Identity();
-        streamMount.SetupByTranslation(float3(-0.14f, 0.0f, 0.0f));
-        residentMount.SetupByTranslation(float3(0.14f, 0.0f, 0.0f));
+        float4x4 leftMount = float4x4::Identity();
+        float4x4 rightMount = float4x4::Identity();
+        leftMount.SetupByTranslation(float3(-0.14f, 0.0f, 0.0f));
+        rightMount.SetupByTranslation(float3(0.14f, 0.0f, 0.0f));
         scene::Scene runtimeScene;
         if (!runtimeScene.compose(
                 {
                     scene::SceneSourceDesc{
-                        .id = "resident",
+                        .id = "right",
                         .path = sourcePath,
-                        .mountMatrix = residentMount,
+                        .mountMatrix = rightMount,
                     },
                     scene::SceneSourceDesc{
-                        .id = "stream",
+                        .id = "left",
                         .path = sourcePath,
-                        .mountMatrix = streamMount,
+                        .mountMatrix = leftMount,
                     },
                 },
                 reason,
                 sourcePath)) {
             return RHITestResult::fail(
-                "mixed-producer scene composition failed: " + reason);
+                "composed-stream scene composition failed: " + reason);
         }
         if (runtimeScene.renderNodes().size() != 2 ||
             streamAsset.instances().size() != 1 ||
             streamAsset.instances()[0].renderNodeIndex != 0 ||
-            runtimeScene.renderNodeIndexForSource("resident", 0) != 0 ||
-            runtimeScene.renderNodeIndexForSource("stream", 0) != 1) {
+            runtimeScene.renderNodeIndexForSource("right", 0) != 0 ||
+            runtimeScene.renderNodeIndexForSource("left", 0) != 1) {
             return RHITestResult::fail(
-                "mixed-producer fixture no longer has one stream owner and one ordinary instance");
+                "composed-stream fixture no longer has two streamed composition instances");
         }
 
         uint64_t requestedStreamRecordCapacity = 0;
@@ -8718,18 +8565,18 @@ public:
                 streamAsset.primitives()[instance.primitiveIndex].groupCount;
         }
         requestedStreamRecordCapacity =
-            std::min<uint64_t>(requestedStreamRecordCapacity, kMaxActiveGroups) *
+            std::min<uint64_t>(requestedStreamRecordCapacity * 2u, kMaxActiveGroups) *
             streamAsset.maxPageClusters();
         if (requestedStreamRecordCapacity == 0 ||
             !render::visibilityRecordCapacityFitsId(
                 requestedStreamRecordCapacity)) {
             return RHITestResult::fail(
-                "mixed-producer fixture has an invalid stream record capacity");
+                "composed-stream fixture has an invalid stream record capacity");
         }
 
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
-                .applicationName = "Metallic GPUDriven mixed-producer render test",
+                .applicationName = "Metallic GPUDriven composed-stream render test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableMeshShader = true,
@@ -8752,11 +8599,11 @@ public:
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
             return RHITestResult::fail(
-                "mixed-producer device has no graphics queue");
+                "composed-stream device has no graphics queue");
         }
 
         render::RenderGraph graph;
-        graph.setName("GPUDrivenMixedProducer");
+        graph.setName("GPUDrivenComposedStream");
         render::RenderDebugRuntime debugRuntime;
         debug::DebugValue debugJobs = debug::DebugValue::array();
         debug::DebugValue clusterJobs = debug::DebugValue::array();
@@ -8765,11 +8612,8 @@ public:
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", sourcePath.string()},
-                {"streamAssetPath", streamAssetPath.string()},
-                {"streamSourceId", "stream"},
-                {"enableMeshletStreaming", true},
                 {"maxLockedFallbackPages", 4},
-                {"maxResidentPages", 64},
+                {"maxRightPages", 64},
                 {"maxPageUploadsPerFrame", 4},
                 {"maxActiveGroups", kMaxActiveGroups},
                 {"mode", "meshlet"},
@@ -8800,6 +8644,7 @@ public:
         graph.markOutput("GPUDriven.color");
         graph.markOutput("GPUDriven.visibility");
         graph.markOutput("GPUDriven.depth");
+        graph.markOutput("GPUDriven.rasterInfo");
 
         render::RenderGraphExecutor executor;
         executor.bindRuntimeScene(&runtimeScene);
@@ -8822,7 +8667,7 @@ public:
         }
         if (!result) {
             return RHITestResult::fail(
-                std::string("mixed-producer graph compile returned ") +
+                std::string("composed-stream graph compile returned ") +
                 toString(result) + ": " + log);
         }
 
@@ -8832,7 +8677,7 @@ public:
                 for (const char* point : {"AfterTraversal", "AfterEarlyCull", "AfterLateCull", "AfterPass"}) {
                     debug::DebugValue resources = debug::DebugValue::array({{{"id", "streaming.GPUDriven.activeHeader"}, {"count", 1}}});
                     if (std::string_view(point) == "AfterPass") {
-                        for (const char* id : {"gpuScene.GPUDriven.meshletDraws", "gpuScene.GPUDriven.geometries", "streaming.GPUDriven.visibleClusters"}) {
+                        for (const char* id : {"gpuScene.GPUDriven.geometries", "streaming.GPUDriven.visibleClusters"}) {
                             resources.push_back({{"id", id}, {"count", 1}});
                         }
                     }
@@ -8845,7 +8690,7 @@ public:
                 debugJobs = queued["result"]["jobs"];
                 if (device->capabilities().shaderBufferInt64Atomics) {
                     debug::DebugValue clusterBatches = debug::DebugValue::array();
-                    for (const char* point : {"AfterResidentEarlyBins", "AfterStreamEarlyBins", "AfterResidentLateBins", "AfterStreamLateBins"}) {
+                    for (const char* point : {"AfterStreamEarlyBins", "AfterStreamLateBins"}) {
                         clusterBatches.push_back({{"pass", "GPUDriven"}, {"checkpoint", point}, {"resources", {
                             {{"id", "hybrid.GPUDriven.clusters"}, {"count", 16}},
                             {{"id", "hybrid.GPUDriven.arguments"}, {"count", 15}}}}});
@@ -8864,11 +8709,11 @@ public:
             }
             if (!result) {
                 return RHITestResult::fail(
-                    "mixed-producer warmup frame " +
+                    "composed-stream warmup frame " +
                     std::to_string(frame) + " returned " + toString(result));
             }
-            if (device->capabilities().independentComputeQueue && executor.executionStats().asyncComputeBranches != 3) {
-                return RHITestResult::fail("Mixed rendering must fork resident early/late and stream early under the default policy");
+            if (device->capabilities().independentComputeQueue && executor.executionStats().asyncComputeBranches == 0) {
+                return RHITestResult::fail("Stream rendering must fork software raster under the default policy");
             }
             debugRuntime.poll();
         }
@@ -8905,56 +8750,48 @@ public:
             }
             softwareClusters[jobIndex % 2] += header[4];
         }
-        if (!clusterJobs.empty() && (softwareClusters[0] == 0 || softwareClusters[1] == 0)) {
-            return RHITestResult::fail("Real resident/stream producers did not both use software cluster bins: " +
+        if (!clusterJobs.empty() && (softwareClusters[0] + softwareClusters[1] == 0)) {
+            return RHITestResult::fail("Stream rendering did not use software cluster bins: " +
                 std::to_string(softwareClusters[0]) + "/" + std::to_string(softwareClusters[1]));
         }
-        const auto residentRecord = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
-            {"job", debugJobs.back().at("job")}, {"expression", "buffers[\"gpuScene.GPUDriven.meshletDraws\"][0].source.name"}}}});
-        if (residentRecord["status"] != "ok" || residentRecord["result"]["value"] != "Resident") {
-            return RHITestResult::fail("Resident record lost typed source: " + residentRecord.dump());
-        }
-
         render::RenderSubsystemHost* subsystemHost = executor.subsystemHost();
         render::GPUSceneSubsystem* gpuScene = subsystemHost != nullptr
             ? subsystemHost->get<render::GPUSceneSubsystem>()
             : nullptr;
         if (gpuScene == nullptr) {
             return RHITestResult::fail(
-                "mixed-producer graph did not publish GPUScene");
+                "composed-stream graph did not publish GPUScene");
         }
         const render::GPUSceneGlobalBufferViews& globalViews =
             gpuScene->globalBufferViews();
-        if (!globalViews.meshletDraws.valid() ||
-            globalViews.meshletDraws.structureStride !=
-                sizeof(render::VisibleClusterRecord) ||
-            globalViews.meshletDraws.size == 0 ||
-            (globalViews.meshletDraws.size %
-                sizeof(render::VisibleClusterRecord)) != 0) {
-            return RHITestResult::fail(
-                "mixed-producer GPUScene resident record namespace is invalid");
+        auto* rasterInfo = executor.outputResource("GPUDriven.rasterInfo");
+        if (!rasterInfo || !rasterInfo->buffer) {
+            return RHITestResult::fail("Stream raster metadata is missing");
         }
-        const uint32_t streamRecordBase = static_cast<uint32_t>(
-            globalViews.meshletDraws.size /
-            sizeof(render::VisibleClusterRecord));
-        if (residentRecord["result"]["coverage"]["streaming.GPUDriven.visibleClusters"]["visibleRecordBase"] != streamRecordBase) {
-            return RHITestResult::fail("Stream capture lost the mixed visibility namespace offset");
+        render::VisibilityBufferFrameInfo frameInfo{};
+        const void* mappedInfo = rasterInfo->buffer->map();
+        if (!mappedInfo) { return RHITestResult::fail("Stream raster metadata map failed"); }
+        std::memcpy(&frameInfo, mappedInfo, sizeof(frameInfo));
+        rasterInfo->buffer->unmap();
+        const auto* streamView = gpuScene->visibilityStream(
+            {frameInfo.lightGridViewIndex, frameInfo.lightGridViewGeneration},
+            frameInfo.frameIndex, frameInfo.sceneIdentity);
+        if (!streamView || !streamView->valid()) {
+            return RHITestResult::fail("Stream raster snapshot is missing");
         }
-        if (!render::visibilityRecordCapacityFitsId(
-                static_cast<uint64_t>(streamRecordBase) +
-                requestedStreamRecordCapacity)) {
-            return RHITestResult::fail(
-                "mixed-producer combined record namespace exceeds visibility IDs");
-        }
+        const auto streamSnapshot = *streamView;
+        const uint64_t recordBytes = static_cast<uint64_t>(streamSnapshot.visibleRecordCapacity) *
+            sizeof(render::CompactStreamVisibleRecord);
+        const uint64_t groupBytes = streamSnapshot.activeGroupBuffer->desc().size;
 
-        const render::GPUSceneInstanceId streamInstance =
+        const render::GPUSceneInstanceId leftInstance =
             gpuScene->instanceForRenderNode(1);
-        const render::GPUSceneInstanceId residentInstance =
+        const render::GPUSceneInstanceId rightInstance =
             gpuScene->instanceForRenderNode(0);
-        if (!streamInstance.valid() || !residentInstance.valid() ||
-            streamInstance == residentInstance) {
+        if (!leftInstance.valid() || !rightInstance.valid() ||
+            leftInstance == rightInstance) {
             return RHITestResult::fail(
-                "mixed-producer fixture did not map two dense GPUScene instances");
+                "composed-stream fixture did not map two dense GPUScene instances");
         }
 
         render::RenderGraphResource* color =
@@ -8970,7 +8807,7 @@ public:
             visibility->desc.format != render::Format::R32Uint ||
             depth->desc.format != render::Format::D32Sfloat) {
             return RHITestResult::fail(
-                "mixed-producer shared color/visibility/depth surfaces are missing");
+                "composed-stream shared color/visibility/depth surfaces are missing");
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
@@ -9007,7 +8844,8 @@ public:
         std::unique_ptr<render::Buffer> colorReadback;
         std::unique_ptr<render::Buffer> visibilityReadback;
         std::unique_ptr<render::Buffer> depthReadback;
-        std::unique_ptr<render::Buffer> residentRecordReadback;
+        std::unique_ptr<render::Buffer> streamRecordReadback;
+        std::unique_ptr<render::Buffer> streamGroupReadback;
         result = makeReadback(kPixelByteSize, colorReadback);
         if (result) {
             result = makeReadback(kPixelByteSize, visibilityReadback);
@@ -9016,13 +8854,14 @@ public:
             result = makeReadback(kPixelByteSize, depthReadback);
         }
         if (result) {
-            result = makeReadback(
-                globalViews.meshletDraws.size,
-                residentRecordReadback);
+            result = makeReadback(recordBytes, streamRecordReadback);
+        }
+        if (result) {
+            result = makeReadback(groupBytes, streamGroupReadback);
         }
         if (!result || colorReadback == nullptr ||
             visibilityReadback == nullptr || depthReadback == nullptr ||
-            residentRecordReadback == nullptr) {
+            streamRecordReadback == nullptr || streamGroupReadback == nullptr) {
             return RHITestResult::fail(
                 std::string("createBuffer(mixed producer readback) returned ") +
                 toString(result));
@@ -9046,7 +8885,7 @@ public:
         }
         if (!result) {
             return RHITestResult::fail(
-                std::string("record mixed-producer outputs returned ") +
+                std::string("record composed-stream outputs returned ") +
                 toString(result));
         }
 
@@ -9075,35 +8914,41 @@ public:
         if (auto commandResult = commandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->copyTextureToBuffer(depthCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
-        const render::BufferBarrierDesc residentRecordsToCopy{
-            .buffer = globalViews.meshletDraws.buffer,
-            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
-            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-            .range = {.offset = globalViews.meshletDraws.offset, .size = globalViews.meshletDraws.size},
-        };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = {&residentRecordsToCopy, 1},
-        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        {
-            auto sourceSlice = globalViews.meshletDraws.buffer->slice({globalViews.meshletDraws.offset, globalViews.meshletDraws.size});
-            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = residentRecordReadback.get()->slice({0, globalViews.meshletDraws.size});
-            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        for (const auto [source, destination] : std::array{
+                 std::pair{streamSnapshot.visibleClusterBuffer, streamRecordReadback.get()},
+                 std::pair{streamSnapshot.activeGroupBuffer, streamGroupReadback.get()}}) {
+            const uint64_t size = destination->desc().size;
+            const render::BufferBarrierDesc toCopy{
+                .buffer = source,
+                .before = {render::PipelineStageBits::AllCommands,
+                    render::AccessBits::ShaderRead | render::AccessBits::ShaderWrite},
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+                .range = {.offset = 0, .size = size},
+            };
+            if (auto copyResult = commandBuffer->synchronize({.buffers = {&toCopy, 1}}); !copyResult) {
+                return RHITestResult::fail(render::resultToString(copyResult));
+            }
+            auto sourceSlice = source->slice({0, size});
+            auto destinationSlice = destination->slice({0, size});
+            if (!sourceSlice || !destinationSlice) { return RHITestResult::fail("Invalid stream readback slice"); }
+            if (auto copyResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !copyResult) {
+                return RHITestResult::fail(render::resultToString(copyResult));
+            }
+            const render::BufferBarrierDesc toRead{
+                .buffer = source,
+                .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+                .after = {render::PipelineStageBits::AllCommands,
+                    render::AccessBits::ShaderRead | render::AccessBits::ShaderWrite},
+                .range = {.offset = 0, .size = size},
+            };
+            if (auto copyResult = commandBuffer->synchronize({.buffers = {&toRead, 1}}); !copyResult) {
+                return RHITestResult::fail(render::resultToString(copyResult));
+            }
         }
-        const render::BufferBarrierDesc residentRecordsToRead{
-            .buffer = globalViews.meshletDraws.buffer,
-            .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
-            .range = {.offset = globalViews.meshletDraws.offset, .size = globalViews.meshletDraws.size},
-        };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = {&residentRecordsToRead, 1},
-        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RHITestResult::fail(
-                std::string("end mixed-producer capture returned ") +
+                std::string("end composed-stream capture returned ") +
                 toString(result));
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
@@ -9116,7 +8961,7 @@ public:
         }
         if (!result) {
             return RHITestResult::fail(
-                std::string("submit mixed-producer capture returned ") +
+                std::string("submit composed-stream capture returned ") +
                 toString(result));
         }
 
@@ -9136,8 +8981,9 @@ public:
         std::vector<uint32_t> colorPixels(kWidth * kHeight);
         std::vector<uint32_t> visibilityPixels(kWidth * kHeight);
         std::vector<float> depthPixels(kWidth * kHeight);
-        std::vector<render::VisibleClusterRecord> residentRecords(
-            streamRecordBase);
+        std::vector<render::CompactStreamVisibleRecord> streamRecords(streamSnapshot.visibleRecordCapacity);
+        std::vector<render::MeshletStreamGPUActiveGroup> streamGroups(
+            groupBytes / sizeof(render::MeshletStreamGPUActiveGroup));
         if (!copyReadback(
                 *colorReadback,
                 colorPixels.data(),
@@ -9151,21 +8997,20 @@ public:
                 depthPixels.data(),
                 kPixelByteSize) ||
             !copyReadback(
-                *residentRecordReadback,
-                residentRecords.data(),
-                globalViews.meshletDraws.size)) {
+                *streamRecordReadback, streamRecords.data(), recordBytes) ||
+            !copyReadback(*streamGroupReadback, streamGroups.data(), groupBytes)) {
             return RHITestResult::fail(
-                "mixed-producer capture did not map all shared surfaces and records");
+                "composed-stream capture did not map all shared surfaces and records");
         }
 
-        uint32_t residentPixelCount = 0;
-        uint32_t streamPixelCount = 0;
-        uint32_t residentMinX = kWidth;
-        uint32_t residentMaxX = 0;
-        uint32_t streamMinX = kWidth;
-        uint32_t streamMaxX = 0;
-        std::unordered_set<uint32_t> residentRecordIds;
-        std::unordered_set<uint32_t> streamRecordIds;
+        uint32_t rightPixelCount = 0;
+        uint32_t leftPixelCount = 0;
+        uint32_t rightMinX = kWidth;
+        uint32_t rightMaxX = 0;
+        uint32_t leftMinX = kWidth;
+        uint32_t leftMaxX = 0;
+        std::unordered_set<uint32_t> rightRecordIds;
+        std::unordered_set<uint32_t> leftRecordIds;
         for (uint32_t pixelIndex = 0;
              pixelIndex < kWidth * kHeight;
              ++pixelIndex) {
@@ -9188,49 +9033,44 @@ public:
                 depthPixels[pixelIndex] > 1.0f ||
                 (red <= 8u && green <= 8u && blue <= 8u)) {
                 return RHITestResult::fail(
-                    "mixed-producer visibility does not match the shared depth/debug surfaces");
+                    "composed-stream visibility does not match the shared depth/debug surfaces");
             }
 
-            if (recordIndex < streamRecordBase) {
-                const render::VisibleClusterRecord& record =
-                    residentRecords[recordIndex];
-                if (render::visibleClusterSource(record.flags) !=
-                        render::VisibleClusterSource::Resident ||
-                    record.instanceIndex != residentInstance.index ||
-                    record.instanceIndex == streamInstance.index) {
-                    return RHITestResult::fail(
-                        "stream-owned geometry leaked into the resident producer namespace");
-                }
-                ++residentPixelCount;
-                residentMinX = std::min(residentMinX, x);
-                residentMaxX = std::max(residentMaxX, x);
-                residentRecordIds.insert(recordIndex);
+            if (recordIndex >= streamRecords.size()) {
+                return RHITestResult::fail("Visibility ID exceeds stream record capacity");
+            }
+            const auto record = render::unpackStreamVisibleRecord(streamRecords[recordIndex]);
+            if (record.dataIndex >= streamGroups.size()) {
+                return RHITestResult::fail("Stream visibility references an invalid active group");
+            }
+            const auto instanceIndex = streamGroups[record.dataIndex].gpuSceneInstanceIndex;
+            if (instanceIndex == rightInstance.index) {
+                ++rightPixelCount;
+                rightMinX = std::min(rightMinX, x);
+                rightMaxX = std::max(rightMaxX, x);
+                rightRecordIds.insert(recordIndex);
                 continue;
             }
-
-            const uint64_t localStreamRecord =
-                static_cast<uint64_t>(recordIndex) - streamRecordBase;
-            if (localStreamRecord >= requestedStreamRecordCapacity) {
-                return RHITestResult::fail(
-                    "visibility referenced a stream record outside its logical namespace");
+            if (instanceIndex != leftInstance.index) {
+                return RHITestResult::fail("Stream visibility lost its composed instance identity");
             }
-            ++streamPixelCount;
-            streamMinX = std::min(streamMinX, x);
-            streamMaxX = std::max(streamMaxX, x);
-            streamRecordIds.insert(recordIndex);
+            ++leftPixelCount;
+            leftMinX = std::min(leftMinX, x);
+            leftMaxX = std::max(leftMaxX, x);
+            leftRecordIds.insert(recordIndex);
         }
 
-        if (residentPixelCount < 32 || streamPixelCount < 32 ||
-            residentRecordIds.empty() || streamRecordIds.empty()) {
+        if (rightPixelCount < 32 || leftPixelCount < 32 ||
+            rightRecordIds.empty() || leftRecordIds.empty()) {
             return RHITestResult::fail(
-                "mixed-producer frame did not contain both resident and stream visibility IDs: resident=" +
-                std::to_string(residentPixelCount) +
-                " stream=" + std::to_string(streamPixelCount));
+                "composed-stream frame did not contain both composed stream instances: right=" +
+                std::to_string(rightPixelCount) +
+                " stream=" + std::to_string(leftPixelCount));
         }
-        if (streamMinX > streamMaxX || residentMinX > residentMaxX ||
-            streamMaxX >= residentMinX) {
+        if (leftMinX > leftMaxX || rightMinX > rightMaxX ||
+            leftMaxX >= rightMinX) {
             return RHITestResult::fail(
-                "mixed-producer mounted fixtures overlap or were assigned to the wrong producer");
+                "composed-stream mounted fixtures overlap or lost their composed instance mapping");
         }
 
         uint32_t unifiedPassNodeCount = 0;
@@ -9241,12 +9081,12 @@ public:
         }
         if (unifiedPassNodeCount != 1) {
             return RHITestResult::fail(
-                "mixed producers were not rasterized by one visibility-buffer graph node");
+                "composed instances were not rasterized by one visibility-buffer graph node");
         }
 
         const auto* visualizationNode = graph.findNode("GPUDriven");
         if (visualizationNode == nullptr) {
-            return RHITestResult::fail("mixed-producer visualization node is missing");
+            return RHITestResult::fail("composed-stream visualization node is missing");
         }
         const auto visualizationNodeId = visualizationNode->id;
         const std::array visualizationModes{"triangle", "depth", "coverage", "none"};
@@ -9258,7 +9098,7 @@ public:
                     visualizationNodeId, "freezeCullingCamera", freezeCullingCamera) ||
                 !graph.setNodeRuntimeProperty(visualizationNodeId, "asyncSoftwareRaster", configuration % 2 == 0) ||
                 !executor.syncRuntimeProperties(graph)) {
-                return RHITestResult::fail("could not switch mixed-producer visualization");
+                return RHITestResult::fail("could not switch composed-stream visualization");
             }
             result = fence->reset();
             if (result) {
@@ -9336,12 +9176,12 @@ public:
 
         (void)device->waitIdle();
         return RHITestResult::pass(
-            "software clusters resident/stream=" + std::to_string(softwareClusters[0]) + "/" + std::to_string(softwareClusters[1]) +
-            "; visualization preserves shared visibility/depth; residentPixels=" +
-            std::to_string(residentPixelCount) +
-            " streamPixels=" + std::to_string(streamPixelCount) +
-            " residentRecords=" + std::to_string(residentRecordIds.size()) +
-            " streamRecords=" + std::to_string(streamRecordIds.size()));
+            "software clusters early/late=" + std::to_string(softwareClusters[0]) + "/" + std::to_string(softwareClusters[1]) +
+            "; visualization preserves shared visibility/depth; rightPixels=" +
+            std::to_string(rightPixelCount) +
+            " leftPixels=" + std::to_string(leftPixelCount) +
+            " rightRecords=" + std::to_string(rightRecordIds.size()) +
+            " leftRecords=" + std::to_string(leftRecordIds.size()));
     }
 };
 
@@ -10586,7 +10426,7 @@ public:
         RenderGraph graph;
         const auto id = graph.addNode("VisibilityBufferPass", "VBuffer", {
             {"path", "first.gltf"}, {"streamAssetPath", "custom.meshstream.bin"},
-            {"sceneBinding", "asset"}, {"enableMeshletStreaming", true}, {"streamAssetOnly", true}})->id;
+            {"sceneBinding", "asset"}})->id;
         const auto same = editor::streamSceneLoadOptions(graph, first, directory);
         const auto switched = editor::streamSceneLoadOptions(graph, second, directory);
         if (same.streamAssetPath != directory / "custom.meshstream.bin" ||
@@ -10603,10 +10443,13 @@ public:
             editor::streamSceneLoadOptions(graph, second, directory).streamAssetPath != switched.streamAssetPath) {
             return RHITestResult::fail("Source, world binding and cache did not switch together");
         }
-        RenderGraph resident;
-        resident.addNode("VisibilityBufferPass", "Resident", {});
-        if (!editor::streamSceneLoadOptions(resident, second, directory).streamAssetPath.empty()) {
-            return RHITestResult::fail("Resident graph unexpectedly selected metadata-only loading");
+        for (const auto* pass : {"VisibilityBufferPass", "ScenePathTracePass", "SceneAccelerationStructurePass"}) {
+            RenderGraph unified;
+            unified.addNode(pass, "Scene", {});
+            if (editor::streamSceneLoadOptions(unified, second, directory).streamAssetPath !=
+                scene::meshletStreamAssetPathFor(second)) {
+                return RHITestResult::fail("Scene producer did not select the unified streaming cache");
+            }
         }
         return RHITestResult::pass();
     }
@@ -10615,21 +10458,21 @@ METALLIC_REGISTER_RHI_TEST(StreamSceneOpenRoutingTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
 template<int Mode>
-class MixedProducerRasterVariantTest final : public RenderGraphGPUDrivenMixedProducerRenderTest {
+class ComposedStreamRasterVariantTest final : public RenderGraphGPUDrivenComposedStreamRenderTest {
 public:
-    MixedProducerRasterVariantTest() : RenderGraphGPUDrivenMixedProducerRenderTest(Mode) {}
+    ComposedStreamRasterVariantTest() : RenderGraphGPUDrivenComposedStreamRenderTest(Mode) {}
 };
-using MixedProducerPreparedTest = MixedProducerRasterVariantTest<0>;
-using MixedProducerLegacyTest = MixedProducerRasterVariantTest<1>;
-using MixedProducerPlaneTest = MixedProducerRasterVariantTest<2>;
-using MixedProducerCooperativeTest = MixedProducerRasterVariantTest<3>;
-using MixedProducerWorkBinsTest = MixedProducerRasterVariantTest<4>;
+using MixedProducerPreparedTest = ComposedStreamRasterVariantTest<0>;
+using MixedProducerLegacyTest = ComposedStreamRasterVariantTest<1>;
+using MixedProducerPlaneTest = ComposedStreamRasterVariantTest<2>;
+using MixedProducerCooperativeTest = ComposedStreamRasterVariantTest<3>;
+using MixedProducerWorkBinsTest = ComposedStreamRasterVariantTest<4>;
 METALLIC_REGISTER_RHI_TEST(MixedProducerPreparedTest);
 METALLIC_REGISTER_RHI_TEST(MixedProducerLegacyTest);
 METALLIC_REGISTER_RHI_TEST(MixedProducerPlaneTest);
 METALLIC_REGISTER_RHI_TEST(MixedProducerCooperativeTest);
 METALLIC_REGISTER_RHI_TEST(MixedProducerWorkBinsTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenMixedProducerRenderTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenComposedStreamRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenAlphaMaskRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);

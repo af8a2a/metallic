@@ -154,7 +154,6 @@ uint64_t geometryFingerprint(const scene::RenderPrimitive& primitive)
 {
     uint64_t hash = kFnvOffsetBasis;
     hashValue(hash, primitive.mode);
-    hashValue(hash, primitive.storage);
     hashValue(hash, primitive.vertexCount);
     hashValue(hash, primitive.indexCount);
     hashValue(hash, primitive.triangleCount);
@@ -205,7 +204,6 @@ bool sameGeometryPayload(
     const scene::RenderPrimitive& rhs)
 {
     return lhs.mode == rhs.mode &&
-        lhs.storage == rhs.storage &&
         lhs.vertexCount == rhs.vertexCount &&
         lhs.indexCount == rhs.indexCount &&
         lhs.triangleCount == rhs.triangleCount &&
@@ -300,7 +298,7 @@ bool validateDrawablePrimitive(
         diagnostic.reason = GPUSceneInvalidPrimitiveReason::UnsupportedMode;
         return false;
     }
-    if (primitive.storage == scene::GeometryStorage::StreamAsset) {
+    if (primitive.positions.empty()) {
         if (primitive.vertexCount < 3 || !primitive.localBounds.valid || !primitive.positions.empty()) {
             diagnostic.reason = GPUSceneInvalidPrimitiveReason::InsufficientVertices;
             return false;
@@ -448,7 +446,7 @@ GPUSceneSourceView GPUSceneSourceView::fromScene(
         .externalRevision = externalRevision,
         .renderLights = scene.lights(),
         .virtualLights = virtualLights,
-        .constantAlphaOpaque = scene.hasStreamGeometry(),
+        .constantAlphaOpaque = true,
     };
 }
 
@@ -493,14 +491,7 @@ bool GPUSceneGlobalBufferViews::validFor(
         instances.validFor(generation, revision) &&
         drawKeys.validFor(generation, revision) &&
         optionalBufferViewValidFor(drawInstanceIds, generation, revision) &&
-        optionalBufferViewValidFor(vertices, generation, revision) &&
-        optionalBufferViewValidFor(indices, generation, revision) &&
-        optionalBufferViewValidFor(meshlets, generation, revision) &&
-        optionalBufferViewValidFor(meshletDraws, generation, revision) &&
-        optionalBufferViewValidFor(meshletVertices, generation, revision) &&
-        optionalBufferViewValidFor(meshletTriangleWords, generation, revision) &&
-        optionalBufferViewValidFor(descriptorRemap, generation, revision) &&
-        optionalBufferViewValidFor(lodGroups, generation, revision);
+        optionalBufferViewValidFor(descriptorRemap, generation, revision);
 }
 
 bool GPUSceneConsumerBindings::validFor(const GPUSceneGlobalBufferViews& views) const
@@ -517,14 +508,7 @@ bool GPUSceneConsumerBindings::validFor(const GPUSceneGlobalBufferViews& views) 
         &views.instances,
         &views.drawKeys,
         &views.drawInstanceIds,
-        &views.vertices,
-        &views.indices,
-        &views.meshlets,
-        &views.meshletDraws,
-        &views.meshletVertices,
-        &views.meshletTriangleWords,
         &views.descriptorRemap,
-        &views.lodGroups,
     };
     for (size_t index = 0; index < bufferViews.size(); ++index) {
         const bool required = !emptyBufferView(*bufferViews[index]);
@@ -533,14 +517,6 @@ bool GPUSceneConsumerBindings::validFor(const GPUSceneGlobalBufferViews& views) 
         }
     }
     return true;
-}
-
-bool GPUSceneRasterDrawLayout::validFor(
-    uint32_t generation,
-    uint64_t revision) const
-{
-    return generation != 0 && revision != 0 &&
-        drawSetGeneration == generation && drawSetRevision == revision;
 }
 
 bool GPUSceneVisibleGPUResources::validFor(
@@ -608,7 +584,6 @@ void GPUScene::invalidateSourceIds()
     lightGeneration_ = advanceGeneration(lightGeneration_);
     drawSetGeneration_ = advanceGeneration(drawSetGeneration_);
     geometries_.clear();
-    geometrySourcePrimitives_.clear();
     materials_.clear();
     instances_.clear();
     lights_.clear();
@@ -721,7 +696,6 @@ Result<> GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
 
     std::unordered_map<uint64_t, std::vector<GPUSceneGeometryId>> geometryCandidates;
     geometries_.reserve(source.renderPrimitives.size());
-    geometrySourcePrimitives_.reserve(source.renderPrimitives.size());
     instances_.reserve(source.renderNodes.size());
 
     auto geometryForPrimitive = [&](uint32_t sourceIndex) {
@@ -766,7 +740,6 @@ Result<> GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
             .localBounds = primitive.localBounds,
             .payloadFingerprint = fingerprint,
         });
-        geometrySourcePrimitives_.push_back(primitive);
         if (candidates != nullptr) {
             candidates->push_back(mapped);
         }
@@ -1113,14 +1086,6 @@ const GPUSceneGeometryRecord* GPUScene::geometry(GPUSceneGeometryId id) const
     return id.generation == geometryGeneration_ && id.index < geometries_.size() &&
             geometries_[id.index].id == id
         ? &geometries_[id.index]
-        : nullptr;
-}
-
-const scene::RenderPrimitive* GPUScene::geometrySourcePrimitive(
-    GPUSceneGeometryId id) const
-{
-    return geometry(id) != nullptr && id.index < geometrySourcePrimitives_.size()
-        ? &geometrySourcePrimitives_[id.index]
         : nullptr;
 }
 
@@ -1474,14 +1439,7 @@ bool GPUScene::setGlobalBufferViews(GPUSceneGlobalBufferViews views)
         !normalizeBufferView(views.instances, drawSet_.generation, drawSet_.revision) ||
         !normalizeBufferView(views.drawKeys, drawSet_.generation, drawSet_.revision) ||
         !normalizeOptionalBufferView(views.drawInstanceIds, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.vertices, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.indices, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.meshlets, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.meshletDraws, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.meshletVertices, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.meshletTriangleWords, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.descriptorRemap, drawSet_.generation, drawSet_.revision) ||
-        !normalizeOptionalBufferView(views.lodGroups, drawSet_.generation, drawSet_.revision)) {
+        !normalizeOptionalBufferView(views.descriptorRemap, drawSet_.generation, drawSet_.revision)) {
         return false;
     }
     globalBufferViews_ = std::move(views);

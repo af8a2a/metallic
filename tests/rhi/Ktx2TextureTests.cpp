@@ -426,7 +426,7 @@ class KtxTextureResourcesTest final : public RHITest {
         }
         {
             ScenePathTraceResources cancelled;
-            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log, true), log);
+            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log), log);
             bool complete = false;
             scene::SceneLoadProgress progress;
             require(cancelled.pumpPrepareAsync(0.1, progress, log).transform([&](auto value) { complete = std::move(value); }), log);
@@ -438,7 +438,7 @@ class KtxTextureResourcesTest final : public RHITest {
             cancelled.clear();
             Ktx2TextureInfo lateInfo;
             require(readKtx2TextureInfo(directory / "299.ktx2", lateInfo, log), log);
-            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log, true), log);
+            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log), log);
             // The bounded queue cannot have admitted image 299 before any consumption.
             {
                 std::fstream damaged(lateInfo.path, std::ios::binary | std::ios::in | std::ios::out);
@@ -571,7 +571,7 @@ public:
         std::string log;
         require(resources.prepare(context.device,context.graphicsQueue,
             {{"path",path.string()},{"materialTextureMaxDimension",128},{"materialTextureMaskMaxDimension",4},
-             {"materialTextureBudgetMiB",4},{"materialTextureStreaming",true},
+             {"materialTextureBudgetMiB",4},
              {"materialTextureRefineDimension",512},{"materialTextureColdFrames",16}},&scene,log),log);
         const auto baseline = resources.textureStats().residentAllocationBytes;
         const auto initialMips = resources.materialTextureFirstMips();
@@ -710,7 +710,7 @@ public:
         std::string log;
         require(resources.prepare(context.device, context.graphicsQueue,
             {{"path",path.string()}, {"materialTextureMaxDimension",128}, {"materialTextureBudgetMiB",4},
-             {"materialTextureStreaming",true}, {"materialTextureRefineDimension",512},
+              {"materialTextureRefineDimension",512},
              {"materialTextureColdFrames",120}}, &scene, log), log);
         const uint32_t slot = resources.logicalTextureIndices()[1];
         const uint32_t baseMip = resources.materialTextureFirstMips()[1];
@@ -837,7 +837,7 @@ public:
         std::string log;
         require(resources.prepare(context.device, context.graphicsQueue,
             {{"path",path.string()}, {"materialTextureMaxDimension",128}, {"materialTextureBudgetMiB",4},
-             {"materialTextureStreaming",true}, {"materialTextureRefineDimension",512},
+              {"materialTextureRefineDimension",512},
              {"materialTextureColdFrames",16}}, &scene, log), log);
         const auto baseline = resources.textureStats().residentAllocationBytes;
         const uint32_t imageSlot = resources.logicalTextureIndices()[0];

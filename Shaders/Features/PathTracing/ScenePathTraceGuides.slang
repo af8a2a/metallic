@@ -171,12 +171,7 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     color = max(color, float3(0.0, 0.0, 0.0));
 
     if (push.enableAccumulation != 0u) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
-        }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
+        color = accumulateStreamPathTrace(pixel, color, push);
     }
 
     gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);

@@ -158,22 +158,8 @@ MT_VK_FEATURE(pushDescriptor, false, false,
     request.streamline && extensions.pushDescriptor, 1,
     , backendCaps.pushDescriptor = pushDescriptor;)
 
-MT_VK_FEATURE(opacityMicromap, vulkanOptions.enableOpacityMicromap, false,
-    request.opacityMicromap &&
-        result.rayTracingAccelerationStructure &&
-        extensions.opacityMicromap &&
-        (extensions.opacityMicromapExt ? probe.opacityMicromapExtFeatures.micromap == VK_TRUE : probe.opacityMicromapFeatures.micromap == VK_TRUE &&
-        probe.deviceAddressCommandsFeatures.deviceAddressCommands == VK_TRUE), 0,
-    opacityMicromapFeatures.micromap = selection.opacityMicromap;, backendCaps.opacityMicromap = opacityMicromap;)
 
-MT_VK_FEATURE(opacityMicromapExt, true, false,
-    result.opacityMicromap && extensions.opacityMicromapExt, 0,
-    opacityMicromapExtFeatures.micromap = selection.opacityMicromapExt;, )
 
-MT_VK_SIMPLE(rayTracingPositionFetch, VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME,
-    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
-    rayTracingPositionFetch, desc.enableRayTracingPositionFetch, false,
-    result.rayTracingAccelerationStructure, 0, caps.rayTracingPositionFetch = rayTracingPositionFetch;)
 
 #ifdef VK_NV_cluster_acceleration_structure
 MT_VK_AS_FEATURE(clusterAccelerationStructure, VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME,
@@ -256,13 +242,6 @@ MT_VK_NODE(VkPhysicalDeviceAccelerationStructureFeaturesKHR, accelerationStructu
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, extensions.accelerationStructure, selection.rayTracingAccelerationStructure)
 MT_VK_NODE(VkPhysicalDeviceRayQueryFeaturesKHR, rayQueryFeatures,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR, extensions.rayQuery, selection.rayQuery)
-MT_VK_NODE(VkPhysicalDeviceOpacityMicromapFeaturesKHR, opacityMicromapFeatures,
-    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR, extensions.opacityMicromap &&
-        !extensions.opacityMicromapExt, selection.opacityMicromap &&
-        !selection.opacityMicromapExt)
-MT_VK_NODE(VkPhysicalDeviceOpacityMicromapFeaturesEXT, opacityMicromapExtFeatures,
-    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT, extensions.opacityMicromap &&
-        extensions.opacityMicromapExt, selection.opacityMicromapExt)
 MT_VK_NODE(VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT, deviceGeneratedCommandsFeatures,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT, extensions.deviceGeneratedCommands, selection.deviceGeneratedCommands)
 MT_VK_NODE(VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR, deviceAddressCommandsFeatures,
@@ -290,8 +269,6 @@ MT_VK_EXTENSION(meshShader, VK_EXT_MESH_SHADER_EXTENSION_NAME, selection.meshSha
 MT_VK_EXTENSION(deferredHostOperations, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, selection.rayTracingAccelerationStructure)
 MT_VK_EXTENSION(accelerationStructure, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, selection.rayTracingAccelerationStructure)
 MT_VK_EXTENSION(rayQuery, VK_KHR_RAY_QUERY_EXTENSION_NAME, selection.rayQuery)
-MT_VK_EXTENSION(khrOpacityMicromap, VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME, selection.opacityMicromap && !selection.opacityMicromapExt)
-MT_VK_EXTENSION(extOpacityMicromap, VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME, selection.opacityMicromapExt)
 MT_VK_EXTENSION(pushDescriptor, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, selection.pushDescriptor)
 MT_VK_EXTENSION(rayTracingPipeline, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, selection.streamline)
 MT_VK_EXTENSION(pipelineLibrary, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME, selection.streamline)

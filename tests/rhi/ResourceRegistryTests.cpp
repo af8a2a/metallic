@@ -183,7 +183,7 @@ public:
                 FIELD(RTXDICompositeParams, baseColorMetalness), FIELD(RTXDICompositeParams, emissive),
                 FIELD(RTXDICompositeParams, output), FIELD(RTXDICompositeParams, settings)}},
             {"Metallic.SharcMaintenanceParams", {FIELD(SharcMaintenanceParams, hashEntries), FIELD(SharcMaintenanceParams, accumulation),
-                FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0),
+                FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, geometryChanges),
                 FIELD(SharcMaintenanceParams, settings)}},
         };
 #undef FIELD
@@ -304,8 +304,8 @@ public:
         REG_REQUIRE(tracker.initialize(*device, queue));
         // No legacy cacheParams buffer is provided. The inline entry count and
         // stale threshold must control both kernels, including the tail lanes.
-        for (uint32_t testCase = 0; testCase < 3; ++testCase) {
-            const bool clear = testCase == 0;
+        for (uint32_t testCase = 0; testCase < 5; ++testCase) {
+            const bool clear = testCase == 0 || testCase >= 3;
             ComputeKernel kernel;
             std::string log;
             auto shader = compileSlangShaderToSpirv({.moduleName = "Features/PathTracing/SceneSharcMaintenance",
@@ -337,6 +337,16 @@ public:
                 buffers[b]->unmap();
             }
             Commands recording;
+            std::unique_ptr<Buffer> geometryChanges;
+            REG_REQUIRE(device->createBuffer({.size = 24 * sizeof(uint32_t),
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload})
+                .transform([&](auto value) { geometryChanges = std::move(value); }));
+            auto* changed = static_cast<uint32_t*>(geometryChanges->map());
+            REG_CHECK(changed);
+            std::fill_n(changed, 24, 0u);
+            changed[16] = testCase == 3 ? 1u : 0u;
+            geometryChanges->flush();
+            geometryChanges->unmap();
             REG_REQUIRE(recording.initialize(*device, queue));
             REG_REQUIRE(recording.begin(testCase));
             {
@@ -345,6 +355,8 @@ public:
                 params.hashEntries = writer.buffer(buffers[0].get());
                 params.accumulation = writer.buffer(buffers[1].get());
                 params.resolved = writer.buffer(buffers[2].get());
+                params.geometryChanges = writer.buffer(geometryChanges.get());
+                params.settings.forceClear = testCase == 0;
                 params.settings.entriesNum = 17;
                 params.settings.sceneScale = 1.0f;
                 params.settings.accumulationFrameNum = 20;
@@ -367,6 +379,7 @@ public:
                 const uint32_t words = b == 0 ? 2 : 4;
                 auto expected = initial[b];
                 for (uint32_t entry = 0; entry < 17; ++entry) {
+                    if (testCase == 4) { continue; }
                     if (clear || testCase == 1) {
                         for (uint32_t word = 0; word < words; ++word) { expected[entry * words + word] = 0; }
                     } else if (b == 2) { expected[entry * words + 2] = (8u << 16) | 1u; }
@@ -380,7 +393,7 @@ public:
             }
         }
         REG_CHECK((*registry)->stats().parameterBytes == 0);
-        return RHITestResult::pass("Clear/resolve respect inline bounds; thresholds 8/9 evict/retain; no parameter buffer upload");
+        return RHITestResult::pass("Clear/resolve respect bounds and stale thresholds; GPU cut changes clear cache while a stable cut preserves it");
     }
 };
 METALLIC_REGISTER_RHI_TEST(SharcTypedMaintenanceTest);
@@ -2193,7 +2206,7 @@ public:
             for (uint32_t variant = 0; variant < 3; ++variant) {
                 // Arbitrary identities are read back, never resolved. All-ones
                 // also verifies that optional-resource sentinels survive slicing.
-                std::array<uint32_t, 114> packet;
+                std::array<uint32_t, sizeof(SceneResourceParameters) / sizeof(uint32_t)> packet;
                 for (uint32_t i = 0; i < packet.size(); ++i) { packet[i] = variant == 2 ? UINT32_MAX : 1000 + i; }
                 static_assert(sizeof(packet) == sizeof(SceneResourceParameters));
                 REG_REQUIRE(recording.begin(frame++));
@@ -2201,7 +2214,7 @@ public:
                 REG_CHECK(registry);
                 ParameterWriter writer(device, **registry, &recording.frame);
                 const auto outputHandle = writer.buffer(output.get());
-                std::array<uint32_t, 113> shortPacket{};
+                std::array<uint32_t, sizeof(SceneResourceParameters) / sizeof(uint32_t) - 1> shortPacket{};
                 std::copy_n(packet.begin(), shortPacket.size(), shortPacket.begin());
                 auto encoded = variant == 1 ? encodeNamedParameters(writer, shortPacket, outputHandle, kFieldABI) :
                     encodeNamedParameters(writer, packet, outputHandle, kFieldABI);
@@ -2218,7 +2231,7 @@ public:
                 std::copy_n(mapped, actual.size(), actual.begin());
                 output->unmap();
                 evidence.insert(evidence.end(), actual.begin(), actual.end());
-                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 236, 40, 44, 48, 52, 56, 60, 64, 364, 368, 372, 452};
+                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 228, 40, 44, 48, 52, 56, 60, 64, 328, 332, 336, 412};
                 for (uint32_t i = 0; i < offsets.size(); ++i) {
                     REG_CHECK(actual[i] == (variant == 1 ? 0 : packet[offsets[i] / 4]));
                 }

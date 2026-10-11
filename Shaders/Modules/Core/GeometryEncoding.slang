@@ -4,25 +4,7 @@ implementing ShaderCore;
 namespace Metallic
 {
 
-// Matches SceneShadingVertex.h: 16 bytes; no position or padded UV components.
-public struct SceneShadingVertex
-{
-    public uint normal;
-    public uint tangent;
-    public float2 texcoord;
-};
-
-// Present only on devices that cannot fetch triangle positions from the BLAS.
-// Three scalars keep a 12-byte stride under std430 as well as scalar layout;
-// an array of float3 would have a 16-byte stride under std430.
-public struct SceneVertexPosition { public float x; public float y; public float z; };
-
-public float3 loadSceneVertexPosition(StructuredBuffer<SceneVertexPosition> positions, uint index)
-{
-    SceneVertexPosition position = positions[index];
-    return float3(position.x, position.y, position.z);
-}
-
+// Shared octahedral encodings for streamed meshlet attributes.
 internal float3 decodeSceneOctahedron(float2 oct)
 {
     float3 direction = float3(oct, 1.0 - abs(oct.x) - abs(oct.y));

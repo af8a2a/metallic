@@ -2,7 +2,6 @@
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ComputeResourceEncoder.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
@@ -76,15 +75,8 @@ inline constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
 inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "Features/Debug/SceneRayQueryVisualize";
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
-inline constexpr const char* kVisibilityBufferShaderModuleName = "Features/VisibilityBuffer/VisibilityBuffer";
 inline constexpr const char* kGPUDrivenCullingShaderModuleName = "Features/GPUDriven/GPUDrivenCulling";
 inline constexpr const char* kVisibilityBufferCompositeShaderModuleName = "Features/VisibilityBuffer/VisibilityBufferComposite";
-inline constexpr const char* kVisibilityBufferAmplificationEntryPoint =
-    "visibilityBufferAmplificationMain";
-inline constexpr const char* kVisibilityBufferMeshEntryPoint = "visibilityBufferMeshMain";
-inline constexpr const char* kVisibilityBufferFragmentEntryPoint = "visibilityBufferFragmentMain";
-inline constexpr const char* kVisibilityBufferMaskedFragmentEntryPoint =
-    "visibilityBufferMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
 inline constexpr const char* kGPUDrivenPreviewHZBEntryPoint = "gpuDrivenPreviewHzbMain";
@@ -661,8 +653,6 @@ struct GPUDrivenPreviewGPUParams {
     float renderViewport[4] = {};
     float renderClipOrtho[4] = {};
     uint32_t mode = kGPUDrivenPreviewModeMeshlet;
-    uint32_t meshletOffset = 0;
-    uint32_t meshletCount = 0;
     uint32_t selectedLodLevel = 0;
     uint32_t instanceCount = 0;
     uint32_t width = 1;
@@ -683,19 +673,12 @@ struct GPUDrivenPreviewGPUParams {
     uint32_t environmentVisible = 1;
     uint32_t materialCount = 1;
     uint32_t visibleMeshletCapacity = 0;
-    uint32_t lodSelectionBuffer = UINT32_MAX;
-    uint32_t lodSelectionEnabled = 0;
     uint32_t tessellationBuffer = UINT32_MAX;
     float displacementBound = 0.0f;
     uint32_t tessellationPadding[2] = {};
 };
 
 struct GPUDrivenPreviewUserPush {
-    uint32_t positionBuffer = 0;
-    uint32_t meshletBuffer = 0;
-    uint32_t meshletDrawBuffer = 0;
-    uint32_t meshletVertexBuffer = 0;
-    uint32_t meshletTriangleBuffer = 0;
     uint32_t paramsBuffer = 0;
     uint32_t transformBuffer = 0;
     uint32_t instanceBuffer = 0;
@@ -719,7 +702,6 @@ struct GPUDrivenPreviewUserPush {
     uint32_t environmentImage = 0;
     uint32_t environmentSHBuffer = 0;
     uint32_t streamDeferredBindingsBuffer = std::numeric_limits<uint32_t>::max();
-    uint32_t residentRecordCapacity = 0;
     uint32_t streamOwnerMaskBuffer = std::numeric_limits<uint32_t>::max();
     float tessellationEdgePixels = 8.0f;
     uint32_t tessellationMaxFactor = 4;
@@ -740,8 +722,8 @@ static_assert(sizeof(GPUDrivenPreviewGPUMeshlet) == sizeof(GPUSceneGPUMeshletRec
 static_assert(sizeof(GPUSceneGPUMeshletDrawRecord) == 16);
 static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
-static_assert(sizeof(GPUDrivenPreviewGPUParams) == 352);
-static_assert(sizeof(GPUDrivenPreviewUserPush) == 136);
+static_assert(sizeof(GPUDrivenPreviewGPUParams) == 336);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 112);
 
 struct SceneMaterialVisualizationPush {
     float eye[4] = {};

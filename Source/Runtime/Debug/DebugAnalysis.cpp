@@ -140,7 +140,7 @@ void addCaptureRelations(DebugValue& root)
                 const std::string visibility = metadata.value("pass", "") + ".visibility";
                 const uint64_t globalIndex = metadata.value("visibleRecordBase", uint64_t(0)) + offset + i;
                 link["recordValidity"] = visibleRecords[visibility].contains(globalIndex) ? "ReferencedByCapturedPixel" : "Unverified";
-                link["source"] = source == 0 ? "Resident" : source == 1 ? "StreamPage" : "Unknown";
+                link["source"] = source == 1 ? "StreamPage" : "Unknown";
                 link["instance"] = cpuReference(scene, "instances", record.at("instanceIndex"), "instanceCount");
                 if (source == 0) {
                     link["geometry"] = cpuReference(scene, "geometries", record.at("dataIndex"), "geometryCount");

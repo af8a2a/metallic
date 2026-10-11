@@ -1,9 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/NeuralTextureResources.h"
-#include "Runtime/Render/SceneShadingVertex.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
@@ -85,8 +83,7 @@ public:
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
         const scene::Scene& runtimeScene,
-        std::string& log,
-        bool materialsOnly = false);
+        std::string& log);
     [[nodiscard]] Result<bool> pumpPrepareAsync(
         double budgetMilliseconds,
         scene::SceneLoadProgress& progress,
@@ -126,14 +123,6 @@ public:
     uint64_t revision() const;
 
     const scene::Bounds& bounds() const;
-    SceneAccelerationStructureBuilder& accelerationStructure();
-    const SceneAccelerationStructureBuilder& accelerationStructure() const;
-    Buffer* shadingVertexBuffer() const;
-    // Null when positions are supplied by ray-tracing position fetch.
-    Buffer* fallbackPositionBuffer() const;
-    Buffer* indexBuffer() const;
-    Buffer* primitiveBuffer() const;
-    Buffer* instanceBuffer() const;
     Buffer* materialBuffer() const;
     // Same published generation as materialBuffer(); no mutable parameter access.
     std::shared_ptr<const MaterialGeneration> materialGeneration() const;

@@ -12,8 +12,7 @@
             "properties": {
                 "path": "Asset/MiniZorah/zorah_main_public.v2.gltf",
                 "streamAssetPath": "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
-                "sceneBinding": "asset", "viewBinding": "global", "streamAssetOnly": true, "enableMeshletStreaming": true,
-                "autoBuildStreamAsset": false, "enableClusterRtx": false, "enableClas": true,
+                "sceneBinding": "asset", "viewBinding": "global", "autoBuildStreamAsset": false, "enableClusterRtx": false, "enableClas": true,
                 "compactClas": true, "coldPageRetentionFrames": 120,
                 "startClasBytes": 0, "growClasBytes": 67108864, "clasEmptyChunkRetentionFrames": 30,
                 "maxClasBytes": 536870912, "maxClasBuildClusters": 8192,

@@ -4531,7 +4531,6 @@ bool Scene::loadInternal(
                 primitive.mode = gltfPrimitive.mode;
 
                 if (streamMetadata) {
-                    primitive.storage = GeometryStorage::StreamAsset;
                     const auto& position = model.accessors.at(gltfPrimitive.attributes.at("POSITION"));
                     primitive.vertexCount = position.count;
                     primitive.localBounds = accessorBounds(position);

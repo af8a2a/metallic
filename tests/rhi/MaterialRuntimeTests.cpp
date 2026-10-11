@@ -275,12 +275,11 @@ public:
         scene::SceneDocument document;
         if (!document.load(path)) { return RHITestResult::fail("LookDev scene load failed"); }
         std::string log;
-        // The same materials-only preparation is used by StreamAsset consumers;
-        // test both upload routes without requiring a second scene fixture.
-        for (bool materialsOnly : {false, true}) {
+        // Every consumer uses the same streamed material generation.
+        {
             ScenePathTraceResources resources;
             auto result = resources.beginPrepareAsync(*device, queue,
-                {{"path", path.string()}}, document, log, materialsOnly);
+                {{"path", path.string()}}, document, log);
             if (hasError(result, Error::Unsupported)) { return RHITestResult::skip(log); }
             if (!result) { return RHITestResult::fail(log); }
             bool complete = false;

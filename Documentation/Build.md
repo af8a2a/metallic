@@ -26,8 +26,7 @@ git submodule update --init --recursive -- External/openpbr-bsdf
 ```
 
 The Vulkan backend requires `VK_KHR_device_address_commands` with
-`deviceAddressCommands` and `bufferDeviceAddress` enabled, independently of
-opacity micromap support. Unsupported devices fail initialization with
+`deviceAddressCommands` and `bufferDeviceAddress` enabled. Unsupported devices fail initialization with
 `Unsupported`. Indirect dispatch, indirect mesh draws, and buffer transfers use
 device-address commands; buffers with these usages receive device addresses
 without an explicit `ShaderDeviceAddress` request from the caller.
@@ -80,7 +79,7 @@ cache identity. Scene requests include the runtime `METALLIC_CUSTOM_MATERIALS=0`
 default so prewarmed OpenPBR and path-tracing binaries are reused.
 
 The catalog deduplicates complete requests after generation. Conventional scene
-variants cover resident/streamed materials, supported position-fetch settings,
+variants use streamed geometry and CLAS ray queries,
 Deferred global/local views, FP16/FP32, guides and material classes. Editor display
 requests share a factory with runtime and include SDR/scRGB/HDR10 paths at the
 standard 80/203-nit reference whites.
@@ -407,21 +406,13 @@ direct callers; opting into Device metadata requires pumping
 when root pages should remain lazy. See the
 [implementation and validation](ZorahFullNsightFixImplementation20260930.md).
 
-When Nsight Graphics capture injection is active, opacity micromaps use the
-`VK_EXT_opacity_micromap` backend, including native EXT builds and shader support.
-Ordinary execution uses `VK_KHR_opacity_micromap`. This avoids the current capture
-interceptor's KHR OMM null-range crash while retaining OMM acceleration. See the
-[investigation and workaround](NsightKhrOpacityMicromapInvestigation.md).
-TODO(Nsight KHR OMM): Remove the temporary EXT path after Nsight Graphics supports
-KHR OMM and the injected build/capture/replay checks in that document pass.
-The RHI test runner can reproduce the capture path with
-`--rhi-nsight-capture --gtest_filter='*opacity_micromap*'`.
+Ray tracing uses streamed CLAS geometry exclusively. Traditional triangle BLAS,
+position-fetch and opacity micromap paths, including the former Nsight KHR/EXT
+OMM workaround, have been removed. An explicit `enableRayQuery` device request
+also requires CLAS; unsupported hardware returns `Unsupported`. Raster-only
+devices do not acquire this requirement. TLAS and PTLAS remain supported over
+CLAS-built bottom levels; production scene streaming currently uses standard TLAS.
 
-The Nsight EXT path also supplies explicit UINT32 identity OMM indices to avoid
-the replayer's null dereference when restoring implicit indices. Buffers are
-retained by their OMM; ordinary KHR behavior is unchanged. Restart the rebuilt
-application and create a fresh capture, since existing files keep their original
-build parameters. See [replay evidence and removal TODO](NsightCaptureReplayInvestigation.md).
 To export a warmed-up Sponza frame without a window, run
 `MetallicRHITests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-export --rhi-no-validation --gtest_filter='*gpu_driven_sponza_realtime_pipeline' --output-dir .tmp/nsight-replay`.
 The runner prints the capture path under the output directory's `nsight` folder;

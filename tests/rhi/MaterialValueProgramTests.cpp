@@ -320,7 +320,7 @@ public:
         if (!result) { return RHITestResult::fail("Device failed"); }
         auto& queue = *device->getQueue(QueueType::Graphics);
         ScenePathTraceResources resources;
-        if (!resources.beginPrepareAsync(*device, queue, {{"path", scenePath.string()}}, document, log, true)) {
+        if (!resources.beginPrepareAsync(*device, queue, {{"path", scenePath.string()}}, document, log)) {
             return RHITestResult::fail(log);
         }
         bool complete = false;

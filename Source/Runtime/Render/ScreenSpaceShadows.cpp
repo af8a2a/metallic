@@ -141,21 +141,27 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         log = "Invalid ray-traced shadow dimensions or trace settings";
         return makeError(Error::InvalidArgument);
     }
-    if (!device.capabilities().rayQuery || !device.capabilities().rayTracingAccelerationStructure) {
+    if (!device.capabilities().rayQuery || !device.capabilities().rayTracingAccelerationStructure || !device.capabilities().clusterAccelerationStructure) {
         log = "Ray-traced shadows require ray queries and a scene acceleration structure";
         return makeError(Error::Unsupported);
     }
-    const bool streamed = streamGeometry != nullptr;
-    const bool streamTlas = streamed && (accelerationStructure || streamGeometry->accelerationStructure != nullptr);
-    if (!streamed && (geometry == nullptr || !geometry->valid())) {
-        log = "Ray-traced shadows require prepared scene geometry";
+    if (streamGeometry == nullptr || geometry == nullptr || !geometry->valid()) {
+        log = "Ray-traced shadows require prepared streaming geometry and material resources";
         return makeError(Error::InvalidArgument);
     }
-    const auto* neural = streamed ? nullptr : &geometry->neuralTextures();
-    const bool ntc = neural != nullptr && neural->active();
+    if (streamGeometry->accelerationStructure == nullptr) {
+        log = "Ray-traced shadows require a ready CLAS scene; defer rendering until streaming initialization completes";
+        return makeError(Error::InvalidArgument);
+    }
+    if (accelerationStructure != nullptr && accelerationStructure != streamGeometry->accelerationStructure) {
+        log = "Ray-traced shadows require the CLAS TLAS and geometry buffers from the same streaming session";
+        return makeError(Error::InvalidArgument);
+    }
+    const auto* neural = &geometry->neuralTextures();
+    const bool ntc = neural->active();
     const bool coop = ntc && neural->cooperativeVectorActive();
     profile.next("Prepare trace pipeline");
-    auto& trace = traces_[streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0)];
+    auto& trace = traces_[ntc ? (coop ? 2 : 1) : 0];
     constexpr ComputeResourceMember shadowOutputs[] = {
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, penumbra),
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowNormal),
@@ -163,8 +169,8 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowMotion),
         METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowOutput)
     };
-    const auto traceIndex = streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0);
-    const uint32_t textureCount = streamed && !streamTlas ? 0 : geometry->materialTextureCount();
+    const auto traceIndex = ntc ? (coop ? 2 : 1) : 0;
+    const uint32_t textureCount = geometry->materialTextureCount();
     if (trace.valid() && traceTextureCounts_[traceIndex] != textureCount) {
         if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ComputeKernel>(std::move(trace))); }
         else { (void)device.waitIdle(); trace.clear(); }
@@ -173,7 +179,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     traceTextureCounts_[traceIndex] = textureCount;
     if (!trace.valid()) {
         ShadowShaderOptions shaderOptions{
-            .streamed = streamed, .streamTlas = streamTlas, .hasNTC = ntc, .cooperativeVector = coop,
+            .hasNTC = ntc, .cooperativeVector = coop,
         };
 #if METALLIC_HAS_NTC
         shaderOptions.ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR;
@@ -190,19 +196,14 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         for (const auto member : shadowOutputs) {
             layout.push_back({.binding = member, .kind = ComputeResourceBindingKind::StorageImage});
         }
-        if (!streamed || streamTlas) {
+        {
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), .kind = ComputeResourceBindingKind::AccelerationStructure});
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues)});
         }
-        if (streamTlas) {
+        {
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials)});
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
             for (const auto member : {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount)}) { layout.push_back({.binding = member}); }
-        }
-        if (!streamed) {
-            for (const auto member : {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances), METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials)}) { layout.push_back({.binding = member}); }
-            layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = geometry->materialTextureCount()});
         }
         if (ntc) {
             layout.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents), .kind = ComputeResourceBindingKind::SampledImage,
@@ -284,7 +285,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     }
     parameters.trace[0] = settings.maxDistance;
     parameters.trace[2] = settings.normalBias;
-    parameters.control[0] = settings.enabled && selected != UINT32_MAX && (!streamed || streamTlas);
+    parameters.control[0] = settings.enabled && selected != UINT32_MAX;
     parameters.control[3] = settings.debug;
     parameters.shape[0] = settings.lightRadius;
     const bool denoise = METALLIC_HAS_NRD && settings.denoise && parameters.control[0];
@@ -340,39 +341,22 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = shadowOutputs[i], .textureView = state->views[i].get()});
     }
     uint32_t geometryPush[2]{};
-    if (streamed) {
-        if (streamTlas) {
-            CPUProfileScope resources(profiler, "Prepare material textures");
-            if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), .accelerationStructure = accelerationStructure
-                ? accelerationStructure : streamGeometry->accelerationStructure});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .buffer = geometry->materialBuffer()});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = {geometry->materialTextureViews().data(), textureCount}, .sampledImages = geometry->materialTextureSnapshot()});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), .buffer = streamGeometry->pageBuffer});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), .buffer = streamGeometry->pageTableBuffer});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), .buffer = streamGeometry->instanceBuffer});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), .buffer = streamGeometry->activeHeaderBuffer});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = streamGeometry->paramsBuffer});
-            geometryPush[0] = textureCount;
-        }
-    } else {
+    {
         CPUProfileScope resources(profiler, "Prepare material textures");
         if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), .accelerationStructure = accelerationStructure
-            ? accelerationStructure : geometry->accelerationStructure().accelerationStructure()});
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices), .buffer = geometry->shadingVertexBuffer()});
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices), .buffer = geometry->indexBuffer()});
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives), .buffer = geometry->primitiveBuffer()});
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances), .buffer = geometry->instanceBuffer()});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
+            .accelerationStructure = streamGeometry->accelerationStructure});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .buffer = geometry->materialBuffer()});
-        bindings.push_back({
-            .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
-            .textureViews = {geometry->materialTextureViews().data(), geometry->materialTextureCount()},
-            .sampledImages = geometry->materialTextureSnapshot(),
-        });
-        geometryPush[0] = geometry->materialTextureCount();
-        geometryPush[1] = neural->textureSetCount();
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = {geometry->materialTextureViews().data(), textureCount}, .sampledImages = geometry->materialTextureSnapshot()});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPages), .buffer = streamGeometry->pageBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamPageTable), .buffer = streamGeometry->pageTableBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamInstances), .buffer = streamGeometry->instanceBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rayStreamHeader), .buffer = streamGeometry->activeHeaderBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = streamGeometry->paramsBuffer});
+        geometryPush[0] = textureCount;
+        geometryPush[1] = ntc ? neural->textureSetCount() : 0u;
     }
+
     if (ntc) {
         bindings.push_back({
             .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcLatents),
@@ -384,7 +368,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, ntcSampler), .sampler = &neural->latentSampler()});
     }
     profile.next("Record trace dispatch");
-    if (geometry && (!streamed || streamTlas)) {
+    if (geometry) {
         const auto inputs = geometry->materialBinding();
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()});
         if (auto* frame = RenderFrameContext::from(commands)) { frame->retain(inputs); }

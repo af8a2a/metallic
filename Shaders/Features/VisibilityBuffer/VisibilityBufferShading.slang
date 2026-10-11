@@ -437,7 +437,7 @@ float4 projectStreamDeferredPosition(
     }
     if (params.renderViewport.y > 0.0) {
         // The caller flips clip Y for Vulkan after this projection. Negate the
-        // Y jitter here to match the resident path's post-flip pixel offset.
+        // Y jitter here to match the post-flip raster pixel offset.
         clip.xy -= 2.0 * float2(params.renderEye.w, -params.renderCenter.w) /
             max(params.renderViewport.yz, float2(1.0)) * clip.w;
     }
@@ -988,110 +988,6 @@ uint shadeDeferredSurface(
     return packHdrColor(radiance);
 }
 
-bool decodeResidentVisibilitySurface(
-    uint meshletIndex,
-    uint triangleIndex,
-    float2 pixelCenter,
-    GPUDrivenPreviewParams params,
-    GPUDrivenPreviewPush push,
-    out GPUDrivenDeferredSurface surface)
-{
-    surface = (GPUDrivenDeferredSurface)0;
-    if (!visibilityRecordIndexValid(meshletIndex, push.residentRecordCapacity)) {
-        return false;
-    }
-
-    StructuredBuffer<GPUDrivenPreviewMeshlet> meshletHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(push.meshletBuffer));
-    StructuredBuffer<VisibleClusterRecord> meshletDrawHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.meshletDrawBuffer));
-    StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
-    StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
-    VisibleClusterRecord meshletDraw = meshletDraws[meshletIndex];
-    if (visibleClusterSource(meshletDraw) != kVisibleClusterSourceResident ||
-        meshletDraw.instanceIndex >= params.instanceCount) {
-        return false;
-    }
-    GPUDrivenPreviewMeshlet meshlet = meshlets[meshletDraw.clusterIndex];
-    if (triangleIndex >= meshlet.ranges.w) {
-        return false;
-    }
-
-    StructuredBuffer<GPUDrivenPreviewGeometry> geometryHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewGeometry>>(push.transformBuffer));
-    StructuredBuffer<GPUDrivenPreviewInstance> instanceHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(push.instanceBuffer));
-    StructuredBuffer<GPUDrivenPreviewGeometry> geometries = geometryHandle;
-    StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
-    GPUDrivenPreviewGeometry geometry = geometries[meshletDraw.dataIndex];
-    GPUDrivenPreviewInstance instance = instances[meshletDraw.instanceIndex];
-
-    surface.materialIndex = instance.identity.y;
-    surface.primitiveIndex = geometry.source.x;
-    surface.lodLevel = meshlet.lod.x;
-    surface.lodGroupIndex = meshlet.lod.y;
-    if (params.mode != kModeShaded && params.mode != kModeBaseColor) {
-        return true;
-    }
-
-    StructuredBuffer<GPUDrivenPreviewVertex> vertexHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(push.positionBuffer));
-    StructuredBuffer<uint> meshletVertexHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletVertexBuffer));
-    StructuredBuffer<uint> meshletTriangleHandle =
-        resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.meshletTriangleBuffer));
-    StructuredBuffer<GPUDrivenPreviewVertex> vertices = vertexHandle;
-    StructuredBuffer<uint> meshletVertices = meshletVertexHandle;
-    StructuredBuffer<uint> meshletTriangles = meshletTriangleHandle;
-
-    uint3 localIndices = uint3(
-        loadPackedMeshletTriangleIndex(meshletTriangles, meshlet.ranges.z, triangleIndex, 0u),
-        loadPackedMeshletTriangleIndex(meshletTriangles, meshlet.ranges.z, triangleIndex, 1u),
-        loadPackedMeshletTriangleIndex(meshletTriangles, meshlet.ranges.z, triangleIndex, 2u));
-    uint3 vertexIndices = uint3(
-        geometry.payload.x + meshletVertices[meshlet.ranges.x + localIndices.x],
-        geometry.payload.x + meshletVertices[meshlet.ranges.x + localIndices.y],
-        geometry.payload.x + meshletVertices[meshlet.ranges.x + localIndices.z]);
-    GPUDrivenPreviewVertex vertex0 = vertices[vertexIndices.x];
-    GPUDrivenPreviewVertex vertex1 = vertices[vertexIndices.y];
-    GPUDrivenPreviewVertex vertex2 = vertices[vertexIndices.z];
-    SceneTransform transform = instanceTransform(instance);
-
-    float3 world0 = transformPoint(transform, vertex0.position.xyz);
-    float3 world1 = transformPoint(transform, vertex1.position.xyz);
-    float3 world2 = transformPoint(transform, vertex2.position.xyz);
-    float4 clip0 = projectPosition(world0, params);
-    float4 clip1 = projectPosition(world1, params);
-    float4 clip2 = projectPosition(world2, params);
-    float3 barycentrics = perspectiveBarycentrics(pixelCenter, clip0, clip1, clip2, params);
-    float3 worldPosition = world0 * barycentrics.x + world1 * barycentrics.y + world2 * barycentrics.z;
-    float2 texcoord = vertex0.texcoord.xy * barycentrics.x +
-        vertex1.texcoord.xy * barycentrics.y + vertex2.texcoord.xy * barycentrics.z;
-    float3 localNormal = vertex0.normal.xyz * barycentrics.x +
-        vertex1.normal.xyz * barycentrics.y + vertex2.normal.xyz * barycentrics.z;
-    float3 geometryNormal = safeNormalize(cross(world1 - world0, world2 - world0), float3(0.0, 0.0, 1.0));
-    float3 normal = transformNormal(transform, localNormal);
-    if (dot(normal, geometryNormal) < 0.0) {
-        normal = -normal;
-    }
-
-    float4 localTangent = vertex0.tangent * barycentrics.x +
-        vertex1.tangent * barycentrics.y + vertex2.tangent * barycentrics.z;
-    float3 tangent = transformDirection(transform, localTangent.xyz);
-    tangent = safeNormalize(tangent - normal * dot(normal, tangent),
-        abs(normal.z) < 0.999 ? safeNormalize(cross(float3(0.0, 0.0, 1.0), normal), float3(1.0, 0.0, 0.0)) :
-            safeNormalize(cross(float3(0.0, 1.0, 0.0), normal), float3(1.0, 0.0, 0.0)));
-    float tangentSign = localTangent.w < 0.0 ? -1.0 : 1.0;
-
-    surface.worldPosition = worldPosition;
-    surface.geometryNormal = geometryNormal;
-    surface.normal = normal;
-    surface.tangent = tangent;
-    surface.texcoord = texcoord;
-    surface.tangentSign = tangentSign;
-    return true;
-}
-
 bool decodeStreamVisibilitySurface(
     uint recordIndex,
     uint triangleIndex,
@@ -1108,8 +1004,7 @@ bool decodeStreamVisibilitySurface(
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamDeferredBindings>>(push.streamDeferredBindingsBuffer));
     StructuredBuffer<GPUDrivenStreamDeferredBindings> bindingsBuffer = bindingsHandle;
     GPUDrivenStreamDeferredBindings bindings = bindingsBuffer[0];
-    if (bindings.visibleRecordBase < push.residentRecordCapacity ||
-        !visibilityRecordRangeValid(
+    if (!visibilityRecordRangeValid(
             bindings.visibleRecordBase,
             bindings.visibleRecordCapacity) ||
         recordIndex < bindings.visibleRecordBase ||
@@ -1182,14 +1077,8 @@ void visibilityBufferShadeMain(
     }
 
     GPUDrivenDeferredSurface surface;
-    bool decoded = false;
-    if (visibilityRecordIndexValid(recordIndex, push.residentRecordCapacity)) {
-        decoded = decodeResidentVisibilitySurface(
-            recordIndex, triangleIndex, pixelCenter, params, push, surface);
-    } else {
-        decoded = decodeStreamVisibilitySurface(
-            recordIndex, triangleIndex, pixelCenter, params, push, surface);
-    }
+    bool decoded = decodeStreamVisibilitySurface(
+        recordIndex, triangleIndex, pixelCenter, params, push, surface);
     if (!decoded) {
         colors[outputIndex] = background;
         return;

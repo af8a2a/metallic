@@ -5,18 +5,12 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-struct MaterialPush { uint width, height, residentCount, streamCount, mode; float3 eye; };
+struct MaterialPush { uint width, height, streamCount, mode; float3 eye; };
 #include "VisibilityStreamDecode.slang"
 #define gOutput resolveUniform(getResourceParameters<VisibilityMaterialResourceParameters>().output)
 #define gVisibility resolveUniform(getResourceParameters<VisibilityMaterialResourceParameters>().visibility)
 #define gInstances resolveBuffer<StructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<VisibilityMaterialResourceParameters>().instances)
 #define gMaterials resolveBuffer<StructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<VisibilityMaterialResourceParameters>().materials)
-#define gRecords resolveBuffer<StructuredBuffer<VisibleClusterRecord>>(getResourceParameters<VisibilityMaterialResourceParameters>().records)
-#define gMeshlets resolveBuffer<StructuredBuffer<GPUDrivenPreviewMeshlet>>(getResourceParameters<VisibilityMaterialResourceParameters>().meshlets)
-#define gVertices resolveBuffer<StructuredBuffer<GPUDrivenPreviewVertex>>(getResourceParameters<VisibilityMaterialResourceParameters>().vertices)
-#define gVertexIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<VisibilityMaterialResourceParameters>().vertexIndices)
-#define gTriangles resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<VisibilityMaterialResourceParameters>().triangles)
-#define gGeometries resolveBuffer<StructuredBuffer<GPUDrivenPreviewGeometry>>(getResourceParameters<VisibilityMaterialResourceParameters>().geometries)
 #define gStreamRecords resolveBuffer<StructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<VisibilityMaterialResourceParameters>().streamRecords)
 #define gGroups resolveBuffer<StructuredBuffer<StreamActiveGroup>>(getResourceParameters<VisibilityMaterialResourceParameters>().groups)
 #define gPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<VisibilityMaterialResourceParameters>().pages)
@@ -33,23 +27,8 @@ bool decodeTriangle(uint id, MaterialPush push, out uint instanceId, out float3 
     uint index, triangle;
     if (!unpackVisibilityId(id, index, triangle)) { return false; }
     VisibleClusterRecord record;
-    if (index < push.residentCount) {
-        record = gRecords[index];
-        if (visibleClusterSource(record) != kVisibleClusterSourceResident) { return false; }
-        GPUDrivenPreviewMeshlet meshlet = gMeshlets[record.clusterIndex];
-        if (triangle >= meshlet.ranges.w) { return false; }
-        GPUDrivenPreviewGeometry geometry = gGeometries[record.dataIndex];
-        uint3 local = uint3(loadPackedMeshletTriangleIndex(gTriangles, meshlet.ranges.z, triangle, 0),
-            loadPackedMeshletTriangleIndex(gTriangles, meshlet.ranges.z, triangle, 1),
-            loadPackedMeshletTriangleIndex(gTriangles, meshlet.ranges.z, triangle, 2));
-        a = gVertices[geometry.payload.x + gVertexIndices[meshlet.ranges.x + local.x]].position.xyz;
-        b = gVertices[geometry.payload.x + gVertexIndices[meshlet.ranges.x + local.y]].position.xyz;
-        c = gVertices[geometry.payload.x + gVertexIndices[meshlet.ranges.x + local.z]].position.xyz;
-    } else {
-        index -= push.residentCount;
-        if (index >= push.streamCount) { return false; }
-        if (!decodeStreamTriangle(index, triangle, gStreamRecords, gGroups, gPages, gPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameters<VisibilityMaterialResourceParameters>().pageCount)), record, a, b, c)) { return false; }
-    }
+    if (index >= push.streamCount) { return false; }
+    if (!decodeStreamTriangle(index, triangle, gStreamRecords, gGroups, gPages, gPageTable, streamPageWordCount(resolveBuffer<ByteAddressBuffer>(getResourceParameters<VisibilityMaterialResourceParameters>().pageCount)), record, a, b, c)) { return false; }
     uint count, stride;
     gInstances.GetDimensions(count, stride);
     instanceId = record.instanceIndex;

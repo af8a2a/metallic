@@ -125,12 +125,11 @@ std::vector<render::ShaderRequest> materialShaderWarmupRequests(
                     : properties.value("bsdf", "standard") == "openpbr"
                     ? (guides ? SceneShaderProgram::OpenPBRPathTraceGuides : SceneShaderProgram::OpenPBRPathTrace)
                     : (guides ? SceneShaderProgram::PathTraceGuides : SceneShaderProgram::PathTrace);
-                for (bool fetch : {false, true}) {
-                    if (deferred && fetch) { continue; }
+                {
                     for (bool view : {false, true}) {
                         if (!deferred && view) { continue; }
                         SceneShaderOptions options{.customMaterials = true, .globalView = view,
-                            .hasRTXCR = !rtxcrInclude.empty(), .positionFetch = fetch,
+                            .hasRTXCR = !rtxcrInclude.empty(),
                             .deferredFloat16 = properties.value("halfPrecision", true), .upscalerGuides = guides,
                             .materialInclude = include.string(), .rtxcrInclude = rtxcrInclude};
                         if (!binned) { add(makeSceneShaderRequest(program, options)); continue; }

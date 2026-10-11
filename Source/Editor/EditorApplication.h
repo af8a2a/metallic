@@ -12,7 +12,6 @@
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -181,8 +180,6 @@ private:
     void applyLoadedSceneToRenderGraph(const std::filesystem::path& path);
     void applyLoadedSceneCamera();
     void setEnvironmentPath(const std::filesystem::path& path);
-    void buildSceneAccelerationStructure();
-    void clearSceneAccelerationStructure();
     void addRenderGraphNode(std::string type, ImVec2 screenPosition);
     void markRenderGraphOutput(std::string outputName);
     void setActivePreviewOutput(std::string outputName);
@@ -292,7 +289,6 @@ private:
     std::unique_ptr<render::RenderDebugRuntime> debugRuntime_;
     std::unique_ptr<render::WorkControlShaderTrace> shaderTrace_;
     render::HistoryResourceManager historyResources_;
-    std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;
     editor::RenderGraphExecutionViewer graphExecutionViewer_;
     EditorResourceInspector resourceInspector_;
@@ -408,7 +404,6 @@ private:
     std::string visibilityPreviewReturnOutput_;
     std::string renderGraphStatus_;
     std::string sceneStatus_ = "No scene loaded.";
-    std::string sceneAccelerationStructureStatus_ = "RTAS not built.";
     std::string startupSampleId_;
     bool gpuDrivenScenesOnly_ = false;
     std::string startupScenePath_;

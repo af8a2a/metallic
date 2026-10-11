@@ -22,8 +22,8 @@ void main()
     output.Store(44, sharc.sharcAccumulation.index);
     output.Store(48, sharc.sharcHashEntries.index);
     output.Store(52, sharc.sharcResolved.index);
-    output.Store(56, getResourceParameterField<SceneResourceParameters, uint>(452));
-    output.Store(60, getResourceParameterField<SceneResourceParameters, uint>(456));
+    output.Store(56, getResourceParameterField<SceneResourceParameters, uint>(sizeof(SceneResourceParameters) - sizeof(uint)));
+    output.Store(60, getResourceParameterField<SceneResourceParameters, uint>(sizeof(SceneResourceParameters)));
     output.Store(64, getResourceParameterField<SceneResourceParameters, uint>(0xfffffffc));
     output.Store(68, getResourceParameterField<SceneResourceParameters, uint>(1));
 }

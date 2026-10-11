@@ -32,6 +32,8 @@ void sharcClearMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint entryIndex = dispatchThreadId.x;
     SceneSharcMaintenancePush params = gStage.settings;
+    StructuredBuffer<uint> changes = resolveUniform(gStage.geometryChanges);
+    if (params.forceClear == 0u && (changes[1] | changes[16] | changes[23]) == 0u) { return; }
     if (entryIndex >= params.entriesNum) {
         return;
     }
@@ -65,6 +67,11 @@ void sharcResolveMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     resolveParameters.accumulationFrameNum = params.accumulationFrameNum;
     resolveParameters.staleFrameNumMax = params.staleFrameNumMax;
     resolveParameters.frameIndex = params.frameIndex;
+#if defined(SHARC_BLEND_ADJACENT_LEVELS) && !SHARC_BLEND_ADJACENT_LEVELS
+    resolveParameters.blendAdjacentLevels = false;
+#else
+    resolveParameters.blendAdjacentLevels = true;
+#endif
 
     sharcResolveEntry(entryIndex, sharcParameters, resolveParameters);
 }

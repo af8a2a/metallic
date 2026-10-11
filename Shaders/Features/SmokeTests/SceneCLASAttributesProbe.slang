@@ -9,10 +9,10 @@ struct ProbePush { float translationX; };
 
 [shader("compute")]
 [numthreads(4, 1, 1)]
-void scenePositionFetchProbeMain(uint3 id : SV_DispatchThreadID)
+void sceneCLASAttributesProbeMain(uint3 id : SV_DispatchThreadID)
 {
     // Two indexed triangles, a back-face hit, and a miss. The fixture has a
-    // nonuniform object transform, so treating fetched positions as world space
+    // nonuniform object transform, so decoding page positions as world space
     // or changing the authored normal orientation cannot pass unnoticed.
     Ray ray;
     ray.origin = float3(id.x == 1u ? 6.0 : 4.0, id.x == 1u ? 0.25 : -1.25, 10.0);

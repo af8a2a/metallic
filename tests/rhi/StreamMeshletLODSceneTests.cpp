@@ -61,11 +61,10 @@ public:
         RenderGraph graph;
         graph.addNode("VisibilityBufferPass", "VBuffer", {
             {"path", sourcePath.generic_string()}, {"streamAssetPath", assetPath.generic_string()},
-            {"streamAssetOnly", true},
             // Exercise ordered in-frame publication below instead of the synchronous
             // startup loader, which now completes root uploads before the first frame.
             {"initialLoad", false},
-            {"enableMeshletStreaming", true}, {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
+            {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
             {"maxPageUploadsPerFrame", 64}, {"maxActiveGroups", capacity},
             {"pageLoadConcurrency", 0},
             {"maxGpuPageRequests", 256}, {"maxGpuPageUnloadRequests", 256},
@@ -332,8 +331,7 @@ public:
 
                     // Stream IDs retain sparse active-group slots; every pixel must refer
                     // to a selected cluster in this exact frame's active list.
-                    const uint32_t recordBase = static_cast<uint32_t>(
-                        gpuScene->globalBufferViews().meshletDraws.size / sizeof(VisibleClusterRecord));
+                    constexpr uint32_t recordBase = 0;
                     const uint32_t clusterStride = header.at("maxActiveGroupClusters");
                     if (clusterStride == 0) { return RHITestResult::fail("Zero stream cluster slot stride"); }
                     size_t covered = 0;

@@ -79,13 +79,10 @@ inline ShaderProgramIdentity sceneShaderIdentity(SceneShaderProgram program)
 
 struct SceneShaderOptions {
     bool customMaterials = false;
-    bool streamMaterials = false;
-    bool streamRayQueries = false;
     bool globalView = false;
     bool hasRTXCR = false;
     bool hasNTC = false;
     bool cooperativeVector = false;
-    bool positionFetch = false;
     bool deferredFloat16 = true;
     bool upscalerGuides = false;
     std::string materialInclude;
@@ -100,8 +97,10 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
     const auto identity = sceneShaderIdentity(program);
     ShaderRequest request{.module = identity.module, .entry = identity.entry,
         .capabilities = {"spvGroupNonUniformBallot"}};
-    if (!deferred) { request.capabilities.insert(request.capabilities.begin(), "spvRayQueryKHR"); }
-    if (!deferred && options.positionFetch) { request.capabilities.emplace_back("spvRayQueryPositionFetchKHR"); }
+    if (!deferred) {
+        request.capabilities.insert(request.capabilities.begin(),
+            {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"});
+    }
     if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
     if (program == SceneShaderProgram::OpenPBRSharcResolve) {
         // OpenPBR's lobe/direction keys cannot be decoded as SHaRC grid positions.
@@ -113,13 +112,10 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
     const auto flag = [](bool value) { return value ? "1" : "0"; };
     request.defines = {
         {"METALLIC_CUSTOM_MATERIALS", flag(options.customMaterials)},
-        {"METALLIC_STREAM_MATERIALS", flag(options.streamMaterials)},
-        {"METALLIC_STREAM_RAY_QUERIES", flag(!deferred && options.streamRayQueries)},
         {"METALLIC_GLOBAL_VIEW", flag(options.globalView)},
         {"METALLIC_HAS_RTXCR", flag(!deferred && options.hasRTXCR)},
         {"METALLIC_HAS_NTC", flag(options.hasNTC)},
         {"METALLIC_NTC_COOPERATIVE_VECTOR", flag(options.cooperativeVector)},
-        {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", flag(!deferred && options.positionFetch)},
         {"METALLIC_DEFERRED_LIGHT_GRID", flag(deferred)},
         {"METALLIC_REALTIME_DEFERRED", flag(deferred)},
     };
@@ -135,7 +131,6 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
 enum class SceneRayQueryProgram { RTXDI, MaterialVisualization };
 
 struct SceneRayQueryOptions {
-    bool positionFetch = false;
     bool hasNTC = false;
     bool cooperativeVector = false;
     std::string ntcInclude;
@@ -151,11 +146,9 @@ inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program, cons
         request.module = "Features/Debug/SceneMaterialVisualize";
         request.entry = "sceneMaterialVisualizeMain";
     }
-    request.capabilities = {"spvRayQueryKHR"};
-    if (options.positionFetch) { request.capabilities.emplace_back("spvRayQueryPositionFetchKHR"); }
+    request.capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"};
     if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
-    request.defines = {{"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", options.positionFetch ? "1" : "0"},
-        {"METALLIC_HAS_NTC", options.hasNTC ? "1" : "0"},
+    request.defines = {{"METALLIC_HAS_NTC", options.hasNTC ? "1" : "0"},
         {"METALLIC_NTC_COOPERATIVE_VECTOR", options.cooperativeVector ? "1" : "0"}};
     if (options.hasNTC) { request.searchPaths.push_back(options.ntcInclude); }
     return request;
@@ -182,8 +175,6 @@ inline ShaderRequest makeEditorDisplayShaderRequest(const char* entry, bool hdr,
 }
 
 struct ShadowShaderOptions {
-    bool streamed = false;
-    bool streamTlas = false;
     bool hasNTC = false;
     bool cooperativeVector = false;
     std::string ntcInclude;
@@ -192,10 +183,8 @@ struct ShadowShaderOptions {
 inline ShaderRequest makeShadowShaderRequest(const ShadowShaderOptions& options)
 {
     ShaderRequest request{.module = "Features/Lighting/ScreenSpaceShadows", .entry = "rayTracedShadowsMain",
-        .capabilities = {"spvRayQueryKHR"},
-        .defines = {{"METALLIC_STREAM_SHADOWS", options.streamed ? "1" : "0"},
-            {"METALLIC_STREAM_TLAS", options.streamTlas ? "1" : "0"},
-            {"METALLIC_HAS_NTC", options.hasNTC ? "1" : "0"},
+        .capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"},
+        .defines = {{"METALLIC_HAS_NTC", options.hasNTC ? "1" : "0"},
             {"METALLIC_NTC_COOPERATIVE_VECTOR", options.cooperativeVector ? "1" : "0"}}};
     if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
     if (options.hasNTC) { request.searchPaths.push_back(options.ntcInclude); }

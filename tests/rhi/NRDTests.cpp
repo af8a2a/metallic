@@ -7,6 +7,8 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/RenderSample.h"
@@ -314,6 +316,7 @@ protected:
              .enableBindlessDescriptorHeap = true,
              .enableRayTracingAccelerationStructure = requiresRayQueries(),
              .enableRayQuery = requiresRayQueries(),
+             .enableClusterAccelerationStructure = requiresRayQueries(),
              .validationSink = {.callback =
                                     [](void* context, const render::ValidationMessage& message) noexcept {
                                         // GENERAL loader registration errors are logged separately from API validation.
@@ -910,7 +913,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     render::ScreenSpaceShadows shadows;
     render::ScreenSpaceShadowSettings settings;
     settings.maxDistance = 100000;
-    if (!device->capabilities().rayQuery || !device->capabilities().rayTracingAccelerationStructure) {
+    if (!device->capabilities().rayQuery || !device->capabilities().rayTracingAccelerationStructure || !device->capabilities().clusterAccelerationStructure) {
         GTEST_SKIP() << "Ray queries unavailable";
     }
     // The blocker is behind the camera (z=-1), so it never appears in the depth
@@ -930,6 +933,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     }
     std::array<scene::SceneDocument, 3> scenes;
     std::array<render::ScenePathTraceResources, 3> geometry;
+    std::array<render::MeshletStreamRuntime, 3> streams;
     render::SceneResourceManager sceneResources;
     for (size_t i = 0; i < geometry.size(); ++i) {
         auto document = render::RenderGraphProperties::parse(R"json({
@@ -957,12 +961,39 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         ASSERT_TRUE(scenes[i].load(path)) << scenes[i].lastLoadResult().error;
         std::string log;
         std::shared_ptr<render::SceneResourceSnapshot> snapshot;
-        ASSERT_TRUE(sceneResources.acquire(*device, *queue, {{"path", path.generic_string()}}, &scenes[i], render::SceneResourceFeatureBits::Geometry | render::SceneResourceFeatureBits::Materials |
-            render::SceneResourceFeatureBits::MaterialTextures | render::SceneResourceFeatureBits::StandardAccelerationStructure, log).transform([&](auto value) { snapshot = std::move(value); })) << log;
+        ASSERT_TRUE(sceneResources.acquire(*device, *queue, {{"path", path.generic_string()}}, &scenes[i], render::SceneResourceFeatureBits::Materials |
+            render::SceneResourceFeatureBits::MaterialTextures | render::SceneResourceFeatureBits::AccelerationStructure, log).transform([&](auto value) { snapshot = std::move(value); })) << log;
         ASSERT_NE(snapshot, nullptr);
         ASSERT_NE(snapshot->pathTraceResources, nullptr);
         geometry[i] = *snapshot->pathTraceResources;
         ASSERT_TRUE(geometry[i].valid());
+        const auto assetPath = fixtureDirectory / ("Scene" + std::to_string(i) + ".meshstream.bin");
+        ASSERT_TRUE(scene::buildMeshletStreamAssetOffline({.sourcePath = path, .outputPath = assetPath}, log)) << log;
+        ASSERT_TRUE(streams[i].initialize(*device, {.sourcePath = path, .streamAssetPath = assetPath,
+            .maxResidentBytes = 4ull << 20, .maxResidentPages = 64, .maxLockedFallbackPages = 64,
+            .maxGpuPageRequests = 128, .maxGpuPageUnloadRequests = 128, .maxActiveGroups = 128,
+            .maxRasterCandidates = 128, .maxTraversalWorkers = 32, .maxTraversalWorkItems = 256,
+            .pageLoadConcurrency = 0, .queuedFrameCount = 1, .enableClusterRtx = true,
+            .enableClas = true, .maxClasBytes = 16ull << 20, .maxBlasBytes = 16ull << 20,
+            .maxFallbackBlasBytes = 16ull << 20}, log)) << log;
+        ASSERT_TRUE(streams[i].syncRuntimeScene(scenes[i], log)) << log;
+        for (uint32_t attempt = 0; attempt < 32 && !streams[i].sceneReady(); ++attempt) {
+            require(recording.begin(++frameIndex));
+            require(commands->reset());
+            require(command->begin(recording.submissionContext()));
+            require(streamer->beginFrame(recording));
+            require(streams[i].cmdLoadInitialResources(*command, *streamer));
+            require(command->end());
+            render::CommandBuffer* list[] = {command.get()};
+            render::QueueSubmissionTracker tracker;
+            require(tracker.initialize(*device, *queue));
+            require(tracker.submit({.commandBuffers = {list, 1}}, recording));
+            require(queue->waitIdle());
+            streamer->endFrame();
+            streams[i].prepareMaintenance();
+        }
+        ASSERT_TRUE(streams[i].sceneReady()) << "Shadow fixture never reached complete CLAS fallback coverage";
+
     }
     bool alphaCutout = false;
     render::RenderView camera;
@@ -975,7 +1006,9 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     pose.farPlane = 10;
     ASSERT_TRUE(camera.setCamera(pose));
     environment::WorldEnvironment world;
-    world.sun = {.direction = float3(-0.70710678f, 0, 0.70710678f), .illuminance = 10.0f,
+    // Keep the Sun above the horizon so automatic shadow-source selection is active.
+    // The blocker spans the full vertical test domain; its X/Z projection is unchanged.
+    world.sun = {.direction = float3(-0.70710678f, -0.1f, 0.70710678f), .illuminance = 10.0f,
         .angularRadius = 0.5f * 0.01745329252f, .enabled = true};
     auto lights = render::buildScreenSpaceShadowLightRecords(nullptr, {}, world.snapshot());
     std::unique_ptr<render::Texture> depth;
@@ -987,6 +1020,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
     require(device->createBuffer({.size = uint64_t(w) * h * 4, .usage = render::BufferUsageBits::TransferSource,
         .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { upload = std::move(rhiValue); }));
     bool depthReady = false;
+    bool checkedStreamIdentity = false;
     uint32_t shadowFrame = 0;
     render::ViewConstants previous{};
     auto renderShadow = [&](bool blocker, bool discard = false, bool falseDepthBlocker = false) {
@@ -1002,8 +1036,24 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         }
         upload->flush({0, uint64_t(w) * h * 4});
         upload->unmap();
-        require(recording.begin(frameIndex));
+        require(recording.begin(++frameIndex));
+        require(commands->reset());
         require(command->begin(recording.submissionContext()));
+        require(streamer->beginFrame(recording));
+        auto& runtime = streams[blocker ? (alphaCutout ? 2 : 1) : 0];
+        render::MeshletStreamFrameDesc frame{.width = w, .height = h, .enableGpuLodSelection = false,
+            .camera = {.eye = {pose.eye[0], pose.eye[1], pose.eye[2]},
+                .center = {pose.center[0], pose.center[1], pose.center[2]},
+                .znear = pose.nearPlane, .zfar = pose.farPlane,
+                .orthographic = pose.orthographic, .orthoHeight = pose.orthoHeight}};
+        require(runtime.cmdBeginFrame(*command, *streamer, frame));
+        require(runtime.cmdPreTraversal(*command, frame));
+        require(runtime.cmdPrepareDeferred(*command));
+        const auto streamGeometry = runtime.deferredGpuResources();
+        if (!runtime.sceneReady() || streamGeometry.accelerationStructure == nullptr) {
+            throw std::runtime_error("Shadow fixture has no ready CLAS TLAS");
+        }
+
         command->hostWriteBarrier();
         render::TextureBarrierDesc barrier{
             .texture = depth.get(),
@@ -1019,7 +1069,29 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         render::ScreenSpaceShadowResult output;
         std::string log;
-        auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights, blocker ? (alphaCutout ? 3 : 1) : 2, 0, settings, log, &geometry[blocker ? (alphaCutout ? 2 : 1) : 0]).transform([&](auto value) { output = std::move(value); });
+        if (!checkedStreamIdentity && blocker) {
+            auto* materials = &geometry[blocker ? (alphaCutout ? 2 : 1) : 0];
+            auto missing = streamGeometry;
+            missing.accelerationStructure = nullptr;
+            auto rejected = shadows.record(*device, *command, *streamer, *depthView, view, lights,
+                0, 0, settings, log, materials, &missing,
+                nullptr, streamGeometry.accelerationStructure);
+            if (rejected || rejected.error() != render::Error::InvalidArgument || log.find("ready CLAS") == std::string::npos) {
+                throw std::runtime_error("Missing stream CLAS publication was not rejected");
+            }
+            const auto other = streams[blocker ? 0 : 1].deferredGpuResources();
+            if (other.accelerationStructure == nullptr || other.accelerationStructure == streamGeometry.accelerationStructure) {
+                throw std::runtime_error("Shadow identity fixture needs independent CLAS sessions");
+            }
+            rejected = shadows.record(*device, *command, *streamer, *depthView, view, lights,
+                0, 0, settings, log, materials, &streamGeometry,
+                nullptr, other.accelerationStructure);
+            if (rejected || rejected.error() != render::Error::InvalidArgument || log.find("same streaming session") == std::string::npos) {
+                throw std::runtime_error("Unrelated CLAS TLAS was not rejected before shadow recording");
+            }
+            checkedStreamIdentity = true;
+        }
+        auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights, blocker ? (alphaCutout ? 3 : 1) : 2, 0, settings, log, &geometry[blocker ? (alphaCutout ? 2 : 1) : 0], &streamGeometry).transform([&](auto value) { output = std::move(value); });
         if (!result) { throw std::runtime_error(log + render::resultToString(result)); }
         barrier.texture = output.texture;
         barrier.oldLayout = render::TextureLayout::ShaderRead; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
@@ -1029,6 +1101,8 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         barrier.oldLayout = render::TextureLayout::TransferSource; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
         barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+        require(runtime.cmdPostTraversal(*command));
+        require(runtime.cmdEndFrame(*command));
         require(command->end());
         if (discard) {
             recording.cancel();
@@ -1073,6 +1147,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
             EXPECT_EQ(*std::min_element(flat.begin(), flat.end()), 255) << "Removed blocker retained history";
         }
     }
+    EXPECT_TRUE(checkedStreamIdentity);
     // Moon keeps slot 1 and traces its own visibility when Sun is disabled.
     world.moon = world.sun;
     world.sun.enabled = false;

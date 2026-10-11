@@ -619,27 +619,16 @@ SceneLoadHandle SceneLoader::request(
                     return true;
                 };
 
+            bool cachedGeometry = false;
             if (!options.streamAssetPath.empty()) {
                 MeshletStreamAsset asset;
                 std::string reason;
-                if (!asset.open(options.streamAssetPath, reason) ||
-                    !asset.isRuntimeCompatibleForSource(path, reason)) {
-                    std::lock_guard lock(state->mutex);
-                    if (isTerminal(state->progress.status) || state->cancelRequested.load(std::memory_order_acquire)) {
-                        return {};
-                    }
-                    state->progress.status = SceneLoadStatus::Failed;
-                    state->progress.phase = SceneLoadPhase::Failed;
-                    state->progress.error = "Cannot load streamed scene '" + path.string() +
-                        "': cooked geometry cache '" + options.streamAssetPath.string() + "' is unavailable or incompatible: " +
-                        reason + ". Prepare it with: MetallicMeshletCook --source \"" + path.string() +
-                        "\" --output \"" + options.streamAssetPath.string() + "\"";
-                    return std::unexpected(state->progress.error);
-                }
+                cachedGeometry = asset.open(options.streamAssetPath, reason) &&
+                    asset.isRuntimeCompatibleForSource(path, reason);
             }
-            const bool loaded = options.streamAssetPath.empty()
-                ? candidate->loadDeferredMeshlets(path, callback)
-                : candidate->loadStreamMetadata(path, callback);
+            const bool loaded = cachedGeometry
+                ? candidate->loadStreamMetadata(path, callback)
+                : candidate->loadDeferredMeshlets(path, callback);
             const bool cancelled = state->cancelRequested.load(std::memory_order_acquire) || context.stopRequested();
             if (cancelled) {
                 std::lock_guard lock(state->mutex);

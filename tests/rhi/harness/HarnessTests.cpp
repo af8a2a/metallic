@@ -188,7 +188,7 @@ void differentialProtocol()
 {
     const auto root = outputDirectory();
     const auto reference = root / "reference", target = root / "target";
-    const Json spec{{"toggle", "positionFetch"}, {"capability", "positionFetch"},
+    const Json spec{{"toggle", "clusterAS"}, {"capability", "clusterAS"},
         {"absoluteTolerance", 0.0001}, {"relativeTolerance", 0.0}};
     const auto populate = [&](const std::filesystem::path& directory, bool enabled) {
         Evidence evidence(directory);
@@ -198,8 +198,8 @@ void differentialProtocol()
             {"variant", enabled ? "target" : "reference"}});
         evidence.json("capabilities.json", {{"uuid", "gpu"}, {"driverVersion", 1}, {"driverInfo", "driver"},
             {"apiVersion", 1}, {"validationMode", "core"}, {"capabilities", Json::array({
-                {{"id", "positionFetch"}, {"requested", enabled}, {"enabled", enabled}}})}});
-        evidence.json("profile.json", {{"id", enabled ? "target" : "reference"}, {"positionFetch", enabled}, {"rayQuery", true}});
+                {{"id", "clusterAS"}, {"requested", enabled}, {"enabled", enabled}}})}});
+        evidence.json("profile.json", {{"id", enabled ? "target" : "reference"}, {"clusterAS", enabled}, {"rayQuery", true}});
         evidence.json("fixture.json", {{"vertices", {0, 1, 2}}});
         evidence.json("execution.json", {{"targetUsed", enabled}});
         evidence.json("observations.json", {37, 1.25, 0.5});

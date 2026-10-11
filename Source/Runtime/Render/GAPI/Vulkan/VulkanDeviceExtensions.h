@@ -13,7 +13,6 @@ struct VulkanDeviceExtensions {
     bool preferUnifiedImageLayouts = true;
     // Internal acceleration of static ray-tracing coverage; unsupported devices
     // retain shader alpha traversal.
-    bool enableOpacityMicromap = true;
     // Implies validation and excludes NvPerf. The capture must outlive Device.
     ShaderPrintf* shaderPrintf = nullptr;
 };
@@ -37,7 +36,6 @@ inline VulkanDeviceExtensions& deviceExtensions(DeviceDesc& desc)
 // Enabled backend/integration capabilities, separate from portable RHI features.
 struct VulkanDeviceCapabilities {
     bool unifiedImageLayouts = false;
-    bool opacityMicromap = false;
     bool pushDescriptor = false;
     bool streamline = false;
     bool streamlineDlssSr = false;

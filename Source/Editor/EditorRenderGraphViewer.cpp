@@ -56,7 +56,6 @@ const char* resourceTypeName(RenderGraphResourceType type)
 const char* accelerationStructureTypeName(RayTracingAccelerationStructureType type)
 {
     switch (type) {
-    case RayTracingAccelerationStructureType::BottomLevel: return "BLAS";
     case RayTracingAccelerationStructureType::TopLevel: return "TLAS";
     }
     return "Unknown";

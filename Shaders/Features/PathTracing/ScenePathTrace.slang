@@ -64,40 +64,18 @@ typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathT
 
 #define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
-#if METALLIC_STREAM_RAY_QUERIES || (METALLIC_STREAM_SHADOWS && METALLIC_STREAM_TLAS)
+#if !METALLIC_REALTIME_DEFERRED
 #include "StreamSceneRayQuery.slang"
 #endif
 
 bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTracePush push)
 {
-#if METALLIC_STREAM_RAY_QUERIES
+#if METALLIC_REALTIME_DEFERRED
+    return false;
+#else
     Ray ray; ray.origin = origin; ray.direction = direction;
     HitInfo hit;
     return traceStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit);
-#elif METALLIC_STREAM_MATERIALS
-    return false; // Streamed opaque shading consumes the main-light shadow pass.
-#else
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.Direction = direction;
-    ray.TMin = 0.001;
-    ray.TMax = max(maxDistance, 0.001);
-
-    // This API returns only visibility, never an ordered hit distance.
-    // Keep alpha candidate evaluation before accepting the first blocker.
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            alphaMaskAcceptsHit(
-                query.CandidateInstanceIndex(),
-                query.CandidatePrimitiveIndex(),
-                query.CandidateTriangleBarycentrics(),
-                push)) {
-            query.CommitNonOpaqueTriangleHit();
-        }
-    }
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 #endif
 }
 
@@ -105,149 +83,16 @@ bool traceClosestImpl(Ray ray, ScenePathTracePush push, bool classifyShadow,
     out bool opaqueShadow, out HitInfo hit)
 {
     opaqueShadow = false;
-#if METALLIC_STREAM_RAY_QUERIES
-    return traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
-#elif METALLIC_STREAM_MATERIALS
+#if METALLIC_REALTIME_DEFERRED
     hit = (HitInfo)0;
-    return false; // Streamed opaque shading consumes the main-light shadow pass.
+    return false;
 #else
-    hit = HitInfo();
-    hit.t = 0.0;
-    hit.position = ray.origin;
-    hit.normal = float3(0.0, 1.0, 0.0);
-    hit.geometryNormal = hit.normal;
-    hit.tangent = float4(1.0, 0.0, 0.0, 1.0);
-    hit.bitangent = float3(0.0, 0.0, 1.0);
-    hit.texcoord = float2(0.0, 0.0);
-    hit.materialIndex = 0u;
-    hit.instanceIndex = 0u;
-    hit.primitiveIndex = 0u;
-    hit.triangleIndex = 0u;
-    hit.rayConeLodConstant = 0.0;
-    hit.frontFace = true;
-
-    RayDesc rayDesc;
-    rayDesc.Origin = ray.origin;
-    rayDesc.Direction = ray.direction;
-    rayDesc.TMin = max(push.clipOrtho.x, 0.0001);
-    rayDesc.TMax = max(push.clipOrtho.y, rayDesc.TMin + 0.0001);
-
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, rayDesc);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            alphaMaskAcceptsHit(
-                query.CandidateInstanceIndex(),
-                query.CandidatePrimitiveIndex(),
-                query.CandidateTriangleBarycentrics(),
-                push)) {
-            query.CommitNonOpaqueTriangleHit();
-        }
-    }
-
-    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-        return false;
-    }
-
-    uint instanceIndex = query.CommittedInstanceIndex();
-    PathTraceInstance instance = gInstances[instanceIndex];
-    if (classifyShadow) {
-        PathTraceMaterial material = loadSceneMaterial(instance.materialIndex);
-        // A zero transmission factor is opaque regardless of texture values.
-        // BLEND must retain ordered alpha attenuation. MASK has already passed
-        // exactly the same coverage test as the full surface query above.
-        // All other materials retain complete OpenPBR shadow transport.
+    bool found = traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
+    if (found && classifyShadow) {
+        PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
         opaqueShadow = material.textureParams.w <= 1.5 && material.glassParams.x == 0.0;
-        if (opaqueShadow) {
-            hit.t = query.CommittedRayT();
-            hit.materialIndex = instance.materialIndex;
-            return true;
-        }
     }
-    PathTracePrimitive primitive = gPrimitives[instance.primitiveIndex];
-    uint triangleIndex = query.CommittedPrimitiveIndex();
-    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-
-    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
-    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
-    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0];
-    SceneShadingVertex v1 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1];
-    SceneShadingVertex v2 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2];
-
-    float2 bary = query.CommittedTriangleBarycentrics();
-    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-
-#if SCENE_RAYQUERY_ENABLE_POSITION_FETCH
-    // Position fetch returns object-space positions in triangle vertex order.
-    // Attributes still use the indexed vertex buffer; keep the same TBN basis.
-    float3 positions[3] = query.CommittedGetIntersectionTriangleVertexPositions();
-    float3 p0 = positions[0];
-    float3 p1 = positions[1];
-    float3 p2 = positions[2];
-#else
-    float3 p0 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i0);
-    float3 p1 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i1);
-    float3 p2 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i2);
-#endif
-    float2 uv0 = v0.texcoord;
-    float2 uv1 = v1.texcoord;
-    float2 uv2 = v2.texcoord;
-    float3 localNormal = decodeSceneNormal(v0.normal) * weights.x +
-        decodeSceneNormal(v1.normal) * weights.y + decodeSceneNormal(v2.normal) * weights.z;
-    float3 localNormalFallback = safeNormalize(localNormal, float3(0.0, 1.0, 0.0));
-    float3 localGeometryNormal = safeTriangleNormal(
-        p1 - p0,
-        p2 - p0,
-        localNormalFallback);
-    localNormal = dot(localNormal, localNormal) > 0.000001 ? safeNormalize(localNormal, localGeometryNormal) : localGeometryNormal;
-    hit.texcoord = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
-
-    float3x4 worldToObject = query.CommittedWorldToObject3x4();
-    float3x4 objectToWorld = query.CommittedObjectToWorld3x4();
-    float handedness = determinant((float3x3)objectToWorld) < 0.0 ? -1.0 : 1.0;
-    hit.t = query.CommittedRayT();
-    hit.position = ray.origin + ray.direction * hit.t;
-    hit.geometryNormal = safeNormalize(transformObjectNormalToWorld(localGeometryNormal, worldToObject), localGeometryNormal);
-    hit.normal = safeNormalize(transformObjectNormalToWorld(localNormal, worldToObject), hit.geometryNormal);
-    hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
-
-    float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
-    float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
-    float tangentSign = 1.0;
-    if ((primitive.flags & kPrimitiveHasAuthoredTangents) != 0u) {
-        float4 localTangent = decodeSceneTangent(v0.tangent) * weights.x +
-            decodeSceneTangent(v1.tangent) * weights.y + decodeSceneTangent(v2.tangent) * weights.z;
-        float3 localTangentDirection = dot(localTangent.xyz, localTangent.xyz) > 0.000001
-            ? safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0))
-            : float3(1.0, 0.0, 0.0);
-        tangentSign = (localTangent.w >= 0.0 ? 1.0 : -1.0) * handedness;
-        float3 worldTangent = safeNormalize(mul(objectToWorld, float4(localTangentDirection, 0.0)), fallbackTangent);
-        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
-        hit.tangent = float4(worldTangent, tangentSign);
-        hit.bitangent = safeNormalize(cross(hit.normal, worldTangent) * tangentSign, cross(hit.normal, fallbackTangent));
-    } else {
-        float3 localTriangleTangent;
-        float3 localTriangleBitangent;
-        computeTriangleTangentSpace(p0, p1, p2, uv0, uv1, uv2, localNormal, localTriangleTangent, localTriangleBitangent);
-        float3 worldTangent = safeNormalize(mul(objectToWorld, float4(localTriangleTangent, 0.0)), fallbackTangent);
-        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
-        float3 worldBitangent = safeNormalize(mul(objectToWorld, float4(localTriangleBitangent, 0.0)), cross(hit.normal, worldTangent));
-        worldBitangent = safeNormalize(worldBitangent - hit.normal * dot(hit.normal, worldBitangent), cross(hit.normal, worldTangent));
-        tangentSign = dot(cross(hit.normal, worldTangent), worldBitangent) < 0.0 ? -1.0 : 1.0;
-        hit.tangent = float4(worldTangent, tangentSign);
-        hit.bitangent = worldBitangent;
-    }
-
-    hit.tangent.w *= push.bitangentFlip;
-    hit.bitangent *= push.bitangentFlip;
-
-    hit.materialIndex = instance.materialIndex;
-    hit.instanceIndex = instanceIndex;
-    hit.primitiveIndex = instance.primitiveIndex;
-    hit.triangleIndex = triangleIndex;
-    hit.rayConeLodConstant = instance.rayConeLodConstant;
-    return true;
+    return found;
 #endif
 }
 
@@ -778,12 +623,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     if (push.enableAccumulation != 0u) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
-        }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
+        color = accumulateStreamPathTrace(pixel, color, push);
     }
 
     gOutput[pixel] = float4(color, 1.0);

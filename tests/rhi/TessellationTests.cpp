@@ -248,7 +248,7 @@ public:
                                 graph.setNodeRuntimeProperty(vbuffer, "camera.projection", ortho ? "orthographic" : "perspective");
                                 graph.setNodeRuntimeProperty(vbuffer, "camera.reversedZ", legacyReversedZ);
                                 graph.setNodeRuntimeProperty(deferred, "debugView", debug);
-                                const auto renderScene = [&](const std::filesystem::path& path, bool tess, bool streaming) {
+                                const auto renderScene = [&](const std::filesystem::path& path, bool tess) {
                                     if (!document.load(path)) { log = document.lastLoadResult().error; return false; }
                                     if (mirrored) {
                                         auto transform = float4x4::Identity(); transform.SetupByScale(float3(-1, 1, 1));
@@ -258,19 +258,18 @@ public:
                                     graph.setNodeRuntimeProperty(deferred, "path", path.string());
                                     graph.setNodeRuntimeProperty(vbuffer, "tessellation", tess);
                                     graph.setNodeRuntimeProperty(vbuffer, "clusterPrebin", !mirrored);
-                                    graph.setNodeRuntimeProperty(vbuffer, "enableMeshletStreaming", streaming);
                                     graph.setNodeRuntimeProperty(vbuffer, "streamAssetPath", stream.string());
                                     graph.setNodeRuntimeProperty(vbuffer, "maxActiveGroups", 32);
                                     graph.markDirty();
-                                    for (uint32_t i = 0; i < (streaming ? 8u : 2u); ++i) {
+                                    for (uint32_t i = 0; i < 8u; ++i) {
                                         if (!preview.render(graph, 193, 157)) { log = preview.lastLog(); return false; }
                                     }
                                     return true;
                                 };
-                                if (!renderScene(referencePath, false, false)) { return RHITestResult::fail(log); }
+                                if (!renderScene(referencePath, false)) { return RHITestResult::fail(log); }
                                 const auto reference = preview.pixels();
-                                for (bool streaming : {false, true}) {
-                                    if (!renderScene(source, true, streaming)) { return RHITestResult::fail(log); }
+                                {
+                                    if (!renderScene(source, true)) { return RHITestResult::fail(log); }
                                     size_t covered = 0, outliers = 0; double error = 0;
                                     for (size_t i = 0; i < reference.size(); ++i) {
                                         covered += (reference[i] & 0xffffffu) != 0;
@@ -281,7 +280,7 @@ public:
                                         }
                                         outliers += maximum > 4;
                                     }
-                                    const auto name = std::to_string(splitDepth) + "_" + std::to_string(int(edgePixels)) + std::string(streaming ? "Stream" : "Resident") + (mirrored ? "MirroredUnbinned" : "") + (ortho ? "Ortho" : "Perspective") + (legacyReversedZ ? "LegacyReverseTrue" : "LegacyReverseFalse") + debug;
+                                    const auto name = std::to_string(splitDepth) + "_" + std::to_string(int(edgePixels)) + std::string("Stream") + (mirrored ? "MirroredUnbinned" : "") + (ortho ? "Ortho" : "Perspective") + (legacyReversedZ ? "LegacyReverseTrue" : "LegacyReverseFalse") + debug;
                                     saveRgba8Png(context.outputDirectory / (name + ".png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
                                     if (covered < 3000 || outliers > reference.size() / 100 || error / (reference.size() * 3) > 1.0) {
                                         saveRgba8Png(context.outputDirectory / (name + "Reference.png"), reinterpret_cast<const uint8_t*>(reference.data()), 193, 157, log);
@@ -321,9 +320,8 @@ public:
             // Keep the same scene, graph, stream cut and pipelines while editing
             // each quality control. Image changes prove the push reached both
             // task splitting and mesh dicing; generation checks forbid rebuilds.
-            for (bool streaming : {false, true}) {
+            {
                 for (bool prebin : {false, true}) {
-                    graph.setNodeRuntimeProperty(vbuffer, "enableMeshletStreaming", streaming);
                     graph.setNodeRuntimeProperty(vbuffer, "clusterPrebin", prebin);
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationEdgePixels", 1.0f);
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 8);
@@ -349,7 +347,7 @@ public:
                         {"tessellationEdgePixels", 1.0f, true},
                     };
                     for (const auto& edit : edits) {
-                        const std::string label = std::string(streaming ? "Stream " : "Resident ") +
+                        const std::string label = std::string("Stream ") +
                             (prebin ? "binned " : "unbinned ") + edit.key + "=" + edit.value.dump();
                         if (!graph.setNodeRuntimeProperty(vbuffer, edit.key, edit.value) || graph.dirty()) {
                             return RHITestResult::fail(label + " requested a graph rebuild");
@@ -384,7 +382,7 @@ public:
                         paletteSize(sourceColors) > 3 || paletteSize(dicedColors) < 64) {
                         return RHITestResult::fail("Generated triangle IDs were not distinguished from the two source triangles");
                     }
-                    const auto capture = std::string("TessellatedTriangles") + (streaming ? "Stream" : "Resident") + (prebin ? "Binned" : "Unbinned") + ".png";
+                    const auto capture = std::string("TessellatedTriangles") + "Stream" + (prebin ? "Binned" : "Unbinned") + ".png";
                     saveRgba8Png(context.outputDirectory / capture, reinterpret_cast<const uint8_t*>(dicedColors.data()), 193, 157, log);
                     if (!preview.render(graph, 193, 157, "VBuffer.color") || preview.pixels() != dicedColors) {
                         return RHITestResult::fail("Generated triangle colors changed on a stationary frame");
@@ -422,7 +420,7 @@ public:
                 }
             }
         }
-        return RHITestResult::pass(std::to_string(cases) + " resident/stream displaced renders match baked geometry, UV and normals across projections and ignored legacy depth settings");
+        return RHITestResult::pass(std::to_string(cases) + " Streamed displaced renders match baked geometry, UV and normals across projections and ignored legacy depth settings");
     }
 };
 

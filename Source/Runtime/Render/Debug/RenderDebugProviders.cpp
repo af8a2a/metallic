@@ -60,7 +60,7 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"VisibleClusterRecord", sizeof(VisibleClusterRecord), {
         DEBUG_FIELD(VisibleClusterRecord, clusterIndex), DEBUG_FIELD(VisibleClusterRecord, instanceIndex),
         DEBUG_FIELD(VisibleClusterRecord, dataIndex), DEBUG_FIELD(VisibleClusterRecord, flags),
-        {"source", "u32", offsetof(VisibleClusterRecord, flags), 1, 28, 2, 1, {{"0", "Resident"}, {"1", "StreamPage"}}},
+        {"source", "u32", offsetof(VisibleClusterRecord, flags), 1, 28, 2, 1, {{"1", "StreamPage"}}},
         {"drawBucket", "u32", offsetof(VisibleClusterRecord, flags), 1, 0, 4}}});
     static_assert(sizeof(StreamRequestBufferHeader) == 64);
     add({"StreamRequestBufferHeader", sizeof(StreamRequestBufferHeader), {
@@ -132,9 +132,6 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
         };
         global("instances", globals.instances, "GPUSceneGPUInstanceRecord");
         global("geometries", globals.geometries, "GPUSceneGPUGeometryRecord");
-        global("meshlets", globals.meshlets, "GPUSceneGPUMeshletRecord");
-        global("lodGroups", globals.lodGroups, "MeshletLODGroupRecord");
-        global("meshletDraws", globals.meshletDraws, "VisibleClusterRecord");
         global("drawInstanceIds", globals.drawInstanceIds, "u32");
         GPUSceneViewGPUResourcesView resources;
         if (phase < kGPUSceneCullPhaseCount && gpuScene->viewGpuResources(view, frameSlot, resources) && resources.frameSlotInitialized) {

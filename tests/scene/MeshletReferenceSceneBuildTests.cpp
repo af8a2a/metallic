@@ -140,4 +140,38 @@ TEST(MeshletReferenceSceneBuild, MirroredGeneratedTangentsMatchSourceAndEditedGe
     }
     EXPECT_TRUE(foundEditedPosition);
 }
+TEST(MeshletReferenceSceneBuild, MetadataInstanceEditsPreserveCookedGeometryMapping)
+{
+    const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) /
+        "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf";
+    Scene geometry;
+    ASSERT_TRUE(geometry.load(source)) << geometry.lastLoadResult().error;
+    Scene metadata;
+    ASSERT_TRUE(metadata.loadStreamMetadata(source)) << metadata.lastLoadResult().error;
+    ASSERT_FALSE(metadata.renderNodes().empty());
+    ASSERT_TRUE(metadata.renderPrimitives().front().positions.empty());
+    // Instance metadata remains authoritative when the cook restores geometry
+    // from the source document after an editor topology edit.
+    auto& nodes = const_cast<std::vector<RenderNode>&>(metadata.renderNodes());
+    auto duplicate = nodes.front();
+    duplicate.visible = false;
+    duplicate.worldMatrix.a[12] += 2.0f;
+    nodes.push_back(duplicate);
+    const auto output = std::filesystem::temp_directory_path() /
+        ("MetallicInstanceCook-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".streamasset");
+    std::string reason;
+    ASSERT_TRUE(buildMeshletStreamAsset({.scene = &geometry, .instanceScene = &metadata,
+        .sourcePath = source, .outputPath = output}, reason)) << reason;
+    MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    ASSERT_EQ(asset.instanceCount(), nodes.size());
+    const auto& instance = asset.instances().back();
+    EXPECT_EQ(instance.renderNodeIndex, nodes.size() - 1);
+    EXPECT_EQ(instance.visible, 0u);
+    EXPECT_EQ(asset.primitives()[instance.primitiveIndex].renderPrimitiveIndex,
+        uint32_t(duplicate.renderPrimitiveIndex));
+    EXPECT_FLOAT_EQ(instance.worldMatrix[12], duplicate.worldMatrix.a[12]);
+    EXPECT_EQ(asset.primitiveCount(), geometry.renderPrimitives().size());
+}
+
 } // namespace

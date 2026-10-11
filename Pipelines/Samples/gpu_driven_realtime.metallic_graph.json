@@ -15,8 +15,6 @@
                 "streamAssetPath": "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
                 "sceneBinding": "asset",
                 "viewBinding": "global",
-                "streamAssetOnly": true,
-                "enableMeshletStreaming": true,
                 "autoBuildStreamAsset": false,
                 "enableClusterRtx": true,
                 "enableClas": true,

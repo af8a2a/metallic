@@ -152,7 +152,7 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；
-是否使用硬件 position fetch 由调用程序决定。着色法线、几何法线和 TBN 的求值顺序保持原有语义。
+光追顶点属性统一从 CLAS 对应的流送页解码，不再提供 position-fetch/fallback 分支。着色法线、几何法线和 TBN 的求值顺序保持原有语义。
 
 ## SDK 兼容边界
 

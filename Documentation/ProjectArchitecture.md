@@ -155,7 +155,7 @@ flowchart LR
 - SDL 窗口、RHI Device/Queue/Swapchain/CommandBuffer 和同步对象；
 - ImGui/ImNodes 上下文和 Vulkan 后端资源；
 - `RenderGraph`、`RenderGraphExecutor`、`HistoryResourceManager`；
-- 编辑器侧 `Scene` 和 `SceneAccelerationStructureBuilder`；
+- 编辑器侧 `Scene`，通过 RenderGraph 的流送准备统一加载场景资源；
 - Profiler、NVML Monitor、视口描述符和 UI 状态。
 
 初始化顺序是：全局 TaskSystem → SDL/窗口 → Vulkan RHI → 历史资源 → Swapchain → ImGui/ImNodes → NVML → RenderGraph/样例。关闭顺序反向执行，并在销毁 GPU 资源前等待 Device idle。
@@ -424,10 +424,10 @@ Editor 仍在多视口录制提交之后封闭 frame completion，确保这些�
 
 `dispatchIndirect()`（含 `ComputeKernel`）、`drawMeshTasksIndirect()` 和 `BufferTextureRegion::buffer` 只接受 `BufferSlice`，不再另外传 buffer 指针与 offset。调用方检查 `Buffer::slice()` / `BufferSlice::subslice()` 的结果；拷贝 footprint 以 slice 长度为上限，间接命令校验 slice 的设备、usage、绝对地址对齐及最小长度，录制后保活其 allocation。`writeStorageBuffer()` 也只接受 slice，但 DR 描述符仍写入完整 allocation：shader span 的 offset 相对于 allocation，不能再次加上 slice 偏移。
 
-AS 构建（BLAS/TLAS、OMM、CLAS、PTLAS）、CLAS 移动及 `BufferDecompressionDesc` 的 CPU buffer 字段也统一使用 `BufferSlice`；不再另传 offset/size。构建输入、间接表和输出容量以 slice 为界，scratch 对齐消耗的 padding 也必须留在 slice 内。CLAS 的 CPU 表上传写到 slice 的偏移，命令录制保留所有直接传入的 slice allocation。解压的 source/destination 长度分别表示压缩字节数和精确解码字节数；预检查不录制命令也不保活资源。GPU 可写的 AS 原生记录仍包含设备地址，其引用的间接资源仍由场景或 streaming 层负责声明、同步和保活，不能由表本身的 slice 推导。
+AS 构建（CLAS、cluster BLAS、TLAS、PTLAS）、CLAS 移动及 `BufferDecompressionDesc` 的 CPU buffer 字段也统一使用 `BufferSlice`；不再另传 offset/size。构建输入、间接表和输出容量以 slice 为界，scratch 对齐消耗的 padding 也必须留在 slice 内。CLAS 的 CPU 表上传写到 slice 的偏移，命令录制保留所有直接传入的 slice allocation。解压的 source/destination 长度分别表示压缩字节数和精确解码字节数；预检查不录制命令也不保活资源。GPU 可写的 AS 原生记录仍包含设备地址，其引用的间接资源仍由场景或 streaming 层负责声明、同步和保活，不能由表本身的 slice 推导。
 
 
-同步优先由 RenderGraph 的资源访问声明驱动：跨 pass 使用 reflection，pass 内多阶段使用 `executeStages()`；私有 helper 使用同一个 `GraphAccessPlan` 声明每个阶段的读、写、间接参数或传输访问。stage/access、RAW/WAR/WAW、layout 和跨队列前置依赖由规划器推导。材质分桶、Resident LOD、GPUScene HZB 的内部阶段也走该规划器，不再各自维护 barrier 数组。图外上传、调试读回及未纳入图的历史资源仍需在边界明确同步，不能依靠 CPU 等待代替 GPU 依赖。
+同步优先由 RenderGraph 的资源访问声明驱动：跨 pass 使用 reflection，pass 内多阶段使用 `executeStages()`；私有 helper 使用同一个 `GraphAccessPlan` 声明每个阶段的读、写、间接参数或传输访问。stage/access、RAW/WAR/WAW、layout 和跨队列前置依赖由规划器推导。材质分桶、流送遍历、GPUScene HZB 的内部阶段也走该规划器，不再各自维护 barrier 数组。图外上传、调试读回及未纳入图的历史资源仍需在边界明确同步，不能依靠 CPU 等待代替 GPU 依赖。
 
 RHI 的 `MemoryBarrierDesc`、`BufferBarrierDesc` 和 `TextureBarrierDesc` 只接受一套 `before/after: SyncScope`；纹理另以 `oldLayout/newLayout: TextureLayout` 表达布局。空 scope 始终为空，有 stage 而 access 为空表示仅约束执行顺序，不再按 `ResourceState` 推导或通过 `acquireFromQueue` 覆盖。已被 semaphore wait 覆盖的远端生产者使用空源 scope；资源仍须满足队列共享约束，此接口不做 queue-family ownership transfer。RHI 保留显式依赖，只合并同一 stage 对的 memory barrier；省略冗余依赖由图规划器负责。与 [Vulkan synchronization2 的同步范围语义](https://docs.vulkan.org/spec/latest/chapters/synchronization.html) 保持一致。
 
@@ -444,11 +444,11 @@ RHI 上层同样用 `Result<T>` 返回一次操作产生的值：资源注册返
 
 `ParameterWriter` 的资源字段构造仍保留首个错误，以便直接组装 Shader 参数结构；必须检查最终的 `encode()` 或 `status()`。`encode()` 只有在所有资源注册和上传成功时才返回不可变参数包。着色器编译通过独立诊断字符串保留失败详情，不能只在成功结果中保存错误日志。
 
-借用集合统一使用 `std::span`：提交数组、barrier、渲染附件、BLAS/OMM/CLAS 构建输入、上传分块、Compute bindings 和 Slang 编译选项不再分开传指针与数量。查询读回使用可写 span 表达调用方提供的存储；GPU 缓冲区内部的实例数量和 GPU ABI 计数字段保留。span 不拥有内存，调用方需让数据存活到同步调用返回；准备后的执行包继续自行保留资源。
+借用集合统一使用 `std::span`：提交数组、barrier、渲染附件、CLAS/cluster BLAS/TLAS 构建输入、上传分块、Compute bindings 和 Slang 编译选项不再分开传指针与数量。查询读回使用可写 span 表达调用方提供的存储；GPU 缓冲区内部的实例数量和 GPU ABI 计数字段保留。span 不拥有内存，调用方需让数据存活到同步调用返回；准备后的执行包继续自行保留资源。
 
 buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，偏移和大小以字节计，`UINT64_MAX` 表示剩余范围。`BufferSlice` 在校验范围后保留底层分配；末端空切片可表示，但不能用于需要数据的 GPU 操作或视图。纹理视图和 barrier 共用 `TextureSubresourceRange`，默认一个 mip 和一个 layer，数量必须非零且范围不能越界。
 
-`ShaderModuleDesc`、`ComputeKernelDesc` 与 `ResourceComputeKernelDesc` 统一接收 `std::span<const uint32_t> spirv`，大小由 word span 确定。graphics/compute pipeline 与 shader object 使用同一个 `ShaderStageDesc { module, entryPoint }`；省略 entry point 时为 `main`，显式空指针或空字符串无效。模块复制输入并保留设备实际使用的 SPIR-V，OMM 转换只在模块创建时执行，shader object 复用同一份结果。阶段模块必须属于创建设备，创建完成后可释放输入 words 和模块包装对象。
+`ShaderModuleDesc`、`ComputeKernelDesc` 与 `ResourceComputeKernelDesc` 统一接收 `std::span<const uint32_t> spirv`，大小由 word span 确定。graphics/compute pipeline 与 shader object 使用同一个 `ShaderStageDesc { module, entryPoint }`；省略 entry point 时为 `main`，显式空指针或空字符串无效。模块复制输入并保留设备实际使用的 SPIR-V，shader object 复用同一份结果。阶段模块必须属于创建设备，创建完成后可释放输入 words 和模块包装对象。
 
 ### 10.2 Vulkan 实现
 
@@ -498,11 +498,11 @@ Streamline/DLSS-SR/DLSS-RR 和 Aftermath 的实际启用状态通过
 
 清单中的特性按依赖顺序求值；请求依赖先展开，再判断扩展、探测位和前置能力。
 `preferred` 只影响候选匹配，不把软请求升级成创建失败条件；设备选择的评分回退保持原规则。
-OMM 的 KHR/EXT 互斥、验证层兼容性限制、Streamline 组合要求和 Aftermath 环境策略继续保留。
+显式 ray-query 请求同时要求 CLAS；缺少 CLAS 时设备创建返回 `Unsupported`。纯光栅设备无需 CLAS。Streamline 组合要求和 Aftermath 环境策略继续保留。
 驱动调用、descriptor heap 属性查询、SDK 初始化和日志留在 `VulkanRHI.cpp`；协商模型可独立做 CPU 测试。
 持有内部 pNext 指针的 probe/enable storage 禁止复制和移动；运行时直接读取已发布能力，
 不再为 shader object、ray query、AS、cluster/partitioned AS、push descriptor 维护第二份 enabled 标志。
-`MetallicVulkanDeviceFeaturesTests` 覆盖缺失扩展/探测位/依赖、软回退、共享链、OMM 路由和能力发布，
+`MetallicVulkanDeviceFeaturesTests` 覆盖缺失扩展/探测位/依赖、软回退、共享链、ray-query 的 CLAS 硬要求和能力发布，
 无需创建 Vulkan 设备；实际设备能力仍由 RHI/GPU 回归验证。
 
 2026-10-03 协商重构验证：CPU 测试 12/12；与重构前实现比较 10,000 组确定性模拟输入，
@@ -537,24 +537,17 @@ ShaderPrintf GPU 探针确认扩展配置成功、messenger 已连接、GPU 完�
 
 ### 10.3 光追能力
 
-场景光追层包含：
+场景光追只使用流送路径：`MeshletStreamRuntime` 选择并加载 geometry pages，`MeshletStreamCLASPool` 为已加载页分配 CLAS，再由动态 cluster BLAS 和 TLAS 完成遍历。场景预加载与材质资源准备通过 StreamerSubsystem 统一管理；不再有独立的全量三角形 BLAS builder、非流送 cluster builder 或 resident/streaming 模式开关。页的 loaded/retiring 状态、预算及退役延迟仍是流送内部必要的生命周期信息。
 
-- `SceneAccelerationStructureBuilder`：共享的三角形 BLAS、OMM、压缩和异步提交，顶层选择 Standard TLAS 或 Partitioned TLAS；
-- `SceneClusterAccelerationStructureBuilder`：cluster acceleration structure、cluster BLAS + TLAS；
-- `ComputeKernel`：唯一的应用 compute executable，持有代码与参数 ABI；typed 参数由 `ParameterWriter` 编码，动态资源清单暂由不持有 executable 的 `ComputeResourceEncoder` 适配；
-- `MeshletStreamCLASPool`：面向驻留 page 的 CLAS 分配和更新。
+RHI 只保留 `buildClusterAccelerationStructureTriangles()`、`buildClusterAccelerationStructureBottomLevels()`、普通 TLAS 和 PTLAS。传统 triangle geometry 描述、bottom-level build plan、coverage/OMM 烘焙与构建接口，以及 position-fetch 选项已删除。`buildRayTracingAccelerationStructure()` 与其尺寸查询仅接受 TopLevel；CLAS 组成的 BLAS 存储在显式 buffer slice 中。`RayTracingInstanceDesc::clusterBottomLevel` 和分区实例的同名字段引用该存储切片，编码时检查设备、storage usage 和地址对齐；调用方继续负责间接引用资源的同步及保活。
 
-这些能力均必须先检查扩展/设备能力。普通场景路径与 StreamAsset 路径分别维护加速结构，避免强迫所有场景进入同一种驻留模型。
+普通 TLAS 与 PTLAS 共用 `RayTracingAccelerationStructure`，`desc().type` 均为 `TopLevel`，由 `desc().topLevelBackend` 的 `Standard` / `Partitioned` 区分。两者共用资源保活、`ResourceRegistry::accelerationStructure()`、compute binding 和 bindless heap；shader 使用完整的 64-bit AS device address。
 
-普通 TLAS 与 PTLAS 共用 `RayTracingAccelerationStructure`，`desc().type` 均为 `TopLevel`，由 `desc().topLevelBackend` 的 `Standard` / `Partitioned` 区分后端。两者共用资源保活、`ResourceRegistry::accelerationStructure()`、`ComputeDispatchBinding::accelerationStructure` 和 `BindlessHeap::writeAccelerationStructure()`；shader 仍接收完整的 64-bit AS device address，mapped/native 模式均走 `Core.resolveDescriptor`。
+创建分别使用 `RayTracingAccelerationStructureDesc` 与 `PartitionedAccelerationStructureDesc` 强类型重载。PTLAS 仍保留独立的分区容量、operation 存储与构建接口；普通 TLAS 的更新、压缩和压缩尺寸查询拒绝 PTLAS。生产流送场景当前生成 Standard TLAS，PTLAS 作为底层能力由 CLAS fixture 测试覆盖，并非另一个场景加载模式。
 
-创建统一使用 `Device::createRayTracingAccelerationStructure()` 的强类型重载：普通资源传入 `RayTracingAccelerationStructureDesc`，PTLAS 传入 `PartitionedAccelerationStructureDesc`，结果均为 `Result<std::unique_ptr<RayTracingAccelerationStructure>>`。PTLAS 重载根据分区构建输入及查询到的尺寸创建 `TopLevel / Partitioned` 资源；仅在普通描述中设置 `topLevelBackend = Partitioned` 仍返回 `InvalidArgument`，避免丢失分区容量和 operation 存储要求。
+路径追踪、材质诊断和 shadow candidate 通过稳定 cluster ID 定位流送页中的 authored geometry。MASK/BLEND 的 alpha 接受判断由共同 shader coverage 求值完成；不再依赖 OMM。法线与 TBN 保留 authored/world-space 语义，只有最终着色法线可按 BSDF 需要 face-forward。`MaterialCoverageRenderingTest` 保留 MASK/BLEND、材质编辑和 shadow 距离回归，`SceneCLASAttributesTests` 覆盖非均匀变换、UV、authored tangent 和背面 TBN。
 
-构建参数保持后端差异：`buildRayTracingAccelerationStructure()` 接收 `RayTracingAccelerationStructureBuildDesc`，`buildPartitionedAccelerationStructure()` 接收 `PartitionedAccelerationStructureBuildDesc`；尺寸查询输入、实例描述和编码同样各自保留类型。PTLAS 的分区配置、operation buffer 和 operation count buffer 由统一实现内部的可选状态持有。KHR 构建、更新、压缩和压缩尺寸查询拒绝 PTLAS；PTLAS 构建拒绝普通 TLAS。场景层已删除独立的 PTLAS builder：`SceneAccelerationStructureBuildOptions::topLevelBackend` 控制内部顶层策略，`build()` / `beginBuild()` 默认使用 Standard；显式请求不支持的 Partitioned 返回 `Unsupported`。两种策略共享 OMM→BLAS 构建、压缩尺寸查询、压缩与顶层提交、异步轮询和清理流程。
-
-`ScenePathTraceResources` 通过属性 `"topLevelBackend": "standard" | "partitioned"` 选择策略。资源缓存键包含该选择，材质或可见性变化引起的重建保留它。变换更新复用 BLAS、OMM 和顶层存储：Standard 执行 refit，Partitioned 重新编码并构建顶层。PTLAS 初次按 XZ 网格分区，变换更新保持成员归属与实例索引，因此不会因跨网格移动超过已查询的分区容量；目前不提供增量 PTLAS operations 或自动重分区。[PTLAS 构建语义](https://docs.vulkan.org/features/latest/features/proposals/VK_NV_partitioned_acceleration_structure.html)。
-
-OMM 的 CPU 分类覆盖 `AlphaCoverage.hlsli` 所用双线性 repeat 采样的四个 texel，包括半 texel 偏移和 wrap 接缝；只有全部采样点的状态一致才生成确定状态，否则保留 shader alpha 判断。`opacity_micromap_ray_query` 与 `_partitioned` 用独立 CPU 双线性参考逐像素验证 fallback/OMM、cutoff/UV/alpha/BLEND 编辑及跨分区变换，并验证 BLAS 压缩和 OMM 存储保活。
+显式 `enableRayQuery` 同时请求 CLAS，设备缺少所需扩展或 feature 时返回 `Unsupported`；纯光栅设备不受该要求影响。CLAS 和 PTLAS 的缺失会导致对应 GPU 测试 skip，不能视为运行验证。
 
 ## 11. Shader、Pipeline 与 Sample 的关系
 

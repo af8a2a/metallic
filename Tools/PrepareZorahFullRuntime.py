@@ -40,7 +40,7 @@ def main():
         if node['name'] in ('VBuffer', 'Deferred', 'Shadows'):
             props.update(path=source.relative_to(ROOT).as_posix(),
                          materialTextureMaxDimension=128, materialTextureMaskMaxDimension=512, materialTextureBudgetMiB=512,
-                         materialTextureStreaming=True, materialTextureRefineDimension=512, materialTextureColdFrames=180)
+                         materialTextureRefineDimension=512, materialTextureColdFrames=180)
         if node['name'] == 'VBuffer':
             props.update(streamAssetPath=Path(manifest['asset']).relative_to(ROOT).as_posix(),
                          maxResidentBytes=budget, maxClasBytes=args.clas_mib * 1024**2,

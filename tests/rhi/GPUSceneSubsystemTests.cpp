@@ -679,10 +679,10 @@ public:
             gpuScene.instanceForRenderNode(0);
         const render::GPUSceneInstanceId instanceB =
             gpuScene.instanceForRenderNode(1);
-        const scene::RenderPrimitive* geometrySourceA =
-            gpuScene.geometrySourcePrimitive(geometryA);
-        const scene::RenderPrimitive* geometrySourceB =
-            gpuScene.geometrySourcePrimitive(geometryB);
+        const render::GPUSceneGeometryRecord* geometrySourceA =
+            gpuScene.geometry(geometryA);
+        const render::GPUSceneGeometryRecord* geometrySourceB =
+            gpuScene.geometry(geometryB);
         if (gpuScene.stats().geometryCount != 2 ||
             gpuScene.stats().materialCount != 2 ||
             gpuScene.stats().instanceCount != 2 ||
@@ -693,7 +693,7 @@ public:
             geometrySourceA->meshIndex != 0 || geometrySourceB->meshIndex != 0 ||
             geometrySourceA->primitiveIndex != 0 ||
             geometrySourceB->primitiveIndex != 0 ||
-            geometrySourceA->positions[0].x == geometrySourceB->positions[0].x ||
+            geometrySourceA->payloadFingerprint == geometrySourceB->payloadFingerprint ||
             gpuScene.instancesForObject(objectA).size() != 1 ||
             gpuScene.instancesForObject(objectB).size() != 1 ||
             gpuScene.instance(instanceA) == nullptr ||
@@ -1049,16 +1049,6 @@ public:
         if (!result) {
             return RHITestResult::fail("GPUScene test DrawSet rebuild failed: " + log);
         }
-        const render::GPUSceneGeometryId canonicalGeometry =
-            subsystem->scene().geometryForRenderPrimitive(0);
-        const scene::RenderPrimitive* canonicalSource =
-            subsystem->scene().geometrySourcePrimitive(canonicalGeometry);
-        if (!canonicalGeometry || canonicalSource == nullptr ||
-            canonicalSource->meshletClusters.size() != 1 ||
-            canonicalSource->meshletLodLevels.size() != 2) {
-            return RHITestResult::fail(
-                "GPUScene did not retain generational canonical geometry backing");
-        }
         if (subsystem->instances().size() != 3 ||
             subsystem->instanceForRenderNode(3) ||
             subsystem->stats().skippedRenderNodeCount != 1) {
@@ -1081,25 +1071,11 @@ public:
         render::Buffer* firstDrawKeys = nullptr;
         std::unique_ptr<render::Buffer> canonicalReadback;
         constexpr uint64_t kGeometryReadbackOffset = 0;
-        constexpr uint64_t kMeshletReadbackOffset =
-            kGeometryReadbackOffset + 2u * sizeof(render::GPUSceneGPUGeometryRecord);
-        constexpr uint64_t kMeshletDrawReadbackOffset =
-            kMeshletReadbackOffset + 3u * sizeof(render::GPUSceneGPUMeshletRecord);
-        constexpr uint64_t kMaterialReadbackOffset =
-            kMeshletDrawReadbackOffset +
-            10u * sizeof(render::GPUSceneGPUMeshletDrawRecord);
-        constexpr uint64_t kMeshletVertexReadbackOffset = kMaterialReadbackOffset;
-        constexpr uint64_t kOpenPBRMaterialReadbackOffset =
-            kMeshletVertexReadbackOffset + 9u * sizeof(uint32_t);
+        constexpr uint64_t kOpenPBRMaterialReadbackOffset = 2u * sizeof(render::GPUSceneGPUGeometryRecord);
         constexpr uint64_t kDescriptorRemapReadbackOffset =
-            kOpenPBRMaterialReadbackOffset +
-            2u * sizeof(render::GPUSceneGPUMaterialRecord);
-        constexpr uint64_t kTriangleWordReadbackOffset =
-            kDescriptorRemapReadbackOffset +
-            2u * render::kGPUSceneMaterialTextureSlotCount *
-                sizeof(render::GPUSceneGPUDescriptorRemapRecord);
-        constexpr uint64_t kCanonicalReadbackSize =
-            kTriangleWordReadbackOffset + 3u * sizeof(uint32_t);
+            kOpenPBRMaterialReadbackOffset + 2u * sizeof(render::GPUSceneGPUMaterialRecord);
+        constexpr uint64_t kCanonicalReadbackSize = kDescriptorRemapReadbackOffset +
+            2u * render::kGPUSceneMaterialTextureSlotCount * sizeof(render::GPUSceneGPUDescriptorRemapRecord);
         uint32_t firstGeneration = 0;
         uint64_t firstRevision = 0;
         RHITestResult frameResult = submitFrame(1, 1, [&](render::CommandBuffer& commandBuffer) {
@@ -1109,10 +1085,7 @@ public:
             if (!views.validFor(firstGeneration, firstRevision) ||
                 !views.geometries.valid() || !views.materials.valid() ||
                 !views.instances.valid() || !views.drawKeys.valid() ||
-                !views.drawInstanceIds.valid() || !views.vertices.valid() ||
-                !views.indices.valid() || !views.meshlets.valid() ||
-                !views.meshletDraws.valid() || !views.meshletVertices.valid() ||
-                !views.meshletTriangleWords.valid() ||
+                !views.drawInstanceIds.valid() ||
                 !views.descriptorRemap.valid()) {
                 return RHITestResult::fail("GPUScene did not publish all mandatory global buffer views");
             }
@@ -1122,12 +1095,6 @@ public:
                 views.instances.buffer,
                 views.drawKeys.buffer,
                 views.drawInstanceIds.buffer,
-                views.vertices.buffer,
-                views.indices.buffer,
-                views.meshlets.buffer,
-                views.meshletDraws.buffer,
-                views.meshletVertices.buffer,
-                views.meshletTriangleWords.buffer,
                 views.descriptorRemap.buffer,
             };
             for (render::Buffer* buffer : mandatory) {
@@ -1140,37 +1107,14 @@ public:
                     return RHITestResult::fail("GPUScene global buffer is not device-local Storage|TransferDestination");
                 }
             }
-            if (views.lodGroups.size != 2u * sizeof(render::MeshletLODGroupRecord) ||
-                views.geometries.size != 2u * sizeof(render::GPUSceneGPUGeometryRecord) ||
-                views.vertices.size != 6u * sizeof(render::GPUSceneGPUVertexRecord) ||
-                views.indices.size != 6u * sizeof(uint32_t) ||
-                views.meshlets.size != 3u * sizeof(render::GPUSceneGPUMeshletRecord) ||
-                views.meshletDraws.size !=
-                    10u * sizeof(render::VisibleClusterRecord) ||
-                views.meshletDraws.structureStride !=
-                    sizeof(render::VisibleClusterRecord) ||
-                views.meshletVertices.size != 9u * sizeof(uint32_t) ||
-                // Three local u8 triangle triplets pack into three uint words.
-                views.meshletTriangleWords.size != 3u * sizeof(uint32_t) ||
+            if (views.geometries.size != 2u * sizeof(render::GPUSceneGPUGeometryRecord) ||
                 views.materials.size !=
                     2u * sizeof(render::GPUSceneGPUMaterialRecord) ||
                 views.descriptorRemap.size !=
                     2u * render::kGPUSceneMaterialTextureSlotCount *
                         sizeof(render::GPUSceneGPUDescriptorRemapRecord)) {
                 return RHITestResult::fail(
-                    "GPUScene canonical raster payload was duplicated or has an invalid ABI size");
-            }
-            const render::GPUSceneRasterDrawLayout& rasterLayout =
-                subsystem->rasterDrawLayout();
-            if (!rasterLayout.validFor(firstGeneration, firstRevision) ||
-                rasterLayout.baseRange != render::GPUSceneRasterDrawRange{0, 2} ||
-                rasterLayout.lodRanges.size() != 2 ||
-                rasterLayout.lodRanges[0] != render::GPUSceneRasterDrawRange{2, 2} ||
-                rasterLayout.lodRanges[1] != render::GPUSceneRasterDrawRange{4, 2} ||
-                rasterLayout.adaptiveRange != render::GPUSceneRasterDrawRange{6, 4} ||
-                rasterLayout.maxRangeCount != 4) {
-                return RHITestResult::fail(
-                    "GPUScene base/LOD meshlet draw ranges are not stable or omitted BLEND");
+                    "GPUScene metadata ABI is invalid or standalone geometry payload was allocated");
             }
             firstGeometry = views.geometries.buffer;
             firstMaterial = views.materials.buffer;
@@ -1182,7 +1126,6 @@ public:
             if (!bindingResult || !bindings.validFor(views) ||
                 !bindings[render::GPUSceneGlobalBufferKind::Geometries].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::Instances].valid() ||
-                !bindings[render::GPUSceneGlobalBufferKind::MeshletDraws].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::DescriptorRemap].valid()) {
                 return RHITestResult::fail("GPUScene consumer binding creation failed: " + log);
             }
@@ -1211,12 +1154,8 @@ public:
 
             const std::array sourceViews{
                 &views.geometries,
-                &views.meshlets,
-                &views.meshletDraws,
-                &views.meshletVertices,
                 &views.materials,
                 &views.descriptorRemap,
-                &views.meshletTriangleWords,
             };
             std::array<render::BufferBarrierDesc, sourceViews.size()> toCopy{};
             std::array<render::BufferBarrierDesc, sourceViews.size()> toRead{};
@@ -1248,12 +1187,8 @@ public:
             }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const std::array destinationOffsets{
                 kGeometryReadbackOffset,
-                kMeshletReadbackOffset,
-                kMeshletDrawReadbackOffset,
-                kMeshletVertexReadbackOffset,
                 kOpenPBRMaterialReadbackOffset,
                 kDescriptorRemapReadbackOffset,
-                kTriangleWordReadbackOffset,
             };
             for (size_t index = 0; index < sourceViews.size(); ++index) {
                 {
@@ -1280,31 +1215,15 @@ public:
         }
         const auto* canonicalBytes = static_cast<const uint8_t*>(canonicalMapped);
         std::array<render::GPUSceneGPUGeometryRecord, 2> geometryRecords;
-        std::array<render::GPUSceneGPUMeshletRecord, 3> meshletRecords;
-        std::array<render::GPUSceneGPUMeshletDrawRecord, 10> meshletDrawRecords;
-        std::array<uint32_t, 9> meshletVertexRecords;
         std::array<render::GPUSceneGPUMaterialRecord, 2> materialRecords;
         std::array<
             render::GPUSceneGPUDescriptorRemapRecord,
             2u * render::kGPUSceneMaterialTextureSlotCount>
             descriptorRemapRecords;
-        std::array<uint32_t, 3> triangleWordRecords;
         std::memcpy(
             geometryRecords.data(),
             canonicalBytes + kGeometryReadbackOffset,
             sizeof(geometryRecords));
-        std::memcpy(
-            meshletRecords.data(),
-            canonicalBytes + kMeshletReadbackOffset,
-            sizeof(meshletRecords));
-        std::memcpy(
-            meshletDrawRecords.data(),
-            canonicalBytes + kMeshletDrawReadbackOffset,
-            sizeof(meshletDrawRecords));
-        std::memcpy(
-            meshletVertexRecords.data(),
-            canonicalBytes + kMeshletVertexReadbackOffset,
-            sizeof(meshletVertexRecords));
         std::memcpy(
             materialRecords.data(),
             canonicalBytes + kOpenPBRMaterialReadbackOffset,
@@ -1313,73 +1232,12 @@ public:
             descriptorRemapRecords.data(),
             canonicalBytes + kDescriptorRemapReadbackOffset,
             sizeof(descriptorRemapRecords));
-        std::memcpy(
-            triangleWordRecords.data(),
-            canonicalBytes + kTriangleWordReadbackOffset,
-            sizeof(triangleWordRecords));
         canonicalReadback->unmap();
 
-        if (geometryRecords[0].payload != std::array<uint32_t, 4>{0, 0, 0, 1} ||
-            geometryRecords[0].counts[3] != 2 ||
-            geometryRecords[1].payload[0] != 3 ||
-            geometryRecords[1].payload[2] != 3 ||
-            geometryRecords[1].payload[3] != 0) {
-            return RHITestResult::fail(
-                "GPUScene geometry records do not expose the canonical vertex/base-meshlet ranges");
-        }
-        for (uint32_t meshletIndex = 0; meshletIndex < meshletRecords.size(); ++meshletIndex) {
-            const render::GPUSceneGPUMeshletRecord& meshlet =
-                meshletRecords[meshletIndex];
-            if (meshlet.ranges != std::array<uint32_t, 4>{
-                    meshletIndex * 3u,
-                    3,
-                    meshletIndex,
-                    1,
-                } ||
-                meshlet.lod[0] != (meshletIndex == 2 ? 1u : 0u) ||
-                meshlet.lod[1] != (meshletIndex == 0 ? UINT32_MAX : meshletIndex - 1u) ||
-                meshlet.lod[2] != (meshletIndex == 2 ? 0u : UINT32_MAX) ||
-                meshlet.boundingSphere[3] <= 0.0f ||
-                meshlet.coneAxisLodError[2] != 1.0f) {
-                return RHITestResult::fail(
-                    "GPUScene canonical base/LOD meshlet metadata is incorrect");
-            }
-        }
-        constexpr std::array<uint32_t, 9> kExpectedLocalMeshletVertices{
-            0, 1, 2,
-            0, 1, 2,
-            0, 1, 2,
-        };
-        if (meshletVertexRecords != kExpectedLocalMeshletVertices ||
-            triangleWordRecords != std::array<uint32_t, 3>{
-                0x00020100u,
-                0x00020100u,
-                0x00020100u,
-            }) {
-            return RHITestResult::fail(
-                "GPUScene meshlet vertices are not geometry-local or triangle bytes are not packed");
-        }
-        for (uint32_t rangeIndex = 0; rangeIndex < 3; ++rangeIndex) {
-            const uint32_t firstDraw = rangeIndex * 2u;
-            const uint32_t expectedMeshlet = rangeIndex;
-            const render::GPUSceneGPUMeshletDrawRecord& opaque =
-                meshletDrawRecords[firstDraw];
-            const render::GPUSceneGPUMeshletDrawRecord& blend =
-                meshletDrawRecords[firstDraw + 1u];
-            if (opaque.clusterIndex != expectedMeshlet || opaque.instanceIndex != 0 ||
-                opaque.dataIndex != 0 ||
-                (opaque.flags & render::kVisibleClusterDrawBucketMask) != static_cast<uint32_t>(
-                    render::GPUSceneDrawBucket::OpaqueSingleSided) ||
-                render::visibleClusterSource(opaque.flags) !=
-                    render::VisibleClusterSource::Resident ||
-                blend.clusterIndex != expectedMeshlet || blend.instanceIndex != 1 ||
-                blend.dataIndex != 0 ||
-                (blend.flags & render::kVisibleClusterDrawBucketMask) !=
-                    static_cast<uint32_t>(render::GPUSceneDrawBucket::Blend) ||
-                render::visibleClusterSource(blend.flags) !=
-                    render::VisibleClusterSource::Resident) {
-                return RHITestResult::fail(
-                    "GPUScene MeshletDraws do not use dense global instance IDs or retain BLEND");
+        for (const auto& geometry : geometryRecords) {
+            if (geometry.payload != std::array<uint32_t, 4>{UINT32_MAX, UINT32_MAX, UINT32_MAX, 0} ||
+                geometry.counts[3] != 0 || geometry.counts[0] != 3 || geometry.identity[1] == 0) {
+                return RHITestResult::fail("GPUScene geometry metadata contains standalone raster payload or lost identity/counts");
             }
         }
         if (materialRecords[0].baseColorTexture.textureIndex != 0 ||
@@ -1431,13 +1289,6 @@ public:
                 views.instances.buffer != firstInstance ||
                 views.drawKeys.buffer != firstDrawKeys) {
                 return RHITestResult::fail("GPUScene incremental sync recreated a global device buffer");
-            }
-            if (!subsystem->rasterDrawLayout().validFor(
-                    subsystem->drawSet().generation,
-                    subsystem->drawSet().revision) ||
-                subsystem->rasterDrawLayout().baseRange.count != 2) {
-                return RHITestResult::fail(
-                    "GPUScene incremental sync invalidated its generation-scoped raster layout");
             }
             if (!bindings.validFor(views)) {
                 return RHITestResult::fail(

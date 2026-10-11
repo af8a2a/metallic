@@ -279,6 +279,8 @@ private:
 
 struct MeshletStreamAssetBuildDesc {
     const Scene* scene = nullptr;
+    // Optional current instance metadata when geometry is imported for cooking.
+    const Scene* instanceScene = nullptr;
     std::filesystem::path sourcePath;
     std::filesystem::path outputPath;
     MeshletStreamPayloadCompression compressionMode = MeshletStreamPayloadCompression::None;

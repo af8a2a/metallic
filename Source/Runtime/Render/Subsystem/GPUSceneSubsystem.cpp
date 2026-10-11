@@ -65,21 +65,7 @@ struct GPUSceneCPUUploadData {
     std::vector<GPUSceneGPUInstanceRecord> instances;
     std::vector<GPUSceneGPUDrawKeyRecord> drawKeys;
     std::vector<uint32_t> drawInstanceIds;
-    std::vector<GPUSceneGPUVertexRecord> vertices;
-    std::vector<uint32_t> indices;
-    std::vector<GPUSceneGPUMeshletRecord> meshlets;
-    std::vector<MeshletLODGroupRecord> lodGroups;
-    std::vector<GPUSceneGPUMeshletDrawRecord> meshletDraws;
-    std::vector<uint32_t> meshletVertices;
-    std::vector<uint32_t> meshletTriangleWords;
     std::vector<GPUSceneGPUDescriptorRemapRecord> descriptorRemap;
-    GPUSceneRasterDrawLayout rasterDrawLayout;
-};
-
-struct GPUSceneGeometryRasterRanges {
-    GPUSceneRasterDrawRange baseRange;
-    GPUSceneRasterDrawRange adaptiveRange;
-    std::vector<GPUSceneRasterDrawRange> lodRanges;
 };
 
 std::vector<GPUSceneGPUInstanceRecord> buildGpuInstanceRecords(
@@ -121,118 +107,6 @@ std::vector<GPUSceneGPUInstanceRecord> buildGpuInstanceRecords(
     return records;
 }
 
-uint32_t appendMeshletTriangleWords(
-    std::span<const uint8_t> bytes,
-    std::vector<uint32_t>& words)
-{
-    const uint32_t firstWord = gpuCount(words.size());
-    for (size_t offset = 0; offset < bytes.size(); offset += 4) {
-        uint32_t word = 0;
-        const size_t byteCount = std::min<size_t>(4, bytes.size() - offset);
-        std::memcpy(&word, bytes.data() + offset, byteCount);
-        words.push_back(word);
-    }
-    return firstWord;
-}
-
-GPUSceneRasterDrawRange appendMeshletRange(
-    const scene::RenderPrimitive& primitive,
-    std::span<const scene::MeshletCluster> clusters,
-    std::span<const uint32_t> meshletVertices,
-    std::span<const uint8_t> meshletTriangles,
-    uint32_t firstCluster,
-    uint32_t clusterCount,
-    GPUSceneCPUUploadData& data,
-    uint32_t groupOffset = kMeshletLODInvalidGroup)
-{
-    GPUSceneRasterDrawRange range{
-        .offset = gpuCount(data.meshlets.size()),
-    };
-    if (firstCluster > clusters.size() ||
-        clusterCount > clusters.size() - firstCluster) {
-        return range;
-    }
-
-    const std::span<const scene::MeshletCluster> selected =
-        clusters.subspan(firstCluster, clusterCount);
-    for (const scene::MeshletCluster& cluster : selected) {
-        const uint64_t triangleByteCount =
-            static_cast<uint64_t>(cluster.triangleCount) * 3u;
-        if (cluster.vertexCount == 0 || cluster.triangleCount == 0 ||
-            cluster.vertexOffset > meshletVertices.size() ||
-            cluster.vertexCount > meshletVertices.size() - cluster.vertexOffset ||
-            cluster.triangleOffset > meshletTriangles.size() ||
-            triangleByteCount > meshletTriangles.size() - cluster.triangleOffset) {
-            continue;
-        }
-
-        const std::span<const uint32_t> localVertices = meshletVertices.subspan(
-            cluster.vertexOffset,
-            cluster.vertexCount);
-        const std::span<const uint8_t> localTriangles = meshletTriangles.subspan(
-            cluster.triangleOffset,
-            static_cast<size_t>(triangleByteCount));
-        const bool validVertices = std::ranges::all_of(
-            localVertices,
-            [&](uint32_t vertexIndex) {
-                return vertexIndex < primitive.positions.size();
-            });
-        const bool validTriangles = std::ranges::all_of(
-            localTriangles,
-            [&](uint8_t vertexIndex) {
-                return vertexIndex < cluster.vertexCount;
-            });
-        if (!validVertices || !validTriangles) {
-            continue;
-        }
-
-        const uint32_t vertexOffset = gpuCount(data.meshletVertices.size());
-        data.meshletVertices.insert(
-            data.meshletVertices.end(),
-            localVertices.begin(),
-            localVertices.end());
-        const uint32_t triangleWordOffset =
-            appendMeshletTriangleWords(localTriangles, data.meshletTriangleWords);
-
-        GPUSceneGPUMeshletRecord meshlet;
-        meshlet.ranges = {
-            vertexOffset,
-            cluster.vertexCount,
-            triangleWordOffset,
-            cluster.triangleCount,
-        };
-        meshlet.lod = {
-            cluster.lodLevel,
-            groupOffset == kMeshletLODInvalidGroup ? kMeshletLODInvalidGroup :
-                groupOffset + static_cast<uint32_t>(cluster.lodGroupIndex),
-            groupOffset == kMeshletLODInvalidGroup || cluster.refinedGroupIndex < 0 ?
-                kMeshletLODInvalidGroup : groupOffset + static_cast<uint32_t>(cluster.refinedGroupIndex),
-            0,
-        };
-        meshlet.boundingSphere = {
-            cluster.boundingSphereCenter.x,
-            cluster.boundingSphereCenter.y,
-            cluster.boundingSphereCenter.z,
-            std::max(cluster.boundingSphereRadius, 0.0f),
-        };
-        meshlet.coneApexCutoff = {
-            cluster.coneApex.x,
-            cluster.coneApex.y,
-            cluster.coneApex.z,
-            cluster.coneCutoff,
-        };
-        meshlet.coneAxisLodError = {
-            cluster.coneAxis.x,
-            cluster.coneAxis.y,
-            cluster.coneAxis.z,
-            cluster.lodError,
-        };
-        data.meshlets.push_back(meshlet);
-    }
-    range.count = gpuCount(data.meshlets.size()) - range.offset;
-    return range;
-}
-
 GPUSceneGPUMaterialTextureInfo buildGpuMaterialTextureInfo(
     const scene::RenderTextureInfo& source,
     uint32_t materialIndex,
@@ -271,8 +145,6 @@ GPUSceneCPUUploadData buildGpuUploadData(
     data.materials.reserve(gpuScene.materials().size());
     data.instances.reserve(gpuScene.instances().size());
     data.drawInstanceIds.reserve(gpuScene.drawSet().instances.size());
-    std::vector<GPUSceneGeometryRasterRanges> geometryRanges;
-    geometryRanges.resize(gpuScene.geometries().size());
 
     for (const GPUSceneGeometryRecord& geometry : gpuScene.geometries()) {
         GPUSceneGPUGeometryRecord gpu;
@@ -317,94 +189,6 @@ GPUSceneCPUUploadData buildGpuUploadData(
             0,
         };
 
-        const scene::RenderPrimitive* sourcePrimitive =
-            gpuScene.geometrySourcePrimitive(geometry.id);
-        if (sourcePrimitive != nullptr && sourcePrimitive->storage == scene::GeometryStorage::Resident) {
-            const scene::RenderPrimitive& primitive = *sourcePrimitive;
-            const uint32_t vertexOffset = gpuCount(data.vertices.size());
-            for (size_t vertexIndex = 0; vertexIndex < primitive.positions.size(); ++vertexIndex) {
-                const float3 position = primitive.positions[vertexIndex];
-                const float3 normal = vertexIndex < primitive.normals.size()
-                    ? primitive.normals[vertexIndex]
-                    : float3(0.0f, 0.0f, 1.0f);
-                const float4 tangent = vertexIndex < primitive.tangents.size()
-                    ? primitive.tangents[vertexIndex]
-                    : float4(1.0f, 0.0f, 0.0f, 1.0f);
-                const float2 texcoord = vertexIndex < primitive.texcoords0.size()
-                    ? primitive.texcoords0[vertexIndex]
-                    : float2(0.0f, 0.0f);
-                GPUSceneGPUVertexRecord vertex;
-                vertex.position = {position.x, position.y, position.z, 1.0f};
-                vertex.normal = {normal.x, normal.y, normal.z, 0.0f};
-                vertex.tangent = {tangent.x, tangent.y, tangent.z, tangent.w};
-                vertex.texcoord = {texcoord.x, texcoord.y};
-                vertex.flags = (primitive.hasAuthoredNormals ? 1u : 0u) |
-                    (primitive.hasAuthoredTangents ? 2u : 0u);
-                data.vertices.push_back(vertex);
-            }
-
-            const uint32_t indexOffset = gpuCount(data.indices.size());
-            if (primitive.indices.empty()) {
-                for (uint32_t index = 0; index < primitive.positions.size(); ++index) {
-                    data.indices.push_back(index);
-                }
-            } else {
-                data.indices.insert(
-                    data.indices.end(),
-                    primitive.indices.begin(),
-                    primitive.indices.end());
-            }
-
-            const uint32_t meshletVertexOffset = gpuCount(data.meshletVertices.size());
-            const uint32_t meshletTriangleWordOffset = gpuCount(data.meshletTriangleWords.size());
-            GPUSceneGeometryRasterRanges& ranges = geometryRanges[geometry.id.index];
-            ranges.baseRange = appendMeshletRange(
-                primitive,
-                primitive.meshletClusters,
-                primitive.meshletVertices,
-                primitive.meshletTriangles,
-                0,
-                gpuCount(primitive.meshletClusters.size()),
-                data);
-            std::vector<MeshletLODGroupRecord> groups;
-            std::string lodReason;
-            const bool validLod = buildMeshletLodMetadata(primitive, groups, lodReason);
-            const uint32_t groupOffset = validLod ? gpuCount(data.lodGroups.size()) : kMeshletLODInvalidGroup;
-            if (validLod) { data.lodGroups.insert(data.lodGroups.end(), groups.begin(), groups.end()); }
-            ranges.adaptiveRange.offset = gpuCount(data.meshlets.size());
-            ranges.lodRanges.resize(primitive.meshletLodLevels.size());
-            for (uint32_t lodLevel = 0;
-                 lodLevel < primitive.meshletLodLevels.size();
-                 ++lodLevel) {
-                const scene::MeshletLODLevel& level =
-                    primitive.meshletLodLevels[lodLevel];
-                ranges.lodRanges[lodLevel] = appendMeshletRange(
-                    primitive,
-                    primitive.meshletLodClusters,
-                    primitive.meshletLodVertices,
-                    primitive.meshletLodTriangles,
-                    level.clusterOffset,
-                    level.clusterCount,
-                    data, groupOffset);
-            }
-            ranges.adaptiveRange.count = gpuCount(data.meshlets.size()) - ranges.adaptiveRange.offset;
-            if (!validLod || ranges.adaptiveRange.count != primitive.meshletLodClusters.size()) {
-                ranges.adaptiveRange = ranges.baseRange;
-            }
-            gpu.payload = {
-                vertexOffset,
-                indexOffset,
-                ranges.baseRange.offset,
-                ranges.baseRange.count,
-            };
-            gpu.meshletPayload = {
-                meshletVertexOffset,
-                gpuCount(data.meshletVertices.size()) - meshletVertexOffset,
-                meshletTriangleWordOffset,
-                gpuCount(data.meshletTriangleWords.size()) - meshletTriangleWordOffset,
-            };
-            gpu.counts[3] = gpuCount(ranges.lodRanges.size());
-        }
         data.geometries.push_back(gpu);
     }
 
@@ -526,59 +310,6 @@ GPUSceneCPUUploadData buildGpuUploadData(
         data.drawKeys.push_back(key);
     }
 
-    const auto appendDrawRange = [&](uint32_t lodLevel, bool baseRange, bool adaptive = false) {
-        GPUSceneRasterDrawRange range{
-            .offset = gpuCount(data.meshletDraws.size()),
-        };
-        for (GPUSceneInstanceId id : drawSet.instances) {
-            const GPUSceneInstanceRecord* instance = gpuScene.instance(id);
-            if (instance == nullptr || instance->geometry.index >= geometryRanges.size()) {
-                continue;
-            }
-            const GPUSceneGeometryRasterRanges& geometry =
-                geometryRanges[instance->geometry.index];
-            const GPUSceneRasterDrawRange* geometryRange = nullptr;
-            if (adaptive) {
-                geometryRange = &geometry.adaptiveRange;
-            } else if (baseRange) {
-                geometryRange = &geometry.baseRange;
-            } else if (lodLevel < geometry.lodRanges.size()) {
-                geometryRange = &geometry.lodRanges[lodLevel];
-            }
-            if (geometryRange == nullptr) {
-                continue;
-            }
-            for (uint32_t meshletOffset = 0;
-                 meshletOffset < geometryRange->count;
-                 ++meshletOffset) {
-                data.meshletDraws.push_back(VisibleClusterRecord{
-                    .clusterIndex = geometryRange->offset + meshletOffset,
-                    .instanceIndex = id.index,
-                    .dataIndex = instance->geometry.index,
-                    .flags = visibleClusterFlags(
-                        VisibleClusterSource::Resident,
-                        static_cast<uint32_t>(instance->drawKey.bucket)),
-                });
-            }
-        }
-        range.count = gpuCount(data.meshletDraws.size()) - range.offset;
-        data.rasterDrawLayout.maxRangeCount =
-            std::max(data.rasterDrawLayout.maxRangeCount, range.count);
-        return range;
-    };
-
-    data.rasterDrawLayout.baseRange = appendDrawRange(0, true);
-    size_t maxLodLevelCount = 0;
-    for (const GPUSceneGeometryRasterRanges& geometry : geometryRanges) {
-        maxLodLevelCount = std::max(maxLodLevelCount, geometry.lodRanges.size());
-    }
-    data.rasterDrawLayout.lodRanges.resize(maxLodLevelCount);
-    for (uint32_t lodLevel = 0; lodLevel < maxLodLevelCount; ++lodLevel) {
-        data.rasterDrawLayout.lodRanges[lodLevel] = appendDrawRange(lodLevel, false);
-    }
-    data.rasterDrawLayout.adaptiveRange = appendDrawRange(0, false, true);
-    data.rasterDrawLayout.drawSetGeneration = drawSet.generation;
-    data.rasterDrawLayout.drawSetRevision = drawSet.revision;
     return data;
 }
 
@@ -630,14 +361,7 @@ struct GPUSceneSubsystem::GPUResources {
         result.instances = resource(GPUSceneGlobalBufferKind::Instances).sceneView(generation, revision);
         result.drawKeys = resource(GPUSceneGlobalBufferKind::DrawKeys).sceneView(generation, revision);
         result.drawInstanceIds = resource(GPUSceneGlobalBufferKind::DrawInstanceIds).sceneView(generation, revision);
-        result.vertices = resource(GPUSceneGlobalBufferKind::Vertices).sceneView(generation, revision);
-        result.indices = resource(GPUSceneGlobalBufferKind::Indices).sceneView(generation, revision);
-        result.meshlets = resource(GPUSceneGlobalBufferKind::Meshlets).sceneView(generation, revision);
-        result.meshletDraws = resource(GPUSceneGlobalBufferKind::MeshletDraws).sceneView(generation, revision);
-        result.meshletVertices = resource(GPUSceneGlobalBufferKind::MeshletVertices).sceneView(generation, revision);
-        result.meshletTriangleWords = resource(GPUSceneGlobalBufferKind::MeshletTriangleWords).sceneView(generation, revision);
         result.descriptorRemap = resource(GPUSceneGlobalBufferKind::DescriptorRemap).sceneView(generation, revision);
-        result.lodGroups = resource(GPUSceneGlobalBufferKind::LODGroups).sceneView(generation, revision);
         result.drawSetGeneration = generation;
         result.drawSetRevision = revision;
         return result;
@@ -1347,7 +1071,6 @@ Result<> GPUSceneSubsystem::recordPreGraph(
         }
         gpuUploadStats_.drawSetGeneration = 0;
         gpuUploadStats_.drawSetRevision = 0;
-        rasterDrawLayout_ = {};
         return {};
     }
     PendingUpload upload = pendingUpload_;
@@ -1362,13 +1085,11 @@ Result<> GPUSceneSubsystem::recordPreGraph(
     if (upload != PendingUpload::None) {
         const auto previousResources = gpuResources_;
         const auto previousRevision = gpuResources_ != nullptr ? gpuResources_->revision : 0;
-        const auto previousLayout = rasterDrawLayout_;
         const auto previousStats = gpuUploadStats_;
         result = context.host.deferSubmission(*context.commandBuffer, {},
-            [this, previousResources, previousRevision, previousLayout, previousStats, upload]() {
+            [this, previousResources, previousRevision, previousStats, upload]() {
                 gpuResources_ = previousResources;
                 if (gpuResources_ != nullptr) { gpuResources_->revision = previousRevision; }
-                rasterDrawLayout_ = previousLayout;
                 gpuUploadStats_ = previousStats;
                 scene_.invalidateGpuResources();
                 if (gpuResources_ != nullptr) { scene_.setGlobalBufferViews(gpuResources_->views()); }
@@ -1410,14 +1131,7 @@ void GPUSceneSubsystem::appendDebugBindings(const RenderSubsystemFrameContext&, 
     add("materials", globals.materials);
     add("drawKeys", globals.drawKeys);
     add("drawInstanceIds", globals.drawInstanceIds, "u32");
-    add("vertices", globals.vertices);
-    add("indices", globals.indices, "u32");
-    add("meshlets", globals.meshlets, "GPUSceneGPUMeshletRecord");
-    add("meshletDraws", globals.meshletDraws, "VisibleClusterRecord");
-    add("meshletVertices", globals.meshletVertices, "u32");
-    add("meshletTriangleWords", globals.meshletTriangleWords, "u32");
     add("descriptorRemap", globals.descriptorRemap, "u32");
-    add("lodGroups", globals.lodGroups, "MeshletLODGroupRecord");
 }
 
 Result<> GPUSceneSubsystem::uploadFullScene(
@@ -1425,10 +1139,6 @@ Result<> GPUSceneSubsystem::uploadFullScene(
     std::string& log)
 {
     GPUSceneCPUUploadData data = buildGpuUploadData(scene_);
-    if (!visibilityRecordCapacityFitsId(data.meshletDraws.size())) {
-        log = "GPUScene resident meshlet draw count exceeds the common visibility ID record limit";
-        return makeError(Error::InvalidArgument);
-    }
     // Mandatory tables always retain one sentinel element so consumers can
     // bind a stable non-zero structured buffer for an empty DrawSet.
     if (data.geometries.empty()) {
@@ -1543,42 +1253,9 @@ Result<> GPUSceneSubsystem::uploadFullScene(
     }
     if (result) {
         result = createResource(
-            GPUSceneGlobalBufferKind::Vertices, data.vertices, "vertex payload");
-    }
-    if (result) {
-        result = createResource(
-            GPUSceneGlobalBufferKind::Indices, data.indices, "index payload");
-    }
-    if (result) {
-        result = createResource(
-            GPUSceneGlobalBufferKind::Meshlets, data.meshlets, "meshlet payload");
-    }
-    if (result) {
-        result = createResource(
-            GPUSceneGlobalBufferKind::MeshletDraws,
-            data.meshletDraws,
-            "meshlet draw payload");
-    }
-    if (result) {
-        result = createResource(
-            GPUSceneGlobalBufferKind::MeshletVertices,
-            data.meshletVertices,
-            "meshlet vertex payload");
-    }
-    if (result) {
-        result = createResource(
-            GPUSceneGlobalBufferKind::MeshletTriangleWords,
-            data.meshletTriangleWords,
-            "meshlet triangle payload");
-    }
-    if (result) {
-        result = createResource(
             GPUSceneGlobalBufferKind::DescriptorRemap,
             data.descriptorRemap,
             "descriptor remap");
-    }
-    if (result) {
-        result = createResource(GPUSceneGlobalBufferKind::LODGroups, data.lodGroups, "LOD groups");
     }
     if (!result) {
         return result;
@@ -1645,7 +1322,6 @@ Result<> GPUSceneSubsystem::uploadFullScene(
         context.host.retire(std::static_pointer_cast<void>(gpuResources_));
     }
     gpuResources_ = std::move(next);
-    rasterDrawLayout_ = std::move(data.rasterDrawLayout);
     ++gpuUploadStats_.fullUploadCount;
     gpuUploadStats_.uploadedByteCount += uploadedBytes;
     gpuUploadStats_.drawSetGeneration = gpuResources_->generation;
@@ -1727,7 +1403,6 @@ Result<> GPUSceneSubsystem::uploadInstances(
     uploads->stagingBuffers.push_back(std::move(staging));
     context.host.retire(std::static_pointer_cast<void>(uploads));
     gpuResources_->revision = scene_.drawSet().revision;
-    rasterDrawLayout_.drawSetRevision = scene_.drawSet().revision;
     if (!scene_.setGlobalBufferViews(gpuResources_->views())) {
         log = "GPUScene failed to publish incrementally updated instance buffer views";
         return makeError(Error::Failure);
@@ -1756,14 +1431,7 @@ Result<GPUSceneConsumerBindings> GPUSceneSubsystem::createBindings(std::string& 
         &views.instances,
         &views.drawKeys,
         &views.drawInstanceIds,
-        &views.vertices,
-        &views.indices,
-        &views.meshlets,
-        &views.meshletDraws,
-        &views.meshletVertices,
-        &views.meshletTriangleWords,
         &views.descriptorRemap,
-        &views.lodGroups,
     };
     for (size_t index = 0; index < bufferViews.size(); ++index) {
         const GPUSceneBufferView& view = *bufferViews[index];
@@ -1847,7 +1515,6 @@ void GPUSceneSubsystem::shutdown()
     lightGrids_.clear();
     viewGpuResources_.clear();
     gpuResources_.reset();
-    rasterDrawLayout_ = {};
     scene_.shutdown();
     device_ = nullptr;
     host_ = nullptr;

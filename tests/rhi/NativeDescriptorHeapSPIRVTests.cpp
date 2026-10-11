@@ -1,7 +1,6 @@
 #include "Runtime/Render/GAPI/ShaderTarget.h"
 #include "Runtime/Render/GAPI/Vulkan/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/GAPI/Vulkan/DescriptorHeapShaderABI.h"
-#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <initializer_list>
@@ -102,39 +101,6 @@ TEST(SpirvWalker, DecodesOffsetsAndUnknownOpcodesWithoutSemanticValidation)
     EXPECT_EQ(walker.instructions()[1].offset, 7u);
     EXPECT_EQ(walker.instructions()[1].wordCount, 1u);
     EXPECT_EQ(walker.instructions()[1].opcode, 65535u);
-}
-
-TEST(OpacityMicromapSPIRV, InPlaceTransformIsIdempotentAndFailuresPreserveOutput)
-{
-    using render::vulkan::enableOpacityMicromapSpirv;
-    Words code{0x07230203, 0x10600, 0, 32, 0};
-    emit(code, 17, {4472}); // RayQuery capability
-    emit(code, 14, {0, 1});
-    emit(code, 15, {5, 10, 0});
-    emit(code, 54, {1, 10, 0, 2});
-    emit(code, 56, {});
-    for (bool useExt : {false, true}) {
-        Words expected;
-        ASSERT_TRUE(enableOpacityMicromapSpirv(code, expected, useExt));
-        EXPECT_NE(expected, code);
-        auto alias = code;
-        ASSERT_TRUE(enableOpacityMicromapSpirv(alias, alias, useExt));
-        EXPECT_EQ(alias, expected);
-        ASSERT_TRUE(enableOpacityMicromapSpirv(alias, alias, useExt));
-        EXPECT_EQ(alias, expected);
-        auto malformed = code;
-        malformed.push_back((4u << 16) | 17u);
-        auto preserved = malformed;
-        EXPECT_FALSE(enableOpacityMicromapSpirv(malformed, malformed, useExt));
-        EXPECT_EQ(malformed, preserved);
-        EXPECT_FALSE(enableOpacityMicromapSpirv(malformed, alias, useExt));
-        EXPECT_EQ(alias, expected);
-    }
-    // Semantic failure after a valid instruction walk is also transactional.
-    code[3] = 0xffffffffu;
-    const auto original = code;
-    EXPECT_FALSE(enableOpacityMicromapSpirv(code, code));
-    EXPECT_EQ(code, original);
 }
 
 TEST(ShaderTargetPostprocess, FinalizationIsTransactionalAndIdempotent)

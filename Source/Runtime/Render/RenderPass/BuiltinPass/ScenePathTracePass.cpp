@@ -1,3 +1,5 @@
+#include "StreamRayTracingBindings.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
@@ -88,12 +90,6 @@ constexpr ComputeResourceMember kLightGridMembers[] = {
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightGridIndices)
 };
 constexpr ComputeResourceMember kRasterGeometryMembers[] = {
-    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterVertices),
-    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterMeshlets),
-    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterRecords),
-    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterVertexIndices),
-    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterTriangles),
-    METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterGeometries),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterInstances),
     METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterMaterials)
 };
@@ -353,13 +349,18 @@ struct ScenePathTraceCameraSnapshot {
 
 class ScenePathTracePass final : public ComputePass {
 public:
-    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext& context) const override
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
-        if (visibilityDeferred_ || (context.runtimeScene && context.runtimeScene->hasStreamGeometry())) {
-            return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures, .textureFeedback = visibilityDeferred_};
-        }
-        return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure, .textureFeedback = visibilityDeferred_};
+        return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures |
+            (visibilityDeferred_ ? SceneResourceFeatureBits::None : SceneResourceFeatureBits::AccelerationStructure),
+            .geometry = !visibilityDeferred_, .textureFeedback = true};
+    }
+
+    void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
+    {
+        ScenePathTracePush push{};
+        buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), {}, false, push);
+        describeStreamRayView(push, view);
     }
 
     RenderGraphSceneDependency sceneDependency() const override
@@ -379,12 +380,8 @@ public:
 
     std::span<const RenderSubsystemId> requiredSubsystems() const override
     {
-        static constexpr std::array deferredRequired{
-            EnvironmentLightingSubsystem::kSubsystemId, GPUSceneSubsystem::kSubsystemId,
-        };
-        if (visibilityDeferred_) { return deferredRequired; }
         static constexpr std::array required{
-            EnvironmentLightingSubsystem::kSubsystemId,
+            EnvironmentLightingSubsystem::kSubsystemId, GPUSceneSubsystem::kSubsystemId,
         };
         return required;
     }
@@ -393,12 +390,8 @@ public:
     {
         const bool exportGuides = exportDenoiserGuides(properties());
         RenderPassReflection reflection;
-        if (!visibilityDeferred_) {
-            reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
-                .accelerationStructureRead().setOptional();
-        }
         if (visibilityDeferred_) {
-            reflection.addTextureInput("visibility", "Resident GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
+            reflection.addTextureInput("visibility", "Streamed GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
             reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
             auto& domain = reflection.addTextureInput("domain", "Optional displaced barycentrics and geometric normal").sampledRead().setOptional();
             domain.format = Format::Unknown; // R32G32B32A32 when active, inexpensive dummy when disabled.
@@ -622,11 +615,6 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
-        streamMaterials_ = context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry();
-        if (streamMaterials_ && !visibilityDeferred_) {
-            log = "StreamAsset scenes require realtime visibility-buffer deferred lighting";
-            return makeError(Error::Unsupported);
-        }
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "ScenePathTracePass requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
@@ -663,7 +651,6 @@ public:
         const bool singleSampleGuides = !realtime_ && !visibilityDeferred_ && useOpenPBR && exportGuides &&
             uintProperty(properties(), "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples) == 1;
         const bool ntcActive = sceneResources_.neuralTextures().active();
-        const bool positionFetch = !visibilityDeferred_ && !streamMaterials_ && context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         SceneShaderProgram shaderProgram;
@@ -700,13 +687,11 @@ public:
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|valuePrograms=" + std::to_string(hasValuePrograms() ? valuePrograms->key() : 0) +
-            "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
             "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|ntc=" + (ntcActive ? "1" : "0") +
             "|coopvec=" + (ntcCooperativeVector ? "1" : "0") +
-            "|positionFetch=" + (positionFetch ? "1" : "0") +
             "|singleSampleGuides=" + (singleSampleGuides ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
@@ -752,12 +737,10 @@ public:
 
         SceneShaderOptions shaderOptions{
             .customMaterials = hasValuePrograms(),
-            .streamMaterials = streamMaterials_,
             .globalView = globalView,
             .hasRTXCR = METALLIC_HAS_RTXCR != 0,
             .hasNTC = ntcActive,
             .cooperativeVector = ntcCooperativeVector,
-            .positionFetch = positionFetch,
             .deferredFloat16 = boolProperty(properties(), "halfPrecision", true),
             .upscalerGuides = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false),
             .materialInclude = valueSearchPath,
@@ -782,22 +765,6 @@ public:
             ComputeResourceBindingDesc{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output),
                 .kind = ComputeResourceBindingKind::StorageImage,
-            },
-            ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeResourceBindingDesc{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances),
-                .kind = ComputeResourceBindingKind::StorageBuffer,
             },
             ComputeResourceBindingDesc{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
@@ -825,9 +792,8 @@ public:
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
-        if (!visibilityDeferred_ && !positionFetch && !streamMaterials_) {
-            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .kind = ComputeResourceBindingKind::StorageBuffer});
-        }
+        baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
+        if (!visibilityDeferred_) { appendStreamRayLayout(baseBindings); }
         if (realtime_) {
             baseBindings.push_back(ComputeResourceBindingDesc{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer,
@@ -856,7 +822,6 @@ public:
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialSampler), .kind = ComputeResourceBindingKind::Sampler});
             for (const auto binding : kStreamGeometryMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
@@ -935,7 +900,7 @@ public:
 
         if (visibilityDeferred_) {
             std::erase_if(baseBindings, [](const auto& binding) {
-                return binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances);
+                return binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene);
             });
         }
         baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer});
@@ -1266,6 +1231,15 @@ public:
         Buffer* textureFeedback = context.preparedScene() ? context.preparedScene()->textureFeedback : nullptr;
         profile.next("Prepare output and shading parameters");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
+        const auto textureSnapshot = sceneResources_.materialTextureSnapshot();
+        const auto* frameScene = context.preparedScene();
+        const uint64_t geometryRevision = frameScene && frameScene->geometry ? frameScene->geometry->shadingRevision() : 0;
+        if (textureSnapshot != previousTextureSnapshot_ || geometryRevision != geometryShadingRevision_) {
+            resetAccumulation_ = true;
+            sharcClearPending_ = true;
+            previousTextureSnapshot_ = textureSnapshot;
+            geometryShadingRevision_ = geometryRevision;
+        }
         TextureView* environmentTextureView = environment.radianceView;
         TextureView* environmentImportancePdfView = environment.pdfView;
         TextureView* const environmentTextureViews[] = {environmentTextureView};
@@ -1386,7 +1360,7 @@ public:
             }
             deferredStream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
                 info.frameIndex, info.sceneIdentity);
-            if (info.hasStreamGeometry && !deferredStream) { return makeError(Error::InvalidArgument); }
+            if (!deferredStream) { return makeError(Error::InvalidArgument); }
             if (info.width != context.width() || info.height != context.height() || info.frameIndex != context.frameIndex() ||
                 lightScene == nullptr || info.sceneIdentity != lightScene->resourceIdentity()) {
                 spdlog::error("[VisibilityBufferDeferredPass] Raster scene/view mismatch: raster={}x{} scene={}, deferred={}x{} scene={}",
@@ -1476,35 +1450,23 @@ public:
         TextureView* const atmosphereMultiScatteringViews[]{environment.multiScatteringView};
         TextureView* const atmosphereSkyViews[]{environment.skyView};
         TextureView* const atmosphereCloudShadowViews[] = {environment.cloudShadowView};
+        const auto* prepared = context.preparedScene();
+        const auto streamGeometry = prepared && prepared->geometry
+            ? prepared->geometry->deferredGpuResources() : MeshletStreamDeferredGPUResourcesView{};
+        if (!visibilityDeferred_ && (!streamGeometry.valid() || !streamGeometry.accelerationStructure)) {
+            return makeError(Error::InvalidArgument);
+        }
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lights), .buffer = lights_.buffer()},
             ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.celestialLights), .buffer = celestial.buffer.get()},
             ComputeDispatchBinding{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
                 .accelerationStructure = visibilityDeferred_ ? nullptr :
-                    (context.inputAccelerationStructure("accelerationStructure")
-                        ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure()),
+                    streamGeometry.accelerationStructure,
             },
             ComputeDispatchBinding{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output),
                 .textureView = color.view(),
-            },
-            ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices),
-                .buffer = sceneResources_.shadingVertexBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices),
-                .buffer = sceneResources_.indexBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives),
-                .buffer = sceneResources_.primitiveBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances),
-                .buffer = sceneResources_.instanceBuffer(),
             },
             ComputeDispatchBinding{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
@@ -1523,7 +1485,7 @@ public:
                 .textureViews = materialTextureViews,
                 // Streaming publishes a new immutable snapshot after mip changes;
                 // completed descriptor tables reuse unchanged image bindings.
-                .sampledImages = visibilityDeferred_ ? sceneResources_.materialTextureSnapshot() : nullptr,
+                .sampledImages = sceneResources_.materialTextureSnapshot(),
             },
             ComputeDispatchBinding{
                 .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentMap),
@@ -1534,6 +1496,8 @@ public:
                 .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
             },
         };
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = textureFeedback});
+        if (!visibilityDeferred_) { appendStreamRayBindings(bindings, streamGeometry, prepared->geometry->shadingChangeBuffer()); }
         if (environment.atmosphereParametersBuffer != nullptr) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .textureViews = {atmosphereTransmittanceViews, 1}});
@@ -1544,14 +1508,11 @@ public:
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.cloudShadow), .textureViews = {atmosphereCloudShadowViews, 1}});
             }
         }
-        if (!visibilityDeferred_ && sceneResources_.fallbackPositionBuffer() != nullptr) {
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, positions), .buffer = sceneResources_.fallbackPositionBuffer()});
-        }
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = sceneResources_.materialBinding()->valueBuffer()
             ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()});
         if (visibilityDeferred_) {
             std::erase_if(bindings, [](const auto& binding) {
-                return binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, vertices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, indices) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, primitives) || binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, instances);
+                return binding.binding == METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene);
             });
         }
         if (realtime_) {
@@ -1617,26 +1578,22 @@ public:
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .textureViews = {&visibilityView, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .textureViews = {&visibilityDepthView, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .textureViews = {&domainView, 1}});
-            const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
-                &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
-                &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
+            const GPUSceneBufferView* views[] = {&deferredViews->instances, &deferredViews->materials};
             for (uint32_t i = 0; i < std::size(views); ++i) {
-                const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
+                const auto& view = *views[i];
                 bindings.push_back({
                     .binding = kRasterGeometryMembers[i],
                     .buffer = view.buffer,
                     .range = {.offset = view.offset, .size = view.size},
                 });
             }
-            Buffer* fallback = deferredViews->geometries.buffer;
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
-            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = textureFeedback});
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, streamPageCount), .buffer = deferredStream->paramsBuffer});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialSampler), .sampler = &materialSampler_});
             const std::array streamBuffers{
-                deferredStream ? deferredStream->visibleClusterBuffer : fallback,
-                deferredStream ? deferredStream->activeGroupBuffer : fallback,
-                deferredStream ? deferredStream->pageBuffer : fallback,
-                deferredStream ? deferredStream->pageTableBuffer : fallback, deferredFrameInfo};
+                deferredStream->visibleClusterBuffer,
+                deferredStream->activeGroupBuffer,
+                deferredStream->pageBuffer,
+                deferredStream->pageTableBuffer, deferredFrameInfo};
             for (uint32_t i = 0; i < streamBuffers.size(); ++i) {
                 bindings.push_back({.binding = kStreamGeometryMembers[i], .buffer = streamBuffers[i]});
             }
@@ -1647,14 +1604,12 @@ public:
                 const bool sparsePrograms = boolProperty(context.properties(), "programBinning", true);
                 if (sparsePrograms) { updateMaterialProgramBins(); }
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
-                    .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
-                        ? deferredViews->meshletDraws.buffer : fallback,
+                    .visibility = visibilityView,
+                    .streamRecords = deferredStream->visibleClusterBuffer,
+                    .streamGroups = deferredStream->activeGroupBuffer,
                     .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
                     .shadingMaterials = sceneResources_.materialBuffer(),
                     .width = push.width, .height = push.height,
-                    .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
-                    .streamGroups = deferredStream ? deferredStream->activeGroupBuffer : nullptr,
-                    .residentRecordCount = info.residentRecordCount,
                     .materialProgramBins = sparsePrograms ? std::span<const uint32_t>(materialInstanceProgramBins_) : std::span<const uint32_t>{},
                     .programBinCount = sparsePrograms ? uint32_t(materialProgramBins_.size()) : 0u},
                     binningLog).transform([&](auto value) { materialBins = std::move(value); });
@@ -2205,14 +2160,16 @@ private:
         }
         SceneSharcMaintenancePush clearPush{};
         clearPush.entriesNum = sharcEntryCount_;
+        clearPush.forceClear = sharcClearPending_ || *sharcDiscarded_;
+        Buffer* geometryChanges = context.preparedScene()->geometry->shadingChangeBuffer();
+        result = importBuffer(resources, "streamGeometryChanges", geometryChanges);
+        if (!result) { return result; }
+        maintenanceUses.push_back({"streamGeometryChanges", RenderGraphResourceAccess::BufferShaderRead});
         const uint32_t maintenanceGroups = (sharcEntryCount_ + kSharcMaintenanceBlockSize - 1u) / kSharcMaintenanceBlockSize;
         std::vector<RenderGraphStage> stages;
-        const bool clearCache = sharcClearPending_ || *sharcDiscarded_;
-        if (clearCache) {
-            stages.push_back({"SHaRC clear", maintenanceUses, [&](CommandBuffer& commands) {
-                return dispatchSharcMaintenance(commands, sharcClearProgram_, clearPush, maintenanceGroups);
-            }});
-        }
+        stages.push_back({clearPush.forceClear ? "SHaRC clear" : "SHaRC stream invalidation", maintenanceUses, [&](CommandBuffer& commands) {
+            return dispatchSharcMaintenance(commands, sharcClearProgram_, clearPush, maintenanceGroups, geometryChanges);
+        }});
         stages.push_back({"SHaRC update", resources.uses, [&](CommandBuffer& commands) {
             return dispatchResources(updateProgram, encoderFor(updateProgram), {
                 .commandBuffer = &commands,
@@ -2225,7 +2182,7 @@ private:
             });
         }});
         stages.push_back({"SHaRC resolve", maintenanceUses, [&](CommandBuffer& commands) {
-            return dispatchSharcMaintenance(commands, sharcResolveProgram_, resolvePush, maintenanceGroups);
+            return dispatchSharcMaintenance(commands, sharcResolveProgram_, resolvePush, maintenanceGroups, geometryChanges);
         }});
         stages.push_back({"SHaRC query", resources.uses, [&](CommandBuffer& commands) {
             return dispatchResources(queryProgram, encoderFor(queryProgram), {
@@ -2251,7 +2208,7 @@ private:
         CommandBuffer& commandBuffer,
         ComputeKernel& program,
         const SceneSharcMaintenancePush& maintenancePush,
-        uint32_t groupCount)
+        uint32_t groupCount, Buffer* geometryChanges)
     {
         auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
@@ -2260,6 +2217,7 @@ private:
             .hashEntries = writer.buffer(sharcHashEntriesBuffer_.get()),
             .accumulation = writer.buffer(sharcAccumulationBuffer_.get()),
             .resolved = writer.buffer(sharcResolvedBuffer_.get()),
+            .geometryChanges = writer.buffer(geometryChanges),
             .settings = maintenancePush,
         };
         auto encoded = writer.encode(params, kSharcMaintenanceABI, ParameterTransport::InlinePush);
@@ -2429,8 +2387,8 @@ private:
 
     bool validateMaterialTarget(std::string& log) const
     {
-        if (hasValuePrograms() && (!useOpenPBRBsdf(properties()) || streamMaterials_)) {
-            log = "Custom Value programs currently require OpenPBR PT or resident VBuffer shading";
+        if (hasValuePrograms() && !useOpenPBRBsdf(properties())) {
+            log = "Custom Value programs currently require OpenPBR PT or VBuffer shading";
             return false;
         }
         const auto generation = sceneResources_.materialGeneration();
@@ -2725,6 +2683,8 @@ private:
     bool compiledExportUpscalerGuides_ = false;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;
+    std::shared_ptr<const ComputeSampledImageSnapshot> previousTextureSnapshot_;
+    uint64_t geometryShadingRevision_ = 0;
     SamplerDesc materialSampler_{
         .minFilter = SamplerFilter::Linear,
         .magFilter = SamplerFilter::Linear,
@@ -2733,7 +2693,6 @@ private:
         .addressV = SamplerAddressMode::Repeat,
         .addressW = SamplerAddressMode::Repeat,
     };
-    bool streamMaterials_ = false;
     Device* device_ = nullptr;
     SamplerDesc openPBRLutSampler_{
         .minFilter = SamplerFilter::Linear,

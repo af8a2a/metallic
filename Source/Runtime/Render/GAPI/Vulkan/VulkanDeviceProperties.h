@@ -15,7 +15,6 @@ struct VulkanDeviceProperties {
     VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructure{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
     VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptorHeap{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
     VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT generatedCommands{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};
-    VkPhysicalDeviceOpacityMicromapPropertiesKHR opacityMicromap{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_KHR};
 #ifdef VK_NV_cluster_acceleration_structure
     VkPhysicalDeviceClusterAccelerationStructurePropertiesNV cluster{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
