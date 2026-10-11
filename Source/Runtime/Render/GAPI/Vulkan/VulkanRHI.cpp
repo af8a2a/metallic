@@ -2113,7 +2113,8 @@ struct PipelineCacheImpl {
     ~PipelineCacheImpl();
     Result<> initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
     Result<> save();
-    bool recordPsoLocked(uint64_t psoHash);
+    bool recordPsoLocked(uint64_t psoHash, const VkPipelineCreationFeedback& feedback,
+        uint64_t nativeCreateNs, uint64_t cacheLockWaitNs);
 };
 
 struct GraphicsPipelineImpl {
@@ -2880,8 +2881,10 @@ Result<> PipelineCacheImpl::save()
     return {};
 }
 
-bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash)
+bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash, const VkPipelineCreationFeedback& feedback,
+    uint64_t nativeCreateNs, uint64_t cacheLockWaitNs)
 {
+    const bool firstInSession = !sessionPsoHashes.contains(psoHash);
     const bool cacheHit = storedPsoHashes.contains(psoHash) ||
         sessionPsoHashes.contains(psoHash);
     sessionPsoHashes.insert(psoHash);
@@ -2890,6 +2893,24 @@ bool PipelineCacheImpl::recordPsoLocked(uint64_t psoHash)
         ++stats.hitCount;
     } else {
         ++stats.missCount;
+    }
+    const bool feedbackValid = (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) != 0;
+    const bool nativeHit = feedbackValid &&
+        (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
+    if (!feedbackValid) {
+        ++stats.unknownFeedbackCount;
+    } else if (nativeHit) {
+        ++stats.nativeHitCount;
+    } else {
+        ++stats.nativeMissCount;
+    }
+    stats.lastNativeCreateTimeNanoseconds = nativeCreateNs;
+    stats.lastDriverDurationNanoseconds = feedbackValid ? feedback.duration : 0;
+    stats.lastCacheLockWaitTimeNanoseconds = cacheLockWaitNs;
+    // A stored application identity does not imply a readily usable native
+    // pipeline. Persist newly generated backend state even on a hash hit.
+    // Without feedback, refresh each identity once per session conservatively.
+    if (!cacheHit || (feedbackValid ? !nativeHit : firstInSession)) {
         ++stats.dirtyRevision;
     }
     return cacheHit;
@@ -8747,10 +8768,10 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
         shaderImpl->replayInputSpirv.assign(input, input + desc.spirv.size_bytes());
         shaderImpl->replayDeviceSpirv.assign(actual, actual + deviceDesc.spirv.size_bytes());
     }
+    shaderImpl->diagnosticName = desc.debugName ? desc.debugName : "";
     if (impl_->pipelineExecutableStatistics) {
         shaderImpl->deviceSpirvFnv1a64 = detail::hashBytes(detail::kFnvOffset,
             deviceDesc.spirv.data(), deviceDesc.spirv.size_bytes());
-        shaderImpl->diagnosticName = desc.debugName ? desc.debugName : "";
     }
     return std::unique_ptr<ShaderModule>(new ShaderModule(std::move(shaderImpl)));
 }
@@ -8825,6 +8846,80 @@ std::array<VkDescriptorSetAndBindingMappingEXT, 3> defaultHeapMappings(const Des
             VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
         static_cast<uint32_t>(writer.resourceDescriptorStride()));
     return bindlessMappings;
+}
+
+uint64_t pipelineElapsedNanoseconds(std::chrono::steady_clock::time_point begin)
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - begin).count());
+}
+
+struct PipelineCreationFeedback {
+    VkPipelineCreationFeedback ownedFeedback{};
+    VkPipelineCreationFeedbackCreateInfo ownedInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+        .pPipelineCreationFeedback = &ownedFeedback,
+    };
+    const VkPipelineCreationFeedback* observedFeedback = &ownedFeedback;
+
+    void attach(const void*& next)
+    {
+        // External native callers may already request feedback. Keep their
+        // complete chain and output buffers instead of adding a duplicate.
+        for (auto* structure = static_cast<const VkBaseInStructure*>(next);
+             structure != nullptr; structure = structure->pNext) {
+            if (structure->sType == VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO) {
+                const auto* existing = reinterpret_cast<const VkPipelineCreationFeedbackCreateInfo*>(structure);
+                if (existing->pPipelineCreationFeedback != nullptr) {
+                    observedFeedback = existing->pPipelineCreationFeedback;
+                }
+                return;
+            }
+        }
+        ownedInfo.pNext = next;
+        next = &ownedInfo;
+    }
+};
+
+template<class CreateInfo, class NativeCreate>
+VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::PipelineCacheImpl* cache,
+    uint64_t psoHash, const char* kind, const std::string& shaderName, const char* entryPoint,
+    uint64_t cacheLockWaitNs, bool& metadataHit, NativeCreate&& nativeCreate)
+{
+    CreateInfo info = suppliedInfo;
+    PipelineCreationFeedback feedback;
+    feedback.attach(info.pNext);
+    metadataHit = cache != nullptr &&
+        (cache->storedPsoHashes.contains(psoHash) || cache->sessionPsoHashes.contains(psoHash));
+    const std::string cachePath = cache != nullptr ? cache->filePath.string() : "<none>";
+    const char* entry = entryPoint != nullptr ? entryPoint : "<none>";
+    spdlog::info("[PipelineCreate] Begin kind={} pso={:016x} cache='{}' shader='{}' entry={} metadataHit={} cacheLockWaitMs={:.3f}",
+        kind, psoHash, cachePath, shaderName, entry, metadataHit,
+        static_cast<double>(cacheLockWaitNs) / 1'000'000.0);
+
+    // Exclude diagnostic formatting, cache locking and statistics queries from
+    // the host duration of the native creation call itself.
+    const auto begin = std::chrono::steady_clock::now();
+    const VkResult result = nativeCreate(info);
+    const uint64_t nativeCreateNs = pipelineElapsedNanoseconds(begin);
+    const auto& observed = *feedback.observedFeedback;
+    const bool feedbackValid = result == VK_SUCCESS &&
+        (observed.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) != 0;
+    const bool nativeHit = feedbackValid &&
+        (observed.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
+    if (result == VK_SUCCESS && cache != nullptr) {
+        metadataHit = cache->recordPsoLocked(psoHash, observed, nativeCreateNs, cacheLockWaitNs);
+    }
+    // Driver duration is undefined when VALID is clear; do not read it then.
+    const std::string driverMs = feedbackValid
+        ? fmt::format("{:.3f}", static_cast<double>(observed.duration) / 1'000'000.0)
+        : "unknown";
+    spdlog::info("[PipelineCreate] End kind={} pso={:016x} cache='{}' shader='{}' entry={} result={} nativeMs={:.3f} driverMs={} cacheLockWaitMs={:.3f} feedbackValid={} nativeHit={} metadataHit={}",
+        kind, psoHash, cachePath, shaderName, entry, static_cast<int>(result),
+        static_cast<double>(nativeCreateNs) / 1'000'000.0, driverMs,
+        static_cast<double>(cacheLockWaitNs) / 1'000'000.0, feedbackValid,
+        feedbackValid ? (nativeHit ? "true" : "false") : "unknown", metadataHit);
+    return result;
 }
 
 // The returned lock stays alive through Vulkan creation and recordPsoLocked().
@@ -8938,8 +9033,10 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
+    const auto cacheLockBegin = std::chrono::steady_clock::now();
     auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
     if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
+    const uint64_t cacheLockWaitNs = pipelineCache != nullptr ? pipelineElapsedNanoseconds(cacheLockBegin) : 0;
     const uint64_t psoHash = detail::graphicsPipelineStateHash(desc);
 
     const char* vertexEntryPoint = desc.vertexShader.entryPoint;
@@ -9116,20 +9213,23 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     };
 
     VkPipeline& pipeline = pipelineImpl->pipeline;
-    result = impl_->functions.vkCreateGraphicsPipelines(
-        impl_->device,
-        pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
-        1,
-        &pipelineInfo,
-        nullptr,
-        &pipeline);
+    const ShaderModule* primaryShader = usesMeshShader ? desc.meshShader.module : desc.vertexShader.module;
+    result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "graphics",
+        primaryShader->impl_->diagnosticName, usesMeshShader ? meshEntryPoint : vertexEntryPoint,
+        cacheLockWaitNs, pipelineImpl->pipelineCacheHit, [&](const VkGraphicsPipelineCreateInfo& info) {
+            return impl_->functions.vkCreateGraphicsPipelines(
+                impl_->device,
+                pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
+                1,
+                &info,
+                nullptr,
+                &pipeline);
+        });
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
 
     pipelineImpl->psoHash = psoHash;
-    pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
-        pipelineCache->recordPsoLocked(psoHash);
     return std::unique_ptr<GraphicsPipeline>(new GraphicsPipeline(std::move(pipelineImpl)));
 }
 
@@ -9157,8 +9257,10 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
+    const auto cacheLockBegin = std::chrono::steady_clock::now();
     auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
     if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
+    const uint64_t cacheLockWaitNs = pipelineCache != nullptr ? pipelineElapsedNanoseconds(cacheLockBegin) : 0;
     const uint64_t psoHash = detail::computePipelineStateHash(desc);
 
     const char* computeEntryPoint = desc.computeShader.entryPoint;
@@ -9244,13 +9346,17 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         }
     }
     VkPipeline& pipeline = pipelineImpl->pipeline;
-    result = impl_->functions.vkCreateComputePipelines(
-        impl_->device,
-        pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
-        1,
-        &pipelineInfo,
-        nullptr,
-        &pipeline);
+    result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "compute",
+        desc.computeShader.module->impl_->diagnosticName, computeEntryPoint,
+        cacheLockWaitNs, pipelineImpl->pipelineCacheHit, [&](const VkComputePipelineCreateInfo& info) {
+            return impl_->functions.vkCreateComputePipelines(
+                impl_->device,
+                pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
+                1,
+                &info,
+                nullptr,
+                &pipeline);
+        });
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -9297,8 +9403,6 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
     pipelineImpl->replayInputSpirv = desc.computeShader.module->impl_->replayInputSpirv;
     pipelineImpl->replayDeviceSpirv = desc.computeShader.module->impl_->replayDeviceSpirv;
     pipelineImpl->psoHash = psoHash;
-    pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
-        pipelineCache->recordPsoLocked(psoHash);
     return std::unique_ptr<ComputePipeline>(new ComputePipeline(std::move(pipelineImpl)));
 }
 
@@ -10515,15 +10619,21 @@ struct VulkanNativeAccess {
         if (!impl || !impl->device || !impl->pipelineCache || pipeline != VK_NULL_HANDLE) {
             return makeError(Error::InvalidArgument);
         }
+        const auto cacheLockBegin = std::chrono::steady_clock::now();
         std::lock_guard lock(impl->mutex);
+        const uint64_t cacheLockWaitNs = pipelineElapsedNanoseconds(cacheLockBegin);
         VkPipeline candidate = VK_NULL_HANDLE;
-        const VkResult result = impl->device->functions.vkCreateGraphicsPipelines(
-            impl->device->device, impl->pipelineCache, 1, &info, nullptr, &candidate);
+        bool metadataHit = false;
+        const char* entry = info.stageCount != 0 && info.pStages != nullptr ? info.pStages[0].pName : nullptr;
+        const VkResult result = createPipelineWithFeedback(info, impl, stateHash, "external-graphics",
+            "<external>", entry, cacheLockWaitNs, metadataHit, [&](const VkGraphicsPipelineCreateInfo& suppliedInfo) {
+                return impl->device->functions.vkCreateGraphicsPipelines(
+                    impl->device->device, impl->pipelineCache, 1, &suppliedInfo, nullptr, &candidate);
+            });
         if (result != VK_SUCCESS) {
             if (candidate) { impl->device->functions.vkDestroyPipeline(impl->device->device, candidate, nullptr); }
             return resultFromVk(result);
         }
-        impl->recordPsoLocked(stateHash);
         pipeline = candidate;
         return {};
     }

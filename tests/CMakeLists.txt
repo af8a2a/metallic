@@ -427,6 +427,7 @@ add_executable(MetallicRHITests
     rhi/ResourceRegistryTests.cpp
     rhi/ShaderRegistryTests.cpp
     rhi/PipelineCacheSaveTests.cpp
+    rhi/PipelineCacheFeedbackTests.cpp
     rhi/ShaderObjectBinaryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp

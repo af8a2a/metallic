@@ -23,9 +23,9 @@ auto result = ShaderRegistry::instance().getComputeKernel(device,
 
 Registry 是进程单例，但全局仅保存源码字节标识与缓存分组。创建 module 时关联 RHI descriptor-heap/opacity-micromap 转换前后的字节标识，保持实际 GPU shader 的来源分组。GPU cache 通过 `Device::sharedState` 按设备创建一次，在 native Device 销毁前释放；不同 Device 不共享 native handles。每个返回的 PSO 是调用者拥有的 RHI 对象，持久缓存向驱动提供预编译数据；这是 `.pso` 复用，不是按日志 hash 直接返回任意执行对象。源码每次经过现有 Slang 依赖检查，不能从失效请求拿到旧字节码。
 
-缓存放在 `.cache/pso/`。PT、SHaRC、实时光照、Deferred、VisibilityBuffer 与 GPUDrivenStreamAsset 保留既有文件名；其他 module 自动使用 `ShaderRegistry-<module basename>-<full module hash>.pso`，无来源元数据的原始 SPIR-V 使用 `ShaderRegistry.pso`。同一 module 的入口和变体共享容器，shader 字节、入口、完整 RHI 管线状态及 backend/device 兼容性决定实际 PSO 身份。分组只决定存储文件，不决定执行对象是否相同。
+缓存默认放在 `.cache/pso/`；诊断时可设置 `METALLIC_PSO_CACHE_DIRECTORY` 使用独立目录，隔离首次 native 创建和跨进程重用，同时保留现有 SPIR-V 缓存。PT、SHaRC、实时光照、Deferred、VisibilityBuffer 与 GPUDrivenStreamAsset 保留既有文件名；其他 module 自动使用 `ShaderRegistry-<module basename>-<full module hash>.pso`，无来源元数据的原始 SPIR-V 使用 `ShaderRegistry.pso`。同一 module 的入口和变体共享容器，shader 字节、入口、完整 RHI 管线状态及 backend/device 兼容性决定实际 PSO 身份。分组只决定存储文件，不决定执行对象是否相同。
 
-成功创建的新 PSO 交给设备持有的后台 worker 保存；同一 group 的请求合并，在最后一次新状态请求后 750 ms 保存，持续新增请求最多等待 5 s（不含已有保存任务的执行时间）。命中不延长等待；失败候选不记录为成功。正常 Device 销毁先排空并 join worker，再销毁 native cache；需要立即确保持久化的工具/测试可调用 `flushPipelineCaches(device)`，普通管线获取无需调用。保存失败会记录 warning 并保留待保存状态，后台延迟重试，当前管线仍可执行；退出/显式 flush 的失败尝试有界，避免永久等待。显式 `desc.pipelineCache` 沿用调用者的保存契约，`PipelineCache::save()` 仍同步；默认 null 必须走 Registry 持久缓存。
+成功创建的新 PSO 或有效 native feedback 报告未命中的已有 PSO，交给设备持有的后台 worker 保存。这样应用 hash 命中后驱动补充的 backend data 仍会持久化。反馈无效时，每个 PSO 在本进程首次成功创建后保存一次；反馈无效的重复创建不重复标记。有效 native 命中不延长等待；失败候选不记录为成功。同一 group 的请求合并，在最后一次待保存状态请求后 750 ms 保存，持续新增请求最多等待 5 s（不含已有保存任务的执行时间）。正常 Device 销毁先排空并 join worker，再销毁 native cache；需要立即确保持久化的工具/测试可调用 `flushPipelineCaches(device)`，普通管线获取无需调用。保存失败会记录 warning 并保留待保存状态，后台延迟重试，当前管线仍可执行；退出/显式 flush 的失败尝试有界，避免永久等待。显式 `desc.pipelineCache` 沿用调用者的保存契约，`PipelineCache::save()` 仍同步；默认 null 必须走 Registry 持久缓存。
 
 后台提取与文件处理不持有 PSO 创建/统计共用的元数据锁，独立保存锁防止旧文件覆盖较新保存。提取前捕获 hash 与 revision，成功后只提交该快照，保存期间新增的 PSO 留待下一次保存。默认 Vulkan cache 未设置 externally-synchronized 标志，native cache 访问由驱动内部同步，仍可能存在驱动锁竞争，依据 [Vulkan pipeline cache synchronization](https://docs.vulkan.org/spec/latest/chapters/pipelines.html#pipelines-cache)。`Saved pipeline cache` 在操作完成后打印，并记录 `extractMs`（驱动提取及输出缓冲分配）、`writeMs`（容器排序、校验和、写盘与原子替换）、`totalMs`；这些不是 shader 编译、PSO 创建或启动总耗时。`PipelineCacheStats` 的 revision、保存次数和阶段时间可验证合并及持久化状态。
 
@@ -45,6 +45,7 @@ Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shad
 - `shader_registry_source_pso_and_device_lifetime`：源码冷/热缓存、shader 与管线状态变体、失败发布、并发创建、不同 Device 的持久复用。
 - `MetallicDeferredShaderCacheWriterTests`：合并、后台阻塞隔离、保存期间的新请求、失败重试和退出排空。
 - `pipeline_cache_deferred_save_and_snapshot`：实际 Vulkan 缓存保存的同步/后台计时、并发新增与全量重新加载。
+- `pipeline_cache_native_feedback_and_refresh`：已知 hash 与空 native cache 的组合、compute/graphics/native 适配器反馈链、backend 更新持久化、第二 Device 重载和像素读回。
 - `MetallicShaderObjectCacheFileTests`：文件兼容性、损坏、尺寸边界、原子替换与并发保存。
 - `shader_object_binary_persistence_readback`：SPIR-V 导出、BINARY 命中、片元变体、损坏回退和第二 Device 的像素一致性。
 - `MetallicShaderObjectBinaryProcessSmoke`：关闭驱动内部缓存，独立进程检查 binary 加载与精确像素读回。
@@ -53,4 +54,4 @@ Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shad
 - `hdr_editor_imgui_composite`：编辑器显示管线的 native 缓存复用与 scRGB/PQ 像素读回。
 - `MetallicLookDevPathTracePipelineCacheSmoke`：关闭驱动内部缓存，用两个实际 LookDev 进程检查 OpenPBR PT 与 SHaRC 的 Registry 缓存覆盖。
 
-`[ShaderRegistry] PSO cache group=... hits=... misses=...` 是容器 hash-table 统计，不是 Vulkan native creation feedback；性能结论仍需同负载实际计时。
+`[ShaderRegistry] PSO cache group=... hits=... misses=...` 是容器 hash-table 统计；新增 `nativeHits/nativeMisses/nativeUnknown` 分别计数有效驱动命中、有效反馈未命中及无效反馈。`[PipelineCreate] Begin/End` 在 native 调用前后打印，记录 `nativeMs`（仅 Vulkan 创建调用）、`cacheLockWaitMs`（应用缓存锁等待）和有效反馈的 `driverMs`；无效反馈的 driver duration 和 native hit 为 unknown。驱动未报告命中不等于发生了 shader 编译；首次 native 创建仍可耗时较长。默认 Vulkan 1.4 已包含 creation feedback，无需额外开启扩展。外部 graphics 适配器已有的 feedback chain 会保留。性能结论仍需同负载、同缓存条件实际计时。

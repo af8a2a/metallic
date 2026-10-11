@@ -1212,7 +1212,15 @@ struct PipelineCacheStats {
     uint64_t hitCount = 0;
     uint64_t missCount = 0;
     uint64_t backendDataSize = 0;
-    // Revisions advance only for successful, previously unseen PSO identities.
+    // These counters report driver feedback, independently of hash-table hits.
+    // A native miss does not by itself prove that shader compilation occurred.
+    uint64_t nativeHitCount = 0;
+    uint64_t nativeMissCount = 0;
+    uint64_t unknownFeedbackCount = 0;
+    uint64_t lastNativeCreateTimeNanoseconds = 0;
+    uint64_t lastDriverDurationNanoseconds = 0; // Zero when feedback is invalid.
+    uint64_t lastCacheLockWaitTimeNanoseconds = 0;
+    // Successful creation may update backend data even for a known PSO hash.
     // A save commits its snapshot; concurrent newer revisions remain pending.
     uint64_t dirtyRevision = 0;
     uint64_t persistedRevision = 0;

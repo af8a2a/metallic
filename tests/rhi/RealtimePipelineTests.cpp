@@ -453,6 +453,50 @@ public:
         if (!render::vulkan::deviceCapabilities(context.device).streamlineDlssRr) {
             return RHITestResult::skip("Requires --rhi-streamline and DLSS-RR support");
         }
+        const uint32_t initialValidationCount = context.validationMessageCount ? context.validationMessageCount->load() : 0;
+        // RR needs actual presents for Streamline frame bookkeeping and garbage
+        // collection even when correctness images are captured offscreen.
+        std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)> window(
+            SDL_CreateWindow("DLSS-RR history regression", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN), SDL_DestroyWindow);
+        if (!window) { return realtimeFailure(SDL_GetError()); }
+        auto swapchain = context.device.createSwapchain({.window = {.nativeWindow = window.get()},
+            .width = 64, .height = 64, .vsync = false});
+        auto available = context.device.createSwapchainSemaphore();
+        auto pool = context.device.createCommandPool(context.graphicsQueue);
+        if (!swapchain || !available || !pool) { return realtimeFailure("RR history presentation setup failed"); }
+        auto commands = (*pool)->createCommandBuffer();
+        if (!commands) { return realtimeFailure("RR history presentation command allocation failed"); }
+        std::vector<std::unique_ptr<render::SwapchainSemaphore>> finished;
+        for (uint32_t i = 0; i < (*swapchain)->imageCount(); ++i) {
+            auto semaphore = context.device.createSwapchainSemaphore();
+            if (!semaphore) { return realtimeFailure("RR history presentation semaphore allocation failed"); }
+            finished.push_back(std::move(*semaphore));
+        }
+        // Declared after presentation resources and before the graph: every
+        // exit destroys graph executables, drains the queue, then releases WSI.
+        struct PresentationQueueDrain {
+            render::Queue& queue;
+            ~PresentationQueueDrain()
+            {
+                (void)queue.waitIdle();
+            }
+        } presentationDrain{context.graphicsQueue};
+        const auto presentFrame = [&] {
+            SDL_PumpEvents();
+            auto acquired = (*swapchain)->acquireNextImage(**available);
+            if (!acquired || !(*pool)->reset() || !(*commands)->begin()) { return false; }
+            render::TextureBarrierDesc barrier{.texture = (*swapchain)->texture(*acquired),
+                .oldLayout = render::TextureLayout::Undefined, .newLayout = render::TextureLayout::Present,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1}};
+            if (!(*commands)->synchronize({.textures = {&barrier, 1}}) || !(*commands)->end()) { return false; }
+            render::CommandBuffer* command = commands->get();
+            const render::SwapchainSemaphoreSubmitDesc wait{.semaphore = available->get()};
+            const render::SwapchainSemaphoreSubmitDesc signal{.semaphore = finished[*acquired].get()};
+            if (!context.graphicsQueue.submit({.waitSwapchainSemaphores = {&wait, 1}, .commandBuffers = {&command, 1},
+                    .signalSwapchainSemaphores = {&signal, 1}})) { return false; }
+            return bool((*swapchain)->present(context.graphicsQueue, *acquired, *finished[*acquired])) &&
+                bool(context.graphicsQueue.waitIdle());
+        };
         render::RenderSampleLoadResult sample;
         std::string log;
         if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-rr", sample, log)) { return realtimeFailure(log); }
@@ -462,7 +506,8 @@ public:
         }
         // Legacy RR assets use per-pass cameras. Bind one shared view for the
         // camera-motion portion of this test, as the realtime sample already does.
-        sample.graph.setViewProperties({{"camera", sample.graph.findNode("PathTrace")->properties.at("camera")}});
+        sample.graph.setViewProperties({{"camera", sample.graph.findNode("PathTrace")->properties.at("camera")},
+            {"renderResolution", {{"adaptive", true}}}});
         sample.graph.findNode("PathTrace")->properties.erase("camera");
         sample.graph.findNode("DLSSRR")->properties.erase("camera");
         render::RenderWorld world;
@@ -479,11 +524,15 @@ public:
 
         render::RenderGraphExecutor executor;
         executor.bindRenderWorld(&world);
-        const uint32_t initialValidationCount = context.validationMessageCount ? context.validationMessageCount->load() : 0;
         for (uint32_t variant = 0; variant < 2; ++variant) {
             const uint32_t width = variant == 0 ? 384 : 321, height = variant == 0 ? 256 : 217;
             if (!executor.compile(context.device, sample.graph, width, height, log)) { return realtimeFailure(log); }
+            const auto* output = executor.outputResource("DLSSRR.color");
+            if (!output || output->desc.width != width || output->desc.height != height) {
+                return realtimeFailure("RR resize fixture did not negotiate the requested output extent");
+            }
             for (uint32_t frame = 0; frame < 12; ++frame) {
+                render::vulkan::StreamlineFrameScope sdkFrame(false);
                 if (frame == 6) {
                     auto camera = executor.renderView()->camera();
                     camera.eye[0] += 0.05f;
@@ -492,7 +541,7 @@ public:
                 if (!executor.execute({.graphicsQueue = &context.graphicsQueue}) || !executor.waitForSubmittedWork()) {
                     return realtimeFailure("ACEScg DLSS-RR frame/history execution failed");
                 }
-
+                if (!presentFrame()) { return realtimeFailure("RR history presentation failed"); }
             }
             auto* buffer = executor.outputResource("Readback.pixels")->buffer;
             buffer->invalidate();
@@ -509,10 +558,17 @@ public:
             if (energy == 0 || energy == uint64_t(width) * height * 3 * 255) { return realtimeFailure("RR color is entirely black or white"); }
         }
         executor = render::RenderGraphExecutor{};
+        if (!context.graphicsQueue.waitIdle()) { return realtimeFailure("RR history presentation drain failed"); }
+        finished.clear();
+        commands->reset();
+        pool->reset();
+        available->reset();
+        swapchain->reset();
+        window.reset();
         if (context.validationMessageCount && context.validationMessageCount->load() != initialValidationCount) {
             return realtimeFailure("RR produced Vulkan validation messages");
         }
-        return RHITestResult::pass("DLSS-RR working HDR/albedo, 24 frames, camera change and odd-size resize");
+        return RHITestResult::pass("DLSS-RR working HDR/albedo, 24 presented frames, camera change and odd-size resize");
     }
 };
 METALLIC_REGISTER_RHI_TEST(WorkingColorDLSSRRTest);
