@@ -37,4 +37,23 @@ public bool meshletLodGroupNeedsFine(float4 sphere, float groupError, uint level
         meshletLodProjectedError(sphere, groupError, world0, world1, world2, world3,
             eye, forward, projection) > projection.w;
 }
+
+// Ray-tracing detail is independent of camera orientation. Use the nearest
+// point of the transformed error-expanded sphere, retaining the same affine
+// scale bound and orthographic pixel convention as the raster metric.
+public float meshletLodRayProjectedError(float4 sphere, float groupError,
+    float4 world0, float4 world1, float4 world2, float4 world3,
+    float4 eye, float4 forward, float4 projection, float worldBoundsPadding = 0.0)
+{
+    float3 a = world0.xyz, b = world1.xyz, c = world2.xyz;
+    float ab = abs(dot(a, b)), ac = abs(dot(a, c)), bc = abs(dot(b, c));
+    float scale = sqrt(max(dot(a, a) + ab + ac, max(dot(b, b) + ab + bc, dot(c, c) + ac + bc)));
+    float error = groupError * scale;
+    if (error <= 0.0) { return 0.0; }
+    if (forward.w != 0.0) { return error * projection.x / max(projection.z, 1e-6); }
+    float3 center = a * sphere.x + b * sphere.y + c * sphere.z + world3.xyz - eye.xyz;
+    float distance = length(center) - (sphere.w * scale + error + worldBoundsPadding);
+    if (distance <= eye.w) { return 3.402823466e+38; }
+    return error * (projection.x / max(2.0 * projection.y, 1e-6)) / distance;
+}
 } // namespace Metallic.GPUDriven

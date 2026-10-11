@@ -98,6 +98,11 @@ std::vector<uint32_t> buildMeshletLodDemandRoots(std::span<const MeshletLODBVHNo
 std::vector<uint32_t> buildMeshletLodTileParents(std::span<const MeshletLODBVHNode> tiles);
 float meshletLodPixelError(const MeshletLODGroupRecord& group,
     const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view);
+// RT error uses distance to the conservative world sphere, independent of
+// camera rotation. Raster users retain meshletLodPixelError's projection bound.
+float meshletLodRayPixelError(const MeshletLODGroupRecord& group,
+    const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view);
+bool meshletLodRayNeedsFine(float pixelError, float threshold, float hysteresis, bool previouslyWanted);
 bool meshletLodNeedsFine(const MeshletLODGroupRecord& group,
     const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view,
     uint32_t manualLevel = UINT32_MAX);

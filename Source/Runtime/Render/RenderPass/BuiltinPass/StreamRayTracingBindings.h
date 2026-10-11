@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StreamLODSettings.h"
+
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/NamedResourceParameters.h"
@@ -44,6 +46,7 @@ void describeStreamRayView(const Push& push, uint32_t displayHeight,
     view.displayHeight = displayHeight;
     view.lodPixelError = properties.value("lodPixelError", 1.5f);
     view.lodBias = properties.value("lodBias", 0.0f);
+    applyStreamRayLODSettings(properties, view);
     view.camera.eye = float3(push.eye[0], push.eye[1], push.eye[2]);
     view.camera.center = float3(push.center[0], push.center[1], push.center[2]);
     view.camera.up = float3(push.upProjection[0], push.upProjection[1], push.upProjection[2]);

@@ -37,6 +37,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -1775,7 +1776,7 @@ public:
             return RHITestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
         }
         for (const auto* pass : {pathTrace.get(), materialVisualization.get(), rtxdi.get()}) {
-            for (const char* key : {"lodPixelError", "lodBias"}) {
+            for (const char* key : {"lodPixelError", "lodBias", "rtOffscreenErrorScale", "rtLodHysteresis"}) {
                 const auto controls = pass->runtimeSettings();
                 const auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& control) {
                     return control.key == key && control.type == render::RenderGraphRuntimeSettingType::Float &&
@@ -1784,6 +1785,36 @@ public:
                 if (found == controls.end()) {
                     return RHITestResult::fail(std::string("Ray passes must expose runtime-only LOD control ") + key);
                 }
+            }
+        }
+        const auto hasRayLODControls = [](const render::RenderGraphPass& pass) {
+            const auto controls = pass.runtimeSettings();
+            for (const auto& [key, value, minimum, maximum] : {
+                     std::tuple{"rtOffscreenErrorScale", 2.0f, 1.0f, 16.0f},
+                     std::tuple{"rtLodHysteresis", .2f, 0.0f, .9f}}) {
+                const auto found = std::find_if(controls.begin(), controls.end(), [&](const auto& control) {
+                    return control.key == key && control.type == render::RenderGraphRuntimeSettingType::Float &&
+                        control.defaultValue == value && control.minValue == minimum && control.maxValue == maximum &&
+                        !control.rebuildGraph && !control.invalidateHistory;
+                });
+                if (found == controls.end()) { return false; }
+            }
+            return true;
+        };
+        for (const char* name : {"SceneAccelerationStructurePass", "SceneRayQueryVisualizationPass"}) {
+            auto pass = render::createRenderGraphPass(name);
+            if (!pass || !hasRayLODControls(*pass)) {
+                return RHITestResult::fail(std::string(name) + " missing RT LOD controls");
+            }
+        }
+        for (const char* name : {"VisibilityBufferPass", "GPUDrivenStreamAssetPass"}) {
+            auto pass = render::createRenderGraphPass(name);
+            if (!pass || hasRayLODControls(*pass)) {
+                return RHITestResult::fail(std::string(name) + " exposed inactive RT LOD controls");
+            }
+            pass->setProperties({{"enableClusterRtx", true}});
+            if (!hasRayLODControls(*pass)) {
+                return RHITestResult::fail(std::string(name) + " did not expose RT LOD controls for its CLAS producer");
             }
         }
         if (!hasRuntimeSetting(*gpuDrivenPreview, "visualization",

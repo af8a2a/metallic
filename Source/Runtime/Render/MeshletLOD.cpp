@@ -357,8 +357,7 @@ bool buildMeshletLodMetadata(const scene::RenderPrimitive& primitive,
 
 namespace {
 
-float meshletLodPixelErrorImpl(const MeshletLODGroupRecord& group,
-    const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view, float worldBoundsPadding)
+float meshletLodWorldScale(const GPUSceneGPUInstanceRecord& instance)
 {
     const auto& m = instance.worldMatrix;
     float gram[3][3]{};
@@ -369,7 +368,14 @@ float meshletLodPixelErrorImpl(const MeshletLODGroupRecord& group,
         }
         scaleSquared = std::max(scaleSquared, std::abs(gram[i][0]) + std::abs(gram[i][1]) + std::abs(gram[i][2]));
     }
-    const float scale = std::sqrt(scaleSquared);
+    return std::sqrt(scaleSquared);
+}
+
+float meshletLodPixelErrorImpl(const MeshletLODGroupRecord& group,
+    const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view, float worldBoundsPadding)
+{
+    const auto& m = instance.worldMatrix;
+    const float scale = meshletLodWorldScale(instance);
     const float error = group.error * scale;
     if (error <= 0) { return 0; }
     if (view.forward[3] != 0) { return error * view.projection[0] / std::max(view.projection[2], 1e-6f); }
@@ -497,6 +503,32 @@ float meshletLodPixelError(const MeshletLODGroupRecord& group,
     const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view)
 {
     return meshletLodPixelErrorImpl(group, instance, view, 0);
+}
+
+float meshletLodRayPixelError(const MeshletLODGroupRecord& group,
+    const GPUSceneGPUInstanceRecord& instance, const MeshletLODView& view)
+{
+    const float scale = meshletLodWorldScale(instance);
+    const float error = group.error * scale;
+    if (error <= 0) { return 0; }
+    if (view.forward[3] != 0) { return error * view.projection[0] / std::max(view.projection[2], 1e-6f); }
+    const auto& m = instance.worldMatrix;
+    float distanceSquared = 0;
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+        const float delta = m[axis] * group.sphere[0] + m[4 + axis] * group.sphere[1] +
+            m[8 + axis] * group.sphere[2] + m[12 + axis] - view.eye[axis];
+        distanceSquared += delta * delta;
+    }
+    const float distance = std::sqrt(distanceSquared) - (group.sphere[3] * scale + error);
+    if (distance <= view.eye[3]) { return std::numeric_limits<float>::max(); }
+    const float focal = view.projection[0] / std::max(2 * view.projection[1], 1e-6f);
+    return error * focal / distance;
+}
+
+bool meshletLodRayNeedsFine(float pixelError, float threshold, float hysteresis, bool previouslyWanted)
+{
+    const float width = std::clamp(std::isfinite(hysteresis) ? hysteresis : 0.2f, 0.0f, 0.9f);
+    return pixelError > threshold * (previouslyWanted ? 1.0f - width : 1.0f);
 }
 
 bool meshletLodNeedsFine(const MeshletLODGroupRecord& group,

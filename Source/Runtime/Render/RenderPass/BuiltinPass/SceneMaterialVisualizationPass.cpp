@@ -81,6 +81,7 @@ public:
                 }),
             runtimeBoolSetting("flipBitangent", "Flip Bitangent", false),
         };
+        appendStreamRayLODRuntimeSettings(settings);
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.42f, 1.15f},

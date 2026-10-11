@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ResourceState.h"
+#include "StreamLODSettings.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
@@ -294,6 +295,7 @@ public:
             setting.rebuildGraph = true;
             settings.push_back(std::move(setting));
         }
+        if (properties().value("enableClusterRtx", false)) { appendStreamRayLODRuntimeSettings(settings); }
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 2.0f, 8.0f},
@@ -2372,6 +2374,7 @@ private:
         frame.useSeparateRenderCamera = true;
         frame.jitterX = camera.renderEye[3];
         frame.jitterY = camera.renderCenter[3];
+        applyStreamRayLODSettings(context.properties(), frame, true);
         return frame;
     }
 

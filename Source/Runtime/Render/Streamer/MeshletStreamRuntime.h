@@ -368,6 +368,10 @@ struct MeshletStreamGPUParams {
     // RT selection may replace an ancestor only after the finer CLAS is published.
     uint32_t rayClasPageTableBuffer = UINT32_MAX;
     uint32_t lodTelemetryPadding = 0;
+    float rtOffscreenErrorScale = 2.0f;
+    float rtLodHysteresis = 0.2f;
+    uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: preserve visible raster quality.
+    uint32_t rtLodPolicyRevision = 1;
 };
 
 struct MeshletStreamGPURasterBindings {
@@ -477,7 +481,7 @@ static_assert(sizeof(MeshletStreamGPUBLASHeader) == 96);
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGPUParams) == 624);
+static_assert(sizeof(MeshletStreamGPUParams) == 640);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
 static_assert(sizeof(MeshletStreamGPURasterBindings) == 96);
@@ -564,6 +568,9 @@ struct MeshletStreamFrameDesc {
     bool enableGpuLodSelection = true;
     float lodPixelError = 1.5f; // Display viewport pixels, before lodBias.
     float lodBias = 0.0f;
+    float rtOffscreenErrorScale = 2.0f; // Multiplies the RT pixel budget outside the primary frustum.
+    float rtLodHysteresis = 0.2f; // Refine at T; coarsen below T * (1 - hysteresis).
+    bool preserveRasterLod = false; // Shared raster/RT cuts preserve visible raster projection quality.
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
     MeshletStreamCameraDesc renderCamera;
@@ -830,6 +837,10 @@ private:
     ResourceState demandBufferState_ = ResourceState::Undefined;
     uint32_t lodInstanceOffsetsOffset_ = 0;
     ResourceState lodStateBufferState_ = ResourceState::Undefined;
+    std::shared_ptr<bool> lodStateInitialized_ = std::make_shared<bool>(false);
+    uint64_t rtLodHistoryBytes_ = 0;
+    uint32_t rtLodPolicyRevision_ = 1;
+    float rtLodDisplayPixelError_ = 1.5f;
     ResourceLease nodeHandle_;
     ResourceLease drawIndirectHandle_;
     ResourceLease traversalHeaderHandle_;

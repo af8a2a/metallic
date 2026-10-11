@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
+#include "StreamLODSettings.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -33,8 +34,10 @@ public:
 
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
-        return {{.key = "AsyncComputePreferred", .label = "Async Compute Preferred",
+        std::vector<RenderGraphRuntimeSetting> settings{{.key = "AsyncComputePreferred", .label = "Async Compute Preferred",
             .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = true, .rebuildGraph = true}};
+        appendStreamRayLODRuntimeSettings(settings);
+        return settings;
     }
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
@@ -88,6 +91,7 @@ public:
             std::tan(view.camera.fovDegrees * 3.14159265359f / 360.0f));
         view.lodPixelError = properties.value("lodPixelError", 1.5f);
         view.lodBias = properties.value("lodBias", 0.0f);
+        applyStreamRayLODSettings(properties, view);
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override

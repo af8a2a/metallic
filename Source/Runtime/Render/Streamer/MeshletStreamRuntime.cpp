@@ -849,7 +849,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     maxUploadBytesPerFrame_ = desc.maxUploadBytesPerFrame;
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
     screenSpacePagePriority_ = desc.screenSpacePagePriority;
-    viewDrivenPageDemand_ = desc.viewDrivenPageDemand;
+    viewDrivenPageDemand_ = desc.viewDrivenPageDemand || clusterRtxEnabled_;
     distributedPageDemand_ = desc.distributedPageDemand;
     distributedDemandMinGroups_ = desc.distributedDemandMinGroups;
     prefetchPages_ = desc.prefetchPages && desc.viewDrivenPageDemand && desc.screenSpacePagePriority &&
@@ -2169,6 +2169,10 @@ void MeshletStreamRuntime::reset()
     recentPrefetchGpuDropped_ = 0;
     lodInstanceOffsetsOffset_ = 0;
     lodStateBufferState_ = ResourceState::Undefined;
+    lodStateInitialized_ = std::make_shared<bool>(false);
+    rtLodHistoryBytes_ = 0;
+    rtLodPolicyRevision_ = 1;
+    rtLodDisplayPixelError_ = 1.5f;
     nodeBuffer_.reset();
     drawIndirectBuffer_.reset();
     traversalHeaderBuffer_.reset();
@@ -3403,6 +3407,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     lodInstanceOffsetsOffset_ = static_cast<uint32_t>(topology.size());
     uint64_t stateWords = instances.size() * 4ull;
     lodTransitionHistoryBytes_ = 0;
+    rtLodHistoryBytes_ = 0;
     for (const auto& instance : instances) {
         topology.push_back(static_cast<uint32_t>(stateWords));
         if (instance.primitiveIndex < primitives.size()) {
@@ -3410,6 +3415,13 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             // IDs. Only previous active entries need clearing each frame.
             const uint64_t groupCount = primitives[instance.primitiveIndex].groupCount;
             stateWords += 4ull + groupCount * 3ull;
+            if (clusterRtxEnabled_) {
+                // GPU-submitted frame tokens and desired refinement history.
+                // Independent of optional diagnostic telemetry and page availability.
+                const uint64_t historyWords = 3ull + groupCount * 2ull;
+                stateWords += historyWords;
+                rtLodHistoryBytes_ += historyWords * sizeof(uint32_t);
+            }
             if (lodTransitionTelemetry_) {
                 const uint64_t historyWords = 1ull + groupCount * 2ull;
                 stateWords += historyWords;
@@ -3754,10 +3766,24 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
     params.rayClasPageTableBuffer = clusterRtxEnabled_ && clasPageTableHandle_.valid()
         ? clasPageTableHandle_.shaderIndex() : UINT32_MAX;
-    params.lodPixelError = meshletLodRenderPixelThreshold(
-        std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
-            std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f)),
-        height, frame.displayHeight);
+    const float displayPixelError = std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
+        std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f));
+    params.lodPixelError = meshletLodRenderPixelThreshold(displayPixelError, height, frame.displayHeight);
+    params.rtOffscreenErrorScale = std::clamp(finiteOr(frame.rtOffscreenErrorScale, 2.0f), 1.0f, 16.0f);
+    params.rtLodHysteresis = std::clamp(finiteOr(frame.rtLodHysteresis, 0.2f), 0.0f, 0.9f);
+    params.rtLodFlags = clusterRtxEnabled_ ? 1u | (frame.preserveRasterLod ? 2u : 0u) : 0u;
+    if (clusterRtxEnabled_ && previousFrameParamsValid_ &&
+        (rtLodDisplayPixelError_ != displayPixelError ||
+         previousFrameParams_.rtOffscreenErrorScale != params.rtOffscreenErrorScale ||
+         previousFrameParams_.rtLodHysteresis != params.rtLodHysteresis ||
+         previousFrameParams_.rtLodFlags != params.rtLodFlags ||
+         previousFrameParams_.enableGpuLodSelection != params.enableGpuLodSelection ||
+         previousFrameParams_.selectedLodLevel != params.selectedLodLevel)) {
+        ++rtLodPolicyRevision_;
+        if (rtLodPolicyRevision_ == 0) { rtLodPolicyRevision_ = 1; *lodStateInitialized_ = false; }
+    }
+    rtLodDisplayPixelError_ = displayPixelError;
+    params.rtLodPolicyRevision = rtLodPolicyRevision_;
     params.lodTopologyBuffer = lodTopologyHandle_.shaderIndex();
     params.lodStateBuffer = lodStateHandle_.shaderIndex();
     const uint64_t threshold = uint64_t(distributedDemandMinGroups_) +
@@ -3887,7 +3913,8 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
     MeshletStreamUserPush push = userPush();
     // The diagnostic observation packs a 26-bit frame tag. Reset at its wrap,
     // once per 67 million frames, so an old unvisited group cannot alias history.
-    const bool initializeState = lodStateBufferState_ == ResourceState::Undefined ||
+    const bool initializeState = !*lodStateInitialized_ ||
+        (clusterRtxEnabled_ && (frameIndex_ == 0u || frameIndex_ == UINT32_MAX)) ||
         (lodTransitionTelemetry_ && (frameIndex_ & 0x03ffffffu) == 0u);
     if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
     if (distributedPageDemand_ || lodTransitionTelemetry_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
@@ -3908,6 +3935,13 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
         return result;
     };
     if (initializeState) {
+        // Recording changes resource state immediately, but only GPU submission
+        // makes its contents initialized. Retry the clear after cancellation.
+        *lodStateInitialized_ = false;
+        auto transaction = std::make_shared<SubmissionTransaction>(
+            [initialized = lodStateInitialized_] { *initialized = true; },
+            [initialized = lodStateInitialized_] { *initialized = false; });
+        if (auto added = commandBuffer.addSubmissionTransaction(transaction); !added) { return added; }
         // Device allocations have undefined contents. Initialize once before
         // sparse clearing; subsequent frames touch only formerly active IDs.
         const Result<> result = dispatchPhase(kMeshletStreamActiveBuildInitializeLODStatePhase,
@@ -4596,6 +4630,13 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"throughput", throughputJson},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
+        {"rtLod", {{"enabled", clusterRtxEnabled_}, {"historyBytes", rtLodHistoryBytes_},
+            {"preserveRasterLod", (previousFrameParams_.rtLodFlags & 2u) != 0u},
+            {"offscreenErrorScale", previousFrameParams_.rtOffscreenErrorScale},
+            {"hysteresis", previousFrameParams_.rtLodHysteresis},
+            {"refineDisplayPixels", rtLodDisplayPixelError_},
+            {"coarsenDisplayPixels", rtLodDisplayPixelError_ * (1.f - previousFrameParams_.rtLodHysteresis)},
+            {"policyRevision", rtLodPolicyRevision_}}},
         {"distributedPageDemand", distributedPageDemand_}, {"demandTaskCount", demandTaskCount_},
         {"distributedDemandActive", currentFrameDistributedDemand_},
         {"distributedDemandMinGroups", distributedDemandMinGroups_}, {"recentDemandGroupTests", recentDemandGroupTests_},

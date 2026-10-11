@@ -48,6 +48,7 @@ public:
                 "instance",
                 {{"Instance", "instance"}, {"Primitive", "primitive"}, {"Cluster ID", "cluster-id"}}),
         };
+        appendStreamRayLODRuntimeSettings(settings);
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.0f, 3.0f},

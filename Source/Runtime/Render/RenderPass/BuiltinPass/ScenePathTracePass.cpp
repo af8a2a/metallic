@@ -483,6 +483,7 @@ public:
             }
             settings.push_back(runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f));
             settings.push_back(runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f));
+            appendStreamRayLODRuntimeSettings(settings);
             appendCameraRuntimeSettings(settings, {0.0f, 0.2f, 2.5f}, {0.0f, 0.0f, 0.0f}, 50.0f, true);
             return settings;
         }
@@ -586,6 +587,7 @@ public:
         }
         settings.push_back(runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f));
         settings.push_back(runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f));
+        appendStreamRayLODRuntimeSettings(settings);
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.2f, 2.5f},

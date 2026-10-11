@@ -1,4 +1,5 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "StreamLODSettings.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
@@ -339,7 +340,7 @@ public:
         retention.rebuildGraph = true;
         auto telemetry = runtimeBoolSetting("enableLodTransitionTelemetry", "LOD Transition Diagnostics (Extra GPU Memory)", false);
         telemetry.rebuildGraph = true;
-        return {
+        std::vector<RenderGraphRuntimeSetting> settings{
             prefetch,
             {.key = "AsyncComputePreferred", .label = "Async RTAS Build",
                 .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = true, .rebuildGraph = true},
@@ -375,6 +376,10 @@ public:
                     {"Cluster ID", "cluster-id"},
                 }),
         };
+        if (properties().value("enableClusterRtx", false) || properties().value("rtasVisualization", false)) {
+            appendStreamRayLODRuntimeSettings(settings);
+        }
+        return settings;
     }
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
@@ -1349,6 +1354,7 @@ private:
             frame.jitterX = view->jitter[0];
             frame.jitterY = view->jitter[1];
         }
+        applyStreamRayLODSettings(context.properties(), frame, true);
         return frame;
     }
 

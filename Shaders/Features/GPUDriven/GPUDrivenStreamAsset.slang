@@ -508,6 +508,10 @@ struct GPUDrivenStreamAssetParams
     float previousLodPixelError;
     uint rayClasPageTableBuffer;
     uint lodTelemetryPadding;
+    float rtOffscreenErrorScale;
+    float rtLodHysteresis;
+    uint rtLodFlags;
+    uint rtLodPolicyRevision;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -749,6 +753,73 @@ bool streamRefinementDemandVisible(GPUDrivenStreamAssetGroup group, GPUDrivenStr
         if (dot(delta, normal) + radius + padding * length(normal) < 0.0) { return false; }
     }
     return true;
+}
+
+bool streamRayLodEnabled(GPUDrivenStreamAssetParams params)
+{
+    return (params.rtLodFlags & 1u) != 0u;
+}
+
+uint streamRayLodHistoryBase(uint base, uint groupCount)
+{
+    return base + groupCount * 3u + 4u;
+}
+
+void prepareStreamRayLodHistory(RWStructuredBuffer<uint> state, uint base, uint groupCount,
+    bool visible, GPUDrivenStreamAssetParams params)
+{
+    if (!streamRayLodEnabled(params)) { return; }
+    uint history = streamRayLodHistoryBase(base, groupCount);
+    bool eligible = visible && params.enableGpuLodSelection != 0u;
+    state[history] = eligible && state[history + 2u] == params.rtLodPolicyRevision ? state[history + 1u] : 0u;
+    state[history + 1u] = params.frameIndex + 1u;
+    state[history + 2u] = params.rtLodPolicyRevision;
+}
+
+float streamLodMetric(float4 sphere, float error, GPUDrivenStreamAssetInstance instance,
+    float4 eye, float4 forward, float4 projection, GPUDrivenStreamAssetParams params,
+    bool visible, float padding = 0.0)
+{
+    if (!streamRayLodEnabled(params)) {
+        return meshletLodProjectedError(sphere, error, instance.world0, instance.world1,
+            instance.world2, instance.world3, eye, forward, projection, padding);
+    }
+    float projected = meshletLodRayProjectedError(sphere, error, instance.world0, instance.world1,
+        instance.world2, instance.world3, eye, forward, projection, padding);
+    if (visible && (params.rtLodFlags & 2u) != 0u) {
+        projected = max(projected, meshletLodProjectedError(sphere, error, instance.world0, instance.world1,
+            instance.world2, instance.world3, eye, forward, projection, padding));
+    }
+    return projected;
+}
+
+// Demand owns hysteresis. Parent activation, CLAS readiness and the complete
+// frontier still decide which complementary cluster masks can be published.
+bool streamLodGroupDemand(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
+    float4 eye, float4 forward, float4 projection, uint manualLevel, GPUDrivenStreamAssetParams params,
+    RWStructuredBuffer<uint> state, uint base, uint groupCount, uint localGroup, bool updateHistory = true)
+{
+    if ((group.flags & 1u) != 0u) { return true; }
+    if (manualLevel != 0xffffffffu) { return group.lodLevel >= manualLevel; }
+    bool visible = streamRefinementDemandVisible(group, instance, params);
+    if (!streamRayLodEnabled(params) && !visible) { return false; }
+    float threshold = projection.w;
+    uint history = streamRayLodHistoryBase(base, groupCount);
+    uint address = history + 3u + localGroup * 2u;
+    if (streamRayLodEnabled(params)) {
+        threshold *= visible ? 1.0 : max(params.rtOffscreenErrorScale, 1.0);
+        if (updateHistory && state[history] != 0u && state[address] == state[history] && state[address + 1u] != 0u) {
+            threshold *= 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9);
+        }
+    }
+    float error = streamLodMetric(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
+        group.maxQuadricError, instance, eye, forward, projection, params, visible);
+    bool wanted = error > threshold;
+    if (updateHistory && streamRayLodEnabled(params)) {
+        state[address] = state[history + 1u];
+        state[address + 1u] = wanted ? 1u : 0u;
+    }
+    return wanted;
 }
 
 // A scheduling heuristic, not a replacement for the conservative LOD cut.
@@ -1962,7 +2033,7 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
 // This preserves parent-before-child evaluation without a stack/queue limit.
 bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
     GPUDrivenStreamAssetInstance instance, float4 eye, float4 forward,
-    float4 projection, uint manualLevel)
+    float4 projection, uint manualLevel, GPUDrivenStreamAssetParams params)
 {
     if ((topology[offset + 6u] & 1u) != 0u) { return true; }
     if (manualLevel != 0xffffffffu) { return topology[offset + 5u] >= manualLevel; }
@@ -1978,27 +2049,31 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
             abs(instance.world2.xyz) * extent.z + abs(instance.world3.xyz) + abs(eye.xyz);
         worldPadding = (32.0 * 1.1920928955078125e-7) * (magnitude.x + magnitude.y + magnitude.z);
     }
-    float upperError = meshletLodProjectedError(sphere, asfloat(topology[offset + 4u]),
-        instance.world0, instance.world1, instance.world2, instance.world3, eye, forward, projection, worldPadding);
+    float upperError = streamLodMetric(sphere, asfloat(topology[offset + 4u]),
+        instance, eye, forward, projection, params, true, worldPadding);
+    // A node may contain retained fine groups or on-screen children. Prune
+    // only against the lowest hysteresis threshold, without an offscreen scale.
+    float threshold = projection.w * (streamRayLodEnabled(params)
+        ? 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9) : 1.0);
     // Outward-rounded node spheres plus a small conservative comparison guard
     // prevent floating point cancellation at an LOD threshold from dropping a
     // desired leaf. Non-finite upper bounds also descend; leaves use exact error.
-    return !(upperError < projection.w - max(abs(projection.w) * 1e-4, 1e-5));
+    return !(upperError < threshold - max(abs(threshold) * 1e-4, 1e-5));
 }
 
-// Optional history follows the existing sparse IDs: two words per group and
-// one full-width auto-visible frame stamp per instance. No history scan/clear
-// is required per frame; the runtime resets the buffer when the 26-bit tag wraps.
-uint streamLodHistoryBase(uint base, uint groupCount)
+// Optional telemetry follows sparse IDs and any RT demand history: two words
+// per group and one full-width auto-visible frame stamp per instance. No scan
+// is required per frame; the runtime resets this state when the 26-bit tag wraps.
+uint streamLodHistoryBase(uint base, uint groupCount, GPUDrivenStreamAssetParams params)
 {
-    return base + groupCount * 3u + 4u;
+    return base + groupCount * 3u + 4u + (streamRayLodEnabled(params) ? 3u + groupCount * 2u : 0u);
 }
 
 bool beginStreamLodTelemetry(RWStructuredBuffer<uint> state, uint base, uint groupCount,
     bool visible, GPUDrivenStreamAssetParams params)
 {
     if (params.enableLodTransitionTelemetry == 0u) { return false; }
-    uint address = streamLodHistoryBase(base, groupCount) + groupCount * 2u;
+    uint address = streamLodHistoryBase(base, groupCount, params) + groupCount * 2u;
     uint previous = state[address];
     bool eligible = visible && params.enableGpuLodSelection != 0u &&
         (params.frameIndex & kLODTelemetryFrameMask) != 0u && params.frameIndex != 0xffffffffu;
@@ -2013,7 +2088,7 @@ void observeStreamLodGroup(RWStructuredBuffer<uint> state, StructuredBuffer<uint
     bool continuous, GPUDrivenStreamAssetParams params)
 {
     if (params.enableLodTransitionTelemetry == 0u) { return; }
-    uint history = streamLodHistoryBase(base, primitive.groupCount);
+    uint history = streamLodHistoryBase(base, primitive.groupCount, params);
     uint address = history + localGroup * 2u;
     uint previous = state[address];
     uint tag = params.frameIndex & kLODTelemetryFrameMask;
@@ -2032,7 +2107,7 @@ void observeStreamLodGroup(RWStructuredBuffer<uint> state, StructuredBuffer<uint
     bool catchup = eligible && continuous && active && previousDemand &&
         state[address + 1u] == params.frameIndex;
     bool threshold = false;
-    if (eligible && continuous && active && !previousDemand && (group.flags & 1u) == 0u) {
+    if (eligible && continuous && active && !previousDemand && (group.flags & 1u) == 0u && !streamRayLodEnabled(params)) {
         // A missing observation is not evidence of a threshold crossing: the
         // demand BVH may have pruned an offscreen group. Re-evaluate the actual
         // preceding camera and threshold and require its refinement to be visible.
@@ -2076,7 +2151,7 @@ void selectStreamLodTelemetry(RWStructuredBuffer<uint> state, uint base, uint gr
     uint localGroup, uint mask, bool terminal, bool fallback, GPUDrivenStreamAssetParams params)
 {
     if (params.enableLodTransitionTelemetry == 0u || terminal || fallback || mask == 0u) { return; }
-    uint address = streamLodHistoryBase(base, groupCount) + localGroup * 2u;
+    uint address = streamLodHistoryBase(base, groupCount, params) + localGroup * 2u;
     uint observation = state[address];
     state[address] = observation | kLODObservedSelected;
     if (params.demandStatsBuffer == 0xffffffffu || (observation & kLODObservationEligible) == 0u) { return; }
@@ -2128,7 +2203,7 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
         uint offset = primitive.lodBvhOffset + nodeIndex * 10u;
         ++visitedNodes;
         if (!streamLodBvhNeedsFine(topology, offset, instance,
-                lodEye, lodForward, lodProjection, manualLevel)) {
+                lodEye, lodForward, lodProjection, manualLevel, params)) {
             nodeIndex = topology[offset + 7u];
             continue;
         }
@@ -2144,12 +2219,9 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
                 uint parentId = topology[group.parentOffset + parent];
                 parentsActive = parentsActive && state[base + (parentId - primitive.groupOffset) * 2u] != 0u;
             }
-            float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
-            bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
-                group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
-                instance.world3, lodEye, lodForward, lodProjection, manualLevel);
             // Demand comes from resident metadata, independently of the safe cut.
-            bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
+            bool demanded = streamLodGroupDemand(group, instance, lodEye, lodForward, lodProjection,
+                manualLevel, params, state, base, primitive.groupCount, localGroup);
             if (demanded) {
                 if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                     markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -2226,7 +2298,7 @@ void buildStreamLodFrontier(
     // Frustum rejection is current-frame and independent of HZB history. Keep
     // the ordinary state clearing below, so a returning instance cannot reuse
     // stale parent reachability. Manual cut/debug and RT traversal stay intact.
-    if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
+    if (params.enableGpuLodSelection != 0u && !streamRayLodEnabled(params) && push.rasterBindingsBuffer != 0xffffffffu) {
         StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
             resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
         if ((bindings[0].cullingFlags & 1u) != 0u &&
@@ -2236,6 +2308,7 @@ void buildStreamLodFrontier(
         }
     }
     uint telemetryBase = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+    prepareStreamRayLodHistory(state, telemetryBase, primitive.groupCount, instance.visible != 0u, params);
     bool telemetryContinuous = beginStreamLodTelemetry(state, telemetryBase, primitive.groupCount,
         instance.visible != 0u, params);
     if (primitive.lodBvhNodeCount != 0u) {
@@ -2266,11 +2339,8 @@ void buildStreamLodFrontier(
             uint parentId = topology[group.parentOffset + parent];
             parentsActive = parentsActive && state[base + (parentId - primitive.groupOffset) * 2u] != 0u;
         }
-        float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
-        bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
-            group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
-            instance.world3, lodEye, lodForward, lodProjection, manualLevel);
-        bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
+        bool demanded = streamLodGroupDemand(group, instance, lodEye, lodForward, lodProjection,
+            manualLevel, params, state, base, primitive.groupCount, localGroup);
         if (demanded) {
             if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                 markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -2476,6 +2546,8 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
         if (index < size) { demand[index] = 0u; }
         return;
     }
+    RWStructuredBuffer<uint> state =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.lodStateBuffer));
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives =
@@ -2542,7 +2614,7 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
                 while (tile < end) {
                     uint offset = primitive.lodTileOffset + 1u + tile * 10u;
                     ++visited;
-                    if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual)) {
+                    if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual, params)) {
                         tile = topology[offset + 7u];
                         continue;
                     }
@@ -2569,13 +2641,11 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
             if (item < work.total) {
                 GPUDrivenStreamAssetGroup group = groups[groupIndex];
                 GPUDrivenStreamAssetInstance ownerInstance = instances[owner];
-                bool wanted = (group.flags & 1u) != 0u ||
-                    (meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-                        group.maxQuadricError, group.lodLevel, group.flags, ownerInstance.world0, ownerInstance.world1,
-                        ownerInstance.world2, ownerInstance.world3, eye, direction, projection, manual) &&
-                        streamRefinementDemandVisible(group, ownerInstance, params));
+                GPUDrivenStreamAssetPrimitive ownerPrimitive = primitives[ownerInstance.primitiveIndex];
+                uint ownerBase = topology[params.lodInstanceOffsetsOffset + owner];
+                bool wanted = streamLodGroupDemand(group, ownerInstance, eye, direction, projection,
+                    manual, params, state, ownerBase, ownerPrimitive.groupCount, groupIndex - ownerPrimitive.groupOffset);
                 if (wanted) {
-                    GPUDrivenStreamAssetPrimitive ownerPrimitive = primitives[ownerInstance.primitiveIndex];
                     uint groupBits = topology[params.demandInstanceOffsetsOffset + owner * 4u];
                     uint bit = groupBits + groupIndex - ownerPrimitive.groupOffset;
                     InterlockedOr(demand[kStreamDemandStatsWords + (bit >> 5u)], 1u << (bit & 31u));
@@ -2720,7 +2790,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         forecast.viewport.w = 2.0 * atan(tan(params.viewport.w * 0.5) * params.prefetchParams.x);
         forecast.clipOrtho.z *= params.prefetchParams.x;
         forecast.lodPixelError *= params.prefetchParams.y;
-        if (!streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
+        if (!streamRayLodEnabled(params) && !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
                 max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(forecast))) { return; }
         float3 delta = forecast.center.xyz - forecast.eye.xyz;
         float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
@@ -2734,7 +2804,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             // once it is filled instead of repeatedly reporting deferred work.
             if (requests[kStreamRequestPrefetchCounterWord] >= limit) { return; }
             uint offset = primitive.lodTileOffset + 1u + tile * 10u;
-            if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu)) {
+            if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu, forecast)) {
                 tile = topology[offset + 7u];
                 continue;
             }
@@ -2745,10 +2815,10 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + topology[offset + 8u] + count - 1u - lane];
             if ((group.flags & 1u) != 0u || group.pageIndex >= params.scenePageCount ||
                 streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { continue; }
-            if (!meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-                    group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
-                    instance.world2, instance.world3, eye, direction, projection, 0xffffffffu) ||
-                !streamRefinementDemandVisible(group, instance, forecast)) { continue; }
+            uint historyBase = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+            if (!streamLodGroupDemand(group, instance, eye, direction, projection, 0xffffffffu,
+                    forecast, state, historyBase, primitive.groupCount,
+                    topology[offset + 8u] + count - 1u - lane, false)) { continue; }
             if (table != 0u) {
                 float benefit = streamGroupScreenBenefit(group, instance, forecast, eye, direction, projection);
                 InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
@@ -2848,12 +2918,13 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             state[base + localGroup * 2u + 1u] = 0u;
         }
         if (lane < 4u) { state[header + lane] = 0u; state[sparse + lane] = 0u; }
+        if (lane == 0u) { prepareStreamRayLodHistory(state, base, primitive.groupCount, instance.visible != 0u, params); }
     }
     if (push.activeBuildPhase != kActiveBuildPhaseClear) {
         if (lane == 0u) { g_CooperativeRoots = 0u; g_CooperativeMissingRoots = 0u; }
         AllMemoryBarrierWithGroupSync();
     }
-    if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
+    if (params.enableGpuLodSelection != 0u && !streamRayLodEnabled(params) && push.rasterBindingsBuffer != 0xffffffffu) {
         StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
             resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
         if ((bindings[0].cullingFlags & 1u) != 0u && !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
@@ -2886,7 +2957,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 if (index < count) {
                     root = topology[params.demandTaskOffset + first + index];
                     wanted = streamLodBvhNeedsFine(topology, primitive.lodTileOffset + 1u + root * 10u,
-                        instance, eye, direction, projection, manual);
+                        instance, eye, direction, projection, manual, params);
                 }
                 // Task order has no cut/budget semantics. Reserve independently
                 // per wave; a dispatch barrier publishes all payloads to workers.
@@ -2926,7 +2997,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u + 1u] + tile;
             visit = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
         } else {
-            visit = streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual);
+            visit = streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual, params);
         }
         if (!visit) { tile = topology[offset + 7u]; continue; }
         ++tile;
@@ -2957,10 +3028,8 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u] + localGroup;
                 demanded = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
             } else {
-                bool desired = meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-                    group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
-                    instance.world2, instance.world3, eye, direction, projection, manual);
-                demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
+                demanded = streamLodGroupDemand(group, instance, eye, direction, projection,
+                    manual, params, state, base, primitive.groupCount, localGroup);
                 if (demanded) {
                     if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
                     else {
