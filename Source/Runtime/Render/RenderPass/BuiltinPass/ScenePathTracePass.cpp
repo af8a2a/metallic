@@ -583,6 +583,12 @@ public:
                 16,
                 false),
         };
+        // Sample count selects the one-ray or general OpenPBR guide program.
+        if (useOpenPBRBsdf(properties()) && exportDenoiserGuides(properties())) {
+            for (auto& setting : settings) {
+                if (setting.key == "samples") { setting.rebuildGraph = true; }
+            }
+        }
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.2f, 2.5f},
@@ -598,6 +604,10 @@ public:
             requestedCache = kScenePathTraceCacheModeOff;
         }
         if (requestedCache != cacheMode_) { return compile(context, log); }
+        const bool singleSampleGuides = !realtime_ && !visibilityDeferred_ &&
+            useOpenPBRBsdf(properties()) && exportDenoiserGuides(properties()) &&
+            uintProperty(properties(), "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples) == 1;
+        if (singleSampleGuides != compiledSingleSampleGuides_) { return compile(context, log); }
         // Resource-only graph rebuilds reuse compiled passes. Deferred compile-time
         // settings must rebuild their matching shader and descriptor variants.
         if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
@@ -650,6 +660,8 @@ public:
         }
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
+        const bool singleSampleGuides = !realtime_ && !visibilityDeferred_ && useOpenPBR && exportGuides &&
+            uintProperty(properties(), "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples) == 1;
         const bool ntcActive = sceneResources_.neuralTextures().active();
         const bool positionFetch = !visibilityDeferred_ && !streamMaterials_ && context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
@@ -695,6 +707,7 @@ public:
             "|ntc=" + (ntcActive ? "1" : "0") +
             "|coopvec=" + (ntcCooperativeVector ? "1" : "0") +
             "|positionFetch=" + (positionFetch ? "1" : "0") +
+            "|singleSampleGuides=" + (singleSampleGuides ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
@@ -931,7 +944,13 @@ public:
                 std::span<const SlangMacroDefine> extraDefines,
                 const std::vector<ComputeResourceBindingDesc>& permutationBindings,
                 ComputeKernel& outProgram, MaterialProgramId definition = MaterialProgramId::OpenPBRComposite) -> Result<> {
-            const auto request = makeSceneShaderRequest(shaderProgram, shaderOptions, extraDefines);
+            // Compile the one-ray continuation without retaining the generic
+            // multi-sample integrator in its live program. Training is unchanged.
+            std::vector<SlangMacroDefine> defines(extraDefines.begin(), extraDefines.end());
+            if (singleSampleGuides && permutation != PathTracePermutation::SharcUpdate) {
+                defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
+            }
+            const auto request = makeSceneShaderRequest(shaderProgram, shaderOptions, defines);
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
@@ -1115,6 +1134,7 @@ public:
         }
 
         compiledShaderKey_ = shaderKey;
+        compiledSingleSampleGuides_ = singleSampleGuides;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
@@ -2700,6 +2720,7 @@ private:
     std::vector<ComputeKernel> closurePrograms_;
     bool compiledMaterialBinning_ = true;
     bool compiledProgramBinning_ = true;
+    bool compiledSingleSampleGuides_ = false;
     bool compiledHalfPrecision_ = true;
     bool compiledExportUpscalerGuides_ = false;
     SceneLightResources lights_;

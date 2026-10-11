@@ -225,6 +225,20 @@ public:
                     for (size_t i = 0; i < values.size(); ++i) { movingMean[i] += values[i] / 32.0; }
                 }
                 requireSharc(saveRgba8Png(root / (label + "Moving.png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()), kSize, kSize, log), log);
+                if (defaultBudget_ && (mode == 0 || mode == 2)) {
+                    // Runtime 1 -> 4 -> 1 must select the matching Base/Query
+                    // program, including resource-only compiled-pass reuse.
+                    requireSharc(bool(preview.render(graph, kSize, kSize, "PathTrace.linearDepth")), preview.lastLog());
+                    const auto primaryDepth = preview.readbackBytes();
+                    for (uint32_t samples : {4u, 1u}) {
+                        requireSharc(graph.setNodeRuntimeProperty(nodeId, "samples", samples), "Change camera ray count");
+                        requireSharc(graph.dirty(), "Sample specialization change did not invalidate the graph");
+                        renderColor();
+                        requireSharc(hasStage("SHaRC query") == cacheEnabled, "Sample switch changed the cache mode");
+                        requireSharc(bool(preview.render(graph, kSize, kSize, "PathTrace.linearDepth")), preview.lastLog());
+                        requireSharc(preview.readbackBytes() == primaryDepth, "Sample switch changed primary depth guides");
+                    }
+                }
                 if (cacheEnabled) {
                     // Switching components invalidates both cache partitions.
                     requireSharc(graph.setNodeRuntimeProperty(nodeId, "sharc.lobeMask", 3), "Change cached components");
