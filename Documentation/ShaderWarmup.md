@@ -52,12 +52,25 @@ code; other requests are still attempted. This warms SPIR-V, not driver PSO cach
 ## Parallel compilation and progress
 
 Warmup uses a worker pool. The default is the available CPU thread count capped
-at 4 to limit simultaneous Slang compiler memory use. --jobs N sets an explicit
-positive worker count; --jobs 1 restores serial compilation. The actual worker
-count is capped by the number of selected requests.
+at 8 to limit simultaneous Slang compiler memory use. The environment variable
+`METALLIC_SHADER_WARMUP_JOBS` overrides this default for both application startup
+and the standalone compiler. `--jobs N` takes precedence over the environment
+variable; `--jobs 1` restores serial compilation. Values must be positive integers;
+an unset or empty environment variable uses the default. Invalid values fail
+warmup before compilation. Listing, help, and explicitly skipped startup warmup
+do not require a valid worker setting. The actual worker count is capped by the
+number of selected requests.
+
+More workers increase simultaneous compiler memory use. Compare cold-cache
+elapsed time and peak memory before increasing beyond the default; cache-hit
+runs do not measure compilation throughput.
 
 ~~~powershell
 .\build-release\Source\MetallicShaderCompiler.exe --jobs 8
+# Also applies when starting a sample from this shell (or its IDE environment).
+$env:METALLIC_SHADER_WARMUP_JOBS = '12'
+.\build-release\Source\MetallicPathTracingSample.exe
+Remove-Item Env:METALLIC_SHADER_WARMUP_JOBS
 cmake -S . -B build-release "-DMETALLIC_SHADER_WARMUP_ARGS=--jobs;8"
 cmake --build build-release --target MetallicShaderWarmup
 ~~~

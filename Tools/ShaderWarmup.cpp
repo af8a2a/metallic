@@ -10,6 +10,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <iomanip>
 #include <iostream>
@@ -63,14 +64,17 @@ int run(int argc, char** argv)
     DescriptorHeapShaderStrides explicitStrides;
     bool resourceStrideSpecified = false;
     bool samplerStrideSpecified = false;
-    size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 4u);
+    size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
+    bool jobsSpecified = false;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--help") {
             std::cout << "MetallicShaderCompiler [--list] [--filter substring] [--cache-dir path]\n"
                          "                       [--debug-mode disabled|capture|debug] [--jobs N]\n"
                          "                       [--resource-heap-stride N --sampler-heap-stride N]\n"
-                         "Default workers: min(CPU threads, 4); --jobs 1 compiles serially.\n"
+                         "Default workers: min(CPU threads, 8); --jobs 1 compiles serially.\n"
+                         "METALLIC_SHADER_WARMUP_JOBS overrides the default, including application startup.\n"
+                         "--jobs takes precedence over the environment variable.\n"
                          "Native shaders query a supported adapter unless both byte strides are supplied.\n"
                          "Defaults to the runtime .cache/shaders/spirv cache. No GPU device is created.\n";
             return 0;
@@ -85,6 +89,7 @@ int run(int argc, char** argv)
             } else if (argument == "--cache-dir") {
                 cacheDirectory = value;
             } else if (argument == "--jobs") {
+                jobsSpecified = true;
                 const auto parsed = std::from_chars(value.data(), value.data() + value.size(), jobs);
                 if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || jobs == 0) {
                     std::cerr << "--jobs requires a positive integer\n";
@@ -116,6 +121,17 @@ int run(int argc, char** argv)
     if (resourceStrideSpecified != samplerStrideSpecified) {
         std::cerr << "--resource-heap-stride and --sampler-heap-stride must be supplied together\n";
         return 2;
+    }
+    if (!jobsSpecified && !listOnly) {
+        const char* environmentJobs = std::getenv("METALLIC_SHADER_WARMUP_JOBS");
+        if (environmentJobs != nullptr && environmentJobs[0] != '\0') {
+            const std::string_view value(environmentJobs);
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), jobs);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || jobs == 0) {
+                std::cerr << "METALLIC_SHADER_WARMUP_JOBS requires a positive integer\n";
+                return 2;
+            }
+        }
     }
 
     auto requests = metallic::tools::shaderWarmupRequests();
