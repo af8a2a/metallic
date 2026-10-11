@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/RenderView.h"
@@ -27,12 +28,12 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "ViewConstantsProbe",
             .entryPointName = "viewConstantsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}};
+        const render::ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ViewConstantsProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ViewConstantsProbeResources, input)}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kViewConstantsProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::ViewConstantsProbeResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -42,8 +43,8 @@ public:
             return render::makeError(render::Error::Failure);
         }
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("view").buffer()},
-            {.binding = 1, .buffer = context.viewConstantsBuffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ViewConstantsProbeResources, output), .buffer = context.outputBuffer("view").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::ViewConstantsProbeResources, input), .buffer = context.viewConstantsBuffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:

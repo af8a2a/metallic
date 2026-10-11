@@ -2,7 +2,6 @@
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ComputeResourceEncoder.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
@@ -76,15 +75,8 @@ inline constexpr const char* kMaterialShaderObjectAlternateFragmentEntryPoint =
     "materialShaderObjectAlternateFragmentMain";
 inline constexpr const char* kSceneRayQueryVisualizationShaderModuleName = "Features/Debug/SceneRayQueryVisualize";
 inline constexpr const char* kSceneRayQueryVisualizationEntryPoint = "sceneRayQueryVisualizeMain";
-inline constexpr const char* kVisibilityBufferShaderModuleName = "Features/VisibilityBuffer/VisibilityBuffer";
 inline constexpr const char* kGPUDrivenCullingShaderModuleName = "Features/GPUDriven/GPUDrivenCulling";
 inline constexpr const char* kVisibilityBufferCompositeShaderModuleName = "Features/VisibilityBuffer/VisibilityBufferComposite";
-inline constexpr const char* kVisibilityBufferAmplificationEntryPoint =
-    "visibilityBufferAmplificationMain";
-inline constexpr const char* kVisibilityBufferMeshEntryPoint = "visibilityBufferMeshMain";
-inline constexpr const char* kVisibilityBufferFragmentEntryPoint = "visibilityBufferFragmentMain";
-inline constexpr const char* kVisibilityBufferMaskedFragmentEntryPoint =
-    "visibilityBufferMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
 inline constexpr const char* kGPUDrivenPreviewHZBEntryPoint = "gpuDrivenPreviewHzbMain";
@@ -158,8 +150,12 @@ inline constexpr uint32_t kSceneMaterialVisualizationModeTangent = 9;
 inline constexpr uint32_t kSceneMaterialVisualizationModeBitangent = 10;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNRDNormalRoughness = 11;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNormalDeviation = 12;
-inline constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
-inline constexpr uint32_t kDefaultPathTraceSamples = 2;
+// Camera hit is depth zero. SHaRC takes over after one indirect hit when
+// eligible; this larger hard limit retains cache-miss and specular transport.
+inline constexpr uint32_t kDefaultPathTraceMaxDepth = 12;
+inline constexpr uint32_t kDefaultPathTraceSamples = 1;
+inline constexpr uint32_t kDefaultSharcUpdateMaxDepth = 12;
+inline constexpr uint32_t kDefaultSharcQueryMinDepth = 1;
 inline constexpr uint32_t kMaxPathTraceMaxDepth = 32;
 inline constexpr uint32_t kMaxPathTraceSamples = 16;
 inline constexpr uint32_t kDefaultRTXDILightCount = 256;
@@ -219,12 +215,6 @@ inline constexpr uint32_t kScenePathTraceDebugStochasticTextureFiltering = 1u <<
 // Radiance cache modes for the RTXGI SHaRC integration.
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
-// CPU input IDs for radiance-cache permutations. NamedResourceLayouts maps
-// these to direct SceneResourceParameters fields; shaders do not see these IDs.
-inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 20;
-inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
-inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;
-inline constexpr uint32_t kScenePathTraceSharcResolvedBinding = 23;
 inline constexpr uint32_t kNRDDenoiserModeReblur = 0;
 inline constexpr uint32_t kNRDDenoiserModeRelax = 1;
 inline constexpr uint32_t kNRDDenoiserModeReference = 2;
@@ -663,8 +653,6 @@ struct GPUDrivenPreviewGPUParams {
     float renderViewport[4] = {};
     float renderClipOrtho[4] = {};
     uint32_t mode = kGPUDrivenPreviewModeMeshlet;
-    uint32_t meshletOffset = 0;
-    uint32_t meshletCount = 0;
     uint32_t selectedLodLevel = 0;
     uint32_t instanceCount = 0;
     uint32_t width = 1;
@@ -685,19 +673,12 @@ struct GPUDrivenPreviewGPUParams {
     uint32_t environmentVisible = 1;
     uint32_t materialCount = 1;
     uint32_t visibleMeshletCapacity = 0;
-    uint32_t lodSelectionBuffer = UINT32_MAX;
-    uint32_t lodSelectionEnabled = 0;
     uint32_t tessellationBuffer = UINT32_MAX;
     float displacementBound = 0.0f;
     uint32_t tessellationPadding[2] = {};
 };
 
 struct GPUDrivenPreviewUserPush {
-    uint32_t positionBuffer = 0;
-    uint32_t meshletBuffer = 0;
-    uint32_t meshletDrawBuffer = 0;
-    uint32_t meshletVertexBuffer = 0;
-    uint32_t meshletTriangleBuffer = 0;
     uint32_t paramsBuffer = 0;
     uint32_t transformBuffer = 0;
     uint32_t instanceBuffer = 0;
@@ -721,7 +702,6 @@ struct GPUDrivenPreviewUserPush {
     uint32_t environmentImage = 0;
     uint32_t environmentSHBuffer = 0;
     uint32_t streamDeferredBindingsBuffer = std::numeric_limits<uint32_t>::max();
-    uint32_t residentRecordCapacity = 0;
     uint32_t streamOwnerMaskBuffer = std::numeric_limits<uint32_t>::max();
     float tessellationEdgePixels = 8.0f;
     uint32_t tessellationMaxFactor = 4;
@@ -742,8 +722,8 @@ static_assert(sizeof(GPUDrivenPreviewGPUMeshlet) == sizeof(GPUSceneGPUMeshletRec
 static_assert(sizeof(GPUSceneGPUMeshletDrawRecord) == 16);
 static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
-static_assert(sizeof(GPUDrivenPreviewGPUParams) == 352);
-static_assert(sizeof(GPUDrivenPreviewUserPush) == 136);
+static_assert(sizeof(GPUDrivenPreviewGPUParams) == 336);
+static_assert(sizeof(GPUDrivenPreviewUserPush) == 112);
 
 struct SceneMaterialVisualizationPush {
     float eye[4] = {};
@@ -756,10 +736,9 @@ struct SceneMaterialVisualizationPush {
     uint32_t mode = kSceneMaterialVisualizationModeMaterial;
     uint32_t materialTextureCount = 0;
     float bitangentFlip = 1.0f;
-    uint32_t ntcTextureSetCount = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
 };
+
+static_assert(sizeof(SceneMaterialVisualizationPush) == 100);
 
 struct ScenePathTracePush {
     float eye[4] = {};
@@ -789,7 +768,6 @@ struct ScenePathTracePush {
     // When set, the shader writes linear HDR for subsequent post-processing.
     uint32_t outputLinear = 0;
     uint32_t cacheMode = kScenePathTraceCacheModeOff;
-    uint32_t ntcTextureSetCount = 0;
     uint32_t debugView = kScenePathTraceDebugViewFinal;
     uint32_t debugFlags = 0;
     float jitterOffsetX = 0.0f;
@@ -802,7 +780,7 @@ struct ScenePathTracePush {
 };
 
 // Per-frame parameters for the radiance-cache permutations of
-// ScenePathTrace.slang (binding kScenePathTraceCacheParamsBinding). Layout
+// ScenePathTrace.slang (SceneResourceParameters::cacheParams). Layout
 // must match struct ScenePathTraceCacheParams in the shader byte for byte.
 struct ScenePathTraceCacheParams {
     float sharcCameraPosition[4] = {};
@@ -816,11 +794,18 @@ struct ScenePathTraceCacheParams {
     uint32_t sharcUpdateStride = 5;
     uint32_t width = 1;
     uint32_t height = 1;
+    uint32_t sharcQueryMinDepth = 1;
+    float sharcMinRoughness = 0.25f;
+    uint32_t sharcLobeMask = 3;
 };
 
-static_assert(sizeof(ScenePathTraceCacheParams) == 68);
+static_assert(sizeof(ScenePathTraceCacheParams) == 80);
 static_assert(offsetof(ScenePathTraceCacheParams, height) == 64);
-static_assert(sizeof(ScenePathTracePush) == 256);
+static_assert(offsetof(ScenePathTraceCacheParams, sharcMinRoughness) == 72);
+static_assert(offsetof(ScenePathTraceCacheParams, sharcLobeMask) == 76);
+static_assert(sizeof(ScenePathTracePush) == 252);
+static_assert(offsetof(ScenePathTracePush, debugView) == 224);
+static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
 
 struct SceneRTXDIPush {
     float eye[4] = {};
@@ -859,11 +844,11 @@ struct SceneRTXDIPush {
     float exposure = 1.0f;
     float normalThreshold = 0.6f;
     float depthThreshold = 0.08f;
-    uint32_t ntcTextureSetCount = 0;
     uint32_t outputLinear = 0;
 };
 
-static_assert(sizeof(SceneRTXDIPush) == 256);
+static_assert(sizeof(SceneRTXDIPush) == 252);
+static_assert(offsetof(SceneRTXDIPush, outputLinear) == 248);
 
 inline std::string resultMessage(std::string_view label, const Result<>& result)
 {

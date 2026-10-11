@@ -2,7 +2,8 @@
 #include "Runtime/Render/Core/NamedComputeParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/Streamer/ScenePathTraceResources.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/StreamRayTracingBindings.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -11,14 +12,14 @@ constexpr uint64_t kNamedComputeABI = 0x4e43500000000002ull;
 
 class SceneRayQueryVisualizationPass final : public ComputePass {
 public:
-    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext& context) const override
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
-        auto features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::StandardAccelerationStructure;
-        if (context.device && context.device->capabilities().clusterAccelerationStructure) {
-            features = features | SceneResourceFeatureBits::ClusterAccelerationStructure;
-        }
-        return {.features = features, .optionalClusterAccelerationStructure =
-            visualizationModeFromProperties(properties()) != kRayQueryVisualizationGranularityClusterId};
+        return {.features = SceneResourceFeatureBits::AccelerationStructure, .geometry = true};
+    }
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{GPUSceneSubsystem::kSubsystemId};
+        return required;
     }
 
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
@@ -47,6 +48,7 @@ public:
                 "instance",
                 {{"Instance", "instance"}, {"Primitive", "primitive"}, {"Cluster ID", "cluster-id"}}),
         };
+        appendStreamRayLODRuntimeSettings(settings);
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.0f, 3.0f},
@@ -65,80 +67,30 @@ public:
             log = "SceneRayQueryVisualizationPass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
-        const uint32_t requestedMode = visualizationModeFromProperties(properties());
-        const bool clusterIdRequested = requestedMode == kRayQueryVisualizationGranularityClusterId;
-        const bool clusterIdSupported = context.device->capabilities().clusterAccelerationStructure;
-        if (clusterIdRequested && !clusterIdSupported) {
-            log = "SceneRayQueryVisualizationPass cluster-id granularity requires clusterAccelerationStructure capability";
+        if (!context.device->capabilities().clusterAccelerationStructure) {
+            log = "SceneRayQueryVisualizationPass requires CLAS support";
             return makeError(Error::Unsupported);
         }
+        if (!context.preparedScene || !context.preparedScene->geometry) {
+            log = "Scene geometry was not prepared by StreamerSubsystem";
+            return makeError(Error::InvalidArgument);
+        }
         device_ = context.device;
-        graphicsQueue_ = context.graphicsQueue;
-        const std::filesystem::path path = scenePathFromProperties(properties());
-        const scene::Scene* runtimeScene = runtimeSceneForPath(context.runtimeScene, path);
-
-        const uint64_t resourceIdentity = runtimeScene != nullptr ? runtimeScene->resourceIdentity() : 0;
-        const uint64_t structuralRevision = runtimeScene != nullptr
-            ? runtimeScene->sceneGraph().structuralRevision()
-            : 0;
-        const uint64_t transformRevision = runtimeScene != nullptr ? runtimeScene->transformRevision() : 0;
-        const uint64_t visibilityRevision = runtimeScene != nullptr ? runtimeScene->visibilityRevision() : 0;
-        if (rayQueryProgram_.valid() &&
-            sceneResources_.accelerationStructure().valid() &&
-            resourceIdentity_ == resourceIdentity &&
-            structuralRevision_ == structuralRevision &&
-            transformRevision_ == transformRevision &&
-            visibilityRevision_ == visibilityRevision &&
-            clusterIdShaderEnabled_ == clusterIdSupported &&
-            (!clusterIdRequested || (clusterAccelerationStructure_ && clusterAccelerationStructure_->valid()))) {
-            return {};
-        }
-
-        if (runtimeScene == nullptr) {
-            log = "SceneRayQueryVisualizationPass requires a runtime scene resource provider";
-            return makeError(Error::InvalidArgument);
-        }
-        const scene::Scene& loadedScene = *runtimeScene;
-        if (!loadedScene.bounds().valid) {
-            log = "SceneRayQueryVisualizationPass scene bounds are unavailable";
-            return makeError(Error::Failure);
-        }
-
-        drawBounds_ = loadedScene.bounds();
-        rayQueryProgram_.clear();
-
-        if (!context.preparedScene || !context.preparedScene->snapshot ||
-            !context.preparedScene->snapshot->pathTraceResources) {
-            log = "Scene resources were not prepared by StreamerSubsystem";
-            return makeError(Error::InvalidArgument);
-        }
-        sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
+        geometry_ = context.preparedScene->geometry;
+        drawBounds_ = geometry_->bounds();
+        if (rayQueryProgram_.valid()) { return {}; }
         Result<> result;
-        clusterAccelerationStructure_ = context.preparedScene->clusterAccelerationStructure;
-
         ShaderCompileResult computeCompile;
-        const char* rayQueryCapabilities[] = {"spvRayQueryKHR"};
         const char* clusterIdCapabilities[] = {
             "spvRayQueryKHR",
             "SPV_NV_cluster_acceleration_structure",
             "spvRayTracingClusterAccelerationStructureNV",
         };
-        const SlangMacroDefine clusterIdMacros[] = {
-            SlangMacroDefine{
-                .name = "SCENE_RAYQUERY_ENABLE_CLUSTER_ID",
-                .value = "1",
-            },
-        };
-        const char* const* capabilities = clusterIdSupported ? clusterIdCapabilities : rayQueryCapabilities;
-        const uint32_t capabilityCount = clusterIdSupported
-            ? static_cast<uint32_t>(std::size(clusterIdCapabilities))
-            : static_cast<uint32_t>(std::size(rayQueryCapabilities));
         result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = kSceneRayQueryVisualizationShaderModuleName,
             .entryPointName = kSceneRayQueryVisualizationEntryPoint,
             .searchPath = kTriangleShaderSearchPath,
-            .capabilities = {capabilities, capabilityCount},
-            .macroDefines = {clusterIdSupported ? clusterIdMacros : nullptr, clusterIdSupported ? static_cast<uint32_t>(std::size(clusterIdMacros)) : 0u},
+            .capabilities = clusterIdCapabilities,
         }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
@@ -167,9 +119,6 @@ public:
             rayQueryProgram_.clear();
             return result;
         }
-        clusterIdShaderEnabled_ = clusterIdSupported;
-
-        stampSceneState(loadedScene);
         return {};
     }
 
@@ -182,26 +131,14 @@ public:
             !drawBounds_.valid) {
             return makeError(Error::InvalidArgument);
         }
-        if (!sceneResources_.accelerationStructure().valid()) {
-            return {};
-        }
-
         SceneRayQueryVisualizationPush push;
-        buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
-        const bool useClusterId = push.mode == kRayQueryVisualizationGranularityClusterId;
-        if (useClusterId && !(clusterAccelerationStructure_ && clusterAccelerationStructure_->valid())) {
-            return makeError(Error::Unsupported);
-        }
-
+        buildPush(context.width(), context.height(), context.properties(), geometry_->bounds(), push);
         auto registry = ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
         ParameterWriter writer(*device_, **registry, RenderFrameContext::from(context.commandBuffer()));
         SceneResourceParameters resources{};
-        resources.scene = writer.accelerationStructure(useClusterId
-                    ? clusterAccelerationStructure_->accelerationStructure()
-                    : context.inputAccelerationStructure("accelerationStructure")
-                        ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure()).value;
+        resources.scene = writer.accelerationStructure(context.inputAccelerationStructure("accelerationStructure")
+            ? context.inputAccelerationStructure("accelerationStructure") : geometry_->accelerationStructure()).value;
         resources.output = writer.storageImageHandle(color.view());
         auto encoded = encodeNamedParameters(writer, resources, push, kNamedComputeABI);
         if (!encoded) { return makeError(encoded.error()); }
@@ -209,27 +146,14 @@ public:
             (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
     }
 
+    void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
+    {
+        SceneRayQueryVisualizationPush push;
+        buildPush(context.width(), context.height(), context.properties(), geometry_->bounds(), push);
+        describeStreamRayView(push, context.displayHeight(), context.properties(), view);
+    }
+
 private:
-    void stampSceneState(const scene::Scene& runtimeScene)
-    {
-        resourceIdentity_ = runtimeScene.resourceIdentity();
-        structuralRevision_ = runtimeScene.sceneGraph().structuralRevision();
-        transformRevision_ = runtimeScene.transformRevision();
-        visibilityRevision_ = runtimeScene.visibilityRevision();
-    }
-
-    static std::filesystem::path scenePathFromProperties(const RenderGraphProperties& props)
-    {
-        if (props.contains("path") && props["path"].is_string()) {
-            std::filesystem::path path = props["path"].get<std::string>();
-            if (path.is_relative()) {
-                path = std::filesystem::path(PROJECT_SOURCE_DIR) / path;
-            }
-            return path;
-        }
-        return kDefaultMaterialScenePath;
-    }
-
     static float finiteOr(float value, float fallback)
     {
         return std::isfinite(value) ? value : fallback;
@@ -381,17 +305,10 @@ private:
         outPush.height = height;
     }
 
-    ScenePathTraceResources sceneResources_;
-    std::shared_ptr<SceneClusterAccelerationStructureBuilder> clusterAccelerationStructure_;
+    std::shared_ptr<MeshletStreamRuntime> geometry_;
     ComputeKernel rayQueryProgram_;
     scene::Bounds drawBounds_;
-    uint64_t resourceIdentity_ = 0;
-    uint64_t structuralRevision_ = 0;
-    uint64_t transformRevision_ = 0;
-    uint64_t visibilityRevision_ = 0;
     Device* device_ = nullptr;
-    Queue* graphicsQueue_ = nullptr;
-    bool clusterIdShaderEnabled_ = false;
 };
 
 } // namespace

@@ -39,7 +39,6 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     add("Features/GPUDriven/GPUDrivenStreamWorkload", {"streamWorkloadResetMain", "streamWorkloadMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkRaster", {"streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"});
     add("Features/GPUDriven/GPUDrivenStreamGroupRaster", {"streamClusterRasterGroup32Main"});
-    add("Features/GPUDriven/ResidentMeshletLOD", {"residentLodResetMain", "residentLodSelectMain", "residentLodArgumentsMain", "residentLodScatterMain"});
     add("Features/GPUDriven/GPUDrivenStreamAsset", {"streamClusterBinMain", "streamClusterBinP0Main"});
     add("Features/Lighting/BuildReGIR", {"buildReGIRMain"});
     add("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"});
@@ -104,74 +103,50 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     const std::vector<std::string> meshCapabilities{"spvMeshShadingEXT", "spvGroupNonUniformBallot"};
     add(streamModule, {"gpuDrivenStreamAssetMeshMain", "streamTessellationMesh"}, meshCapabilities);
     add(streamModule, {"streamTessellationFragment"});
-    const char* visibilityModule = "Features/VisibilityBuffer/VisibilityBuffer";
-    add(visibilityModule, {"visibilityBufferFragmentMain", "visibilityBufferMaskedFragmentMain",
-        "visibilityClusterCountMain", "visibilityClusterBinMain", "visibilityClusterRasterMain",
-        "visibilityTessellationFragment", "visibilityTessellationCullingFragment"});
-    for (const char* wave : {"0", "1"}) {
-        add("Features/GPUDriven/HZBSPD", {"hzbSpdMain"}, {}, {{"HZB_SPD_WAVE_OPS", wave}});
-        add(visibilityModule, {"visibilityBufferAmplificationMain", "visibilityTessellationTask"},
-            meshCapabilities, {{"GPU_DRIVEN_AMPLIFICATION_WAVE_OPS", wave}});
+    for (bool wave : {false, true}) {
         add(streamModule, {"streamTessellationTask"}, meshCapabilities,
-            {{"GPU_DRIVEN_AMPLIFICATION_WAVE_OPS", wave}});
+            {{"GPU_DRIVEN_AMPLIFICATION_WAVE_OPS", wave ? "1" : "0"}});
     }
-    add(visibilityModule, {"visibilityBufferMeshMain", "visibilityTessellationMesh"}, meshCapabilities);
-    add(visibilityModule, {"visibilityBufferMeshMain", "visibilityTessellationMesh"}, meshCapabilities,
-        {{"VISIBILITY_BUFFER_ALPHA_MASKED", "1"}});
-    add(visibilityModule, {"visibilityTessellationFragment", "visibilityTessellationCullingFragment"}, {},
-        {{"VISIBILITY_BUFFER_ALPHA_MASKED", "1"}});
-
     const bool hasRtxcr = !rtxcrInclude.empty();
     const std::vector<std::string> rtxcrPaths = hasRtxcr
         ? std::vector<std::string>{rtxcrInclude} : std::vector<std::string>{};
     if (hasRtxcr) {
         add("Features/Samples/RTXCRMaterialSample", {"rtxcrMaterialSampleMain"}, {}, {}, rtxcrPaths);
     }
-    // Conventional textures, both position-fetch capability variants. Optional
-    // NTC/NRD SDK permutations remain runtime-compiled; local generated material
-    // programs are appended by Tools/MaterialShaderWarmupRequests.cpp.
-    for (bool positionFetch : {false, true}) {
-        for (auto program : {SceneRayQueryProgram::RTXDI, SceneRayQueryProgram::MaterialVisualization}) {
-            requests.push_back(makeSceneRayQueryRequest(program, {.positionFetch = positionFetch}));
-        }
-        for (bool streamed : {false, true}) {
-            if (streamed && positionFetch) { continue; }
-            SceneShaderOptions options{.streamMaterials = streamed, .hasRTXCR = hasRtxcr,
-                .positionFetch = positionFetch, .rtxcrInclude = rtxcrInclude};
-            for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve,
-                    SceneShaderProgram::RealtimeLighting, SceneShaderProgram::PathTraceGuides,
-                    SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
-                requests.push_back(makeSceneShaderRequest(program, options));
-            }
-            requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options));
-            for (const char* cacheDefine : {"SHARC_UPDATE", "SHARC_QUERY"}) {
-                const SlangMacroDefine define{cacheDefine, "1"};
-                requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1}));
-            }
+    // All ray-query programs consume streamed CLAS geometry. Optional SDK
+    // permutations are compiled on demand; generated materials append requests.
+    for (auto program : {SceneRayQueryProgram::RTXDI, SceneRayQueryProgram::MaterialVisualization}) {
+        requests.push_back(makeSceneRayQueryRequest(program));
+    }
+    const SceneShaderOptions options{.hasRTXCR = hasRtxcr, .rtxcrInclude = rtxcrInclude};
+    for (auto program : {SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve,
+            SceneShaderProgram::OpenPBRSharcResolve, SceneShaderProgram::RealtimeLighting,
+            SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
+            SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+        requests.push_back(makeSceneShaderRequest(program, options));
+    }
+    for (const char* cacheDefine : {"SHARC_UPDATE", "SHARC_QUERY"}) {
+        const SlangMacroDefine define{cacheDefine, "1"};
+        for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::OpenPBRPathTrace,
+                SceneShaderProgram::OpenPBRPathTraceGuides}) {
+            requests.push_back(makeSceneShaderRequest(program, options, {&define, 1}));
         }
     }
-    for (bool streamed : {false, true}) {
-        for (bool guides : {false, true}) {
-            for (bool view : {false, true}) {
-                for (bool half : {false, true}) {
-                    const SceneShaderOptions options{.streamMaterials = streamed, .globalView = view,
-                        .deferredFloat16 = half, .upscalerGuides = guides};
-                    requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, options));
-                    for (int materialClass = 0; materialClass < 5; ++materialClass) {
-                        const std::string value = std::to_string(materialClass);
-                        const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
-                        requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1}));
-                    }
+    for (bool guides : {false, true}) {
+        for (bool view : {false, true}) {
+            for (bool half : {false, true}) {
+                const SceneShaderOptions deferredOptions{.globalView = view,
+                    .deferredFloat16 = half, .upscalerGuides = guides};
+                requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, deferredOptions));
+                for (int materialClass = 0; materialClass < 5; ++materialClass) {
+                    const std::string value = std::to_string(materialClass);
+                    const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+                    requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, deferredOptions, {&define, 1}));
                 }
             }
         }
     }
-    for (bool streamed : {false, true}) {
-        for (bool streamTlas : {false, true}) {
-            if (!streamed && streamTlas) { continue; }
-            requests.push_back(makeShadowShaderRequest({.streamed = streamed, .streamTlas = streamTlas}));
-        }
-    }
+    requests.push_back(makeShadowShaderRequest());
     // Deduplicate complete requests, preserving macro/capability/search-path
     // order and the first occurrence. No compiler cache version change is needed.
     std::vector<ShaderRequest> unique;

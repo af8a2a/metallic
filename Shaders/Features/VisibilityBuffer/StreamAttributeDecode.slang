@@ -3,7 +3,7 @@
 import Core;
 using Metallic;
 
-// MeshletStreamPayloadFormat; packed streams reuse resident shading encoding.
+// MeshletStreamPayloadFormat; packed streams use the shared shading encoding.
 uint streamNormalStride(uint format) { return format == 2u ? 16u : (format == 5u ? 4u : 0u); }
 uint streamTangentStride(uint format) { return format == 2u ? 16u : (format == 6u ? 4u : 0u); }
 float3 streamLoadNormal(StructuredBuffer<uint> words, uint page, uint offset, uint vertex, uint format)

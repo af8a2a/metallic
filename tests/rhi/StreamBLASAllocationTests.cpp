@@ -32,12 +32,15 @@ public:
         if (!created) { return RHITestResult::fail("Device creation failed"); }
         try {
             constexpr uint32_t count = 137, groups = count, references = count * 32;
-            enum Input { Active, Groups, Params, Header, Instances, Infos, References, Pages, Addresses, Destinations, InputCount };
+            enum Input { Active, Groups, Params, Header, Instances, Infos, References, Pages, Addresses, Destinations,
+                SceneInstances, FallbackAddresses, InputCount };
             const uint64_t sizes[] = {sizeof(MeshletStreamGPUActiveHeader), groups * sizeof(MeshletStreamGPUActiveGroup),
                 sizeof(MeshletStreamGPUParams), sizeof(MeshletStreamGPUBLASHeader) + (groups + (count + 63) / 64) * 16,
                 count * sizeof(MeshletStreamGPUInstanceBLAS), count * sizeof(MeshletStreamGPUBLASBuildInfo),
-                references * 8 + 16, count * sizeof(MeshletStreamCLASPageEntry), references * 8, count * 8};
-            const uint32_t strides[] = {32, 112, sizeof(MeshletStreamGPUParams), sizeof(MeshletStreamGPUBLASHeader), sizeof(MeshletStreamGPUInstanceBLAS), 16, 8, sizeof(MeshletStreamCLASPageEntry), 8, 8};
+                references * 8 + 16, count * sizeof(MeshletStreamCLASPageEntry), references * 8, count * 8,
+                count * sizeof(MeshletStreamGPUInstance), sizeof(uint64_t)};
+            const uint32_t strides[] = {32, 112, sizeof(MeshletStreamGPUParams), sizeof(MeshletStreamGPUBLASHeader), sizeof(MeshletStreamGPUInstanceBLAS), 16, 8, sizeof(MeshletStreamCLASPageEntry), 8, 8,
+                sizeof(MeshletStreamGPUInstance), sizeof(uint64_t)};
             std::unique_ptr<BindlessHeap> heap;
             require(bool(device->createBindlessHeap({.maxBuffers = InputCount}).transform([&](auto v) { heap = std::move(v); })), "heap");
             std::array<BindlessHandle, InputCount> handles;
@@ -78,14 +81,16 @@ public:
             };
             MeshletStreamUserPush push{.activeGroupBuffer = handles[Groups].shaderIndex,
                 .paramsBuffer = handles[Params].shaderIndex, .activeHeaderBuffer = handles[Active].shaderIndex,
+                .instanceBuffer = handles[SceneInstances].shaderIndex,
                 .clasAddressBuffer = handles[Addresses].shaderIndex, .clasPageTableBuffer = handles[Pages].shaderIndex,
                 .blasHeaderBuffer = handles[Header].shaderIndex, .instanceBlasBuffer = handles[Instances].shaderIndex,
                 .blasBuildInfoBuffer = handles[Infos].shaderIndex, .blasClusterReferenceBuffer = handles[References].shaderIndex,
+                .fallbackBlasAddressBuffer = handles[FallbackAddresses].shaderIndex,
                 .dynamicBlasAddressBuffer = handles[Destinations].shaderIndex,
                 .traversalPhase = 1};
             bool submitted = false;
-            const auto execute = [&](bool force) {
-                push.traversalPhase = force ? 1u : 0u;
+            const auto execute = [&](uint32_t cacheFlags) {
+                push.traversalPhase = cacheFlags;
                 if (submitted) { require(bool(fence->reset()) && bool(pool->reset()), "reset"); }
                 require(bool(command->begin()), "begin"); command->hostWriteBarrier(); require(bool(command->bindBindlessHeap(*heap)), "record command");
                 require(bool(command->bindExecution(pipeline->execution())), "bind");
@@ -121,6 +126,7 @@ public:
                 for (uint32_t i = 0; i < InputCount; ++i) { upload(i, nullptr, 0); }
                 MeshletStreamGPUParams params;
                 params.activeGroupCount = groups; params.sceneInstanceCount = count; params.scenePageCount = count;
+                params.scenePrimitiveCount = 1;
                 params.blasClusterReferenceCapacity = test == 1 ? 93 : references;
                 params.blasBuildCapacity = test == 2 ? 3 : count;
                 params.maxBlasClustersPerBuild = test == 3 ? 3 : 32;
@@ -134,6 +140,9 @@ public:
                 std::array<MeshletStreamCLASPageEntry, count> pages{};
                 std::array<uint64_t, references> addresses{};
                 std::array<uint32_t, count> selected{};
+                std::array<MeshletStreamGPUInstance, count> sceneInstances{};
+                for (auto& instance : sceneInstances) { instance.visible = 1; }
+                uint64_t fallbackAddress = 0x24680000ull;
                 for (uint32_t i = 0; i < count; ++i) {
                     const uint32_t instance = test == 4 ? count - 1 - i : i;
                     auto& group = active[i]; group.instanceIndex = instance; group.pageIndex = i;
@@ -151,7 +160,9 @@ public:
                 upload(Active, &activeHeader, sizeof(activeHeader)); upload(Groups, active.data(), sizeof(active));
                 upload(Params, &params, sizeof(params)); upload(Pages, pages.data(), sizeof(pages));
                 upload(Addresses, addresses.data(), sizeof(addresses));
-                auto copied = execute(true);
+                upload(SceneInstances, sceneInstances.data(), sizeof(sceneInstances));
+                upload(FallbackAddresses, &fallbackAddress, sizeof(fallbackAddress));
+                auto copied = execute(1u);
                 const auto* data = copied.data();
                 uint64_t offset = 0;
                 std::array<const uint8_t*, InputCount> output{}; offset = 0;
@@ -213,15 +224,20 @@ public:
                     };
                     auto reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 0 && headerAt(reuse).reusedInstances == acceptedBuilds, "unchanged instances rebuilt");
+                    require(headerAt(reuse).semanticChangeCount == 0, "Unchanged published cut invalidated shading history");
                     // Unrelated publication and transform changes never alter object-space BLAS.
                     ++push.clasPublicationRevision; active[100].world0[3] = 123.0f;
                     upload(Groups, active.data(), sizeof(active));
                     reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 0, "unrelated publication/transform invalidated cache");
+                    require(headerAt(reuse).semanticChangeCount == 0, "Unrelated publication invalidated shading history");
                     ++pages[100].publicationGeneration;
+                    for (uint32_t c = 0; c < 32; ++c) { addresses[100 * 32 + c] += 0x100000ull; }
+                    upload(Addresses, addresses.data(), sizeof(addresses));
                     upload(Pages, pages.data(), sizeof(pages)); reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 1 && headerAt(reuse).reusedInstances + 1 == acceptedBuilds &&
                         headerAt(reuse).publicationInvalidated == 1, "page generation did not isolate dirty instance");
+                    require(headerAt(reuse).semanticChangeCount == 0, "CLAS relocation/generation invalidated identical geometry");
                     for (uint32_t i = 0; i < count; ++i) {
                         require(instanceAt(copied, i).storageOffset == instanceAt(reuse, i).storageOffset, "stable slot relocated");
                     }
@@ -231,9 +247,13 @@ public:
                     upload(Active, &activeHeader, sizeof(activeHeader)); upload(Groups, active.data(), sizeof(active));
                     reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 0 && headerAt(reuse).reusedInstances == acceptedBuilds, "compacted cut offsets invalidated unrelated instances");
+                    require(headerAt(reuse).semanticChangeCount == 0, "Cut array relocation invalidated identical geometry");
                     active[99].clusterSelectionMask = 0xffffffffu;
                     upload(Groups, active.data(), sizeof(active)); reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 1 && headerAt(reuse).arenaRepack == 0, "local cut growth rebuilt unrelated instances");
+                    require(headerAt(reuse).semanticChangeCount == 1, "Real cut change did not invalidate exactly one instance in its frame");
+                    reuse = execute(false);
+                    require(headerAt(reuse).semanticChangeCount == 0, "Real cut change invalidated another stable frame");
                     uint32_t packedBytes = 0;
                     for (uint32_t i = 0; i < count; ++i) {
                         auto instance = instanceAt(reuse, i);
@@ -246,18 +266,36 @@ public:
                     upload(Params, &params, sizeof(params)); reuse = execute(false);
                     require(headerAt(reuse).arenaRepack == 1 && headerAt(reuse).blasBuildCount == acceptedBuilds &&
                         headerAt(reuse).storageRejected == 0, "bounded arena repack failed");
+                    require(headerAt(reuse).semanticChangeCount == 0, "BLAS arena relocation invalidated identical geometry");
                     reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 0, "repacked arena did not settle");
                     params.blasStorageBytes = 64;
                     upload(Params, &params, sizeof(params)); reuse = execute(false);
                     require(headerAt(reuse).storageRejected == acceptedBuilds && headerAt(reuse).blasBuildCount == 0, "storage overflow published invalid BLAS");
+                    require(headerAt(reuse).semanticChangeCount == acceptedBuilds, "Dynamic-to-fallback publication omitted semantic changes");
                     params.blasStorageBytes = 1u << 20;
-                    upload(Params, &params, sizeof(params)); reuse = execute(true);
+                    upload(Params, &params, sizeof(params)); reuse = execute(2u);
                     require(headerAt(reuse).blasBuildCount == acceptedBuilds && headerAt(reuse).storageRejected == 0, "cancel/reset did not restore cache");
+                    require(headerAt(reuse).semanticChangeCount == acceptedBuilds, "Fallback-to-dynamic publication omitted semantic changes");
+                    reuse = execute(2u);
+                    require(headerAt(reuse).semanticChangeCount == 0, "Forced rebuild invalidated identical published geometry");
                     pages[81].addressOffsetAndState = packMeshletStreamClasPageEntry(81 * 32, MeshletStreamCLASPageState::Active);
                     ++pages[81].publicationGeneration;
                     upload(Pages, pages.data(), sizeof(pages)); reuse = execute(false);
                     require(headerAt(reuse).blasBuildCount == 1 && headerAt(reuse).reusedInstances == acceptedBuilds, "republication invalidated unrelated instances");
+                    require(headerAt(reuse).semanticChangeCount == 1, "Newly usable dynamic geometry omitted semantic change");
+                    sceneInstances[100].visible = 0;
+                    upload(SceneInstances, sceneInstances.data(), sizeof(sceneInstances));
+                    reuse = execute(false);
+                    require(headerAt(reuse).semanticChangeCount == 1, "Removing ray-visible geometry omitted semantic change");
+                    fallbackAddress += 0x10000ull;
+                    upload(FallbackAddresses, &fallbackAddress, sizeof(fallbackAddress));
+                    reuse = execute(false);
+                    require(headerAt(reuse).semanticChangeCount == 0, "Stable hidden geometry/fallback address relocation invalidated shading");
+                    sceneInstances[100].visible = 1;
+                    upload(SceneInstances, sceneInstances.data(), sizeof(sceneInstances));
+                    reuse = execute(false);
+                    require(headerAt(reuse).semanticChangeCount == 1, "Restoring ray-visible geometry omitted semantic change");
                 }
             }
             return RHITestResult::pass("Per-instance exact reuse, local generation/cut invalidation, shifted ranges, bounded growth/repack, reset; selected-cut packing: zero initial slices, multi-block/tail scan, reordered instances, sparse masks, exact fit, reference/build/per-build limits and missing CLAS");

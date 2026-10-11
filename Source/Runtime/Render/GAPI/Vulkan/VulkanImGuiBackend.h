@@ -55,7 +55,9 @@ public:
     Result<> retainTextures(CommandBuffer& commands);
     // Explicit draw data enables native offscreen panel captures without desktop automation.
     Result<> render(CommandBuffer& commands, ImDrawData* drawData = nullptr);
-    Result<> encodeHDR10(CommandBuffer& commands, ImGuiTexture source, uint32_t width, uint32_t height);
+    // Source is a retained DR sampled-image handle; independent of ImGui texture IDs.
+    Result<> encodeHDR10(CommandBuffer& commands, BindlessHeap& heap, BindlessHandle source,
+        uint32_t width, uint32_t height);
     // The caller seals its frame completion after this method, covering all windows.
     Result<> renderPlatformWindows();
 private:

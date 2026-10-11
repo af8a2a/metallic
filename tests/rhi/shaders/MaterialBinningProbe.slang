@@ -5,9 +5,11 @@ import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
+#include "../../../Shaders/Features/VisibilityBuffer/VisibilityStreamDecode.slang"
 
 #define gVisibility resolveUniform(getResourceParameters<MaterialBinningProbeResources>().visibility)
-#define gRecords resolveBuffer<RWStructuredBuffer<VisibleClusterRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)
+#define gRecords resolveBuffer<RWStructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)
+#define gGroups resolveBuffer<RWStructuredBuffer<StreamActiveGroup>>(getResourceParameters<MaterialBinningProbeResources>().groups)
 #define gInstances resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<MaterialBinningProbeResources>().instances)
 #define gMaterials resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<MaterialBinningProbeResources>().materials)
 #define gShadingMaterials resolveBuffer<RWStructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
@@ -73,10 +75,12 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
     ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i < (PROBE_MATERIAL_COUNT + 3u)) {
-        VisibleClusterRecord record = {0u, i, 0u, 0u};
-        if (i == PROBE_MATERIAL_COUNT) { record.flags = 1u << 28u; }
-        if (i == (PROBE_MATERIAL_COUNT + 1u)) { record.instanceIndex = 10000u; }
+        CompactStreamVisibleRecord record = packStreamVisibleRecord(i, 0u, 0u);
+        if (i == PROBE_MATERIAL_COUNT) { record = (CompactStreamVisibleRecord)0; }
         gRecords[i] = record;
+        StreamActiveGroup group = (StreamActiveGroup)0;
+        group.gpuSceneInstanceIndex = i == (PROBE_MATERIAL_COUNT + 1u) ? 10000u : i;
+        gGroups[i] = group;
         GPUDrivenPreviewInstance instance = {};
         instance.identity.y = i == (PROBE_MATERIAL_COUNT + 2u) ? 10000u : (i * 17u) % PROBE_MATERIAL_COUNT;
         gInstances[i] = instance;
@@ -91,12 +95,11 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
         shading.params.x = type == 1u ? 0.0 : (type == 2u ? 1.0 : 0.5);
         shading.glassParams.x = type == 4u ? 1.0 : 0.0;
         shading.metallicRoughnessTexture.textureIndex = 0xffffffffu;
-        shading.metallicRoughnessTexture.ntcTextureSetIndex = 0xffffffffu;
         if (i == 1u || i == 2u) {
             shading.params.x = 1.0;
             shading.glassParams.x = 0.0;
             if (i == 1u) { shading.metallicRoughnessTexture.textureIndex = 7u; }
-            else { shading.metallicRoughnessTexture.ntcTextureSetIndex = 0u; }
+            else { shading.metallicRoughnessTexture.textureIndex = 8u; }
         }
         gShadingMaterials[i] = shading;
     }

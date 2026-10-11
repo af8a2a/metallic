@@ -8,10 +8,9 @@ namespace metallic::editor {
 
 inline bool isStreamSceneProducer(const render::RenderGraphNode& node)
 {
-    auto properties = node.properties;
-    properties.merge_patch(node.runtimeProperties);
-    return node.type == "VisibilityBufferPass" &&
-        properties.value("enableMeshletStreaming", false) && properties.value("streamAssetOnly", false);
+    return node.type == "VisibilityBufferPass" || node.type == "GPUDrivenStreamAssetPass" ||
+        node.type == "ScenePathTracePass" || node.type == "SceneAccelerationStructurePass" ||
+        node.type == "SceneRTXDIPass" || node.type == "SceneMaterialVisualizationPass";
 }
 
 inline scene::SceneLoadOptions streamSceneLoadOptions(const render::RenderGraph& graph,

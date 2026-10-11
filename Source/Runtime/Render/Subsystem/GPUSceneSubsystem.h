@@ -250,11 +250,6 @@ public:
     }
 
     const GPUSceneGPUUploadStats& gpuUploadStats() const { return gpuUploadStats_; }
-    const GPUSceneRasterDrawLayout& rasterDrawLayout() const
-    {
-        return rasterDrawLayout_;
-    }
-
     [[nodiscard]] Result<GPUSceneConsumerBindings> createBindings(std::string& log) const;
     void releaseBindings(GPUSceneConsumerBindings& bindings) const;
 
@@ -330,7 +325,6 @@ private:
     std::unordered_map<uint64_t, std::vector<std::shared_ptr<ClusterLightGrid>>> lightGrids_;
     uint64_t nextViewGpuResourceAllocationId_ = 1;
     GPUSceneGPUUploadStats gpuUploadStats_;
-    GPUSceneRasterDrawLayout rasterDrawLayout_;
     PendingUpload pendingUpload_ = PendingUpload::Full;
     bool sourceDirty_ = true;
     bool debugReadbackEnabled_ = false;

@@ -132,7 +132,6 @@ struct SceneNode {
     bool visible = true;
 };
 
-enum class GeometryStorage { Resident, StreamAsset };
 
 struct RenderPrimitive {
     std::string name;
@@ -140,7 +139,6 @@ struct RenderPrimitive {
     int32_t primitiveIndex = kInvalidSceneIndex;
     int32_t materialIndex = kInvalidSceneIndex;
     int32_t mode = 4;
-    GeometryStorage storage = GeometryStorage::Resident;
     uint64_t vertexCount = 0;
     uint64_t indexCount = 0;
     uint64_t triangleCount = 0;
@@ -195,14 +193,6 @@ struct RenderTexture {
     std::string name;
     int32_t imageIndex = kInvalidSceneIndex;
     int32_t samplerIndex = kInvalidSceneIndex;
-    int32_t ntcImageIndex = kInvalidSceneIndex;
-    std::array<int8_t, 4> ntcChannels{-1, -1, -1, -1};
-    uint8_t ntcChannelCount = 0;
-
-    bool hasNeuralSource() const
-    {
-        return ntcImageIndex != kInvalidSceneIndex && ntcChannelCount > 0;
-    }
 };
 
 struct RenderTextureInfo {

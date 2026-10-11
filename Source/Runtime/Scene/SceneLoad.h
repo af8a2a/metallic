@@ -64,8 +64,8 @@ struct SceneLoadOptions {
     // an image exceeding it runs alone. 1 GiB accommodates eight 4K RGBA decodes.
     uint64_t maxDecodedBytesInFlight = 1024ull * 1024ull * 1024ull;
     uint32_t mipConcurrency = 0;
-    // Non-empty selects metadata-only import after validating this cooked asset.
-    // Geometry and texture payloads remain owned by the runtime streamers.
+    // Preferred cooked cache. A valid cache permits metadata-only import; a
+    // missing cache imports CPU geometry for cooking by the scene streamer.
     std::filesystem::path streamAssetPath;
 };
 

@@ -3,6 +3,7 @@
 
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Scene/SceneDocument.h"
+#include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <algorithm>
 #include <limits>
@@ -14,13 +15,6 @@
 
 namespace metallic::render {
 namespace {
-
-bool requiresResidentGeometry(SceneResourceFeatureBits features)
-{
-    constexpr auto geometry = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Meshlets |
-        SceneResourceFeatureBits::StandardAccelerationStructure | SceneResourceFeatureBits::ClusterAccelerationStructure;
-    return (static_cast<uint32_t>(features) & static_cast<uint32_t>(geometry)) != 0;
-}
 
 std::filesystem::path propertyPath(
     const RenderGraphProperties& properties,
@@ -34,16 +28,10 @@ std::filesystem::path propertyPath(
 
 std::string resourceKey(const std::filesystem::path& scenePath, const RenderGraphProperties& properties)
 {
-    return normalizedScenePath(scenePath).generic_string() + "#top-level:" +
-        properties.value("topLevelBackend", RenderGraphProperties("standard")).dump() + "#textures:" +
-        std::to_string(properties.value("AsyncComputePreferred", true)) + ":" +
-        std::to_string(properties.value("graphManagedAccelerationStructure", false)) + ":" +
-        std::to_string(properties.value("graphManagedAccelerationStructure", false)
-            ? properties.value("_renderGraphAccelerationStructureOwner", uint64_t{0}) : uint64_t{0}) + ":" +
+    return normalizedScenePath(scenePath).generic_string() + "#textures:" +
         std::to_string(properties.value("materialTextureMaxDimension",512)) + ":" +
         std::to_string(properties.value("materialTextureBudgetMiB",2048)) + ":" +
         std::to_string(properties.value("materialTextureMaskMaxDimension",0)) + ":" +
-        std::to_string(properties.value("materialTextureStreaming",false)) + ":" +
         std::to_string(properties.value("materialTextureRefineDimension",512)) + ":" +
         std::to_string(properties.value("materialTextureColdFrames",180));
 }
@@ -63,9 +51,7 @@ bool snapshotMatchesScene(
     const SceneResourceSnapshot& snapshot,
     const scene::Scene& sourceScene)
 {
-    return snapshot.sourceResourceIdentity == sourceScene.resourceIdentity() &&
-        snapshot.sourceStructuralRevision == sourceScene.sceneGraph().structuralRevision() &&
-        snapshot.sourceVisibilityRevision == sourceScene.visibilityRevision();
+    return snapshot.sourceResourceIdentity == sourceScene.resourceIdentity();
 }
 
 } // namespace
@@ -102,15 +88,13 @@ Result<const scene::Scene*> SceneResourceManager::resolveScene(
     }
     impl_->collectRetired();
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const bool streamMetadata = properties.value("streamAssetOnly", false);
-    outScene = runtimeSceneForPath(runtimeScene, scenePath);
-    if (outScene != nullptr && (!properties.contains("streamAssetOnly") ||
-        outScene->hasStreamGeometry() == streamMetadata)) {
+    outScene = scenePath.empty() && runtimeScene && runtimeScene->valid()
+        ? runtimeScene : runtimeSceneForPath(runtimeScene, scenePath);
+    if (outScene != nullptr) {
         return outScene;
     }
 
-    const std::string key = normalizedScenePath(scenePath).generic_string() +
-        (streamMetadata ? "#stream-metadata" : "#resident");
+    const std::string key = normalizedScenePath(scenePath).generic_string();
     const auto found = impl_->scenes.find(key);
     if (found != impl_->scenes.end()) {
         outScene = found->second.get();
@@ -119,7 +103,13 @@ Result<const scene::Scene*> SceneResourceManager::resolveScene(
 
     auto loadedScene = std::make_shared<scene::SceneDocument>();
     const std::filesystem::path resolvedPath = normalizedScenePath(scenePath);
-    if (!(streamMetadata ? loadedScene->loadStreamMetadata(resolvedPath) : loadedScene->load(resolvedPath))) {
+    auto assetPath = propertyPath(properties, "streamAssetPath");
+    assetPath = assetPath.empty() ? scene::meshletStreamAssetPathFor(resolvedPath) : normalizedScenePath(assetPath);
+    scene::MeshletStreamAsset asset;
+    std::string cacheReason;
+    const bool metadataImport = (resolvedPath.extension() == ".gltf" || resolvedPath.extension() == ".glb") &&
+        asset.open(assetPath, cacheReason) && asset.isRuntimeCompatibleForSource(resolvedPath, cacheReason);
+    if (!(metadataImport ? loadedScene->loadStreamMetadata(resolvedPath) : loadedScene->load(resolvedPath))) {
         const std::string& detail = loadedScene->documentWarning().empty()
             ? loadedScene->lastLoadResult().error
             : loadedScene->documentWarning();
@@ -156,17 +146,8 @@ Result<std::shared_ptr<SceneResourceSnapshot>> SceneResourceManager::acquire(
         return makeError(sceneResult.error());
     }
     const scene::Scene* resolvedScene = *sceneResult;
-    if (resolvedScene->hasStreamGeometry() && requiresResidentGeometry(features)) {
-        log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
-        return makeError(Error::InvalidArgument);
-    }
-    if (!device.capabilities().rayTracingAccelerationStructure && requiresResidentGeometry(features)) {
-        log = "Resident scene GPU geometry requires ray tracing acceleration structures";
-        return makeError(Error::Unsupported);
-    }
-
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::string key = resourceKey(scenePath, properties) + (resolvedScene->hasStreamGeometry() ? "#stream-materials" : "");
+    const std::string key = resourceKey(scenePath, properties);
     auto found = impl_->snapshots.find(key);
     outSnapshot.reset();
     if (found != impl_->snapshots.end()) {
@@ -205,7 +186,7 @@ Result<std::shared_ptr<SceneResourceSnapshot>> SceneResourceManager::acquire(
         graphicsQueue,
         properties,
         *resolvedScene,
-        log, !device.capabilities().rayTracingAccelerationStructure);
+        log);
     bool complete = false;
     scene::SceneLoadProgress progress;
     while (result && !complete) {
@@ -230,14 +211,6 @@ Result<std::shared_ptr<SceneResourceSnapshot>> SceneResourceManager::beginAcquir
     std::string& log)
 {
     std::shared_ptr<SceneResourceSnapshot> outSnapshot{};
-    if (runtimeScene.hasStreamGeometry() && requiresResidentGeometry(features)) {
-        log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
-        return makeError(Error::InvalidArgument);
-    }
-    if (!device.capabilities().rayTracingAccelerationStructure && requiresResidentGeometry(features)) {
-        log = "Resident scene GPU geometry requires ray tracing acceleration structures";
-        return makeError(Error::Unsupported);
-    }
     if (impl_ == nullptr) {
         impl_ = std::make_shared<Impl>();
     }
@@ -248,7 +221,7 @@ Result<std::shared_ptr<SceneResourceSnapshot>> SceneResourceManager::beginAcquir
     impl_->device = &device;
 
     const std::filesystem::path scenePath = propertyPath(properties, "path");
-    const std::string key = resourceKey(scenePath, properties) + (runtimeScene.hasStreamGeometry() ? "#stream-materials" : "");
+    const std::string key = resourceKey(scenePath, properties);
     auto found = impl_->snapshots.find(key);
     outSnapshot.reset();
     if (found != impl_->snapshots.end()) {
@@ -288,7 +261,7 @@ Result<std::shared_ptr<SceneResourceSnapshot>> SceneResourceManager::beginAcquir
         graphicsQueue,
         properties,
         runtimeScene,
-        log, !device.capabilities().rayTracingAccelerationStructure);
+        log);
     if (!result) {
         impl_->snapshots.erase(key);
         outSnapshot.reset();

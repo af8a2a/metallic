@@ -986,9 +986,21 @@ public:
             record(true);
             view.selectedLodLevel = 0;
             record();
-            require(header.padding0 != 0 && header.blasBuildCount > 0, "Cancelled recording poisoned BLAS cache");
+            require(header.padding0 == 0 && header.blasBuildCount == 0 && header.semanticChangeCount == 0,
+                "Cancelled recording discarded the previously submitted BLAS cut/history");
             record();
             require(header.padding0 == 0, "Retry did not restore reuse");
+            view.selectedLodLevel = 2;
+            record(true);
+            record();
+            require(header.blasBuildCount > 0 && header.semanticChangeCount != 0,
+                "Retrying a cancelled new cut reused stale geometry/history");
+            record();
+            require(header.blasBuildCount == 0 && header.semanticChangeCount == 0,
+                "Accepted retry invalidated another stable frame");
+            view.selectedLodLevel = 0;
+            record();
+            record();
             const auto residents = runtime.residency().residentPages();
             const auto nonRoot = std::find_if(residents.begin(), residents.end(), [&](uint32_t page) {
                 return runtime.residency().pageState(page) == MeshletStreamPageResidencyState::Resident &&
@@ -3384,6 +3396,106 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletBudgetAdmissionTest);
+
+class StreamerMeshletGeometryRetirementTest final : public RHITest {
+public:
+    StreamerMeshletGeometryRetirementTest() { type = RHITestType::Command; name = "streamer_meshlet_geometry_retirement"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "geometry_retirement.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        if (asset.pageCount() < 2) { return RHITestResult::fail("Need two geometry pages"); }
+        MeshletStreamResidencyManager residency;
+        RenderFrameContext frame;
+        QueueSubmissionTracker tracker;
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        std::unique_ptr<Semaphore> gate;
+        std::unique_ptr<Buffer> geometry, readback;
+        struct Drain {
+            Queue& queue;
+            std::unique_ptr<Semaphore>& gate;
+            RenderFrameContext& frame;
+            ~Drain()
+            {
+                if (gate && gate->currentValue() < 1) { (void)gate->signal(1); }
+                frame.cancel();
+                (void)queue.waitIdle();
+            }
+        } drain{context.graphicsQueue, gate, frame};
+#define RETIRE_REQUIRE(expression) \
+        if (!(expression)) { return RHITestResult::fail("Geometry retirement: " #expression); }
+        RETIRE_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+        RETIRE_REQUIRE(context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }));
+        RETIRE_REQUIRE(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }));
+        RETIRE_REQUIRE(context.device.createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+        const uint64_t capacity = pageDeviceStorageBytes(asset, 0);
+        RETIRE_REQUIRE(context.device.createBuffer({.size = capacity, .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto value) { geometry = std::move(value); }));
+        RETIRE_REQUIRE(context.device.createBuffer({.size = capacity, .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { readback = std::move(value); }));
+        auto* bytes = geometry->map();
+        RETIRE_REQUIRE(bytes != nullptr);
+        std::memset(bytes, 0x5a, size_t(capacity));
+        geometry->flush({0, capacity});
+        geometry->unmap();
+        for (uint32_t scenario = 0; scenario < 3; ++scenario) {
+            std::string reason;
+            RETIRE_REQUIRE(residency.initialize({.asset = &asset, .maxResidentBytes = capacity,
+                .queuedFrameCount = 1, .unloadDelayFrames = 1}, reason));
+            residency.beginFrame();
+            (void)residency.requestPage(0);
+            RETIRE_REQUIRE(residency.pageAllocated(0) && residency.storage().usedBytes() == capacity);
+            const uint64_t offset = residency.deviceOffsetForPage(0);
+            RETIRE_REQUIRE(frame.begin(scenario + 1));
+            RETIRE_REQUIRE(pool->reset());
+            RETIRE_REQUIRE(commands->begin(frame.submissionContext()));
+            residency.trackGeometryUse(frame.completion());
+            residency.trackGeometryUse(frame.completion()); // Duplicate consumers share one frame identity.
+            const auto src = geometry->slice({offset, capacity});
+            const auto dst = readback->slice({0, capacity});
+            RETIRE_REQUIRE(src && dst && commands->copyBuffer(*src, *dst));
+            RETIRE_REQUIRE(commands->end());
+            RETIRE_REQUIRE(residency.unloadPage(0));
+            if (scenario == 0) {
+                CommandBuffer* buffers[] = {commands.get()};
+                const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+                RETIRE_REQUIRE(tracker.submit({.waitSemaphores = {&wait, 1}, .commandBuffers = {buffers, 1}}, frame));
+            }
+            for (uint32_t cpuFrame = 0; cpuFrame < 16; ++cpuFrame) {
+                residency.beginFrame();
+                (void)residency.requestPage(1);
+                RETIRE_REQUIRE(residency.pageAllocated(0) && residency.deviceOffsetForPage(0) == offset);
+                RETIRE_REQUIRE(residency.storage().usedBytes() == capacity && !residency.pageAllocated(1));
+                RETIRE_REQUIRE(residency.stats().queuedUnloadTaskCount == 1);
+            }
+            if (scenario == 0) {
+                RETIRE_REQUIRE(gate->signal(1));
+                RETIRE_REQUIRE(frame.wait(5'000'000'000ull));
+                std::vector<uint8_t> copied(size_t(capacity), 0);
+                RETIRE_REQUIRE(readBufferBytes(*readback, copied.data(), capacity));
+                RETIRE_REQUIRE(std::all_of(copied.begin(), copied.end(), [](uint8_t value) { return value == 0x5a; }));
+            } else {
+                if (scenario == 2) {
+                    // Reset must discard old task snapshots; cancellation must
+                    // not free a new allocation that reuses the same page ID.
+                    RETIRE_REQUIRE(residency.initialize({.asset = &asset, .maxResidentBytes = capacity}, reason));
+                    (void)residency.requestPage(0);
+                }
+                frame.cancel();
+            }
+            residency.beginFrame();
+            RETIRE_REQUIRE(residency.pageAllocated(0) == (scenario == 2));
+            RETIRE_REQUIRE(residency.storage().usedBytes() == (scenario == 2 ? capacity : 0));
+            RETIRE_REQUIRE(residency.stats().queuedUnloadTaskCount == 0);
+        }
+#undef RETIRE_REQUIRE
+        return RHITestResult::pass("Gated GPU readers retain offsets and budget; cancellation and reset safely release ownership");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletGeometryRetirementTest);
 
 class StreamerMeshletBatchedUnloadTest final : public RHITest {
 public:

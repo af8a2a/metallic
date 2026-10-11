@@ -1,4 +1,6 @@
 #include "TestComputeProgram.h"
+#include "TestResourceParameters.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -85,10 +87,9 @@ RHITestResult runSurfaceLighting(RHITestContext& context, Device& device,
             .entry = "surfaceLightingProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, model);
         const std::string label = request.defines.back().second;
         ShaderRequestView source(request);
-        const ComputeResourceBindingDesc counterBinding{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer};
-        const ComputeResourceField counterField{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer, .offset = 0};
+        const ComputeResourceBindingDesc counterBinding{.binding = METALLIC_RESOURCE_MEMBER(BatchBarrierProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer};
         const ResourceComputeKernelDesc layout{.pushConstantSize = sizeof(OpenPBRProbeParams), .bindings = {&counterBinding, 1},
-            .requiresRayQuery = false, .resourceParameters = {.size = 4, .fields = {&counterField, 1}}};
+            .requiresRayQuery = false, .resourceParameterSize = sizeof(BatchBarrierProbeResources)};
         ComputeProgram program, alias;
         std::shared_ptr<const MaterialExecutableArtifact> artifact, cached;
         const auto before = materialProgramCacheStats();
@@ -116,7 +117,7 @@ RHITestResult runSurfaceLighting(RHITestContext& context, Device& device,
             // Keep registered handles and parameter attachments alive through completion.
             auto encoded = writer.encode(params, kOpenPBRProbeABI, ParameterTransport::InlinePush);
             require(encoded, "Lighting resource encoding failed");
-            const ComputeDispatchBinding binding{.binding = 0, .buffer = &counters};
+            const ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(BatchBarrierProbeResources, output), .buffer = &counters};
             require(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = {&binding, 1}, .pushData = &params,
                 .pushDataSize = sizeof(params), .groupCountX = 24, .groupCountY = 16}), "Lighting dispatch failed");
             require(gpu.submitAndWait(), "Lighting completion failed");

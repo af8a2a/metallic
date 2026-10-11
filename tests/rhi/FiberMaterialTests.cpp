@@ -197,7 +197,7 @@ public:
                 .transform([&](auto value) { device = std::move(value); }), "Fiber binding device");
             auto& queue = *device->getQueue(QueueType::Graphics);
             ScenePathTraceResources resources;
-            check(resources.beginPrepareAsync(*device, queue, {{"path", scenePath.string()}}, document, log, true), log);
+            check(resources.beginPrepareAsync(*device, queue, {{"path", scenePath.string()}}, document, log), log);
             bool complete = false;
             scene::SceneLoadProgress progress;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);

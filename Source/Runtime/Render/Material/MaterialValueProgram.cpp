@@ -186,7 +186,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
         result->source_ = "// Material Value IR; generated Surface slice, shared 80-byte instance ABI.\n"
             "import SlabClosure;\n"
             "struct SlabMaterialEvaluation { Metallic.Material.SlabMaterialInputs inputs; float3 emission; };\n"
-            "struct MaterialValueTextureContext { float normalizedRayLod; uint textureCount; uint ntcCount; };\n"
+            "struct MaterialValueTextureContext { float normalizedRayLod; uint textureCount; };\n"
             "struct MaterialValueOpenPBRInputs { float coatWeight; float coatRoughness; float coatIOR; float fuzzWeight; float3 fuzzColor; float fuzzRoughness; float specularAnisotropy; float2 anisotropyTangent; bool volumeColor; uint overrideMask; float3 normalTS; bool hasNormal; };\n"
             "MaterialValueOpenPBRInputs defaultMaterialValueOpenPBRInputs() { MaterialValueOpenPBRInputs v = (MaterialValueOpenPBRInputs)0; v.coatIOR=1.5; v.coatRoughness=0.03; v.fuzzRoughness=0.5; v.fuzzColor=1.0; v.anisotropyTangent=float2(1,0); return v; }\n"
             "struct MaterialValueInstance { uint programId; uint coverageOffset; uint coverageCount; uint coverageFlags; float4 parameters[4]; };\n"

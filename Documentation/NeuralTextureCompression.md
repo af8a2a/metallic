@@ -1,72 +1,120 @@
-# Neural Texture Compression
+# Reserved Neural Texture Compression support
 
-Metallic can sample NVIDIA Neural Texture Compression (NTC) texture sets directly in the material visualization, path-tracing, and RTXDI scene shaders. At runtime it keeps the compact latent textures and inference weights resident instead of uploading the replaced RGBA8 mip chains. On supported NVIDIA GPUs it prefers FP8 inference through `VK_NV_cooperative_vector`; other devices retain the Generic INT8/DP4a path.
+NTC is reserved for future virtual-texture (VT) work. Ordinary scene loading and
+rendering no longer perform inference on material samples. Path tracing, RTXDI,
+material visualization, shadows, OpenPBR and material-value programs use only
+conventional textures. Their shader requests have no NTC or cooperative-vector
+variants, includes, resource bindings or capability requirements.
 
-## Build setup
+## Asset behavior
 
-NTC support is enabled by default when `RTXNTC-Library` can be found in one of these locations:
+The glTF importer ignores optional `NV_texture_swizzle` metadata and uses the
+ordinary texture `source`. A required `NV_texture_swizzle` extension is unsupported
+and rejected by the existing required-extension check. Assets intended for normal
+rendering must supply conventional textures; NTC-only assets are not decoded by
+the ordinary loader. There is no automatic NTC preparation, upload, replacement,
+residency accounting or inference during normal scene rendering.
 
-- `-DRTXNTC_ROOT=<RTXNTC checkout or RTXNTC-Library path>`
-- `External/RTXNTC-Library`
-- a sibling checkout at `../RTXNTC/libraries/RTXNTC-Library`
+## Retained boundary
 
-For the local reference checkout:
+- `Source/Runtime/Render/NeuralTextureResources.*` retains explicit experimental
+  metadata, latent-texture and inference-weight preparation for future work.
+- `Shaders/Interop/NeuralTextures.slang` retains the Generic INT8 and cooperative
+  vector adapters, using an isolated `NeuralTextureResourceParameters` packet.
+  Ordinary scene shaders do not import this module.
+- The Vulkan format and cooperative-vector primitives remain available to explicit
+  consumers. They are not selected by ordinary material shaders.
 
-```powershell
-cmake -S . -B build -DMETALLIC_BUILD_TESTS=ON -DRTXNTC_ROOT=E:/RTXNTC
-cmake --build build --target MetallicMaterialVisualizationSample MetallicPathTracingSample MetallicRTXDISample --config Debug
-```
+`METALLIC_ENABLE_NTC` defaults to `OFF`, including the full preset. An experimental
+build can opt in with `-DMETALLIC_ENABLE_NTC=ON -DRTXNTC_ROOT=<SDK checkout>` and
+explicitly build `MetallicReservedNTC`. This target is excluded from the default
+build and is not linked into the editor or normal renderer. The SDK lookup also
+accepts `External/RTXNTC-Library` and `../RTXNTC/libraries/RTXNTC-Library`.
+The retained SDK backend requires Vulkan headers; CUDA, DX12 and prebuilt
+SDK decompression shaders remain disabled.
 
-Use `-DMETALLIC_ENABLE_NTC=OFF` to build without LibNTC. CUDA, DX12, and LibNTC's prebuilt decompression shaders are disabled. The LibNTC Vulkan backend is enabled for cooperative-vector capability discovery and weight-layout conversion; inference itself still runs through Metallic's Vulkan RHI and Slang shaders. A Vulkan SDK that provides `vulkan/vulkan.hpp` is required when NTC is enabled.
+Enabling this target does not restore glTF parsing or material inference.
+A future VT implementation must explicitly define tile feedback, residency and
+budgeting, decoding/transcoding, synchronization and conventional fallback before
+connecting NTC to its tile cache. No VT feature is implemented by this change.
 
-## Asset contract
+## Layout and validation
 
-The glTF file must expose each neural source as an image with MIME type `image/vnd-nvidia.ntc` or a `.ntc` URI. Logical glTF textures select that source and its output channels through `NV_texture_swizzle`:
+The material texture record is 48 bytes with two alignment-padding words and no
+neural placeholder fields; the complete legacy material record is 720 bytes.
+The padding is required by StructuredBuffer vector alignment: the two `float4`
+transforms start at offsets 16 and 32. Without it, Slang `sizeof` reports a compact
+40-byte record while SPIR-V still uses 48-byte records and a 720-byte material stride.
+The former texture-set count word is removed from pass constants. PathTrace and
+RTXDI constants are 252 bytes, material visualization constants are 100 bytes,
+and shadow geometry constants are 4 bytes. The ordinary scene resource packet
+is 384 bytes and needs no tail padding. CPU/Slang declarations, array strides,
+resource-field offsets and byte probes are updated together.
 
-```json
-{
-  "extensions": {
-    "NV_texture_swizzle": {
-      "options": [
-        { "source": 5, "channels": [0, 1, 2, 3] }
-      ]
-    }
-  }
-}
-```
+Regression coverage checks conventional glTF fallback, required-extension
+rejection, ordinary material classification, CPU/GPU material layout and shader
+requests without neural permutations. Rendering and optional reserved-SDK
+validation must be reported separately; compilation alone does not establish
+visual correctness or VT readiness.
 
-`source` is the glTF image index. `channels` contains one to four NTC output-channel indices in RGBA order. The current implementation accepts channel indices 0-15 and uses the first valid NTC option. A texture without a valid neural option continues through the conventional image path.
+## Initial NTC removal validation on 2026-10-11
 
-## Runtime behavior
+Reused `build-pass-stages-nrd` without changing its SDK/compiler configuration.
+The editor, shader compiler, scene tests, shader-request tests and RHI tests built.
 
-For every referenced NTC texture set, Metallic:
+- Scene import: 2 focused tests passed for optional neural metadata fallback and
+  unsupported required extensions.
+- Shader requests: 19 tests passed, including ordinary requests without neural
+  permutations, raster-only Deferred SPIR-V and custom-material warmup/cache reuse.
+  `PrewarmedOpenPBRHitsTheRuntimeRequestCache` was excluded from the final run:
+  the initial run exposed an obsolete optimizer-dependent function-call assertion,
+  which was removed; its lengthy all-debug-mode compilation was stopped. The
+  complete debug-mode cache test was not rerun.
+- RTXDI, material visualization and screen-space shadow requests compiled with
+  zero failures through `MetallicShaderCompiler --filter`.
+- RHI: 8 focused tests passed with Vulkan validation: ordinary/typed material
+  binning, material GPU ABI, feature-policy rendering, 256-frame HDR captures,
+  ValueIR texture footprints, material generations and mapped/native resource
+  field bounds. The initial scene packet used an explicit tail word to make CPU/Slang
+  sizes agree at 392 bytes (subsequently compacted to 384 bytes). Auto/Dynamic relative RMSE was `1.66213e-9`.
+- Inspected tone-mapped previews of the raw Reference, Deferred and RTXCR
+  PathTrace outputs. The test checks finite HDR values; this does not establish
+  long-session or full-scene temporal stability. No Vulkan VUID errors appeared;
+  the machine reported two pre-existing missing layer-manifest warnings.
+- Reserved backend: SDK-enabled `NeuralTextureResources.cpp` passed MSVC `/Zs`.
+  The opt-in target was not linked or exercised on GPU, and VT is not implemented.
 
-1. Reads metadata, packed BGRA4 latent mip arrays, constants, and the best supported inference weights through LibNTC.
-2. Selects CoopVec FP8 when both the Vulkan device and texture set support it; otherwise selects Generic INT8 when integer dot products are available.
-3. Converts CoopVec weights to the device-optimized layout with `vkCmdConvertCooperativeVectorMatrixNV` during the scene upload. This upload uses the graphics queue because the conversion command is not valid on a transfer-only queue.
-4. Uploads the latent arrays and shared inference buffers with the normal asynchronous scene upload batches.
-5. Omits replaced conventional material textures from GPU residency.
-6. Reconstructs requested material channels at the shader sample site.
+Local evidence is under `build-pass-stages-nrd/ntc-final-evidence` and the
+`ntc-*.log` files in that build tree. No performance improvement is claimed.
 
-The implementation currently supports at most 64 NTC texture sets per scene and reserves descriptor bindings 29-33 for latent arrays, constants, weights, per-set offsets/modes, and the latent sampler. Cooperative-vector shaders are compiled with Slang's `spvCooperativeVectorNV` capability. Vulkan 1.3 integer dot-product support is required only for texture sets that fall back to Generic INT8.
+## Layout cleanup and native Slang follow-up on 2026-10-11
 
-If LibNTC is unavailable, the GPU supports neither cooperative vectors nor integer dot products, an NTC stream cannot be opened, or metadata/inference payload validation fails, the loader logs the reason and keeps the conventional textures. A malformed neural reference therefore does not make an otherwise valid scene unusable.
+Removed the remaining NTC placeholder members and unnecessary tail words. The
+material texture record keeps only the eight bytes required to align its vector
+transforms; a GPU byte probe verifies the complete 720-byte material and array
+stride. Shared alpha coverage, texture decoding and RTXCR material adaptation are
+Slang modules. OpenPBR path vertices use a typed Slang function with explicit
+transport state and control results. Program-local surface composition remains
+an include because its types and feature configuration belong to the caller.
+Vendor shader snapshots are unchanged.
 
-## Running and validating
+Reused `build-pass-stages-nrd` and built `Metallic`, `MetallicRHITests`,
+`MetallicShaderRequestsTests` and `MetallicShaderCompiler` successfully.
+Eleven shader-request tests passed, including custom-material warmup. Four focused
+GPU tests passed with Vulkan validation for material ABI, both material-binning
+routes and resource-field bounds.
+Eight additional GPU tests passed for HDR capture, ValueIR texture footprints,
+OpenPBR/Slab coverage and shadows, material visualization, RTXDI, OpenPBR debug
+views and path-trace stage parameter layout. The debug-view test initially compared
+coarse fallback geometry with later streamed detail; it now waits for stable
+geometry before its 24 cases and passed a focused rerun with the original
+comparison thresholds unchanged. No Vulkan VUID errors appeared.
 
-All three sample executables accept a scene override:
-
-```powershell
-build\Source\MetallicMaterialVisualizationSample.exe --smoke-test --scene <scene.gltf>
-build\Source\MetallicPathTracingSample.exe --smoke-test --scene <scene.gltf>
-build\Source\MetallicRTXDISample.exe --smoke-test --scene <scene.gltf>
-```
-
-The NTC resource log reports texture-set count, the CoopVec/Generic split, replaced logical textures, conventional byte estimate, resident neural bytes, saved bytes, and reduction percentage. On an RTX 5070 Ti with the RTXNTC FlightHelmet scene, all five texture sets selected CoopVec FP8. Reported material-texture residency changed from 285,212,652 bytes (272.0 MiB) to 11,969,568 bytes (11.4 MiB), saving 273,243,084 bytes (260.6 MiB, 95.8%). This measures texture payloads replaced by NTC; acceleration structures, geometry, render targets, and other renderer allocations are outside that figure.
-
-## Current limits
-
-- CoopVec FP8 is selected per texture set. Mixed scenes can use CoopVec FP8 and Generic INT8 in the same packed buffers and shader permutation.
-- Material visualization and RTXDI currently reconstruct mip 0. The path tracer selects neural mip levels from its existing ray-cone/STF sampling path.
-- NTC is integrated into the shared ray-query scene resources used by material visualization, path tracing, and RTXDI. The separate GPU-driven raster texture system is unchanged.
-- NTC encoding and glTF conversion are asset-pipeline tasks and are not performed at runtime.
+The 256-frame Reference, Deferred and RTXCR PathTrace HDR outputs match the
+initial NTC-removal baseline byte for byte: all three have zero changed components,
+zero maximum absolute error and zero relative RMSE. Evidence is in
+`build-pass-stages-nrd/slang-native-evidence/migration-comparison.json`.
+The debug-view rerun is recorded in `slang-debug-stability-rhi.log` and
+`slang-debug-stability-evidence` under the same build tree.
+These checks establish equivalence for those workloads, not a performance gain
+or long-session temporal stability.

@@ -1,4 +1,6 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include <stdexcept>
@@ -7,7 +9,6 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "harness/GraphEvidence.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -446,8 +447,8 @@ render::Result<> createProbe(render::Device& device, const char* entry,
         .pushConstantSize = sizeof(uint32_t),
         .bindings = bindings,
         .requiresRayQuery = false,
-        .resourceParameters = std::string_view(entry) == "accumulateHistory" ? metallic::tests::kFrameHistoryProbeLayout :
-            std::string_view(entry) == "sampleImages" ? metallic::tests::kFrameImagesProbeLayout : metallic::tests::kFrameCopyProbeLayout,
+        .resourceParameterSize = std::string_view(entry) == "accumulateHistory" ? sizeof(metallic::tests::FrameHistoryProbeResources) :
+            std::string_view(entry) == "sampleImages" ? sizeof(metallic::tests::FrameImagesProbeResources) : sizeof(metallic::tests::FrameCopyProbeResources),
     }, log);
 }
 
@@ -484,8 +485,8 @@ public:
         FRAME_REQUIRE(device->createBuffer({.size = 12, .structureStride = 4,
             .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
         std::string log;
         FRAME_REQUIRE(createProbe(*device, "copyValue", bindings, program, log));
@@ -496,7 +497,7 @@ public:
             auto& commands = index < 2 ? first : second;
             storageBarrier(*commands.buffer, *output);
             const render::ComputeDispatchBinding resources[] = {
-                {.binding = 0, .buffer = inputs[index].get()}, {.binding = 1, .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .buffer = inputs[index].get()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .buffer = output.get()},
             };
             FRAME_REQUIRE(program.dispatch({
                 .commandBuffer = commands.buffer.get(),
@@ -560,8 +561,8 @@ public:
         auto b = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
             images, {images->views[0], images->views[2]}});
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage, .descriptorCount = 2},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .kind = render::ComputeResourceBindingKind::SampledImage, .descriptorCount = 2},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
         std::string log;
         FRAME_REQUIRE(createProbe(*device, "sampleImages", bindings, program, log));
@@ -593,11 +594,11 @@ public:
             render::TextureView* raw[] = {images->views[0].get(), images->views[1].get()};
             const render::ComputeDispatchBinding resources[] = {
                 {
-                    .binding = 0,
+                    .binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images),
                     .textureViews = {raw, 2},
                     .sampledImages = i == 3 ? nullptr : ((i == 2 || i == 5) ? b : a),
                 },
-                {.binding = 1, .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .buffer = output.get()},
             };
             render::ComputeDispatchStats stats;
             FRAME_REQUIRE((i == 4 ? secondProgram : program).dispatch({
@@ -621,7 +622,7 @@ public:
             FRAME_REQUIRE(frame.begin(i));
             storageBarrier(*frame.buffer, *output);
             const render::ComputeDispatchBinding resources[] = {
-                {.binding = 0, .sampledImages = i == 6 ? a : b}, {.binding = 1, .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, images), .sampledImages = i == 6 ? a : b}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameImagesProbeResources, output), .buffer = output.get()},
             };
             FRAME_REQUIRE(program.dispatch({
                 .commandBuffer = frame.buffer.get(),
@@ -677,9 +678,9 @@ public:
         textureDesc.format = render::Format::RGBA32Sfloat;
         FRAME_REQUIRE(history.ensureTexture("history", textureDesc));
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameHistoryProbeResources, previous), .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameHistoryProbeResources, current), .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameHistoryProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
         std::string log;
         FRAME_REQUIRE(createProbe(*device, "accumulateHistory", bindings, program, log));
@@ -693,9 +694,9 @@ public:
             FRAME_REQUIRE(history.transitionTexture(*commands.buffer, "history", render::HistorySlot::Previous, render::ResourceState::General));
             storageBarrier(*commands.buffer, *output);
             const render::ComputeDispatchBinding resources[] = {
-                {.binding = 0, .textureView = history.texture("history", render::HistorySlot::Previous).view},
-                {.binding = 1, .textureView = history.texture("history", render::HistorySlot::Current).view},
-                {.binding = 2, .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameHistoryProbeResources, previous), .textureView = history.texture("history", render::HistorySlot::Previous).view},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameHistoryProbeResources, current), .textureView = history.texture("history", render::HistorySlot::Current).view},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameHistoryProbeResources, output), .buffer = output.get()},
             };
             FRAME_REQUIRE(program.dispatch({
                 .commandBuffer = commands.buffer.get(),
@@ -1779,13 +1780,13 @@ public:
             .entryPointName = "readEnvironment", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameEnvironmentProbeResources, environment), .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameEnvironmentProbeResources, output), .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kFrameEnvironmentProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::FrameEnvironmentProbeResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -1807,8 +1808,8 @@ public:
         const auto& snapshot = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
         render::TextureView* views[] = {snapshot.radianceView};
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = {views, 1}},
-            {.binding = 1, .buffer = context.outputBuffer("data").buffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameEnvironmentProbeResources, environment), .textureViews = {views, 1}},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameEnvironmentProbeResources, output), .buffer = context.outputBuffer("data").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:

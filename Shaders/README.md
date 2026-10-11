@@ -28,16 +28,19 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |
 | `Modules/ColorGrading.slang`、`Modules/ColorGrading/` | ACES 2.0 / UE Film、全局调色、custom LUT 与三维 LUT 编解码 |
-| `Interop/NeuralTextures.slang` | NTC 的唯一模块适配入口，封装 Generic/CoopVec 和无 NTC 的回退 |
+| `Interop/NeuralTextures.slang` | 未来 VT 的独立预留模块，封装 Generic/CoopVec；普通 shader 不导入 |
 | `Interop/NRDEncoding.slang` | NRD 前端编码的唯一模块适配入口 |
 | `Interop/Denoising/NRD/` | 已适配的 NRD pass、bindings、配置和算法快照；保留程序内 HLSL 宏 |
-| `ThirdParty/RadianceCache/` | SHARC 头文件与许可证，保留原有 HLSL 包含方式 |
+| `Modules/SHARC.slang`、`Modules/SHARC/` | 原生 Slang HashGrid、SHARC update/query/resolve；见 [模块说明](Modules/SHARC/README.md) |
+| `ThirdParty/RadianceCache/` | SHARC 历史 HLSL 适配快照与版权声明，仅作迁移对照，生产代码不再包含 |
 | `Features/` | Shader programs：入口、pass 资源和流程相关代码；路径保持兼容现有 C++ 和管线资产 |
 | `Licenses/` | 第三方 shader 许可证 |
 
 测试探针放在 `tests/rhi/shaders/`。RTXCR Geometry / Subsurface、RTXTF、NTC 等 SDK 继续使用
 `External/` 下的源码。RTXCR Hair GPU 实现使用原生模块，上游快照保留为独立验收基线。
 OpenPBR GPU 实现使用原生模块，`External/openpbr-bsdf` 保留为独立验收基线和 CPU LUT 数据来源。
+SHARC 使用 `import SHARC;` 和 `using Metallic.SHARC;`，固定当前 renderer 的 64-bit key/atomic 配置，
+update/query 宏仅控制调用方 pass，不改变模块类型或函数语义。
 ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
 来源记录、许可证和使用说明见 [ShaderToHuman](Modules/ShaderToHuman/README.md)。
 所有 vendor 文件与许可证保持原有内容。
@@ -76,6 +79,11 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 当前固定的 Slang 2026.18.2 下，模块公开结构体的成员仍显式标注 `public`。
 
 新 compute pass 使用 `ComputeKernel` + `ParameterWriter`，以具名 typed 参数承载资源。
+只需要参数包的一部分时，可用 `getResourceParameterField<Packet, Field>(byteOffset)`
+读取字段或连续小参数组，避免先构造整个 `Packet`。偏移必须采用 scalar wire layout，
+并由共享 CPU 声明的 `offsetof` 断言及 mapped/native GPU readback 验证。
+此接口仍要求完整的 root 和 `Packet` 长度；短包、非 4 字节对齐或越界字段返回零值，
+合法包中的缺失资源 sentinel 原样保留。它不改变参数编码或 descriptor 解析方式。
 Shader 获取使用 [ShaderRegistry](../Documentation/ShaderRegistry.md) 的 `getComputeKernel` /
 `getComputeProgram`，或 `getShader` 后由统一管线入口创建；默认自动复用持久 PSO，Pass 不管理缓存文件。
 DR-first 的新接口使用 `ResourceHandle<T>` / `SamplerHandle`（32 位）和
@@ -111,9 +119,9 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 历史纹理和 ping-pong 梯度的访问与同步仍由 RenderGraph 阶段声明负责。
 
 [PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（80 字节）
-的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
+的共享 inline 参数。SHARC 模块需要 StructuredBuffer 对象进行原子操作，
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
-主追踪及其 OpenPBR、NTC、VisibilityBuffer 使用共享的 `SceneResourceParameters` 具名 DR 字段。
+主追踪及其 OpenPBR、VisibilityBuffer 使用共享的 `SceneResourceParameters` 具名 DR 字段。
 
 VisibilityBuffer Deferred 是纯光栅表面的实时 resolve，不包含 ray-query 积分器。
 材质的语义 Feature、作者策略和编译选择由 CPU [Feature System](../Documentation/MaterialSystemPhase7.md)
@@ -131,28 +139,46 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 `resolveBuffer<StructuredBuffer<T>>(resources.indices)`，图像和 sampler 使用 `resolveUniform`，
 纹理数组使用 `resolveNonUniform(ResourceHandle<Texture2D<float4>>(resources.materialTextures.load(index)))`。
 [NamedResourceParameters.h](../Source/Runtime/Render/Core/NamedResourceParameters.h) 共用 C++/Slang 字段；
-CPU 初始化 `ComputeProgramDesc.resourceParameters`，使用
-[NamedResourceLayouts.h](../Source/Runtime/Render/Core/NamedResourceLayouts.h) 的对应布局（如 `kGPUProbeResourceLayout`）。
-编码器检查字段范围、对齐、重叠、资源类型和数组形式，并将 CPU 输入 ID 写入具名字段。
-生产 GPU 参数块没有逻辑 slot table；场景结构为 440 字节，buffer/image/sampler 字段为 4 字节，
+静态 pass 优先使用 `ParameterWriter` 直接构造具名参数。动态资源清单通过
+`METALLIC_RESOURCE_MEMBER(Params, member)` / `METALLIC_DATA_MEMBER(Params, member)`
+引用字段，并用 `resourceParameterSize = sizeof(Params)` 声明参数块大小。
+[ResourceMember.h](../Source/Runtime/Render/Core/ResourceMember.h) 从 C++ 成员类型和 `offsetof`
+推导资源类别、字段格式及偏移；不再维护数字 ID 到字段的独立布局表。
+编码器仍检查字段范围、对齐、重叠、资源类型和数组形式，保留可选资源与批量 dispatch 的契约。
+生产 GPU 参数块没有逻辑 slot table；场景结构为 384 字节，buffer/image/sampler 字段为 4 字节，
 数组和原始数据字段为 12 字节 span，AS 独立保留完整地址。常量仍通过 `getConstants<T>()` 读取。
-`getResource<T>(slot)` / `getResourceArray<T>(slot, index)` / `getData<T>(slot)` 仅用于未迁移的底层测试适配器，
-不要在 `Features`、`Interop` 或生成的材质代码中新增调用。
+`ComputeResourceMember` 不接受整数 ID；测试与生产均使用成员引用，旧数字 ID 和显式字段表兼容路径已删除。
 `Core` 导入 `ParameterRoot`，因此不能和另一份 inline push 声明混用。RHI 不在用户 push 数据前插入 heap header。
 
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；
-是否使用硬件 position fetch 由调用程序决定。着色法线、几何法线和 TBN 的求值顺序保持原有语义。
+光追顶点属性统一从 CLAS 对应的流送页解码，不再提供 position-fetch/fallback 分支。着色法线、几何法线和 TBN 的求值顺序保持原有语义。
+
+## 项目自有 Slang 实现
+
+`AlphaCoverage`、`MaterialTextureDecode` 和 `RTXCRMaterialAdapter` 使用独立 Slang
+module，通过 `import` 显式共享。依赖调用程序类型和编译配置的
+`SceneSurfaceClosure.slang` 保留程序内 `#include`；这些入口没有统一命名 module，
+不能使用要求 `implementing` 命名模块的 `__include`。
+`OpenPBRPathVertex.slang` 提供显式状态参数和控制结果的顶点处理函数，通用路径循环与
+单样本 continuation 共同调用，不再通过 HLSL 文本宏注入 `break`、`continue` 或 `return`。
+`MeshletStreamBLAS.h` 是 C++/Slang 共享常量契约，使用普通头文件。
+第三方 SDK 和 NRD 快照保留其原始 HLSL 适配边界及许可证。
+
+材质 `TextureInfo` 为 48 字节，`LegacyMaterialPayload` 为 720 字节。两个索引后只保留
+8 字节对齐 padding，使 StructuredBuffer 的两个 float4 位于偏移 16/32；不保留 NTC 字段。
+Slang `sizeof` 与 SPIR-V StructuredBuffer 布局不能混为一谈；GPU 字段/数组步长探针验证两端契约。
 
 ## SDK 兼容边界
 
-- 固定功能经 adapter module 导入。`NRDEncoding` 固定前端编码配置，`NeuralTextures`
-  由编译 session 的 `METALLIC_HAS_NTC` / `METALLIC_NTC_COOPERATIVE_VECTOR` 选择实现。
+- 固定功能经 adapter module 导入。`NRDEncoding` 固定前端编码配置。
+  `NeuralTextures` 仅为未来 VT 预留，使用独立 `NeuralTextureResourceParameters`；
+  普通 shader 不导入、不携带 NTC 编译排列。
 - `#define` 不跨 `import` 或 `__include` 传播。消费者局部定义不能改变已导入模块；
   SDK 全局排列使用 `SlangShaderDesc::macroDefines`，它们也参与缓存键。
 - 同一程序中，每个 vendor header 有一个 canonical owner。其他模块导入 owner，
   不重复包含 vendor header；include guard 不能跨 module 去重。
-- NRD pass、OpenPBR 的纹理回调和 feature 宏、SHARC 等仍允许
+- NRD pass、OpenPBR 的纹理回调和 feature 宏等仍允许
   程序内 `#define` + `#include`。`Features/` 中复用这些配置的路径追踪、引导图和实时着色
   文件仍属于程序组合层，不能被 `Modules/` 反向引用。
 - 新的 Metallic 子系统使用 `import`，不要通过 `#include` 引入 `Modules/` 的实现文件。

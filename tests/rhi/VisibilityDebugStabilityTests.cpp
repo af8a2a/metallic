@@ -32,10 +32,9 @@ public:
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless heap"); }
         DEBUG_REQUIRE(created);
         constexpr uint32_t width = 12, capacity = 32;
-        enum Input { Params, Resident, Clusters, Stream, Groups, InputCount };
-        const uint32_t strides[] = {sizeof(builtin_pass::GPUDrivenPreviewGPUParams), sizeof(VisibleClusterRecord),
-            80, sizeof(CompactStreamVisibleRecord), sizeof(MeshletStreamGPUActiveGroup)};
-        const uint32_t counts[] = {1, capacity, 8, capacity, 8};
+        enum Input { Params, Stream, Groups, InputCount };
+        const uint32_t strides[] = {sizeof(builtin_pass::GPUDrivenPreviewGPUParams), sizeof(CompactStreamVisibleRecord), sizeof(MeshletStreamGPUActiveGroup)};
+        const uint32_t counts[] = {1, capacity, 8};
         std::unique_ptr<BindlessHeap> heap;
         DEBUG_REQUIRE(device->createBindlessHeap({.maxSampledImages = 2, .maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, InputCount> handles;
@@ -102,19 +101,12 @@ public:
         DEBUG_REQUIRE(upload(*uploads[1], depth.data(), sizeof(depth)));
         for (uint32_t mode = 1; mode <= 6; ++mode) {
             std::array<uint32_t, width> reference{};
-            // Same geometry, but records, active groups, resident base and physical pages move.
+            // Same geometry, but records, active groups and physical pages move.
             for (uint32_t permutation = 0; permutation < 2; ++permutation) {
-                const uint32_t base = permutation == 0 ? 8 : 16;
                 const auto slot = [permutation](uint32_t i) { return permutation == 0 ? i : 15u - i; };
                 const auto groupSlot = [permutation](uint32_t i) { return permutation == 0 ? i : 7u - i; };
-                std::array<VisibleClusterRecord, capacity> resident{};
                 std::array<CompactStreamVisibleRecord, capacity> stream{};
                 std::array<MeshletStreamGPUActiveGroup, 8> groups{};
-                std::array<std::array<uint32_t, 20>, 8> meshlets{};
-                meshlets[2][4] = 3; meshlets[4][4] = 1;
-                resident[slot(0)] = {.clusterIndex = 2, .instanceIndex = 7};
-                resident[slot(1)] = {.clusterIndex = 2, .instanceIndex = 9};
-                resident[slot(2)] = {.clusterIndex = 4};
                 for (uint32_t g = 0; g < 3; ++g) {
                     auto& group = groups[groupSlot(g)];
                     group.pageIndex = g == 2 ? 101 : 100;
@@ -131,15 +123,13 @@ public:
                 stream[slot(5)] = packStreamVisibleRecord(99, 0, 0);
                 const auto id = [](uint32_t r, uint32_t t = 0) { return ((r + 1) << 7) | t; };
                 const std::array<uint32_t, width> visibility{ id(slot(0)), id(slot(1)), id(slot(2), 1),
-                    id(base + slot(0)), id(base + slot(1)), id(base + slot(0), 1),
-                    id(base + slot(2)), id(base + slot(3)), 0, id(base + slot(4)), id(base + slot(5)), id(base + capacity) };
+                    id(slot(0)), id(slot(1)), id(slot(0), 1),
+                    id(slot(2)), id(slot(3)), 0, id(slot(4)), id(slot(5)), id(capacity) };
                 builtin_pass::GPUDrivenPreviewGPUParams params;
                 params.width = width; params.height = 1; params.mode = mode; params.clearColor[3] = 1;
                 DEBUG_REQUIRE(upload(*buffers[Params], &params, sizeof(params)));
-                DEBUG_REQUIRE(upload(*buffers[Resident], resident.data(), sizeof(resident)));
                 DEBUG_REQUIRE(upload(*buffers[Stream], stream.data(), sizeof(stream)));
                 DEBUG_REQUIRE(upload(*buffers[Groups], groups.data(), sizeof(groups)));
-                DEBUG_REQUIRE(upload(*buffers[Clusters], meshlets.data(), sizeof(meshlets)));
                 DEBUG_REQUIRE(upload(*uploads[0], visibility.data(), sizeof(visibility)));
                 if (submitted) { DEBUG_REQUIRE(fence->reset()); DEBUG_REQUIRE(pool->reset()); }
                 DEBUG_REQUIRE(commands->begin());
@@ -171,8 +161,8 @@ public:
                 commands->setScissor({.width = width, .height = 1});
                 if (auto commandResult = commands->bindBindlessHeap(*heap); !commandResult) { return RHITestResult::fail(std::string("bindBindlessHeap failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 const VisibilityBufferCompositeUserPush push{.paramsBuffer = handles[Params].shaderIndex, .visibilityImage = images[0].shaderIndex,
-                    .depthImage = images[1].shaderIndex, .residentRecords = handles[Resident].shaderIndex, .meshletBuffer = handles[Clusters].shaderIndex,
-                    .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
+                    .depthImage = images[1].shaderIndex,
+                    .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
                 if (auto commandResult = commands->pushBindlessData(&push, sizeof(push)); !commandResult) { return RHITestResult::fail(std::string("pushBindlessData failed: ") + render::resultToString(commandResult)); } if (auto commandResult = commands->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); } commands->endRendering();
                 barrier.oldLayout = TextureLayout::ColorAttachment; barrier.before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite}; barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
@@ -196,13 +186,13 @@ public:
                         return RHITestResult::fail("Meshlet color does not distinguish page/local cluster independently of triangle");
                     }
                     if (mode == 2 && (actual[0] != actual[3] || actual[3] != actual[5] || actual[3] != actual[7] || actual[3] == actual[6])) {
-                        return RHITestResult::fail("Stream LOD colors do not use actual LOD shared with resident geometry");
+                        return RHITestResult::fail("Stream LOD colors do not use actual LOD from stream geometry");
                     }
                     if (mode == 3 && actual[3] == actual[5]) { return RHITestResult::fail("Triangle ID not distinguished"); }
                 }
             }
         }
-        return RHITestResult::pass("Six actual composite modes stable across record/group/base/page relocation; meshlet, triangle and true stream LOD identities verified");
+        return RHITestResult::pass("Six actual composite modes stable across record/group/page relocation; meshlet, triangle and true stream LOD identities verified");
     }
 };
 METALLIC_REGISTER_RHI_TEST(VisibilityDebugStabilityTest);

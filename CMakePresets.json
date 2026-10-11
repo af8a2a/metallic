@@ -52,7 +52,7 @@
         "METALLIC_BUILD_TESTS": true,
         "METALLIC_ENABLE_OPENUSD": true,
         "METALLIC_ENABLE_NRD": true,
-        "METALLIC_ENABLE_NTC": true,
+        "METALLIC_ENABLE_NTC": false,
         "METALLIC_ENABLE_STREAMLINE": true
       }
     },

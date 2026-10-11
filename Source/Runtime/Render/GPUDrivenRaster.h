@@ -11,14 +11,11 @@ struct VisibilityBufferCompositeUserPush {
     uint32_t paramsBuffer = 0;
     uint32_t visibilityImage = 0;
     uint32_t depthImage = 0;
-    uint32_t residentRecords = 0;
-    uint32_t meshletBuffer = 0;
-    uint32_t residentRecordCapacity = 0;
     uint32_t streamRecords = UINT32_MAX;
     uint32_t streamGroups = UINT32_MAX;
     uint32_t shadedColors = 0;
 };
-static_assert(sizeof(VisibilityBufferCompositeUserPush) == 36);
+static_assert(sizeof(VisibilityBufferCompositeUserPush) == 24);
 
 // CPU-authored metadata accompanying visibility/depth. Consumers reconstruct
 // from the actual raster camera, including when the culling camera is frozen.
@@ -30,8 +27,6 @@ struct alignas(16) VisibilityBufferFrameInfo {
     float clipOrtho[4] = {};
     uint32_t width = 0;
     uint32_t height = 0;
-    uint32_t residentRecordCount = 0;
-    uint32_t hasStreamGeometry = 0;
     uint64_t sceneIdentity = 0;
     uint64_t reserved = 0;
     uint32_t lightGridViewIndex = 0;
@@ -44,11 +39,9 @@ struct alignas(16) VisibilityBufferFrameInfo {
     // primary surface without changing the camera or the source scene.
     uint64_t rasterSettingsRevision = 0;
 };
-static_assert(sizeof(VisibilityBufferFrameInfo) == 160);
+static_assert(sizeof(VisibilityBufferFrameInfo) == 144);
 // VisibilityBufferDeferred.slang reads these words from the shared frame buffer.
-static_assert(offsetof(VisibilityBufferFrameInfo, residentRecordCount) == 88);
-static_assert(offsetof(VisibilityBufferFrameInfo, hasStreamGeometry) == 92);
-static_assert(offsetof(VisibilityBufferFrameInfo, reserved) == 104);
+static_assert(offsetof(VisibilityBufferFrameInfo, reserved) == 96);
 
 inline constexpr uint32_t kVisibilityTriangleBits = 7u;
 inline constexpr uint32_t kVisibilityTriangleMask =
@@ -98,7 +91,6 @@ static_assert(!visibilityRecordRangeFitsId(
     0u));
 
 enum class VisibleClusterSource : uint32_t {
-    Resident = 0u,
     StreamPage = 1u,
 };
 
@@ -118,9 +110,7 @@ constexpr VisibleClusterSource visibleClusterSource(uint32_t flags)
         (flags & kVisibleClusterSourceMask) >> kVisibleClusterSourceShift);
 }
 
-// Stable visibility-buffer indirection shared by resident GPUScene meshes and
-// streamed page clusters. dataIndex addresses geometry for Resident records
-// and the active-group table for StreamPage records.
+// Decoded stream visibility record. dataIndex addresses the active-group table.
 struct alignas(16) VisibleClusterRecord {
     uint32_t clusterIndex = 0;
     uint32_t instanceIndex = 0;
@@ -137,7 +127,7 @@ static_assert(offsetof(VisibleClusterRecord, flags) == 12);
 static_assert(std::is_trivially_copyable_v<VisibleClusterRecord>);
 
 // Stream records keep their sparse visibility ID. Instance identity comes from
-// the active group; resident records retain the general 16-byte layout.
+// the active group.
 struct CompactStreamVisibleRecord {
     uint32_t packed = 0; // cluster[0:4], group+1[5:29], raster flags[30:31]
 };

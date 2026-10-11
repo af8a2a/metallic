@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamLatency.h"
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
@@ -363,6 +364,9 @@ public:
     void reset();
 
     void beginFrame(CPUProfileRecorder* profiler = nullptr);
+    // Register before recording geometry consumers. An unload snapshots all
+    // outstanding readers; frame age alone must never recycle their page ranges.
+    void trackGeometryUse(const GPUCompletionPoint& completion);
     bool lockFallbackPages(std::span<const uint32_t> pageIndices, std::string& reason);
     bool requestPage(uint32_t pageIndex);
     bool unloadPage(uint32_t pageIndex);
@@ -503,6 +507,8 @@ private:
     std::array<std::shared_ptr<StreamUploadCompletion>, kStreamingMaxActiveTasks> storageCompletions_;
     StreamingTaskQueue unloadTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> unloadTaskPages_;
+    std::vector<GPUCompletionPoint> geometryUses_;
+    std::array<std::vector<GPUCompletionPoint>, kStreamingMaxActiveTasks> unloadTaskUses_;
     StreamingTaskQueue updateTaskQueue_;
     std::array<std::vector<uint32_t>, kStreamingMaxActiveTasks> updateTaskPages_;
     std::vector<uint32_t> requestedPages_;

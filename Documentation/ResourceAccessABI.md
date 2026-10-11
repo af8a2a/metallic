@@ -58,22 +58,26 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
 - Named-resource shaders read named resource structs through
   `getResourceParameters<T>()`, then resolve their explicit handles/spans. The
   shared `NamedResourceParameters.h` declares the CPU/Slang wire fields.
-  `NamedResourceLayouts.h` maps CPU input IDs to field offsets; those IDs never
-  reach the GPU packet. The scene block is 440 bytes, replacing the
-  sparse 24-byte-per-slot table. Scalar images no longer allocate index arrays.
-- `ResourceComputeKernelDesc.resourceParameters` validates field type, bounds, alignment,
+  Dynamic manifests reference members through `METALLIC_RESOURCE_MEMBER` or
+  `METALLIC_DATA_MEMBER`, with `resourceParameterSize = sizeof(T)`. The member type and
+  offset determine the CPU-only encoding contract; there is no separate numbered
+  input-to-field table. Static passes can directly use `ParameterWriter` instead.
+  The scene block is 456 bytes. Scalar images do not allocate index arrays.
+  `ComputeResourceMember` cannot be constructed from a numeric ID. Tests use the
+  same member contract; the numeric adapter and explicit field tables are deleted.
+- `ComputeResourceEncoder` validates member type, bounds, alignment,
   overlap and array representation before pipeline creation. The encoder copies
-  layout metadata and preserves immutable prepared dispatch/submission leases.
+  manifest metadata and preserves immutable prepared dispatch/submission leases.
   Its 24-byte root still carries resource and constant DR spans. Image arrays
   contain 32-bit indices; named data spans count words and `typedBufferSpan<T>`
   validates divisibility before exposing typed elements. AS fields remain 64-bit.
 - The numeric-slot adapter and `ComputeResourceSlot` wire table are removed.
-  `ComputeResourceEncoder` requires an explicit nonempty named layout and writes directly
-  to field offsets, without a sparse CPU slot array. CPU IDs are not limited to
-  the old 0..255 slot range; only the number of bindings remains bounded at 256.
+  `ComputeResourceEncoder` requires a nonzero parameter block size and writes directly
+  to member offsets, without a sparse CPU slot array or numeric input IDs.
+  The number of resource members remains bounded at 256.
   `getResource`, `getResourceArray` and `getData` no longer exist in Core or its
-  callers. Test fixtures share `tests/rhi/TestResourceParameters.h` and
-  `TestResourceLayouts.h`; image arrays use bounded DR index spans.
+  callers. Test fixtures share `tests/rhi/TestResourceParameters.h` and use
+  member references directly; image arrays use bounded DR index spans.
 - `ShaderDataSpan`, `DataSpan`, `dataBuffer`, and address-returning `data` /
   `EncodedParameters::address` APIs are removed. `dataSpan` and `sampledImages`
   return descriptor spans. BufferSlice registration retains the allocation after
@@ -227,9 +231,17 @@ evidence of non-DR resource access.
 
 - `Features/PostProcess/EditorDisplay.slang` is the only fixed image/sampler
   binding found under `Shaders/`. Its two sets match `VulkanImGuiBackend`'s
-  Vulkan layouts, ImGui draw callbacks and HDR10 output descriptor-set binding.
-  Migrating it requires a coordinated editor/ImGui binding change, including
-  detached windows; changing the shader declarations alone is insufficient.
+  Vulkan layouts and ImGui draw callbacks, including detached windows. This is
+  an explicit third-party ABI exception. HDR10 encoding is separate in
+  `EditorOutput.slang`: a DR sampled-image handle, shared ResourceRegistry lease,
+  and ordinary RHI graphics pipeline replace its former ImGui descriptor set.
+- `DescriptorHeapCodePattern.slang` and `GeneratedCommandsProbe.slang` also use
+  DR handles. The aggregate probe no longer requires adjacent descriptors or
+  custom binding-to-heap mappings; `VulkanPipelineDiagnostics.h` and its mapping
+  API are deleted. DGC retains pipeline-set/count/preprocess/rebind coverage,
+  using push-data tokens for index/value while retaining the DR output handle.
+  Low-level push data is still valid parameter transport; it is not an image or
+  buffer descriptor binding.
 - Production Features/Interop and generated material source have no legacy
   `getResource<T>`, `getResourceArray<T>` or `getData<T>` calls. Their Core
   definitions and all test call sites have also been removed. NRD's generated bindings resolve engine handles and its
@@ -455,3 +467,35 @@ Evidence is under `.cache/`: `compute-named-{mapped,native-final}.{xml,log}`,
 The exact main-suite filter is saved in `compute-named-filter.txt`. NRD and
 startup logs are `compute-nrd-{mapped,native}.{xml,log}` and
 `compute-smoke-{mapped,native}.log`.
+
+### Binding boundary retirement (2026-10-10)
+
+ImGui is the sole maintained shader source with explicit image/sampler bindings.
+HDR10 composition output uses the separate native-DR `EditorOutput` module;
+its source is retained through a shared ResourceRegistry lease, independently of
+ImGui texture registration. Both low-level aggregate and DGC probes now resolve
+DR handles, and the unused custom binding-mapping API has been removed.
+SDK-internal binding and the Streamline descriptor-state compatibility operation
+remain native interop responsibilities. NRD's maintained wrappers already replace
+the vendor binding macros with DR resolution.
+
+Validation on the final build:
+
+- `Metallic`, `MetallicRHITests`, and `MetallicShaderRequestsTests` built successfully.
+- 20 focused native RHI/ABI/HDR tests passed, including PQ pixel reference,
+  source-view lifetime, and independent ImGui/output pipeline cache reuse.
+- Five aggregate access patterns passed in native mode; the same five also
+  passed in mapped compilation during migration. Experimental internal pipeline
+  caching was disabled as required by the probe's existing run contract.
+- DGC reference and target passed and produced identical outputs for fixed
+  pipeline, pipeline-set, explicit preprocess, count and rebind cases. The final
+  native run enabled synchronization validation and recorded zero messages.
+- Two display shader request tests passed; native Editor one-frame smoke
+  submitted and presented successfully. This does not establish long-running
+  behavior or physical HDR monitor appearance.
+
+Evidence: `.cache/dr-binding-retirement/` contains `final-native.xml`,
+`pattern-native-*.xml`, `requests.xml`, `dgc-native-final/report.html` and
+`editor-smoke.log`. The initial DGC conformance run was blocked by two stale
+system layer manifests; the successful runs used the harness-supported SDK
+layer directory and isolated implicit-layer discovery, with validation enabled.

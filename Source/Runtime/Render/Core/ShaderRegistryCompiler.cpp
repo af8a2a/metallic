@@ -24,8 +24,7 @@ std::string groupForSource(const char* moduleName)
     }
     if (module == "Features/Lighting/SceneRealtimeLighting") { return "RealtimeLightingPass"; }
     if (module == "Features/VisibilityBuffer/VisibilityBufferDeferred") { return "VisibilityBufferDeferredPass"; }
-    if (module == "Features/VisibilityBuffer/VisibilityBuffer" ||
-        module == "Features/VisibilityBuffer/VisibilityBufferComposite" ||
+    if (module == "Features/VisibilityBuffer/VisibilityBufferComposite" ||
         module == "Features/GPUDriven/GPUDrivenCulling") { return "VisibilityBufferPass"; }
     if (module == "Features/GPUDriven/GPUDrivenStreamAsset") { return "GPUDrivenStreamAssetPass"; }
     if (module.starts_with("Features/Streaming/")) { return "SceneStreaming"; }

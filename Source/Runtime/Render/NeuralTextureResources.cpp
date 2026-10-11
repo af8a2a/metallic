@@ -382,12 +382,21 @@ NeuralTextureResources& NeuralTextureResources::operator=(NeuralTextureResources
 Result<> NeuralTextureResources::prepare(
     Device& device,
     const scene::Scene& loadedScene,
+    std::span<const NeuralTextureBinding> bindings,
     std::string& log)
 {
     impl_->clear();
     impl_->logicalTextureSetMap.assign(
         loadedScene.textures().size(),
         kInvalidNeuralTextureSetIndex);
+
+    for (const NeuralTextureBinding& binding : bindings) {
+        if (binding.logicalTextureIndex >= loadedScene.textures().size() ||
+            binding.imageIndex < 0 || static_cast<size_t>(binding.imageIndex) >= loadedScene.images().size()) {
+            appendWarning(log, "[NTC] Explicit texture binding is out of range");
+            return makeError(Error::InvalidArgument);
+        }
+    }
 
 #if !METALLIC_HAS_NTC
     (void)device;
@@ -396,10 +405,8 @@ Result<> NeuralTextureResources::prepare(
     return {};
 #else
     std::unordered_set<int32_t> referencedImages;
-    for (const scene::RenderTexture& texture : loadedScene.textures()) {
-        if (texture.hasNeuralSource()) {
-            referencedImages.insert(texture.ntcImageIndex);
-        }
+    for (const NeuralTextureBinding& binding : bindings) {
+        referencedImages.insert(binding.imageIndex);
     }
     if (referencedImages.empty()) {
         return {};
@@ -611,12 +618,14 @@ Result<> NeuralTextureResources::prepare(
         return {};
     }
 
-    for (uint32_t textureIndex = 0; textureIndex < loadedScene.textures().size(); ++textureIndex) {
-        const scene::RenderTexture& texture = loadedScene.textures()[textureIndex];
-        const auto found = imageToSet.find(texture.ntcImageIndex);
-        if (texture.hasNeuralSource() && found != imageToSet.end()) {
-            impl_->logicalTextureSetMap[textureIndex] = found->second;
-            ++impl_->stats.replacedTextureCount;
+    for (const NeuralTextureBinding& binding : bindings) {
+        const auto found = imageToSet.find(binding.imageIndex);
+        if (found != imageToSet.end()) {
+            auto& setIndex = impl_->logicalTextureSetMap[binding.logicalTextureIndex];
+            if (setIndex == kInvalidNeuralTextureSetIndex) {
+                ++impl_->stats.replacedTextureCount;
+            }
+            setIndex = found->second;
         }
     }
     std::unordered_map<int32_t, uint32_t> replacedConventionalImages;

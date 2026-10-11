@@ -138,7 +138,7 @@ public:
     std::string_view description() const override
     {
         return "GPU adaptive triangle patches with an authored height texture, deferred lighting and DLSS-SR. "
-            "Resident demo; see Documentation/GPUDrivenTessellation.md for the streaming cook.";
+            "Geometry streams automatically; see Documentation/GPUDrivenTessellation.md for cooking details.";
     }
     std::string scenePath() const override { return "Asset/Tessellation/DisplacedPlane.gltf"; }
     std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_tessellation.metallic_graph.json"; }
@@ -627,7 +627,7 @@ public:
     std::string_view category() const override { return "GPUDriven"; }
     std::string_view description() const override
     {
-        return "Complete MiniZorah cooked geometry with bounded streaming, the authored camera and no resident scene import.";
+        return "Complete MiniZorah cooked geometry with bounded streaming and the authored camera.";
     }
     std::string scenePath() const override { return "Asset/MiniZorah/zorah_main_public.v2.gltf"; }
     bool loadSceneInEditor() const override { return false; }

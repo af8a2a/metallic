@@ -1,4 +1,5 @@
 #include "../../../Source/Runtime/Render/Core/PathTraceStageParameters.h"
+#include "../../Interop/MeshletStreamBLAS.h"
 [[vk::push_constant]] ConstantBuffer<SharcMaintenanceParams> gStage;
 
 import ShaderCore;
@@ -13,7 +14,8 @@ using Metallic;
 //                    temporal accumulation, stale eviction and adjacent-level
 //                    blending, then clears the accumulation buffer.
 
-#include "../../ThirdParty/RadianceCache/Sharc/SharcCommon.h"
+import SHARC;
+using Metallic.SHARC;
 
 #ifndef SHARC_MAINTENANCE_BLOCK_SIZE
 #define SHARC_MAINTENANCE_BLOCK_SIZE 256
@@ -31,13 +33,15 @@ void sharcClearMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint entryIndex = dispatchThreadId.x;
     SceneSharcMaintenancePush params = gStage.settings;
+    StructuredBuffer<uint> changes = resolveUniform(gStage.geometryChanges);
+    if (params.forceClear == 0u && changes[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD] == 0u) { return; }
     if (entryIndex >= params.entriesNum) {
         return;
     }
 
-    gHashEntries[entryIndex] = HASH_GRID_INVALID_HASH_KEY;
-    gAccumulation[entryIndex] = SharcZeroAccumulationData();
-    gResolved[entryIndex] = SharcZeroPackedData();
+    gHashEntries[entryIndex] = kHashGridInvalidHashKey;
+    gAccumulation[entryIndex] = sharcZeroAccumulationData();
+    gResolved[entryIndex] = sharcZeroPackedData();
 }
 
 [shader("compute")]
@@ -47,11 +51,11 @@ void sharcResolveMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint entryIndex = dispatchThreadId.x;
     SceneSharcMaintenancePush params = gStage.settings;
 
-    SharcParameters sharcParameters;
+    SHARCParameters sharcParameters;
     sharcParameters.hashGridParameters.cameraPosition = params.cameraPosition.xyz;
-    sharcParameters.hashGridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    sharcParameters.hashGridParameters.logarithmBase = kSHARCGridLogarithmBase;
     sharcParameters.hashGridParameters.sceneScale = max(params.sceneScale, 0.0001);
-    sharcParameters.hashGridParameters.levelBias = SHARC_GRID_LEVEL_BIAS;
+    sharcParameters.hashGridParameters.levelBias = kSHARCGridLevelBias;
 
     sharcParameters.hashGridData.capacity = params.entriesNum;
     sharcParameters.hashGridData.hashEntriesBuffer = gHashEntries;
@@ -59,11 +63,16 @@ void sharcResolveMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     sharcParameters.resolvedBuffer = gResolved;
     sharcParameters.radianceScale = 1.0e3;
 
-    SharcResolveParameters resolveParameters;
+    SHARCResolveParameters resolveParameters;
     resolveParameters.cameraPositionPrev = params.cameraPositionPrev.xyz;
     resolveParameters.accumulationFrameNum = params.accumulationFrameNum;
     resolveParameters.staleFrameNumMax = params.staleFrameNumMax;
     resolveParameters.frameIndex = params.frameIndex;
+#if defined(SHARC_BLEND_ADJACENT_LEVELS) && !SHARC_BLEND_ADJACENT_LEVELS
+    resolveParameters.blendAdjacentLevels = false;
+#else
+    resolveParameters.blendAdjacentLevels = true;
+#endif
 
-    SharcResolveEntry(entryIndex, sharcParameters, resolveParameters);
+    sharcResolveEntry(entryIndex, sharcParameters, resolveParameters);
 }

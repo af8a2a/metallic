@@ -7,7 +7,8 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 #include "WaveWorkDistribution.slang"
-#include "../../Interop/AlphaCoverage.hlsli"
+import AlphaCoverage;
+#include "../../Interop/MeshletStreamBLAS.h"
 #define VISIBILITY_TESSELLATION_STREAM 1
 #include "../VisibilityBuffer/VisibilityTessellation.slang"
 
@@ -325,7 +326,7 @@ struct GPUDrivenStreamAssetBLASHeader
     uint frameIndex;
     uint padding0;
     uint padding1;
-    uint padding2;
+    uint semanticChangeCount;
     uint requestedClusterReferences;
     uint requestedInstances;
     uint referenceBudgetRejected;
@@ -506,7 +507,12 @@ struct GPUDrivenStreamAssetParams
     float4 prefetchUp;
     uint enableLodTransitionTelemetry;
     float previousLodPixelError;
-    uint2 lodTelemetryPadding;
+    uint rayClasPageTableBuffer;
+    uint lodTelemetryPadding;
+    float rtOffscreenErrorScale;
+    float rtLodHysteresis;
+    uint rtLodFlags;
+    uint rtLodPolicyRevision;
 };
 
 struct GPUDrivenStreamAssetVertexOutput
@@ -748,6 +754,73 @@ bool streamRefinementDemandVisible(GPUDrivenStreamAssetGroup group, GPUDrivenStr
         if (dot(delta, normal) + radius + padding * length(normal) < 0.0) { return false; }
     }
     return true;
+}
+
+bool streamRayLodEnabled(GPUDrivenStreamAssetParams params)
+{
+    return (params.rtLodFlags & 1u) != 0u;
+}
+
+uint streamRayLodHistoryBase(uint base, uint groupCount)
+{
+    return base + groupCount * 3u + 4u;
+}
+
+void prepareStreamRayLodHistory(RWStructuredBuffer<uint> state, uint base, uint groupCount,
+    bool visible, GPUDrivenStreamAssetParams params)
+{
+    if (!streamRayLodEnabled(params)) { return; }
+    uint history = streamRayLodHistoryBase(base, groupCount);
+    bool eligible = visible && params.enableGpuLodSelection != 0u;
+    state[history] = eligible && state[history + 2u] == params.rtLodPolicyRevision ? state[history + 1u] : 0u;
+    state[history + 1u] = params.frameIndex + 1u;
+    state[history + 2u] = params.rtLodPolicyRevision;
+}
+
+float streamLodMetric(float4 sphere, float error, GPUDrivenStreamAssetInstance instance,
+    float4 eye, float4 forward, float4 projection, GPUDrivenStreamAssetParams params,
+    bool visible, float padding = 0.0)
+{
+    if (!streamRayLodEnabled(params)) {
+        return meshletLodProjectedError(sphere, error, instance.world0, instance.world1,
+            instance.world2, instance.world3, eye, forward, projection, padding);
+    }
+    float projected = meshletLodRayProjectedError(sphere, error, instance.world0, instance.world1,
+        instance.world2, instance.world3, eye, forward, projection, padding);
+    if (visible && (params.rtLodFlags & 2u) != 0u) {
+        projected = max(projected, meshletLodProjectedError(sphere, error, instance.world0, instance.world1,
+            instance.world2, instance.world3, eye, forward, projection, padding));
+    }
+    return projected;
+}
+
+// Demand owns hysteresis. Parent activation, CLAS readiness and the complete
+// frontier still decide which complementary cluster masks can be published.
+bool streamLodGroupDemand(GPUDrivenStreamAssetGroup group, GPUDrivenStreamAssetInstance instance,
+    float4 eye, float4 forward, float4 projection, uint manualLevel, GPUDrivenStreamAssetParams params,
+    RWStructuredBuffer<uint> state, uint base, uint groupCount, uint localGroup, bool updateHistory = true)
+{
+    if ((group.flags & 1u) != 0u) { return true; }
+    if (manualLevel != 0xffffffffu) { return group.lodLevel >= manualLevel; }
+    bool visible = streamRefinementDemandVisible(group, instance, params);
+    if (!streamRayLodEnabled(params) && !visible) { return false; }
+    float threshold = projection.w;
+    uint history = streamRayLodHistoryBase(base, groupCount);
+    uint address = history + 3u + localGroup * 2u;
+    if (streamRayLodEnabled(params)) {
+        threshold *= visible ? 1.0 : max(params.rtOffscreenErrorScale, 1.0);
+        if (updateHistory && state[history] != 0u && state[address] == state[history] && state[address + 1u] != 0u) {
+            threshold *= 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9);
+        }
+    }
+    float error = streamLodMetric(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
+        group.maxQuadricError, instance, eye, forward, projection, params, visible);
+    bool wanted = error > threshold;
+    if (updateHistory && streamRayLodEnabled(params)) {
+        state[address] = state[history + 1u];
+        state[address + 1u] = wanted ? 1u : 0u;
+    }
+    return wanted;
 }
 
 // A scheduling heuristic, not a replacement for the conservative LOD cut.
@@ -1255,8 +1328,17 @@ bool groupPageDrawable(
         return false;
     }
     GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
-    return streamPageDrawable(streamPageState(pageEntry)) &&
-        streamPageDeviceOffset(pageEntry) != kInvalidStreamDeviceOffset;
+    if (!streamPageDrawable(streamPageState(pageEntry)) ||
+        streamPageDeviceOffset(pageEntry) == kInvalidStreamDeviceOffset) { return false; }
+    // The same predicate controls activation and complementary parent masks.
+    // Geometry arriving before its CLAS must leave the legal ancestor cut in
+    // place, rather than select a fine cut that sends the whole BLAS to its root.
+    if (params.rayClasPageTableBuffer != 0xffffffffu) {
+        StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry> clasPages =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetCLASPageEntry>>(params.rayClasPageTableBuffer));
+        if (clasPageState(clasPages[group.pageIndex]) != kCLASPageStateActive) { return false; }
+    }
+    return true;
 }
 
 uint buildGroupClusterSelectionMask(
@@ -1952,7 +2034,7 @@ void gpuDrivenStreamAssetTraversalMain(uint3 dispatchThreadID : SV_DispatchThrea
 // This preserves parent-before-child evaluation without a stack/queue limit.
 bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
     GPUDrivenStreamAssetInstance instance, float4 eye, float4 forward,
-    float4 projection, uint manualLevel)
+    float4 projection, uint manualLevel, GPUDrivenStreamAssetParams params)
 {
     if ((topology[offset + 6u] & 1u) != 0u) { return true; }
     if (manualLevel != 0xffffffffu) { return topology[offset + 5u] >= manualLevel; }
@@ -1968,27 +2050,31 @@ bool streamLodBvhNeedsFine(StructuredBuffer<uint> topology, uint offset,
             abs(instance.world2.xyz) * extent.z + abs(instance.world3.xyz) + abs(eye.xyz);
         worldPadding = (32.0 * 1.1920928955078125e-7) * (magnitude.x + magnitude.y + magnitude.z);
     }
-    float upperError = meshletLodProjectedError(sphere, asfloat(topology[offset + 4u]),
-        instance.world0, instance.world1, instance.world2, instance.world3, eye, forward, projection, worldPadding);
+    float upperError = streamLodMetric(sphere, asfloat(topology[offset + 4u]),
+        instance, eye, forward, projection, params, true, worldPadding);
+    // A node may contain retained fine groups or on-screen children. Prune
+    // only against the lowest hysteresis threshold, without an offscreen scale.
+    float threshold = projection.w * (streamRayLodEnabled(params)
+        ? 1.0 - clamp(params.rtLodHysteresis, 0.0, 0.9) : 1.0);
     // Outward-rounded node spheres plus a small conservative comparison guard
     // prevent floating point cancellation at an LOD threshold from dropping a
     // desired leaf. Non-finite upper bounds also descend; leaves use exact error.
-    return !(upperError < projection.w - max(abs(projection.w) * 1e-4, 1e-5));
+    return !(upperError < threshold - max(abs(threshold) * 1e-4, 1e-5));
 }
 
-// Optional history follows the existing sparse IDs: two words per group and
-// one full-width auto-visible frame stamp per instance. No history scan/clear
-// is required per frame; the runtime resets the buffer when the 26-bit tag wraps.
-uint streamLodHistoryBase(uint base, uint groupCount)
+// Optional telemetry follows sparse IDs and any RT demand history: two words
+// per group and one full-width auto-visible frame stamp per instance. No scan
+// is required per frame; the runtime resets this state when the 26-bit tag wraps.
+uint streamLodHistoryBase(uint base, uint groupCount, GPUDrivenStreamAssetParams params)
 {
-    return base + groupCount * 3u + 4u;
+    return base + groupCount * 3u + 4u + (streamRayLodEnabled(params) ? 3u + groupCount * 2u : 0u);
 }
 
 bool beginStreamLodTelemetry(RWStructuredBuffer<uint> state, uint base, uint groupCount,
     bool visible, GPUDrivenStreamAssetParams params)
 {
     if (params.enableLodTransitionTelemetry == 0u) { return false; }
-    uint address = streamLodHistoryBase(base, groupCount) + groupCount * 2u;
+    uint address = streamLodHistoryBase(base, groupCount, params) + groupCount * 2u;
     uint previous = state[address];
     bool eligible = visible && params.enableGpuLodSelection != 0u &&
         (params.frameIndex & kLODTelemetryFrameMask) != 0u && params.frameIndex != 0xffffffffu;
@@ -2003,7 +2089,7 @@ void observeStreamLodGroup(RWStructuredBuffer<uint> state, StructuredBuffer<uint
     bool continuous, GPUDrivenStreamAssetParams params)
 {
     if (params.enableLodTransitionTelemetry == 0u) { return; }
-    uint history = streamLodHistoryBase(base, primitive.groupCount);
+    uint history = streamLodHistoryBase(base, primitive.groupCount, params);
     uint address = history + localGroup * 2u;
     uint previous = state[address];
     uint tag = params.frameIndex & kLODTelemetryFrameMask;
@@ -2022,7 +2108,7 @@ void observeStreamLodGroup(RWStructuredBuffer<uint> state, StructuredBuffer<uint
     bool catchup = eligible && continuous && active && previousDemand &&
         state[address + 1u] == params.frameIndex;
     bool threshold = false;
-    if (eligible && continuous && active && !previousDemand && (group.flags & 1u) == 0u) {
+    if (eligible && continuous && active && !previousDemand && (group.flags & 1u) == 0u && !streamRayLodEnabled(params)) {
         // A missing observation is not evidence of a threshold crossing: the
         // demand BVH may have pruned an offscreen group. Re-evaluate the actual
         // preceding camera and threshold and require its refinement to be visible.
@@ -2066,7 +2152,7 @@ void selectStreamLodTelemetry(RWStructuredBuffer<uint> state, uint base, uint gr
     uint localGroup, uint mask, bool terminal, bool fallback, GPUDrivenStreamAssetParams params)
 {
     if (params.enableLodTransitionTelemetry == 0u || terminal || fallback || mask == 0u) { return; }
-    uint address = streamLodHistoryBase(base, groupCount) + localGroup * 2u;
+    uint address = streamLodHistoryBase(base, groupCount, params) + localGroup * 2u;
     uint observation = state[address];
     state[address] = observation | kLODObservedSelected;
     if (params.demandStatsBuffer == 0xffffffffu || (observation & kLODObservationEligible) == 0u) { return; }
@@ -2118,7 +2204,7 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
         uint offset = primitive.lodBvhOffset + nodeIndex * 10u;
         ++visitedNodes;
         if (!streamLodBvhNeedsFine(topology, offset, instance,
-                lodEye, lodForward, lodProjection, manualLevel)) {
+                lodEye, lodForward, lodProjection, manualLevel, params)) {
             nodeIndex = topology[offset + 7u];
             continue;
         }
@@ -2134,12 +2220,9 @@ void buildStreamLodBvhFrontier(uint instanceIndex,
                 uint parentId = topology[group.parentOffset + parent];
                 parentsActive = parentsActive && state[base + (parentId - primitive.groupOffset) * 2u] != 0u;
             }
-            float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
-            bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
-                group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
-                instance.world3, lodEye, lodForward, lodProjection, manualLevel);
             // Demand comes from resident metadata, independently of the safe cut.
-            bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
+            bool demanded = streamLodGroupDemand(group, instance, lodEye, lodForward, lodProjection,
+                manualLevel, params, state, base, primitive.groupCount, localGroup);
             if (demanded) {
                 if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                     markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -2216,7 +2299,7 @@ void buildStreamLodFrontier(
     // Frustum rejection is current-frame and independent of HZB history. Keep
     // the ordinary state clearing below, so a returning instance cannot reuse
     // stale parent reachability. Manual cut/debug and RT traversal stay intact.
-    if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
+    if (params.enableGpuLodSelection != 0u && !streamRayLodEnabled(params) && push.rasterBindingsBuffer != 0xffffffffu) {
         StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
             resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
         if ((bindings[0].cullingFlags & 1u) != 0u &&
@@ -2226,6 +2309,7 @@ void buildStreamLodFrontier(
         }
     }
     uint telemetryBase = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+    prepareStreamRayLodHistory(state, telemetryBase, primitive.groupCount, instance.visible != 0u, params);
     bool telemetryContinuous = beginStreamLodTelemetry(state, telemetryBase, primitive.groupCount,
         instance.visible != 0u, params);
     if (primitive.lodBvhNodeCount != 0u) {
@@ -2256,11 +2340,8 @@ void buildStreamLodFrontier(
             uint parentId = topology[group.parentOffset + parent];
             parentsActive = parentsActive && state[base + (parentId - primitive.groupOffset) * 2u] != 0u;
         }
-        float4 sphere = float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius);
-        bool desired = meshletLodGroupNeedsFine(sphere, group.maxQuadricError,
-            group.lodLevel, group.flags, instance.world0, instance.world1, instance.world2,
-            instance.world3, lodEye, lodForward, lodProjection, manualLevel);
-        bool demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
+        bool demanded = streamLodGroupDemand(group, instance, lodEye, lodForward, lodProjection,
+            manualLevel, params, state, base, primitive.groupCount, localGroup);
         if (demanded) {
             if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) {
                 markStreamPageDemand(pageTable, params, group.pageIndex);
@@ -2466,6 +2547,8 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
         if (index < size) { demand[index] = 0u; }
         return;
     }
+    RWStructuredBuffer<uint> state =
+        resolveUniform(ResourceHandle<RWStructuredBuffer<uint>>(params.lodStateBuffer));
     StructuredBuffer<GPUDrivenStreamAssetInstance> instances =
         resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
     StructuredBuffer<GPUDrivenStreamAssetPrimitive> primitives =
@@ -2532,7 +2615,7 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
                 while (tile < end) {
                     uint offset = primitive.lodTileOffset + 1u + tile * 10u;
                     ++visited;
-                    if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual)) {
+                    if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual, params)) {
                         tile = topology[offset + 7u];
                         continue;
                     }
@@ -2559,13 +2642,11 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
             if (item < work.total) {
                 GPUDrivenStreamAssetGroup group = groups[groupIndex];
                 GPUDrivenStreamAssetInstance ownerInstance = instances[owner];
-                bool wanted = (group.flags & 1u) != 0u ||
-                    (meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-                        group.maxQuadricError, group.lodLevel, group.flags, ownerInstance.world0, ownerInstance.world1,
-                        ownerInstance.world2, ownerInstance.world3, eye, direction, projection, manual) &&
-                        streamRefinementDemandVisible(group, ownerInstance, params));
+                GPUDrivenStreamAssetPrimitive ownerPrimitive = primitives[ownerInstance.primitiveIndex];
+                uint ownerBase = topology[params.lodInstanceOffsetsOffset + owner];
+                bool wanted = streamLodGroupDemand(group, ownerInstance, eye, direction, projection,
+                    manual, params, state, ownerBase, ownerPrimitive.groupCount, groupIndex - ownerPrimitive.groupOffset);
                 if (wanted) {
-                    GPUDrivenStreamAssetPrimitive ownerPrimitive = primitives[ownerInstance.primitiveIndex];
                     uint groupBits = topology[params.demandInstanceOffsetsOffset + owner * 4u];
                     uint bit = groupBits + groupIndex - ownerPrimitive.groupOffset;
                     InterlockedOr(demand[kStreamDemandStatsWords + (bit >> 5u)], 1u << (bit & 31u));
@@ -2710,7 +2791,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
         forecast.viewport.w = 2.0 * atan(tan(params.viewport.w * 0.5) * params.prefetchParams.x);
         forecast.clipOrtho.z *= params.prefetchParams.x;
         forecast.lodPixelError *= params.prefetchParams.y;
-        if (!streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
+        if (!streamRayLodEnabled(params) && !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
                 max(instance.boundsCenterRadius.w, 0.000001), currentStreamCamera(forecast))) { return; }
         float3 delta = forecast.center.xyz - forecast.eye.xyz;
         float3 forward = dot(delta, delta) > 1e-12 ? normalize(delta) : float3(0.0, 0.0, -1.0);
@@ -2724,7 +2805,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             // once it is filled instead of repeatedly reporting deferred work.
             if (requests[kStreamRequestPrefetchCounterWord] >= limit) { return; }
             uint offset = primitive.lodTileOffset + 1u + tile * 10u;
-            if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu)) {
+            if (!streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, 0xffffffffu, forecast)) {
                 tile = topology[offset + 7u];
                 continue;
             }
@@ -2735,10 +2816,10 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             GPUDrivenStreamAssetGroup group = groups[primitive.groupOffset + topology[offset + 8u] + count - 1u - lane];
             if ((group.flags & 1u) != 0u || group.pageIndex >= params.scenePageCount ||
                 streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { continue; }
-            if (!meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-                    group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
-                    instance.world2, instance.world3, eye, direction, projection, 0xffffffffu) ||
-                !streamRefinementDemandVisible(group, instance, forecast)) { continue; }
+            uint historyBase = topology[params.lodInstanceOffsetsOffset + instanceIndex];
+            if (!streamLodGroupDemand(group, instance, eye, direction, projection, 0xffffffffu,
+                    forecast, state, historyBase, primitive.groupCount,
+                    topology[offset + 8u] + count - 1u - lane, false)) { continue; }
             if (table != 0u) {
                 float benefit = streamGroupScreenBenefit(group, instance, forecast, eye, direction, projection);
                 InterlockedMax(requests[table + group.pageIndex], asuint(benefit));
@@ -2838,12 +2919,13 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             state[base + localGroup * 2u + 1u] = 0u;
         }
         if (lane < 4u) { state[header + lane] = 0u; state[sparse + lane] = 0u; }
+        if (lane == 0u) { prepareStreamRayLodHistory(state, base, primitive.groupCount, instance.visible != 0u, params); }
     }
     if (push.activeBuildPhase != kActiveBuildPhaseClear) {
         if (lane == 0u) { g_CooperativeRoots = 0u; g_CooperativeMissingRoots = 0u; }
         AllMemoryBarrierWithGroupSync();
     }
-    if (params.enableGpuLodSelection != 0u && push.rasterBindingsBuffer != 0xffffffffu) {
+    if (params.enableGpuLodSelection != 0u && !streamRayLodEnabled(params) && push.rasterBindingsBuffer != 0xffffffffu) {
         StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindings =
             resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(push.rasterBindingsBuffer));
         if ((bindings[0].cullingFlags & 1u) != 0u && !streamSphereInsideFrustum(instance.boundsCenterRadius.xyz,
@@ -2876,7 +2958,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 if (index < count) {
                     root = topology[params.demandTaskOffset + first + index];
                     wanted = streamLodBvhNeedsFine(topology, primitive.lodTileOffset + 1u + root * 10u,
-                        instance, eye, direction, projection, manual);
+                        instance, eye, direction, projection, manual, params);
                 }
                 // Task order has no cut/budget semantics. Reserve independently
                 // per wave; a dispatch barrier publishes all payloads to workers.
@@ -2916,7 +2998,7 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
             uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u + 1u] + tile;
             visit = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
         } else {
-            visit = streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual);
+            visit = streamLodBvhNeedsFine(topology, offset, instance, eye, direction, projection, manual, params);
         }
         if (!visit) { tile = topology[offset + 7u]; continue; }
         ++tile;
@@ -2947,10 +3029,8 @@ void streamCooperativeLodMain(uint3 workgroup : SV_GroupID, uint lane : SV_Group
                 uint bit = topology[params.demandInstanceOffsetsOffset + instanceIndex * 4u] + localGroup;
                 demanded = (demand[kStreamDemandStatsWords + (bit >> 5u)] & (1u << (bit & 31u))) != 0u;
             } else {
-                bool desired = meshletLodGroupNeedsFine(float4(group.boundsCenterX, group.boundsCenterY, group.boundsCenterZ, group.boundsRadius),
-                    group.maxQuadricError, group.lodLevel, group.flags, instance.world0, instance.world1,
-                    instance.world2, instance.world3, eye, direction, projection, manual);
-                demanded = terminal || (desired && streamRefinementDemandVisible(group, instance, params));
+                demanded = streamLodGroupDemand(group, instance, eye, direction, projection,
+                    manual, params, state, base, primitive.groupCount, localGroup);
                 if (demanded) {
                     if (streamPageAvailable(streamPageState(pageTable[group.pageIndex]))) { markStreamPageDemand(pageTable, params, group.pageIndex); }
                     else {
@@ -3286,6 +3366,32 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
 }
 
 static const uint kBLASInstanceDirty = 8u;
+static const uint kBLASInstanceSemanticCutDirty = 1u << 4u;
+// Persist the representation actually published to the TLAS, including failed
+// admissions. Address relocations and requested cuts do not change this state.
+static const uint kBLASInstancePublishedFallback = 1u << 5u;
+static const uint kBLASInstancePublishedDynamic = 2u << 5u;
+static const uint kBLASInstancePublishedMask = 3u << 5u;
+
+bool streamBlasDynamicReady(GPUDrivenStreamAssetInstanceBLAS blas)
+{
+    return (blas.flags & kBLASInstanceDynamic) != 0u &&
+        (blas.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
+        blas.selectedClusterCount != 0u &&
+        blas.insertedClusterCount == blas.selectedClusterCount &&
+        blas.cachedValid != 0u && blas.storageCapacity != 0u;
+}
+
+uint2 streamPublishedBlasAddress(GPUDrivenStreamAssetInstanceBLAS blas,
+    GPUDrivenStreamAssetParams params, uint2 fallbackAddress)
+{
+    if (streamBlasDynamicReady(blas)) {
+        uint low = params.blasStorageAddressLow + blas.storageOffset;
+        return uint2(low, params.blasStorageAddressHigh +
+            (low < params.blasStorageAddressLow ? 1u : 0u));
+    }
+    return fallbackAddress;
+}
 groupshared uint4 g_StreamBlasStoragePrefix[64];
 
 uint blasInstanceStorageBytes(uint count, GPUDrivenStreamAssetParams params)
@@ -3337,7 +3443,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     if (push.activeBuildPhase == kBLASInputPhaseReset) {
         if (itemIndex == 0u) {
             GPUDrivenStreamAssetBLASHeader previous = (GPUDrivenStreamAssetBLASHeader)0;
-            if (push.traversalPhase == 0u) { previous = blasHeader[0]; }
+            if ((push.traversalPhase & 1u) == 0u) { previous = blasHeader[0]; }
             GPUDrivenStreamAssetBLASHeader header = (GPUDrivenStreamAssetBLASHeader)0;
             header.clusterReferenceCount = 0u;
             header.blasBuildCount = 0u;
@@ -3348,7 +3454,6 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
             header.arenaUsedBytes = previous.arenaUsedBytes;
             header.arenaBase = previous.arenaUsedBytes;
             header.padding1 = activeCount;
-            header.padding2 = push.clasPublicationRevision;
             blasHeader[0] = header;
         }
         return;
@@ -3358,24 +3463,54 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         resolveUniform(ResourceHandle<RWStructuredBuffer<uint4>>(push.blasHeaderBuffer));
     RWStructuredBuffer<uint4> cache = cacheHandle;
     if (push.activeBuildPhase == 4u || push.activeBuildPhase == 11u) {
+        if (push.activeBuildPhase == 11u && itemIndex < params.sceneInstanceCount) {
+            // Finalize only after insertion/admission, using the same effective
+            // representation as TLAS input. Stable fallback is not a cut change.
+            StructuredBuffer<GPUDrivenStreamAssetInstance> instances =
+                resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(push.instanceBuffer));
+            StructuredBuffer<uint2> fallbackAddresses =
+                resolveUniform(ResourceHandle<StructuredBuffer<uint2>>(push.fallbackBlasAddressBuffer));
+            GPUDrivenStreamAssetInstance instance = instances[itemIndex];
+            GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
+            uint2 fallbackAddress = instance.primitiveIndex < params.scenePrimitiveCount
+                ? fallbackAddresses[instance.primitiveIndex] : uint2(0u, 0u);
+            uint2 address = streamPublishedBlasAddress(info, params, fallbackAddress);
+            bool visible = instance.visible != 0u && any(address != uint2(0u, 0u));
+            uint previousMode = info.flags & kBLASInstancePublishedMask;
+            uint publishedMode = !visible ? 0u : (streamBlasDynamicReady(info)
+                ? kBLASInstancePublishedDynamic : kBLASInstancePublishedFallback);
+            bool semanticChanged = publishedMode != previousMode ||
+                (publishedMode == kBLASInstancePublishedDynamic &&
+                    (info.flags & kBLASInstanceSemanticCutDirty) != 0u);
+            if (semanticChanged) {
+                // Global: an offscreen instance can affect reflections/shadows.
+                InterlockedAdd(blasHeader[0].semanticChangeCount, 1u);
+            }
+            instanceBlas[itemIndex].flags = (info.flags & ~kBLASInstancePublishedMask) | publishedMode;
+        }
         if (itemIndex < activeCount) {
             GPUDrivenStreamAssetActiveGroup group = activeGroups[itemIndex];
             if (group.instanceIndex >= params.sceneInstanceCount || group.pageIndex >= params.scenePageCount) { return; }
-            GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[group.instanceIndex];
             uint4 key = uint4(group.pageIndex, group.clusterSelectionMask, group.clusterCount,
                 clasPageTable[group.pageIndex].publicationGeneration);
             if (push.activeBuildPhase == 11u) {
                 cache[6u + itemIndex] = key;
             } else {
+                GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[group.instanceIndex];
                 // Compare by rank within the instance, independent of the
                 // compact offsets of other instances. Read all old keys before
                 // phase 11 publishes the next cache (including removed groups).
                 uint rank = itemIndex - info.firstGroup;
                 bool dirty = info.cachedValid == 0u || rank >= info.previousGroupCount;
+                bool semanticDirty = dirty;
                 if (!dirty) {
                     uint4 previous = cache[6u + info.previousFirstGroup + rank];
                     dirty = any(previous != key);
+                    semanticDirty = any(previous.xyz != key.xyz);
                     if (previous.w != key.w) { InterlockedAdd(blasHeader[0].publicationInvalidated, 1u); }
+                }
+                if (semanticDirty) {
+                    InterlockedOr(instanceBlas[group.instanceIndex].flags, kBLASInstanceSemanticCutDirty);
                 }
                 if (dirty) {
                     InterlockedOr(instanceBlas[group.instanceIndex].flags, kBLASInstanceDirty);
@@ -3388,11 +3523,14 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
     if (push.activeBuildPhase == 5u) {
         if (itemIndex < params.sceneInstanceCount) {
             GPUDrivenStreamAssetInstanceBLAS info = instanceBlas[itemIndex];
-            if (push.traversalPhase != 0u) { info = (GPUDrivenStreamAssetInstanceBLAS)0; }
+            // Bit 0 initializes a new cache; bit 1 forces physical rebuilds
+            // (publication generation wrap) while preserving semantic history.
+            if ((push.traversalPhase & 1u) != 0u) { info = (GPUDrivenStreamAssetInstanceBLAS)0; }
             info.selectedClusterCount = 0u;
             info.insertedClusterCount = 0u;
             info.blasBuildIndex = kInvalidClusterIndex;
-            info.flags = 0u;
+            info.flags = (info.flags & kBLASInstancePublishedMask) |
+                ((push.traversalPhase & 2u) != 0u ? kBLASInstanceDirty : 0u);
             info.firstGroup = 0xffffffffu;
             info.groupCount = 0u;
             instanceBlas[itemIndex] = info;
@@ -3510,7 +3648,9 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         instanceBlas[itemIndex].blasBuildIndex = buildIndex;
         bool dirty = info.cachedValid == 0u || info.previousGroupCount != info.groupCount ||
             params.enableBlasInstanceReuse == 0u || (info.flags & kBLASInstanceDirty) != 0u;
-        InterlockedOr(instanceBlas[itemIndex].flags, kBLASInstanceDynamic | (dirty ? kBLASInstanceDirty : 0u));
+        bool semanticDirty = info.previousGroupCount != info.groupCount;
+        InterlockedOr(instanceBlas[itemIndex].flags, kBLASInstanceDynamic |
+            (dirty ? kBLASInstanceDirty : 0u) | (semanticDirty ? kBLASInstanceSemanticCutDirty : 0u));
         InterlockedAdd(blasHeader[0].admittedInstances, 1u);
         return;
     }
@@ -3576,7 +3716,7 @@ void gpuDrivenStreamAssetBuildBlasInputMain(
         growthOffset += min(blasHeader[0].arenaBase, 0xffffffffu - growthOffset);
         uint offset = repack ? packedOffset : grow ? growthOffset : info.storageOffset;
         if (size == 0u || offset >= params.blasStorageBytes || size > params.blasStorageBytes - offset) {
-            info.flags = kBLASInstanceFallback | kBLASInstanceOverflow;
+            info.flags = (info.flags & kBLASInstancePublishedMask) | kBLASInstanceFallback | kBLASInstanceOverflow;
             info.cachedValid = 0u;
             info.storageOffset = 0u; info.storageCapacity = 0u;
             instanceBlas[itemIndex] = info;
@@ -3700,20 +3840,9 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
 
     GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
     GPUDrivenStreamAssetInstanceBLAS blas = instanceBlas[instanceIndex];
-    uint2 accelerationStructureReference = uint2(0u, 0u);
-    bool dynamicReady =
-        (blas.flags & kBLASInstanceDynamic) != 0u &&
-        (blas.flags & (kBLASInstanceFallback | kBLASInstanceOverflow)) == 0u &&
-        blas.selectedClusterCount != 0u &&
-        blas.insertedClusterCount == blas.selectedClusterCount &&
-        blas.cachedValid != 0u && blas.storageCapacity != 0u;
-    if (dynamicReady) {
-        uint low = params.blasStorageAddressLow + blas.storageOffset;
-        accelerationStructureReference = uint2(low, params.blasStorageAddressHigh +
-            (low < params.blasStorageAddressLow ? 1u : 0u));
-    } else if (instance.primitiveIndex < params.scenePrimitiveCount) {
-        accelerationStructureReference = fallbackBlasAddresses[instance.primitiveIndex];
-    }
+    uint2 fallbackAddress = instance.primitiveIndex < params.scenePrimitiveCount
+        ? fallbackBlasAddresses[instance.primitiveIndex] : uint2(0u, 0u);
+    uint2 accelerationStructureReference = streamPublishedBlasAddress(blas, params, fallbackAddress);
 
     bool addressValid =
         accelerationStructureReference.x != 0u ||

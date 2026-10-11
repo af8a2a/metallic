@@ -1,7 +1,8 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
-#include "harness/RayQueryFixture.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
+#include "harness/CLASRayFixture.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -43,38 +44,22 @@ public:
     {
         device_ = context.device;
         if (!device_) { return makeError(Error::InvalidArgument); }
-        auto vertex = device_->createBuffer({.size = sizeof(bench::kRayVertices),
-            .usage = BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
-            .memoryLocation = MemoryLocation::HostUpload,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
-        if (!vertex) { return makeError(vertex.error()); }
-        vertex_ = std::move(*vertex);
-        auto* mapped = vertex_->map();
-        if (!mapped) { return makeError(Error::Failure); }
-        std::memcpy(mapped, bench::kRayVertices.data(), sizeof(bench::kRayVertices));
-        vertex_->flush();
-        vertex_->unmap();
-        auto vertexSlice = vertex_->slice();
-        if (!vertexSlice) { return makeError(vertexSlice.error()); }
-        geometry_ = {.vertexBuffer = *vertexSlice, .vertexStride = 12,
-            .vertexCount = 3, .indexType = RayTracingIndexType::None, .primitiveCount = 1};
-        auto bottomSizes = device_->queryRayTracingAccelerationStructureBuildSizes({.geometries = {&geometry_, 1}});
-        if (!bottomSizes) { return makeError(bottomSizes.error()); }
-        auto bottom = device_->createRayTracingAccelerationStructure({.size = bottomSizes->accelerationStructureSize});
-        if (!bottom) { return makeError(bottom.error()); }
-        bottom_ = std::move(*bottom);
+        auto initialized = geometry_.initialize(*device_);
+        if (!initialized) { return initialized; }
+        auto bottomLevel = geometry_.bottomLevel();
+        if (!bottomLevel) { return makeError(bottomLevel.error()); }
         auto topSizes = device_->queryRayTracingAccelerationStructureBuildSizes({
             .type = RayTracingAccelerationStructureType::TopLevel, .instanceCount = 1});
         if (!topSizes) { return makeError(topSizes.error()); }
         topSize_ = topSizes->accelerationStructureSize;
-        const RayTracingInstanceDesc instance{.bottomLevel = bottom_.get(), .customIndex = 37, .mask = 1};
+        const RayTracingInstanceDesc instance{.clusterBottomLevel = *bottomLevel, .customIndex = 37, .mask = 1};
         auto instances = device_->createRayTracingInstanceBuffer({&instance, 1});
         if (!instances) { return makeError(instances.error()); }
         instances_ = std::move(*instances);
         auto properties = device_->queryRayTracingAccelerationStructureProperties();
         if (!properties) { return makeError(properties.error()); }
         auto scratch = device_->createBuffer({
-            .size = std::max(bottomSizes->buildScratchSize, topSizes->buildScratchSize) + properties->scratchAlignment,
+            .size = topSizes->buildScratchSize + properties->scratchAlignment,
             .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
         if (!scratch) { return makeError(scratch.error()); }
@@ -113,52 +98,19 @@ public:
 private:
     Result<> build(CommandBuffer& commands)
     {
-        using namespace detail;
-        const std::array resources{
-            GraphAccessResource{.type = RenderGraphResourceType::Buffer},
-            GraphAccessResource{.type = RenderGraphResourceType::Buffer},
-            GraphAccessResource{.type = RenderGraphResourceType::Buffer},
-            GraphAccessResource{.type = RenderGraphResourceType::AccelerationStructure},
-            GraphAccessResource{.type = RenderGraphResourceType::AccelerationStructure},
-        };
-        auto vertex = vertex_->slice({0, vertex_->desc().size});
-        auto instances = instances_->slice({0, instances_->desc().size});
-        auto scratch = scratch_->slice({0, scratch_->desc().size});
-        if (!vertex || !instances || !scratch) { return makeError(Error::Failure); }
-        const std::array bindings{
-            GraphAccessBinding{.buffer = *vertex}, GraphAccessBinding{.buffer = *instances},
-            GraphAccessBinding{.buffer = *scratch}, GraphAccessBinding{.accelerationStructure = bottom_.get()},
-            GraphAccessBinding{.accelerationStructure = top_.get()},
-        };
-        using Access = RenderGraphResourceAccess;
-        const std::array passes{
-            GraphAccessPass{.uses = {
-                declaredGraphAccess(0, Access::BufferAccelerationStructureBuildRead, RenderGraphPassKind::Compute),
-                declaredGraphAccess(2, Access::BufferAccelerationStructureScratchReadWrite, RenderGraphPassKind::Compute),
-                declaredGraphAccess(3, Access::AccelerationStructureBuildWrite, RenderGraphPassKind::Compute)}},
-            GraphAccessPass{.uses = {
-                declaredGraphAccess(1, Access::BufferAccelerationStructureBuildRead, RenderGraphPassKind::Compute),
-                declaredGraphAccess(2, Access::BufferAccelerationStructureScratchReadWrite, RenderGraphPassKind::Compute),
-                declaredGraphAccess(3, Access::AccelerationStructureBuildRead, RenderGraphPassKind::Compute),
-                declaredGraphAccess(4, Access::AccelerationStructureBuildWrite, RenderGraphPassKind::Compute)}},
-        };
-        auto plan = buildGraphAccessPlan(resources, passes);
-        if (!plan) { return makeError(plan.error()); }
-        auto result = recordGraphAccessBarriers(commands, plan->passes[0], bindings);
-        if (!result) { return result; }
-        result = commands.buildRayTracingAccelerationStructure({.destination = bottom_.get(),
-            .geometries = {&geometry_, 1}, .scratchBuffer = *scratch, .graphManagedSynchronization = true});
-        if (!result) { return result; }
-        result = recordGraphAccessBarriers(commands, plan->passes[1], bindings);
+        auto instances = instances_->slice();
+        auto scratch = scratch_->slice();
+        if (!instances || !scratch) { return makeError(Error::Failure); }
+        auto result = geometry_.record(commands);
         if (!result) { return result; }
         return commands.buildRayTracingAccelerationStructure({.destination = top_.get(),
             .instanceBuffer = *instances, .instanceCount = 1, .scratchBuffer = *scratch, .graphManagedSynchronization = true});
     }
     Device* device_ = nullptr;
     uint64_t topSize_ = 0;
-    std::unique_ptr<Buffer> vertex_, instances_, scratch_;
-    std::unique_ptr<RayTracingAccelerationStructure> bottom_, top_;
-    RayTracingTriangleGeometryDesc geometry_;
+    std::unique_ptr<Buffer> instances_, scratch_;
+    std::unique_ptr<RayTracingAccelerationStructure> top_;
+    bench::CLASRayFixture geometry_;
 };
 
 class GraphAccelerationStructureReadPass final : public ComputePass {
@@ -183,16 +135,16 @@ public:
             .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return makeError(shader.error()); }
-        const ComputeResourceBindingDesc bindings[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
-        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log);
+        const ComputeResourceBindingDesc bindings[]{{METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output)}};
+        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameterSize = sizeof(metallic::tests::UnifiedTopLevelProbeResources)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         auto* accelerationStructure = context.inputAccelerationStructure("structure");
         auto* output = context.outputBuffer("observations").buffer();
         if (!accelerationStructure || !output) { return makeError(Error::InvalidArgument); }
-        const ComputeDispatchBinding bindings[]{{.binding = 0, .accelerationStructure = accelerationStructure},
-            {.binding = 1, .buffer = output}};
+        const ComputeDispatchBinding bindings[]{{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), .accelerationStructure = accelerationStructure},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output), .buffer = output}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
     }
 private:
@@ -217,7 +169,7 @@ public:
         auto created = bench::createTestDevice(context, {.applicationName = "RenderGraph AS publication test",
             .enableValidation = context.enableValidation, .enableSynchronizationValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true, .enableRayTracingAccelerationStructure = true,
-            .enableRayQuery = true,
+            .enableRayQuery = true, .enableClusterAccelerationStructure = true,
             .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
                 if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
                     ++*static_cast<std::atomic_uint*>(data);

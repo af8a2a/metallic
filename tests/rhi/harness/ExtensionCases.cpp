@@ -1,4 +1,6 @@
-#include "../TestResourceLayouts.h"
+#include "../TestResourceParameters.h"
+#include "../TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RayQueryFixture.h"
 #include "../TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -74,9 +76,9 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
     const auto shader = checked(compileSlangShaderToSpirv({.moduleName = "UnifiedTopLevelProbe",
         .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
         .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log));
-    const ComputeResourceBindingDesc layout[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
+    const ComputeResourceBindingDesc layout[]{{METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output)}};
     ComputeProgram program;
-    checked(program.initialize(device, {.spirv = shader.spirv, .bindings = layout, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log));
+    checked(program.initialize(device, {.spirv = shader.spirv, .bindings = layout, .resourceParameterSize = sizeof(metallic::tests::UnifiedTopLevelProbeResources)}, log));
     auto output = buffer(device, sizeof(RayObservations), MemoryLocation::HostReadback);
     auto pool = checked(device.createCommandPool(queue));
     auto commands = checked(pool->createCommandBuffer());
@@ -87,7 +89,7 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
         ~Drain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
     } drain{frame, *pool};
     checked(frame.begin(0)); checked(commands->begin(frame.submissionContext()));
-    const ComputeDispatchBinding bindings[]{{.binding = 0, .accelerationStructure = tlas.get()}, {.binding = 1, .buffer = output.get()}};
+    const ComputeDispatchBinding bindings[]{{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, scene), .accelerationStructure = tlas.get()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::UnifiedTopLevelProbeResources, output), .buffer = output.get()}};
     checked(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}));
     checked(commands->end());
     CommandBuffer* submitted[]{commands.get()};
@@ -102,20 +104,19 @@ public:
     ClusterRayQueryTest() { type = RHITestType::Rendering; name = "clas_relocated_analytic_ray_query"; }
     std::optional<Metadata> metadata() const override
     {
-        return comparisonMetadata({"clas.move.retire.traversal", "rayQuery.analytic.hit.miss.mask.distance.barycentric.frontFace"},
-            Layer::RHI, "ray-query", {"ray-query-clas", "clusterAS", Capability::ClusterAS, 0.00001});
+        return gpuMetadata({"clas.move.retire.traversal", "rayQuery.analytic.hit.miss.mask.distance.barycentric.frontFace"},
+            Layer::RHI, "ray-query", "core", {"readback.bin"});
     }
     RHITestResult run(RHITestContext& context) override
     {
         DeviceDesc desc{.applicationName = "CLAS analytic probe", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true, .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
-            .enableRayTracingPositionFetch = false, .enableClusterAccelerationStructure = true};
-        vulkan::deviceExtensions(desc).enableOpacityMicromap = false;
+            .enableClusterAccelerationStructure = true};
         auto created = createTestDevice(context, std::move(desc));
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("ray query/CLAS profile unavailable"); }
         auto device = checked(std::move(created));
         if (!device->capabilities().rayQuery || !device->capabilities().bindlessDescriptorHeap ||
-            (!context.evidence && !device->capabilities().clusterAccelerationStructure)) {
+            !device->capabilities().clusterAccelerationStructure) {
             return RHITestResult::skip("ray query/CLAS unavailable");
         }
         RHITestContext active{*device, *device->getQueue(QueueType::Graphics), context.outputDirectory,
@@ -130,20 +131,7 @@ private:
         auto vertices = buffer(device, sizeof(kRayVertices), MemoryLocation::HostUpload);
         upload(*vertices, kRayVertices);
         Json observations = Json::array();
-        if (!clusters) {
-            const RayTracingTriangleGeometryDesc geometry{.vertexBuffer = checked(vertices->slice()), .vertexStride = 12,
-                .vertexCount = 3, .indexType = RayTracingIndexType::None, .primitiveCount = 1};
-            const auto sizes = checked(device.queryRayTracingAccelerationStructureBuildSizes({.geometries = {&geometry, 1}}));
-            auto blas = checked(device.createRayTracingAccelerationStructure({.size = sizes.accelerationStructureSize}));
-            auto scratch = buffer(device, sizes.buildScratchSize + checked(device.queryRayTracingAccelerationStructureProperties()).scratchAlignment);
-            {
-                GPUCommands build(context.graphicsQueue); checked(build.initialize(device));
-                checked(build.commands->buildRayTracingAccelerationStructure({.destination = blas.get(),
-                    .geometries = {&geometry, 1}, .scratchBuffer = checked(scratch->slice())}));
-                checked(build.submitAndWait());
-            }
-            for (unsigned i = 0; i < 2; ++i) { observations.push_back(trace(context, blas->deviceAddress())); }
-        } else {
+        {
             const auto properties = checked(device.queryClusterAccelerationStructureProperties());
             const auto sizes = checked(device.queryClusterAccelerationStructureTriangleBuildSizes({.maxClusterTriangleCount = 128,
                 .maxClusterVertexCount = 128, .maxTotalTriangleCount = 128, .maxTotalVertexCount = 128}));

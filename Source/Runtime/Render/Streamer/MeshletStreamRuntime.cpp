@@ -88,7 +88,7 @@ scene::Bounds computeDrawBounds(const scene::MeshletStreamAsset& asset)
     scene::Bounds bounds;
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset.primitives();
     for (const scene::MeshletStreamInstanceInfo& instance : asset.instances()) {
-        if (instance.visible == 0 || instance.primitiveIndex >= primitives.size()) {
+        if (instance.primitiveIndex >= primitives.size()) {
             continue;
         }
         includeTransformedBounds(bounds, primitives[instance.primitiveIndex].bounds, instance.worldMatrix);
@@ -838,6 +838,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (deviceImmutableMetadata_) {
         immutableMetadataUpload_ = std::make_shared<ImmutableMetadataUpload>();
     }
+    if (desc.enableClusterRtx && (!desc.enableClas || !device.capabilities().clusterAccelerationStructure)) {
+        log = "MeshletStreamRuntime ray tracing requires CLAS support and enableClas";
+        return makeError(Error::Unsupported);
+    }
     const bool enableClas = desc.enableClas && device.capabilities().clusterAccelerationStructure;
     clusterRtxEnabled_ = desc.enableClusterRtx;
     maxResidentPages_ = desc.maxResidentPages;
@@ -845,7 +849,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     maxUploadBytesPerFrame_ = desc.maxUploadBytesPerFrame;
     maxGpuPageRequests_ = std::max(desc.maxGpuPageRequests, 1u);
     screenSpacePagePriority_ = desc.screenSpacePagePriority;
-    viewDrivenPageDemand_ = desc.viewDrivenPageDemand;
+    viewDrivenPageDemand_ = desc.viewDrivenPageDemand || clusterRtxEnabled_;
     distributedPageDemand_ = desc.distributedPageDemand;
     distributedDemandMinGroups_ = desc.distributedDemandMinGroups;
     prefetchPages_ = desc.prefetchPages && desc.viewDrivenPageDemand && desc.screenSpacePagePriority &&
@@ -1244,17 +1248,15 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             maximumPrimitiveClusters = std::max(maximumPrimitiveClusters,
                 static_cast<uint32_t>(std::min<uint64_t>(count, blasClusterReferenceCapacity_)));
         }
-        const uint32_t visibleInstances = static_cast<uint32_t>(std::count_if(
-            asset_.instances().begin(), asset_.instances().end(), [this](const auto& instance) {
-                return instance.visible != 0 && instance.primitiveIndex < asset_.primitiveCount();
-            }));
+        // Hidden instances may become visible without recreating this session.
+        const uint32_t instanceCapacity = asset_.instanceCount();
         if (desc.maxBlasBytes == 0 || desc.maxBlasBuilds == 0 ||
-            visibleInstances == 0 || maximumPrimitiveClusters == 0) {
+            instanceCapacity == 0 || maximumPrimitiveClusters == 0) {
             log = "MeshletStreamRuntime cluster RTX requires non-zero BLAS budgets and geometry";
             return makeError(Error::InvalidArgument);
         }
         uint32_t referenceLimit = blasClusterReferenceCapacity_;
-        const uint32_t buildLimit = std::min(desc.maxBlasBuilds, visibleInstances);
+        const uint32_t buildLimit = std::min(desc.maxBlasBuilds, instanceCapacity);
         ClusterAccelerationStructureBuildSizes blasSizes;
         for (;;) {
             // Every admitted build has at least one reference. Preserve instance
@@ -2111,6 +2113,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
 
 void MeshletStreamRuntime::reset()
 {
+    ++shadingStateRevision_;
     sceneReadinessCache_ = std::make_shared<SceneReadinessCache>();
     rasterSnapshotFrozen_ = false;
     ++debugGeneration_;
@@ -2165,6 +2168,10 @@ void MeshletStreamRuntime::reset()
     recentPrefetchGpuDropped_ = 0;
     lodInstanceOffsetsOffset_ = 0;
     lodStateBufferState_ = ResourceState::Undefined;
+    lodStateInitialized_ = std::make_shared<bool>(false);
+    rtLodHistoryBytes_ = 0;
+    rtLodPolicyRevision_ = 1;
+    rtLodDisplayPixelError_ = 1.5f;
     nodeBuffer_.reset();
     drawIndirectBuffer_.reset();
     traversalHeaderBuffer_.reset();
@@ -2280,7 +2287,7 @@ void MeshletStreamRuntime::reset()
     blasBuildCapacity_ = 0;
     maxBlasClustersPerBuild_ = 0;
     blasSizeClasses_ = {};
-    blasPublicationEpoch_ = 0;
+    blasPublicationEpoch_ = std::make_shared<uint32_t>(0);
     blasAddressBufferState_ = ResourceState::Undefined;
     blasClusterReferenceAddress_ = 0;
     fallbackBlasPrimitives_.clear();
@@ -2619,6 +2626,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         currentUploadSlot_ = uploadSlot;
     }
     nextUpload.completion = metallic::render::RenderFrameContext::from(commandBuffer) ? metallic::render::RenderFrameContext::from(commandBuffer)->completion() : GPUCompletionPoint{};
+    residency_.trackGeometryUse(nextUpload.completion);
     if (rasterSnapshotFrozen_) {
         // Rotate host-write frame slots, but do not publish completions, consume
         // requests, reclaim pages or enqueue new geometry/CLAS work.
@@ -2743,6 +2751,13 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
         if (!result) { return result; }
     }
     if (checkpoint) { checkpoint("AfterStreamPriorityClear"); }
+    // Publish completed CLAS work before selecting the ray-tracing cut. Both
+    // activation and parent replacement use this same published page table.
+    // Pending pages remain demanded, with their usable ancestors kept hot and
+    // charged to the existing geometry/CLAS budgets until refinement is ready.
+    result = transitionPageBufferForTraversal(commandBuffer);
+    if (result) { result = cmdBuildPendingClas(commandBuffer, checkpoint); }
+    if (!result) { return result; }
     result = buildActiveTable(commandBuffer, checkpoint);
     if (!result) {
         return result;
@@ -2759,8 +2774,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
         return result;
     }
 
-    result = cmdBuildPendingClas(commandBuffer, checkpoint);
-    if (!result || !clusterRtxEnabled_) { return result; }
+    if (!clusterRtxEnabled_) { return result; }
     result = buildBlasInputs(commandBuffer, checkpoint);
     if (!result) {
         return result;
@@ -2882,7 +2896,10 @@ Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
             return result;
         }
         for (const auto& build : clasBuilds) {
-            if (clasPool_->pageHasClas(build.pageIndex)) {
+            // Keep the source plan while a direct build is only recorded. A
+            // cancelled frame must be able to rebuild rather than reuse an
+            // address whose construction never reached the GPU.
+            if (clasPool_->pageHasClas(build.pageIndex) && !clasPool_->pageBuildPending(build.pageIndex)) {
                 pendingClasPlans_.erase(build.pageIndex);
                 queuedClasPages_.erase(build.pageIndex);
             } else {
@@ -3051,6 +3068,13 @@ uint32_t MeshletStreamRuntime::drawTaskCount() const
     return count > std::numeric_limits<uint32_t>::max() ? 0u : static_cast<uint32_t>(count);
 }
 
+uint64_t MeshletStreamRuntime::shadingRevision() const
+{
+    // Physical CLAS publication/relocation only invalidates acceleration-structure
+    // references. GPU cut changes invalidate shading in the frame they execute.
+    return shadingStateRevision_;
+}
+
 Result<> MeshletStreamRuntime::syncRuntimeScene(const scene::Scene& scene, std::string& log)
 {
     const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
@@ -3148,6 +3172,7 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
     if (updatedBounds.valid) {
         drawBounds_ = updatedBounds;
     }
+    ++shadingStateRevision_;
     sceneTransformRevision_ = scene.transformRevision();
     sceneVisibilityRevision_ = scene.visibilityRevision();
     sceneResourceIdentity_ = scene.resourceIdentity();
@@ -3383,6 +3408,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     lodInstanceOffsetsOffset_ = static_cast<uint32_t>(topology.size());
     uint64_t stateWords = instances.size() * 4ull;
     lodTransitionHistoryBytes_ = 0;
+    rtLodHistoryBytes_ = 0;
     for (const auto& instance : instances) {
         topology.push_back(static_cast<uint32_t>(stateWords));
         if (instance.primitiveIndex < primitives.size()) {
@@ -3390,6 +3416,13 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             // IDs. Only previous active entries need clearing each frame.
             const uint64_t groupCount = primitives[instance.primitiveIndex].groupCount;
             stateWords += 4ull + groupCount * 3ull;
+            if (clusterRtxEnabled_) {
+                // GPU-submitted frame tokens and desired refinement history.
+                // Independent of optional diagnostic telemetry and page availability.
+                const uint64_t historyWords = 3ull + groupCount * 2ull;
+                stateWords += historyWords;
+                rtLodHistoryBytes_ += historyWords * sizeof(uint32_t);
+            }
             if (lodTransitionTelemetry_) {
                 const uint64_t historyWords = 1ull + groupCount * 2ull;
                 stateWords += historyWords;
@@ -3732,10 +3765,26 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
         ? kMeshletStreamNoDebugLODOverride
         : frame.selectedLodLevel;
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
-    params.lodPixelError = meshletLodRenderPixelThreshold(
-        std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
-            std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f)),
-        height, frame.displayHeight);
+    params.rayClasPageTableBuffer = clusterRtxEnabled_ && clasPageTableHandle_.valid()
+        ? clasPageTableHandle_.shaderIndex() : UINT32_MAX;
+    const float displayPixelError = std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
+        std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f));
+    params.lodPixelError = meshletLodRenderPixelThreshold(displayPixelError, height, frame.displayHeight);
+    params.rtOffscreenErrorScale = std::clamp(finiteOr(frame.rtOffscreenErrorScale, 2.0f), 1.0f, 16.0f);
+    params.rtLodHysteresis = std::clamp(finiteOr(frame.rtLodHysteresis, 0.2f), 0.0f, 0.9f);
+    params.rtLodFlags = clusterRtxEnabled_ ? 1u | (frame.preserveRasterLod ? 2u : 0u) : 0u;
+    if (clusterRtxEnabled_ && previousFrameParamsValid_ &&
+        (rtLodDisplayPixelError_ != displayPixelError ||
+         previousFrameParams_.rtOffscreenErrorScale != params.rtOffscreenErrorScale ||
+         previousFrameParams_.rtLodHysteresis != params.rtLodHysteresis ||
+         previousFrameParams_.rtLodFlags != params.rtLodFlags ||
+         previousFrameParams_.enableGpuLodSelection != params.enableGpuLodSelection ||
+         previousFrameParams_.selectedLodLevel != params.selectedLodLevel)) {
+        ++rtLodPolicyRevision_;
+        if (rtLodPolicyRevision_ == 0) { rtLodPolicyRevision_ = 1; *lodStateInitialized_ = false; }
+    }
+    rtLodDisplayPixelError_ = displayPixelError;
+    params.rtLodPolicyRevision = rtLodPolicyRevision_;
     params.lodTopologyBuffer = lodTopologyHandle_.shaderIndex();
     params.lodStateBuffer = lodStateHandle_.shaderIndex();
     const uint64_t threshold = uint64_t(distributedDemandMinGroups_) +
@@ -3865,7 +3914,8 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
     MeshletStreamUserPush push = userPush();
     // The diagnostic observation packs a 26-bit frame tag. Reset at its wrap,
     // once per 67 million frames, so an old unvisited group cannot alias history.
-    const bool initializeState = lodStateBufferState_ == ResourceState::Undefined ||
+    const bool initializeState = !*lodStateInitialized_ ||
+        (clusterRtxEnabled_ && (frameIndex_ == 0u || frameIndex_ == UINT32_MAX)) ||
         (lodTransitionTelemetry_ && (frameIndex_ & 0x03ffffffu) == 0u);
     if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
     if (distributedPageDemand_ || lodTransitionTelemetry_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
@@ -3886,6 +3936,13 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
         return result;
     };
     if (initializeState) {
+        // Recording changes resource state immediately, but only GPU submission
+        // makes its contents initialized. Retry the clear after cancellation.
+        *lodStateInitialized_ = false;
+        auto transaction = std::make_shared<SubmissionTransaction>(
+            [initialized = lodStateInitialized_] { *initialized = true; },
+            [initialized = lodStateInitialized_] { *initialized = false; });
+        if (auto added = commandBuffer.addSubmissionTransaction(transaction); !added) { return added; }
         // Device allocations have undefined contents. Initialize once before
         // sparse clearing; subsequent frames touch only formerly active IDs.
         const Result<> result = dispatchPhase(kMeshletStreamActiveBuildInitializeLODStatePhase,
@@ -3947,20 +4004,17 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
         return makeError(Error::InvalidArgument);
     }
 
-    // The GPU page generation is 32-bit. A global wrap conservatively resets
-    // all instance caches, so an old generation can never compare equal again.
+    // A 32-bit page-generation wrap rebuilds physical references, while keeping
+    // the prior semantic cut. Commit the epoch only when the recording is accepted.
     const auto publicationEpoch = static_cast<uint32_t>(clasPool_->stats().publicationRevision >> 32u);
-    if (publicationEpoch != blasPublicationEpoch_) {
-        *blasCacheInitialized_ = false;
-        blasPublicationEpoch_ = publicationEpoch;
-    }
+    const bool publicationWrapped = publicationEpoch != *blasPublicationEpoch_;
     commandBuffer.hostWriteBarrier();
     if (auto r = transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true); !r) { return r; }
 
-    auto dispatchPhase = [this, &commandBuffer](uint32_t phase, uint32_t threadCount) {
+    auto dispatchPhase = [this, &commandBuffer, publicationWrapped](uint32_t phase, uint32_t threadCount) {
         MeshletStreamUserPush push = userPush();
         push.activeBuildPhase = phase;
-        push.traversalPhase = *blasCacheInitialized_ ? 0u : 1u;
+        push.traversalPhase = (*blasCacheInitialized_ ? 0u : 1u) | (publicationWrapped ? 2u : 0u);
         return blasInputPass_->dispatch(
             commandBuffer,
             *registry_->heap(),
@@ -3989,10 +4043,14 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     }
     result = dispatchPhase(5u, std::max(asset_.instanceCount(), 1u));
     if (!result) { return result; }
-    result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,
-        [valid = blasCacheInitialized_] { *valid = false; }));
+    // Only an accepted recording initializes the GPU cache. Cancelling a later
+    // frame leaves its previous cut and semantic history intact on the GPU.
+    result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+        [valid = blasCacheInitialized_, epoch = blasPublicationEpoch_, publicationEpoch] {
+            *valid = true;
+            *epoch = publicationEpoch;
+        }, nullptr));
     if (!result) { return result; }
-    *blasCacheInitialized_ = true;
     if (checkpoint) { checkpoint("BeforeBlasCount"); }
     result = dispatchPhase(kMeshletStreamBLASInputCountPhase, maxActiveGroups_);
     if (!result) {
@@ -4025,7 +4083,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     if (checkpoint) { checkpoint("BeforeBlasInsert"); }
     result = dispatchPhase(kMeshletStreamBLASInputInsertPhase, maxActiveGroups_);
     if (!result) { return result; }
-    result = dispatchPhase(11u, maxActiveGroups_);
+    result = dispatchPhase(11u, std::max(maxActiveGroups_, asset_.instanceCount()));
     if (!result) { return result; }
     return transitionBuffer(commandBuffer, *blasAddressBuffer_, blasAddressBufferState_, ResourceState::General, true);
 }
@@ -4281,6 +4339,8 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profile
     if (clusterRtxEnabled_) {
         std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
             readback->desc().size - sizeof(MeshletStreamGPUBLASHeader), sizeof(recentBlasHeader_));
+        // Telemetry only: replaying this delayed feedback into shadingRevision()
+        // would clear PT/SHaRC a second time after the same-frame GPU invalidation.
     }
     recentGpuRequestCount_ = header->loadCounter;
     recentPrefetchGpuRequests_ = header->prefetchRequestCounter;
@@ -4446,6 +4506,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.blasArenaUsedBytes = recentBlasHeader_.arenaUsedBytes;
     result.blasArenaRepack = recentBlasHeader_.arenaRepack;
     result.blasPublicationInvalidated = recentBlasHeader_.publicationInvalidated;
+    result.blasSemanticChangeCount = recentBlasHeader_.semanticChangeCount;
 
 
     result.geometryUsedBytes = stats.usedResidentBytes;
@@ -4567,6 +4628,13 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"throughput", throughputJson},
         {"screenSpacePagePriority", screenSpacePagePriority_},
         {"viewDrivenPageDemand", viewDrivenPageDemand_},
+        {"rtLod", {{"enabled", clusterRtxEnabled_}, {"historyBytes", rtLodHistoryBytes_},
+            {"preserveRasterLod", (previousFrameParams_.rtLodFlags & 2u) != 0u},
+            {"offscreenErrorScale", previousFrameParams_.rtOffscreenErrorScale},
+            {"hysteresis", previousFrameParams_.rtLodHysteresis},
+            {"refineDisplayPixels", rtLodDisplayPixelError_},
+            {"coarsenDisplayPixels", rtLodDisplayPixelError_ * (1.f - previousFrameParams_.rtLodHysteresis)},
+            {"policyRevision", rtLodPolicyRevision_}}},
         {"distributedPageDemand", distributedPageDemand_}, {"demandTaskCount", demandTaskCount_},
         {"distributedDemandActive", currentFrameDistributedDemand_},
         {"distributedDemandMinGroups", distributedDemandMinGroups_}, {"recentDemandGroupTests", recentDemandGroupTests_},

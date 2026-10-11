@@ -23,20 +23,8 @@ VulkanDeviceProperties queryDeviceProperties(VkPhysicalDevice physicalDevice,
 #ifdef VK_NV_cluster_acceleration_structure
     if (features.clusterAccelerationStructure) { append(result.cluster); }
 #endif
-    VkPhysicalDeviceOpacityMicromapPropertiesEXT extMicromap{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT};
-    if (features.opacityMicromap) {
-        if (features.opacityMicromapExt) { append(extMicromap); }
-        else { append(result.opacityMicromap); }
-    }
     query(physicalDevice, &root);
     result.core = root.properties;
-    if (features.opacityMicromap && features.opacityMicromapExt) {
-        result.opacityMicromap.maxOpacity2StateSubdivisionLevel = extMicromap.maxOpacity2StateSubdivisionLevel;
-        result.opacityMicromap.maxOpacity4StateSubdivisionLevel = extMicromap.maxOpacity4StateSubdivisionLevel;
-        // EXT has no equivalent property; our triangle indices/counts are uint32.
-        result.opacityMicromap.maxMicromapTriangles = std::numeric_limits<uint32_t>::max();
-    }
     // Do not retain links to this stack frame (including across copies or moves).
     for (auto* node = static_cast<VkBaseOutStructure*>(root.pNext); node != nullptr;) {
         auto* next = node->pNext;

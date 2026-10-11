@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/HZBSPD.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -50,13 +51,13 @@ public:
             .entryPointName = "hzbSpdFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage}, {.binding = 1}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::HZBSPDFixtureResources, depth), .kind = render::ComputeResourceBindingKind::StorageImage}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::HZBSPDFixtureResources, counter)}};
         result = fixture_.initialize(*context.device, {
             .spirv = shader.spirv,
             .pushConstantSize = 12,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kHZBSPDFixtureLayout,
+            .resourceParameterSize = sizeof(metallic::tests::HZBSPDFixtureResources),
         }, log);
         if (!result) { return result; }
         const render::SlangMacroDefine waveDefine{render::kHZBSPDWaveOpsDefine,
@@ -96,7 +97,7 @@ public:
         auto* data = context.outputBuffer("data").buffer();
         auto* counter = context.outputBuffer("counter").buffer();
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureView = depth.view()}, {.binding = 1, .buffer = counter}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::HZBSPDFixtureResources, depth), .textureView = depth.view()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::HZBSPDFixtureResources, counter), .buffer = counter}};
         auto result = fixture_.dispatch({
             .commandBuffer = &context.commandBuffer(),
             .bindings = {bindings, 2},

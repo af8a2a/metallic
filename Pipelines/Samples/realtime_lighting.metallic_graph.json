@@ -13,6 +13,7 @@
             "properties": {
                 "path": "Asset/meet_mat.glb",
                 "visualization": "none",
+                "enableClusterRtx": true,
                 "instanceFrustumCull": true
             }
         },
@@ -176,6 +177,11 @@
             "id": 14,
             "src": "VBuffer.rasterInfo",
             "dst": "Shadows.rasterInfo"
+        },
+        {
+            "id": 21,
+            "src": "VBuffer.accelerationStructure",
+            "dst": "Shadows.accelerationStructure"
         },
         {
             "id": 15,

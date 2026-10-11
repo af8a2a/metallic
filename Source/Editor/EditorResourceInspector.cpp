@@ -34,7 +34,7 @@ float halfFloat(const uint8_t* data)
     return h & 0x8000 ? -magnitude : magnitude;
 }
 
-std::array<float, 4> pixel(const debug::DebugArtifact& artifact, size_t index)
+std::array<double, 4> pixel(const debug::DebugArtifact& artifact, size_t index)
 {
     const auto* p = artifact.bytes.data() + index * artifact.layout.stride;
     const auto& name = artifact.layout.name;
@@ -42,12 +42,12 @@ std::array<float, 4> pixel(const debug::DebugArtifact& artifact, size_t index)
     if (name == "BGRA8") { return {p[2] / 255.f, p[1] / 255.f, p[0] / 255.f, p[3] / 255.f}; }
     if (name == "RGBA16F") { return {halfFloat(p), halfFloat(p + 2), halfFloat(p + 4), halfFloat(p + 6)}; }
     if (name == "RGBA32F") { return {read<float>(p), read<float>(p + 4), read<float>(p + 8), read<float>(p + 12)}; }
-    std::array<float, 4> result{0, 0, 0, 1};
+    std::array<double, 4> result{0, 0, 0, 1};
     for (size_t c = 0; c < std::min(size_t(4), artifact.layout.fields.size()); ++c) {
         const auto& field = artifact.layout.fields[c];
         const auto* data = p + field.offset;
-        result[c] = field.type == "f16" ? halfFloat(data) : field.type == "u32" ? float(read<uint32_t>(data)) :
-            field.type == "i32" ? float(read<int32_t>(data)) : read<float>(data);
+        result[c] = field.type == "f16" ? double(halfFloat(data)) : field.type == "u32" ? double(read<uint32_t>(data)) :
+            field.type == "i32" ? double(read<int32_t>(data)) : double(read<float>(data));
     }
     if (artifact.layout.fields.size() == 1) { result[1] = result[2] = result[0]; }
     return result;
@@ -98,6 +98,11 @@ debug::DebugValue EditorResourceInspector::diagnostics() const
         result["capture"]["byteCount"] = capture_->artifacts[0].bytes.size();
         result["capture"]["evidence"] = capture_->snapshot.evidence.value();
         result["capture"]["schema"] = capture_->artifacts[0].layout.schema();
+        if (capture_->artifacts[0].metadata.value("kind", "") == "texture") {
+            result["displayRange"] = {{"auto", autoRange_}, {"trimFlatExtremes", trimRange_},
+                {"trimmed", rangeTrimmed_}, {"finiteComponents", rangeFinite_},
+                {"min", rangeMin_}, {"max", rangeMax_}, {"channel", channel_}};
+        }
     }
     return result;
 }
@@ -338,10 +343,58 @@ void EditorResourceInspector::draw(render::RenderDebugRuntime& runtime, render::
     ImGui::EndChild();
 }
 
+void EditorResourceInspector::updateAutoRange()
+{
+    const auto& artifact = capture_->artifacts[0];
+    double low = std::numeric_limits<double>::infinity(), high = -low;
+    double nextLow = low, nextHigh = high;
+    uint64_t lowCount = 0, highCount = 0;
+    rangeFinite_ = 0;
+    rangeTrimmed_ = false;
+    // Scan captured data only, once per preview rebuild. Cube mode shares a
+    // range across the volume; slice mode sees only its captured slice/ROI.
+    const size_t channels = channel_ ? 1 : std::min(size_t(3), artifact.layout.fields.size());
+    for (size_t i = 0; i < artifact.bytes.size() / artifact.layout.stride; ++i) {
+        const auto p = pixel(artifact, i);
+        for (size_t c = 0; c < channels; ++c) {
+            const double value = p[channel_ ? size_t(channel_ - 1) : c];
+            if (!std::isfinite(value)) { continue; }
+            ++rangeFinite_;
+            if (value < low) { nextLow = low; low = value; lowCount = 1; }
+            else if (value == low) { ++lowCount; }
+            else if (value < nextLow) { nextLow = value; }
+            if (value > high) { nextHigh = high; high = value; highCount = 1; }
+            else if (value == high) { ++highCount; }
+            else if (value > nextHigh) { nextHigh = value; }
+        }
+    }
+    if (!rangeFinite_) { rangeMin_ = 0; rangeMax_ = 1; return; }
+    if (trimRange_ && low < high) {
+        // Repeated clear/far-plane values can dominate depth captures, so
+        // percentiles alone cannot recover the small foreground. Never infer
+        // semantics from resource names, or collapse a two-valued mask.
+        const uint64_t threshold = std::max(uint64_t(2), (rangeFinite_ + 99) / 100);
+        const double trimmedLow = lowCount >= threshold ? nextLow : low;
+        const double trimmedHigh = highCount >= threshold ? nextHigh : high;
+        if (trimmedLow < trimmedHigh) {
+            rangeTrimmed_ = trimmedLow != low || trimmedHigh != high;
+            low = trimmedLow; high = trimmedHigh;
+        }
+    }
+    if (low == high) {
+        // Constant data appears mid-gray. Double precision also keeps extreme
+        // finite float values and very narrow hardware-depth intervals usable.
+        const double padding = std::max(0.5, std::abs(low) * 0.01);
+        low -= padding; high += padding;
+    }
+    rangeMin_ = low; rangeMax_ = high;
+}
+
 bool EditorResourceInspector::rebuildImage(render::Device& device, render::vulkan::VulkanImGuiBackend& backend)
 {
     using namespace render;
     const auto& artifact = capture_->artifacts[0];
+    if (autoRange_) { updateAutoRange(); }
     const uint32_t w = artifact.metadata.at("roi").at("width"), h = artifact.metadata.at("roi").at("height");
     const uint32_t d = artifact.metadata.value("sliceCount", 1u);
     const bool cube = cube_ && artifact.metadata.value("textureType", 0u) == static_cast<uint32_t>(TextureType::Texture3D);
@@ -357,14 +410,14 @@ bool EditorResourceInspector::rebuildImage(render::Device& device, render::vulka
     auto* bytes = static_cast<uint8_t*>((*staging)->map());
     if (!bytes) { status_ = "Could not map preview upload"; return false; }
     std::memset(bytes, 0, size_t(width) * height * 4);
-    const float gain = std::exp2(exposure_), span = std::max(rangeMax_ - rangeMin_, 1e-20f);
+    const double gain = std::exp2(double(exposure_)), span = std::max(rangeMax_ - rangeMin_, 1e-300);
     const auto writePixel = [&](size_t destination, size_t source) {
         const auto p = pixel(artifact, source);
         bool finite = true;
         for (size_t c = 0; c < 3; ++c) {
-            const float value = (p[channel_ ? size_t(channel_ - 1) : c] * gain - rangeMin_) / span;
+            const double value = (p[channel_ ? size_t(channel_ - 1) : c] * gain - rangeMin_) / span;
             finite &= std::isfinite(value);
-            bytes[destination * 4 + c] = std::isfinite(value) ? uint8_t(std::clamp(value, 0.f, 1.f) * 255.f + 0.5f) : 0;
+            bytes[destination * 4 + c] = std::isfinite(value) ? uint8_t(std::clamp(value, 0.0, 1.0) * 255.0 + 0.5) : 0;
         }
         if (!finite) { bytes[destination * 4] = 255; bytes[destination * 4 + 1] = 0; bytes[destination * 4 + 2] = 255; }
         bytes[destination * 4 + 3] = 255;
@@ -425,13 +478,25 @@ void EditorResourceInspector::drawTexture(render::Device& device, render::vulkan
     const bool cube = cube_ && capture_->artifacts[0].metadata.value("textureType", 0u) == static_cast<uint32_t>(render::TextureType::Texture3D);
     ImGui::SetNextItemWidth(100); imageDirty_ |= ImGui::Combo("Channel", &channel_, "RGB\0R\0G\0B\0A\0");
     ImGui::SameLine(); ImGui::SetNextItemWidth(130); imageDirty_ |= ImGui::SliderFloat("Exposure", &exposure_, -16, 16);
-    ImGui::SetNextItemWidth(110); imageDirty_ |= ImGui::DragFloat("Min", &rangeMin_, 0.01f);
-    ImGui::SameLine(); ImGui::SetNextItemWidth(110); imageDirty_ |= ImGui::DragFloat("Max", &rangeMax_, 0.01f);
+    imageDirty_ |= ImGui::Checkbox("Auto range", &autoRange_);
+    if (autoRange_) {
+        ImGui::SameLine(); imageDirty_ |= ImGui::Checkbox("Trim flat extremes", &trimRange_);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Exclude repeated minimum/maximum plateaus (at least 1%% of finite values, minimum 2).\nUseful for clear/far-plane backgrounds. Disable to include every finite value.");
+        }
+    } else {
+        ImGui::SetNextItemWidth(150); imageDirty_ |= ImGui::InputDouble("Min", &rangeMin_, 0, 0, "%.9g");
+        ImGui::SameLine(); ImGui::SetNextItemWidth(150); imageDirty_ |= ImGui::InputDouble("Max", &rangeMax_, 0, 0, "%.9g");
+    }
     if (!cube) {
         ImGui::Checkbox("Fit", &fit_); ImGui::SameLine(); ImGui::SetNextItemWidth(130); ImGui::SliderFloat("Zoom", &zoom_, 0.1f, 16.f);
     }
     ImGui::TextDisabled("Display: range/exposure + clamp; magenta = non-finite. Hover for raw values.");
     if (imageDirty_ && !rebuildImage(device, backend)) { return; }
+    if (autoRange_) {
+        ImGui::Text("Min %.9g   Max %.9g%s", rangeMin_, rangeMax_, rangeTrimmed_ ? " (flat extremes clipped)" : "");
+        if (!rangeFinite_) { ImGui::TextDisabled("No finite values in the selected channels; using 0..1."); }
+    }
     if (!descriptor_) { return; }
     if (cube) { drawCube(); return; }
     const auto& artifact = capture_->artifacts[0];

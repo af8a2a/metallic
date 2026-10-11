@@ -8,7 +8,6 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/HistoryResources.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -344,6 +343,58 @@ class CompactCLASLifecycleTest final : public RHITest {
                                                    pageIndex * asset.maxPageClusters(), plan, log),
                     log);
             const MeshletStreamCLASPageBuild build{.pageIndex = pageIndex, .deviceOffsetBytes = 0, .plan = &plan};
+            {
+                // The fixed pool is also the compact builder's staging path.
+                // Its readiness must follow command order, and cancellation
+                // must leave the original plan eligible for another build.
+                MeshletStreamCLASPool fixed;
+                require(bool(fixed.initialize(*device, {.asset = &asset, .maxStorageBytes = 1024 * 1024,
+                    .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2}, log)), log);
+                uint32_t invalidated = 0;
+                fixed.setInvalidationObserver([&](std::span<const uint32_t> ids) { invalidated += uint32_t(ids.size()); });
+                auto* fixedQueue = device->getQueue(QueueType::Graphics);
+                QueueSubmissionTracker fixedTracker;
+                RenderFrameContext fixedFrame;
+                std::unique_ptr<CommandPool> fixedCommands;
+                std::unique_ptr<CommandBuffer> fixedCmd;
+                require(bool(fixedTracker.initialize(*device, *fixedQueue)) &&
+                    bool(device->createCommandPool(*fixedQueue).transform([&](auto value) { fixedCommands = std::move(value); })) &&
+                    bool(fixedCommands->createCommandBuffer().transform([&](auto value) { fixedCmd = std::move(value); })),
+                    "Fixed pool commands failed");
+                const auto readFixedState = [&] {
+                    fixed.pageTableBuffer()->invalidate();
+                    auto* entries = static_cast<const MeshletStreamCLASPageEntry*>(fixed.pageTableBuffer()->map());
+                    require(entries != nullptr, "Fixed pool table map failed");
+                    const auto state = entries[pageIndex].addressOffsetAndState >> kMeshletStreamCLASPageStateShift;
+                    fixed.pageTableBuffer()->unmap();
+                    return state;
+                };
+                for (uint32_t attempt = 0; attempt < 2; ++attempt) {
+                    fixed.beginFrame();
+                    require(bool(fixedFrame.begin(attempt + 1)) && bool(fixedCommands->reset()) &&
+                        bool(fixedCmd->begin(fixedFrame.submissionContext())), "Fixed pool recording failed");
+                    require(bool(fixed.cmdBuildPages(*fixedCmd, *pageBuffer, std::span(&build, 1), log)), log);
+                    require(fixed.pageHasClas(pageIndex) && fixed.pageBuildPending(pageIndex), "Recorded CLAS did not retain retry state");
+                    require(readFixedState() == uint32_t(MeshletStreamCLASPageState::Empty),
+                        "Recording exposed CLAS before GPU ordered publication");
+                    require(bool(fixedCmd->end()), "Fixed pool end failed");
+                    if (attempt == 0) {
+                        fixedFrame.cancel();
+                        require(!fixed.pageHasClas(pageIndex), "Cancelled CLAS stayed ready");
+                        fixed.beginFrame();
+                        require(fixed.stats().usedStorageBytes == 0 && fixed.stats().builtPageCount == 0 && invalidated == 0,
+                            "Cancelled build retained storage/readiness or incorrectly reported a destructive root edit");
+                    } else {
+                        CommandBuffer* list[] = {fixedCmd.get()};
+                        require(bool(fixedTracker.submit({.commandBuffers = {list, 1}}, fixedFrame)) &&
+                            bool(fixedFrame.wait(5'000'000'000ull)), "Fixed pool retry submit failed");
+                        require(readFixedState() == uint32_t(MeshletStreamCLASPageState::Active) &&
+                            fixed.pageHasClas(pageIndex) && !fixed.pageBuildPending(pageIndex),
+                            "Retry failed to publish rebuilt CLAS");
+                    }
+                }
+                fixed.setInvalidationObserver({});
+            }
             auto* queue = device->getQueue(QueueType::Graphics);
             QueueSubmissionTracker tracker;
             RenderFrameContext frame;
@@ -696,10 +747,6 @@ class MiniZorahCLASInFlightTest final : public RHITest {
             if (!runtimeScene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / previous.desc.scenePath)) {
                 return RHITestResult::fail("Sponza load failed");
             }
-            SceneAccelerationStructureBuilder staticRtas;
-            if (!(result = staticRtas.build(*device, *device->getQueue(QueueType::Compute), runtimeScene, log))) {
-                return RHITestResult::fail(log);
-            }
             (void)view.setCameraProperties(previous.graph.viewProperties().at("camera"));
             if (!(result = executor.compile(*device, previous.graph, 1564, 708, log))) { return RHITestResult::fail(log); }
             for (uint32_t f = 0; f < 60; ++f) {
@@ -707,7 +754,6 @@ class MiniZorahCLASInFlightTest final : public RHITest {
                     .computeQueue = device->getQueue(QueueType::Compute), .historyResources = &history});
                 if (!result) { return RHITestResult::fail(toString(result)); }
             }
-            staticRtas.clear();
             runtimeScene.clear();
             history.invalidateAll();
             (void)view.setCameraProperties(original);

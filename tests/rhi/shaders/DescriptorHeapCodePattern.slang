@@ -1,4 +1,7 @@
-// One resource layout and identical arithmetic; only aggregate access changes.
+import ShaderCore;
+using Metallic;
+
+// One DR payload and identical arithmetic; only aggregate access changes.
 #ifndef METALLIC_GPU_PATTERN
 #define METALLIC_GPU_PATTERN 0
 #endif
@@ -15,12 +18,16 @@ struct PatternValues
     uint h;
 };
 
-[[vk::binding(0, 0)]] Texture2D<float4> gImage;
-[[vk::binding(1, 0)]] RWStructuredBuffer<PatternValues> gInput;
-[[vk::binding(2, 0)]] RWStructuredBuffer<uint> gOutput;
+struct PatternPush
+{
+    PatternValues values;
+    ResourceHandle<Texture2D<float4>> image;
+    ResourceHandle<RWStructuredBuffer<PatternValues>> input;
+    ResourceHandle<RWStructuredBuffer<uint>> output;
+};
 
 #if METALLIC_GPU_PATTERN != 1
-[[vk::push_constant]] ConstantBuffer<PatternValues> gPush;
+[[vk::push_constant]] ConstantBuffer<PatternPush> gPush;
 #endif
 
 // A macro deliberately avoids introducing a by-value helper parameter in the
@@ -32,18 +39,27 @@ struct PatternValues
 [numthreads(128, 1, 1)]
 void descriptorHeapCodePatternMain(uint3 dispatchThreadId : SV_DispatchThreadID
 #if METALLIC_GPU_PATTERN == 1
-    , uniform PatternValues push
+    , uniform PatternPush parameters
 #endif
 )
 {
 #if METALLIC_GPU_PATTERN == 1
-    uint pushSum = PATTERN_SUM(push);
+    uint pushSum = PATTERN_SUM(parameters.values);
 #elif METALLIC_GPU_PATTERN == 2
-    PatternValues push = gPush;
+    PatternValues push = gPush.values;
     uint pushSum = PATTERN_SUM(push);
 #else
-    uint pushSum = PATTERN_SUM(gPush);
+    uint pushSum = PATTERN_SUM(gPush.values);
 #endif
+
+#if METALLIC_GPU_PATTERN == 1
+#define PATTERN_RESOURCES parameters
+#else
+#define PATTERN_RESOURCES gPush
+#endif
+    let gImage = resolveUniform(PATTERN_RESOURCES.image);
+    let gInput = resolveUniform(PATTERN_RESOURCES.input);
+    let gOutput = resolveUniform(PATTERN_RESOURCES.output);
 
 #if METALLIC_GPU_PATTERN == 3
     PatternValues input = gInput[0];

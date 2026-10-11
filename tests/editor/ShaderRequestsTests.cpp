@@ -19,7 +19,7 @@ namespace {
 SceneShaderOptions standardSceneOptions()
 {
     const std::string rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR;
-    return {.hasRTXCR = !rtxcrInclude.empty(), .positionFetch = true, .rtxcrInclude = rtxcrInclude};
+    return {.hasRTXCR = !rtxcrInclude.empty(), .rtxcrInclude = rtxcrInclude};
 }
 
 bool contains(const std::vector<ShaderRequest>& catalog, const ShaderRequest& request)
@@ -289,26 +289,23 @@ TEST(ShaderRequests, IncludesTheRuntimeCustomMaterialDefaultInItsOriginalPositio
 {
     const auto request = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, {});
     const std::vector<std::pair<std::string, std::string>> expected{
-        {"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_STREAM_MATERIALS", "0"},
-        {"METALLIC_STREAM_RAY_QUERIES", "0"}, {"METALLIC_GLOBAL_VIEW", "0"},
-        {"METALLIC_HAS_RTXCR", "0"}, {"METALLIC_HAS_NTC", "0"}, {"METALLIC_NTC_COOPERATIVE_VECTOR", "0"},
-        {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", "0"}, {"METALLIC_DEFERRED_LIGHT_GRID", "0"},
+        {"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_GLOBAL_VIEW", "0"},
+        {"METALLIC_HAS_RTXCR", "0"},
+        {"METALLIC_DEFERRED_LIGHT_GRID", "0"},
         {"METALLIC_REALTIME_DEFERRED", "0"}, {"METALLIC_DEFERRED_UPSCALER_GUIDES", "0"},
     };
     EXPECT_EQ(request.defines, expected);
-    EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "spvGroupNonUniformBallot"}));
+    EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV", "spvGroupNonUniformBallot"}));
 }
 
 TEST(ShaderRequests, PreservesCustomMaterialAndSDKSearchPrecedence)
 {
-    const SceneShaderOptions options{.customMaterials = true, .hasRTXCR = true, .hasNTC = true,
-        .cooperativeVector = true, .positionFetch = true,
-        .materialInclude = "C:/Values", .rtxcrInclude = "C:/RTXCR", .ntcInclude = "C:/NTC"};
+    const SceneShaderOptions options{.customMaterials = true, .hasRTXCR = true,
+        .materialInclude = "C:/Values", .rtxcrInclude = "C:/RTXCR"};
     const SlangMacroDefine cacheDefine{"SHARC_QUERY", "1"};
     const auto request = makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&cacheDefine, 1});
-    EXPECT_EQ(request.searchPaths, (std::vector<std::string>{"C:/Values", "C:/RTXCR", "C:/NTC"}));
-    EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "spvGroupNonUniformBallot",
-        "spvRayQueryPositionFetchKHR", "spvCooperativeVectorNV"}));
+    EXPECT_EQ(request.searchPaths, (std::vector<std::string>{"C:/Values", "C:/RTXCR"}));
+    EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV", "spvGroupNonUniformBallot"}));
     EXPECT_EQ(request.defines.front(), (std::pair<std::string, std::string>{"METALLIC_CUSTOM_MATERIALS", "1"}));
     EXPECT_EQ(request.defines.back(), (std::pair<std::string, std::string>{"SHARC_QUERY", "1"}));
     const auto maintenance = makeSceneShaderRequest(SceneShaderProgram::SharcClear, options);
@@ -317,16 +314,25 @@ TEST(ShaderRequests, PreservesCustomMaterialAndSDKSearchPrecedence)
     EXPECT_EQ(maintenance.capabilities, request.capabilities);
 }
 
+TEST(ShaderRequests, DirectionalCacheNeverUsesSpatialKeyReprojection)
+{
+    const auto spatial = makeSceneShaderRequest(SceneShaderProgram::SharcResolve, {});
+    const auto directional = makeSceneShaderRequest(SceneShaderProgram::OpenPBRSharcResolve, {});
+    EXPECT_NE(spatial, directional);
+    EXPECT_TRUE(spatial.defines.empty());
+    EXPECT_EQ(directional.defines, (std::vector<std::pair<std::string, std::string>>{{"SHARC_BLEND_ADJACENT_LEVELS", "0"}}));
+}
+
 TEST(ShaderRequests, DeferredDoesNotRequestRayTracingCapabilities)
 {
     auto options = standardSceneOptions();
-    options.streamRayQueries = true;
     for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
         const auto request = makeSceneShaderRequest(program, options);
         EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvGroupNonUniformBallot"}));
         EXPECT_TRUE(request.searchPaths.empty());
-        EXPECT_NE(std::find(request.defines.begin(), request.defines.end(),
-            std::pair<std::string, std::string>{"METALLIC_STREAM_RAY_QUERIES", "0"}), request.defines.end());
+        EXPECT_EQ(std::find_if(request.defines.begin(), request.defines.end(), [](const auto& define) {
+            return define.first == "METALLIC_STREAM_RAY_QUERIES" || define.first == "SCENE_RAYQUERY_ENABLE_POSITION_FETCH";
+        }), request.defines.end());
     }
 }
 
@@ -339,24 +345,26 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
         EXPECT_EQ(std::count(catalog.begin(), catalog.end(), catalog[i]), 1);
         if (catalog[i].module == "Features/VisibilityBuffer/VisibilityBufferDeferred") { ++deferredCount; }
     }
-    EXPECT_EQ(deferredCount, 96u);
-    for (bool fetch : {false, true}) {
-        auto options = standardSceneOptions(); options.positionFetch = fetch;
+    EXPECT_EQ(deferredCount, 48u);
+    {
+        auto options = standardSceneOptions();
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
                 SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides,
                 SceneShaderProgram::RealtimeLighting, SceneShaderProgram::SharcClear,
-                SceneShaderProgram::SharcResolve}) {
+                SceneShaderProgram::SharcResolve, SceneShaderProgram::OpenPBRSharcResolve}) {
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(program, options)));
         }
         for (const char* name : {"SHARC_UPDATE", "SHARC_QUERY"}) {
             const SlangMacroDefine define{name, "1"};
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1})));
+            EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, {&define, 1})));
+            EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, {&define, 1})));
         }
     }
-    for (bool streamed : {false, true}) {
+    {
         for (bool guides : {false, true}) {
             auto options = standardSceneOptions();
-            options.streamMaterials = streamed; options.globalView = true; options.upscalerGuides = guides;
+            options.globalView = true; options.upscalerGuides = guides;
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::Deferred, options)));
             for (int materialClass = 0; materialClass < 5; ++materialClass) {
                 const std::string value = std::to_string(materialClass);
@@ -367,20 +375,24 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
     }
 }
 
-TEST(ShaderRequests, RayQueriesAndShadowsRetainOptionalNTCRequests)
+TEST(ShaderRequests, OrdinaryShadersExcludeNeuralTextureVariants)
 {
-    const auto ray = makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI,
-        {.positionFetch = true, .hasNTC = true, .cooperativeVector = true, .ntcInclude = "C:/NTC"});
-    EXPECT_EQ(ray.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "spvRayQueryPositionFetchKHR", "spvCooperativeVectorNV"}));
-    EXPECT_EQ(ray.searchPaths, (std::vector<std::string>{"C:/NTC"}));
-    const auto shadow = makeShadowShaderRequest({.hasNTC = true, .cooperativeVector = true, .ntcInclude = "C:/NTC"});
-    EXPECT_EQ(shadow.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "spvCooperativeVectorNV"}));
-    EXPECT_EQ(shadow.searchPaths, ray.searchPaths);
     const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
-    EXPECT_TRUE(contains(catalog, makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI, {.positionFetch = true})));
-    EXPECT_TRUE(contains(catalog, makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization, {})));
-    EXPECT_TRUE(contains(catalog, makeShadowShaderRequest({.streamed = true, .streamTlas = true})));
-    EXPECT_FALSE(contains(catalog, ray)); // Optional SDK permutations are still compiled on demand.
+    EXPECT_TRUE(contains(catalog, makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI)));
+    EXPECT_TRUE(contains(catalog, makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization)));
+    EXPECT_TRUE(contains(catalog, makeShadowShaderRequest()));
+    for (const auto& request : catalog) {
+        EXPECT_EQ(std::count(request.capabilities.begin(), request.capabilities.end(), "spvCooperativeVectorNV"), 0);
+        for (const auto& define : request.defines) {
+            EXPECT_EQ(define.first.find("NTC"), std::string::npos);
+        }
+    }
+    for (const auto& request : {makeSceneRayQueryRequest(SceneRayQueryProgram::RTXDI),
+            makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization), makeShadowShaderRequest()}) {
+        EXPECT_TRUE(request.defines.empty());
+        EXPECT_TRUE(request.searchPaths.empty());
+        EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"}));
+    }
 }
 
 TEST_F(ShaderRequestCompileTest, PrewarmedOpenPBRHitsTheRuntimeRequestCache)
@@ -404,14 +416,12 @@ TEST_F(ShaderRequestCompileTest, PrewarmedOpenPBRHitsTheRuntimeRequestCache)
         const auto precompiled = compileSlangShaderToSpirv(warmupSource.desc(), cache, diagnostics);
         ASSERT_TRUE(precompiled) << diagnostics;
         EXPECT_FALSE(hit); // Each mode must have a separate cache identity.
-        bool hasCalls = false;
         bool hasFunctionDebug = false;
         const auto& words = precompiled->spirv;
         for (size_t offset = 5; offset < words.size();) {
             const uint32_t count = words[offset] >> 16, opcode = words[offset] & 0xffffu;
             ASSERT_GT(count, 0u);
             ASSERT_LE(offset + count, words.size());
-            if (opcode == 57) { hasCalls = true; } // OpFunctionCall
             if (opcode == 11 && count > 2) { // OpExtInstImport
                 const std::string_view name(reinterpret_cast<const char*>(&words[offset + 2]),
                     (count - 2u) * sizeof(uint32_t));
@@ -419,7 +429,8 @@ TEST_F(ShaderRequestCompileTest, PrewarmedOpenPBRHitsTheRuntimeRequestCache)
             }
             offset += count;
         }
-        EXPECT_TRUE(hasCalls); // Do not exhaustively inline the production scene shader.
+        // Default optimization may inline all calls; cache identity and debug metadata
+        // must remain correct regardless of the optimized function graph.
         EXPECT_EQ(hasFunctionDebug, mode != SlangShaderDebugMode::Disabled);
         const auto reused = compileSlangShaderToSpirv(runtimeSource.desc(), cache, diagnostics);
         ASSERT_TRUE(reused) << diagnostics;
@@ -487,7 +498,8 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
     studio["id"] = "studio-white-test";
     write(root / "build/MaterialValidation/WhiteStudio02/Catalog.json", {{"version", 1}, {"samples", {studio}}});
     const auto requests = metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR);
-    ASSERT_EQ(requests.size(), 4u);
+    // One CLAS path trace request plus deferred render and deferred material-kernel requests.
+    ASSERT_EQ(requests.size(), 3u);
     metallic::scene::RenderMaterial material;
     material.valueProgram = valueProgram;
     std::string diagnostics;
@@ -515,6 +527,19 @@ TEST_F(ShaderRequestCompileTest, LocalMaterialProgramsWarmBeforeRuntimeCreatesTh
         ASSERT_TRUE(reused) << diagnostics;
         EXPECT_TRUE(hit);
         EXPECT_EQ(compiled->spirv, reused->spirv);
+        if (program == SceneShaderProgram::OpenPBRPathTrace) {
+            // The custom-material wrapper must expose component evaluation and
+            // sampling in both SHaRC paths, including the guide entry point.
+            for (const char* mode : {"SHARC_QUERY", "SHARC_UPDATE"}) {
+                for (const auto entry : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                    const SlangMacroDefine define{mode, "1"};
+                    const auto request = makeSceneShaderRequest(entry, options, {&define, 1});
+                    const ShaderRequestView source(request);
+                    const auto cachedPath = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+                    ASSERT_TRUE(cachedPath) << mode << ": " << request.entry << '\n' << diagnostics;
+                }
+            }
+        }
     }
     std::filesystem::remove(root / "Sample/Scene.gltf");
     EXPECT_TRUE(metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR).empty());
@@ -524,8 +549,6 @@ TEST(ShaderRequests, CoversStreamPrecisionViewAndDisplaySettings)
 {
     const auto requests = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
     auto scene = standardSceneOptions();
-    scene.streamMaterials = true;
-    scene.positionFetch = false;
     EXPECT_TRUE(contains(requests, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, scene)));
     for (bool view : {false, true}) {
         for (bool half : {false, true}) {
@@ -538,6 +561,20 @@ TEST(ShaderRequests, CoversStreamPrecisionViewAndDisplaySettings)
         true, true, std::to_string(203.0f))));
     EXPECT_TRUE(contains(requests, makeEditorDisplayShaderRequest("editorOutputPQFragment", true,
         false, false, std::to_string(80.0f))));
+}
+
+TEST(ShaderRequests, HDR10UsesDynamicResourcesOutsideImGuiABI)
+{
+    const auto imgui = makeEditorDisplayShaderRequest("editorDisplayFragment", true, false, false, "203.0");
+    EXPECT_EQ(imgui.module, "Features/PostProcess/EditorDisplay");
+    EXPECT_EQ(imgui.descriptorHeapMode, SlangDescriptorHeapMode::Mapped);
+    for (const char* entry : {"editorOutputVertex", "editorOutputPQFragment"}) {
+        const auto output = makeEditorDisplayShaderRequest(entry, true, false, false, "203.0");
+        EXPECT_EQ(output.module, "Features/PostProcess/EditorOutput");
+        EXPECT_EQ(output.descriptorHeapMode, SlangDescriptorHeapMode::Native);
+        // PQ encodes absolute scRGB nits; UI paper white is already composed.
+        EXPECT_EQ(output, makeEditorDisplayShaderRequest(entry, false, true, true, "80.0"));
+    }
 }
 
 } // namespace

@@ -379,7 +379,7 @@ enum class ValidationObjectType : uint8_t {
     Unknown, Instance, Adapter, Device, Queue, CommandBuffer, Semaphore, Fence,
     DeviceMemory, Buffer, BufferView, Texture, TextureView, Sampler, ShaderModule,
     Pipeline, PipelineCache, PipelineLayout, DescriptorHeap, QueryPool, CommandPool,
-    Surface, Swapchain, AccelerationStructure, Micromap,
+    Surface, Swapchain, AccelerationStructure,
 };
 
 struct ValidationObject {
@@ -473,10 +473,8 @@ struct DeviceDesc {
     // Soft device-selection preference; pipelines opt in separately.
     uint32_t preferredTaskSubgroupSize = 0;
     bool enableRayTracingAccelerationStructure = false;
+    // Ray queries require CLAS; unsupported devices fail creation.
     bool enableRayQuery = false;
-    // Optional optimization, enabled only when acceleration structures and the
-    // device's position-fetch feature are available. False forces the fallback.
-    bool enableRayTracingPositionFetch = true;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
     ValidationSink validationSink;
@@ -515,7 +513,6 @@ struct DeviceCapabilities {
     uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
-    bool rayTracingPositionFetch = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
     bool shaderBufferInt64Atomics = false;
@@ -811,7 +808,6 @@ struct ClusterAccelerationStructureMoveDesc {
 };
 
 enum class RayTracingAccelerationStructureType : uint8_t {
-    BottomLevel,
     TopLevel,
 };
 
@@ -826,7 +822,6 @@ enum class RayTracingAccelerationStructureBuildFlags : uint8_t {
     PreferFastBuild = 1u << 1,
     AllowUpdate = 1u << 2,
     AllowCompaction = 1u << 3,
-    AllowDataAccess = 1u << 4,
 };
 
 constexpr RayTracingAccelerationStructureBuildFlags operator|(
@@ -840,25 +835,6 @@ constexpr RayTracingAccelerationStructureBuildFlags operator|(
 constexpr bool hasFlag(
     RayTracingAccelerationStructureBuildFlags value,
     RayTracingAccelerationStructureBuildFlags flag)
-{
-    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
-}
-
-enum class RayTracingGeometryFlags : uint8_t {
-    None = 0,
-    Opaque = 1u << 0,
-    NoDuplicateAnyHitInvocation = 1u << 1,
-};
-
-constexpr RayTracingGeometryFlags operator|(
-    RayTracingGeometryFlags lhs,
-    RayTracingGeometryFlags rhs)
-{
-    return static_cast<RayTracingGeometryFlags>(
-        static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
-}
-
-constexpr bool hasFlag(RayTracingGeometryFlags value, RayTracingGeometryFlags flag)
 {
     return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
 }
@@ -884,69 +860,17 @@ constexpr bool hasFlag(RayTracingInstanceFlags value, RayTracingInstanceFlags fl
     return (static_cast<uint8_t>(value) & static_cast<uint8_t>(flag)) != 0;
 }
 
-enum class RayTracingIndexType : uint8_t {
-    None,
-    Uint16,
-    Uint32,
-};
-
 struct RayTracingAccelerationStructureProperties {
     uint64_t scratchAlignment = 1;
     uint64_t instanceBufferAlignment = 16;
     uint64_t instanceRecordSize = 0;
 };
 
-enum class RayTracingCoverageMode : uint8_t {
-    Mask,
-    Blend,
-};
-
-// Already transformed UVs, in exactly the same triangle/vertex order as the BLAS.
-struct RayTracingCoverageTriangle {
-    std::array<std::array<float, 2>, 3> uv{};
-};
-
-// Static coverage matching four-tap bilinear/repeat sampling of the supplied
-// finest-resident RGBA8 image. Empty pixels denote constant texture alpha one.
-// MASK accepts alpha >= cutoff; BLEND leaves partial alpha to shader evaluation.
-// Prepare consumes these CPU spans synchronously. Dynamic or unavailable
-// coverage is represented by a null geometry.coverage and uses shader traversal.
-struct RayTracingCoverageDesc {
-    RayTracingCoverageMode mode = RayTracingCoverageMode::Mask;
-    float alphaFactor = 1.0f;
-    float alphaCutoff = 0.5f;
-    uint32_t width = 1;
-    uint32_t height = 1;
-    std::span<const uint8_t> pixelsRGBA8;
-    std::span<const RayTracingCoverageTriangle> triangles;
-};
-
-struct RayTracingCoverageAccelerationStats {
-    uint32_t geometryCount = 0;
-    uint64_t triangleCount = 0;
-    uint64_t storageBytes = 0;
-};
-
-struct RayTracingTriangleGeometryDesc {
-    BufferSlice vertexBuffer;
-    uint64_t vertexStride = 0;
-    Format vertexFormat = Format::RGB32Sfloat;
-    uint32_t vertexCount = 0;
-    BufferSlice indexBuffer;
-    RayTracingIndexType indexType = RayTracingIndexType::Uint32;
-    uint32_t primitiveCount = 0;
-    RayTracingGeometryFlags flags = RayTracingGeometryFlags::Opaque;
-    // Optional static acceleration of non-opaque traversal. Use a prepared
-    // bottom-level plan when supplying coverage; raw query/build excludes it.
-    const RayTracingCoverageDesc* coverage = nullptr;
-};
-
 struct RayTracingAccelerationStructureBuildInputs {
     RayTracingAccelerationStructureType type =
-        RayTracingAccelerationStructureType::BottomLevel;
+        RayTracingAccelerationStructureType::TopLevel;
     RayTracingAccelerationStructureBuildFlags flags =
         RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
-    std::span<const RayTracingTriangleGeometryDesc> geometries;
     uint32_t instanceCount = 0;
 };
 
@@ -964,13 +888,12 @@ enum class RayTracingTopLevelBackend : uint8_t {
 
 struct RayTracingAccelerationStructureDesc {
     RayTracingAccelerationStructureType type =
-        RayTracingAccelerationStructureType::BottomLevel;
+        RayTracingAccelerationStructureType::TopLevel;
     RayTracingAccelerationStructureBuildFlags buildFlags =
         RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
     uint64_t size = 0;
     // Partitioned resources use the PartitionedAccelerationStructureDesc overload
     // of createRayTracingAccelerationStructure; this creation descriptor is Standard-only.
-    // BottomLevel resources always use Standard.
     RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
 };
 
@@ -980,7 +903,8 @@ struct RayTracingInstanceDesc {
         {0.0f, 1.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 1.0f, 0.0f},
     };
-    class RayTracingAccelerationStructure* bottomLevel = nullptr;
+    // Storage slice of a BLAS assembled by buildClusterAccelerationStructureBottomLevels.
+    BufferSlice clusterBottomLevel;
     uint32_t customIndex = 0;
     uint32_t shaderBindingTableRecordOffset = 0;
     uint8_t mask = 0xff;
@@ -1010,13 +934,9 @@ struct RayTracingAccelerationStructureBuildDesc {
     class RayTracingAccelerationStructure* source = nullptr;
     RayTracingAccelerationStructureBuildMode mode =
         RayTracingAccelerationStructureBuildMode::Build;
-    std::span<const RayTracingTriangleGeometryDesc> geometries;
     BufferSlice instanceBuffer;
     uint32_t instanceCount = 0;
     BufferSlice scratchBuffer;
-    // Uses the immutable geometry, flags and sizes frozen by preparation.
-    // Mutually exclusive with geometries/instanceBuffer/source and Update mode.
-    const class RayTracingBottomLevelBuildPlan* plan = nullptr;
     // RenderGraph declares the AS write and synchronizes subsequent consumers.
     // Standalone builds retain the legacy post-build dependency by default.
     bool graphManagedSynchronization = false;
@@ -1100,7 +1020,8 @@ struct PartitionedAccelerationStructureInstanceDesc {
         {0.0f, 1.0f, 0.0f, 0.0f},
         {0.0f, 0.0f, 1.0f, 0.0f},
     };
-    class RayTracingAccelerationStructure* bottomLevel = nullptr;
+    // Storage slice of a BLAS assembled by buildClusterAccelerationStructureBottomLevels.
+    BufferSlice clusterBottomLevel;
     uint32_t instanceIndex = 0;
     uint32_t partitionIndex = 0;
     uint32_t customIndex = 0;
@@ -1212,7 +1133,15 @@ struct PipelineCacheStats {
     uint64_t hitCount = 0;
     uint64_t missCount = 0;
     uint64_t backendDataSize = 0;
-    // Revisions advance only for successful, previously unseen PSO identities.
+    // These counters report driver feedback, independently of hash-table hits.
+    // A native miss does not by itself prove that shader compilation occurred.
+    uint64_t nativeHitCount = 0;
+    uint64_t nativeMissCount = 0;
+    uint64_t unknownFeedbackCount = 0;
+    uint64_t lastNativeCreateTimeNanoseconds = 0;
+    uint64_t lastDriverDurationNanoseconds = 0; // Zero when feedback is invalid.
+    uint64_t lastCacheLockWaitTimeNanoseconds = 0;
+    // Successful creation may update backend data even for a known PSO hash.
     // A save commits its snapshot; concurrent newer revisions remain pending.
     uint64_t dirtyRevision = 0;
     uint64_t persistedRevision = 0;
@@ -1372,7 +1301,6 @@ struct BufferImpl;
 struct BufferAddressCommandAccess;
 struct BufferViewImpl;
 struct RayTracingAccelerationStructureImpl;
-struct RayTracingBottomLevelBuildPlanImpl;
 struct TextureImpl;
 struct TextureViewImpl;
 struct ShaderModuleImpl;
@@ -1382,7 +1310,6 @@ struct ComputePipelineImpl;
 struct GraphicsShaderObjectProgramImpl;
 struct BindlessHeapImpl;
 struct VulkanNativeAccess;
-struct ShaderBindingMappingDesc;
 } // namespace detail
 
 class Queue {
@@ -1548,21 +1475,6 @@ class RayTracingAccelerationStructureCompactionQueryPool {
         std::span<uint64_t> outCompactedSizes) const;
 };
 
-// CPU preparation freezes sizes and backend resources without submitting GPU work.
-// A plan records one Build; repeated recording and Update are rejected.
-// Device must outlive the plan. Releasing it after recording is safe: commands
-// retain build inputs until completion and the BLAS owns resident dependencies.
-class RayTracingBottomLevelBuildPlan {
-    METALLIC_RHI_HANDLE(RayTracingBottomLevelBuildPlan, shared_ptr,
-        friend class Device;
-        friend class CommandBuffer;
-    )
-
-    bool valid() const;
-    const RayTracingAccelerationStructureBuildSizes& sizes() const;
-    RayTracingCoverageAccelerationStats coverageStats() const;
-};
-
 class RayTracingAccelerationStructure {
     METALLIC_RHI_HANDLE(RayTracingAccelerationStructure, shared_ptr,
         friend class Device;
@@ -1574,7 +1486,6 @@ class RayTracingAccelerationStructure {
 
     const RayTracingAccelerationStructureDesc& desc() const;
     ResourceMemoryInfo memoryInfo() const;
-    RayTracingCoverageAccelerationStats coverageStats() const;
     bool valid() const;
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
@@ -1937,10 +1848,6 @@ class Device {
     [[nodiscard]] Result<std::vector<std::unique_ptr<Buffer>>> createAliasedBuffers(std::span<const BufferDesc> descriptions);
     [[nodiscard]] Result<RayTracingAccelerationStructureProperties> queryRayTracingAccelerationStructureProperties() const;
     [[nodiscard]] Result<RayTracingAccelerationStructureBuildSizes> queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const;
-    [[nodiscard]] Result<std::unique_ptr<RayTracingBottomLevelBuildPlan>> prepareRayTracingBottomLevelBuild(
-        std::span<const RayTracingTriangleGeometryDesc> geometries,
-        RayTracingAccelerationStructureBuildFlags flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace);
-    [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingBottomLevelBuildPlan& plan);
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createRayTracingInstanceBuffer(std::span<const RayTracingInstanceDesc> instances);
@@ -1973,8 +1880,6 @@ class Device {
 
 private:
     bool validShaderStage(const ShaderStageDesc& stage) const;
-    Result<std::unique_ptr<ComputePipeline>> createComputePipelineImpl(const ComputePipelineDesc& desc,
-        std::span<const detail::ShaderBindingMappingDesc> mappings);
     static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
 };
 

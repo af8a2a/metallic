@@ -1,21 +1,10 @@
 import Core;
 using Metallic;
 
+#if !SHARC_UPDATE && !METALLIC_PT_SINGLE_SAMPLE
+#define METALLIC_PT_EARLY_PRIMARY_GUIDES 1
+#endif
 #include "OpenPBRRayQueryPathTrace.slang"
-
-#define gDlssRrAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideAlbedo)
-
-#define gDlssRrSpecularAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularAlbedo)
-
-#define gDlssRrNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().guideNormalRoughness)
-
-#define gDlssRrMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().guideMotion)
-
-#define gDlssRrLinearDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideLinearDepth)
-
-#define gDlssRrSpecularHitDistance resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularHitDistance)
-
-#define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
 
 struct DLSSRRGuideData
 {
@@ -43,13 +32,14 @@ DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
 
 void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
-    gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
-    gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
-    gDlssRrNormalRoughness[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
-    gDlssRrMotionVectors[pixel] = data.motionVector;
-    gDlssRrLinearDepth[pixel] = max(data.linearDepth, 0.0);
-    gDlssRrSpecularHitDistance[pixel] = max(data.specularHitDistance, 0.0);
-    gDlssDepth[pixel] = cameraHardwareDepth(data.linearDepth, push);
+    let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+    resolveUniform(resources.guideAlbedo)[pixel] = float4(saturate(data.albedo), 1.0);
+    resolveUniform(resources.guideSpecularAlbedo)[pixel] = float4(saturate(data.specularAlbedo), 1.0);
+    resolveUniform(resources.guideNormalRoughness)[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
+    resolveUniform(resources.guideMotion)[pixel] = data.motionVector;
+    resolveUniform(resources.guideLinearDepth)[pixel] = max(data.linearDepth, 0.0);
+    resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(data.specularHitDistance, 0.0);
+    resolveUniform(resources.guideDepth)[pixel] = cameraHardwareDepth(data.linearDepth, push);
 }
 
 DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
@@ -57,12 +47,13 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
     RayCone rayCone,
     float2 samplePixel,
     ScenePathTracePush push,
-    inout uint seed)
+    inout uint seed,
+    bool primaryFound,
+    HitInfo hit)
 {
     DLSSRRGuideData data = makeDefaultDlssRrGuideData(push);
 
-    HitInfo hit;
-    if (!traceClosest(ray, push, hit)) {
+    if (!primaryFound) {
         data.motionVector = skyMotionVectorToPrevious(
             ray.direction,
             samplePixel,
@@ -97,10 +88,70 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
     return data;
 }
 
+#if !SHARC_UPDATE
+// Static guides are consumed before any deep path. Only the first specular
+// endpoint depends on continuation and is stored after it completes.
+void writeDlssRrPrimaryGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
+{
+    let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+    resolveUniform(resources.guideAlbedo)[pixel] = float4(saturate(data.albedo), 1.0);
+    resolveUniform(resources.guideSpecularAlbedo)[pixel] = float4(saturate(data.specularAlbedo), 1.0);
+    resolveUniform(resources.guideNormalRoughness)[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
+    resolveUniform(resources.guideMotion)[pixel] = data.motionVector;
+    resolveUniform(resources.guideLinearDepth)[pixel] = max(data.linearDepth, 0.0);
+    resolveUniform(resources.guideDepth)[pixel] = cameraHardwareDepth(data.linearDepth, push);
+}
+
+#if METALLIC_PT_EARLY_PRIMARY_GUIDES
+void evaluateAndWriteOpenPbrPrimaryGuides(uint2 pixel, Ray ray, RayCone rayCone,
+    ScenePathTracePush push, bool found, HitInfo primaryHit)
+{
+    // This stream and material program belong to guides. Do not consume the
+    // path seed or reuse its closure: texture filtering and normal policies differ.
+    uint guideSeed = hash(pixel.x + pixel.y * max(push.width, 1u) +
+        (push.sampleFrame + 1u) * 0x85ebca6bu);
+    DLSSRRGuideData guides = evaluateOpenPbrDlssRrGuides(ray, rayCone,
+        float2(pixel) + float2(0.5), push, guideSeed, found, primaryHit);
+    writeDlssRrPrimaryGuides(pixel, guides, push);
+}
+#endif
+
+// Keep the established one-ray stage unchanged; only authored hit data escapes.
+bool queryOpenPbrPrimaryStage(uint2 pixel, Ray ray, RayCone rayCone,
+    ScenePathTracePush push, out HitInfo primaryHit)
+{
+    bool found = traceClosest(ray, push, primaryHit);
+    uint guideSeed = hash(pixel.x + pixel.y * max(push.width, 1u) +
+        (push.sampleFrame + 1u) * 0x85ebca6bu);
+    DLSSRRGuideData guides = evaluateOpenPbrDlssRrGuides(ray, rayCone,
+        float2(pixel) + float2(0.5), push, guideSeed, found, primaryHit);
+    writeDlssRrPrimaryGuides(pixel, guides, push);
+    return found;
+}
+
+#include "OpenPBRPathContinuation.slang"
+
+void writeOpenPbrPathColor(uint2 pixel, float3 color, ScenePathTracePush push)
+{
+    color = push.debugView != kOpenPBRDebugViewFinal
+        ? openPbrDisplayDebugColor(push, color) : max(color, float3(0.0));
+
+    if (push.enableAccumulation != 0u) {
+        color = accumulateStreamPathTrace(pixel, color, push);
+    }
+
+    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
+}
+#endif
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
+#if SHARC_UPDATE
+    // Sparse cache training never touches the full-resolution RR inputs.
+    dispatchOpenPbrRayQueryPathTrace(dispatchThreadId);
+#else
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
@@ -112,44 +163,43 @@ void openPbrRayQueryPathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThre
         pixel.x +
         pixel.y * max(push.width, 1u) +
         (push.sampleFrame + 1u) * 0x9e3779b9u);
-    float3 color = float3(0.0, 0.0, 0.0);
-    DLSSRRGuideData guides = makeDefaultDlssRrGuideData(push);
-    float firstSampleSpecularHitDistance = 0.0;
-    for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
-        float2 jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
-        float2 samplePixel = float2(pixel) + jitter;
-
-        Ray ray;
-        ray.origin = rayOriginFromPixel(samplePixel, push);
-        ray.direction = rayDirectionFromPixel(samplePixel, push);
-        RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
-        float sampleSpecularHitDistance;
-        color += pathTraceOpenPBR(ray, rayCone, push, seed, sampleSpecularHitDistance);
-
-        if (sampleIndex == 0u) {
-            firstSampleSpecularHitDistance = sampleSpecularHitDistance;
-            guides = evaluateOpenPbrDlssRrGuides(
-                ray,
-                rayCone,
-                float2(pixel) + float2(0.5, 0.5),
-                push,
-                seed);
-            guides.specularHitDistance = firstSampleSpecularHitDistance;
-        }
+    // RR samples share the jittered camera ray, but retain independent BSDF,
+    // coverage and texture RNG consumption. Share only authored hit data;
+    // guides still evaluate their own material and face-forward policy.
+    float2 jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
+    float2 samplePixel = float2(pixel) + jitter;
+    Ray ray;
+    ray.origin = rayOriginFromPixel(samplePixel, push);
+    ray.direction = rayDirectionFromPixel(samplePixel, push);
+    RayCone rayCone = primaryRayConeFromPixel(samplePixel, push);
+#if METALLIC_PT_SINGLE_SAMPLE
+    {
+        float specularHitDistance;
+        float3 color = pathTraceOpenPbrSingleSample(pixel, ray, rayCone, push, seed, specularHitDistance);
+        writeOpenPbrPathColor(pixel, color, push);
+        let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+        resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(specularHitDistance, 0.0);
     }
-    color /= float(samples);
-    color = push.debugView != kOpenPBRDebugViewFinal
-        ? openPbrDisplayDebugColor(push, color) : max(color, float3(0.0));
+#else
+    {
+        // Multi-sample pixels retain the general authored-primary reuse path.
+        float3 color = float3(0.0);
+        float firstSampleSpecularHitDistance = 0.0;
+        OpenPBRPrimaryQuery primaryQuery = {};
+        for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
+            float sampleSpecularHitDistance;
+            color += pathTraceOpenPBRWithPrimaryQuery(ray, rayCone, push, seed,
+                sampleSpecularHitDistance, primaryQuery, pixel);
 
-    if (push.enableAccumulation != 0u) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
+            if (sampleIndex == 0u) {
+                firstSampleSpecularHitDistance = sampleSpecularHitDistance;
+            }
         }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
+        color /= float(samples);
+        writeOpenPbrPathColor(pixel, color, push);
+        let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+        resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(firstSampleSpecularHitDistance, 0.0);
     }
-
-    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
-    writeDlssRrGuides(pixel, guides, push);
+#endif
+#endif
 }

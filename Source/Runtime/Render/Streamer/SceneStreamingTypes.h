@@ -14,7 +14,6 @@ class TextureView;
 struct StreamedImage;
 class MeshletStreamRuntime;
 class ScenePathTraceResources;
-class SceneClusterAccelerationStructureBuilder;
 struct SceneStreamingState;
 
 enum class SceneResourceFeatureBits : uint32_t {
@@ -23,8 +22,7 @@ enum class SceneResourceFeatureBits : uint32_t {
     Materials = 1u << 1,
     MaterialTextures = 1u << 2,
     Meshlets = 1u << 3,
-    StandardAccelerationStructure = 1u << 4,
-    ClusterAccelerationStructure = 1u << 5,
+    AccelerationStructure = 1u << 4,
 };
 
 constexpr SceneResourceFeatureBits operator|(
@@ -46,24 +44,19 @@ struct SceneResourceSnapshot {
     std::shared_ptr<ScenePathTraceResources> pathTraceResources;
 };
 
-// Passes declare resource needs; StreamerSubsystem owns loading and residency.
-enum class SceneStreamKind { None, Visibility, Asset };
+// Passes declare resource needs; StreamerSubsystem owns all geometry streaming.
 struct SceneStreamingRequirements {
     SceneResourceFeatureBits features = SceneResourceFeatureBits::None;
-    SceneStreamKind geometry = SceneStreamKind::None;
+    bool geometry = false;
     bool textureFeedback = false;
     bool sampledImage = false;
-    bool optionalClusterAccelerationStructure = false;
-    bool graphManagedAccelerationStructure = false;
     bool operator==(const SceneStreamingRequirements&) const = default;
 };
 
 struct PreparedSceneResources {
+    const scene::Scene* sourceScene = nullptr;
     std::shared_ptr<SceneResourceSnapshot> snapshot;
     std::shared_ptr<SceneStreamingState> state;
-    std::shared_ptr<SceneClusterAccelerationStructureBuilder> clusterAccelerationStructure;
-    std::array<uint64_t, 4> clusterRevision{};
-    std::string streamSourceId;
     std::string softwareRasterIdentity;
     bool ready = false;
     std::filesystem::path streamSourcePath;

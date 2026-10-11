@@ -82,9 +82,6 @@ public:
         if (capabilities.rayQuery && !capabilities.rayTracingAccelerationStructure) {
             return RHITestResult::fail("rayQuery capability was enabled without acceleration structure support");
         }
-        if (capabilities.rayTracingPositionFetch && !capabilities.rayTracingAccelerationStructure) {
-            return RHITestResult::fail("position fetch was enabled without acceleration structure support");
-        }
         if (capabilities.clusterAccelerationStructure && !capabilities.rayTracingAccelerationStructure) {
             return RHITestResult::fail(
                 "clusterAccelerationStructure capability was enabled without acceleration structure support");

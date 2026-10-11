@@ -5,9 +5,6 @@ using Metallic;
 
 #define gOutput resolveUniform(getResourceParameters<SceneResourceParameters>().output)
 
-#ifndef SCENE_RAYQUERY_ENABLE_CLUSTER_ID
-#define SCENE_RAYQUERY_ENABLE_CLUSTER_ID 0
-#endif
 
 static const uint kRayQueryVisualizationModeInstance = 0u;
 static const uint kRayQueryVisualizationModePrimitive = 1u;
@@ -47,7 +44,6 @@ float3 hashColor(uint value)
     return lerp(float3(0.16, 0.20, 0.26), color, 0.82);
 }
 
-#if SCENE_RAYQUERY_ENABLE_CLUSTER_ID
 int committedClusterId(inout RayQuery<RAY_FLAG_FORCE_OPAQUE> query)
 {
     // Target capabilities authorize the extension, while inline SPIR-V must
@@ -58,12 +54,7 @@ int committedClusterId(inout RayQuery<RAY_FLAG_FORCE_OPAQUE> query)
         OpRayQueryGetIntersectionClusterIdNV $$int result &query $(1);
     };
 }
-#else
-int committedClusterId(inout RayQuery<RAY_FLAG_FORCE_OPAQUE> query)
-{
-    return -1;
-}
-#endif
+
 
 float3 rayDirectionFromPixel(uint2 pixel, SceneRayQueryVisualizationPush push)
 {

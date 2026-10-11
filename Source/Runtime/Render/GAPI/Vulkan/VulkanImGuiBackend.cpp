@@ -21,13 +21,14 @@ public:
         VkFormat pqOutputFormat = VK_FORMAT_UNDEFINED);
     void shutdown();
     VkPipeline mainPipeline() const { return mainPipeline_; }
-    bool canEncodeHDR10() const { return pqPipeline_ != VK_NULL_HANDLE; }
+    bool canEncodeHDR10() const { return pqPipeline_ != nullptr; }
     void beginScRgbImage(ImDrawList& list, ImGuiViewport* viewport);
-    void encodeHDR10(VkCommandBuffer commands, VkDescriptorSet source, uint32_t width, uint32_t height);
+    Result<> encodeHDR10(CommandBuffer& commands, uint32_t sourceIndex, uint32_t width, uint32_t height);
 
 private:
     static void bindImagePipeline(const ImDrawList*, const ImDrawCmd* command);
-    VkPipeline createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits, bool encodePQ = false);
+    VkPipeline createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits);
+    Result<> createHDR10Pipeline(Format format);
 
     VkDevice device_ = VK_NULL_HANDLE;
     render::Device* rhiDevice_ = nullptr;
@@ -36,7 +37,7 @@ private:
     VkDescriptorSetLayout setLayouts_[2]{};
     VkPipeline mainPipeline_ = VK_NULL_HANDLE;
     VkPipeline mainImagePipeline_ = VK_NULL_HANDLE;
-    VkPipeline pqPipeline_ = VK_NULL_HANDLE;
+    std::unique_ptr<GraphicsPipeline> pqPipeline_;
     VkFormat pqOutputFormat_ = VK_FORMAT_UNDEFINED;
     std::map<VkFormat, VkPipeline> secondaryImagePipelines_;
     VkFormat mainFormat_ = VK_FORMAT_UNDEFINED;
@@ -56,7 +57,8 @@ DisplayPipelines::~DisplayPipelines()
 void DisplayPipelines::shutdown()
 {
     if (device_ == VK_NULL_HANDLE) { return; }
-    for (VkPipeline pipeline : {mainPipeline_, mainImagePipeline_, pqPipeline_}) {
+    pqPipeline_.reset();
+    for (VkPipeline pipeline : {mainPipeline_, mainImagePipeline_}) {
         if (pipeline) { functions_->vkDestroyPipeline(device_, pipeline, nullptr); }
     }
     for (const auto& [format, pipeline] : secondaryImagePipelines_) {
@@ -67,7 +69,7 @@ void DisplayPipelines::shutdown()
     for (VkDescriptorSetLayout layout : setLayouts_) {
         if (layout) { functions_->vkDestroyDescriptorSetLayout(device_, layout, nullptr); }
     }
-    mainPipeline_ = mainImagePipeline_ = pqPipeline_ = VK_NULL_HANDLE;
+    mainPipeline_ = mainImagePipeline_ = VK_NULL_HANDLE;
     layout_ = VK_NULL_HANDLE;
     setLayouts_[0] = setLayouts_[1] = VK_NULL_HANDLE;
     device_ = VK_NULL_HANDLE;
@@ -106,18 +108,32 @@ bool DisplayPipelines::initialize(render::Device& rhiDevice, VkFormat mainFormat
     mainPipeline_ = createPipeline(mainFormat, hdr, false, paperWhiteNits);
     mainImagePipeline_ = createPipeline(mainFormat, hdr, true, paperWhiteNits);
     if (pqOutputFormat != VK_FORMAT_UNDEFINED) {
-        pqPipeline_ = createPipeline(pqOutputFormat, true, false, paperWhiteNits, true);
-        if (!pqPipeline_) { return false; }
+        if (!createHDR10Pipeline(resourceFormat(pqOutputFormat))) { return false; }
     }
     return mainPipeline_ && mainImagePipeline_;
 }
 
-VkPipeline DisplayPipelines::createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits, bool encodePQ)
+Result<> DisplayPipelines::createHDR10Pipeline(Format format)
+{
+    const ImGuiShaderRequest request{.encodePQ = true};
+    auto vertex = shaders.load(*rhiDevice_, request, true);
+    if (!vertex) { return std::unexpected(vertex.error()); }
+    auto fragment = shaders.load(*rhiDevice_, request, false);
+    if (!fragment) { return std::unexpected(fragment.error()); }
+    return shaders.cache(*rhiDevice_, (*vertex)->contentHash(), [&](PipelineCache& cache) {
+        return rhiDevice_->createGraphicsPipeline({.vertexShader = {vertex->get(), "main"},
+            .fragmentShader = {fragment->get(), "main"}, .colorFormats = {format}, .colorAttachmentCount = 1,
+            .usesBindlessHeap = true, .pipelineCache = &cache})
+            .transform([&](auto value) { pqPipeline_ = std::move(value); });
+    });
+}
+
+VkPipeline DisplayPipelines::createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits)
 {
     std::unique_ptr<render::ShaderModule> modules[2];
     const ImGuiShaderRequest request{.hdr = hdr, .scRgbImage = scRgbImage,
         .targetSrgb = resourceFormat(format) == Format::BGRA8sRGB || resourceFormat(format) == Format::RGBA8sRGB,
-        .encodePQ = encodePQ, .paperWhiteNits = paperWhiteNits};
+        .paperWhiteNits = paperWhiteNits};
     for (uint32_t index = 0; index < 2; ++index) {
         auto module = shaders.load(*rhiDevice_, request, index == 0);
         if (!module) { return VK_NULL_HANDLE; }
@@ -140,10 +156,6 @@ VkPipeline DisplayPipelines::createPipeline(VkFormat format, bool hdr, bool scRg
         .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = attributes};
     VkPipelineInputAssemblyStateCreateInfo assembly{.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
-    if (encodePQ) {
-        vertex.vertexBindingDescriptionCount = 0;
-        vertex.vertexAttributeDescriptionCount = 0;
-    }
     VkPipelineViewportStateCreateInfo viewport{.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .viewportCount = 1, .scissorCount = 1};
     VkPipelineRasterizationStateCreateInfo raster{.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -158,7 +170,6 @@ VkPipeline DisplayPipelines::createPipeline(VkFormat format, bool hdr, bool scRg
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
     VkPipelineColorBlendStateCreateInfo blend{.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1, .pAttachments = &attachment};
-    if (encodePQ) { attachment.blendEnable = VK_FALSE; }
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamic{.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = 2, .pDynamicStates = dynamicStates};
@@ -174,7 +185,7 @@ VkPipeline DisplayPipelines::createPipeline(VkFormat format, bool hdr, bool scRg
     constexpr uint64_t kPipelineABIVersion = 1;
     uint64_t stateHash = render::detail::kFnvOffset;
     const uint64_t identity[] = {0x494d47554950534full, kPipelineABIVersion,
-        modules[0]->contentHash(), modules[1]->contentHash(), uint64_t(format), uint64_t(encodePQ),
+        modules[0]->contentHash(), modules[1]->contentHash(), uint64_t(format), uint64_t{0},
         sizeof(ImDrawVert), offsetof(ImDrawVert, pos), offsetof(ImDrawVert, uv), offsetof(ImDrawVert, col)};
     for (uint64_t value : identity) {
         stateHash = render::detail::hashValue(stateHash, value);
@@ -212,15 +223,14 @@ void DisplayPipelines::beginScRgbImage(ImDrawList& list, ImGuiViewport* viewport
     list.AddCallback(bindImagePipeline, &data, sizeof(data));
 }
 
-void DisplayPipelines::encodeHDR10(VkCommandBuffer commands, VkDescriptorSet source, uint32_t width, uint32_t height)
+Result<> DisplayPipelines::encodeHDR10(CommandBuffer& commands, uint32_t sourceIndex, uint32_t width, uint32_t height)
 {
-    VkViewport viewport{0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f};
-    VkRect2D scissor{{0, 0}, {width, height}};
-    functions_->vkCmdSetViewport(commands, 0, 1, &viewport);
-    functions_->vkCmdSetScissor(commands, 0, 1, &scissor);
-    functions_->vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pqPipeline_);
-    functions_->vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &source, 0, nullptr);
-    functions_->vkCmdDraw(commands, 3, 1, 0, 0);
+    auto result = commands.setViewport({.width = float(width), .height = float(height)});
+    if (!result) { return result; }
+    commands.setScissor({0, 0, width, height});
+    result = commands.bindExecution(pqPipeline_->execution(), &sourceIndex, sizeof(sourceIndex));
+    if (!result) { return result; }
+    return commands.draw(3);
 }
 
 
@@ -489,18 +499,15 @@ Result<> VulkanImGuiBackend::render(CommandBuffer& commands, ImDrawData* drawDat
     return resultFromVk(impl_->error);
 }
 
-Result<> VulkanImGuiBackend::encodeHDR10(CommandBuffer& commands, ImGuiTexture source, uint32_t width, uint32_t height)
+Result<> VulkanImGuiBackend::encodeHDR10(CommandBuffer& commands, BindlessHeap& heap, BindlessHandle source,
+    uint32_t width, uint32_t height)
 {
     if (!impl_->initialized || !width || !height || !impl_->display.canEncodeHDR10() ||
-        !impl_->textures.contains(source)) { return makeError(Error::InvalidArgument); }
-    const auto& texture = impl_->textures.at(source);
-    ExternalCommandScope scope(commands);
-    auto view = scope.imageView(*texture->view);
-    if (!view) { return std::unexpected(view.error()); }
-    auto retained = commands.retainResource(texture);
-    if (!retained) { return retained; }
-    impl_->display.encodeHDR10(scope.commandBuffer(), texture->descriptor, width, height);
-    return {};
+        !source.valid() || source.kind != BindlessHandleKind::SampledImage ||
+        source.shaderIndex == UINT32_MAX) { return makeError(Error::InvalidArgument); }
+    auto result = commands.bindBindlessHeap(heap);
+    if (!result) { return result; }
+    return impl_->display.encodeHDR10(commands, source.shaderIndex, width, height);
 }
 
 Result<> VulkanImGuiBackend::renderPlatformWindows()

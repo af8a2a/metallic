@@ -30,7 +30,7 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addTextureInput("visibility", "Unified resident/stream visibility IDs").sampledRead().format = Format::R32Uint;
+        reflection.addTextureInput("visibility", "Stream visibility IDs").sampledRead().format = Format::R32Uint;
         reflection.addBufferInput("rasterInfo", "Raster scene, view and frame identity")
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         reflection.addTextureOutput("color", "Scalar materials with geometric normals and directional lighting")
@@ -103,11 +103,7 @@ private:
         if (!views.validFor(gpuScene->drawSet().generation, gpuScene->drawSet().revision)) { return makeError(Error::InvalidArgument); }
         const auto* stream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
             info.frameIndex, info.sceneIdentity);
-        if (info.hasStreamGeometry && !stream) { return makeError(Error::InvalidArgument); }
-        // Unused optional descriptors point at a valid metadata buffer; the shader
-        // selects its producer before accessing any geometry descriptor.
-        Buffer* fallback = views.geometries.buffer;
-        const auto optional = [fallback](Buffer* buffer) { return buffer ? buffer : fallback; };
+        if (!stream) { return makeError(Error::InvalidArgument); }
         TextureView* image = visibility.view();
         auto registry = ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
@@ -117,20 +113,14 @@ private:
         resources.visibility = writer.sampledImageHandle(image);
         resources.instances = writer.buffer(views.instances.buffer);
         resources.materials = writer.buffer(views.materials.buffer);
-        resources.records = writer.buffer(optional(views.meshletDraws.buffer));
-        resources.meshlets = writer.buffer(optional(views.meshlets.buffer));
-        resources.vertices = writer.buffer(optional(views.vertices.buffer));
-        resources.vertexIndices = writer.buffer(optional(views.meshletVertices.buffer));
-        resources.triangles = writer.buffer(optional(views.meshletTriangleWords.buffer));
-        resources.geometries = writer.buffer(views.geometries.buffer);
-        resources.streamRecords = writer.buffer(stream ? stream->visibleClusterBuffer : fallback);
-        resources.groups = writer.buffer(stream ? stream->activeGroupBuffer : fallback);
-        resources.pages = writer.buffer(stream ? stream->pageBuffer : fallback);
-        resources.pageTable = writer.buffer(stream ? stream->pageTableBuffer : fallback);
-        resources.pageCount = writer.buffer(stream ? stream->paramsBuffer : fallback);
-        struct Push { uint32_t width, height, residentCount, streamCount, mode; float eye[3]; };
+        resources.streamRecords = writer.buffer(stream->visibleClusterBuffer);
+        resources.groups = writer.buffer(stream->activeGroupBuffer);
+        resources.pages = writer.buffer(stream->pageBuffer);
+        resources.pageTable = writer.buffer(stream->pageTableBuffer);
+        resources.pageCount = writer.buffer(stream->paramsBuffer);
+        struct Push { uint32_t width, height, streamCount, mode; float eye[3]; };
         const auto mode = properties().value("visualization", "shaded");
-        const Push push{info.width, info.height, info.residentRecordCount, stream ? stream->visibleRecordCapacity : 0u,
+        const Push push{info.width, info.height, stream->visibleRecordCapacity,
             mode == "baseColor" ? 1u : mode == "normal" ? 2u : mode == "instance" ? 3u : 0u,
             {info.eye[0], info.eye[1], info.eye[2]}};
         auto encoded = encodeNamedParameters(writer, resources, push, kNamedComputeABI);

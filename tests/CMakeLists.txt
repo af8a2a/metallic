@@ -401,6 +401,7 @@ add_executable(MetallicRHITests
     rhi/DLSSNRTests.cpp
     rhi/AutoExposureTests.cpp
     rhi/OpenPBRLookDevTests.cpp
+    rhi/OpenPBRSharcTests.cpp
     rhi/SliderDebugTests.cpp
     rhi/VisibilityBufferDeferredTests.cpp
     rhi/StreamMaterialTests.cpp
@@ -426,6 +427,7 @@ add_executable(MetallicRHITests
     rhi/ResourceRegistryTests.cpp
     rhi/ShaderRegistryTests.cpp
     rhi/PipelineCacheSaveTests.cpp
+    rhi/PipelineCacheFeedbackTests.cpp
     rhi/ShaderObjectBinaryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
@@ -448,6 +450,7 @@ add_executable(MetallicRHITests
     rhi/GPUSceneSubsystemTests.cpp
     rhi/MeshletLODTests.cpp
     rhi/StreamMeshletLODTests.cpp
+    rhi/StreamCLASCutTests.cpp
     rhi/WaveWorkDistributionTests.cpp
     rhi/TessellationTests.cpp
     rhi/TessellationSplitTests.cpp
@@ -510,8 +513,7 @@ add_executable(MetallicRHITests
     rhi/RayTracingAccelerationStructureTests.cpp
     rhi/UnifiedTopLevelTests.cpp
         rhi/CLASCompactionTests.cpp
-    rhi/RayTracingPositionFetchTests.cpp
-    rhi/OpacityMicromapTests.cpp
+    rhi/SceneCLASAttributesTests.cpp
     rhi/StreamerTests.cpp
     rhi/StreamerConcurrencyTests.cpp
     rhi/StreamBLASAllocationTests.cpp

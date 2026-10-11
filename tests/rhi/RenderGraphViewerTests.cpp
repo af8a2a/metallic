@@ -1,9 +1,10 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "Editor/EditorRenderGraphViewer.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -36,20 +37,20 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "AutoExposureFixture",
             .entryPointName = "autoExposureFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc binding{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage};
+        const render::ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::AutoExposureFixtureResources, output), .kind = render::ComputeResourceBindingKind::StorageImage};
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .pushConstantSize = 16,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kAutoExposureFixtureLayout,
+            .resourceParameterSize = sizeof(metallic::tests::AutoExposureFixtureResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         struct Push { uint32_t width, height; float luminance; uint32_t outliers; };
         const Push push{context.width(), context.height(), 0.25f, 0};
-        const render::ComputeDispatchBinding binding{.binding = 0, .textureView = context.outputTexture("color").view()};
+        const render::ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::AutoExposureFixtureResources, output), .textureView = context.outputTexture("color").view()};
         const std::array uses{render::RenderGraphStageUse{"color", render::RenderGraphResourceAccess::TextureStorageWrite}};
         const std::array stages{render::RenderGraphStage{"Fill pixels", uses,
             [&](render::CommandBuffer& commands) {

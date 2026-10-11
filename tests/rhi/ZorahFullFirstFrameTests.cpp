@@ -189,7 +189,8 @@ public:
                 capture("ZorahFull-settled");
                 auto* host=preview.subsystemHost();
                 auto* gpuScene=host->get<GPUSceneSubsystem>();
-                requireFull(gpuScene && !gpuScene->globalBufferViews().vertices.buffer, "Resident GPU vertex upload detected");
+                requireFull(gpuScene && gpuScene->globalBufferViews().geometries.valid() &&
+                    gpuScene->globalBufferViews().instances.valid(), "Streamed scene metadata is missing");
                 auto* streamer=host->get<StreamerSubsystem>();
                 auto* device=host->device();
                 std::shared_ptr<SceneResourceSnapshot> materials;
@@ -226,8 +227,6 @@ public:
                         "Full logical texture references the fallback descriptor");
                 }
                 requireFull(tex.residentAllocationBytes<=tex.budgetBytes,"Texture allocations exceeded budget");
-                requireFull(!materials->pathTraceResources->shadingVertexBuffer() &&
-                    !materials->pathTraceResources->accelerationStructure().valid(),"Material owner imported full resident RTAS");
                 const auto deferredId = graph.findNode("Deferred")->id;
                 graph.setNodeRuntimeProperty(deferredId,"debugView","baseColor");
                 requireFull(bool(preview.render(graph,960,540,"Deferred.color",true)),preview.lastLog());

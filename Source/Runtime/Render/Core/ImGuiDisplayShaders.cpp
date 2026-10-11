@@ -1,6 +1,7 @@
 #include "ImGuiDisplayShaders.h"
 #include "ShaderRegistry.h"
 #include "ShaderRequests.h"
+#include "ResourceRegistry.h"
 #include <spdlog/spdlog.h>
 
 namespace metallic::render {
@@ -25,5 +26,16 @@ vulkan::ImGuiShaderServices imGuiDisplayShaders()
             return ShaderRegistry::instance().getExternalGraphicsPipeline(device, hash, factory);
         },
     };
+}
+Result<> encodeEditorHDR10(vulkan::VulkanImGuiBackend& backend, Device& device,
+    CommandBuffer& commands, TextureView& source, uint32_t width, uint32_t height)
+{
+    auto registry = ResourceRegistry::forDevice(device);
+    if (!registry) { return std::unexpected(registry.error()); }
+    auto lease = (*registry)->sampledImage(source);
+    if (!lease) { return std::unexpected(lease.error()); }
+    auto result = (*registry)->retain(commands, *lease);
+    if (!result) { return result; }
+    return backend.encodeHDR10(commands, *(*registry)->heap(), lease->descriptorHandle(), width, height);
 }
 } // namespace metallic::render

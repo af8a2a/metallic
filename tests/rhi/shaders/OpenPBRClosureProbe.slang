@@ -155,6 +155,10 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
         error = max(error, abs(standalonePrepared.evalProjected(wi) -
             openPBRGetSumOfDiffuseSpecular(openPBREval(standalone.context, standaloneNative, wi))));
         error = max(error, float3(abs(standalonePrepared.pdf(wi) - openPBRPdf(standalone.context, standaloneNative, wi))));
+        let components = standalonePrepared.evalProjectedComponents(wi);
+        let nativeComponents = openPBREval(standalone.context, standaloneNative, wi);
+        error = max(error, abs(components.diffuse - nativeComponents.diffuse));
+        error = max(error, abs(components.specular - nativeComponents.specular));
     }
     float3 random = float3((float(lane % 128) + 0.5) / 128, frac(float(lane) * 0.61803398875), frac(float(lane) * 0.41421356237));
     BSDFWeightSample weighted = sampleSurfaceWeight(prepared, random);
@@ -178,9 +182,12 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
     float standalonePdf;
     uint standaloneType;
     openPBRSample(standalone.context, standaloneNative, random, standaloneDirection, standaloneWeight, standalonePdf, standaloneType);
-    let standaloneSample = standalonePrepared.sampleWeighted(random);
+    OpenPBRDiffuseSpecular components;
+    let standaloneSample = standalonePrepared.sampleWeightedComponents(random, components);
     sampleError = max(sampleError, float3(abs(standaloneSample.pdf - standalonePdf)));
     if (standalonePdf > 0) {
+        sampleError = max(sampleError, abs(components.diffuse - standaloneWeight.diffuse));
+        sampleError = max(sampleError, abs(components.specular - standaloneWeight.specular));
         sampleError = max(sampleError, abs(standaloneSample.wiWS - standaloneDirection));
         sampleError = max(sampleError, abs(standaloneSample.weight - openPBRGetSumOfDiffuseSpecular(standaloneWeight)));
         sampleError = max(sampleError, float3(abs(float(standaloneSample.flags) - float(standaloneType))));

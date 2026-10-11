@@ -2,6 +2,8 @@
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
 
+#include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <spdlog/spdlog.h>
 
@@ -32,7 +34,11 @@ Result<PipelineCache*> acquireCache(Device& device, const std::string& group)
     std::lock_guard lock((*state)->mutex);
     auto& cache = (*state)->caches[group];
     if (!cache) {
-        const std::string path = std::string(PROJECT_SOURCE_DIR "/.cache/pso/") + group + ".pso";
+        const char* cacheDirectory = std::getenv("METALLIC_PSO_CACHE_DIRECTORY");
+        const std::filesystem::path directory = cacheDirectory && cacheDirectory[0]
+            ? std::filesystem::path(cacheDirectory)
+            : std::filesystem::path(PROJECT_SOURCE_DIR "/.cache/pso");
+        const std::string path = (directory / (group + ".pso")).string();
         auto created = device.createPipelineCache({.filePath = path.c_str()});
         if (!created) {
             (*state)->caches.erase(group);
@@ -46,14 +52,16 @@ Result<PipelineCache*> acquireCache(Device& device, const std::string& group)
 void persist(Device& device, PipelineCache& cache, const std::string& group)
 {
     const auto stats = cache.stats();
-    spdlog::info("[ShaderRegistry] PSO cache group={} hits={} misses={}", group, stats.hitCount, stats.missCount);
+    spdlog::info("[ShaderRegistry] PSO cache group={} hits={} misses={} nativeHits={} nativeMisses={} nativeUnknown={} createMs={:.3f}",
+        group, stats.hitCount, stats.missCount, stats.nativeHitCount, stats.nativeMissCount,
+        stats.unknownFeedbackCount, static_cast<double>(stats.lastNativeCreateTimeNanoseconds) / 1'000'000.0);
     if (stats.dirtyRevision == stats.persistedRevision) { return; }
     auto state = deviceShaders(device);
     if (!state) {
         spdlog::warn("[ShaderRegistry] Could not queue PSO cache group={}", group);
         return;
     }
-    // Hits do not extend the deadline. Bursts of new PSOs share a save, and
+    // Native hits do not extend the deadline. Bursts of backend updates share a save, and
     // ongoing work has a bounded deadline instead of deferring indefinitely.
     (*state)->writer.request(group, stats.dirtyRevision, [&cache, group] {
         const auto result = cache.save();

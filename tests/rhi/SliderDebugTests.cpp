@@ -1,6 +1,7 @@
-#include "TestResourceLayouts.h"
-#include "RHITest.h"
+#include "TestResourceParameters.h"
 #include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderSample.h"
@@ -39,16 +40,16 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeResourceBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SliderDebugFixtureResources, output), .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SliderDebugFixtureResources, input), .kind = render::ComputeResourceBindingKind::SampledImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SliderDebugFixtureResources, readback), .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
             .pushConstantSize = readback_ ? 0u : 4u,
             .bindings = {readback_ ? bindings + 1 : bindings, readback_ ? 2u : 1u},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kSliderDebugFixtureLayout,
+            .resourceParameterSize = sizeof(metallic::tests::SliderDebugFixtureResources),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -57,9 +58,9 @@ public:
         const uint32_t path = context.properties().value("path", 0u);
         auto* input = context.inputTexture("source").view();
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureView = context.outputTexture("color").view()},
-            {.binding = 1, .textureViews = {&input, 1}},
-            {.binding = 2, .buffer = context.outputBuffer("pixels").buffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SliderDebugFixtureResources, output), .textureView = context.outputTexture("color").view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SliderDebugFixtureResources, input), .textureViews = {&input, 1}},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::SliderDebugFixtureResources, readback), .buffer = context.outputBuffer("pixels").buffer()},
         };
         return program_.dispatch({
             .commandBuffer = &context.commandBuffer(),

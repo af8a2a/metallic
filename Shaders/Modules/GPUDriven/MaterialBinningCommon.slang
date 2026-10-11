@@ -45,8 +45,7 @@ public uint classifyDeferredMaterial(PathTraceMaterial material)
     // black transmission texel stays in the ray-continuation permutation.
     if (material.glassParams.x > 0.0 || material.textureParams.w > 1.5) { return kMaterialClassTransmission; }
     if (material.params.x <= 0.0) { return kMaterialClassDielectric; }
-    bool hasMetalnessTexture = material.metallicRoughnessTexture.textureIndex != 0xffffffffu ||
-        material.metallicRoughnessTexture.ntcTextureSetIndex != 0xffffffffu;
+    bool hasMetalnessTexture = material.metallicRoughnessTexture.textureIndex != 0xffffffffu;
     if (material.params.x >= 1.0 && !hasMetalnessTexture) { return kMaterialClassConductor; }
     return kMaterialClassOpaque;
 }

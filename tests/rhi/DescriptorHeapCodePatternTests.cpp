@@ -1,5 +1,5 @@
 #include "TestComputeProgram.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanPipelineDiagnostics.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
@@ -126,61 +126,45 @@ struct PatternCommands {
     if (!patternResult) { return RHITestResult::fail(std::string(#expression) + ": " + toString(patternResult)); } \
 } while (false)
 
-// Raw vk::binding/push-data diagnostics intentionally stay below the production
-// ComputeKernel ABI. Fixture resources outlive PatternCommands and its GPU wait.
-class MappedPatternPipeline {
+// Keep aggregate access controls while resolving every resource through DR.
+// Fixture resources outlive PatternCommands and its GPU wait.
+class DynamicPatternPipeline {
 public:
     render::Result<> initialize(render::Device& device, std::span<const uint32_t> spirv)
     {
-        auto result = device.createBindlessHeap({.maxSampledImages = 2, .maxBuffers = 4})
-            .transform([&](auto value) { heap_ = std::move(value); });
-        if (!result) { return result; }
-        // Preserve the original two-table allocation and pushed-base mapping.
-        for (uint32_t table = 0; table < 2; ++table) {
-            auto image = heap_->allocate(metallic::render::BindlessHandleKind::SampledImage);
-            auto input = heap_->allocate(metallic::render::BindlessHandleKind::Buffer);
-            auto output = heap_->allocate(metallic::render::BindlessHandleKind::Buffer);
-            if (!image) { return render::makeError(image.error()); }
-            if (!input) { return render::makeError(input.error()); }
-            if (!output) { return render::makeError(output.error()); }
-            if (output->shaderIndex != input->shaderIndex + 1) { return render::makeError(render::Error::Failure); }
-            if (table == 0) { image_ = *image; input_ = *input; output_ = *output; }
-        }
-        const render::detail::ShaderBindingMappingDesc mappings[] = {
-            {.firstBinding = 0, .type = render::detail::ShaderBindingType::SampledImage,
-                .source = render::detail::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 32},
-            {.firstBinding = 1, .type = render::detail::ShaderBindingType::StorageBuffer,
-                .source = render::detail::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36},
-            {.firstBinding = 2, .type = render::detail::ShaderBindingType::StorageBuffer,
-                .source = render::detail::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36, .heapIndexOffset = 1}};
-        result = device.createShaderModule({.spirv = spirv})
+        auto registry = render::ResourceRegistry::forDevice(device);
+        if (!registry) { return render::makeError(registry.error()); }
+        registry_ = *registry;
+        auto result = device.createShaderModule({.spirv = spirv})
             .transform([&](auto value) { shader_ = std::move(value); });
         if (!result) { return result; }
-        return render::detail::createMappedComputePipeline(device, {.computeShader = {shader_.get(), "main"},
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = 40}, mappings)
+        return device.createComputePipeline({.computeShader = {shader_.get(), "main"},
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)})
             .transform([&](auto value) { pipeline_ = std::move(value); });
     }
 
     render::Result<> dispatch(render::CommandBuffer& commands, render::TextureView& image,
         render::Buffer& input, render::Buffer& output, const PatternValues& values, uint32_t groups)
     {
-        auto result = heap_->writeSampledImage(image_, image);
-        if (result) { result = (input).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(input_, bufferSlice); }); }
-        if (result) { result = (output).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(output_, bufferSlice); }); }
-        if (!result) { return result; }
-        struct Push { PatternValues values; uint32_t imageBase, bufferBase; };
-        const Push push{values, image_.shaderIndex, input_.shaderIndex};
-        static_assert(sizeof(Push) == 40);
-        if (auto commandResult = commands.bindBindlessHeap(*heap_); !commandResult) { return commandResult; }
-        result = commands.bindExecution(pipeline_->execution(), &push, sizeof(push));
+        auto imageLease = registry_->sampledImage(image);
+        auto inputLease = registry_->storageBuffer(input);
+        auto outputLease = registry_->storageBuffer(output);
+        if (!imageLease) { return render::makeError(imageLease.error()); }
+        if (!inputLease) { return render::makeError(inputLease.error()); }
+        if (!outputLease) { return render::makeError(outputLease.error()); }
+        const render::ResourceLease leases[]{*imageLease, *inputLease, *outputLease};
+        const Push push{values, imageLease->shaderIndex(), inputLease->shaderIndex(), outputLease->shaderIndex()};
+        auto result = registry_->bind(commands, leases);
+        if (result) { result = commands.bindExecution(pipeline_->execution(), &push, sizeof(push)); }
         if (result) { result = commands.dispatch(groups, 1, 1); }
         return result;
     }
 private:
-    std::unique_ptr<render::BindlessHeap> heap_;
+    struct Push { PatternValues values; uint32_t image, input, output; };
+    static_assert(sizeof(Push) == 44);
+    std::shared_ptr<render::ResourceRegistry> registry_;
     std::unique_ptr<render::ShaderModule> shader_;
     std::unique_ptr<render::ComputePipeline> pipeline_;
-    render::BindlessHandle image_, input_, output_;
 };
 
 class DescriptorHeapCodePatternTest final : public RHITest {
@@ -322,14 +306,14 @@ public:
             std::dec << ", words=" << shader.spirv.size() <<
             ", generator override=" << (generatorValue != nullptr ? "on (memory only)" : "off") << std::endl;
         render::ComputeKernel program;
-        MappedPatternPipeline mappedProgram;
+        DynamicPatternPipeline dynamicProgram;
         std::string log;
         result = environment ? program.initialize(*device, {
             .spirv = shader.spirv,
             .parameters = render::parameterAbi<render::EnvironmentLightingPrecomputeParams>(
                 render::kEnvironmentLightingPrecomputeABI, render::ParameterTransport::InlinePush),
             .debugName = "DescriptorHeap Code Pattern",
-        }, log) : mappedProgram.initialize(*device, shader.spirv);
+        }, log) : dynamicProgram.initialize(*device, shader.spirv);
         if (!result) { return RHITestResult::fail(log + render::resultToString(result)); }
         if (compileOnly) {
             std::cout << "Pattern compile only: pipeline initialized; no fixture resources, commands or submissions; "
@@ -436,7 +420,7 @@ public:
             return program.dispatch(*commands.buffer, *encoded, groupCount);
         };
         PATTERN_REQUIRE(environment ? dispatchEnvironment(0, groups) :
-            mappedProgram.dispatch(*commands.buffer, *view, *input, *output, push, groups));
+            dynamicProgram.dispatch(*commands.buffer, *view, *input, *output, push, groups));
         if (environment && !integrateOnly) {
             const render::BufferBarrierDesc partialsBarrier{
                 .buffer = input.get(),

@@ -11,7 +11,7 @@
 
 namespace metallic::tests::bench {
 
-enum class Capability { ShaderObject, TimestampQueries, Bindless, IndependentCopy, IndependentCompute, RayQuery, PositionFetch, OpacityMicromap,
+enum class Capability { ShaderObject, TimestampQueries, Bindless, IndependentCopy, IndependentCompute, RayQuery,
     UnifiedLayouts, PartitionedAS, ClusterAS, GeneratedCommands, MemoryDecompression };
 enum class Layer { RHI, Core, RenderGraph, Backend, Harness };
 enum class Validation { Off, Core, Synchronization };

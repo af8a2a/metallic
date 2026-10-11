@@ -8,8 +8,8 @@ public struct PathTraceTextureInfo
 {
     public uint textureIndex;
     public uint texCoord;
-    public uint ntcTextureSetIndex;
-    public uint ntcChannelMapping;
+    // Required for float4 alignment in StructuredBuffer std430 layout.
+    public uint2 alignmentPadding;
     public float4 transform0;
     public float4 transform1;
 };

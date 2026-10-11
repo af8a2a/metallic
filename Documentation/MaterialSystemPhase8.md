@@ -66,7 +66,7 @@ legacy payload 的 `attenuationColor.w` 保留通道用于标记 MASK 自定义�
 | Ray-traced shadows | 与 path trace 相同的 alpha acceptance |
 | RTXDI / 材质可视化 | 相同 Coverage 接口、参数 buffer 与普通纹理 alpha 采样规则 |
 
-普通纹理使用原有 `AlphaCoverage.hlsli` 的确定性双线性读取，使用最精细驻留 mip（上传图像的 mip 0）。
+普通纹理使用原有 `AlphaCoverage.slang` 的确定性双线性读取，使用最精细驻留 mip（上传图像的 mip 0）。
 OPAQUE 的 raster entry 不调用 Coverage；ray query 的 opaque 分支直接通过。
 MASK 无自定义切片时保留基础 alpha/cutoff 行为。没有测量 CPU 绑定成本或声明性能提升。
 

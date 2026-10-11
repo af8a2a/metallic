@@ -20,6 +20,7 @@
                     "orbitYawDegrees": 10.0
                 },
                 "flipBitangent": false,
+                "cacheMode": "off",
                 "maxDepth": 4,
                 "samples": 4,
                 "outputLinear": true,

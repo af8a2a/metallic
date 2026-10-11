@@ -37,8 +37,8 @@ Json describeDevice(render::Device& device, const Profile& profile)
     }
     Json capabilities = Json::array();
     for (const auto capability : {Capability::ShaderObject, Capability::TimestampQueries, Capability::Bindless,
-        Capability::IndependentCopy, Capability::IndependentCompute, Capability::RayQuery, Capability::PositionFetch,
-        Capability::OpacityMicromap, Capability::UnifiedLayouts, Capability::PartitionedAS, Capability::ClusterAS,
+        Capability::IndependentCopy, Capability::IndependentCompute, Capability::RayQuery,
+        Capability::UnifiedLayouts, Capability::PartitionedAS, Capability::ClusterAS,
         Capability::GeneratedCommands, Capability::MemoryDecompression}) {
         const bool usable = enabled(capability, device.capabilities(), render::vulkan::deviceCapabilities(device));
         capabilities.push_back({{"id", name(capability)}, {"requested", requested(capability, profile)},

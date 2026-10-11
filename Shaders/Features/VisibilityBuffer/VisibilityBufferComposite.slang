@@ -11,7 +11,6 @@ struct VisibilityBufferCompositePush
 {
 
     uint paramsBuffer, visibilityImage, depthImage;
-    uint residentRecords, meshletBuffer, residentRecordCapacity;
     uint streamRecords, streamGroups;
     uint shadedColors;
 };
@@ -47,7 +46,7 @@ FullscreenVertexOutput visibilityBufferCompositeVertexMain(uint vertexIndex : SV
 }
 
 // Debug display only: no material textures or BSDF.
-// Both resident and stream producers share the same packed visibility namespace.
+// Stream clusters use one packed visibility namespace.
 uint visibilityHash(uint value)
 {
     value ^= value >> 16u;
@@ -73,22 +72,6 @@ bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
 {
     clusterSeed = lodLevel = 0u;
     uint count, stride;
-    if (index < push.residentRecordCapacity) {
-        StructuredBuffer<VisibleClusterRecord> recordsHandle =
-            resolveUniform(ResourceHandle<StructuredBuffer<VisibleClusterRecord>>(push.residentRecords));
-        StructuredBuffer<GPUDrivenPreviewMeshlet> clustersHandle =
-            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(push.meshletBuffer));
-        StructuredBuffer<VisibleClusterRecord> records = recordsHandle;
-        StructuredBuffer<GPUDrivenPreviewMeshlet> clusters = clustersHandle;
-        records.GetDimensions(count, stride);
-        if (index >= count) { return false; }
-        VisibleClusterRecord record = records[index];
-        clusters.GetDimensions(count, stride);
-        if (visibleClusterSource(record) != kVisibleClusterSourceResident || record.clusterIndex >= count) { return false; }
-        clusterSeed = visibilityHash(record.clusterIndex + 1u);
-        lodLevel = clusters[record.clusterIndex].lod.x;
-        return true;
-    }
     if (push.streamRecords == 0xffffffffu || push.streamGroups == 0xffffffffu) { return false; }
     StructuredBuffer<CompactStreamVisibleRecord> recordsHandle =
         resolveUniform(ResourceHandle<StructuredBuffer<CompactStreamVisibleRecord>>(push.streamRecords));
@@ -96,7 +79,6 @@ bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
         resolveUniform(ResourceHandle<StructuredBuffer<VisibilityDebugActiveGroup>>(push.streamGroups));
     StructuredBuffer<CompactStreamVisibleRecord> records = recordsHandle;
     StructuredBuffer<VisibilityDebugActiveGroup> groups = groupsHandle;
-    index -= push.residentRecordCapacity;
     records.GetDimensions(count, stride);
     if (index >= count) { return false; }
     VisibleClusterRecord record = unpackStreamVisibleRecord(records[index]);

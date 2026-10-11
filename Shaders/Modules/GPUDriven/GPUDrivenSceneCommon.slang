@@ -8,11 +8,6 @@ public static const uint kInvalidTextureIndex = 0xffffffffu;
 
 public struct GPUDrivenPreviewPush
 {
-    public uint positionBuffer;
-    public uint meshletBuffer;
-    public uint meshletDrawBuffer;
-    public uint meshletVertexBuffer;
-    public uint meshletTriangleBuffer;
     public uint paramsBuffer;
     public uint transformBuffer;
     public uint instanceBuffer;
@@ -36,7 +31,6 @@ public struct GPUDrivenPreviewPush
     public uint environmentImage;
     public uint environmentSHBuffer;
     public uint streamDeferredBindingsBuffer;
-    public uint residentRecordCapacity;
     public uint streamOwnerMaskBuffer;
     public float tessellationEdgePixels;
     public uint tessellationMaxFactor;
@@ -166,8 +160,6 @@ public struct GPUDrivenPreviewParams
     public float4 renderViewport;
     public float4 renderClipOrtho;
     public uint mode;
-    public uint meshletOffset;
-    public uint meshletCount;
     public uint selectedLodLevel;
     public uint instanceCount;
     public uint width;
@@ -183,19 +175,9 @@ public struct GPUDrivenPreviewParams
     public uint environmentVisible;
     public uint materialCount;
     public uint visibleMeshletCapacity;
-    public uint lodSelectionBuffer;
-    public uint lodSelectionEnabled;
     public uint tessellationBuffer;
     public float displacementBound;
     public uint2 tessellationPadding;
 };
 
-public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
-{
-    if (params.lodSelectionEnabled == 0u) { return params.meshletOffset + candidate; }
-    StructuredBuffer<uint4> selections =
-        resolveUniform(ResourceHandle<StructuredBuffer<uint4>>(params.lodSelectionBuffer));
-    uint count = min(selections[0].x, selections[0].y);
-    return candidate < count ? selections[candidate + 1u].z : 0xffffffffu;
-}
 } // namespace Metallic.GPUDriven

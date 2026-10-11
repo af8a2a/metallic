@@ -14,7 +14,7 @@ public static const uint kMaterialProgramDualSlab = 4u;
 // Compatibility storage program. The existing upload embeds resources in the
 // same 720-byte record, so both offsets must reference that same record. This
 // adapter is not a new scattering model or a per-instance shader specialization.
-public static const uint kLegacyMaterialRecordBytes = 720u;
+public static const uint kLegacyMaterialRecordBytes = sizeof(PathTraceMaterial);
 public MaterialInstanceRef legacyMaterialInstanceRef(uint materialIndex)
 {
     MaterialInstanceRef instance;

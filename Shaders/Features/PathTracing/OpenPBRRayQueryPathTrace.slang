@@ -15,6 +15,8 @@ struct OpenPBRInteriorStack
     uint count;
 };
 
+#include "OpenPBRRadianceCache.slang"
+
 OpenPBRInteriorStack makeOpenPBRInteriorStack()
 {
     OpenPBRInteriorStack stack;
@@ -147,9 +149,11 @@ float3 openPbrShadowTransmittance(
         shadowPush.clipOrtho.x = 0.001;
         shadowPush.clipOrtho.y = remainingDistance;
         HitInfo shadowHit;
-        if (!traceClosest(ray, shadowPush, shadowHit) || shadowHit.t >= remainingDistance) {
+        bool opaqueShadow;
+        if (!traceClosestShadow(ray, shadowPush, opaqueShadow, shadowHit) || shadowHit.t >= remainingDistance) {
             return transmittance;
         }
+        if (opaqueShadow) { return float3(0.0); }
 
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
             transmittance *= openPbrVolumeTransmittance(interiorStack, shadowHit.t);
@@ -271,14 +275,29 @@ struct PathSurfaceLights : ISurfaceLightProvider
     }
 };
 
-float3 pathTraceOpenPBRWithPrimaryHit(
+// Keep the first authored hit separate from the mutable shading hit. The first
+// sample fills this cache at the normal path-query site; guides and subsequent
+// samples reuse it without moving hit reconstruction out of the path loop.
+struct OpenPBRPrimaryQuery
+{
+    HitInfo hit;
+    bool queried;
+    bool found;
+};
+
+#include "OpenPBRPathVertex.slang"
+
+float3 pathTraceOpenPBRWithPrimaryQuery(
     Ray ray,
     RayCone rayCone,
     ScenePathTracePush push,
     inout uint seed,
     out float specularHitDistance,
-    bool hasPrimaryHit,
-    HitInfo primaryHit)
+    inout OpenPBRPrimaryQuery primaryQuery
+#if METALLIC_PT_EARLY_PRIMARY_GUIDES
+    , uint2 guidePixel = uint2(0xffffffffu)
+#endif
+)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
     float3 throughput = float3(1.0, 1.0, 1.0);
@@ -292,208 +311,66 @@ float3 pathTraceOpenPBRWithPrimaryHit(
     float3 primaryEndpoint = float3(0.0);
     float3 primaryOrigin = ray.origin;
     bool primarySurface = false;
+    bool primaryQueryConsumed = false;
+#if METALLIC_PT_SHARC
+    OpenPBRCacheContext cache = makeOpenPbrCacheContext();
+#endif
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
         HitInfo hit;
         bool found;
-        if (depth == 0u && hasPrimaryHit) {
-            hit = primaryHit;
-            found = true;
-        } else {
+        if (primaryQueryConsumed || !primaryQuery.queried) {
             found = traceClosest(ray, push, hit);
+        } else {
+            hit = primaryQuery.hit;
+            found = primaryQuery.found;
         }
-        if (!found) {
-            // Diagnostic colors carry display/data encoding, not scene radiance.
-            if (push.debugView != kOpenPBRDebugViewFinal) { return float3(0.0); }
-            if (captureSpecularHitDistance) {
-                specularHitDistance = 65504.0;
-                captureSpecularHitDistance = false;
-            }
-            float misWeight = depth == 0u
-                ? 1.0
-                : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
-            float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
-            if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
-                missRadiance += physicalDeltaMissDisks(getResourceParameters<SceneResourceParameters>().environment,
-                    ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
-            }
-            radiance += throughput * missRadiance;
-            break;
-        }
-        if (captureSpecularHitDistance) {
-            specularHitDistance = hit.t;
-            captureSpecularHitDistance = false;
-        }
-        if (depth == 0u) { primaryEndpoint = hit.position; primarySurface = true; }
-
-        rayCone = propagateRayCone(rayCone, hit.t);
-        if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
-            throughput *= openPbrVolumeTransmittance(interiorStack, hit.t);
-        }
-        if (luminanceMax(throughput) <= 0.000001) {
-            break;
-        }
-
-        PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
-        if (materialDomain(material) == kMaterialDomainFiber) {
-            const float3 stableNormal = hit.normal;
-            if (dot(hit.normal, ray.direction) > 0) { hit.normal = -hit.normal; }
-            if (!shadeSceneFiber(material, hit, stableNormal, push, depth,
-                    ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta)) { break; }
-            continue;
-        }
-        if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
-            float alpha = evaluateSceneCoverage(hit.materialIndex, material, hit.texcoord, push).opacity;
-            if (rand(seed) >= alpha) {
-                if (++alphaLayers >= 16u) { break; }
-                ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
-                hasPrimaryHit = false;
-                if (depth == 0u) { primarySurface = false; }
-                --depth;
-                continue;
-            }
-        }
-        float3 shadingNormal = hit.normal;
-        RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
-        SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, false, true);
-        // Always dispatch from this hit's instance. Raster specialization and
-        // primary PreparedClosure are never inherited by a secondary hit.
-        let evaluated = evaluateRaySurface(program, work);
-        let materialEval = evaluated.closure;
-        // Value inputs (including textured volume absorption) belong to this hit.
-        material = program.material;
-        hit = program.hit;
-        seed = program.seed;
-        float4 normalSample = program.normalSample;
-        if (depth == 0u &&
-            push.debugView != kOpenPBRDebugViewFinal &&
-            push.debugView != kOpenPBRDebugViewShadowTransmittance) {
-            return openPbrPrimaryDebugColor(
-                push,
-                hit,
-                shadingNormal,
-                normalSample,
-                materialEval,
-                ray.direction);
-        }
-        float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
-        SurfaceSamplingContext sampling;
-        sampling.throughput = throughput;
-        sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
-        sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
-        let prepared = prepareRaySurface(materialEval, work, sampling);
-
-        radiance += throughput * max(prepared.emission(), float3(0.0, 0.0, 0.0));
-        if (material.emissive.w != 0.0) { break; }
-
-        PathSurfaceLights lights;
-        lights.push = push;
-        lights.hit = hit;
-        lights.material = material;
-        lights.interiorStack = interiorStack;
-        lights.viewDirection = viewDirection;
-        lights.seed = seed;
-        // The environment proposal and ordinary secondary BSDF miss exclude
-        // celestial disks, so their separate finite NEE estimator has weight one.
-        // Local delta sources retain their source-selection PDF.
-        radiance = integrateDirectLighting(prepared, lights, radiance, throughput);
-        seed = lights.seed;
-
-        EnvironmentLightSample lightSample;
-        bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
-        bool sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
-        if (sampledEnvironment) {
-            float lightBsdfPdf = prepared.pdf(lightSample.direction);
-            float3 lightWeight = evaluateSurfaceProjected(prepared, lightSample.direction);
-            float3 shadowTransmittance = float3(0.0, 0.0, 0.0);
-            if (lightBsdfPdf > 0.0 && luminanceMax(lightWeight) > 0.0) {
-                OpenPBRInteriorStack shadowInteriorStack = interiorStack;
-                bool lightCrossesSurface =
-                    dot(viewDirection, hit.geometryNormal) *
-                    dot(lightSample.direction, hit.geometryNormal) < 0.0;
-                if (lightCrossesSurface) {
-                    openPbrUpdateInteriorStackAfterTransmission(
-                        shadowInteriorStack,
-                        hit,
-                        material);
+        if (!primaryQueryConsumed) {
+            // BLEND continuation can revisit depth zero from another origin.
+            primaryQueryConsumed = true;
+            if (!primaryQuery.queried) {
+                primaryQuery.hit = hit;
+                primaryQuery.found = found;
+                primaryQuery.queried = true;
+#if METALLIC_PT_EARLY_PRIMARY_GUIDES
+                // Keep reconstruction in the original loop. Consume only an
+                // independent guide evaluation here, before any path closure.
+                if (guidePixel.x < push.width && guidePixel.y < push.height) {
+                    evaluateAndWriteOpenPbrPrimaryGuides(guidePixel, ray, rayCone,
+                        push, found, hit);
                 }
-                float3 shadowOrigin = offsetRay(
-                    hit.position,
-                    openPbrRayOffsetNormal(lightSample.direction, hit.geometryNormal));
-                if (openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)) {
-                    shadowTransmittance = float3(1.0, 1.0, 1.0);
-                } else if (openPbrDebugFlag(push, kOpenPBRDebugUseOpaqueShadows)) {
-                    shadowTransmittance = traceShadow(
-                        shadowOrigin,
-                        lightSample.direction,
-                        10000.0,
-                        push)
-                        ? float3(0.0, 0.0, 0.0)
-                        : float3(1.0, 1.0, 1.0);
-                } else {
-                    shadowTransmittance = openPbrShadowTransmittance(
-                        shadowOrigin,
-                        lightSample.direction,
-                        10000.0,
-                        shadowInteriorStack,
-                        push);
-                }
-            }
-            if (depth == 0u && push.debugView == kOpenPBRDebugViewShadowTransmittance) {
-                return shadowTransmittance;
-            }
-            if (luminanceMax(shadowTransmittance) > 0.0) {
-                float lightMisWeight = environmentLightMisWeight(
-                    push,
-                    lightSample.pdfSolidAngle,
-                    lightBsdfPdf);
-                radiance += throughput *
-                    lightWeight *
-                    materialEval.occlusion *
-                    shadowTransmittance *
-                    (lightSample.radiance * lightMisWeight / max(lightSample.pdfSolidAngle, 0.000001));
+#endif
             }
         }
-        if (depth == 0u && push.debugView == kOpenPBRDebugViewShadowTransmittance) {
-            return sampledEnvironment
-                ? float3(0.0, 0.0, 0.0)
-                : float3(1.0, 0.0, 1.0);
-        }
-
-        BSDFWeightSample scatter = sampleSurfaceWeight(prepared, float3(rand(seed), rand(seed), rand(seed)));
-        if (scatter.pdf <= 0.0 || scatter.flags == 0u) { break; }
-        float3 sampledDirection = scatter.wiWS;
-
-        if (depth == 0u) {
-            captureSpecularHitDistance =
-                bool(scatter.flags & kBSDFReflection) &&
-                bool(scatter.flags & (kBSDFGlossy | kBSDFDelta));
-        }
-
-        sampledDirection = safeNormalize(sampledDirection, hit.normal);
-        throughput *= max(scatter.weight, float3(0.0, 0.0, 0.0));
-        previousBsdfPdf = scatter.pdf;
-        previousScatterDelta = bool(scatter.flags & kBSDFDelta);
-        if (!previousScatterDelta) {
-            rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf);
-        }
-        if (bool(scatter.flags & kBSDFTransmission)) {
-            openPbrUpdateInteriorStackAfterTransmission(interiorStack, hit, material);
-        }
-        ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(sampledDirection, hit.geometryNormal));
-        ray.direction = sampledDirection;
-
-        if (depth >= 2u) {
-            float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
-            if (rand(seed) > continueProbability) {
-                break;
-            }
-            throughput /= max(continueProbability, 0.001);
-        }
+        let control = shadeOpenPBRPathVertex(found, hit, push,
+            ray, rayCone, seed, depth, radiance, throughput,
+            previousBsdfPdf, previousScatterDelta, interiorStack,
+            specularHitDistance, captureSpecularHitDistance,
+            alphaLayers, primaryEndpoint, primaryOrigin, primarySurface
+#if METALLIC_PT_SHARC
+            , cache
+#endif
+        );
+        if (control == OpenPBRPathControl.Return) { return radiance; }
+        if (control == OpenPBRPathControl.Stop) { break; }
     }
 
+#if SHARC_UPDATE
+    return radiance; // Cache entries are local scene radiance, without primary aerial perspective.
+#else
     return primarySurface && push.debugView == kOpenPBRDebugViewFinal
         ? applyPrimaryAerialPerspective(radiance, primaryEndpoint, primaryOrigin) : radiance;
+#endif
+}
+
+float3 pathTraceOpenPBRWithPrimaryHit(Ray ray, RayCone rayCone, ScenePathTracePush push,
+    inout uint seed, out float specularHitDistance, bool hasPrimaryHit, HitInfo primaryHit)
+{
+    OpenPBRPrimaryQuery primaryQuery;
+    primaryQuery.hit = primaryHit;
+    primaryQuery.queried = hasPrimaryHit;
+    primaryQuery.found = hasPrimaryHit;
+    return pathTraceOpenPBRWithPrimaryQuery(ray, rayCone, push, seed, specularHitDistance, primaryQuery);
 }
 
 // Preserve the ray-primary reference API; the raster path supplies an authored
@@ -506,12 +383,23 @@ float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push,
         specularHitDistance, false, unusedHit);
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
 {
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
     uint2 pixel = dispatchThreadId.xy;
+#if SHARC_UPDATE
+    ScenePathTraceCacheParams cacheParams = gCacheParams[0];
+    uint stride = max(cacheParams.sharcUpdateStride, 1u);
+    if (any(pixel >= (uint2(push.width, push.height) + stride - 1u) / stride)) { return; }
+    uint seed = hash(pixel.x + pixel.y * max(push.width, 1u) + (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
+    float2 samplePixel = (float2(pixel) + float2(rand(seed), rand(seed))) * float(stride);
+    if (any(samplePixel >= float2(push.width, push.height))) { return; }
+    Ray ray;
+    ray.origin = rayOriginFromPixel(samplePixel, push);
+    ray.direction = rayDirectionFromPixel(samplePixel, push);
+    float ignoredHitDistance;
+    pathTraceOpenPBR(ray, primaryRayConeFromPixel(samplePixel, push), push, seed, ignoredHitDistance);
+#else
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
     }
@@ -551,13 +439,16 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     if (push.enableAccumulation != 0u && !debugViewEnabled) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
-        }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
+        color = accumulateStreamPathTrace(pixel, color, push);
     }
 
     gOutput[pixel] = float4(color, 1.0);
+#endif
+}
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    dispatchOpenPbrRayQueryPathTrace(dispatchThreadId);
 }

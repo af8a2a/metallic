@@ -6,7 +6,8 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 
 #include <chrono>
 #include <cstring>
@@ -33,15 +34,15 @@ public:
         const auto result = compileSlangShaderToSpirv({.moduleName = "MaterialAssetProbe", .entryPointName = "materialAssetCopyMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const std::array bindings{ComputeResourceBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeResourceBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        const std::array bindings{ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv, .bindings = bindings,
-            .requiresRayQuery = false, .resourceParameters = kMaterialRuntimeProbeLayout}, log);
+            .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::MaterialRuntimeProbeResources)}, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const std::array bindings{render::ComputeDispatchBinding{.binding = 0, .buffer = binding_->buffer()},
-            render::ComputeDispatchBinding{.binding = 1, .buffer = context.outputBuffer("result").buffer()}};
+        const std::array bindings{render::ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .buffer = binding_->buffer()},
+            render::ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .buffer = context.outputBuffer("result").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
             .groupCountX = static_cast<uint32_t>((binding_->buffer()->desc().size / 4 + 63) / 64)});
     }
@@ -97,11 +98,11 @@ public:
             return RHITestResult::fail("Material asset device failed");
         }
         auto& queue = *device->getQueue(QueueType::Graphics);
-        for (bool materialsOnly : {false, true}) {
+        {
             scene::SceneDocument document;
             if (!document.load(path)) { return RHITestResult::fail("Material fixture failed"); }
             ScenePathTraceResources resources;
-            if (!resources.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log, materialsOnly)) {
+            if (!resources.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log)) {
                 return RHITestResult::fail(log);
             }
             bool complete = false;
@@ -158,7 +159,7 @@ public:
             if (!library.save("asset://Textured.material", texturedAsset, log) ||
                 !document.setMaterialAsset(0, "asset://Textured.material", root, log)) { return RHITestResult::fail(log); }
             ScenePathTraceResources textured;
-            if (!textured.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log, materialsOnly)) { return RHITestResult::fail(log); }
+            if (!textured.beginPrepareAsync(*device, queue, {{"path", path.string()}}, document, log)) { return RHITestResult::fail(log); }
             complete = false;
             const auto textureDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (!complete && std::chrono::steady_clock::now() < textureDeadline) {

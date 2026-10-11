@@ -27,7 +27,7 @@ def main() -> None:
     properties = {
         "path": Path(manifest["source"]).resolve().relative_to(ROOT).as_posix(),
         "streamAssetPath": Path(manifest["asset"]).resolve().relative_to(ROOT).as_posix(),
-        "streamAssetOnly": True, "autoBuildStreamAsset": False, "enableClusterRtx": False,
+        "autoBuildStreamAsset": False, "enableClusterRtx": False,
         "maxResidentBytes": page_bytes,
         # Variable-size pages are bounded by bytes. Dividing by the largest
         # page would cap the page count too early while leaving bytes unused.

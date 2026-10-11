@@ -31,7 +31,7 @@ std::set<std::string> extensionNames(const VulkanDeviceFeatureSelection& selecti
     return result;
 }
 
-VulkanExtensionSet extensionsFrom(std::initializer_list<const char*> names, bool injection = false)
+VulkanExtensionSet extensionsFrom(std::initializer_list<const char*> names)
 {
     std::vector<VkExtensionProperties> properties;
     for (const char* name : names) {
@@ -39,7 +39,7 @@ VulkanExtensionSet extensionsFrom(std::initializer_list<const char*> names, bool
         std::strcpy(property.extensionName, name);
         properties.push_back(property);
     }
-    return VulkanExtensionSet::from(std::move(properties), injection);
+    return VulkanExtensionSet::from(std::move(properties));
 }
 
 class DeviceFeatures : public testing::Test {
@@ -83,8 +83,6 @@ TEST_F(DeviceFeatures, OptionalRequestsDoNotDisqualifyFallback)
     auto selected = select();
     EXPECT_TRUE(selected.matches(request()));
     EXPECT_FALSE(selected.deviceGeneratedCommands);
-    EXPECT_FALSE(selected.opacityMicromap);
-    EXPECT_FALSE(selected.rayTracingPositionFetch);
     EXPECT_FALSE(selected.unifiedImageLayouts);
     EXPECT_FALSE(selected.streamline);
     EXPECT_FALSE(selected.aftermath);
@@ -93,6 +91,23 @@ TEST_F(DeviceFeatures, OptionalRequestsDoNotDisqualifyFallback)
 }
 
 #ifdef VK_NV_cluster_acceleration_structure
+TEST_F(DeviceFeatures, RayQueriesRequireClustersWhileRasterOnlyRemainsAvailable)
+{
+    supportAS();
+    extensions.rayQuery = true;
+    probe.rayQueryFeatures.rayQuery = VK_TRUE;
+    EXPECT_TRUE(select().matches(request()));
+    desc.enableRayQuery = true;
+    EXPECT_TRUE(request().clusterAccelerationStructure);
+    EXPECT_FALSE(select().matches(request()));
+    extensions.clusterAccelerationStructure = true;
+    probe.clusterAccelerationStructureFeatures.clusterAccelerationStructure = VK_TRUE;
+    EXPECT_TRUE(select().matches(request()));
+    EXPECT_TRUE(select().clusterAccelerationStructure);
+    probe.clusterAccelerationStructureFeatures.clusterAccelerationStructure = VK_FALSE;
+    EXPECT_FALSE(select().matches(request()));
+}
+
 TEST_F(DeviceFeatures, ClusterRequiresEveryDependencyAndImpliesAS)
 {
     desc.enableClusterAccelerationStructure = true;
@@ -177,48 +192,6 @@ TEST_F(DeviceFeatures, DescriptorHeapNeedsPropertiesAndAllIndexingBits)
     EXPECT_EQ(chain.vulkan12Features.runtimeDescriptorArray, VK_TRUE);
     EXPECT_EQ(chain.descriptorHeapFeatures.descriptorHeap, VK_TRUE);
     EXPECT_EQ(chain.untypedPointerFeatures.shaderUntypedPointers, VK_TRUE);
-}
-
-TEST_F(DeviceFeatures, MicromapRoutesAreExclusiveAndKHRRequiresAddressCommands)
-{
-    desc.enableRayQuery = true;
-    for (const bool injection : {false, true}) {
-        extensions = extensionsFrom({VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME, VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME,
-            VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME}, injection);
-        supportAS();
-        probe.opacityMicromapFeatures.micromap = probe.opacityMicromapExtFeatures.micromap = VK_TRUE;
-        probe.deviceAddressCommandsFeatures.deviceAddressCommands = VK_TRUE;
-        auto selected = select();
-        ASSERT_TRUE(selected.opacityMicromap);
-        DeviceCapabilities caps;
-        VulkanDeviceCapabilities backendCaps;
-        selected.publish(caps, backendCaps);
-        EXPECT_TRUE(backendCaps.opacityMicromap);
-        options.enableOpacityMicromap = false;
-        const auto disabled = select();
-        EXPECT_FALSE(disabled.opacityMicromap);
-        disabled.publish(caps, backendCaps);
-        EXPECT_FALSE(backendCaps.opacityMicromap);
-        options.enableOpacityMicromap = true;
-        EXPECT_EQ(selected.opacityMicromapExt, injection);
-        probe.buildChain(extensions);
-        auto types = chainTypes(probe.features.pNext);
-        EXPECT_EQ(types.contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT), injection);
-        EXPECT_EQ(types.contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR), !injection);
-        VulkanEnabledFeatureChain chain(selected);
-        types = chainTypes(chain.features.pNext);
-        EXPECT_EQ(types.contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT), injection);
-        EXPECT_EQ(types.contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR), !injection);
-        auto names = extensionNames(selected);
-        EXPECT_EQ(names.contains(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME), injection);
-        EXPECT_EQ(names.contains(VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME), !injection);
-        probe.deviceAddressCommandsFeatures.deviceAddressCommands = VK_FALSE;
-        EXPECT_EQ(select().opacityMicromap, injection);
-        extensions.opacityMicromap = false; // Validation-layer compatibility veto.
-        EXPECT_FALSE(select().opacityMicromap);
-    }
-    EXPECT_FALSE(extensionsFrom({VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME}).opacityMicromap);
-    EXPECT_FALSE(extensionsFrom({VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME}, true).opacityMicromap);
 }
 
 #ifdef VK_EXT_mesh_shader

@@ -57,7 +57,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
     Runtime/Render/MeshletLOD.cpp
-    Runtime/Render/ResidentMeshletLOD.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp
     Runtime/Render/Core/RenderFrameContext.cpp
@@ -83,10 +82,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/MeshletStreamPageLoader.cpp
     Runtime/Render/Streamer/MeshletStreamResidency.cpp
     Runtime/Render/Streamer/MeshletStreamRuntime.cpp
-    Runtime/Render/NeuralTextureResources.cpp
-    Runtime/Render/RayTracing/SceneAccelerationStructure.cpp
-    Runtime/Render/RayTracing/SceneCoverage.cpp
-    Runtime/Render/GAPI/Vulkan/OpacityMicromapBake.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
@@ -156,7 +151,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/Vulkan/VulkanDeviceProperties.cpp
     Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.cpp
-    Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
     Runtime/Render/GAPI/Vulkan/VulkanDLSSNR.cpp
 )
@@ -206,17 +200,12 @@ else()
     target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_HAS_TRACY=0)
 endif()
 
+# Reserved NTC resource preparation is opt-in and has no ordinary renderer callers.
 if(TARGET libntc)
-    target_link_libraries(MetallicRuntimeRender PRIVATE libntc)
-    target_compile_definitions(MetallicRuntimeRender PRIVATE
-        METALLIC_HAS_NTC=1
-        METALLIC_NTC_SHADER_INCLUDE_DIR="${METALLIC_NTC_SHADER_INCLUDE_DIR}"
-    )
-else()
-    target_compile_definitions(MetallicRuntimeRender PRIVATE
-        METALLIC_HAS_NTC=0
-        METALLIC_NTC_SHADER_INCLUDE_DIR=""
-    )
+    add_library(MetallicReservedNTC STATIC EXCLUDE_FROM_ALL
+        Runtime/Render/NeuralTextureResources.cpp)
+    target_link_libraries(MetallicReservedNTC PUBLIC MetallicRuntimeRender PRIVATE libntc)
+    target_compile_definitions(MetallicReservedNTC PRIVATE METALLIC_HAS_NTC=1)
 endif()
 
 if(METALLIC_ENABLE_NRD)
@@ -606,6 +595,34 @@ if(WIN32)
     metallic_copy_aftermath_runtime(MetallicShaderPrintfProbe)
 endif()
 metallic_copy_spdlog_runtime(MetallicShaderPrintfProbe)
+
+# Explicit benchmark only: no editor/sample dependency or default warmup.
+add_executable(MetallicShaderPipelineBench EXCLUDE_FROM_ALL Tools/ShaderPipelineBench.cpp)
+target_link_libraries(MetallicShaderPipelineBench PRIVATE MetallicRuntimeRender)
+target_include_directories(MetallicShaderPipelineBench PRIVATE "${CMAKE_SOURCE_DIR}")
+target_include_directories(MetallicShaderPipelineBench BEFORE PRIVATE "${METALLIC_SLANG_ROOT}/include")
+target_compile_definitions(MetallicShaderPipelineBench PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
+if(WIN32)
+    target_compile_definitions(MetallicShaderPipelineBench PRIVATE NOMINMAX)
+    target_compile_options(MetallicShaderPipelineBench PRIVATE /EHsc /utf-8)
+    foreach(_dll IN LISTS METALLIC_SLANG_RUNTIME_DLLS)
+        add_custom_command(TARGET MetallicShaderPipelineBench POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" "$<TARGET_FILE_DIR:MetallicShaderPipelineBench>")
+    endforeach()
+    if(TARGET SDL3-shared)
+        set(_bench_sdl SDL3-shared)
+    else()
+        set(_bench_sdl SDL3::SDL3-shared)
+    endif()
+    add_custom_command(TARGET MetallicShaderPipelineBench POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:${_bench_sdl}>" "$<TARGET_FILE_DIR:MetallicShaderPipelineBench>")
+    metallic_copy_streamline_runtime(MetallicShaderPipelineBench)
+    metallic_copy_dlss_nr_runtime(MetallicShaderPipelineBench)
+    metallic_copy_aftermath_runtime(MetallicShaderPipelineBench)
+endif()
+metallic_copy_spdlog_runtime(MetallicShaderPipelineBench)
 
 # One definition for the runtime and every consumer; public RHI layouts are unchanged.
 target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_RHI_DIAGNOSTICS=$<BOOL:${METALLIC_RHI_DIAGNOSTICS}>)

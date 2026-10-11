@@ -197,29 +197,6 @@ double elapsedMilliseconds(StartupClock::time_point begin)
     return std::chrono::duration<double, std::milli>(StartupClock::now() - begin).count();
 }
 
-bool snapshotReadyAccelerationStructureStats(
-    const render::SceneAccelerationStructureBuilder* builder,
-    render::SceneAccelerationStructureStats& outStats)
-{
-    if (builder == nullptr ||
-        builder->buildState() != render::SceneAccelerationStructureBuildState::Ready ||
-        !builder->valid()) {
-        return false;
-    }
-
-    outStats = builder->stats();
-    return true;
-}
-
-double accelerationStructureSavingsPercent(
-    const render::SceneAccelerationStructureStats& stats)
-{
-    return stats.originalBlasBytes == 0
-        ? 0.0
-        : 100.0 * static_cast<double>(stats.compactionSavedBytes) /
-            static_cast<double>(stats.originalBlasBytes);
-}
-
 template<class Stats>
 void drawGraphMemoryStats(
     const Stats& stats, const char* kind, const char* resources,
@@ -268,34 +245,6 @@ void logGraphMemoryStats(
     ImGui::LogText("Graph %s: %u total, %u transient, %u pinned, %u eligible, %u aliased in %u slots, %u backing allocations\n",
         resources, count, transientCount, pinnedCount, eligibleCount, aliasedCount,
         stats.aliasSlotCount, stats.backingAllocationCount);
-}
-
-void drawAccelerationStructureStats(
-    const render::SceneAccelerationStructureStats& stats)
-{
-    ImGui::Text(
-        "RTAS: %u BLAS, %u instances, %llu triangles",
-        stats.blasCount,
-        stats.instanceCount,
-        static_cast<unsigned long long>(stats.triangleCount));
-    ImGui::Text(
-        "RTAS memory: geometry %llu bytes, AS %llu bytes, scratch %llu bytes",
-        static_cast<unsigned long long>(stats.geometryBytes),
-        static_cast<unsigned long long>(stats.accelerationStructureBytes),
-        static_cast<unsigned long long>(stats.scratchBytes));
-    ImGui::Text(
-        "Original BLAS: %llu bytes",
-        static_cast<unsigned long long>(stats.originalBlasBytes));
-    ImGui::Text(
-        "Compacted BLAS: %llu bytes",
-        static_cast<unsigned long long>(stats.compactedBlasBytes));
-    ImGui::Text(
-        "BLAS savings: %llu bytes (%.2f%%)",
-        static_cast<unsigned long long>(stats.compactionSavedBytes),
-        accelerationStructureSavingsPercent(stats));
-    ImGui::Text(
-        "Peak RTAS memory: %llu bytes",
-        static_cast<unsigned long long>(stats.peakAccelerationStructureBytes));
 }
 
 class StartupLogScope {
@@ -2615,8 +2564,6 @@ bool EditorApplication::initialize()
         graphExecutor_->bindRenderView(&viewportView_);
         graphExecutor_->setDebugObserver(debugRuntime_.get());
         graphExecutor_->bindRuntimeScene(&scene_);
-        sceneAccelerationStructure_ =
-            std::make_unique<render::SceneAccelerationStructureBuilder>();
         if (!startupSampleId_.empty()) {
             loadBuiltInSample(startupSampleId_.c_str());
         } else {
@@ -2861,11 +2808,6 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
 
 void EditorApplication::destroySwapchainResources()
 {
-    for (auto& composition : displayCompositions_) {
-        if (composition.descriptor && imguiRendererInitialized_) {
-            imguiBackend_.removeTexture(composition.descriptor);
-        }
-    }
     displayCompositions_.clear();
     swapchainImageViews_.clear();
     swapchainImageStates_.clear();
@@ -2939,7 +2881,6 @@ void EditorApplication::shutdown()
     graphExecutor_.reset();
     stage("streamer subsystems");
     subsystemHost_.shutdown();
-    sceneAccelerationStructure_.reset();
 
     for (FrameSlot& frame : frameSlots_) {
         frame.commandBuffer.reset();
@@ -3637,15 +3578,6 @@ void EditorApplication::drawScenePanel()
     if (ImGui::Button("Clear")) {
         requestPendingSceneAction(PendingSceneAction::Clear);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Build RTAS")) {
-        buildSceneAccelerationStructure();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Clear RTAS")) {
-        clearSceneAccelerationStructure();
-    }
-
     if (pendingSceneLoad_.valid() || pendingSceneResourcePreparation_) {
         const scene::SceneLoadProgress progress = pendingSceneResourcePreparation_
             ? pendingSceneResourceProgress_
@@ -3669,15 +3601,7 @@ void EditorApplication::drawScenePanel()
     if (!sceneStatus_.empty()) {
         ImGui::TextWrapped("%s", sceneStatus_.c_str());
     }
-    if (!sceneAccelerationStructureStatus_.empty()) {
-        ImGui::TextWrapped("%s", sceneAccelerationStructureStatus_.c_str());
-    }
-    render::SceneAccelerationStructureStats accelerationStructureStats;
-    if (snapshotReadyAccelerationStructureStats(
-            sceneAccelerationStructure_.get(),
-            accelerationStructureStats)) {
-        drawAccelerationStructureStats(accelerationStructureStats);
-    }
+    ImGui::TextDisabled("Ray tracing uses streamed CLAS, maintained automatically.");
     const scene::LoadResult& loadResult = scene_.lastLoadResult();
     if (!loadResult.warning.empty()) {
         ImGui::TextWrapped("Warning: %s", loadResult.warning.c_str());
@@ -4228,9 +4152,7 @@ void EditorApplication::drawStatisticsPanel()
         return;
     }
 
-    if (statisticsScene->hasStreamGeometry()) {
-        ImGui::TextDisabled("Streamed scene metadata (resident pages: Profiler / Streaming)");
-    }
+    ImGui::TextDisabled("Geometry streaming details: Profiler / Streaming");
     const scene::SceneStats& stats = statisticsScene->stats();
     if (ImGui::BeginTable("SceneStatisticsTable", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("Property", ImGuiTableColumnFlags_WidthStretch);
@@ -4273,15 +4195,6 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::TextDisabled("Bounds: unavailable");
     }
 
-    render::SceneAccelerationStructureStats accelerationStructureStats;
-    const bool hasAccelerationStructureStats = statisticsScene == &scene_ && snapshotReadyAccelerationStructureStats(
-        sceneAccelerationStructure_.get(),
-        accelerationStructureStats);
-    if (hasAccelerationStructureStats) {
-        ImGui::Separator();
-        drawAccelerationStructureStats(accelerationStructureStats);
-    }
-
     if (ImGui::Button("Copy to Clipboard")) {
         ImGui::LogToClipboard();
         ImGui::LogText("Scene Statistics:\n");
@@ -4320,22 +4233,7 @@ void EditorApplication::drawStatisticsPanel()
                 bufferMemory.transientBufferCount, bufferMemory.pinnedBufferCount, bufferMemory.eligibleBufferCount,
                 bufferMemory.aliasedBufferCount, bufferMemory.unknownBufferCount);
         }
-        if (hasAccelerationStructureStats) {
-            ImGui::LogText(
-                "Original BLAS: %llu bytes\n",
-                static_cast<unsigned long long>(accelerationStructureStats.originalBlasBytes));
-            ImGui::LogText(
-                "Compacted BLAS: %llu bytes\n",
-                static_cast<unsigned long long>(accelerationStructureStats.compactedBlasBytes));
-            ImGui::LogText(
-                "BLAS savings: %llu bytes (%.2f%%)\n",
-                static_cast<unsigned long long>(accelerationStructureStats.compactionSavedBytes),
-                accelerationStructureSavingsPercent(accelerationStructureStats));
-            ImGui::LogText(
-                "Peak RTAS memory: %llu bytes\n",
-                static_cast<unsigned long long>(
-                    accelerationStructureStats.peakAccelerationStructureBytes));
-        }
+
         ImGui::LogFinish();
     }
 
@@ -5203,17 +5101,7 @@ void EditorApplication::notifySceneTransformChanged(bool geometryChanged)
         viewportPreviewValid_ = false;
     }
     viewportPreviewNeedsRender_ = true;
-    if (!geometryChanged) {
-        return;
-    }
-    if (sceneAccelerationStructure_ != nullptr && sceneAccelerationStructure_->valid()) {
-        sceneAccelerationStructure_->clear();
-        sceneAccelerationStructureStatus_ =
-            "Static RTAS cleared after a scene transform edit; rebuild it if needed.";
-    } else {
-        sceneAccelerationStructureStatus_ =
-            "Runtime ray tracing passes will synchronize transforms on the next frame.";
-    }
+
 }
 
 void EditorApplication::notifyScenePropertiesChanged()
@@ -5623,7 +5511,6 @@ void EditorApplication::executePendingSceneAction()
     switch (action) {
     case PendingSceneAction::Clear:
         cancelSceneLoad();
-        clearSceneAccelerationStructure();
         scene_.clear();
         renderWorld_.setLighting({});
         renderWorld_.setWorldEnvironment({});
@@ -5704,7 +5591,6 @@ void EditorApplication::drawUnsavedSceneModal()
             historyFrameIndex_ = 0;
             viewportPreviewValid_ = false;
             viewportPreviewNeedsRender_ = true;
-            clearSceneAccelerationStructure();
             sceneStatus_ = std::move(message);
             ImGui::CloseCurrentPopup();
             executePendingSceneAction();
@@ -7354,11 +7240,6 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
         const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
         auto* composition = pqOutput ? &displayCompositions_[imageIndex] : nullptr;
-        if (composition && !composition->descriptor) {
-            auto texture = imguiBackend_.addTexture(*composition->view);
-            if (!texture) { return false; }
-            composition->descriptor = *texture;
-        }
         render::TextureBarrierDesc toColor{
             .texture = composition ? composition->texture.get() : swapchainTexture,
             .oldLayout = metallic::render::textureLayoutForResourceState(composition ? composition->state : swapchainImageStates_[imageIndex]),
@@ -7429,7 +7310,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             colorAttachment.loadOp = render::LoadOp::DontCare;
             if (!frame.commandBuffer->beginRendering({.renderArea = renderArea,
                     .colorAttachments = {&colorAttachment, 1}})) { return false; }
-            if (!imguiBackend_.encodeHDR10(*frame.commandBuffer, composition->descriptor,
+            if (!render::encodeEditorHDR10(imguiBackend_, *device_, *frame.commandBuffer, *composition->view,
                     swapchainWidth_, swapchainHeight_)) { return false; }
             frame.commandBuffer->endRendering();
         }
@@ -7653,7 +7534,6 @@ void EditorApplication::loadBuiltInSample(const char* sampleId)
         return;
     }
 
-    clearSceneAccelerationStructure();
     scene_.clear();
     renderWorld_.setLighting({});
     renderWorld_.setWorldEnvironment({});
@@ -7886,8 +7766,7 @@ void EditorApplication::applyLoadedSceneToRenderGraph(const std::filesystem::pat
             }
         }
     }
-    bool changed = scene_.hasStreamGeometry() &&
-        editor::applyStreamSceneOpen(renderGraph_, path, pendingSceneStreamAssetPath_);
+    bool changed = editor::applyStreamSceneOpen(renderGraph_, path, pendingSceneStreamAssetPath_);
 
     std::vector<uint32_t> sceneNodeIds;
     for (const render::RenderGraphNode& node : renderGraph_.nodes()) {
@@ -8117,10 +7996,7 @@ void EditorApplication::pollSceneLoad()
     }
     pendingSceneLoad_ = {};
 
-    if (!readySceneLoad_->hasStreamGeometry() && device_ != nullptr &&
-        graphExecutor_ != nullptr &&
-        device_->capabilities().rayTracingAccelerationStructure &&
-        device_->capabilities().rayQuery) {
+    if (device_ != nullptr && graphExecutor_ != nullptr) {
         render::RenderGraphProperties properties = render::RenderGraphProperties::object();
         properties["path"] = displayPathForProperty(readySceneLoad_->sourcePath());
         std::string log;
@@ -8199,7 +8075,6 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
         return;
     }
 
-    clearSceneAccelerationStructure();
     if (graphExecutor_ != nullptr) {
         graphExecutor_->acceptSceneResourcePreparation();
     }
@@ -8235,7 +8110,6 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
     applyLoadedSceneToRenderGraph(sourcePath);
     pendingSceneStreamAssetPath_.clear();
     applyLoadedSceneCamera();
-    sceneAccelerationStructureStatus_ = "RTAS will be prepared by the active render pass.";
 
     const scene::SceneStats& stats = scene_.stats();
     sceneStatus_ = "Loaded " + sourcePath.string() + " (" + std::to_string(stats.renderNodeCount) +
@@ -8251,63 +8125,6 @@ void EditorApplication::commitLoadedScene(std::unique_ptr<scene::SceneDocument> 
         stats.triangleCount,
         stats.imageCount,
         stats.textureCount);
-}
-
-void EditorApplication::buildSceneAccelerationStructure()
-{
-    StartupLogScope scope("Editor ray tracing acceleration structure build");
-
-    if (sceneAccelerationStructure_ == nullptr) {
-        sceneAccelerationStructure_ =
-            std::make_unique<render::SceneAccelerationStructureBuilder>();
-    }
-    if (device_ == nullptr || graphicsQueue_ == nullptr) {
-        sceneAccelerationStructureStatus_ = "RTAS build failed: RHI device is not initialized.";
-        return;
-    }
-    if (!scene_.valid()) {
-        sceneAccelerationStructureStatus_ = "RTAS build failed: load a 3D scene first.";
-        return;
-    }
-    if (scene_.hasStreamGeometry()) {
-        sceneAccelerationStructureStatus_ = "Streamed RTAS is managed by the GPUDriven render pass.";
-        return;
-    }
-
-    std::string log;
-    render::Queue* accelerationStructureQueue =
-        device_->getQueue(render::QueueType::Compute);
-    if (accelerationStructureQueue == nullptr) {
-        accelerationStructureQueue = graphicsQueue_;
-    }
-    const render::Result<> result =
-        sceneAccelerationStructure_->build(*device_, *accelerationStructureQueue, scene_, log);
-    sceneAccelerationStructureStatus_ = log.empty()
-        ? std::string("RTAS build returned ") + render::resultToString(result)
-        : log;
-    if (result) {
-        const render::SceneAccelerationStructureStats& stats =
-            sceneAccelerationStructure_->stats();
-        spdlog::info(
-            "[Startup] Editor RTAS build completed blas={} instances={} triangles={} asBytes={} scratchBytes={}",
-            stats.blasCount,
-            stats.instanceCount,
-            stats.triangleCount,
-            stats.accelerationStructureBytes,
-            stats.scratchBytes);
-    } else {
-        spdlog::warn(
-            "[Startup] Editor RTAS build failed: {}",
-            sceneAccelerationStructureStatus_);
-    }
-}
-
-void EditorApplication::clearSceneAccelerationStructure()
-{
-    if (sceneAccelerationStructure_ != nullptr) {
-        sceneAccelerationStructure_->clear();
-    }
-    sceneAccelerationStructureStatus_ = "RTAS not built.";
 }
 
 void EditorApplication::addRenderGraphNode(std::string type, ImVec2 screenPosition)

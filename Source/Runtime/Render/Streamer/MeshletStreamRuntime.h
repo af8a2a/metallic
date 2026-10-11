@@ -16,6 +16,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamPrefetch.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
+#include "../../../../Shaders/Interop/MeshletStreamBLAS.h"
 
 #include <array>
 #include <cstddef>
@@ -256,7 +257,7 @@ struct MeshletStreamGPUBLASHeader {
     uint32_t frameIndex = 0;
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
+    uint32_t semanticChangeCount = 0;
     uint32_t requestedClusterReferences = 0;
     uint32_t requestedInstances = 0;
     uint32_t referenceBudgetRejected = 0;
@@ -365,7 +366,13 @@ struct MeshletStreamGPUParams {
     float prefetchUp[4] = {};
     uint32_t enableLodTransitionTelemetry = 0;
     float previousLodPixelError = 1.5f;
-    uint32_t lodTelemetryPadding[2] = {};
+    // RT selection may replace an ancestor only after the finer CLAS is published.
+    uint32_t rayClasPageTableBuffer = UINT32_MAX;
+    uint32_t lodTelemetryPadding = 0;
+    float rtOffscreenErrorScale = 2.0f;
+    float rtLodHysteresis = 0.2f;
+    uint32_t rtLodFlags = 0; // Bit 0: RT policy/history; bit 1: preserve visible raster quality.
+    uint32_t rtLodPolicyRevision = 1;
 };
 
 struct MeshletStreamGPURasterBindings {
@@ -472,10 +479,12 @@ static_assert(sizeof(MeshletStreamGPUDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGPUTraversalHeader) == 32);
 static_assert(sizeof(MeshletStreamGPUTraversalWorkItem) == 16);
 static_assert(sizeof(MeshletStreamGPUBLASHeader) == 96);
+static_assert(offsetof(MeshletStreamGPUBLASHeader, semanticChangeCount) ==
+    METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD * sizeof(uint32_t));
 static_assert(sizeof(MeshletStreamGPUInstanceBLAS) == 64);
 static_assert(sizeof(MeshletStreamGPUBLASBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGPUParams) == 624);
+static_assert(sizeof(MeshletStreamGPUParams) == 640);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
 static_assert(sizeof(MeshletStreamGPURasterBindings) == 96);
@@ -562,6 +571,9 @@ struct MeshletStreamFrameDesc {
     bool enableGpuLodSelection = true;
     float lodPixelError = 1.5f; // Display viewport pixels, before lodBias.
     float lodBias = 0.0f;
+    float rtOffscreenErrorScale = 2.0f; // Multiplies the RT pixel budget outside the primary frustum.
+    float rtLodHysteresis = 0.2f; // Refine at T; coarsen below T * (1 - hysteresis).
+    bool preserveRasterLod = false; // Shared raster/RT cuts preserve visible raster projection quality.
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
     MeshletStreamCameraDesc renderCamera;
@@ -604,6 +616,11 @@ public:
     // Cached for the root resource lifetime; loading progress refreshes per frame.
     bool sceneReady() const { return sceneReadiness().ready; }
     bool tlasReady() const { return tlasBuilt_; }
+    // CPU scene-content token (reset, transforms and visibility). Physical CLAS
+    // publication and delayed GPU feedback do not change it. Same-frame cut
+    // invalidation comes from shadingChangeBuffer() after traversal.
+    uint64_t shadingRevision() const;
+    Buffer* shadingChangeBuffer() const { return blasHeaderBuffer_.get(); }
     bool topLevelBuildPending() const { return topLevelBuildPending_; }
     RayTracingAccelerationStructure* accelerationStructure() const;
 
@@ -824,6 +841,10 @@ private:
     ResourceState demandBufferState_ = ResourceState::Undefined;
     uint32_t lodInstanceOffsetsOffset_ = 0;
     ResourceState lodStateBufferState_ = ResourceState::Undefined;
+    std::shared_ptr<bool> lodStateInitialized_ = std::make_shared<bool>(false);
+    uint64_t rtLodHistoryBytes_ = 0;
+    uint32_t rtLodPolicyRevision_ = 1;
+    float rtLodDisplayPixelError_ = 1.5f;
     ResourceLease nodeHandle_;
     ResourceLease drawIndirectHandle_;
     ResourceLease traversalHeaderHandle_;
@@ -897,9 +918,10 @@ private:
     uint32_t maxBlasClustersPerBuild_ = 0;
     std::array<uint32_t, 32> blasSizeClasses_{};
     bool blasInstanceReuse_ = true;
-    uint32_t blasPublicationEpoch_ = 0;
+    std::shared_ptr<uint32_t> blasPublicationEpoch_ = std::make_shared<uint32_t>(0);
     ResourceState blasAddressBufferState_ = ResourceState::Undefined;
     uint64_t blasClusterReferenceAddress_ = 0;
+    uint64_t shadingStateRevision_ = 0;
     bool tlasBuilt_ = false;
     bool topLevelBuildPending_ = false;
     std::vector<FallbackBLASPrimitive> fallbackBlasPrimitives_;

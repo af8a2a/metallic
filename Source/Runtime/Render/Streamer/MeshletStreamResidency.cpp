@@ -368,6 +368,8 @@ void MeshletStreamResidencyManager::reset()
         taskPages.clear();
     }
     unloadTaskQueue_.reset();
+    geometryUses_.clear();
+    for (auto& uses : unloadTaskUses_) { uses.clear(); }
     for (std::vector<uint32_t>& taskPages : unloadTaskPages_) {
         taskPages.clear();
     }
@@ -405,6 +407,16 @@ void MeshletStreamResidencyManager::reset()
     prefetchReserveBytes_ = 0;
     maxPageEvictionsPerFrame_ = 256;
     maxEvictionBytesPerFrame_ = 0;
+}
+
+void MeshletStreamResidencyManager::trackGeometryUse(const GPUCompletionPoint& completion)
+{
+    std::erase_if(geometryUses_, [](const auto& use) { return use.isCancelled() || use.isComplete(); });
+    if (completion.valid() && !completion.isCancelled() && !completion.isComplete() &&
+        std::none_of(geometryUses_.begin(), geometryUses_.end(),
+            [&](const auto& use) { return use.sameSubmission(completion); })) {
+        geometryUses_.push_back(completion);
+    }
 }
 
 void MeshletStreamResidencyManager::beginFrame(CPUProfileRecorder* profiler)
@@ -536,8 +548,14 @@ void MeshletStreamResidencyManager::beginFrame(CPUProfileRecorder* profiler)
 
     profile.next("Complete unload tasks");
     while (unloadTaskQueue_.canPop(frameIndex_, true)) {
+        const auto& uses = unloadTaskUses_[unloadTaskQueue_.frontTaskIndex()];
+        if (!std::all_of(uses.begin(), uses.end(),
+                [](const auto& use) { return use.isCancelled() || use.isComplete(); })) {
+            break;
+        }
         const uint32_t taskIndex = unloadTaskQueue_.pop();
         completeUnloadTask(taskIndex);
+        unloadTaskUses_[taskIndex].clear();
         unloadTaskQueue_.releaseTaskIndex(taskIndex);
     }
 
@@ -1950,7 +1968,10 @@ bool MeshletStreamResidencyManager::scheduleUnload(uint32_t pageIndex, bool evic
     }
 
     std::vector<uint32_t>& taskPages = unloadTaskPages_[taskIndex];
-    if (newTask) { taskPages.clear(); }
+    if (newTask) {
+        taskPages.clear();
+        unloadTaskUses_[taskIndex] = geometryUses_;
+    }
     taskPages.push_back(pageIndex);
     page.taskIndex = taskIndex;
     page.queued = false;

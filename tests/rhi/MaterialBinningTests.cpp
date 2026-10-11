@@ -1,9 +1,10 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -38,13 +39,14 @@ public:
         render::RenderPassReflection reflection;
         if (fixture_) {
             reflection.addTextureOutput("visibility").storageReadWrite().format = render::Format::R32Uint;
-            reflection.addBufferOutput("records").buffer((materialCount_ + 3) * 16, 16).storageReadWrite();
+            reflection.addBufferOutput("records").buffer((materialCount_ + 3) * 4, 4).storageReadWrite();
+            reflection.addBufferOutput("groups").buffer((materialCount_ + 3) * 112, 112).storageReadWrite();
             reflection.addBufferOutput("instances").buffer((materialCount_ + 3) * 160, 160).storageReadWrite();
             reflection.addBufferOutput("materials").buffer(materialCount_ * 560, 560).storageReadWrite();
-            reflection.addBufferOutput("shadingMaterials").buffer(materialCount_ * 720, 720).storageReadWrite();
+            reflection.addBufferOutput("shadingMaterials").buffer(materialCount_ * sizeof(render::LegacyMaterialPayload), sizeof(render::LegacyMaterialPayload)).storageReadWrite();
         } else {
             reflection.addTextureInput("visibility").sampledRead();
-            for (const char* name : {"records", "instances", "materials", "shadingMaterials"}) {
+            for (const char* name : {"records", "groups", "instances", "materials", "shadingMaterials"}) {
                 reflection.addBufferInput(name).shaderRead();
             }
             reflection.addBufferOutput("data").buffer(
@@ -75,9 +77,9 @@ public:
             return {};
         }
         const render::ComputeResourceBindingDesc layout[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 1}, {.binding = 2}, {.binding = 3},
-            {.binding = 4}, {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, visibility), .kind = render::ComputeResourceBindingKind::StorageImage},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, records)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, instances)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, materials)},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, groups)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output)}};
         const char* entries[] = {fixture_ ? "materialFixtureMain" : "materialReadbackResetMain",
             "materialIndirectProbeMain", "materialIndirectProbeMain"};
         for (uint32_t i = 0; i < (fixture_ ? 1u : 3u); ++i) {
@@ -94,17 +96,17 @@ public:
             result = programs_[i].initialize(*device_, {
                 .spirv = shader.spirv,
                 .pushConstantSize = 16,
-                .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
+                .bindings = {fixture_ ? layout : layout + 6, fixture_ ? 6u : 4u},
                 .requiresRayQuery = false,
-                .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
+                .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources),
             }, log);
             if (!result) { return result; }
             if (!fixture_ && i == 0) {
                 // Constant layout, rather than obsolete table counts, defines ABI compatibility.
                 result = incompatibleProgram_.initialize(*device_, {
                     .spirv = shader.spirv, .pushConstantSize = 20,
-                    .bindings = {layout + 5, 4}, .requiresRayQuery = false,
-                    .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
+                    .bindings = {layout + 6, 4}, .requiresRayQuery = false,
+                    .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources),
                 }, log);
                 if (!result) { return result; }
             }
@@ -121,14 +123,15 @@ public:
         const uint32_t readbackGroups = (std::max(pixels, kBinCount) + 63) / 64;
         if (fixture_) {
             const render::ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .textureView = context.outputTexture("visibility").view()},
-                {.binding = 1, .buffer = context.outputBuffer("records").buffer()},
-                {.binding = 2, .buffer = context.outputBuffer("instances").buffer()},
-                {.binding = 3, .buffer = context.outputBuffer("materials").buffer()},
-                {.binding = 4, .buffer = context.outputBuffer("shadingMaterials").buffer()}};
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, visibility), .textureView = context.outputTexture("visibility").view()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, records), .buffer = context.outputBuffer("records").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, instances), .buffer = context.outputBuffer("instances").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, materials), .buffer = context.outputBuffer("materials").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, shadingMaterials), .buffer = context.outputBuffer("shadingMaterials").buffer()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, groups), .buffer = context.outputBuffer("groups").buffer()}};
             return programs_[0].dispatch({
                 .commandBuffer = &commands,
-                .bindings = {bindings, 5},
+                .bindings = {bindings, 6},
                 .pushData = push,
                 .pushDataSize = sizeof(push),
                 .groupCountX = std::min(fixtureGroups, 65535u),
@@ -139,7 +142,7 @@ public:
         std::string log;
         auto result = binning_.record(*device_, commands, {
             .visibility = context.inputTexture("visibility").view(),
-            .records = context.inputBuffer("records").buffer(),
+            .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
             .instances = context.inputBuffer("instances").buffer(),
             .materials = context.inputBuffer("materials").buffer(),
             .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
@@ -163,8 +166,8 @@ public:
         };
         if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 5, .buffer = bins.bins}, {.binding = 6, .buffer = bins.tiles},
-            {.binding = 7, .buffer = bins.arguments}, {.binding = 8, .buffer = context.outputBuffer("data").buffer()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins), .buffer = bins.bins}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles), .buffer = bins.tiles},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments), .buffer = bins.arguments}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output), .buffer = context.outputBuffer("data").buffer()}};
         render::ComputeDispatchDesc dispatch{
             .commandBuffer = &commands,
             .bindings = {bindings, 4},
@@ -327,7 +330,7 @@ public:
         render::RenderGraph graph;
         graph.addNode("MaterialBinFixture", "Fixture");
         graph.addNode("MaterialBinProbe", "Probe");
-        for (const char* field : {"visibility", "records", "instances", "materials", "shadingMaterials"}) {
+        for (const char* field : {"visibility", "records", "groups", "instances", "materials", "shadingMaterials"}) {
             graph.addEdge(std::string("Fixture.") + field, std::string("Probe.") + field);
         }
         graph.addNode("MaterialBinReadback", "Readback");
@@ -383,7 +386,7 @@ public:
                 }
             }
         }
-        return RHITestResult::pass("257 materials in five feature classes; exact wave32 tile masks, edges, background, texture/NTC conservatism, feature edits, resize/reuse and 2D indirect coverage");
+        return RHITestResult::pass("257 materials in five feature classes; exact wave32 tile masks, edges, background, texture conservatism, feature edits, resize/reuse and 2D indirect coverage");
     }
 private:
     bool typed_;
@@ -412,7 +415,7 @@ public:
     {
         render::RenderPassReflection reflection;
         reflection.addTextureInput("visibility").sampledRead();
-        for (const char* name : {"records", "instances", "materials", "shadingMaterials"}) {
+        for (const char* name : {"records", "groups", "instances", "materials", "shadingMaterials"}) {
             reflection.addBufferInput(name).shaderRead();
         }
         reflection.addBufferOutput("data").buffer(
@@ -424,9 +427,9 @@ public:
         using namespace render;
         device_ = context.device;
         if (executables_->reset.valid()) { return {}; }
-        const ComputeResourceBindingDesc bindings[] = {{.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
+        const ComputeResourceBindingDesc bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output)}};
         const ResourceComputeKernelDesc layout{.pushConstantSize = 16, .bindings = bindings, .requiresRayQuery = false,
-            .resourceParameters = kMaterialBinningProbeLayout};
+            .resourceParameterSize = sizeof(metallic::tests::MaterialBinningProbeResources)};
         executables_->programs.resize(count_);
         for (uint32_t program = 0; program <= count_; ++program) {
             const std::string binCount = std::to_string(count_), slot = std::to_string(program % count_);
@@ -448,7 +451,7 @@ public:
         auto& commands = context.commandBuffer();
         const uint32_t phase = uint32_t(context.frameIndex() % 4);
         // Mapping changes are instance data. They never compile/create a Program.
-        std::vector<uint32_t> mapping(context.inputBuffer("shadingMaterials").buffer()->desc().size / 720);
+        std::vector<uint32_t> mapping(context.inputBuffer("shadingMaterials").buffer()->desc().size / sizeof(render::LegacyMaterialPayload));
         for (uint32_t i = 0; i < mapping.size(); ++i) {
             mapping[i] = count_ == 5 ? (i == 1 || i == 2 ? 3 : 1 + (i + phase) % 4) : 1 + (i + phase) % (count_ - 1);
         }
@@ -458,7 +461,7 @@ public:
             auto invalid = mapping;
             invalid[0] = count_;
             auto rejected = binning_.record(*device_, commands, {
-                .visibility = context.inputTexture("visibility").view(), .records = context.inputBuffer("records").buffer(),
+                .visibility = context.inputTexture("visibility").view(), .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
                 .instances = context.inputBuffer("instances").buffer(), .materials = context.inputBuffer("materials").buffer(),
                 .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
                 .width = context.width(), .height = context.height(), .materialProgramBins = invalid, .programBinCount = count_}, log);
@@ -467,7 +470,7 @@ public:
         {
             auto timing = context.profileScope("Program classification");
             auto result = binning_.record(*device_, commands, {
-                .visibility = context.inputTexture("visibility").view(), .records = context.inputBuffer("records").buffer(),
+                .visibility = context.inputTexture("visibility").view(), .streamRecords = context.inputBuffer("records").buffer(), .streamGroups = context.inputBuffer("groups").buffer(),
                 .instances = context.inputBuffer("instances").buffer(), .materials = context.inputBuffer("materials").buffer(),
                 .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
                 .width = context.width(), .height = context.height(),
@@ -477,8 +480,8 @@ public:
             bins = *result;
         }
         uint32_t push[]{context.width(), context.height(), count_, phase};
-        const ComputeDispatchBinding bindings[] = {{.binding = 5, .buffer = bins.bins}, {.binding = 6, .buffer = bins.tiles},
-            {.binding = 7, .buffer = bins.arguments}, {.binding = 8, .buffer = context.outputBuffer("data").buffer()}};
+        const ComputeDispatchBinding bindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, bins), .buffer = bins.bins}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, tiles), .buffer = bins.tiles},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, arguments), .buffer = bins.arguments}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialBinningProbeResources, output), .buffer = context.outputBuffer("data").buffer()}};
         BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
             .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
             .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
@@ -545,7 +548,7 @@ public:
                 return std::make_unique<MaterialBinningProbePass>(true); });
             RenderGraph graph;
             graph.addNode("ProgramBinFixture", "Fixture"); graph.addNode("ProgramBinProbe", "Probe");
-            for (const char* field : {"visibility", "records", "instances", "materials", "shadingMaterials"}) {
+            for (const char* field : {"visibility", "records", "groups", "instances", "materials", "shadingMaterials"}) {
                 graph.addEdge(std::string("Fixture.") + field, std::string("Probe.") + field);
             }
             graph.addNode("ProgramBinReadback", "Readback"); graph.addEdge("Probe.data", "Readback.source");

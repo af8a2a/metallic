@@ -1,6 +1,6 @@
 import Core;
 using Metallic;
-#include "../../Interop/MaterialTextureDecode.hlsli"
+import MaterialTextureDecode;
 struct TextureProbePush { uint textureIndex; uint mip; uint flags; uint unused; };
 [numthreads(1,1,1)]
 void main()

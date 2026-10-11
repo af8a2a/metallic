@@ -83,13 +83,13 @@ std::filesystem::path materialFixture(const std::filesystem::path& directory)
     return path;
 }
 
-RenderGraph materialGraph(const std::filesystem::path& path, const std::filesystem::path& cache, bool streamed)
+RenderGraph materialGraph(const std::filesystem::path& path, const std::filesystem::path& cache)
 {
     RenderGraph graph;
     Json camera = {{"eye", {0,0,3}}, {"center",{0,0,0}}, {"up",{0,1,0}}, {"fovDegrees",60}, {"znear",.001}, {"zfar",20}, {"reversedZ",true}};
     graph.addNode("VisibilityBufferPass", "Raster", {{"path",path.generic_string()}, {"streamAssetPath",cache.generic_string()},
-        {"enableMeshletStreaming",streamed}, {"streamAssetOnly",streamed}, {"autoBuildStreamAsset",false},
-        {"compactShadingAttributes",streamed && std::getenv("METALLIC_TEST_STREAM_COMPACT_SHADING") != nullptr},
+        {"autoBuildStreamAsset",false},
+        {"compactShadingAttributes",std::getenv("METALLIC_TEST_STREAM_COMPACT_SHADING") != nullptr},
         {"maxResidentPages",32}, {"maxLockedFallbackPages",32}, {"maxActiveGroups",128}, {"maxGpuPageRequests",128},
         {"maxTraversalWorkers",32}, {"maxTraversalWorkItems",256}, {"autoLod",false}, {"lodLevel",0},
         {"instanceHzbCull",false}, {"meshletHzbCull",false}, {"meshletNormalConeCull",false}, {"hybridRaster",false},
@@ -141,9 +141,9 @@ public:
             requireSharedMaterialGeometry(cache, std::array<uint32_t, 3>{257, 258, 259});
             std::map<std::string, std::vector<uint32_t>> reference;
             Json report = Json::array();
-            for (bool streamed : {false,true}) {
+            for (bool metadataOnly : {false,true}) {
                 scene::SceneDocument scene;
-                require(streamed ? scene.loadStreamMetadata(path) : scene.load(path), scene.lastLoadResult().error);
+                require(metadataOnly ? scene.loadStreamMetadata(path) : scene.load(path), scene.lastLoadResult().error);
                 require(scene.materials()[257].specularTexture.textureIndex == 0 && scene.materials()[259].unlit,
                     "Specular/unlit import lost material data");
                 require(scene.materials()[258].alphaMode == "MASK" && scene.renderNodes()[1].materialIndex == 258,
@@ -160,12 +160,12 @@ public:
                 light.direction = float3(-.2f, -.3f, -1.0f);
                 preview.setWorldEnvironment(celestial);
                 preview.setLighting(lighting);
-                auto graph = materialGraph(path, cache, streamed);
+                auto graph = materialGraph(path, cache);
                 auto render = [&]() { require(bool(preview.render(graph, 256,128)), preview.lastLog()); };
                 for (const char* debug : {"baseColor","uv","shadingNormal","mappedNormal","tangent","bitangent","normalTexture","final"}) {
                     graph.setNodeRuntimeProperty(graph.findNode("Deferred")->id, "debugView",debug);
-                    for (uint32_t frame=0; frame<(streamed ? 8u : 1u); ++frame) { render(); }
-                    const std::string label = std::string(streamed ? "stream-" : "resident-") + debug;
+                    for (uint32_t frame=0; frame<8u; ++frame) { render(); }
+                    const std::string label = std::string(metadataOnly ? "stream-" : "decoded-") + debug;
                     require(saveRgba8Png(directory/(label+".png"), reinterpret_cast<const uint8_t*>(preview.pixels().data()),256,128,log),log);
                     if (std::string_view(debug) == "mappedNormal") {
                         uint32_t holes = 0, surfaces = 0;
@@ -174,7 +174,7 @@ public:
                         }}
                         require(holes > 300 && surfaces > 300, label + " alpha mask has no holes: " + std::to_string(holes));
                     }
-                    if (!streamed) { reference[debug]=preview.pixels(); continue; }
+                    if (!metadataOnly) { reference[debug]=preview.pixels(); continue; }
                     const auto& expected=reference.at(debug); double error=0; uint32_t pixels=0,outliers=0;
                     for (uint32_t y=1;y<127;++y) { for (uint32_t x=1;x<255;++x) {
                         const size_t i=y*256+x;
@@ -186,7 +186,7 @@ public:
                     }}
                     report.push_back({{"view",debug},{"pixels",pixels},{"meanError",error/std::max(1u,pixels*3)},{"outliers",outliers}});
                     { std::ofstream out(directory/"Z4Comparison.json"); out<<report.dump(2); }
-                    require(pixels>300 && error/(pixels*3)<.7 && double(outliers)/pixels<.03, std::string(debug)+" resident/stream mismatch: "+report.back().dump());
+                    require(pixels>300 && error/(pixels*3)<.7 && double(outliers)/pixels<.03, std::string(debug)+" decoded/metadata mismatch: "+report.back().dump());
                     const auto hardware=preview.pixels();
                     graph.setNodeRuntimeProperty(graph.findNode("Raster")->id,"hybridRaster",true);
                     graph.setNodeRuntimeProperty(graph.findNode("Raster")->id,"softwareRasterMaxPixels",1024.f);
@@ -210,16 +210,16 @@ public:
                         surfaces += (preview.pixels()[y * 256 + x] & 0xffffffu) != 0;
                     }}
                     require(step == 1 ? surfaces < 12 : surfaces > 1000,
-                        "Coverage did not update stream/resident visibility: " + std::to_string(surfaces));
+                        "Coverage did not update streamed visibility: " + std::to_string(surfaces));
                     const std::string label = "coverage-" + std::to_string(step);
-                    if (!streamed) { reference[label] = preview.pixels(); }
+                    if (!metadataOnly) { reference[label] = preview.pixels(); }
                     else {
                         uint32_t mismatch = 0;
                         const auto& expected = reference.at(label);
                         for (size_t i = 0; i < expected.size(); ++i) {
                             mismatch += ((expected[i] & 0xffffffu) == 0) != ((preview.pixels()[i] & 0xffffffu) == 0);
                         }
-                        require(mismatch < 12, "Dynamic Coverage differs between stream and resident");
+                        require(mismatch < 12, "Dynamic Coverage differs between metadata and decoded imports");
                         graph.setNodeRuntimeProperty(graph.findNode("Raster")->id, "hybridRaster", true);
                         graph.setNodeRuntimeProperty(graph.findNode("Raster")->id, "softwareRasterMaxPixels", 1024.f);
                         render();
@@ -319,7 +319,7 @@ public:
             preview.setEnvironment({.enabled=false});
             auto lighting=scene.lighting(); lighting.lights.clear(); lighting.autoExposure.enabled=false;
             preview.setLighting(lighting);
-            auto graph=materialGraph(path,cache,true);
+            auto graph=materialGraph(path,cache);
             const auto raster=graph.findNode("Raster")->id, deferred=graph.findNode("Deferred")->id;
             graph.setNodeRuntimeProperty(raster,"enableClusterRtx",false);
             graph.setNodeRuntimeProperty(deferred,"debugView","final");
@@ -383,9 +383,9 @@ public:
                 .compressionMode=scene::MeshletStreamPayloadCompression::Reference},log),log);
             requireSharedMaterialGeometry(cache, std::array<uint32_t, 2>{257, 258});
             std::vector<uint32_t> reference;
-            for(bool streamed : {false,true}) {
+            for(bool metadataOnly : {false,true}) {
                 scene::SceneDocument scene;
-                require(streamed ? scene.loadStreamMetadata(path) : scene.load(path),scene.lastLoadResult().error);
+                require(metadataOnly ? scene.loadStreamMetadata(path) : scene.load(path),scene.lastLoadResult().error);
                 RenderGraphPreviewRenderer preview;
                 preview.bindRuntimeScene(&scene);
                 require(bool(preview.initialize(context.enableValidation,true,false)),preview.lastLog());
@@ -394,23 +394,26 @@ public:
                 environment::WorldEnvironment celestial;
                 auto& sun = celestial.sun; sun.enabled=true; sun.illuminance=3; sun.angularRadius=0;
                 sun.direction=float3(2,0,-1); preview.setWorldEnvironment(celestial); preview.setLighting(lighting);
-                auto graph=materialGraph(path,cache,streamed);
+                auto graph=materialGraph(path,cache);
                 const auto raster=graph.findNode("Raster")->id, deferred=graph.findNode("Deferred")->id;
-                graph.setNodeRuntimeProperty(raster,"enableClas",streamed);
-                graph.setNodeRuntimeProperty(raster,"enableClusterRtx",streamed);
+                graph.setNodeRuntimeProperty(raster,"enableClas",true);
+                graph.setNodeRuntimeProperty(raster,"enableClusterRtx",true);
                 graph.setNodeRuntimeProperty(raster,"maxClasBytes",16777216);
                 graph.setNodeRuntimeProperty(deferred,"debugView","final");
-                graph.addNode("RayTracedShadowPass","Shadows",{{"rayTracedShadows",true},{"sigmaDenoise",false},
+                // This coverage fixture projects a horizontal Sun onto a vertical receiver.
+                // Select it explicitly: automatic celestial selection excludes the horizon.
+                graph.addNode("RayTracedShadowPass","Shadows",{{"rayTracedShadows",true},{"sigmaDenoise",false},{"shadowLightIndex",0},
                     {"shadowBias",.001},{"shadowDebug",true}});
                 graph.addEdge("Raster.depth","Shadows.depth");
                 graph.addEdge("Raster.rasterInfo","Shadows.rasterInfo");
+                graph.addEdge("Raster.accelerationStructure","Shadows.accelerationStructure");
                 graph.addEdge("Shadows.shadow","Deferred.shadow");
                 graph.addEdge("Shadows.parameters","Deferred.shadowParameters");
                 for(uint32_t frame=0;frame<8;++frame) { require(bool(preview.render(graph,256,128)),preview.lastLog()); }
                 const auto& pixels=preview.pixels();
-                require(saveRgba8Png(directory/(streamed ? "Stream.png" : "Resident.png"),
+                require(saveRgba8Png(directory/(metadataOnly ? "Stream.png" : "Decoded.png"),
                     reinterpret_cast<const uint8_t*>(pixels.data()),256,128,log),log);
-                if(!streamed) { reference=pixels; continue; }
+                if(!metadataOnly) { reference=pixels; continue; }
                 uint32_t dark=0,lit=0,mismatch=0;
                 // Projected cutout shadow lies to the right of the visible leaf.
                 for(uint32_t y=43;y<85;++y) { for(uint32_t x=157;x<180;++x) {
@@ -421,13 +424,13 @@ public:
                 require(dark>100 && lit>100 && mismatch<20,
                     "MASK shadow mismatch: dark="+std::to_string(dark)+", lit="+std::to_string(lit)+", mismatch="+std::to_string(mismatch));
             }
-            return RHITestResult::pass("Stream CLAS MASK shadow holes match resident ray-query coverage");
+            return RHITestResult::pass("Stream CLAS MASK shadow holes match decoded-import CLAS coverage");
         } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMaterialShadowTest);
 
-std::filesystem::path residentProbe(const std::filesystem::path& source, const std::filesystem::path& directory)
+std::filesystem::path decodedGeometryProbe(const std::filesystem::path& source, const std::filesystem::path& directory)
 {
     Json root;
     { std::ifstream input(source); input >> root; }
@@ -465,7 +468,7 @@ std::filesystem::path residentProbe(const std::filesystem::path& source, const s
     for(const char* field : {"extensionsUsed","extensionsRequired"}) {
         if(root.contains(field)) { auto& list=root[field]; list.erase(std::remove(list.begin(),list.end(),Json("EXT_meshopt_compression")),list.end()); }
     }
-    // Legacy resident VBuffer omits BLEND draws. For attribute-only comparisons,
+    // Raster visibility omits BLEND draws. For attribute-only comparisons,
     // preserve positive-alpha coverage using MASK; this is not a transport reference.
     for(auto& material : root["materials"]) {
         if(material.value("alphaMode","")=="BLEND") {
@@ -526,14 +529,14 @@ public:
                     {"terminalInstanceClusters",terminalClusters},
                     {"materialComparisonScope","LOD0 close-up of the largest authored triangle"}};
                 const auto saveEvidence=[&]() { std::ofstream(directory/"ProbeEvidence.json")<<evidence.dump(2); };
-                const auto referencePath=residentProbe(source,directory);
+                const auto referencePath=decodedGeometryProbe(source,directory);
                 std::map<std::string,std::vector<uint32_t>> reference;
                 float3 probeCenter(0.0f), probeDirection(0,0,1);
                 float probeRadius=1;
                 scene::Bounds fullBounds;
-                for(bool streamed : {false,true}) {
+                for(bool metadataOnly : {false,true}) {
                     scene::SceneDocument scene;
-                    require(streamed ? scene.loadStreamMetadata(source) : scene.load(referencePath),scene.lastLoadResult().error);
+                    require(metadataOnly ? scene.loadStreamMetadata(source) : scene.load(referencePath),scene.lastLoadResult().error);
                     RenderGraphPreviewRenderer preview;
                     preview.bindRuntimeScene(&scene);
                     require(bool(preview.initialize(context.enableValidation,true,false)),preview.lastLog());
@@ -542,7 +545,7 @@ public:
                     environment::WorldEnvironment celestial;
                     auto& light = celestial.sun; light.enabled=true; light.illuminance=3;
                     light.direction=float3(-.3f,-.4f,-1); preview.setWorldEnvironment(celestial); preview.setLighting(lighting);
-                    auto graph=materialGraph(streamed ? source : referencePath,cache,streamed);
+                    auto graph=materialGraph(metadataOnly ? source : referencePath,cache);
                     const auto raster=graph.findNode("Raster")->id,deferred=graph.findNode("Deferred")->id;
                     const auto rasterProperties=[&]() {
                         const auto* node=graph.findNode("Raster");
@@ -550,7 +553,7 @@ public:
                         properties.merge_patch(node->runtimeProperties);
                         return properties;
                     };
-                    if(!streamed) {
+                    if(!metadataOnly) {
                         // City-wide instance bounds and long, thin stalk bounds can
                         // produce empty probes. Frame the largest authored triangle.
                         const auto cross3=[](float3 a,float3 b) { return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x); };
@@ -600,10 +603,10 @@ public:
                     graph.setNodeRuntimeProperty(raster,"maxLockedFallbackPages",std::max<uint64_t>(512,terminalPages.size()));
                     graph.setNodeRuntimeProperty(raster,"maxActiveGroups",std::max<uint64_t>(4096,instanceGroups));
                     graph.setNodeRuntimeProperty(raster,"maxTraversalWorkItems",std::max<uint64_t>(8192,instanceGroups*2));
-                    graph.setNodeRuntimeProperty(raster,"enableClusterRtx",streamed);
-                    graph.setNodeRuntimeProperty(raster,"enableClas",streamed);
+                    graph.setNodeRuntimeProperty(raster,"enableClusterRtx",true);
+                    graph.setNodeRuntimeProperty(raster,"enableClas",true);
                     graph.setNodeRuntimeProperty(raster,"maxClasBytes",134217728);
-                    if(streamed && probe.contains("runtimeProperties")) {
+                    if(metadataOnly && probe.contains("runtimeProperties")) {
                         require(probe.at("runtimeProperties").is_object(),"runtimeProperties must be an object");
                         for(const auto& [key,value] : probe.at("runtimeProperties").items()) {
                             graph.setNodeRuntimeProperty(raster,key,value);
@@ -611,12 +614,12 @@ public:
                     }
                     const bool instanceFrustumCull=rasterProperties().value("instanceFrustumCull",true);
                     const bool meshletFrustumCull=rasterProperties().value("meshletFrustumCull",true);
-                    if((streamed && captureRootCut) || (!streamed && fullBoundsView)) {
+                    if((metadataOnly && captureRootCut) || (!metadataOnly && fullBoundsView)) {
                         if(fullBoundsView) {
                             require(fullBounds.valid,"Probe has no complete world bounds");
                             setCamera(fullBounds.center(),std::max(fullBounds.radius(),.001f));
                         }
-                        if(streamed) {
+                        if(metadataOnly) {
                             graph.setNodeRuntimeProperty(raster,"initialLoad",true);
                             graph.setNodeRuntimeProperty(raster,"autoLod",false);
                             graph.setNodeRuntimeProperty(raster,"lodLevel",31);
@@ -627,7 +630,7 @@ public:
                         for(const char* view : {"mappedNormal","baseColor"}) {
                             graph.setNodeRuntimeProperty(deferred,"debugView",view);
                             require(bool(preview.render(graph,256,256)),name+": "+preview.lastLog());
-                            if(streamed && std::string_view(view)=="mappedNormal") {
+                            if(metadataOnly && std::string_view(view)=="mappedNormal") {
                                 auto* streamer=preview.subsystemHost()->get<StreamerSubsystem>();
                                 require(streamer && streamer->streamCount()==1,"Probe has no unique stream session");
                                 const auto ready=streamer->sceneReadiness();
@@ -646,7 +649,7 @@ public:
                                 require(coveredPixels>20,"First probe root frame has no useful image coverage");
                             }
                             std::string imageLog;
-                            const std::string label=std::string(streamed ? "stream-root-" : "resident-full-lod0-")+view;
+                            const std::string label=std::string(metadataOnly ? "stream-root-" : "decoded-full-lod0-")+view;
                             require(saveRgba8Png(directory/(label+".png"),reinterpret_cast<const uint8_t*>(preview.pixels().data()),
                                 256,256,imageLog),imageLog);
                         }
@@ -656,14 +659,14 @@ public:
                         graph.setNodeRuntimeProperty(raster,"instanceFrustumCull",instanceFrustumCull);
                         graph.setNodeRuntimeProperty(raster,"meshletFrustumCull",meshletFrustumCull);
                     }
-                    if(streamed) { evidence["materialRuntimeProperties"]=rasterProperties(); saveEvidence(); }
+                    if(metadataOnly) { evidence["materialRuntimeProperties"]=rasterProperties(); saveEvidence(); }
                     for(const char* view : {"mappedNormal","baseColor","normalTexture","final"}) {
                         graph.setNodeRuntimeProperty(deferred,"debugView",view);
-                        for(uint32_t frame=0;frame<(streamed ? 24u : 1u);++frame) { require(bool(preview.render(graph,256,256)),name+": "+preview.lastLog()); }
+                        for(uint32_t frame=0;frame<24u;++frame) { require(bool(preview.render(graph,256,256)),name+": "+preview.lastLog()); }
                         std::string log;
-                        const std::string label=std::string(streamed ? "stream-" : "resident-")+view;
+                        const std::string label=std::string(metadataOnly ? "stream-" : "decoded-")+view;
                         require(saveRgba8Png(directory/(label+".png"),reinterpret_cast<const uint8_t*>(preview.pixels().data()),256,256,log),log);
-                        if(!streamed) { reference[view]=preview.pixels(); continue; }
+                        if(!metadataOnly) { reference[view]=preview.pixels(); continue; }
                         const auto& expected=reference.at(view);
                         const auto& coverage=reference.at("mappedNormal");
                         uint32_t subjects=0,outliers=0; double error=0;
@@ -681,8 +684,8 @@ public:
                             {"outliers",outliers},{"comparable",comparable}});
                         { std::ofstream output(context.outputDirectory/"ZorahZ4Probes.json"); output<<report.dump(2); }
                         // Glass/BLEND final uses explicit ray continuation, whereas the
-                        // resident realtime reference above only compares the surface.
-                        // The unlit source has no NORMAL: resident smooth normals
+                        // decoded realtime reference above only compares the surface.
+                        // The unlit source has no NORMAL: decoded smooth normals
                         // and the stream geometric fallback need not match. Neither
                         // affects unlit radiance; retain coverage and color checks.
                         require(subjects>20,"Probe has no comparison coverage: "+name);
@@ -694,7 +697,7 @@ public:
                 }
             }
             require(executedProbes!=0,"Manifest selected no material probes; use a known fixture name or runMaterialProbe=true");
-            return RHITestResult::pass("Zorah KTX2 attribute/material probes rendered and compared with independently decoded resident geometry");
+            return RHITestResult::pass("Zorah KTX2 attribute/material probes rendered and compared with independently decoded geometry streamed through the same renderer");
         } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

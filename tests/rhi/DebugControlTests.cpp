@@ -1,4 +1,6 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -7,7 +9,6 @@
 #include <cstring>
 #include <bit>
 #include <limits>
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 namespace metallic::tests {
@@ -330,14 +331,16 @@ public:
         DEBUG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         ComputeProgram original;
-        const ComputeResourceBindingDesc programBindings[] = {{0}, {1}};
+        const ComputeResourceBindingDesc programBindings[] = {
+            {METALLIC_RESOURCE_MEMBER(FrameCopyProbeResources, input)},
+            {METALLIC_RESOURCE_MEMBER(FrameCopyProbeResources, output)}};
         std::string log;
         DEBUG_REQUIRE(original.initialize(*device, {
             .spirv = shader.spirv,
             .pushConstantSize = 4,
             .bindings = {programBindings, 2},
             .requiresRayQuery = false,
-            .resourceParameters = metallic::tests::kFrameCopyProbeLayout,
+            .resourceParameterSize = sizeof(metallic::tests::FrameCopyProbeResources),
         }, log));
         DEBUG_REQUIRE(frame.begin(1));
         auto& commands = *frame.commands;
@@ -355,7 +358,7 @@ public:
         if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         BufferBarrierDesc outBarrier{.buffer = sentinel.get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
         if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        const ComputeDispatchBinding originalBindings[] = {{.binding = 0, .buffer = ids.get()}, {.binding = 1, .buffer = sentinel.get()}};
+        const ComputeDispatchBinding originalBindings[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, input), .buffer = ids.get()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::FrameCopyProbeResources, output), .buffer = sentinel.get()}};
         const uint32_t index = 0;
         DEBUG_REQUIRE(original.dispatch({
             .commandBuffer = &commands,

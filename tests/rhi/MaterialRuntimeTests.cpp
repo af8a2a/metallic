@@ -1,10 +1,11 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
-#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SceneColorConversion.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -21,6 +22,9 @@
 
 namespace metallic::tests {
 namespace {
+
+constexpr size_t kMaterialWords = sizeof(render::LegacyMaterialPayload) / sizeof(uint32_t);
+constexpr size_t kProbeWords = kMaterialWords + 1;
 
 class MaterialRuntimeTest final : public RHITest
 {
@@ -48,7 +52,7 @@ public:
             }
             end += field.size;
         }
-        if (end != 720 || program->schema->abi != kLegacyMaterialABI) {
+        if (end != sizeof(LegacyMaterialPayload) || program->schema->abi != kLegacyMaterialABI) {
             return RHITestResult::fail("Material schema size/version mismatch");
         }
         for (uint32_t index = 0; index < input.size(); ++index) {
@@ -91,10 +95,10 @@ public:
             return RHITestResult::fail("Recovery recompiled instance parameters or retained an error");
         }
         input[0].params[0] = 1;
-        input[0].metallicRoughnessTexture.ntcTextureSetIndex = 0;
-        auto neural = MaterialGeneration::create(input, 11, log);
-        if (!neural || neural->features()[0].surfaceProgram != material::SurfaceProgramClass::Opaque) {
-            return RHITestResult::fail("NTC metalness was incorrectly specialized as a constant conductor");
+        input[0].metallicRoughnessTexture.textureIndex = 0;
+        auto textured = MaterialGeneration::create(input, 11, log);
+        if (!textured || textured->features()[0].surfaceProgram != material::SurfaceProgramClass::Opaque) {
+            return RHITestResult::fail("Textured metalness was incorrectly specialized as a constant conductor");
         }
         const scene::RenderMaterial single;
         if (MaterialGeneration::create(input, 12, log, {&single, 1}) || log.empty()) {
@@ -154,7 +158,7 @@ std::array<render::LegacyMaterialPayload, 3> probeMaterials()
     for (uint32_t index = 0; index < values.size(); ++index) {
         // Every word is distinct; the shader reads each named field into a flat
         // uint stream so this tests Slang offsets and stride against CPU offsets.
-        std::array<uint32_t, 180> words;
+        std::array<uint32_t, kMaterialWords> words;
         for (uint32_t word = 0; word < words.size(); ++word) {
             words[word] = 0x3f000000u + index * 256u + word;
         }
@@ -171,7 +175,7 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        auto& result = reflection.addBufferOutput("result").buffer(3 * 181 * 4, 4).storageWrite();
+        auto& result = reflection.addBufferOutput("result").buffer(3 * kProbeWords * 4, 4).storageWrite();
         result.memoryLocation = render::MemoryLocation::HostReadback;
         return reflection;
     }
@@ -196,17 +200,17 @@ public:
             log).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
         const std::array bindings{
-            ComputeResourceBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeResourceBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .kind = ComputeResourceBindingKind::StorageBuffer},
+            ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv,
-            .bindings = bindings, .requiresRayQuery = false, .resourceParameters = metallic::tests::kMaterialRuntimeProbeLayout}, log);
+            .bindings = bindings, .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::MaterialRuntimeProbeResources)}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const std::array bindings{
-            render::ComputeDispatchBinding{.binding = 0, .buffer = input_.get()},
-            render::ComputeDispatchBinding{.binding = 1, .buffer = context.outputBuffer("result").buffer()}};
+            render::ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .buffer = input_.get()},
+            render::ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .buffer = context.outputBuffer("result").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
     }
 private:
@@ -240,17 +244,17 @@ public:
         buffer->invalidate();
         const void* mapped = buffer->map();
         if (!mapped) { return RHITestResult::fail("ABI probe readback failed"); }
-        std::array<uint32_t, 3 * 181> output{};
+        std::array<uint32_t, 3 * kProbeWords> output{};
         std::memcpy(output.data(), mapped, sizeof(output));
         buffer->unmap();
         const auto expected = probeMaterials();
         for (uint32_t index = 0; index < expected.size(); ++index) {
-            if (std::memcmp(output.data() + index * 181, &expected[index], 720) != 0 ||
-                output[index * 181 + 180] != (index == 0 ? 1u : 2u)) {
+            if (std::memcmp(output.data() + index * kProbeWords, &expected[index], sizeof(LegacyMaterialPayload)) != 0 ||
+                output[index * kProbeWords + kMaterialWords] != (index == 0 ? 1u : 2u)) {
                 return RHITestResult::fail("CPU/Slang field offsets, stride or program identity mismatch");
             }
         }
-        return RHITestResult::pass("All 720 bytes, array stride, explicit IDs and legacy hair identity agree on GPU");
+        return RHITestResult::pass("All 720 bytes (including alignment padding), array stride, explicit IDs and legacy hair identity agree on GPU");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialRuntimeABITest);
@@ -274,12 +278,11 @@ public:
         scene::SceneDocument document;
         if (!document.load(path)) { return RHITestResult::fail("LookDev scene load failed"); }
         std::string log;
-        // The same materials-only preparation is used by StreamAsset consumers;
-        // test both upload routes without requiring a second scene fixture.
-        for (bool materialsOnly : {false, true}) {
+        // Every consumer uses the same streamed material generation.
+        {
             ScenePathTraceResources resources;
             auto result = resources.beginPrepareAsync(*device, queue,
-                {{"path", path.string()}}, document, log, materialsOnly);
+                {{"path", path.string()}}, document, log);
             if (hasError(result, Error::Unsupported)) { return RHITestResult::skip(log); }
             if (!result) { return RHITestResult::fail(log); }
             bool complete = false;
@@ -387,7 +390,7 @@ public:
         } drain{queue, *gate};
         if (!device->createCommandPool(queue).transform([&](auto v) { pool = std::move(v); }) ||
             !pool->createCommandBuffer().transform([&](auto v) { commands = std::move(v); }) ||
-            !device->createBuffer({.size = 3 * 181 * 4, .structureStride = 4,
+            !device->createBuffer({.size = 3 * kProbeWords * 4, .structureStride = 4,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
                 .transform([&](auto v) { output = std::move(v); })) { return RHITestResult::fail("Resources failed"); }
         std::string log;
@@ -411,7 +414,7 @@ public:
         std::weak_ptr<MaterialBindingGeneration> oldBinding = published;
         ComputeProgram program;
         std::shared_ptr<const MaterialExecutableArtifact> artifact;
-        const ComputeResourceBindingDesc layout[] = {{.binding = 0}, {.binding = 1}};
+        const ComputeResourceBindingDesc layout[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output)}};
         SlangShaderDesc source{.moduleName = "MaterialRuntimeProbe", .entryPointName = "materialRuntimeProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"};
         scene::RenderMaterial semantic;
@@ -421,7 +424,7 @@ public:
         const SlangMacroDefine featureDefine{"MATERIAL_CLASS", classification.c_str()};
         source.macroDefines = {&featureDefine, 1};
         const ResourceComputeKernelDesc description{.bindings = layout, .requiresRayQuery = false,
-            .resourceParameters = kMaterialRuntimeProbeLayout};
+            .resourceParameterSize = sizeof(metallic::tests::MaterialRuntimeProbeResources)};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log)) {
             return RHITestResult::fail(log);
         }
@@ -456,7 +459,7 @@ public:
         if (!frame.begin(0) || !commands->begin(frame.submissionContext())) { return RHITestResult::fail("Begin failed"); }
         frame.retain(published);
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .buffer = published->buffer()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .buffer = output.get()}};
         if (!program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}) || !commands->end()) {
             return RHITestResult::fail("Material dispatch failed");
         }
@@ -471,10 +474,10 @@ public:
             return RHITestResult::fail("Compile failure replaced last successful executable");
         }
         source.entryPointName = "materialRuntimeProbeMain";
-        const ComputeResourceBindingDesc invalidManifest[] = {{.binding = 0}, {.binding = 0}};
+        const ComputeResourceBindingDesc invalidManifest[] = {{.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials)}};
         if (compileMaterialExecutable(*device, source,
                 {.bindings = invalidManifest, .requiresRayQuery = false,
-                 .resourceParameters = kMaterialRuntimeProbeLayout}, program, artifact, log) ||
+                 .resourceParameterSize = sizeof(metallic::tests::MaterialRuntimeProbeResources)}, program, artifact, log) ||
             artifact != originalArtifact) { return RHITestResult::fail("Invalid manifest was published"); }
         const SlangMacroDefine revision{"MATERIAL_PROBE_REVISION", "1"};
         source.macroDefines = {&revision, 1};
@@ -498,8 +501,8 @@ public:
         auto* mapped = static_cast<const uint32_t*>(output->map());
         bool correct = mapped != nullptr;
         for (size_t index = 0; correct && index < 3; ++index) {
-            correct = std::memcmp(mapped + index * 181, &originalParameters->parameters()[index], 720) == 0 &&
-                mapped[index * 181 + 180] == 1;
+            correct = std::memcmp(mapped + index * kProbeWords, &originalParameters->parameters()[index], sizeof(LegacyMaterialPayload)) == 0 &&
+                mapped[index * kProbeWords + kMaterialWords] == 1;
         }
         if (mapped) { output->unmap(); }
         if (!correct) { return RHITestResult::fail("Old submission observed mixed code/parameters/descriptors"); }
@@ -510,13 +513,13 @@ public:
         // previous output was not merely a permanently stale dispatch.
         if (!frame.begin(1) || !commands->begin(frame.submissionContext())) { return RHITestResult::fail("Recovery begin failed"); }
         const ComputeDispatchBinding next[] = {
-            {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, materials), .buffer = published->buffer()}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::MaterialRuntimeProbeResources, output), .buffer = output.get()}};
         if (!program.dispatch({.commandBuffer = commands.get(), .bindings = next}) || !commands->end() ||
             !tracker.submit({.commandBuffers = recorded}, frame) || !frame.wait(5'000'000'000ull)) {
             return RHITestResult::fail("Recovered dispatch failed");
         }
         output->invalidate(); mapped = static_cast<const uint32_t*>(output->map());
-        correct = mapped && std::memcmp(mapped, &published->generation()->parameters()[0], 720) == 0 && mapped[180] == 11;
+        correct = mapped && std::memcmp(mapped, &published->generation()->parameters()[0], sizeof(LegacyMaterialPayload)) == 0 && mapped[kMaterialWords] == 11;
         if (mapped) { output->unmap(); }
         (void)pool->reset(); (void)frame.reset();
         return correct ? RHITestResult::pass("Gated old submission retained code/data/descriptors; failed compile/manifest preserved state; recovery and retirement verified")
@@ -548,7 +551,7 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const uint32_t color = 1;
-        const render::ComputeDispatchBinding binding{.binding = 0, .textureView = context.outputTexture("color").view()};
+        const render::ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(metallic::render::OutputImageResourceParameters, output), .textureView = context.outputTexture("color").view()};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
             .pushData = &color, .pushDataSize = sizeof(color), .groupCountX = (context.width() + 7) / 8,
             .groupCountY = (context.height() + 7) / 8});

@@ -1,13 +1,13 @@
-#include "TestResourceLayouts.h"
+#include "TestResourceParameters.h"
+#include "TestComputeProgram.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "TestComputeProgram.h"
 #include "json.hpp"
 #include <zstd.h>
 #include <fstream>
@@ -153,10 +153,10 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),
             shader.diagnostics);
     const ComputeResourceBindingDesc layout[] = {
-        {.binding = 0,
+        {.binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, textures),
          .kind = ComputeResourceBindingKind::SampledImage,
          .descriptorCount = resources.materialTextureCount()},
-        {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        {.binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, output), .kind = ComputeResourceBindingKind::StorageBuffer}};
     ComputeProgram program;
     require(program.initialize(context.device,
                                {
@@ -164,7 +164,7 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                    .pushConstantSize = 16,
                                    .bindings = {layout, 2},
                                    .requiresRayQuery = false,
-                                   .resourceParameters = kTextureProbeResourceLayout,
+                                   .resourceParameterSize = sizeof(render::TextureProbeResourceParameters),
                                },
                                log),
             log);
@@ -188,10 +188,10 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
     };
     if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
     const ComputeDispatchBinding bindings[] = {{
-        .binding = 0,
+        .binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, textures),
         .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
     },
-                                               {.binding = 1, .buffer = output.get()}};
+                                               {.binding = METALLIC_RESOURCE_MEMBER(render::TextureProbeResourceParameters, output), .buffer = output.get()}};
     const uint32_t push[] = {index, mip, flags, 0};
     require(program.dispatch({
         .commandBuffer = commands.get(),
@@ -426,7 +426,7 @@ class KtxTextureResourcesTest final : public RHITest {
         }
         {
             ScenePathTraceResources cancelled;
-            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log, true), log);
+            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log), log);
             bool complete = false;
             scene::SceneLoadProgress progress;
             require(cancelled.pumpPrepareAsync(0.1, progress, log).transform([&](auto value) { complete = std::move(value); }), log);
@@ -438,7 +438,7 @@ class KtxTextureResourcesTest final : public RHITest {
             cancelled.clear();
             Ktx2TextureInfo lateInfo;
             require(readKtx2TextureInfo(directory / "299.ktx2", lateInfo, log), log);
-            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log, true), log);
+            require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log), log);
             // The bounded queue cannot have admitted image 299 before any consumption.
             {
                 std::fstream damaged(lateInfo.path, std::ios::binary | std::ios::in | std::ios::out);
@@ -571,7 +571,7 @@ public:
         std::string log;
         require(resources.prepare(context.device,context.graphicsQueue,
             {{"path",path.string()},{"materialTextureMaxDimension",128},{"materialTextureMaskMaxDimension",4},
-             {"materialTextureBudgetMiB",4},{"materialTextureStreaming",true},
+             {"materialTextureBudgetMiB",4},
              {"materialTextureRefineDimension",512},{"materialTextureColdFrames",16}},&scene,log),log);
         const auto baseline = resources.textureStats().residentAllocationBytes;
         const auto initialMips = resources.materialTextureFirstMips();
@@ -581,13 +581,13 @@ public:
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
         ComputeProgram program;
-        const ComputeResourceBindingDesc binding{.binding=0};
+        const ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
         require(program.initialize(context.device,{
             .spirv = shader.spirv,
             .pushConstantSize = 16,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
-            .resourceParameters = kTextureFeedbackResourceLayout,
+            .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters),
         },log),log);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -614,7 +614,7 @@ public:
                 sawTextureSchedule |= timing.name=="Candidates and allocation queries";
             }
             require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
-            ComputeDispatchBinding view{.binding=0,.buffer=feedback};
+            ComputeDispatchBinding view{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback),.buffer=feedback};
             const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
             require(program.dispatch({
                 .commandBuffer = commands.get(),
@@ -710,7 +710,7 @@ public:
         std::string log;
         require(resources.prepare(context.device, context.graphicsQueue,
             {{"path",path.string()}, {"materialTextureMaxDimension",128}, {"materialTextureBudgetMiB",4},
-             {"materialTextureStreaming",true}, {"materialTextureRefineDimension",512},
+              {"materialTextureRefineDimension",512},
              {"materialTextureColdFrames",120}}, &scene, log), log);
         const uint32_t slot = resources.logicalTextureIndices()[1];
         const uint32_t baseMip = resources.materialTextureFirstMips()[1];
@@ -720,9 +720,9 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
         ComputeProgram program;
-        const ComputeResourceBindingDesc layout{.binding = 0};
+        const ComputeResourceBindingDesc layout{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameters = kTextureFeedbackResourceLayout}, log), log);
+            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters)}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::array<std::unique_ptr<CommandBuffer>, 3> commands;
         QueueSubmissionTracker tracker;
@@ -741,7 +741,7 @@ public:
         } drain{context.graphicsQueue,frame};
         uint64_t frameIndex = 0;
         const auto dispatch = [&](CommandBuffer& command, Buffer& feedback, uint32_t mip, uint32_t samples) {
-            const ComputeDispatchBinding binding{.binding = 0, .buffer = &feedback};
+            const ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback), .buffer = &feedback};
             const uint32_t push[]{slot,mip,samples,0};
             require(program.dispatch({.commandBuffer = &command, .bindings = {&binding,1},
                 .pushData = push, .pushDataSize = sizeof(push)}), "feedback contract demand");
@@ -837,7 +837,7 @@ public:
         std::string log;
         require(resources.prepare(context.device, context.graphicsQueue,
             {{"path",path.string()}, {"materialTextureMaxDimension",128}, {"materialTextureBudgetMiB",4},
-             {"materialTextureStreaming",true}, {"materialTextureRefineDimension",512},
+              {"materialTextureRefineDimension",512},
              {"materialTextureColdFrames",16}}, &scene, log), log);
         const auto baseline = resources.textureStats().residentAllocationBytes;
         const uint32_t imageSlot = resources.logicalTextureIndices()[0];
@@ -847,11 +847,11 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
         const ComputeResourceBindingDesc layout[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
-            {.binding = 1}, {.binding = 2}, {.binding = 3, .kind = ComputeResourceBindingKind::Sampler}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, textures), .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, feedback)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, sampler), .kind = ComputeResourceBindingKind::Sampler}};
         ComputeProgram program;
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = layout, .requiresRayQuery = false, .resourceParameters = metallic::tests::kTextureStreamingProbeLayout}, log), log);
+            .bindings = layout, .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::TextureStreamingProbeResources)}, log), log);
         const SamplerDesc sampler{.mipFilter = SamplerFilter::Linear,
             .addressU = SamplerAddressMode::Repeat, .addressV = SamplerAddressMode::Repeat};
         std::unique_ptr<Buffer> output;
@@ -884,9 +884,9 @@ public:
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
             require(commands->synchronize({.buffers = {&ready, 1}}), "stability output ready");
             const ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .sampledImages = resources.materialTextureSnapshot()},
-                {.binding = 1, .buffer = feedback}, {.binding = 2, .buffer = output.get()},
-                {.binding = 3, .sampler = &sampler}};
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, textures), .sampledImages = resources.materialTextureSnapshot()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, feedback), .buffer = feedback}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output), .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, sampler), .sampler = &sampler}};
             struct Push { uint32_t slot, visible; float nearSourceLod, farSourceLod; };
             const Push push{imageSlot, visible ? 1u : 0u, .25f, 5.25f};
             require(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,

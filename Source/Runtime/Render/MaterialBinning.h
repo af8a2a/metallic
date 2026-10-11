@@ -15,15 +15,13 @@ inline constexpr uint32_t kMaterialTileHeight = 4;
 
 struct MaterialBinningDesc {
     TextureView* visibility = nullptr;
-    Buffer* records = nullptr;
+    Buffer* streamRecords = nullptr;
+    Buffer* streamGroups = nullptr;
     Buffer* instances = nullptr;
     Buffer* materials = nullptr;
     Buffer* shadingMaterials = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
-    Buffer* streamRecords = nullptr;
-    Buffer* streamGroups = nullptr;
-    uint32_t residentRecordCount = UINT32_MAX;
     // Dense active executable slots; slot zero is the background program.
     // Indexed by source MaterialInstance, never by visibility/mesh instance.
     // Empty selects the retained fixed-five-class baseline.

@@ -7,7 +7,9 @@
 #include <spdlog/spdlog.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 
 namespace {
@@ -25,10 +27,27 @@ bool nativeCompilation = false;
 std::string nativeEntry;
 metallic::render::SlangShaderDebugMode debugMode = metallic::render::SlangShaderDebugMode::CaptureSymbols;
 
+void setWorkerEnvironment(const char* value)
+{
+#ifdef _WIN32
+    _putenv_s("METALLIC_SHADER_WARMUP_JOBS", value ? value : "");
+#else
+    if (value) {
+        setenv("METALLIC_SHADER_WARMUP_JOBS", value, 1);
+    } else {
+        unsetenv("METALLIC_SHADER_WARMUP_JOBS");
+    }
+#endif
+}
+
 class ShaderWarmupStartupTest : public testing::Test {
 protected:
     void SetUp() override
     {
+        if (const char* value = std::getenv("METALLIC_SHADER_WARMUP_JOBS")) {
+            oldWorkerEnvironment_ = value;
+        }
+        setWorkerEnvironment(nullptr);
         compileCalls = 0;
         failCompilation = false;
         throwCompilation = false;
@@ -50,21 +69,78 @@ protected:
 
     void TearDown() override
     {
-        testing::internal::GetCapturedStdout();
-        testing::internal::GetCapturedStderr();
+        setWorkerEnvironment(oldWorkerEnvironment_ ? oldWorkerEnvironment_->c_str() : nullptr);
+        const auto output = testing::internal::GetCapturedStdout();
+        const auto errors = testing::internal::GetCapturedStderr();
+        if (HasFailure()) {
+            std::cout << output;
+            std::cerr << errors;
+        }
         spdlog::set_level(oldLogLevel_);
         std::cout.flags(oldFlags_);
         std::cout.precision(oldPrecision_);
     }
 
 private:
+    std::optional<std::string> oldWorkerEnvironment_;
     spdlog::level::level_enum oldLogLevel_;
     std::ios::fmtflags oldFlags_;
     std::streamsize oldPrecision_;
 };
 
+TEST_F(ShaderWarmupStartupTest, StartupHonorsWorkerEnvironment)
+{
+    setWorkerEnvironment("12");
+    EXPECT_EQ(metallic::render::warmupShadersForStartup(false), 0);
+    const auto output = testing::internal::GetCapturedStdout();
+    testing::internal::CaptureStdout();
+    EXPECT_NE(output.find("Shader warmup workers: 12\n"), std::string::npos);
+    EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
+}
+
+TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeCompilation)
+{
+    for (const char* value : {"0", "-1", "8x", "99999999999999999999999999999"}) {
+        setWorkerEnvironment(value);
+        EXPECT_EQ(metallic::render::warmupShadersForStartup(false), 2) << value;
+    }
+    EXPECT_EQ(compileCalls.load(), 0u);
+    EXPECT_EQ(adapterQueries.load(), 0u);
+}
+
+TEST_F(ShaderWarmupStartupTest, ExplicitJobsOverridesInvalidWorkerEnvironment)
+{
+    setWorkerEnvironment("invalid");
+    char program[] = "MetallicShaderCompiler";
+    char jobs[] = "--jobs";
+    char value[] = "1";
+    char* arguments[] = {program, jobs, value};
+    EXPECT_EQ(metallic::render::runShaderWarmup(3, arguments), 0);
+    const auto output = testing::internal::GetCapturedStdout();
+    testing::internal::CaptureStdout();
+    EXPECT_NE(output.find("Shader warmup workers: 1\n"), std::string::npos);
+}
+
+TEST_F(ShaderWarmupStartupTest, InspectionAndSkipIgnoreInvalidWorkerEnvironment)
+{
+    setWorkerEnvironment("invalid");
+    char program[] = "MetallicShaderCompiler";
+    char list[] = "--list";
+    char help[] = "--help";
+    char* listArguments[] = {program, list};
+    char* helpArguments[] = {program, help};
+    EXPECT_EQ(metallic::render::runShaderWarmup(2, listArguments), 0);
+    EXPECT_EQ(metallic::render::runShaderWarmup(2, helpArguments), 0);
+    EXPECT_EQ(metallic::render::warmupShadersForStartup(true), 0);
+    EXPECT_EQ(compileCalls.load(), 0u);
+}
+
 TEST_F(ShaderWarmupStartupTest, DefaultsToCompleteCatalogAndPreservesApplicationState)
 {
+    const auto requests = metallic::tools::shaderWarmupRequests();
+    const bool hasNativeRequests = std::ranges::any_of(requests, [](const auto& request) {
+        return request.descriptorHeapMode == metallic::render::SlangDescriptorHeapMode::Native;
+    });
     metallic::render::ShaderWarmupLaunchOptions options;
     EXPECT_FALSE(options.skip);
     spdlog::set_level(spdlog::level::debug);
@@ -72,9 +148,9 @@ TEST_F(ShaderWarmupStartupTest, DefaultsToCompleteCatalogAndPreservesApplication
     std::cout.precision(7);
     const auto flags = std::cout.flags();
     ASSERT_EQ(metallic::render::warmupShadersForStartup(options.skip), 0);
-    EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
+    EXPECT_EQ(compileCalls.load(), requests.size());
     EXPECT_FALSE(wrongDebugMode.load());
-    EXPECT_EQ(adapterQueries.load(), 0u);
+    EXPECT_EQ(adapterQueries.load(), hasNativeRequests ? 1u : 0u);
     EXPECT_EQ(spdlog::get_level(), spdlog::level::debug);
     EXPECT_EQ(std::cout.flags(), flags);
     EXPECT_EQ(std::cout.precision(), 7);
@@ -115,8 +191,11 @@ TEST_F(ShaderWarmupStartupTest, NativeStridesApplyOnlyToNativeRequestsWithoutExp
     ASSERT_FALSE(requests.empty());
     nativeEntry = requests.front().entry;
     const size_t nativeCount = std::ranges::count_if(requests, [](const auto& request) {
-        return request.entry == nativeEntry;
+        return request.descriptorHeapMode == metallic::render::SlangDescriptorHeapMode::Native ||
+            request.entry == nativeEntry;
     });
+    ASSERT_GT(nativeCount, 0u);
+    ASSERT_LT(nativeCount, requests.size());
     ASSERT_EQ(metallic::render::warmupShadersForStartup(false), 0);
     EXPECT_EQ(adapterQueries.load(), 1u);
     EXPECT_EQ(compileCalls.load(), requests.size());

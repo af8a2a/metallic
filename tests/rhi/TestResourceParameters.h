@@ -1,7 +1,7 @@
 #pragma once
 
-// Shared CPU/Slang resource declarations for GPU fixtures. Binding IDs exist
-// only on the CPU; shaders load these named descriptor handles and spans.
+// Shared CPU/Slang resource declarations for GPU fixtures. CPU manifests refer
+// directly to these members; shaders load the named descriptor handles and spans.
 #ifdef __cplusplus
 #include "Runtime/Render/Core/ShaderResourceABI.h"
 namespace metallic::tests {
@@ -18,6 +18,24 @@ namespace metallic::tests {
 #define TEST_STORAGE(T) ResourceHandle<RWTexture2D<T>>
 #define TEST_SPAN BufferSpan<uint>
 #define TEST_SAMPLER SamplerHandle
+#endif
+
+TEST_PUBLIC struct NamedResourceProbeResources
+{
+    TEST_PUBLIC TEST_BUFFER output;
+    TEST_PUBLIC TEST_SPAN input;
+};
+#ifdef __cplusplus
+static_assert(sizeof(NamedResourceProbeResources) == 16);
+#endif
+
+TEST_PUBLIC struct OptionalNamedResourceProbeResources
+{
+    TEST_PUBLIC TEST_BUFFER output;
+    TEST_PUBLIC TEST_BUFFER input;
+};
+#ifdef __cplusplus
+static_assert(sizeof(OptionalNamedResourceProbeResources) == 8);
 #endif
 
 TEST_PUBLIC struct AutoExposureFixtureResources
@@ -133,6 +151,7 @@ TEST_PUBLIC struct MaterialBinningProbeResources
 {
     TEST_PUBLIC TEST_STORAGE(uint) visibility;
     TEST_PUBLIC TEST_BUFFER records;
+    TEST_PUBLIC TEST_BUFFER groups;
     TEST_PUBLIC TEST_BUFFER instances;
     TEST_PUBLIC TEST_BUFFER materials;
     TEST_PUBLIC TEST_BUFFER shadingMaterials;
@@ -142,7 +161,7 @@ TEST_PUBLIC struct MaterialBinningProbeResources
     TEST_PUBLIC TEST_BUFFER output;
 };
 #ifdef __cplusplus
-static_assert(sizeof(MaterialBinningProbeResources) == 36);
+static_assert(sizeof(MaterialBinningProbeResources) == 40);
 #endif
 
 TEST_PUBLIC struct MaterialRuntimeProbeResources

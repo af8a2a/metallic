@@ -59,7 +59,6 @@ constexpr ValidationObjectType validationObjectType(VkObjectType type)
     case VK_OBJECT_TYPE_SWAPCHAIN_KHR: return ValidationObjectType::Swapchain;
     case VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR: return ValidationObjectType::AccelerationStructure;
     case VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_NV: return ValidationObjectType::AccelerationStructure;
-    case VK_OBJECT_TYPE_MICROMAP_EXT: return ValidationObjectType::Micromap;
     default: return ValidationObjectType::Unknown;
     }
 }

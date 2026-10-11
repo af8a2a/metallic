@@ -1,17 +1,11 @@
+#include "StreamRayTracingBindings.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
-
-#ifndef METALLIC_HAS_NTC
-#define METALLIC_HAS_NTC 0
-#endif
-
-#ifndef METALLIC_NTC_SHADER_INCLUDE_DIR
-#define METALLIC_NTC_SHADER_INCLUDE_DIR ""
-#endif
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -21,10 +15,23 @@ public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
         return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure};
+            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::AccelerationStructure, .geometry = true, .textureFeedback = true};
+    }
+
+    void describeSceneView(const RenderGraphExecutionContext& context, MeshletStreamFrameDesc& view) const override
+    {
+        SceneMaterialVisualizationPush push{};
+        buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), push);
+        describeStreamRayView(push, context.displayHeight(), context.properties(), view);
     }
 
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
+
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{GPUSceneSubsystem::kSubsystemId};
+        return required;
+    }
 
     bool supportsFrameOverlap() const override { return true; }
 
@@ -33,8 +40,6 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
-            .accelerationStructureRead().setOptional();
         reflection.addTextureOutput("color", "glTF material diagnostic visualization")
             .storageWrite()
             .transient(RenderGraphInitialization::FullOverwrite)
@@ -45,6 +50,8 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{
+            runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f),
+            runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f),
             runtimeEnumSetting(
                 "mode",
                 "Mode",
@@ -66,6 +73,7 @@ public:
                 }),
             runtimeBoolSetting("flipBitangent", "Flip Bitangent", false),
         };
+        appendStreamRayLODRuntimeSettings(settings);
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 0.42f, 1.15f},
@@ -93,28 +101,15 @@ public:
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
         Result<> result;
-        const bool ntcActive = sceneResources_.neuralTextures().active();
-        const bool positionFetch = context.device->capabilities().rayTracingPositionFetch;
-        const bool ntcCooperativeVector =
-            sceneResources_.neuralTextures().cooperativeVectorActive();
         if (rayQueryProgram_.valid() &&
-            compiledTextureCount_ == sceneResources_.materialTextureCount() &&
-            compiledPositionFetch_ == positionFetch &&
-            compiledNtcActive_ == ntcActive &&
-            compiledNtcCooperativeVector_ == ntcCooperativeVector) {
+            compiledTextureCount_ == sceneResources_.materialTextureCount()) {
             return {};
         }
         rayQueryProgram_.clear();
         rayQueryProgramEncoder_.clear();
 
         ShaderCompileResult computeCompile;
-        SceneRayQueryOptions shaderOptions{
-            .positionFetch = positionFetch, .hasNTC = ntcActive, .cooperativeVector = ntcCooperativeVector,
-        };
-#if METALLIC_HAS_NTC
-        shaderOptions.ntcInclude = METALLIC_NTC_SHADER_INCLUDE_DIR;
-#endif
-        const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization, shaderOptions);
+        const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization);
         const ShaderRequestView source(request);
         result = ShaderRegistry::instance().getShader(source.desc(), computeCompile.diagnostics)
             .transform([&](auto value) { computeCompile = std::move(value); });
@@ -135,69 +130,28 @@ public:
             return result;
         }
 
-        // Keep the conventional binding table stable; append NTC descriptors only when active.
         std::vector<ComputeResourceBindingDesc> bindings{
             ComputeResourceBindingDesc{
-                .binding = 0,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
                 .kind = ComputeResourceBindingKind::AccelerationStructure,
             },
             ComputeResourceBindingDesc{
-                .binding = 1,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output),
                 .kind = ComputeResourceBindingKind::StorageImage,
             },
             ComputeResourceBindingDesc{
-                .binding = 2,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
                 .kind = ComputeResourceBindingKind::StorageBuffer,
             },
             ComputeResourceBindingDesc{
-                .binding = 3,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeResourceBindingDesc{
-                .binding = 4,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeResourceBindingDesc{
-                .binding = 5,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeResourceBindingDesc{
-                .binding = 6,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeResourceBindingDesc{
-                .binding = 7,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
                 .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = sceneResources_.materialTextureCount(),
             },
         };
-        bindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
-        if (!positionFetch) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
-        }
-        if (ntcActive) {
-            bindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureLatentsBinding,
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kMaxNeuralTextureSets,
-            });
-            bindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureConstantsBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureWeightsBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureSetInfoBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back(ComputeResourceBindingDesc{
-                .binding = kNeuralTextureSamplerBinding,
-                .kind = ComputeResourceBindingKind::Sampler,
-            });
-        }
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer});
+        appendStreamRayLayout(bindings);
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
         std::string programLog;
         result = initializeResourceKernel(
             *context.device,
@@ -206,7 +160,7 @@ public:
                 .pushConstantSize = sizeof(SceneMaterialVisualizationPush),
                 .bindings = bindings,
                 .debugName = "SceneMaterialVisualizationPass",
-                .resourceParameters = kSceneVisualizationResourceLayout,
+                .resourceParameterSize = sizeof(SceneResourceParameters),
             }, rayQueryProgram_, rayQueryProgramEncoder_,
             programLog);
         if (!programLog.empty()) {
@@ -220,10 +174,7 @@ public:
             rayQueryProgramEncoder_.clear();
             return result;
         }
-        compiledNtcActive_ = ntcActive;
         compiledTextureCount_ = sceneResources_.materialTextureCount();
-        compiledPositionFetch_ = positionFetch;
-        compiledNtcCooperativeVector_ = ntcCooperativeVector;
         return {};
     }
 
@@ -243,76 +194,37 @@ public:
         SceneMaterialVisualizationPush push;
         buildPush(context.width(), context.height(), context.properties(), sceneResources_.bounds(), push);
         push.materialTextureCount = sceneResources_.materialTextureCount();
-        push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
 
         Result<> result;
 
+        const auto* prepared = context.preparedScene();
+        if (!prepared || !prepared->geometry) { return makeError(Error::InvalidArgument); }
+        const auto streamGeometry = prepared->geometry->deferredGpuResources();
+        if (!streamGeometry.valid() || !streamGeometry.accelerationStructure) { return makeError(Error::InvalidArgument); }
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{
-                .binding = 0,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene),
                 .accelerationStructure =
-                    context.inputAccelerationStructure("accelerationStructure")
-                        ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure(),
+                    streamGeometry.accelerationStructure,
             },
             ComputeDispatchBinding{
-                .binding = 1,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, output),
                 .textureView = color.view(),
             },
             ComputeDispatchBinding{
-                .binding = 2,
-                .buffer = sceneResources_.shadingVertexBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 3,
-                .buffer = sceneResources_.indexBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 4,
-                .buffer = sceneResources_.primitiveBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 5,
-                .buffer = sceneResources_.instanceBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 6,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
                 .buffer = sceneResources_.materialBuffer(),
             },
             ComputeDispatchBinding{
-                .binding = 7,
+                .binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures),
                 .textureViews = materialTextureViews,
+                .sampledImages = sceneResources_.materialTextureSnapshot(),
             },
         };
-        const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
-        bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()
+        appendStreamRayBindings(bindings, streamGeometry, prepared->geometry->shadingChangeBuffer());
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = sceneResources_.materialBinding()->valueBuffer()
             ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()});
-        if (sceneResources_.fallbackPositionBuffer() != nullptr) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
-        }
-        if (neuralTextures.active()) {
-            const auto& latentViews = neuralTextures.latentTextureViews();
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureLatentsBinding,
-                .textureViews = latentViews,
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureConstantsBinding,
-                .buffer = neuralTextures.constantsBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureWeightsBinding,
-                .buffer = neuralTextures.weightsBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureSetInfoBinding,
-                .buffer = neuralTextures.setInfoBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureSamplerBinding,
-                .sampler = &neuralTextures.latentSampler(),
-            });
-        }
         result = dispatchResources(rayQueryProgram_, rayQueryProgramEncoder_, ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
             .bindings = bindings,
@@ -515,10 +427,7 @@ private:
     Queue* graphicsQueue_ = nullptr;
     ComputeKernel rayQueryProgram_;
     ComputeResourceEncoder rayQueryProgramEncoder_;
-    bool compiledNtcActive_ = false;
     uint32_t compiledTextureCount_ = 0;
-    bool compiledPositionFetch_ = false;
-    bool compiledNtcCooperativeVector_ = false;
 };
 
 } // namespace

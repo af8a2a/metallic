@@ -1,5 +1,11 @@
 # Static ray-tracing coverage acceleration
 
+> Historical reference (archived 2026-10-11): the triangle BLAS and opacity-micromap
+> APIs described below have been removed. Current ray tracing requires streamed
+> CLAS geometry and evaluates material alpha in the shader. See
+> [Project architecture](ProjectArchitecture.md) and
+> [streamed geometry attributes](SceneShadingVertices.md) for the current contract.
+
 Applications provide geometry and static coverage semantics to the RHI. The
 Vulkan implementation optionally accelerates coverage with opacity micromaps
 (OMM); micromap formats, subdivisions, usage histograms, storage, build commands
@@ -10,7 +16,7 @@ shader alpha traversal.
 
 `RayTracingCoverageDesc` describes MASK/BLEND mode, alpha factor/cutoff, CPU RGBA8
 pixels and transformed UVs in original BLAS triangle order. Its sampling contract
-matches `AlphaCoverage.hlsli`: four-tap bilinear, repeat wrapping and the supplied
+matches `AlphaCoverage.slang`: four-tap bilinear, repeat wrapping and the supplied
 finest-resident image. Empty pixels mean constant texture alpha one. Missing,
 dynamic or otherwise unavailable coverage is represented by a null geometry
 `coverage` pointer.

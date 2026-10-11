@@ -26,8 +26,7 @@ git submodule update --init --recursive -- External/openpbr-bsdf
 ```
 
 The Vulkan backend requires `VK_KHR_device_address_commands` with
-`deviceAddressCommands` and `bufferDeviceAddress` enabled, independently of
-opacity micromap support. Unsupported devices fail initialization with
+`deviceAddressCommands` and `bufferDeviceAddress` enabled. Unsupported devices fail initialization with
 `Unsupported`. Indirect dispatch, indirect mesh draws, and buffer transfers use
 device-address commands; buffers with these usages receive device addresses
 without an explicit `ShaderDeviceAddress` request from the caller.
@@ -80,7 +79,7 @@ cache identity. Scene requests include the runtime `METALLIC_CUSTOM_MATERIALS=0`
 default so prewarmed OpenPBR and path-tracing binaries are reused.
 
 The catalog deduplicates complete requests after generation. Conventional scene
-variants cover resident/streamed materials, supported position-fetch settings,
+variants use streamed geometry and CLAS ray queries,
 Deferred global/local views, FP16/FP32, guides and material classes. Editor display
 requests share a factory with runtime and include SDR/scRGB/HDR10 paths at the
 standard 80/203-nit reference whites.
@@ -91,7 +90,7 @@ material compiler to generate the same content-keyed include, then their declare
 graph shader requests are appended, including custom Surface/Closure programs.
 This preparation loads no geometry or textures and requires no GPU. Optional
 catalogs that do not exist add no requests. Changing generated material source
-after warmup, a new external scene, SDK-specific NTC/NRD permutations or arbitrary
+after warmup, a new external scene, SDK-specific NRD permutations or arbitrary
 display reference whites can still require compilation on demand. Debug mode and
 mapped/native descriptor mode remain separate cache identities.
 
@@ -123,6 +122,125 @@ runtime DLL is required. Select `cacheMode: "sharc"` in a `ScenePathTracePass`
 graph node, or run the `pathtracing-sharc-meet-mat` sample. `cacheMode: "off"`
 keeps uncached path tracing available.
 
+OpenPBR also supports SHaRC with `exportDenoiserGuides: true`, including the
+DLSS Ray Reconstruction F preset. Enable `cacheMode: "sharc"` on `PathTrace`;
+the RR mode and guide connections stay the same. Runtime controls include:
+
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `sharc.updateStride` | 5 | Trace one cache-training path per stride × stride pixel block per frame. |
+| `sharc.updateMaxDepth` | 12 | OpenPBR training-path depth, independent of the image path's `maxDepth`. |
+| `sharc.queryMinDepth` | 1 | Earliest cache query; primary surfaces are depth 0 and always shaded. |
+| `sharc.minRoughness` | 0.25 | Minimum roughness for directional specular caching (hard floor 0.2); diffuse caching is independent. |
+| `sharc.lobeMask` | 3 | 1 = diffuse only, 2 = directional specular only, 3 = both (OpenPBR). |
+| `sharc.entriesLog2` | 22 | Total entry budget, divided equally between the two OpenPBR caches. |
+| `sharc.sceneScale` | 0 | Hash-grid scale; 0 derives it from scene bounds. |
+
+The image path terminates when a mature cache entry can replace its indirect
+tail. A cache miss continues the reference integrator up to `maxDepth`; lowering
+that limit also truncates cold-cache and unsupported-material paths. Training
+uses independent frame-varying samples even when `accumulate` is false, as in
+RR graphs. The cache stores scene-linear radiance before exposure and primary
+aerial perspective. Camera motion retains history; scene/lighting changes,
+grid scale, component selection, training depth and material-debug policy changes invalidate it.
+
+OpenPBR stores the native BSDF's diffuse and specular outgoing radiance in
+independent hash-table partitions. Diffuse keys include world position, material,
+shading normal and quantized material parameters. Specular keys additionally
+include an octahedral outgoing-direction bin; angular cells become smaller as
+roughness decreases. Metal multiple scattering stays in the specular component,
+as defined by OpenPBR. The allocation remains 40 bytes per total entry: the
+default 2^22 entries consume 160 MiB, split into two 80 MiB partitions.
+
+Direct-light evaluation and BSDF sampling retain OpenPBR's two RGB weights and
+the complete mixture PDF. A partial hit replaces only that component's direct
+and indirect radiance; the missing component continues tracing with its original
+mixture weight. Both caches must be available (or a component physically absent)
+to terminate the whole path. Training registers two vertices and propagates the
+complete suffix to both; a full-cache bootstrap may shorten that suffix, but a
+miss or full tracking array never silently drops later contributions. Cached
+samples are normalized once per registered component, including sky misses.
+
+This is a spatial/angular approximation of outgoing radiance, not a universal
+irradiance field: diffuse view dependence and finite voxel/direction bins remain
+approximations. Metal and mixed diffuse/specular materials are supported; very
+sharp specular lobes, transmission, media, subsurface, coat, fuzz, thin film,
+anisotropy and emission retain reference transport. Delta incoming rays, close
+contacts and footprints smaller than a voxel also continue tracing. At least
+two diffuse or eight specular samples and two frame ages are required for reuse.
+Primary RR guides and first specular hit distance still use actual geometry.
+
+OpenPBR uses a separate resolve permutation with adjacent-level blending
+disabled: its opaque material/direction keys cannot be decoded as SHaRC spatial
+keys. Camera motion retains entries and naturally misses when grid levels or
+angular cells change; stale entries expire normally. The standard BSDF keeps
+the original SHaRC resolve. Neither path adds screen-space history reuse.
+
+Build `MetallicRHITests` before running the focused checks:
+
+```powershell
+.\build-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.openpbr_sharc_guides_and_history:RHIRendering.openpbr_sharc_mixed_components:RHIRendering.openpbr_sharc_directional_metal --rhi-validation
+.\build-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.openpbr_sharc_dlss_rr_ab --rhi-streamline --rhi-no-validation
+```
+
+The room tests compare Off, NoQuery, both components, diffuse only and specular
+only on rough dielectric, mixed and metal materials. They check exact miss/guide
+equivalence, energy and image error, live camera motion and history invalidation.
+The BSDF closure probe independently checks both component weights against native
+OpenPBR evaluation and sampling. The RR test records matched 1080p DLSS Quality F
+far/near AB/BA runs, with 32 warmup and 32 measured frames per case. Its PT
+timings include cache update and resolve; they are not end-to-end frame times.
+Generated JSON and images remain in the test output directory.
+
+The component-separated room checks on RTX 5060 / Release with Vulkan validation
+enabled used 96x96, 4 spp, depth 8, stride 2, 2^16 total entries, 32 warmup and
+64 averaged frames. Both components enabled gave the following HDR errors versus
+uncached tracing (these include Monte Carlo noise):
+
+| Room material | Relative RMSE | Cached/reference energy | Moving-camera relative RMSE |
+| --- | ---: | ---: | ---: |
+| Rough dielectric | 4.01% | 0.9957 | 10.71% |
+| Mixed diffuse/specular | 3.23% | 0.9938 | 9.42% |
+| Metal | 2.52% | 0.9981 | 7.99% |
+
+All three also passed separate diffuse-only and specular-only comparisons,
+exact cache-miss and seven-guide equivalence, and scale/component/light history
+invalidation. Pure metal with diffuse-only caching matched the reference exactly.
+The moving check retained warmed caches over 32 frames while translating the
+camera laterally and toward the scene. This small fixture does not establish
+full-scene speedups or artifact-free motion for arbitrary materials.
+
+On 2026-10-10, RTX 5060 / NVIDIA 616.92 / Release, the component-separated
+implementation on the chess sample at 1080p output, DLSS Quality F, 2 spp and
+depth 12 measured the following pooled medians. Each mode used two runs in
+AB/BA order, 32 warmup and 32 measured frames per run, warm shaders/PSOs/cache,
+validation disabled and the editor closed. PT includes update and resolve.
+
+| View | Cache off PT | Split-cache PT | PT time change |
+| --- | ---: | ---: | ---: |
+| Far | 7.75 ms | 8.32 ms | +7.3% |
+| Near | 41.80 ms | 42.02 ms | +0.5% |
+
+RR remained approximately 3.5-3.6 ms. The separate caches expand material
+coverage and pass correctness checks, but do not yet accelerate this workload.
+The production RR sample therefore still defaults to cache off; these results
+do not justify reducing reference fallback depth. Directional bins need more
+samples to become reusable, and lookup/training/resolve costs remain even when
+most tails must continue. Quantifying hit rates and the remaining material
+execution cost is necessary before claiming a speedup.
+
+The RR A/B body completed and saved static and moving-camera images and timing
+JSON. This run again stalled at global teardown, consistent with the previously
+isolated Streamline shutdown issue; its process was terminated after preserving
+evidence. It is not a clean process-exit pass. The prior cache-off
+`working_color_dlss_rr_history` test reproduced the same shutdown stall. The
+benchmark presents through a hidden swapchain each frame for SDK bookkeeping.
+Six GPU checks (three room fixtures, standard SHaRC lighting and history, and
+the OpenPBR component probe), one shader-variant compile check and nine
+shader-request checks completed normally. Generated evidence stays outside source control in
+`.cache/OpenPBRSplitAcceptance`, `.cache/OpenPBRSplitClosure` and
+`.cache/OpenPBRSplitRRPerf`.
+
 ## Release and optimized debugging
 
 Native configure and build presets provide both optimized configurations:
@@ -150,19 +268,17 @@ without Nsight capture. Set `METALLIC_SHADER_CAPTURE_SYMBOLS=1` explicitly when
 source and function views are needed. `METALLIC_SHADER_CAPTURE_SYMBOLS=0` disables
 the RelWithDebInfo symbol default, including during capture.
 
-Runtime and manual warmup use direct SPIR-V generation with `-O0` and an explicit
-lightweight `spirv-opt` pass sequence: dead-function elimination, local single-block
-and single-store cleanup, instruction simplification, dead-branch elimination,
-CFG cleanup, aggressive dead-code elimination and ID compaction. This avoids the
-default preset's exhaustive entry-point inlining and its large debug-info cost.
+Runtime and manual warmup use direct SPIR-V generation with Slang's default
+`-O1` optimization policy. The backend uses its default optimization passes;
+Metallic does not override them with a custom `spirv-opt` sequence.
 Capture symbols retain embedded source and NonSemantic function/call-site records.
 The optimization level, backend and pass sequence are included in cache identity;
-old optimized cache entries are not reused. The Vulkan driver can still inline and
+old O0/custom-pass cache entries are not reused. The Vulkan driver can still inline and
 optimize during pipeline creation, so compare pipeline creation and GPU execution
 separately from Slang compilation. Use
-`--nsight-shader-debug` for shader debugging (`-g2 -O0`, without cleanup passes),
+`--nsight-shader-debug` for explicit shader debugging (`-g2 -O0`),
 not representative runtime profiling. Capture-symbol profiling uses the runtime
-cleanup policy; actual source/call-site correlation must be verified in Nsight.
+O1 policy; actual source/call-site correlation must be verified in Nsight.
 The former `-g1` mode only emitted paths/lines and was insufficient for Nsight's
 high-level source and function views. The cache request version has been bumped
 so those old binaries are not reused. Restart the rebuilt executable and make a
@@ -288,21 +404,13 @@ direct callers; opting into Device metadata requires pumping
 when root pages should remain lazy. See the
 [implementation and validation](ZorahFullNsightFixImplementation20260930.md).
 
-When Nsight Graphics capture injection is active, opacity micromaps use the
-`VK_EXT_opacity_micromap` backend, including native EXT builds and shader support.
-Ordinary execution uses `VK_KHR_opacity_micromap`. This avoids the current capture
-interceptor's KHR OMM null-range crash while retaining OMM acceleration. See the
-[investigation and workaround](NsightKhrOpacityMicromapInvestigation.md).
-TODO(Nsight KHR OMM): Remove the temporary EXT path after Nsight Graphics supports
-KHR OMM and the injected build/capture/replay checks in that document pass.
-The RHI test runner can reproduce the capture path with
-`--rhi-nsight-capture --gtest_filter='*opacity_micromap*'`.
+Ray tracing uses streamed CLAS geometry exclusively. Traditional triangle BLAS,
+position-fetch and opacity micromap paths, including the former Nsight KHR/EXT
+OMM workaround, have been removed. An explicit `enableRayQuery` device request
+also requires CLAS; unsupported hardware returns `Unsupported`. Raster-only
+devices do not acquire this requirement. TLAS and PTLAS remain supported over
+CLAS-built bottom levels; production scene streaming currently uses standard TLAS.
 
-The Nsight EXT path also supplies explicit UINT32 identity OMM indices to avoid
-the replayer's null dereference when restoring implicit indices. Buffers are
-retained by their OMM; ordinary KHR behavior is unchanged. Restart the rebuilt
-application and create a fresh capture, since existing files keep their original
-build parameters. See [replay evidence and removal TODO](NsightCaptureReplayInvestigation.md).
 To export a warmed-up Sponza frame without a window, run
 `MetallicRHITests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-export --rhi-no-validation --gtest_filter='*gpu_driven_sponza_realtime_pipeline' --output-dir .tmp/nsight-replay`.
 The runner prints the capture path under the output directory's `nsight` folder;
@@ -359,7 +467,7 @@ Installed packages live in `.cache/dependencies/<sha256>`, outside `build-full`.
 Deleting or cleaning the application build therefore keeps the dependency
 binaries. A clean full build imports those four libraries with `find_package`;
 their C/C++ sources do not enter its build graph. Smaller libraries, GoogleTest,
-and NTC when enabled still build from source. Streamline retains its existing
+and the explicitly requested reserved NTC target still build from source. Streamline retains its existing
 SDK binary integration.
 
 NRD now uses vendored shaders and Metallic-owned dispatch scheduling. Enabling

@@ -1,3 +1,10 @@
+#ifndef SHARC_UPDATE
+#define SHARC_UPDATE 0
+#endif
+#ifndef SHARC_QUERY
+#define SHARC_QUERY 0
+#endif
+
 import Atmosphere;
 #include "SceneSurface.slang"
 #include "SceneFiberPath.slang"
@@ -10,21 +17,22 @@ import Atmosphere;
 //   SHARC_UPDATE=1    sparse SHaRC update pass (populates the hash-grid cache)
 //   SHARC_QUERY=1     full-resolution pass with SHaRC early termination
 // ---------------------------------------------------------------------------
-#if defined(SHARC_UPDATE) || defined(SHARC_QUERY)
+#if SHARC_UPDATE || SHARC_QUERY
 #define METALLIC_PT_SHARC 1
 #else
 #define METALLIC_PT_SHARC 0
 #endif
 
 #if METALLIC_PT_SHARC
-#include "../../ThirdParty/RadianceCache/Sharc/SharcCommon.h"
+import SHARC;
+using Metallic.SHARC;
 #endif
 
 // Cache mode pushed through the per-frame parameter buffer.
 #define METALLIC_CACHE_MODE_OFF 0
 #define METALLIC_CACHE_MODE_SHARC 1
 
-// Per-frame radiance-cache parameters (binding 20). Layout must match
+// Per-frame radiance-cache parameters (binding 24). Layout must match
 // ScenePathTraceCacheParams in BuiltinPassCommon.h byte for byte.
 struct ScenePathTraceCacheParams
 {
@@ -39,190 +47,66 @@ struct ScenePathTraceCacheParams
     uint sharcUpdateStride;
     uint width;
     uint height;
+    uint sharcQueryMinDepth;
+    float sharcMinRoughness;
+    uint sharcLobeMask;
 };
 
-// Match the tightly packed 68-byte CPU constants.
+// Match the tightly packed 80-byte CPU constants.
 typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
+// Keep sparse training code unchanged: hash insertion/atomic order can affect
+// temporal cache contents. Narrow resource reads are for the shading/query path.
+#if SHARC_UPDATE
 #define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameters<SceneResourceParameters>().cacheParams)
-
-#if METALLIC_PT_SHARC
-#define gSharcHashEntries resolveBuffer<RWStructuredBuffer<uint64_t>>(getResourceParameters<SceneResourceParameters>().sharcHashEntries)
-
-#define gSharcAccumulation resolveBuffer<RWStructuredBuffer<SharcAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation)
-
-#define gSharcResolved resolveBuffer<RWStructuredBuffer<SharcPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved)
+#else
+#define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneCacheParamsOffset))
 #endif
 
 #define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
-#if METALLIC_STREAM_RAY_QUERIES || (METALLIC_STREAM_SHADOWS && METALLIC_STREAM_TLAS)
+#if !METALLIC_REALTIME_DEFERRED
 #include "StreamSceneRayQuery.slang"
 #endif
 
 bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTracePush push)
 {
-#if METALLIC_STREAM_RAY_QUERIES
+#if METALLIC_REALTIME_DEFERRED
+    return false;
+#else
     Ray ray; ray.origin = origin; ray.direction = direction;
     HitInfo hit;
-    return traceStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit);
-#elif METALLIC_STREAM_MATERIALS
-    return false; // Streamed opaque shading consumes the main-light shadow pass.
-#else
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.Direction = direction;
-    ray.TMin = 0.001;
-    ray.TMax = max(maxDistance, 0.001);
+    return traceStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit, true);
+#endif
+}
 
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            alphaMaskAcceptsHit(
-                query.CandidateInstanceIndex(),
-                query.CandidatePrimitiveIndex(),
-                query.CandidateTriangleBarycentrics(),
-                push)) {
-            query.CommitNonOpaqueTriangleHit();
-        }
+bool traceClosestImpl(Ray ray, ScenePathTracePush push, bool classifyShadow,
+    out bool opaqueShadow, out HitInfo hit)
+{
+    opaqueShadow = false;
+#if METALLIC_REALTIME_DEFERRED
+    hit = (HitInfo)0;
+    return false;
+#else
+    bool found = traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
+    if (found && classifyShadow) {
+        PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
+        opaqueShadow = material.textureParams.w <= 1.5 && material.glassParams.x == 0.0;
     }
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    return found;
 #endif
 }
 
 bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 {
-#if METALLIC_STREAM_RAY_QUERIES
-    return traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
-#elif METALLIC_STREAM_MATERIALS
-    hit = (HitInfo)0;
-    return false; // Streamed opaque shading consumes the main-light shadow pass.
-#else
-    hit = HitInfo();
-    hit.t = 0.0;
-    hit.position = ray.origin;
-    hit.normal = float3(0.0, 1.0, 0.0);
-    hit.geometryNormal = hit.normal;
-    hit.tangent = float4(1.0, 0.0, 0.0, 1.0);
-    hit.bitangent = float3(0.0, 0.0, 1.0);
-    hit.texcoord = float2(0.0, 0.0);
-    hit.materialIndex = 0u;
-    hit.instanceIndex = 0u;
-    hit.primitiveIndex = 0u;
-    hit.triangleIndex = 0u;
-    hit.rayConeLodConstant = 0.0;
-    hit.frontFace = true;
+    bool unusedOpaqueShadow;
+    return traceClosestImpl(ray, push, false, unusedOpaqueShadow, hit);
+}
 
-    RayDesc rayDesc;
-    rayDesc.Origin = ray.origin;
-    rayDesc.Direction = ray.direction;
-    rayDesc.TMin = max(push.clipOrtho.x, 0.0001);
-    rayDesc.TMax = max(push.clipOrtho.y, rayDesc.TMin + 0.0001);
-
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, rayDesc);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            alphaMaskAcceptsHit(
-                query.CandidateInstanceIndex(),
-                query.CandidatePrimitiveIndex(),
-                query.CandidateTriangleBarycentrics(),
-                push)) {
-            query.CommitNonOpaqueTriangleHit();
-        }
-    }
-
-    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-        return false;
-    }
-
-    uint instanceIndex = query.CommittedInstanceIndex();
-    PathTraceInstance instance = gInstances[instanceIndex];
-    PathTracePrimitive primitive = gPrimitives[instance.primitiveIndex];
-    uint triangleIndex = query.CommittedPrimitiveIndex();
-    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-
-    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
-    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
-    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0];
-    SceneShadingVertex v1 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1];
-    SceneShadingVertex v2 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2];
-
-    float2 bary = query.CommittedTriangleBarycentrics();
-    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-
-#if SCENE_RAYQUERY_ENABLE_POSITION_FETCH
-    // Position fetch returns object-space positions in triangle vertex order.
-    // Attributes still use the indexed vertex buffer; keep the same TBN basis.
-    float3 positions[3] = query.CommittedGetIntersectionTriangleVertexPositions();
-    float3 p0 = positions[0];
-    float3 p1 = positions[1];
-    float3 p2 = positions[2];
-#else
-    float3 p0 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i0);
-    float3 p1 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i1);
-    float3 p2 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i2);
-#endif
-    float2 uv0 = v0.texcoord;
-    float2 uv1 = v1.texcoord;
-    float2 uv2 = v2.texcoord;
-    float3 localNormal = decodeSceneNormal(v0.normal) * weights.x +
-        decodeSceneNormal(v1.normal) * weights.y + decodeSceneNormal(v2.normal) * weights.z;
-    float3 localNormalFallback = safeNormalize(localNormal, float3(0.0, 1.0, 0.0));
-    float3 localGeometryNormal = safeTriangleNormal(
-        p1 - p0,
-        p2 - p0,
-        localNormalFallback);
-    localNormal = dot(localNormal, localNormal) > 0.000001 ? safeNormalize(localNormal, localGeometryNormal) : localGeometryNormal;
-    hit.texcoord = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
-
-    float3x4 worldToObject = query.CommittedWorldToObject3x4();
-    float3x4 objectToWorld = query.CommittedObjectToWorld3x4();
-    float handedness = determinant((float3x3)objectToWorld) < 0.0 ? -1.0 : 1.0;
-    hit.t = query.CommittedRayT();
-    hit.position = ray.origin + ray.direction * hit.t;
-    hit.geometryNormal = safeNormalize(transformObjectNormalToWorld(localGeometryNormal, worldToObject), localGeometryNormal);
-    hit.normal = safeNormalize(transformObjectNormalToWorld(localNormal, worldToObject), hit.geometryNormal);
-    hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
-
-    float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
-    float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
-    float tangentSign = 1.0;
-    if ((primitive.flags & kPrimitiveHasAuthoredTangents) != 0u) {
-        float4 localTangent = decodeSceneTangent(v0.tangent) * weights.x +
-            decodeSceneTangent(v1.tangent) * weights.y + decodeSceneTangent(v2.tangent) * weights.z;
-        float3 localTangentDirection = dot(localTangent.xyz, localTangent.xyz) > 0.000001
-            ? safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0))
-            : float3(1.0, 0.0, 0.0);
-        tangentSign = (localTangent.w >= 0.0 ? 1.0 : -1.0) * handedness;
-        float3 worldTangent = safeNormalize(mul(objectToWorld, float4(localTangentDirection, 0.0)), fallbackTangent);
-        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
-        hit.tangent = float4(worldTangent, tangentSign);
-        hit.bitangent = safeNormalize(cross(hit.normal, worldTangent) * tangentSign, cross(hit.normal, fallbackTangent));
-    } else {
-        float3 localTriangleTangent;
-        float3 localTriangleBitangent;
-        computeTriangleTangentSpace(p0, p1, p2, uv0, uv1, uv2, localNormal, localTriangleTangent, localTriangleBitangent);
-        float3 worldTangent = safeNormalize(mul(objectToWorld, float4(localTriangleTangent, 0.0)), fallbackTangent);
-        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
-        float3 worldBitangent = safeNormalize(mul(objectToWorld, float4(localTriangleBitangent, 0.0)), cross(hit.normal, worldTangent));
-        worldBitangent = safeNormalize(worldBitangent - hit.normal * dot(hit.normal, worldBitangent), cross(hit.normal, worldTangent));
-        tangentSign = dot(cross(hit.normal, worldTangent), worldBitangent) < 0.0 ? -1.0 : 1.0;
-        hit.tangent = float4(worldTangent, tangentSign);
-        hit.bitangent = worldBitangent;
-    }
-
-    hit.tangent.w *= push.bitangentFlip;
-    hit.bitangent *= push.bitangentFlip;
-
-    hit.materialIndex = instance.materialIndex;
-    hit.instanceIndex = instanceIndex;
-    hit.primitiveIndex = instance.primitiveIndex;
-    hit.triangleIndex = triangleIndex;
-    hit.rayConeLodConstant = instance.rayConeLodConstant;
-    return true;
-#endif
+bool traceClosestShadow(Ray ray, ScenePathTracePush push, out bool opaqueShadow, out HitInfo hit)
+{
+    // Ordered traversal is essential for nested media and transparent layers.
+    // Streamed geometry deliberately retains its existing full decode path.
+    return traceClosestImpl(ray, push, true, opaqueShadow, hit);
 }
 
 // Per-path radiance-cache state. Members exist only in permutations that use
@@ -230,8 +114,10 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 struct PathTraceCacheContext
 {
 #if METALLIC_PT_SHARC
-    SharcParameters sharc;
-    SharcState sharcState;
+    SHARCParameters sharc;
+#if SHARC_UPDATE
+    SHARCState sharcState;
+#endif
 #endif
     float materialRoughnessPrev;
 };
@@ -275,8 +161,8 @@ float3 pathTrace(
                     ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
             }
             radiance += throughput * missRadiance;
-#if METALLIC_PT_SHARC
-            SharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+            sharcUpdateMiss(cache.sharc, cache.sharcState, missRadiance);
 #endif
             break;
         }
@@ -450,16 +336,16 @@ float3 pathTrace(
         // mirroring the reference treatment of skipped delta vertices.
         // ------------------------------------------------------------------
 #if METALLIC_PT_SHARC
-        SharcHitData sharcHitData;
+        SHARCHitData sharcHitData;
         sharcHitData.positionWorld = hit.position;
         sharcHitData.normalWorld = hit.geometryNormal;
 
 #if SHARC_QUERY
         // Camera hits must retain exact material/normal and direct-light detail.
         // The cache is only filtered enough to query after a surface bounce.
-        if (depth > 0u) {
-            uint gridLevel = HashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
-            float voxelSize = HashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
+        if (depth >= max(gCacheParams[0].sharcQueryMinDepth, 1u)) {
+            uint gridLevel = hashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
+            float voxelSize = hashGridGetVoxelSize(gridLevel, cache.sharc.hashGridParameters);
             bool isValidHit = hit.t > voxelSize * sqrt(3.0);
 
             float roughnessPrev = min(cache.materialRoughnessPrev, 0.99);
@@ -468,7 +354,7 @@ float3 pathTrace(
             isValidHit &= footprint > voxelSize;
 
             float3 sharcRadiance;
-            if (isValidHit && SharcGetCachedRadiance(cache.sharc, sharcHitData, sharcRadiance)) {
+            if (isValidHit && sharcGetCachedRadiance(cache.sharc, sharcHitData, sharcRadiance)) {
                 radiance += sharcRadiance * throughput;
                 break; // Terminate the path once we've looked up into the cache
             }
@@ -555,7 +441,7 @@ float3 pathTrace(
 #if METALLIC_PT_SHARC && SHARC_UPDATE
         // Feed the signal accumulated for this segment (emissive + direct
         // lighting) into the cache. Returning false means the path must stop.
-        if (!SharcUpdateHit(cache.sharc, cache.sharcState, sharcHitData, radiance, rand(seed))) {
+        if (!sharcUpdateHit(cache.sharc, cache.sharcState, sharcHitData, radiance, rand(seed))) {
             break;
         }
 #endif
@@ -605,7 +491,7 @@ float3 pathTrace(
 #if METALLIC_PT_SHARC && SHARC_UPDATE
         // Hand the segment throughput to the cache; each segment is
         // accumulated independently afterwards.
-        SharcSetThroughput(cache.sharcState, throughput);
+        sharcSetThroughput(cache.sharcState, throughput);
 #endif
 
         if (depth >= 2u) {
@@ -633,17 +519,28 @@ PathTraceCacheContext makeCacheContext()
     PathTraceCacheContext cache;
     ScenePathTraceCacheParams params = gCacheParams[0];
 #if METALLIC_PT_SHARC
+#if !SHARC_UPDATE
+    let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+#endif
     cache.sharc.hashGridParameters.cameraPosition = params.sharcCameraPosition.xyz;
-    cache.sharc.hashGridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    cache.sharc.hashGridParameters.logarithmBase = kSHARCGridLogarithmBase;
     cache.sharc.hashGridParameters.sceneScale = max(params.sharcSceneScale, 0.0001);
-    cache.sharc.hashGridParameters.levelBias = SHARC_GRID_LEVEL_BIAS;
+    cache.sharc.hashGridParameters.levelBias = kSHARCGridLevelBias;
 
     cache.sharc.hashGridData.capacity = params.sharcEntriesNum;
-    cache.sharc.hashGridData.hashEntriesBuffer = gSharcHashEntries;
-    cache.sharc.accumulationBuffer = gSharcAccumulation;
-    cache.sharc.resolvedBuffer = gSharcResolved;
+#if SHARC_UPDATE
+    cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(getResourceParameters<SceneResourceParameters>().sharcHashEntries);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved);
+#else
+    cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(resources.sharcHashEntries);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(resources.sharcAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(resources.sharcResolved);
+#endif
     cache.sharc.radianceScale = 1.0e3;
-    SharcInit(cache.sharcState);
+#if SHARC_UPDATE
+    sharcInit(cache.sharcState);
+#endif
 #endif
     cache.materialRoughnessPrev = 1.0;
     return cache;
@@ -726,12 +623,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     if (push.enableAccumulation != 0u) {
-        if (push.hasHistory != 0u) {
-            float accumulationWeight = 1.0 / float(push.accumulationFrame + 1u);
-            float3 previousColor = gHistoryPrevious[pixel].rgb;
-            color = lerp(previousColor, color, accumulationWeight);
-        }
-        gHistoryCurrent[pixel] = float4(color, 1.0);
+        color = accumulateStreamPathTrace(pixel, color, push);
     }
 
     gOutput[pixel] = float4(color, 1.0);

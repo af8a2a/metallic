@@ -7,6 +7,11 @@ The production ZorahFull live baseline uses
 for the repeatable command, actual internal extent, process-level results and
 evidence limits. The historical frozen WorkControl case remains a separate workload.
 
+OpenPBR primary-hit reuse and shadow-query comparisons use
+[PathTraceQueries.py](PathTraceQueries.py). See the [capture, correctness and plotting
+workflow](PathTraceQueries.md): production PathTrace, transparent materials, moving
+guides, and balanced independent-process A/B/C timings.
+
 P2 production Shader Printf observations use [ShaderTrace.py](ShaderTrace.py). See
 [commands and the evidence contract](ShaderTrace.md). This is a separate diagnostic
 process with exact WorkControl input/output checks; it is not eligible for timing acceptance.

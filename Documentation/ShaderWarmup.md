@@ -1,5 +1,9 @@
 # Shader cache warmup
 
+For isolated shader compilation and compute pipeline creation measurements, use
+the manual [ShaderPipelineBench harness](ShaderPipelineBench.md). It does not run
+startup warmup or render frames and reports compilation and pipeline timings separately.
+
 After configuring the project, run this target manually:
 
 ~~~powershell
@@ -52,12 +56,25 @@ code; other requests are still attempted. This warms SPIR-V, not driver PSO cach
 ## Parallel compilation and progress
 
 Warmup uses a worker pool. The default is the available CPU thread count capped
-at 4 to limit simultaneous Slang compiler memory use. --jobs N sets an explicit
-positive worker count; --jobs 1 restores serial compilation. The actual worker
-count is capped by the number of selected requests.
+at 8 to limit simultaneous Slang compiler memory use. The environment variable
+`METALLIC_SHADER_WARMUP_JOBS` overrides this default for both application startup
+and the standalone compiler. `--jobs N` takes precedence over the environment
+variable; `--jobs 1` restores serial compilation. Values must be positive integers;
+an unset or empty environment variable uses the default. Invalid values fail
+warmup before compilation. Listing, help, and explicitly skipped startup warmup
+do not require a valid worker setting. The actual worker count is capped by the
+number of selected requests.
+
+More workers increase simultaneous compiler memory use. Compare cold-cache
+elapsed time and peak memory before increasing beyond the default; cache-hit
+runs do not measure compilation throughput.
 
 ~~~powershell
 .\build-release\Source\MetallicShaderCompiler.exe --jobs 8
+# Also applies when starting a sample from this shell (or its IDE environment).
+$env:METALLIC_SHADER_WARMUP_JOBS = '12'
+.\build-release\Source\MetallicPathTracingSample.exe
+Remove-Item Env:METALLIC_SHADER_WARMUP_JOBS
 cmake -S . -B build-release "-DMETALLIC_SHADER_WARMUP_ARGS=--jobs;8"
 cmake --build build-release --target MetallicShaderWarmup
 ~~~
@@ -89,6 +106,9 @@ cmake --build build-release --target MetallicShaderCompiler --config Release
 For multi-configuration generators the executable is under Source/<Config>/.
 The default shader debug mode is disabled, independently of C++ Debug/Release.
 capture corresponds to CaptureSymbols; debug corresponds to ShaderDebug.
+Disabled and capture modes use Slang O1 with default backend optimization passes.
+The explicit debug mode retains O0 for variable inspection. Runtime and warmup
+share this policy and its versioned cache identity.
 The tool also honors the runtime METALLIC_SLANG_DESCRIPTOR_MODE environment
 variable. Cache entries for different modes are separate.
 Native cache identity also includes the resource and sampler byte strides. The
@@ -146,7 +166,7 @@ The realtime deferred variants include upscaler guides and opaque/transmission
 StreamAsset paths. RTXCR sample requests are added only when its SDK is configured.
 
 This is a bounded warmup set, not every combination of runtime properties.
-Optional NTC and NRD SDK permutations, local-view deferred variants, and other
+Optional NRD SDK permutations, local-view deferred variants, and other
 unlisted combinations continue to compile on demand. No cache is required to run.
 
 When adding or changing requests, copy the owning runtime pass's module, entry,

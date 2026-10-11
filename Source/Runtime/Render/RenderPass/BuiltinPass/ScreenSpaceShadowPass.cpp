@@ -13,13 +13,11 @@ namespace {
 
 class RayTracedShadowPass final : public UnsafePass {
 public:
-    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext& context) const override
+    SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
-        if (context.runtimeScene && context.runtimeScene->hasStreamGeometry()) {
-            return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures};
-        }
-        return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure};
+        // Geometry and its CLAS publication belong to the visibility producer.
+        // Preparing geometry here would create an unrelated streaming session.
+        return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures};
     }
 
     bool supportsFrameOverlap() const override { return !METALLIC_HAS_NRD; }
@@ -32,14 +30,14 @@ public:
 
     RenderGraphSceneDependency sceneDependency() const override
     {
-        return {RenderGraphSceneSource::Input, {"depth", "rasterInfo"}};
+        return {RenderGraphSceneSource::Input, {"depth", "rasterInfo", "accelerationStructure"}};
     }
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
-        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
-            .accelerationStructureRead().setOptional();
+        reflection.addAccelerationStructureInput("accelerationStructure", "CLAS TLAS from the matching visibility producer")
+            .accelerationStructureRead();
         reflection.addTextureInput("depth", "Hardware depth from the visibility raster")
             .sampledRead().format = Format::D32Sfloat;
         auto& info = reflection.addBufferInput("rasterInfo", "Matching raster camera and scene identity")
@@ -61,7 +59,7 @@ public:
     {
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
         device_ = context.device;
-        if (!device_->capabilities().rayQuery || !device_->capabilities().rayTracingAccelerationStructure) {
+        if (!device_->capabilities().rayQuery || !device_->capabilities().rayTracingAccelerationStructure || !device_->capabilities().clusterAccelerationStructure) {
             log = "RayTracedShadowPass requires ray queries and a scene acceleration structure";
             return makeError(Error::Unsupported);
         }
@@ -139,19 +137,23 @@ public:
         const auto lights = buildScreenSpaceShadowLightRecords(scene, resolveSceneLighting(scene, context.world()),
             resolveWorldEnvironment(scene, context.world()));
         profile.next("Resolve stream resources");
+        auto* accelerationStructure = context.inputAccelerationStructure("accelerationStructure");
         const MeshletStreamDeferredGPUResourcesView* stream = nullptr;
-        if (scene->hasStreamGeometry()) {
+        {
             const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
             if (gpuScene != nullptr) {
                 stream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
                     info.frameIndex, info.sceneIdentity);
             }
-            if (stream == nullptr) { return makeError(Error::InvalidArgument); }
+            if (stream == nullptr || accelerationStructure == nullptr) {
+                spdlog::error("RayTracedShadowPass requires the visibility producer's ready CLAS publication");
+                return makeError(Error::InvalidArgument);
+            }
         }
         ScreenSpaceShadowResult shadow;
         std::string log;
         profile.next("Prepare and record shadows");
-        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, &geometry_, stream, &profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
+        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, &geometry_, stream, &profiler, accelerationStructure).transform([&](auto value) { shadow = std::move(value); });
         if (!result) {
             spdlog::error("RayTracedShadowPass: {} ({})", log, resultToString(result));
             return result;

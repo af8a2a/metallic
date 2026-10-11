@@ -4,10 +4,12 @@
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "TestComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/NamedResourceLayouts.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/StreamRayTracingBindings.h"
+#include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include <cstring>
 #include <fstream>
@@ -64,12 +66,27 @@ METALLIC_REGISTER_RHI_TEST(MaterialCoverageCompilerTest);
 class CoverageRayProbePass final : public ComputePass
 {
 public:
-    explicit CoverageRayProbePass(std::shared_ptr<uint32_t> micromapCount) : micromapCount_(std::move(micromapCount)) {}
     RenderGraphSceneDependency sceneDependency() const override { return {RenderGraphSceneSource::World}; }
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext&) const override
     {
         return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
-            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::StandardAccelerationStructure};
+            SceneResourceFeatureBits::MaterialTextures | SceneResourceFeatureBits::AccelerationStructure, .geometry = true, .textureFeedback = true};
+    }
+    std::span<const RenderSubsystemId> requiredSubsystems() const override
+    {
+        static constexpr std::array required{GPUSceneSubsystem::kSubsystemId};
+        return required;
+    }
+    void describeSceneView(const RenderGraphExecutionContext&, MeshletStreamFrameDesc& view) const override
+    {
+        view.width = view.height = 64;
+        view.camera.eye = float3(0.5f, 0.5f, 0.0f);
+        view.camera.center = float3(0.5f, 0.5f, 2.0f);
+        view.camera.up = float3(0, 1, 0);
+        view.camera.orthographic = true;
+        view.camera.orthoHeight = 1.0f;
+        view.camera.znear = 0.001f;
+        view.camera.zfar = 10.0f;
     }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -81,42 +98,47 @@ public:
     {
         const auto& geometry = *context.preparedScene->snapshot->pathTraceResources;
         ShaderCompileResult shader;
-        const char* capabilities[] = {"spvRayQueryKHR"};
+        const char* capabilities[] = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"};
         auto result = compileSlangShaderToSpirv({.moduleName = "MaterialCoverageProbe", .entryPointName = "materialCoverageProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities}, log)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const ComputeResourceBindingDesc bindings[] = {
-            {0, ComputeResourceBindingKind::AccelerationStructure}, {1, ComputeResourceBindingKind::StorageImage}, {2}, {3}, {4}, {5}, {6},
-            {9, ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {97}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = 8, .bindings = bindings,
-            .requiresRayQuery = true, .resourceParameters = kSceneProbeResourceLayout}, log);
+        std::vector<ComputeResourceBindingDesc> bindings = {
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, output), ComputeResourceBindingKind::StorageImage}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials)},
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues)},
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureFeedback)}};
+        builtin_pass::appendStreamRayLayout(bindings);
+        return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = sizeof(uint32_t), .bindings = bindings,
+            .requiresRayQuery = true, .resourceParameterSize = sizeof(render::SceneResourceParameters)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         const auto& geometry = *context.preparedScene()->snapshot->pathTraceResources;
         const auto inputs = geometry.materialBinding();
-        *micromapCount_ = geometry.accelerationStructure().stats().coverageAccelerationCount;
         if (inputs->generation()->sourceRevision() != context.runtimeScene()->materialRevision()) { return makeError(Error::Failure); }
-        if (inputs->values()->coverageProgramCount() && geometry.accelerationStructure().stats().coverageAccelerationCount) {
-            return makeError(Error::Failure); // The only MASK material now has dynamic Coverage.
+        const auto* prepared = context.preparedScene();
+        if (!prepared->geometry) { return makeError(Error::InvalidArgument); }
+        if (prepared->geometry->topLevelBuildPending()) {
+            auto built = prepared->geometry->cmdBuildTopLevelAccelerationStructure(context.commandBuffer());
+            if (!built) { return built; }
         }
+        const auto stream = prepared->geometry->deferredGpuResources();
+        if (!stream.valid() || !stream.accelerationStructure) { return makeError(Error::InvalidArgument); }
         if (auto* frame = RenderFrameContext::from(context.commandBuffer())) { frame->retain(inputs); }
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .accelerationStructure = geometry.accelerationStructure().accelerationStructure()},
-            {.binding = 1, .textureView = context.outputTexture("color").view()},
-            {.binding = 2, .buffer = geometry.shadingVertexBuffer()}, {.binding = 3, .buffer = geometry.indexBuffer()},
-            {.binding = 4, .buffer = geometry.primitiveBuffer()}, {.binding = 5, .buffer = geometry.instanceBuffer()},
-            {.binding = 6, .buffer = geometry.materialBuffer()},
-            {.binding = 9, .textureViews = geometry.materialTextureViews(), .sampledImages = geometry.materialTextureSnapshot()},
-            {.binding = 97, .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()}};
-        const uint32_t push[] = {geometry.materialTextureCount(), 0};
+        std::vector<ComputeDispatchBinding> bindings = {
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), .accelerationStructure = stream.accelerationStructure},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, output), .textureView = context.outputTexture("color").view()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials), .buffer = geometry.materialBuffer()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), .textureViews = geometry.materialTextureViews(), .sampledImages = geometry.materialTextureSnapshot()},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues), .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()}};
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback});
+        builtin_pass::appendStreamRayBindings(bindings, stream, prepared->geometry->shadingChangeBuffer());
+        const uint32_t push = geometry.materialTextureCount();
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
-            .pushData = push, .pushDataSize = sizeof(push), .groupCountX = 8, .groupCountY = 8});
+            .pushData = &push, .pushDataSize = sizeof(push), .groupCountX = 8, .groupCountY = 8});
     }
 private:
     ComputeProgram program_;
-    std::shared_ptr<uint32_t> micromapCount_;
 };
 
 class MaterialCoverageRenderingTest : public RHITest
@@ -171,8 +193,7 @@ public:
         // migration: both inputs must be display-linear diagnostics.
         sample.graph.setNodeRuntimeProperty(sample.graph.findNode("Reference")->id, "debugView", "baseColor");
         sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);
-        const auto micromapCount = std::make_shared<uint32_t>(0);
-        registerRenderGraphPassType("CoverageRayProbe", "Coverage ray/shadow test", [micromapCount] { return std::make_unique<CoverageRayProbePass>(micromapCount); });
+        registerRenderGraphPassType("CoverageRayProbe", "Coverage ray/shadow test", [] { return std::make_unique<CoverageRayProbePass>(); });
         const auto probe = sample.graph.addNode("CoverageRayProbe", "CoverageProbe");
         sample.graph.setNodeRuntimeProperty(probe->id, "path", path.generic_string());
         sample.graph.markOutput("CoverageProbe.color");
@@ -232,9 +253,9 @@ public:
                     winners += front;
                 }
             }
-            report << "step=" << step << " frontWinners=" << winners << " checked=3844 opacityMicromaps=" << *micromapCount << '\n';
+            report << "step=" << step << " frontWinners=" << winners << " checked=3844 CLAS alpha traversal" << '\n';
         }
-        // BLEND uses the shared legacy Coverage evaluator. Custom Coverage on
+        // BLEND uses the shared Coverage evaluator through CLAS candidates. Custom Coverage on
         // BLEND remains rejected by the authoring contract (tested above).
         sample.graph = RenderGraph{};
         sample.graph.addNode("CoverageRayProbe", "CoverageProbe", {{"path",path.generic_string()}});

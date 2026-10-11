@@ -2,8 +2,6 @@
 #include "RHITest.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
-#include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
@@ -99,373 +97,6 @@ public:
     }
 };
 
-class SceneAccelerationStructureBuildTest : public RHITest {
-public:
-    explicit SceneAccelerationStructureBuildTest(bool partitioned = false) : partitioned_(partitioned)
-    {
-        type = RHITestType::Resource;
-        name = partitioned ? "scene_partitioned_acceleration_structure_build" : "scene_acceleration_structure_build";
-    }
-
-    RHITestResult run(RHITestContext& context) override
-    {
-        std::unique_ptr<render::Device> device;
-        render::Result<> result = render::createDevice(render::DeviceDesc{
-                .applicationName = "Metallic Scene Acceleration Structure Test",
-                .enableValidation = context.enableValidation,
-                .enableRayTracingAccelerationStructure = true,
-                .enablePartitionedAccelerationStructure = partitioned_,
-                .enableAsyncCompute = true,
-            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!result) {
-            if (render::hasError(result, render::Error::Unsupported)) {
-                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
-            }
-            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
-        }
-        if (!device->capabilities().rayTracingAccelerationStructure) {
-            return RHITestResult::skip("ray tracing acceleration structure capability is unavailable");
-        }
-
-        if (partitioned_ && !device->capabilities().partitionedAccelerationStructure) {
-            return RHITestResult::skip("partitioned acceleration structures unavailable");
-        }
-        const render::SceneAccelerationStructureBuildOptions options{
-            .topLevelBackend = partitioned_ ? render::RayTracingTopLevelBackend::Partitioned : render::RayTracingTopLevelBackend::Standard};
-        render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
-        if (graphicsQueue == nullptr) {
-            return RHITestResult::fail("scene acceleration structure test device has no graphics queue");
-        }
-        render::Queue* accelerationQueue = device->getQueue(render::QueueType::Compute);
-        if (accelerationQueue == nullptr) {
-            accelerationQueue = graphicsQueue;
-        }
-
-        scene::Scene loadedScene;
-        const std::filesystem::path scenePath =
-            std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
-        if (!loadedScene.load(scenePath)) {
-            const scene::LoadResult& loadResult = loadedScene.lastLoadResult();
-            return RHITestResult::fail(
-                loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
-        }
-
-        render::SceneAccelerationStructureBuilder builder;
-        std::string log;
-        if (!partitioned_) {
-            const auto unsupported = builder.beginBuild(*device, *accelerationQueue, loadedScene, log,
-                {.topLevelBackend = render::RayTracingTopLevelBackend::Partitioned});
-            if (!render::hasError(unsupported, render::Error::Unsupported) || builder.valid() ||
-                builder.buildState() != render::SceneAccelerationStructureBuildState::Idle) {
-                return RHITestResult::fail("disabled PTLAS must fail before starting BLAS/OMM work");
-            }
-        }
-        result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log, options);
-        if (!result) {
-            return RHITestResult::fail(
-                std::string("SceneAccelerationStructureBuilder::beginBuild returned ") +
-                toString(result) +
-                ": " +
-                log);
-        }
-        if (builder.buildState() != render::SceneAccelerationStructureBuildState::Building ||
-            builder.valid()) {
-            return RHITestResult::fail(
-                "SceneAccelerationStructureBuilder did not enter its asynchronous build state");
-        }
-
-        const auto clearDeadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        bool clearProbeComplete = false;
-        while (!clearProbeComplete && builder.stats().compactedBlasBytes == 0 &&
-               std::chrono::steady_clock::now() < clearDeadline) {
-            result = builder.pollBuild(log).transform([&](auto value) { clearProbeComplete = std::move(value); });
-            if (!result) {
-                return RHITestResult::fail(
-                    std::string("SceneAccelerationStructureBuilder clear probe returned ") +
-                    toString(result) +
-                    ": " +
-                    log);
-            }
-            if (!clearProbeComplete && builder.stats().compactedBlasBytes == 0) {
-                std::this_thread::yield();
-            }
-        }
-        if (clearProbeComplete || builder.stats().compactedBlasBytes == 0 ||
-            builder.buildState() != render::SceneAccelerationStructureBuildState::Building) {
-            return RHITestResult::fail(
-                "SceneAccelerationStructureBuilder did not expose an in-flight compaction phase");
-        }
-
-        const render::SceneAccelerationStructureStats inFlightStats = builder.stats();
-        if (inFlightStats.originalBlasBytes == 0 ||
-            inFlightStats.compactedBlasBytes == 0 ||
-            inFlightStats.compactedBlasBytes > inFlightStats.originalBlasBytes ||
-            inFlightStats.compactionSavedBytes !=
-                inFlightStats.originalBlasBytes - inFlightStats.compactedBlasBytes ||
-            inFlightStats.accelerationStructureBytes <= inFlightStats.compactedBlasBytes ||
-            inFlightStats.peakAccelerationStructureBytes <
-                inFlightStats.accelerationStructureBytes +
-                    inFlightStats.compactionSavedBytes) {
-            return RHITestResult::fail(
-                "SceneAccelerationStructureBuilder exposed inconsistent in-flight compaction statistics");
-        }
-
-        builder.clear();
-        if (builder.buildState() != render::SceneAccelerationStructureBuildState::Idle ||
-            builder.valid() || builder.accelerationStructure() != nullptr ||
-            builder.stats().blasCount != 0 ||
-            builder.stats().accelerationStructureBytes != 0 ||
-            builder.stats().originalBlasBytes != 0 ||
-            builder.stats().compactedBlasBytes != 0 ||
-            builder.stats().compactionSavedBytes != 0 ||
-            builder.stats().peakAccelerationStructureBytes != 0) {
-            return RHITestResult::fail(
-                "SceneAccelerationStructureBuilder clear did not retire an in-flight build");
-        }
-
-        result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log, options);
-        if (!result) {
-            return RHITestResult::fail(
-                std::string("SceneAccelerationStructureBuilder::beginBuild after clear returned ") +
-                toString(result) +
-                ": " +
-                log);
-        }
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        bool buildComplete = false;
-        bool observedIncompletePoll = false;
-        while (!buildComplete && std::chrono::steady_clock::now() < deadline) {
-            result = builder.pollBuild(log).transform([&](auto value) { buildComplete = std::move(value); });
-            if (!result) {
-                return RHITestResult::fail(
-                    std::string("SceneAccelerationStructureBuilder::pollBuild returned ") +
-                    toString(result) +
-                    ": " +
-                    log);
-            }
-            if (!buildComplete) {
-                observedIncompletePoll = true;
-                if (builder.buildState() !=
-                    render::SceneAccelerationStructureBuildState::Building) {
-                    return RHITestResult::fail(
-                        "SceneAccelerationStructureBuilder left Building before compaction completed");
-                }
-                std::this_thread::yield();
-            }
-        }
-        if (!buildComplete || !observedIncompletePoll ||
-            builder.buildState() != render::SceneAccelerationStructureBuildState::Ready ||
-            !builder.valid()) {
-            return RHITestResult::fail(
-                "SceneAccelerationStructureBuilder asynchronous multi-stage build did not produce a valid TLAS");
-        }
-
-        if (builder.accelerationStructure()->desc().topLevelBackend != options.topLevelBackend ||
-            (partitioned_ && (builder.stats().partitionCount == 0 || builder.stats().operationBytes == 0))) {
-            return RHITestResult::fail("incorrect scene top-level strategy");
-        }
-        const render::SceneAccelerationStructureStats& stats = builder.stats();
-        if (stats.blasCount == 0 || stats.instanceCount == 0 || stats.triangleCount == 0 ||
-            stats.originalBlasBytes == 0 || stats.compactedBlasBytes == 0 ||
-            stats.compactedBlasBytes > stats.originalBlasBytes ||
-            stats.compactionSavedBytes !=
-                stats.originalBlasBytes - stats.compactedBlasBytes ||
-            stats.accelerationStructureBytes <= stats.compactedBlasBytes ||
-            stats.peakAccelerationStructureBytes <
-                stats.accelerationStructureBytes + stats.compactionSavedBytes) {
-            return RHITestResult::fail(
-                "SceneAccelerationStructureBuilder produced inconsistent compaction statistics");
-        }
-
-        const render::SceneAccelerationStructureStats statsBeforeUpdate = stats;
-        const int32_t movedNodeIndex = loadedScene.renderNodes().front().nodeIndex;
-        if (movedNodeIndex < 0 || static_cast<size_t>(movedNodeIndex) >= loadedScene.nodes().size()) {
-            return RHITestResult::fail("SceneAccelerationStructureBuilder test scene has no editable instance owner");
-        }
-        float4x4 movedLocal = loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
-        movedLocal.a03 += 2.0f;
-        if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, movedLocal)) {
-            return RHITestResult::fail("failed to move the RTAS test instance");
-        }
-        result = builder.updateInstanceTransforms(*device, *accelerationQueue, loadedScene, log);
-        if (!result) {
-            return RHITestResult::fail(
-                std::string("SceneAccelerationStructureBuilder::updateInstanceTransforms returned ") +
-                toString(result) + ": " + log);
-        }
-        const render::SceneAccelerationStructureStats& statsAfterUpdate = builder.stats();
-        if (statsAfterUpdate.blasCount != statsBeforeUpdate.blasCount ||
-            statsAfterUpdate.instanceCount != statsBeforeUpdate.instanceCount ||
-            statsAfterUpdate.triangleCount != statsBeforeUpdate.triangleCount ||
-            statsAfterUpdate.originalBlasBytes != statsBeforeUpdate.originalBlasBytes ||
-            statsAfterUpdate.compactedBlasBytes != statsBeforeUpdate.compactedBlasBytes ||
-            statsAfterUpdate.compactionSavedBytes != statsBeforeUpdate.compactionSavedBytes ||
-            statsAfterUpdate.accelerationStructureBytes !=
-                statsBeforeUpdate.accelerationStructureBytes ||
-            statsAfterUpdate.peakAccelerationStructureBytes !=
-                statsBeforeUpdate.peakAccelerationStructureBytes) {
-            return RHITestResult::fail(
-                "TLAS refit changed BLAS topology or compaction statistics");
-        }
-
-        bool visibilityChanged = false;
-        for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
-            if (renderNode.object != scene::kNullSceneEntity) {
-                visibilityChanged =
-                    loadedScene.setObjectVisible(renderNode.object, false) || visibilityChanged;
-            }
-        }
-        if (!visibilityChanged ||
-            std::any_of(
-                loadedScene.renderNodes().begin(),
-                loadedScene.renderNodes().end(),
-                [](const scene::RenderNode& node) { return node.visible; })) {
-            return RHITestResult::fail("failed to hide every RTAS test instance");
-        }
-
-        result = builder.build(*device, *accelerationQueue, loadedScene, log, options);
-        if (!result || !builder.valid()) {
-            return RHITestResult::fail(
-                std::string("SceneAccelerationStructureBuilder empty-scene build returned ") +
-                toString(result) + ": " + log);
-        }
-        const render::SceneAccelerationStructureStats emptyStats = builder.stats();
-        if (emptyStats.blasCount == 0 ||
-            emptyStats.instanceCount != 0 ||
-            emptyStats.triangleCount == 0) {
-            return RHITestResult::fail("empty TLAS did not preserve geometry with zero visible instances");
-        }
-
-        float4x4 hiddenMovedLocal =
-            loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
-        hiddenMovedLocal.a13 += 1.0f;
-        if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, hiddenMovedLocal)) {
-            return RHITestResult::fail("failed to move a hidden RTAS test instance");
-        }
-        result = builder.updateInstanceTransforms(*device, *accelerationQueue, loadedScene, log);
-        if (!result || builder.stats().instanceCount != 0) {
-            return RHITestResult::fail(
-                std::string("empty TLAS transform sync returned ") +
-                toString(result) + ": " + log);
-        }
-
-        builder.clear();
-        if (builder.buildState() != render::SceneAccelerationStructureBuildState::Idle ||
-            builder.valid() || builder.accelerationStructure() != nullptr ||
-            builder.stats().blasCount != 0 ||
-            builder.stats().accelerationStructureBytes != 0 ||
-            builder.stats().originalBlasBytes != 0 ||
-            builder.stats().compactedBlasBytes != 0 ||
-            builder.stats().compactionSavedBytes != 0 ||
-            builder.stats().peakAccelerationStructureBytes != 0) {
-            return RHITestResult::fail(
-                "SceneAccelerationStructureBuilder clear did not reset a completed compact build");
-        }
-
-        {
-            render::ScenePathTraceResources resources;
-            const render::RenderGraphProperties properties{
-                {"path", scenePath.string()},
-                {"topLevelBackend", partitioned_ ? "partitioned" : "standard"},
-            };
-            result = resources.beginPrepareAsync(
-                *device,
-                *graphicsQueue,
-                properties,
-                loadedScene,
-                log);
-            bool resourcesComplete = false;
-            scene::SceneLoadProgress progress;
-            const auto resourceDeadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(30);
-            while (result && !resourcesComplete &&
-                   std::chrono::steady_clock::now() < resourceDeadline) {
-                result = resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { resourcesComplete = std::move(value); });
-                if (result && !resourcesComplete) {
-                    std::this_thread::yield();
-                }
-            }
-            const render::SceneAccelerationStructureStats& resourceStats =
-                resources.accelerationStructure().stats();
-            if (!result || !resourcesComplete || !resources.valid() ||
-                resourceStats.instanceCount != 0 ||
-                resourceStats.originalBlasBytes == 0 ||
-                resourceStats.compactedBlasBytes == 0 ||
-                resourceStats.compactedBlasBytes > resourceStats.originalBlasBytes ||
-                resourceStats.compactionSavedBytes !=
-                    resourceStats.originalBlasBytes - resourceStats.compactedBlasBytes ||
-                resources.instanceBuffer() == nullptr ||
-                resources.instanceBuffer()->desc().size == 0) {
-                return RHITestResult::fail(
-                    std::string("ScenePathTraceResources empty-scene preparation failed: ") + log);
-            }
-
-            const uint64_t resourcesRevision = resources.revision();
-            hiddenMovedLocal.a23 += 1.0f;
-            if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, hiddenMovedLocal)) {
-                return RHITestResult::fail("failed to move a hidden path-trace instance");
-            }
-            result = resources.syncRuntimeScene(&loadedScene, log);
-            if (!result || !resources.valid() ||
-                resources.revision() <= resourcesRevision ||
-                resources.accelerationStructure().stats().instanceCount != 0) {
-                return RHITestResult::fail(
-                    std::string("ScenePathTraceResources empty-scene sync failed: ") + log);
-            }
-
-            std::vector<scene::SceneEntity> renderObjects;
-            renderObjects.reserve(loadedScene.renderNodes().size());
-            for (const scene::RenderNode& renderNode : loadedScene.renderNodes()) {
-                if (renderNode.object != scene::kNullSceneEntity) {
-                    renderObjects.push_back(renderNode.object);
-                }
-            }
-            bool visibilityRestored = false;
-            for (scene::SceneEntity object : renderObjects) {
-                visibilityRestored =
-                    loadedScene.setObjectVisible(object, true) || visibilityRestored;
-            }
-            if (!visibilityRestored ||
-                std::none_of(
-                    loadedScene.renderNodes().begin(),
-                    loadedScene.renderNodes().end(),
-                    [](const scene::RenderNode& node) { return node.visible; })) {
-                return RHITestResult::fail("failed to restore path-trace instance visibility");
-            }
-
-            const uint64_t topologyRevision = resources.revision();
-            result = resources.syncRuntimeScene(&loadedScene, log);
-            const render::SceneAccelerationStructureStats& rebuiltResourceStats =
-                resources.accelerationStructure().stats();
-            if (!result || !resources.valid() ||
-                resources.revision() <= topologyRevision ||
-                rebuiltResourceStats.instanceCount == 0 ||
-                rebuiltResourceStats.originalBlasBytes == 0 ||
-                rebuiltResourceStats.compactedBlasBytes == 0 ||
-                rebuiltResourceStats.compactedBlasBytes >
-                    rebuiltResourceStats.originalBlasBytes ||
-                rebuiltResourceStats.compactionSavedBytes !=
-                    rebuiltResourceStats.originalBlasBytes -
-                        rebuiltResourceStats.compactedBlasBytes) {
-                return RHITestResult::fail(
-                    std::string("ScenePathTraceResources topology rebuild failed: ") + log);
-            }
-
-            resources.clear();
-        }
-
-        result = device->waitIdle();
-        if (!result) {
-            return RHITestResult::fail("failed to wait for empty-scene resource retirement");
-        }
-
-        return RHITestResult::pass(log);
-    }
-private:
-    bool partitioned_ = false;
-};
-
 class SceneNonGeometryTransformSyncTest final : public RHITest {
 public:
     SceneNonGeometryTransformSyncTest()
@@ -534,9 +165,7 @@ public:
             return RHITestResult::fail("resource preparation failed: " + log);
         }
         const uint64_t revision = resources.revision();
-        auto* const instances = resources.instanceBuffer();
-        auto* const vertices = resources.shadingVertexBuffer();
-        auto* const tlas = resources.accelerationStructure().accelerationStructure();
+        auto* const materials = resources.materialBuffer();
         // Simulate consecutive drag updates through the same API as the gizmo.
         for (int step = 0; step < 16; ++step) {
             for (int node : {0, 1}) {
@@ -547,14 +176,8 @@ public:
                 }
                 result = resources.syncRuntimeScene(&scene, log);
                 if (!result || resources.revision() != revision ||
-                    resources.instanceBuffer() != instances || resources.shadingVertexBuffer() != vertices ||
-                    resources.accelerationStructure().accelerationStructure() != tlas) {
+                    resources.materialBuffer() != materials) {
                     return RHITestResult::fail("light/camera drag rebuilt geometry resources: " + log);
-                }
-                result = resources.accelerationStructure().updateInstanceTransforms(
-                    *device, *accelerationQueue, scene, log);
-                if (!result || !log.empty()) {
-                    return RHITestResult::fail("light/camera drag submitted a redundant TLAS refit: " + log);
                 }
             }
         }
@@ -565,99 +188,15 @@ public:
             return RHITestResult::fail("light parent edit failed");
         }
         result = resources.syncRuntimeScene(&scene, log);
-        if (!result || resources.revision() <= revision || resources.shadingVertexBuffer() != vertices ||
-            std::abs(resources.bounds().min.x - oldMinX - 3.0f) > 1e-5f ||
-            log.find("Updated scene acceleration-structure instance transforms") == std::string::npos) {
+        if (!result || resources.revision() <= revision || resources.materialBuffer() != materials ||
+            std::abs(resources.bounds().min.x - oldMinX - 3.0f) > 1e-5f) {
             return RHITestResult::fail("light parent failed to update its geometry child: " + log);
         }
-        return RHITestResult::pass("32 light/camera drag steps reused geometry; geometry-parent move updated TLAS");
+        return RHITestResult::pass("32 light/camera drag steps reused geometry; geometry-parent move updated streamed instance metadata");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(SceneNonGeometryTransformSyncTest);
-
-class SceneClusterAccelerationStructureBuildTest : public RHITest {
-public:
-    SceneClusterAccelerationStructureBuildTest()
-    {
-        type = RHITestType::Resource;
-        name = "scene_cluster_acceleration_structure_build";
-    }
-
-    RHITestResult run(RHITestContext& context) override
-    {
-        std::unique_ptr<render::Device> device;
-        render::Result<> result = render::createDevice(render::DeviceDesc{
-                .applicationName = "Metallic Scene Cluster Acceleration Structure Test",
-                .enableValidation = context.enableValidation,
-                .enableClusterAccelerationStructure = true,
-            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!result) {
-            if (render::hasError(result, render::Error::Unsupported)) {
-                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
-            }
-            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
-        }
-        if (!device->capabilities().clusterAccelerationStructure) {
-            return RHITestResult::skip("cluster acceleration structure capability is unavailable");
-        }
-
-        render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
-        if (graphicsQueue == nullptr) {
-            return RHITestResult::fail("scene cluster RTAS test device has no graphics queue");
-        }
-        render::Queue* accelerationQueue = device->getQueue(render::QueueType::Compute);
-        if (accelerationQueue == nullptr) {
-            accelerationQueue = graphicsQueue;
-        }
-
-        scene::Scene loadedScene;
-        const std::filesystem::path scenePath =
-            std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
-        if (!loadedScene.load(scenePath)) {
-            const scene::LoadResult& loadResult = loadedScene.lastLoadResult();
-            return RHITestResult::fail(
-                loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
-        }
-
-        render::SceneClusterAccelerationStructureBuilder builder;
-        std::string log;
-        result = builder.build(*device, *accelerationQueue, loadedScene, log);
-        if (!result) {
-            if (render::hasError(result, render::Error::Unsupported)) {
-                return RHITestResult::skip(
-                    std::string("SceneClusterAccelerationStructureBuilder::build returned ") +
-                    toString(result) +
-                    ": " +
-                    log);
-            }
-            return RHITestResult::fail(
-                std::string("SceneClusterAccelerationStructureBuilder::build returned ") +
-                toString(result) +
-                ": " +
-                log);
-        }
-        if (!builder.valid()) {
-            return RHITestResult::fail("SceneClusterAccelerationStructureBuilder did not produce a valid TLAS");
-        }
-
-        const render::SceneClusterAccelerationStructureStats& stats = builder.stats();
-        if (stats.clasCount == 0 ||
-            stats.clusterBlasCount == 0 ||
-            stats.instanceCount == 0 ||
-            stats.clusterTriangleCount == 0 ||
-            stats.accelerationStructureBytes == 0) {
-            return RHITestResult::fail("SceneClusterAccelerationStructureBuilder produced empty cluster RTAS stats");
-        }
-
-        return RHITestResult::pass(log);
-    }
-};
-
-class ScenePartitionedAccelerationStructureBuildTest final : public SceneAccelerationStructureBuildTest {
-public:
-    ScenePartitionedAccelerationStructureBuildTest() : SceneAccelerationStructureBuildTest(true) {}
-};
 
 class MeshletStreamCLASPoolBuildTest : public RHITest {
 public:
@@ -927,10 +466,7 @@ public:
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(SceneAccelerationStructureBuildTest);
 METALLIC_REGISTER_RHI_TEST(RayTracingAccelerationStructureBarrierTest);
-METALLIC_REGISTER_RHI_TEST(SceneClusterAccelerationStructureBuildTest);
-METALLIC_REGISTER_RHI_TEST(ScenePartitionedAccelerationStructureBuildTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamCLASPoolBuildTest);
 
 } // namespace

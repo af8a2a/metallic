@@ -44,11 +44,8 @@ void EditorApplication::notifySceneMaterialsChanged(bool invalidateAccelerationS
     historyFrameIndex_ = 0;
     if (graphExecutor_ == nullptr || !graphExecutor_->compiled()) { viewportPreviewValid_ = false; }
     viewportPreviewNeedsRender_ = true;
-    if (invalidateAccelerationStructure && sceneAccelerationStructure_ != nullptr &&
-        sceneAccelerationStructure_->valid()) {
-        sceneAccelerationStructure_->clear();
-        sceneAccelerationStructureStatus_ = "Static RTAS cleared after an alpha-mask change.";
-    }
+    (void)invalidateAccelerationStructure; // CLAS geometry remains shared; alpha is evaluated by the material shader.
+
 }
 
 void EditorApplication::drawSelectedMaterialInspector()

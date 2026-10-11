@@ -161,7 +161,7 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
         if (miniZorah) {
             RenderSampleLoadResult sample;
             require(loadBuiltInRenderSample(unified ? "gpu-driven-minizorah-vbuffer" : "gpu-driven-minizorah", sample, log), log);
-            require(!sample.desc.loadSceneInEditor && !sample.desc.requiresStreamline, "MiniZorah startup must skip resident import and DLSS");
+            require(!sample.desc.loadSceneInEditor && !sample.desc.requiresStreamline, "MiniZorah startup must use streamed geometry and skip DLSS");
             graph = std::move(sample.graph);
             require(viewport.setCameraProperties(graph.viewProperties().at("camera")), "Invalid MiniZorah viewport camera");
             preview.bindRenderView(&viewport);
@@ -172,13 +172,12 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
             RenderSampleLoadResult sample;
             require(loadBuiltInRenderSample("gpu-driven-streamasset", sample, log), log);
             require(!sample.desc.loadSceneInEditor && !sample.desc.requiresStreamline,
-                "SuperSponza startup must skip resident import and DLSS");
+                "SuperSponza startup must use streamed geometry and skip DLSS");
             graph = std::move(sample.graph);
             auto& props = graph.findNode("GPUDriven")->properties;
             source = std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("path").get<std::string>();
             cache = scene::meshletStreamAssetPathFor(source);
             props["streamAssetPath"] = cache.generic_string();
-            props["streamAssetOnly"] = true;
             // Keep all 72 authored 4K PNG mip chains (~6 GiB) in this full-source test.
             props["materialTextureBudgetMiB"] = 8192;
             props["camera"] = {{"eye", {5.433790f, 5.599402f, 1.739370f}},
@@ -191,7 +190,7 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
                 .meshletOptions = {.maxWorkers = 1}}, log), log);
             graph.addNode("GPUDrivenStreamAssetPass", "GPUDriven", {
                 {"path", source.generic_string()}, {"streamAssetPath", cache.generic_string()},
-                {"streamAssetOnly", true}, {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
+                {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
                 {"maxActiveGroups", 1024}, {"maxPageUploadsPerFrame", 64},
                 {"maxGpuPageRequests", 1024}, {"maxGpuPageUnloadRequests", 1024},
                 {"maxTraversalWorkers", 64}, {"maxTraversalWorkItems", 4096},
@@ -216,8 +215,8 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
         }
         auto pass = createRenderGraphPass(unified ? "VisibilityBufferPass" : "GPUDrivenStreamAssetPass");
         pass->setProperties(graph.findNode(node)->properties);
-        require(pass->sceneDependency().source == (unified ? RenderGraphSceneSource::World : RenderGraphSceneSource::None),
-            "Stream-only pass still declares a Scene dependency");
+        require(pass->sceneDependency().source == RenderGraphSceneSource::World,
+            "Streaming producer must declare its scene metadata dependency");
         graph.markOutput("GPUDriven.color");
         graph.markOutput("GPUDriven.visibility");
         if (unified) { graph.markOutput("GPUDriven.depth"); }
@@ -322,19 +321,11 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
                     {"allocationBytes", heap.allocationBytes}};
             }
             auto* gpuScene = preview.subsystemHost()->get<GPUSceneSubsystem>();
-            if (unified) {
-                require(gpuScene && gpuScene->instances().size() == instances.size(), "Incomplete global GPUScene instances");
-                require(gpuScene->geometries().size() == report.at("primitives").get<size_t>(), "Incomplete global geometry identities");
-                const auto& views = gpuScene->globalBufferViews();
-                require(views.vertices.buffer == nullptr && views.indices.buffer == nullptr &&
-                    views.meshletDraws.buffer == nullptr && views.lodGroups.buffer == nullptr &&
-                    gpuScene->rasterDrawLayout().maxRangeCount == 0, "Stream metadata allocated resident payload");
-                return;
-            }
-            require(gpuScene && gpuScene->instances().empty() && gpuScene->geometries().empty(),
-                "Stream-only mode created resident GPUScene geometry or instances");
-            require(gpuScene->materials().empty() && gpuScene->drawSet().generation != 0,
-                "Stream-only view must have an empty but valid DrawSet");
+            require(gpuScene && gpuScene->instances().size() == instances.size(), "Incomplete global GPUScene instances");
+            require(gpuScene->geometries().size() == report.at("primitives").get<size_t>(), "Incomplete global geometry identities");
+            const auto& views = gpuScene->globalBufferViews();
+            require(views.instances.buffer != nullptr && views.geometries.buffer != nullptr &&
+                views.materials.buffer != nullptr, "Streaming scene metadata tables were not uploaded");
         };
         const auto compareClassification = [&](bool fastMetadata, const std::string& pose) {
             graph.setNodeRuntimeProperty(node, "metadataFastClassification", fastMetadata);
@@ -617,8 +608,7 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
             require(observer.latest.value("terminalReady", false) && coveredPixels() > 0, "Scene reopen failed");
             report["resizeReleaseReopen"] = "passed";
         }
-        report["globalGPUSceneInstances"] = unified ? instances.size() : 0;
-        report["residentVertexBytes"] = 0; report["residentMeshletDrawBytes"] = 0;
+        report["globalGPUSceneInstances"] = instances.size();
         report["frames"] = frames; report["status"] = "passed";
         saveReport();
         return RHITestResult::pass(label + " complete root coverage and first frames verified");
@@ -763,7 +753,7 @@ public:
             Json camera = {{"eye", {0, 0, 5}}, {"center", {0, 0, 0}}, {"up", {0, 1, 0}},
                 {"znear", .01}, {"zfar", 10}, {"fovDegrees", 60}, {"reversedZ", true}};
             graph.addNode("VisibilityBufferPass", "Raster", {{"path", path.generic_string()},
-                {"streamAssetPath", cache.generic_string()}, {"streamAssetOnly", true},
+                {"streamAssetPath", cache.generic_string()},
                 {"maxResidentPages", 4}, {"maxLockedFallbackPages", 4}, {"maxActiveGroups", 64},
                 {"maxGpuPageRequests", 64}, {"maxTraversalWorkers", 32}, {"maxTraversalWorkItems", 128},
                 {"autoLod", false}, {"instanceHzbCull", false}, {"meshletHzbCull", false},
@@ -836,7 +826,7 @@ public:
             require(source.valid() && source.hasStreamGeometry() && source.renderNodes().size() == 2, "Metadata scene topology");
             require(source.bounds().max.x == 3 && source.materials()[0].alphaMode == "BLEND", "Metadata transforms/material preservation");
             for (const auto& primitive : source.renderPrimitives()) {
-                require(primitive.storage == scene::GeometryStorage::StreamAsset && primitive.positions.empty() &&
+                require(primitive.positions.empty() &&
                     primitive.indices.empty() && primitive.meshletLodClusters.empty() && primitive.triangleCount == 1, "Metadata imported geometry");
             }
             GPUScene gpuScene;
@@ -854,7 +844,7 @@ public:
             SceneResourceManager manager;
             const scene::Scene* resolved = nullptr;
             require(bool(manager.resolveScene({{"path", path.generic_string()}}, &source, log).transform([&](auto value) { resolved = std::move(value); })) && resolved == &source,
-                "Metadata source fell back to resident import");
+                "Metadata source was replaced instead of reused");
             metadata["images"] = {{{"uri", "unsupported.png"}}};
             { std::ofstream file(path); file << metadata.dump(); }
             require(source.loadStreamMetadata(path) && source.images().size() == 1 &&
@@ -878,7 +868,7 @@ public:
             require(bool(preview.initialize(context.enableValidation, false, false)), preview.lastLog());
             RenderGraph graph;
             graph.addNode("VisibilityBufferPass", "Raster", {{"path", path.generic_string()}, {"streamAssetPath", cache.generic_string()},
-                {"streamAssetOnly", true}, {"maxResidentPages", 4}, {"maxLockedFallbackPages", 4},
+                {"maxResidentPages", 4}, {"maxLockedFallbackPages", 4},
                 {"maxActiveGroups", 64}, {"maxGpuPageRequests", 64}, {"maxTraversalWorkers", 32}, {"maxTraversalWorkItems", 128},
                 {"autoLod", false}, {"instanceHzbCull", false}, {"meshletHzbCull", false}, {"meshletNormalConeCull", true},
                 {"hybridRaster", false}, {"camera", {{"eye", {.25, .25, -2}}, {"center", {.25, .25, 0}}, {"up", {0, 1, 0}},
@@ -900,31 +890,48 @@ public:
             for (uint32_t frame = 0; frame < 16; ++frame) { render(); }
             require(std::all_of(preview.pixels().begin(), preview.pixels().end(), [](uint32_t id) { return id == 0; }),
                 "Single-sided back faces survived after material edit");
-            // Exercise both halves of the independent material consumer: first
-            // ordinary resident records, then streamed IDs with a nonzero base.
-            require(source.load(path), source.lastLoadResult().error);
-            auto opaque = source.materials()[0]; opaque.alphaMode = "OPAQUE";
-            require(source.setMaterialProperties(0, opaque), "Resident fixture material edit failed");
-            graph.setNodeRuntimeProperty(raster, "streamAssetOnly", false);
-            graph.setNodeRuntimeProperty(raster, "enableMeshletStreaming", false);
+            // The independent material consumer must follow live material edits
+            // while geometry stays in the same streamed metadata layout.
+            auto opaque = source.materials()[0];
+            opaque.alphaMode = "OPAQUE";
+            opaque.doubleSided = true;
+            require(source.setMaterialProperties(0, opaque), "Stream material edit failed");
             graph.addNode("VisibilityBufferMaterialPass", "Resolve", {{"visualization", "baseColor"}});
             graph.addEdge("Raster.visibility", "Resolve.visibility");
             graph.addEdge("Raster.rasterInfo", "Resolve.rasterInfo");
             graph.markOutput("Resolve.color");
-            require(bool(preview.render(graph, 128, 128, "Resolve.color")), preview.lastLog());
-            const auto residentColors = preview.pixels();
+            const auto resolve = [&]() {
+                for (uint32_t frame = 0; frame < 4; ++frame) {
+                    require(bool(preview.render(graph, 128, 128, "Resolve.color")), preview.lastLog());
+                }
+            };
+            resolve();
+            const auto baselineColors = preview.pixels();
             const auto expectedChannel = [](float value) { return uint32_t(std::round(std::pow(value, 1.f / 2.2f) * 255)); };
-            const uint32_t expectedColor = expectedChannel(.2f) | (expectedChannel(.4f) << 8u) |
-                (expectedChannel(.6f) << 16u) | 0xff000000u;
-            require(std::count(residentColors.begin(), residentColors.end(), expectedColor) > 128,
-                "Resident material resolve did not preserve base color");
-            graph.setNodeRuntimeProperty(raster, "enableMeshletStreaming", true);
-            for (uint32_t frame = 0; frame < 16; ++frame) {
-                require(bool(preview.render(graph, 128, 128, "Resolve.color")), preview.lastLog());
-            }
+            const auto color = [&](float r, float g, float b) {
+                return expectedChannel(r) | (expectedChannel(g) << 8u) | (expectedChannel(b) << 16u) | 0xff000000u;
+            };
+            require(std::count(baselineColors.begin(), baselineColors.end(), color(.2f, .4f, .6f)) > 128,
+                "Stream material resolve did not preserve base color");
             auto* subsystem = preview.subsystemHost()->get<GPUSceneSubsystem>();
-            require(subsystem->rasterDrawLayout().maxRangeCount > 0, "Mixed fixture lost its resident layout");
-            require(residentColors == preview.pixels(), "Resident and mixed-stream material resolve differ");
+            require(subsystem && subsystem->instances().size() == source.renderNodes().size() &&
+                subsystem->geometries().size() == source.renderPrimitives().size() &&
+                subsystem->globalBufferViews().materials.buffer, "Stream fixture lost its scene metadata tables");
+            const auto instance = subsystem->instanceForRenderNode(0);
+            require(instance.valid(), "Stream render node has no GPUScene instance mapping");
+            auto edited = opaque;
+            edited.baseColorFactor.x = .8f;
+            edited.baseColorFactor.y = .1f;
+            edited.baseColorFactor.z = .3f;
+            require(source.setMaterialProperties(0, edited), "Stream base-color edit failed");
+            resolve();
+            require(std::count(preview.pixels().begin(), preview.pixels().end(), color(.8f, .1f, .3f)) > 128 &&
+                preview.pixels() != baselineColors, "Material resolve ignored a live stream material edit");
+            require(source.setMaterialProperties(0, opaque), "Stream material restoration failed");
+            resolve();
+            require(baselineColors == preview.pixels(), "Restoring the stream material changed resolved output");
+            require(subsystem->instanceForRenderNode(0) == instance && source.renderPrimitives()[0].positions.empty(),
+                "Material edits changed instance identity or imported CPU geometry payloads");
             return RHITestResult::pass("Metadata import never reads external buffers, preserves identity, and classifies only constant opaque alpha");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }

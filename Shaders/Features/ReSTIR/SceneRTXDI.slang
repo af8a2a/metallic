@@ -1,10 +1,7 @@
-#include "../../Interop/MaterialTextureDecode.hlsli"
-#include "../../Interop/AlphaCoverage.hlsli"
+import MaterialTextureDecode;
+import AlphaCoverage;
 import Material;
 using Metallic.Material;
-#ifndef SCENE_RAYQUERY_ENABLE_POSITION_FETCH
-#define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
-#endif
 
 import Core;
 using Metallic;
@@ -16,8 +13,6 @@ using Metallic.Lighting;
 
 import NRDEncoding;
 using Metallic.Interop.NRDEncoding;
-import NeuralTextures;
-using Metallic.Interop.NeuralTextures;
 
 #define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
 
@@ -47,8 +42,8 @@ struct RTXDITextureInfo
 {
     uint textureIndex;
     uint texCoord;
-    uint ntcTextureSetIndex;
-    uint ntcChannelMapping;
+    // Required for float4 alignment in StructuredBuffer std430 layout.
+    uint2 alignmentPadding;
     float4 transform0;
     float4 transform1;
 };
@@ -80,11 +75,8 @@ struct RTXDIMaterial
     RTXDITextureInfo specularColorTexture;
 };
 
-#define gIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().indices)
 
-#define gPrimitives resolveBuffer<StructuredBuffer<RTXDIPrimitive>>(getResourceParameters<SceneResourceParameters>().primitives)
 
-#define gInstances resolveBuffer<StructuredBuffer<RTXDIInstance>>(getResourceParameters<SceneResourceParameters>().instances)
 
 #define gMaterials resolveBuffer<StructuredBuffer<RTXDIMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
 
@@ -173,7 +165,6 @@ struct SceneRTXDIPush
     float exposure;
     float normalThreshold;
     float depthThreshold;
-    uint ntcTextureSetCount;
     uint outputLinear;
 };
 
@@ -203,6 +194,11 @@ struct HitInfo
     float3 bitangent;
     float2 texcoord;
     uint materialIndex;
+    uint instanceIndex;
+    uint primitiveIndex;
+    uint triangleIndex;
+    float rayConeLodConstant;
+    bool frontFace;
 };
 
 struct Surface
@@ -554,11 +550,6 @@ bool hasMaterialTexture(RTXDITextureInfo textureInfo, SceneRTXDIPush push)
         textureInfo.textureIndex < push.materialTextureCount;
 }
 
-bool hasNeuralMaterialTexture(RTXDITextureInfo textureInfo, SceneRTXDIPush push)
-{
-    return metallicHasNeuralTexture(textureInfo.ntcTextureSetIndex, push.ntcTextureSetCount);
-}
-
 float2 transformMaterialUv(RTXDITextureInfo textureInfo, float2 uv)
 {
     return float2(
@@ -566,74 +557,43 @@ float2 transformMaterialUv(RTXDITextureInfo textureInfo, float2 uv)
         dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
 }
 
+#include "../PathTracing/StreamTextureSampling.slang"
+
 float4 loadMaterialTexture(
     RTXDITextureInfo textureInfo,
     float2 uv,
     float4 fallback,
     SceneRTXDIPush push)
 {
-    if (hasNeuralMaterialTexture(textureInfo, push)) {
-        uint2 dimensions;
-        uint mipCount;
-        if (!metallicNeuralTextureDimensions(
-                textureInfo.ntcTextureSetIndex,
-                push.ntcTextureSetCount,
-                0u,
-                dimensions,
-                mipCount)) {
-            return fallback;
-        }
-        float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
-        int2 texel = int2(min(
-            uint2(wrappedUv * float2(dimensions)),
-            dimensions - uint2(1u, 1u)));
-        return metallicSampleNeuralTexture(
-            textureInfo.ntcTextureSetIndex,
-            push.ntcTextureSetCount,
-            textureInfo.ntcChannelMapping,
-            texel,
-            0,
-            fallback);
-    }
     if (!hasMaterialTexture(textureInfo, push)) {
         return fallback;
     }
     uint width = 1u;
     uint height = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    gMaterialTextures(textureIndex).GetDimensions(width, height);
+    requestStreamTextureMip0(textureIndex);
+    uint mip = uint(ceil(streamTextureSamplingFloor(textureIndex)));
+    uint mipCount;
+    gMaterialTextures(textureIndex).GetDimensions(mip, width, height, mipCount);
     if (width == 0u || height == 0u) {
         return fallback;
     }
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
-    return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
+    return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, mip)), textureInfo.transform0.w);
 }
 
-float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
-{
-    RTXDIInstance instance = gInstances[instanceIndex];
-    RTXDIPrimitive primitive = gPrimitives[instance.primitiveIndex];
-    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
-    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
-    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    return resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0].texcoord.xy * weights.x +
-        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1].texcoord.xy * weights.y +
-        resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2].texcoord.xy * weights.z;
-}
 
-bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, SceneRTXDIPush push)
+
+bool alphaMaskAcceptsHit(HitInfo hit, SceneRTXDIPush push)
 {
-    RTXDIInstance instance = gInstances[instanceIndex];
-    RTXDIMaterial material = gMaterials[instance.materialIndex];
+    RTXDIMaterial material = gMaterials[hit.materialIndex];
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
     }
     CoverageContext context;
-    context.uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
+    context.uv = hit.texcoord;
     context.baseAlpha = material.baseColor.a; context.cutoff = material.params.z; context.alphaMode = material.textureParams.w;
     CoverageProgram program;
     // Keep the buffer out of branch phis (no VariablePointersStorageBuffer).
@@ -641,16 +601,15 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
     bool custom = material.attenuationColor.w > 0.5;
     bool needsAlpha = true;
     if (custom) {
-        needsAlpha = program.usesBaseAlpha(coverageInstanceRef(instance.materialIndex));
+        needsAlpha = program.usesBaseAlpha(coverageInstanceRef(hit.materialIndex));
     }
     if (needsAlpha) {
-        if (hasNeuralMaterialTexture(material.baseColorTexture, push)) {
-            context.baseAlpha *= loadMaterialTexture(material.baseColorTexture, context.uv, float4(1.0), push).a;
-        } else if (hasMaterialTexture(material.baseColorTexture, push)) {
-            context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv));
+        if (hasMaterialTexture(material.baseColorTexture, push)) {
+            requestStreamTextureMip0(material.baseColorTexture.textureIndex);
+            context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv), uint(ceil(streamTextureSamplingFloor(material.baseColorTexture.textureIndex))));
         }
     }
-    if (custom) { return program.evaluateCoverage(context, coverageInstanceRef(instance.materialIndex)).accepted; }
+    if (custom) { return program.evaluateCoverage(context, coverageInstanceRef(hit.materialIndex)).accepted; }
     return coverageFromOpacity(context, context.baseAlpha).accepted;
 }
 
@@ -688,115 +647,34 @@ float3 transformObjectNormalToWorld(float3 normal, float3x4 worldToObject)
     return mul(normal, worldToObject).xyz;
 }
 
-bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit)
-{
-    hit = HitInfo();
-    RayDesc rayDesc;
-    rayDesc.Origin = ray.origin;
-    rayDesc.Direction = ray.direction;
-    rayDesc.TMin = max(push.clipOrtho.x, 0.0001);
-    rayDesc.TMax = max(push.clipOrtho.y, rayDesc.TMin + 0.0001);
+#include "../PathTracing/StreamRayGeometry.slang"
 
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, rayDesc);
+bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit, bool occlusionOnly = false)
+{
+    hit = (HitInfo)0;
+    RayDesc desc;
+    desc.Origin = ray.origin; desc.Direction = ray.direction;
+    desc.TMin = max(push.clipOrtho.x, 0.0001);
+    desc.TMax = max(push.clipOrtho.y, desc.TMin + 0.0001);
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+    query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
     while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            alphaMaskAcceptsHit(
-                query.CandidateInstanceIndex(),
-                query.CandidatePrimitiveIndex(),
-                query.CandidateTriangleBarycentrics(),
-                push)) {
+        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) { continue; }
+        HitInfo candidate;
+        if (streamRaySurface(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
+                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), ray,
+                query.CandidateTriangleRayT(), push.bitangentFlip, candidate) && alphaMaskAcceptsHit(candidate, push)) {
             query.CommitNonOpaqueTriangleHit();
         }
     }
-    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) {
-        return false;
-    }
-
-    uint instanceIndex = query.CommittedInstanceIndex();
-    RTXDIInstance instance = gInstances[instanceIndex];
-    RTXDIPrimitive primitive = gPrimitives[instance.primitiveIndex];
-    uint triangleIndex = query.CommittedPrimitiveIndex();
-    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
-    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
-    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i0];
-    SceneShadingVertex v1 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i1];
-    SceneShadingVertex v2 = resolveBuffer<StructuredBuffer<SceneShadingVertex>>(getResourceParameters<SceneResourceParameters>().vertices)[i2];
-    float2 bary = query.CommittedTriangleBarycentrics();
-    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-#if SCENE_RAYQUERY_ENABLE_POSITION_FETCH
-    float3 positions[3] = query.CommittedGetIntersectionTriangleVertexPositions();
-    float3 p0 = positions[0];
-    float3 p1 = positions[1];
-    float3 p2 = positions[2];
-#else
-    float3 p0 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i0);
-    float3 p1 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i1);
-    float3 p2 = loadSceneVertexPosition(resolveBuffer<StructuredBuffer<SceneVertexPosition>>(getResourceParameters<SceneResourceParameters>().positions), i2);
-#endif
-    float2 uv0 = v0.texcoord;
-    float2 uv1 = v1.texcoord;
-    float2 uv2 = v2.texcoord;
-    float3 localGeometryNormal = safeNormalize(cross(p1 - p0, p2 - p0), float3(0.0, 1.0, 0.0));
-    float3 localNormal = decodeSceneNormal(v0.normal) * weights.x + decodeSceneNormal(v1.normal) * weights.y + decodeSceneNormal(v2.normal) * weights.z;
-    localNormal = safeNormalize(localNormal, localGeometryNormal);
-    hit.texcoord = uv0 * weights.x + uv1 * weights.y + uv2 * weights.z;
-
-    float3x4 worldToObject = query.CommittedWorldToObject3x4();
-    hit.t = query.CommittedRayT();
-    hit.position = ray.origin + ray.direction * hit.t;
-    hit.geometryNormal = safeNormalize(
-        transformObjectNormalToWorld(localGeometryNormal, worldToObject),
-        localGeometryNormal);
-    hit.normal = safeNormalize(transformObjectNormalToWorld(localNormal, worldToObject), hit.geometryNormal);
-
-    float3 referenceAxis = abs(hit.normal.z) < 0.999
-        ? float3(0.0, 0.0, 1.0)
-        : float3(0.0, 1.0, 0.0);
-    float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1.0, 0.0, 0.0));
-    float tangentSign = 1.0;
-    if ((primitive.flags & kPrimitiveHasAuthoredTangents) != 0u) {
-        float4 localTangent = decodeSceneTangent(v0.tangent) * weights.x + decodeSceneTangent(v1.tangent) * weights.y + decodeSceneTangent(v2.tangent) * weights.z;
-        float3 localTangentDirection = safeNormalize(localTangent.xyz, float3(1.0, 0.0, 0.0));
-        tangentSign = localTangent.w >= 0.0 ? 1.0 : -1.0;
-        float3 worldTangent = safeNormalize(mul(localTangentDirection, worldToObject).xyz, fallbackTangent);
-        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
-        hit.tangent = float4(worldTangent, tangentSign);
-        hit.bitangent = safeNormalize(
-            cross(hit.normal, worldTangent) * tangentSign,
-            cross(hit.normal, fallbackTangent));
-    } else {
-        float3 localTriangleTangent;
-        float3 localTriangleBitangent;
-        computeTriangleTangentSpace(
-            p0,
-            p1,
-            p2,
-            uv0,
-            uv1,
-            uv2,
-            localNormal,
-            localTriangleTangent,
-            localTriangleBitangent);
-        float3 worldTangent = safeNormalize(mul(localTriangleTangent, worldToObject).xyz, fallbackTangent);
-        worldTangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), fallbackTangent);
-        float3 worldBitangent = safeNormalize(
-            mul(localTriangleBitangent, worldToObject).xyz,
-            cross(hit.normal, worldTangent));
-        worldBitangent = safeNormalize(
-            worldBitangent - hit.normal * dot(hit.normal, worldBitangent),
-            cross(hit.normal, worldTangent));
-        tangentSign = dot(cross(hit.normal, worldTangent), worldBitangent) < 0.0 ? -1.0 : 1.0;
-        hit.tangent = float4(worldTangent, tangentSign);
-        hit.bitangent = worldBitangent;
-    }
-    hit.tangent.w *= push.bitangentFlip;
-    hit.bitangent *= push.bitangentFlip;
-    hit.materialIndex = instance.materialIndex;
-    return true;
+    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
+    // Coverage is already accepted; shadow callers need no committed surface.
+    if (occlusionOnly) { return true; }
+    return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
+            query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray,
+            query.CommittedRayT(), push.bitangentFlip, hit);
 }
+
 
 float3 applyNormalMap(
     float3 normal,
@@ -841,25 +719,13 @@ float3 faceForwardShadingNormal(float3 normal, float3 geometryNormal, float3 ray
 
 bool traceShadow(float3 origin, float3 direction, float maxDistance, SceneRTXDIPush push)
 {
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.Direction = direction;
-    ray.TMin = 0.001;
-    ray.TMax = max(maxDistance - 0.002, 0.001);
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_NONE, 0xff, ray);
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            alphaMaskAcceptsHit(
-                query.CandidateInstanceIndex(),
-                query.CandidatePrimitiveIndex(),
-                query.CandidateTriangleBarycentrics(),
-                push)) {
-            query.CommitNonOpaqueTriangleHit();
-        }
-    }
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    Ray ray; ray.origin = origin; ray.direction = direction;
+    push.clipOrtho.x = 0.001;
+    push.clipOrtho.y = max(maxDistance, 0.001);
+    HitInfo hit;
+    return traceClosest(ray, push, hit, true);
 }
+
 
 Surface makeSurface(HitInfo hit, Ray ray, SceneRTXDIPush push)
 {

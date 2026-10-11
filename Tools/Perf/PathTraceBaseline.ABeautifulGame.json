@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "ABeautifulGame user view 2026-10-11",
+  "source": "User screenshot; camera values transcribed at the displayed six-decimal precision. Render size comes from the Render label, not the viewport rectangle.",
+  "width": 1920,
+  "height": 1080,
+  "camera": {
+    "eye": [-0.447789, 0.206681, 0.134049],
+    "center": [1.574037, -0.888370, -0.601834],
+    "up": [0.0, 1.0, 0.0],
+    "fovDegrees": 45.0,
+    "projection": "perspective",
+    "znear": 0.001,
+    "zfar": 100.0
+  },
+  "environment": {
+    "path": "External/RTXCR-Assets/EnvironmentMaps/studio_small_09_1k.hdr",
+    "intensity": 1.0,
+    "rotationDegrees": 25.0
+  },
+  "scope": "Production OpenPBR PathTrace with guides; no denoiser, upscaler, auto exposure or presentation. Lighting retains the prior comparison fixture and is not inferred from the screenshot.",
+  "frames": 257,
+  "warmupFrames": 128,
+  "timingFrames": 128
+}

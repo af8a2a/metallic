@@ -96,12 +96,12 @@ flowchart TD
 | `core` | shaderObject 开；关闭可关闭的 DGC、RT、SDK；optimal layouts | 资源、copy、基础 shader/graphics、query、错误传播 |
 | `binding` | core + bindless | buffer/image/sampler/AS 绑定、复用、PreparedExecution |
 | `async` | binding + async compute；核查独立 copy/compute | 跨队列、frame completion、query reset、RenderGraph progress |
-| `ray-query` | bindless + AS + rayQuery；参考路径关闭 OMM / positionFetch | 解析几何、标准 TLAS、AS 生命周期 |
+| `ray-query` | bindless + AS + rayQuery + CLAS；缺少 CLAS 明确 Unsupported | 解析几何、标准 TLAS、AS 生命周期 |
 | `gpu-driven` | binding + mesh/task/DGC 等相关请求 | indirect、DGC、mesh；用例另外声明精确子能力 |
-| `advanced-as` | ray-query + CLAS/PTLAS/OMM 请求 | 高级 AS；每个测试单独检查需要的能力组合 |
+| `advanced-as` | ray-query + PTLAS 请求 | 高级 AS；每个测试单独检查需要的能力组合 |
 | `sdk` | 按 SDK 分拆的配置，FreshProcess | Streamline / DLSS / Aftermath 等集成 |
 
-Unified/Optimal、OMM off/on、positionFetch off/on 是具体 differential case 的两个 variant，不把每个开关乘进全局笛卡尔积。A/B 分别在子进程运行同一输入，把原始结果交给父进程比较；核对 GPU UUID、驱动、shader 内容 hash 和除指定开关外的配置一致。两端都退回 fallback 时，只能记录 fallback 已执行，不能记为扩展对比通过。
+Unified/Optimal 等仍受支持的配置可以作为具体 differential case 的两个 variant，不把每个开关乘进全局笛卡尔积。光追已经统一为 CLAS，不再保留 OMM、positionFetch 或传统 triangle BLAS 对照配置；CLAS relocation 和属性解码使用独立数值 oracle。A/B 分别在子进程运行同一输入，把原始结果交给父进程比较；核对 GPU UUID、驱动、shader 内容 hash 和除指定开关外的配置一致。两端都退回 fallback 时，只能记录 fallback 已执行，不能记为扩展对比通过。
 
 已有用例自建 Device 的迁移：先标注 FreshProcess，并记录 validation coverage 不完整；随后改为通过 harness 创建，继承 sink、设备诊断和 profile。验证跨 Device 参数拒绝确实需要两台设备的用例标为特例，单进程独占、串行操作、不启用 SDK；不把它推广成通用 DevicePool。
 
@@ -175,7 +175,7 @@ GPU hash 可作快速拒绝及大结果摘要，失败保存原始数据；小�
 | P1 RHI DGC | GeneratedCommandsTests | direct vs generated compute/draw/mesh，支持的 preprocess 模式、count、GPU 写命令、执行后 state rebind；按子能力选择，不把现有 native probe 当成整个公共 API 覆盖 |
 | P1 RHI 解压 | GPUDecompressionTests | CPU 原文 vs GPU 解压，格式及合法大小/alignment、跨页、批次、graphics/compute；非法压缩数据不随意送 GPU |
 | P1 RHI Ray Query / 顶层 AS | RayTracingAccelerationStructureTests、UnifiedTopLevelTests | 小三角形、实例 mask/ID/transform、fixed rays；Standard/PTLAS 同一公开资源类型，不同类型化构建参数、错误 backend 拒绝 |
-| P1 RHI/Scene RT 对比 | PositionFetch、OpacityMicromap、ClasCompaction | 抽出无场景资产的底层 fixture；原 scene builder/压缩/OMM 测试继续归 integration |
+| P1 RHI/Scene RT 验证 | CLAS attributes、CLAS relocation、TLAS/PTLAS | 共享 CLAS fixture；流送属性、alpha、可见性和图资源生命周期保留独立 oracle；旧 triangle BLAS/OMM 测试已删除 |
 | P2 SDK / 场景 | DLSS/NRD、Streamer、MiniZorah 等 | 保留现有完整路径及输出检查，专门预算、进程隔离、fixture checksum；不阻塞基础 conformance 的设备创建 |
 
 OMM 需要把当前“fallback 通过，但 OMM 不可用，整个测试 Skip”的组合拆成独立 reference 与 comparison 结果。测试 opaque / transparent / unknown 时，参考 shader 遍历与 OMM unknown 的后续 alpha 判定规则一致。compaction 必须证明发生了实际搬迁，并在旧 storage 按契约退休后再次查询。

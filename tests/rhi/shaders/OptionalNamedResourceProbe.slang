@@ -1,18 +1,14 @@
 import Core;
 using Metallic;
 
-struct OptionalNamedResources
-{
-    ResourceHandle<RWByteAddressBuffer> output;
-    ResourceHandle<ByteAddressBuffer> input;
-};
+#include "../TestResourceParameters.h"
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void main()
 {
-    let resources = getResourceParameters<OptionalNamedResources>();
-    let output = resolveUniform(resources.output);
+    let resources = getResourceParameters<OptionalNamedResourceProbeResources>();
+    let output = resolveBuffer<RWByteAddressBuffer>(resources.output);
     bool present = resources.input.index != 0xffffffffu;
     uint value = 0u;
     if (present) { value = resolveUniform(resources.input).Load(0); }

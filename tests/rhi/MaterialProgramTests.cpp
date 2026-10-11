@@ -159,16 +159,24 @@ public:
     {
         using namespace render;
         std::string log;
-        for (const bool positionFetch : {false, true}) {
-            const SceneShaderOptions options{.hasRTXCR = METALLIC_HAS_RTXCR != 0, .positionFetch = positionFetch,
+        {
+            const SceneShaderOptions options{.hasRTXCR = METALLIC_HAS_RTXCR != 0,
                 .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR};
             for (const auto program : {SceneShaderProgram::PathTraceGuides, SceneShaderProgram::OpenPBRPathTraceGuides}) {
                 const auto request = makeSceneShaderRequest(program, options);
                 const ShaderRequestView view(request);
                 PROGRAM_REQUIRE(compileSlangShaderToSpirv(view.desc(), log).transform([](auto) {}));
             }
+            for (const auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                for (const char* name : {"SHARC_UPDATE", "SHARC_QUERY"}) {
+                    const SlangMacroDefine define{name, "1"};
+                    const auto request = makeSceneShaderRequest(program, options, {&define, 1});
+                    const ShaderRequestView view(request);
+                    PROGRAM_REQUIRE(compileSlangShaderToSpirv(view.desc(), log).transform([](auto) {}));
+                }
+            }
         }
-        return RHITestResult::pass("Standard/OpenPBR guide entry points compile with hardware and fallback position fetch; compile-only");
+        return RHITestResult::pass("Standard/OpenPBR guides and OpenPBR SHaRC update/query compile with streamed CLAS geometry; compile-only");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialProgramGuideCompileTest);

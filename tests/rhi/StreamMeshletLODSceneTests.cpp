@@ -61,11 +61,10 @@ public:
         RenderGraph graph;
         graph.addNode("VisibilityBufferPass", "VBuffer", {
             {"path", sourcePath.generic_string()}, {"streamAssetPath", assetPath.generic_string()},
-            {"streamAssetOnly", true},
             // Exercise ordered in-frame publication below instead of the synchronous
             // startup loader, which now completes root uploads before the first frame.
             {"initialLoad", false},
-            {"enableMeshletStreaming", true}, {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
+            {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
             {"maxPageUploadsPerFrame", 64}, {"maxActiveGroups", capacity},
             {"pageLoadConcurrency", 0},
             {"maxGpuPageRequests", 256}, {"maxGpuPageUnloadRequests", 256},
@@ -80,6 +79,7 @@ public:
         graph.markOutput("VBuffer.depth");
         const auto node = graph.findNode("VBuffer")->id;
         RenderView renderView;
+        renderView.setRenderResolution(kWidth, kHeight);
         preview.bindRenderView(&renderView);
         const auto render = [&](const char* output = "VBuffer.visibility") {
             // Exercise the shared view used by the sample, including its Z
@@ -93,6 +93,10 @@ public:
             const auto result = preview.render(graph, kWidth, kHeight, output);
             debug.poll();
             if (!result) { throw std::runtime_error(preview.lastLog()); }
+            if (preview.width() != kWidth || preview.height() != kHeight ||
+                preview.pixels().size() != kWidth * kHeight) {
+                throw std::runtime_error("Stream LOD fixture rendered at an unexpected extent");
+            }
         };
         const auto call = [&](const char* method, DebugValue params) {
             auto response = debug.core().dispatch({{"id", "stream-lod-scene-test"}, {"method", method}, {"params", params}});
@@ -332,8 +336,7 @@ public:
 
                     // Stream IDs retain sparse active-group slots; every pixel must refer
                     // to a selected cluster in this exact frame's active list.
-                    const uint32_t recordBase = static_cast<uint32_t>(
-                        gpuScene->globalBufferViews().meshletDraws.size / sizeof(VisibleClusterRecord));
+                    constexpr uint32_t recordBase = 0;
                     const uint32_t clusterStride = header.at("maxActiveGroupClusters");
                     if (clusterStride == 0) { return RHITestResult::fail("Zero stream cluster slot stride"); }
                     size_t covered = 0;
