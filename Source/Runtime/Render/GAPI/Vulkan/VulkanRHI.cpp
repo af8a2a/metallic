@@ -1888,7 +1888,9 @@ struct PipelineCacheImpl {
     PipelineCacheStats stats;
     std::unordered_set<uint64_t> storedPsoHashes;
     std::unordered_set<uint64_t> sessionPsoHashes;
-    mutable std::mutex mutex;
+    // Protects application metadata only. The native cache uses Vulkan's
+    // internal synchronization so driver pipeline creation can overlap.
+    mutable std::mutex metadataMutex;
     std::mutex saveMutex;
     bool saveOnDestroy = true;
 
@@ -1906,6 +1908,7 @@ struct GraphicsPipelineImpl {
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
+    PipelineCreationStats creationStats;
     ~GraphicsPipelineImpl();
 };
 
@@ -1916,6 +1919,7 @@ struct ComputePipelineImpl {
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
+    PipelineCreationStats creationStats;
     std::vector<uint8_t> replayInputSpirv, replayDeviceSpirv;
     ~ComputePipelineImpl();
 };
@@ -2519,8 +2523,8 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
 
 Result<> PipelineCacheImpl::save()
 {
-    // Serialize file replacement without holding the PSO creation/statistics
-    // mutex during driver extraction, checksum calculation or durable I/O.
+    // Serialize file replacement without holding the metadata mutex during
+    // driver extraction, checksum calculation or durable I/O.
     std::lock_guard saveLock(saveMutex);
     if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
@@ -2532,7 +2536,7 @@ Result<> PipelineCacheImpl::save()
     uint64_t revision = 0;
     std::vector<uint64_t> hashes;
     {
-        std::lock_guard lock(mutex);
+        std::lock_guard lock(metadataMutex);
         if (stats.dirtyRevision == stats.persistedRevision) {
             return {};
         }
@@ -2549,7 +2553,7 @@ Result<> PipelineCacheImpl::save()
         ~SaveAttempt()
         {
             if (!completed) {
-                std::lock_guard lock(cache.mutex);
+                std::lock_guard lock(cache.metadataMutex);
                 ++cache.stats.saveFailureCount;
                 cache.stats.saveInProgress = false;
             }
@@ -2624,7 +2628,7 @@ Result<> PipelineCacheImpl::save()
     const uint64_t writeNs = nanoseconds(writeEnd - writeBegin);
     uint64_t saveNs = 0;
     {
-        std::lock_guard lock(mutex);
+        std::lock_guard lock(metadataMutex);
         storedPsoHashes.insert(hashes.begin(), hashes.end());
         storedCount = stats.storedPsoCount = storedPsoHashes.size();
         stats.backendDataSize = backendData.size();
@@ -3781,7 +3785,7 @@ PipelineCacheStats PipelineCache::stats() const
     if (impl_ == nullptr) {
         return {};
     }
-    std::lock_guard lock(impl_->mutex);
+    std::lock_guard lock(impl_->metadataMutex);
     return impl_->stats;
 }
 
@@ -3851,6 +3855,11 @@ bool GraphicsPipeline::pipelineCacheHit() const
     return impl_ != nullptr && impl_->pipelineCacheHit;
 }
 
+PipelineCreationStats GraphicsPipeline::creationStats() const
+{
+    return impl_ != nullptr ? impl_->creationStats : PipelineCreationStats{};
+}
+
 METALLIC_RHI_HANDLE_DEFINITIONS(ComputePipeline)
 
 namespace detail {
@@ -3877,6 +3886,11 @@ uint64_t ComputePipeline::psoHash() const
 bool ComputePipeline::pipelineCacheHit() const
 {
     return impl_ != nullptr && impl_->pipelineCacheHit;
+}
+
+PipelineCreationStats ComputePipeline::creationStats() const
+{
+    return impl_ != nullptr ? impl_->creationStats : PipelineCreationStats{};
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsShaderObjectProgram)
@@ -8019,13 +8033,19 @@ struct PipelineCreationFeedback {
 template<class CreateInfo, class NativeCreate>
 VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::PipelineCacheImpl* cache,
     uint64_t psoHash, const char* kind, const std::string& shaderName, const char* entryPoint,
-    uint64_t cacheLockWaitNs, bool& metadataHit, NativeCreate&& nativeCreate)
+    bool& metadataHit, PipelineCreationStats& creationStats, NativeCreate&& nativeCreate)
 {
     CreateInfo info = suppliedInfo;
     PipelineCreationFeedback feedback;
     feedback.attach(info.pNext);
-    metadataHit = cache != nullptr &&
-        (cache->storedPsoHashes.contains(psoHash) || cache->sessionPsoHashes.contains(psoHash));
+    uint64_t cacheLockWaitNs = 0;
+    metadataHit = false;
+    if (cache != nullptr) {
+        const auto lockBegin = std::chrono::steady_clock::now();
+        std::lock_guard lock(cache->metadataMutex);
+        cacheLockWaitNs = pipelineElapsedNanoseconds(lockBegin);
+        metadataHit = cache->storedPsoHashes.contains(psoHash) || cache->sessionPsoHashes.contains(psoHash);
+    }
     const std::string cachePath = cache != nullptr ? cache->filePath.string() : "<none>";
     const char* entry = entryPoint != nullptr ? entryPoint : "<none>";
     spdlog::info("[PipelineCreate] Begin kind={} pso={:016x} cache='{}' shader='{}' entry={} metadataHit={} cacheLockWaitMs={:.3f}",
@@ -8043,8 +8063,18 @@ VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::Pipe
     const bool nativeHit = feedbackValid &&
         (observed.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     if (result == VK_SUCCESS && cache != nullptr) {
+        const auto lockBegin = std::chrono::steady_clock::now();
+        std::lock_guard lock(cache->metadataMutex);
+        cacheLockWaitNs += pipelineElapsedNanoseconds(lockBegin);
         metadataHit = cache->recordPsoLocked(psoHash, observed, nativeCreateNs, cacheLockWaitNs);
     }
+    creationStats = PipelineCreationStats{
+        .nativeCreateTimeNanoseconds = nativeCreateNs,
+        .driverDurationNanoseconds = feedbackValid ? observed.duration : 0,
+        .cacheLockWaitTimeNanoseconds = cacheLockWaitNs,
+        .feedbackValid = feedbackValid,
+        .nativeCacheHit = nativeHit,
+    };
     // Driver duration is undefined when VALID is clear; do not read it then.
     const std::string driverMs = feedbackValid
         ? fmt::format("{:.3f}", static_cast<double>(observed.duration) / 1'000'000.0)
@@ -8057,15 +8087,16 @@ VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::Pipe
     return result;
 }
 
-// The returned lock stays alive through Vulkan creation and recordPsoLocked().
-Result<std::unique_lock<std::mutex>> lockPipelineCache(
+// Cache ownership and the native handle are immutable after initialization.
+// Flags are zero, so Vulkan synchronizes native cache access internally.
+Result<> validatePipelineCache(
     const detail::DeviceImpl& device, bool requested, detail::PipelineCacheImpl* cache)
 {
-    if (!requested) { return std::unique_lock<std::mutex>{}; }
+    if (!requested) { return {}; }
     if (cache == nullptr || cache->device != &device || cache->pipelineCache == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
-    return std::unique_lock<std::mutex>(cache->mutex);
+    return {};
 }
 
 template<class PipelineImpl>
@@ -8168,10 +8199,9 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
-    const auto cacheLockBegin = std::chrono::steady_clock::now();
-    auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
-    if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
-    const uint64_t cacheLockWaitNs = pipelineCache != nullptr ? pipelineElapsedNanoseconds(cacheLockBegin) : 0;
+    if (auto validation = validatePipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache); !validation) {
+        return std::unexpected(validation.error());
+    }
     const uint64_t psoHash = detail::graphicsPipelineStateHash(desc);
 
     const char* vertexEntryPoint = desc.vertexShader.entryPoint;
@@ -8351,7 +8381,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     const ShaderModule* primaryShader = usesMeshShader ? desc.meshShader.module : desc.vertexShader.module;
     result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "graphics",
         primaryShader->impl_->diagnosticName, usesMeshShader ? meshEntryPoint : vertexEntryPoint,
-        cacheLockWaitNs, pipelineImpl->pipelineCacheHit, [&](const VkGraphicsPipelineCreateInfo& info) {
+        pipelineImpl->pipelineCacheHit, pipelineImpl->creationStats, [&](const VkGraphicsPipelineCreateInfo& info) {
             return impl_->functions.vkCreateGraphicsPipelines(
                 impl_->device,
                 pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
@@ -8392,10 +8422,9 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
-    const auto cacheLockBegin = std::chrono::steady_clock::now();
-    auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
-    if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
-    const uint64_t cacheLockWaitNs = pipelineCache != nullptr ? pipelineElapsedNanoseconds(cacheLockBegin) : 0;
+    if (auto validation = validatePipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache); !validation) {
+        return std::unexpected(validation.error());
+    }
     const uint64_t psoHash = detail::computePipelineStateHash(desc);
 
     const char* computeEntryPoint = desc.computeShader.entryPoint;
@@ -8483,7 +8512,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
     VkPipeline& pipeline = pipelineImpl->pipeline;
     result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "compute",
         desc.computeShader.module->impl_->diagnosticName, computeEntryPoint,
-        cacheLockWaitNs, pipelineImpl->pipelineCacheHit, [&](const VkComputePipelineCreateInfo& info) {
+        pipelineImpl->pipelineCacheHit, pipelineImpl->creationStats, [&](const VkComputePipelineCreateInfo& info) {
             return impl_->functions.vkCreateComputePipelines(
                 impl_->device,
                 pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
@@ -9728,14 +9757,12 @@ struct VulkanNativeAccess {
         if (!impl || !impl->device || !impl->pipelineCache || pipeline != VK_NULL_HANDLE) {
             return makeError(Error::InvalidArgument);
         }
-        const auto cacheLockBegin = std::chrono::steady_clock::now();
-        std::lock_guard lock(impl->mutex);
-        const uint64_t cacheLockWaitNs = pipelineElapsedNanoseconds(cacheLockBegin);
         VkPipeline candidate = VK_NULL_HANDLE;
         bool metadataHit = false;
+        PipelineCreationStats creationStats;
         const char* entry = info.stageCount != 0 && info.pStages != nullptr ? info.pStages[0].pName : nullptr;
         const VkResult result = createPipelineWithFeedback(info, impl, stateHash, "external-graphics",
-            "<external>", entry, cacheLockWaitNs, metadataHit, [&](const VkGraphicsPipelineCreateInfo& suppliedInfo) {
+            "<external>", entry, metadataHit, creationStats, [&](const VkGraphicsPipelineCreateInfo& suppliedInfo) {
                 return impl->device->functions.vkCreateGraphicsPipelines(
                     impl->device->device, impl->pipelineCache, 1, &suppliedInfo, nullptr, &candidate);
             });

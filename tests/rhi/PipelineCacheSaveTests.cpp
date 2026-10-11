@@ -1,11 +1,16 @@
 #include "RHITest.h"
 #include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
+#include <array>
 #include <atomic>
+#include <barrier>
 #include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <future>
+#include <mutex>
 #include <thread>
 
 namespace metallic::tests {
@@ -268,6 +273,215 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(PipelineCacheDeferredSaveTest);
+
+class PipelineCacheConcurrentCreateTest final : public RHITest {
+    struct NativeCreateOverlap {
+        inline static NativeCreateOverlap* active = nullptr;
+        VolkDeviceTable& functions;
+        PFN_vkCreateComputePipelines create;
+        std::mutex mutex;
+        std::condition_variable condition;
+        uint32_t entered = 0;
+        bool released = false;
+        bool overlap = false;
+
+        explicit NativeCreateOverlap(render::Device& device)
+            : functions(*const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)),
+              create(functions.vkCreateComputePipelines)
+        {
+            active = this;
+            functions.vkCreateComputePipelines = enter;
+        }
+
+        ~NativeCreateOverlap()
+        {
+            functions.vkCreateComputePipelines = create;
+            active = nullptr;
+        }
+
+        static VKAPI_ATTR VkResult VKAPI_CALL enter(VkDevice device, VkPipelineCache cache, uint32_t count,
+            const VkComputePipelineCreateInfo* infos, const VkAllocationCallbacks* allocator, VkPipeline* pipelines)
+        {
+            auto& capture = *active;
+            {
+                std::unique_lock lock(capture.mutex);
+                if (!capture.released) {
+                    if (++capture.entered >= 2) {
+                        capture.overlap = true;
+                        capture.released = true;
+                        capture.condition.notify_all();
+                    } else if (!capture.condition.wait_for(lock, std::chrono::seconds(2), [&] { return capture.released; })) {
+                        // Bound the failure when an application lock serializes
+                        // callers; this is an arrival check, not a speed target.
+                        capture.released = true;
+                        capture.condition.notify_all();
+                    }
+                }
+            }
+            return capture.create(device, cache, count, infos, allocator, pipelines);
+        }
+    };
+
+public:
+    PipelineCacheConcurrentCreateTest()
+    {
+        type = RHITestType::Resource;
+        name = "pipeline_cache_concurrent_create_save_and_stats";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        constexpr uint32_t kVariantCount = 4;
+        constexpr uint32_t kWorkerCount = 4;
+        constexpr uint32_t kRounds = 8;
+        constexpr uint32_t kCreateCount = kWorkerCount * kRounds;
+        const auto root = std::filesystem::absolute(context.outputDirectory / "pipeline-cache-concurrent" /
+            std::to_string(Clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(root);
+        {
+            std::ofstream source(root / "ConcurrentCacheProbe.slang");
+            source << "[shader(\"compute\")] [numthreads(CACHE_THREADS, 1, 1)]\n"
+                      "void computeMain(uint3 id : SV_DispatchThreadID) {}\n";
+            if (!source) { return RHITestResult::fail("could not write concurrent cache shader fixture"); }
+        }
+        const std::string sourceRoot = root.string();
+        const std::string spirvRoot = (root / "spirv").string();
+        std::array<std::unique_ptr<ShaderModule>, kVariantCount> modules;
+        for (uint32_t variant = 0; variant < kVariantCount; ++variant) {
+            const std::string threads = std::to_string(41 + variant);
+            const SlangMacroDefine macro{"CACHE_THREADS", threads.c_str()};
+            std::string log;
+            auto code = ShaderRegistry::instance().getShader({.moduleName = "ConcurrentCacheProbe",
+                .entryPointName = "computeMain", .searchPath = sourceRoot.c_str(), .macroDefines = {&macro, 1}},
+                {.cacheDirectory = spirvRoot.c_str()}, log);
+            if (!code) { return RHITestResult::fail("concurrent cache shader compilation failed: " + log); }
+            auto module = ShaderRegistry::instance().getShaderModule(context.device, {.spirv = code->spirv});
+            if (!module) { return RHITestResult::fail("concurrent cache shader module creation failed"); }
+            modules[variant] = std::move(*module);
+        }
+        const std::string cachePath = (root / "shared.pso").string();
+        auto cache = context.device.createPipelineCache({.filePath = cachePath.c_str(), .saveOnDestroy = false});
+        if (!cache || (*cache)->stats().storedPsoCount != 0) {
+            return RHITestResult::fail("concurrent cache fixture must start empty");
+        }
+        const auto createVariant = [&](PipelineCache& target, uint32_t variant) {
+            return context.device.createComputePipeline({.computeShader = {modules[variant].get()},
+                .usesBindlessHeap = context.device.capabilities().bindlessDescriptorHeap, .pipelineCache = &target});
+        };
+        struct Creation {
+            bool succeeded = false;
+            bool hashHit = false;
+            uint32_t variant = 0;
+            uint64_t hash = 0;
+            PipelineCreationStats stats;
+        };
+        std::array<Creation, kCreateCount> creations{};
+        // Installed before workers start and restored after every worker joins.
+        // Holding the first native entry open proves that another caller can
+        // reach Vulkan without relying on how the driver schedules compilation.
+        auto nativeCalls = std::make_unique<NativeCreateOverlap>(context.device);
+        std::barrier roundBarrier(kWorkerCount + 1);
+        std::array<std::future<void>, kWorkerCount> workers;
+        for (uint32_t worker = 0; worker < kWorkerCount; ++worker) {
+            workers[worker] = std::async(std::launch::async, [&, worker] {
+                for (uint32_t round = 0; round < kRounds; ++round) {
+                    // First race insertion of the same previously unseen hash,
+                    // then exercise distinct native pipelines in the same cache.
+                    auto& result = creations[round * kWorkerCount + worker];
+                    result.variant = round < kVariantCount ? round : (round + worker) % kVariantCount;
+                    roundBarrier.arrive_and_wait();
+                    auto pipeline = createVariant(**cache, result.variant);
+                    if (pipeline) {
+                        result.succeeded = true;
+                        result.hashHit = (*pipeline)->pipelineCacheHit();
+                        result.hash = (*pipeline)->psoHash();
+                        result.stats = (*pipeline)->creationStats();
+                    }
+                    roundBarrier.arrive_and_wait();
+                }
+            });
+        }
+        std::string error;
+        const auto require = [&](bool condition, const char* message) {
+            if (!condition && error.empty()) { error = message; }
+        };
+        uint64_t failedSaves = 0;
+        uint64_t previousRevision = 0;
+        for (uint32_t round = 0; round < kRounds; ++round) {
+            roundBarrier.arrive_and_wait();
+            const bool saved = static_cast<bool>((*cache)->save());
+            failedSaves += uint64_t(!saved);
+            const auto snapshot = (*cache)->stats();
+            require(snapshot.persistedRevision <= snapshot.dirtyRevision && snapshot.dirtyRevision >= previousRevision,
+                "concurrent metadata snapshot lost or overcommitted a revision");
+            require(snapshot.missCount == snapshot.sessionPsoCount && snapshot.sessionPsoCount <= kVariantCount &&
+                snapshot.hitCount + snapshot.missCount ==
+                    snapshot.nativeHitCount + snapshot.nativeMissCount + snapshot.unknownFeedbackCount,
+                "concurrent metadata snapshot has inconsistent hash or feedback counts");
+            previousRevision = snapshot.dirtyRevision;
+            if (saved && snapshot.saveCount != 0) {
+                // Only this thread saves; loading its last completed snapshot
+                // while workers create cannot include subsequently added hashes.
+                auto persisted = context.device.createPipelineCache({.filePath = cachePath.c_str(), .saveOnDestroy = false});
+                require(persisted && (*persisted)->stats().loadStatus == PipelineCacheLoadStatus::Loaded &&
+                    (*persisted)->stats().storedPsoCount == snapshot.storedPsoCount,
+                    "concurrent save produced an invalid or mismatched persistent hash snapshot");
+            }
+            roundBarrier.arrive_and_wait();
+            const auto afterRound = (*cache)->stats();
+            require(afterRound.hitCount + afterRound.missCount == (round + 1) * kWorkerCount,
+                "concurrent pipeline creation lost an accounting update");
+        }
+        for (auto& worker : workers) { worker.get(); }
+        require(nativeCalls->overlap, "same-cache compute callers could not enter Vulkan concurrently");
+        nativeCalls.reset();
+        // A growing driver cache may exhaust extraction retries. It must remain
+        // dirty until this final quiescent save succeeds, without losing hashes.
+        require(static_cast<bool>((*cache)->save()), "final concurrent cache save failed");
+        const auto finalStats = (*cache)->stats();
+        require(finalStats.sessionPsoCount == kVariantCount && finalStats.storedPsoCount == kVariantCount &&
+            finalStats.missCount == kVariantCount && finalStats.hitCount == kCreateCount - kVariantCount &&
+            finalStats.persistedRevision == finalStats.dirtyRevision && !finalStats.saveInProgress &&
+            finalStats.saveFailureCount == failedSaves,
+            "concurrent creation/save lost identities, hit counts, or final revision durability");
+        uint64_t hashHits = 0;
+        uint64_t nativeHits = 0;
+        uint64_t nativeMisses = 0;
+        uint64_t unknownFeedback = 0;
+        uint64_t expectedRevision = 0;
+        std::array<uint64_t, kVariantCount> hashes{};
+        for (const auto& result : creations) {
+            require(result.succeeded && result.stats.nativeCreateTimeNanoseconds > 0,
+                "concurrent pipeline creation failed or lost its per-call timing");
+            if (hashes[result.variant] == 0) { hashes[result.variant] = result.hash; }
+            require(result.hash != 0 && result.hash == hashes[result.variant], "concurrent pipeline hash identity changed");
+            hashHits += uint64_t(result.hashHit);
+            nativeHits += uint64_t(result.stats.feedbackValid && result.stats.nativeCacheHit);
+            nativeMisses += uint64_t(result.stats.feedbackValid && !result.stats.nativeCacheHit);
+            unknownFeedback += uint64_t(!result.stats.feedbackValid);
+            expectedRevision += uint64_t(!result.hashHit || (result.stats.feedbackValid && !result.stats.nativeCacheHit));
+        }
+        require(hashHits == finalStats.hitCount && nativeHits == finalStats.nativeHitCount &&
+            nativeMisses == finalStats.nativeMissCount && unknownFeedback == finalStats.unknownFeedbackCount &&
+            expectedRevision == finalStats.dirtyRevision,
+            "per-call feedback does not match concurrent cache counters or dirty revisions");
+        auto reloaded = context.device.createPipelineCache({.filePath = cachePath.c_str(), .saveOnDestroy = false});
+        require(reloaded && (*reloaded)->stats().loadStatus == PipelineCacheLoadStatus::Loaded &&
+            (*reloaded)->stats().storedPsoCount == kVariantCount && (*reloaded)->stats().dirtyRevision == 0,
+            "final concurrent cache snapshot did not reload cleanly");
+        if (reloaded) {
+            for (uint32_t variant = 0; variant < kVariantCount; ++variant) {
+                auto pipeline = createVariant(**reloaded, variant);
+                require(pipeline && (*pipeline)->pipelineCacheHit() && (*pipeline)->psoHash() == hashes[variant],
+                    "reloaded concurrent cache missed a persisted compute variant");
+            }
+        }
+        if (!error.empty()) { return RHITestResult::fail(error); }
+        return RHITestResult::pass("native-call overlap, 32 concurrent compute creations, exact feedback/revisions, concurrent save/stats and reload");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PipelineCacheConcurrentCreateTest);
 
 class ShaderRegistryDeferredTeardownTest final : public RHITest {
 public:

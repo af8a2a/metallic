@@ -30,6 +30,8 @@ class ShaderPipelineBenchTests(unittest.TestCase):
     def test_help_and_invalid_arguments(self):
         self.assertIn("--pipeline-cache", self.run_bench("--help").stdout)
         self.run_bench("--iterations", "0", expected=2)
+        self.run_bench("--pipeline-workers", "0", expected=2)
+        self.run_bench("--pipeline-workers", "2", "--compile-only", expected=2)
         self.run_bench("--unknown-option", expected=2)
         self.run_bench("--output-dir", self.root / "unselected", expected=2)
         self.assertFalse((self.root / "unselected").exists())
@@ -131,6 +133,36 @@ class ShaderPipelineBenchTests(unittest.TestCase):
                     self.assertIsNone(pipeline["native_cache_hit"])
                     self.assertIsNone(pipeline["driver_ms"])
             self.assertEqual(samples[0]["pipeline"]["pso_hash"], samples[1]["pipeline"]["pso_hash"])
+
+    def test_gpu_concurrent_pipeline_batches(self):
+        if not self.gpu:
+            self.skipTest("enable --gpu for concurrent pipeline checks")
+        for workers in (1, 3):
+            destination = self.root / f"workers-{workers}"
+            self.run_bench("--filter", "Features/PostProcess/AutoExposure.", "--iterations", "2",
+                           "--pipeline-workers", workers, "--shader-cache", "reuse",
+                           "--pipeline-cache", "reuse", "--output-dir", destination)
+            report = json.loads((destination / "report.json").read_text())
+            self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["pipelines_created"], 6)
+            self.assertEqual(report["validation_errors"], 0)
+            self.assertEqual(len(report["pipeline_batches"]), 2)
+            for iteration, batch in enumerate(report["pipeline_batches"]):
+                self.assertEqual(batch["actual_workers"], workers)
+                self.assertEqual(batch["successful_pipelines"], 3)
+                self.assertEqual(batch["metadata_hits"], 3 if iteration else 0)
+                self.assertEqual(batch["metadata_misses"], 0 if iteration else 3)
+                samples = [report["samples"][i] for i in batch["sample_indices"]]
+                self.assertTrue(all(s["iteration"] == iteration for s in samples))
+                self.assertTrue(all(s["pipeline_status"] == "created" for s in samples))
+                self.assertAlmostEqual(batch["pipeline_wall_sum_ms"],
+                                       sum(s["pipeline_wall_ms"] for s in samples))
+                self.assertAlmostEqual(batch["successful_native_create_sum_ms"],
+                                       sum(s["pipeline"]["native_create_ms"] for s in samples))
+                self.assertAlmostEqual(batch["successful_cache_lock_wait_sum_ms"],
+                                       sum(s["pipeline"]["cache_lock_wait_ms"] for s in samples))
+                self.assertGreaterEqual(batch["pipeline_batch_wall_ms"],
+                                        max(s["pipeline_wall_ms"] for s in samples))
 
 
 if __name__ == "__main__":

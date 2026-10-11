@@ -27,7 +27,11 @@ Registry 是进程单例，但全局仅保存源码字节标识与缓存分组�
 
 成功创建的新 PSO 或有效 native feedback 报告未命中的已有 PSO，交给设备持有的后台 worker 保存。这样应用 hash 命中后驱动补充的 backend data 仍会持久化。反馈无效时，每个 PSO 在本进程首次成功创建后保存一次；反馈无效的重复创建不重复标记。有效 native 命中不延长等待；失败候选不记录为成功。同一 group 的请求合并，在最后一次待保存状态请求后 750 ms 保存，持续新增请求最多等待 5 s（不含已有保存任务的执行时间）。正常 Device 销毁先排空并 join worker，再销毁 native cache；需要立即确保持久化的工具/测试可调用 `flushPipelineCaches(device)`，普通管线获取无需调用。保存失败会记录 warning 并保留待保存状态，后台延迟重试，当前管线仍可执行；退出/显式 flush 的失败尝试有界，避免永久等待。显式 `desc.pipelineCache` 沿用调用者的保存契约，`PipelineCache::save()` 仍同步；默认 null 必须走 Registry 持久缓存。
 
-后台提取与文件处理不持有 PSO 创建/统计共用的元数据锁，独立保存锁防止旧文件覆盖较新保存。提取前捕获 hash 与 revision，成功后只提交该快照，保存期间新增的 PSO 留待下一次保存。默认 Vulkan cache 未设置 externally-synchronized 标志，native cache 访问由驱动内部同步，仍可能存在驱动锁竞争，依据 [Vulkan pipeline cache synchronization](https://docs.vulkan.org/spec/latest/chapters/pipelines.html#pipelines-cache)。`Saved pipeline cache` 在操作完成后打印，并记录 `extractMs`（驱动提取及输出缓冲分配）、`writeMs`（容器排序、校验和、写盘与原子替换）、`totalMs`；这些不是 shader 编译、PSO 创建或启动总耗时。`PipelineCacheStats` 的 revision、保存次数和阶段时间可验证合并及持久化状态。
+元数据锁只保护 hash 集合、统计和 revision；Graphics、Compute 及外部 Graphics 创建均在锁外调用驱动。创建前的 hash 查询与创建成功后的登记各使用短临界区；同一 hash 并发创建时，元数据命中按成功登记顺序计数。默认 Vulkan cache 未设置 externally-synchronized 标志，native cache 访问由驱动内部同步，仍可能存在驱动锁竞争，依据 [Vulkan pipeline cache synchronization](https://docs.vulkan.org/spec/latest/chapters/pipelines.html#pipelines-cache)。
+
+后台提取与文件处理也不持有元数据锁，独立保存锁防止旧文件覆盖较新保存。提取前捕获 hash 与 revision，成功后只提交该快照，保存期间新增的 PSO 留待下一次保存。`Saved pipeline cache` 在操作完成后打印，并记录 `extractMs`（驱动提取及输出缓冲分配）、`writeMs`（容器排序、校验和、写盘与原子替换）、`totalMs`；这些不是 shader 编译、PSO 创建或启动总耗时。`PipelineCacheStats` 的 revision、保存次数和阶段时间可验证合并及持久化状态。
+
+`GraphicsPipeline::creationStats()` 和 `ComputePipeline::creationStats()` 返回该对象创建时的不可变反馈，包括 native/driver 时间、metadata 锁等待及 driver 命中状态。并发测量必须使用这些逐调用数据，不能用共享 `PipelineCacheStats.last*` 推断某次调用。`cacheLockWaitMs` 是创建前查询和创建后登记两次锁获取的等待总和；不包括驱动内部同步。使用 [ShaderPipelineBench](ShaderPipelineBench.md) 的 `--pipeline-workers 1` 与多 worker 批次，在同一请求集及缓存条件下比较。
 
 Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shader-objects/<group>/<shaderBinaryUUID>/<programHash>.shaderbin`。首次从 SPIR-V 创建成功后，使用 `vkGetShaderBinaryDataEXT` 导出 linked vertex/fragment 的完整二进制对并原子保存；后续进程用 `VK_SHADER_CODE_TYPE_BINARY_EXT` 成对创建。它们使用独立容器，不使用 `VkPipelineCache`。第三方 SDK 内部 shader 不由 Registry 管理。
 
@@ -45,6 +49,7 @@ Shader Objects 通过 `getGraphicsShaderObjectProgram` 自动使用 `.cache/shad
 - `shader_registry_source_pso_and_device_lifetime`：源码冷/热缓存、shader 与管线状态变体、失败发布、并发创建、不同 Device 的持久复用。
 - `MetallicDeferredShaderCacheWriterTests`：合并、后台阻塞隔离、保存期间的新请求、失败重试和退出排空。
 - `pipeline_cache_deferred_save_and_snapshot`：实际 Vulkan 缓存保存的同步/后台计时、并发新增与全量重新加载。
+- `pipeline_cache_concurrent_create_save_and_stats`：同一 cache 的并发 compute 创建、逐调用反馈计数、同时保存/读取统计及快照重载。
 - `pipeline_cache_native_feedback_and_refresh`：已知 hash 与空 native cache 的组合、compute/graphics/native 适配器反馈链、backend 更新持久化、第二 Device 重载和像素读回。
 - `MetallicShaderObjectCacheFileTests`：文件兼容性、损坏、尺寸边界、原子替换与并发保存。
 - `shader_object_binary_persistence_readback`：SPIR-V 导出、BINARY 命中、片元变体、损坏回退和第二 Device 的像素一致性。

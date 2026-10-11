@@ -1126,6 +1126,16 @@ struct PipelineCacheDesc {
     bool saveOnDestroy = true;
 };
 
+// Immutable feedback for one pipeline creation; unlike cache-wide last* fields,
+// this remains attributable to its caller during concurrent creation.
+struct PipelineCreationStats {
+    uint64_t nativeCreateTimeNanoseconds = 0;
+    uint64_t driverDurationNanoseconds = 0; // Undefined feedback is represented by zero.
+    uint64_t cacheLockWaitTimeNanoseconds = 0; // Metadata-lock acquisition waits only.
+    bool feedbackValid = false;
+    bool nativeCacheHit = false; // Meaningful only when feedbackValid is true.
+};
+
 struct PipelineCacheStats {
     PipelineCacheLoadStatus loadStatus = PipelineCacheLoadStatus::NotFound;
     uint64_t storedPsoCount = 0;
@@ -1591,6 +1601,7 @@ class GraphicsPipeline {
     // still perform implementation-defined validation when creating the PSO.
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
+    PipelineCreationStats creationStats() const;
 
     PreparedExecution execution() const;
 };
@@ -1607,6 +1618,7 @@ class ComputePipeline {
     // still perform implementation-defined validation when creating the PSO.
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
+    PipelineCreationStats creationStats() const;
 
     PreparedExecution execution() const;
 };
