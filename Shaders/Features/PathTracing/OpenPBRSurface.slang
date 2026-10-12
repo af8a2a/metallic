@@ -13,14 +13,22 @@ using Metallic.Material;
 
 float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
+#if SHARC_UPDATE
     let resources = getResourceParameters<SceneResourceParameters>();
+#else
+    let resources = getResourceParameterField<SceneResourceParameters, SceneOpenPBRLUTResourceParameters>(kSceneOpenPBRLUTsOffset);
+#endif
     let texture = ResourceHandle<Texture2D<float4>>(resources.openPBRLut2D.load(openPBRLut2DSlot(lutId)));
     return sampleOpenPBRTexture2D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uv);
 }
 
 float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
+#if SHARC_UPDATE
     let resources = getResourceParameters<SceneResourceParameters>();
+#else
+    let resources = getResourceParameterField<SceneResourceParameters, SceneOpenPBRLUTResourceParameters>(kSceneOpenPBRLUTsOffset);
+#endif
     let texture = ResourceHandle<Texture3D<float4>>(resources.openPBRLut3D.load(openPBRLut3DSlot(lutId)));
     return sampleOpenPBRTexture3D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uvw);
 }

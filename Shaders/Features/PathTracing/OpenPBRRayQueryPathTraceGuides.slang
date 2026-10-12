@@ -140,7 +140,7 @@ void writeOpenPbrPathColor(uint2 pixel, float3 color, ScenePathTracePush push)
         color = accumulateStreamPathTrace(pixel, color, push);
     }
 
-    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
+    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(gSceneLights)), 1.0);
 }
 #endif
 

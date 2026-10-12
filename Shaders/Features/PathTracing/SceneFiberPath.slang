@@ -16,7 +16,7 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     // projected scattering. A future PDF capability can replace this policy.
     for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
         let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-            getResourceParameters<SceneResourceParameters>().environment.celestialLights);
+            getSceneEnvironmentResources().celestialLights);
         PunctualLightSample light = samplePathCelestialLightAtPosition(celestial, celestialSlot, hit.position, seed);
         if (!any(light.illuminance > 0.0)) { continue; }
         float3 scattering = max(prepared.evalProjected(light.direction), 0.0);
@@ -31,8 +31,8 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     }
     uint fiberLightIndex;
     float fiberInverseSourcePdf;
-    if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, fiberLightIndex, fiberInverseSourcePdf)) {
-        PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), fiberLightIndex, hit.position);
+    if (selectPunctualLight(PunctualSamplingResources(gSceneLights, gSceneReGIRGrid, gSceneLightsPdf), hit.position, seed, fiberLightIndex, fiberInverseSourcePdf)) {
+        PunctualLightSample light = samplePunctualLight(gSceneLights, fiberLightIndex, hit.position);
         float3 fiberScattering = max(prepared.evalProjected(light.direction), 0.0);
         if (luminanceMax(fiberScattering * light.illuminance) > 0.0) {
             float3 shadowOrigin = offsetRay(hit.position,

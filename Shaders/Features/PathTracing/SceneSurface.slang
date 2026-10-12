@@ -61,7 +61,11 @@ struct PathTraceInstance
 
 
 
+#if SHARC_UPDATE
 #define gMaterials resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
+#else
+#define gMaterials resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset))
+#endif
 
 #if SHARC_UPDATE
 #define gHistoryCurrent resolveUniform(getResourceParameters<SceneResourceParameters>().accumulationCurrent)
@@ -75,11 +79,40 @@ struct PathTraceInstance
 #define gHistoryPrevious resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float4>>>(kSceneAccumulationPreviousOffset))
 #endif
 
+#if SHARC_UPDATE
 #define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
-
+#define gMaterialSampler resolveUniform(getResourceParameters<SceneResourceParameters>().materialSampler)
+#define gTextureFeedback resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback)
+#define gMaterialValues resolveUniform(getResourceParameters<SceneResourceParameters>().materialValues)
 #define gEnvironmentMap resolveUniform(getResourceParameters<SceneResourceParameters>().environmentMap)
-
 #define gEnvironmentImportancePdf resolveUniform(getResourceParameters<SceneResourceParameters>().environmentPdf)
+#else
+#define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameterField<SceneResourceParameters, BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)))
+#define gMaterialSampler resolveUniform(getResourceParameterField<SceneResourceParameters, SamplerHandle>(kSceneMaterialSamplerOffset))
+#define gTextureFeedback resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset))
+#define gMaterialValues resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialValuesOffset))
+#define gEnvironmentMap resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset))
+#define gEnvironmentImportancePdf resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset))
+#endif
+
+#if SHARC_UPDATE
+#define gSceneLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights)
+#define gSceneLightsPdf resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)
+#define gSceneReGIRGrid resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid)
+#else
+#define gSceneLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightsOffset))
+#define gSceneLightsPdf resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneLightsPdfOffset))
+#define gSceneReGIRGrid resolveBuffer<StructuredBuffer<uint4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneReGIRGridOffset))
+#endif
+
+EnvironmentResourceParameters getSceneEnvironmentResources()
+{
+#if SHARC_UPDATE
+    return getResourceParameters<SceneResourceParameters>().environment;
+#else
+    return getResourceParameterField<SceneResourceParameters, EnvironmentResourceParameters>(kSceneEnvironmentOffset);
+#endif
+}
 
 
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -704,7 +737,7 @@ float3 environmentRadiance(float3 direction, ScenePathTracePush push, bool prima
     }
     // The proposal/capture excludes celestial disks. Only the primary visible
     // background queries the physical sky with disks, avoiding direct-light MIS duplication.
-    let physicalResources = getResourceParameters<SceneResourceParameters>().environment;
+    let physicalResources = getSceneEnvironmentResources();
     if (primaryMiss && physicalEnvironmentEnabled(physicalResources)) {
         return physicalVisibleEnvironment(physicalResources, direction, primaryWorldOrigin) * max(push.environmentIntensity, 0.0);
     }
@@ -843,7 +876,7 @@ float4 loadMaterialTextureMip0(
     // Glass explicitly requests deterministic finest-available sampling in
     // both comparison modes, including the streaming publication floor.
     return decodeMaterialTextureSample(sampleResidentMaterialTexture(gMaterialTextures(textureIndex),
-        resolveUniform(getResourceParameters<SceneResourceParameters>().materialSampler), wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
+        gMaterialSampler, wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
         textureInfo.transform0.w);
 #else
     requestStreamTextureMip0(textureIndex);
@@ -894,7 +927,7 @@ float4 loadMaterialTexture(
         // comparing filtering modes; only the texture estimator changes.
         rand4(seed);
         return decodeMaterialTextureSample(sampleResidentMaterialTexture(gMaterialTextures(textureIndex),
-            resolveUniform(getResourceParameters<SceneResourceParameters>().materialSampler), transformMaterialUv(textureInfo, uv), mipLevel, mipFloor),
+            gMaterialSampler, transformMaterialUv(textureInfo, uv), mipLevel, mipFloor),
             textureInfo.transform0.w);
     }
 #endif
@@ -920,7 +953,7 @@ float4 loadMaterialTextureForMaterial(
     // Demand uses the source dimensions, never the currently coarse resident tail.
     // The same UV transform and ray-cone footprint drive sampling and residency.
     if (hasMaterialTexture(textureInfo, push) && (seed & 7u) == 0u) {
-        RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback);
+        RWStructuredBuffer<uint> feedback = gTextureFeedback;
         uint count, stride;
         feedback.GetDimensions(count, stride);
         uint offset = textureInfo.textureIndex * 8u;
@@ -956,7 +989,7 @@ CoverageResult evaluateSceneCoverage(uint materialIndex, PathTraceMaterial mater
     if (context.alphaMode < 0.5) { return coverageFromOpacity(context, 1.0); }
     if (material.attenuationColor.w > 0.5) {
         CoverageProgram program;
-        program.inputs = resolveUniform(getResourceParameters<SceneResourceParameters>().materialValues);
+        program.inputs = gMaterialValues;
         MaterialInstanceRef instance = coverageInstanceRef(materialIndex);
         if (program.usesBaseAlpha(instance)) {
             context.baseAlpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);

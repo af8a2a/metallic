@@ -2185,8 +2185,27 @@ public:
         auto& device = *fixture;
         auto& queue = *device.getQueue(QueueType::Graphics);
         constexpr uint64_t kFieldABI = 0x4649454c44530001ull;
+        constexpr uint64_t kShortRootABI = 0x4649454c44530002ull;
+        using ShortRoot = std::array<uint32_t, sizeof(NamedComputeParameters) / sizeof(uint32_t) - 1>;
+        static_assert(sizeof(NamedComputeParameters) == 24 && sizeof(ShortRoot) == 20);
+        constexpr std::array<uint32_t, 62> kFieldOffsets{
+            8, 12, 20, 200, 40, 44, 48, 52, 56, 60, 64, 300, 304, 308,
+            sizeof(SceneResourceParameters) - sizeof(uint32_t), UINT32_MAX, UINT32_MAX, UINT32_MAX,
+            kSceneSceneOffset, kSceneSceneOffset + 4,
+            kSceneMaterialSamplerOffset, kSceneMaterialTexturesOffset, kSceneMaterialTexturesOffset + 4, kSceneMaterialTexturesOffset + 8,
+            kSceneOpenPBRLUTsOffset, kSceneOpenPBRLUTsOffset + 4, kSceneOpenPBRLUTsOffset + 8,
+            kSceneOpenPBRLUTsOffset + 12, kSceneOpenPBRLUTsOffset + 16, kSceneOpenPBRLUTsOffset + 20, kSceneOpenPBRLUTsOffset + 24,
+            kSceneRayStreamHeaderOffset, kSceneRayStreamInstancesOffset, kSceneRayStreamPageTableOffset, kSceneRayStreamPagesOffset,
+            kSceneLightsOffset, kSceneLightsPdfOffset,
+            kSceneEnvironmentOffset, kSceneEnvironmentOffset + 4, kSceneEnvironmentOffset + 8, kSceneEnvironmentOffset + 12,
+            kSceneEnvironmentOffset + 16, kSceneEnvironmentOffset + 20, kSceneEnvironmentOffset + 24,
+            kSceneMaterialsOffset, kSceneMaterialValuesOffset, kSceneMaterialTexturesOffset, kSceneMaterialTexturesOffset + 4,
+            kSceneMaterialTexturesOffset + 8, kSceneMaterialSamplerOffset,
+            kSceneRayStreamHeaderOffset, kSceneRayStreamInstancesOffset, kSceneRayStreamPageTableOffset, kSceneRayStreamPagesOffset,
+            kSceneLightsOffset, kSceneLightsPdfOffset, kSceneReGIRGridOffset, kSceneEnvironmentMapOffset, kSceneEnvironmentPdfOffset,
+            kSceneRayStreamChangesOffset, kSceneStreamPageCountOffset, kSceneTextureFeedbackOffset};
         std::unique_ptr<Buffer> output;
-        REG_REQUIRE(device.createBuffer({.size = 128, .structureStride = 4, .usage = BufferUsageBits::Storage,
+        REG_REQUIRE(device.createBuffer({.size = kFieldOffsets.size() * sizeof(uint32_t), .structureStride = 4, .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::HostReadback, .queueAccess = QueueAccessBits::Graphics})
             .transform([&](auto value) { output = std::move(value); }));
         Commands recording;
@@ -2207,7 +2226,10 @@ public:
             std::string log;
             REG_REQUIRE(kernel.initialize(device, {.spirv = shader.spirv,
                 .parameters = parameterAbi<NamedComputeParameters>(kFieldABI)}, log));
-            for (uint32_t variant = 0; variant < 3; ++variant) {
+            ComputeKernel shortRootKernel;
+            REG_REQUIRE(shortRootKernel.initialize(device, {.spirv = shader.spirv,
+                .parameters = parameterAbi<ShortRoot>(kShortRootABI)}, log));
+            for (uint32_t variant = 0; variant < 4; ++variant) {
                 // Arbitrary identities are read back, never resolved. All-ones
                 // also verifies that optional-resource sentinels survive slicing.
                 std::array<uint32_t, sizeof(SceneResourceParameters) / sizeof(uint32_t)> packet;
@@ -2223,7 +2245,19 @@ public:
                 auto encoded = variant == 1 ? encodeNamedParameters(writer, shortPacket, outputHandle, kFieldABI) :
                     encodeNamedParameters(writer, packet, outputHandle, kFieldABI);
                 REG_CHECK(encoded);
-                auto prepared = kernel.prepareDispatch(*encoded, 1);
+                if (variant == 3) {
+                    // The resource span is complete, but the outer root omits
+                    // the final constants-count word. No read of a field may
+                    // proceed merely because its own resource span is valid.
+                    NamedComputeParameters root;
+                    root.resources = writer.dataSpan(packet.data(), sizeof(packet), 4, alignof(decltype(packet)));
+                    root.constants = writer.dataSpan(&outputHandle, sizeof(outputHandle), 4, alignof(decltype(outputHandle)));
+                    ShortRoot shortRoot;
+                    std::memcpy(shortRoot.data(), &root, sizeof(shortRoot));
+                    encoded = writer.encode(shortRoot, kShortRootABI);
+                    REG_CHECK(encoded && encoded->root().count == shortRoot.size());
+                }
+                auto prepared = (variant == 3 ? shortRootKernel : kernel).prepareDispatch(*encoded, 1);
                 REG_CHECK(prepared);
                 REG_REQUIRE(prepared->record(*recording.commands));
                 REG_REQUIRE(recording.submit(tracker, *gate));
@@ -2231,20 +2265,18 @@ public:
                 output->invalidate();
                 const auto* mapped = static_cast<const uint32_t*>(output->map());
                 REG_CHECK(mapped);
-                std::array<uint32_t, 18> actual;
+                std::array<uint32_t, kFieldOffsets.size()> actual;
                 std::copy_n(mapped, actual.size(), actual.begin());
                 output->unmap();
                 evidence.insert(evidence.end(), actual.begin(), actual.end());
-                constexpr std::array<uint32_t, 15> offsets{8, 12, 20, 200, 40, 44, 48, 52, 56, 60, 64, 300, 304, 308,
-                    sizeof(SceneResourceParameters) - sizeof(uint32_t)};
-                for (uint32_t i = 0; i < offsets.size(); ++i) {
-                    REG_CHECK(actual[i] == (variant == 1 ? 0 : packet[offsets[i] / 4]));
+                for (uint32_t i = 0; i < kFieldOffsets.size(); ++i) {
+                    const auto offset = kFieldOffsets[i];
+                    REG_CHECK(actual[i] == (variant == 1 || variant == 3 || offset == UINT32_MAX ? 0 : packet[offset / 4]));
                 }
-                REG_CHECK(actual[15] == 0 && actual[16] == 0 && actual[17] == 0);
             }
         }
         bench::readbackEvidence(context, "resource-field-readback.bin", std::span<const uint32_t>(evidence));
-        return RHITestResult::pass("Mapped/native scene field views preserve offsets, sentinels and full-packet bounds");
+        return RHITestResult::pass("Mapped/native scene views, 64-bit identities and single fields preserve offsets, sentinels and packet/root bounds");
     }
 };
 METALLIC_REGISTER_RHI_TEST(ResourceParameterFieldTest);

@@ -148,6 +148,56 @@ static_assert(offsetof(SceneResourceParameters, environment) + sizeof(Environmen
 #endif
 
 // Read-only views of the existing scene packet; these do not change its wire layout.
+DR_PUBLIC struct SceneMaterialTextureResourceParameters
+{
+    DR_PUBLIC DR_SAMPLER materialSampler;
+    DR_PUBLIC DR_SPAN materialTextures;
+};
+#ifdef __cplusplus
+static_assert(sizeof(SceneMaterialTextureResourceParameters) == 16);
+static_assert(offsetof(SceneResourceParameters, materialSampler) == 108 + offsetof(SceneMaterialTextureResourceParameters, materialSampler));
+static_assert(offsetof(SceneResourceParameters, materialTextures) == 108 + offsetof(SceneMaterialTextureResourceParameters, materialTextures));
+#endif
+
+DR_PUBLIC struct SceneOpenPBRLUTResourceParameters
+{
+    DR_PUBLIC DR_SPAN openPBRLut2D;
+    DR_PUBLIC DR_SPAN openPBRLut3D;
+    DR_PUBLIC DR_SAMPLER openPBRLutSampler;
+};
+#ifdef __cplusplus
+static_assert(sizeof(SceneOpenPBRLUTResourceParameters) == 28);
+static_assert(offsetof(SceneResourceParameters, openPBRLut2D) == 172 + offsetof(SceneOpenPBRLUTResourceParameters, openPBRLut2D));
+static_assert(offsetof(SceneResourceParameters, openPBRLut3D) == 172 + offsetof(SceneOpenPBRLUTResourceParameters, openPBRLut3D));
+static_assert(offsetof(SceneResourceParameters, openPBRLutSampler) == 172 + offsetof(SceneOpenPBRLUTResourceParameters, openPBRLutSampler));
+#endif
+
+DR_PUBLIC struct SceneRayStreamResourceParameters
+{
+    DR_PUBLIC DR_BUFFER rayStreamHeader;
+    DR_PUBLIC DR_BUFFER rayStreamInstances;
+    DR_PUBLIC DR_BUFFER rayStreamPageTable;
+    DR_PUBLIC DR_BUFFER rayStreamPages;
+};
+#ifdef __cplusplus
+static_assert(sizeof(SceneRayStreamResourceParameters) == 16);
+static_assert(offsetof(SceneResourceParameters, rayStreamHeader) == 244 + offsetof(SceneRayStreamResourceParameters, rayStreamHeader));
+static_assert(offsetof(SceneResourceParameters, rayStreamInstances) == 244 + offsetof(SceneRayStreamResourceParameters, rayStreamInstances));
+static_assert(offsetof(SceneResourceParameters, rayStreamPageTable) == 244 + offsetof(SceneRayStreamResourceParameters, rayStreamPageTable));
+static_assert(offsetof(SceneResourceParameters, rayStreamPages) == 244 + offsetof(SceneRayStreamResourceParameters, rayStreamPages));
+#endif
+
+DR_PUBLIC struct SceneLightResourceParameters
+{
+    DR_PUBLIC DR_BUFFER lights;
+    DR_PUBLIC DR_SAMPLED(2D<float>) lightsPdf;
+};
+#ifdef __cplusplus
+static_assert(sizeof(SceneLightResourceParameters) == 8);
+static_assert(offsetof(SceneResourceParameters, lights) == 88 + offsetof(SceneLightResourceParameters, lights));
+static_assert(offsetof(SceneResourceParameters, lightsPdf) == 88 + offsetof(SceneLightResourceParameters, lightsPdf));
+#endif
+
 DR_PUBLIC struct SceneGuideResourceParameters
 {
     DR_PUBLIC DR_STORAGE(2D<float4>) guideAlbedo;
@@ -188,11 +238,31 @@ static_assert(offsetof(SceneResourceParameters, sharcResolved) == 300 + offsetof
 #else
 #define DR_SCENE_OFFSET(Name, Field, Offset) public static const uint Name = Offset
 #endif
+DR_SCENE_OFFSET(kSceneSceneOffset, scene, 0);
 DR_SCENE_OFFSET(kSceneAccumulationCurrentOffset, accumulationCurrent, 8);
 DR_SCENE_OFFSET(kSceneAccumulationPreviousOffset, accumulationPrevious, 12);
 DR_SCENE_OFFSET(kSceneCacheParamsOffset, cacheParams, 20);
+DR_SCENE_OFFSET(kSceneEnvironmentMapOffset, environmentMap, 32);
+DR_SCENE_OFFSET(kSceneEnvironmentPdfOffset, environmentPdf, 36);
 DR_SCENE_OFFSET(kSceneGuidesOffset, guideAlbedo, 40);
+DR_SCENE_OFFSET(kSceneLightsOffset, lights, 88);
+DR_SCENE_OFFSET(kSceneLightsPdfOffset, lightsPdf, 92);
+DR_SCENE_OFFSET(kSceneMaterialSamplerOffset, materialSampler, 108);
+DR_SCENE_OFFSET(kSceneMaterialTexturesOffset, materialTextures, 112);
+DR_SCENE_OFFSET(kSceneMaterialValuesOffset, materialValues, 136);
+DR_SCENE_OFFSET(kSceneMaterialsOffset, materials, 140);
+DR_SCENE_OFFSET(kSceneOpenPBRLUTsOffset, openPBRLut2D, 172);
+DR_SCENE_OFFSET(kSceneRayStreamChangesOffset, rayStreamChanges, 220);
+DR_SCENE_OFFSET(kSceneRayStreamOffset, rayStreamHeader, 244);
+DR_SCENE_OFFSET(kSceneRayStreamHeaderOffset, rayStreamHeader, 244);
+DR_SCENE_OFFSET(kSceneRayStreamInstancesOffset, rayStreamInstances, 248);
+DR_SCENE_OFFSET(kSceneRayStreamPageTableOffset, rayStreamPageTable, 252);
+DR_SCENE_OFFSET(kSceneRayStreamPagesOffset, rayStreamPages, 256);
+DR_SCENE_OFFSET(kSceneReGIRGridOffset, regirGrid, 260);
 DR_SCENE_OFFSET(kSceneSharcOffset, sharcAccumulation, 300);
+DR_SCENE_OFFSET(kSceneStreamPageCountOffset, streamPageCount, 316);
+DR_SCENE_OFFSET(kSceneTextureFeedbackOffset, textureFeedback, 332);
+DR_SCENE_OFFSET(kSceneEnvironmentOffset, environment, 356);
 DR_SCENE_OFFSET(kSceneOutputOffset, output, 200);
 #undef DR_SCENE_OFFSET
 

@@ -3,7 +3,11 @@
 
 float streamTextureSamplingFloor(uint textureIndex)
 {
+#if SHARC_UPDATE
     RWStructuredBuffer<uint> metadata = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback);
+#else
+    RWStructuredBuffer<uint> metadata = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+#endif
     uint count, stride;
     metadata.GetDimensions(count, stride);
     uint offset = textureIndex * 8u;
@@ -14,7 +18,11 @@ float streamTextureSamplingFloor(uint textureIndex)
 // publication and memory budgets still control which mip is available this frame.
 void requestStreamTextureMip0(uint textureIndex)
 {
+#if SHARC_UPDATE
     RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback);
+#else
+    RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+#endif
     uint count, stride;
     feedback.GetDimensions(count, stride);
     uint offset = textureIndex * 8u;

@@ -1,5 +1,10 @@
 # Shader compilation complexity (2026-10-12)
 
+The subsequent [resource narrow-read implementation](PathTracingResourceNarrowReads.md)
+has now been measured: paired Slang CLI wall time decreased 41.56%, while native
+Pipeline creation showed no stable improvement. The original static evidence
+below remains the baseline for that experiment.
+
 This document distinguishes measured compiler evidence from candidate shader
 experiments. Production shader source and external snapshots were not modified
 by this research. The fixed baseline is the measured Guides request with

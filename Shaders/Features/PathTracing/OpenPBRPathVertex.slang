@@ -31,7 +31,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
             : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
         float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
         if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
-            missRadiance += physicalDeltaMissDisks(getResourceParameters<SceneResourceParameters>().environment,
+            missRadiance += physicalDeltaMissDisks(getSceneEnvironmentResources(),
                 ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
         }
         radiance += throughput * missRadiance;

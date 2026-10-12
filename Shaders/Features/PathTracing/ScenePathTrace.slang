@@ -62,7 +62,11 @@ typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathT
 #define gCacheParams resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneCacheParamsOffset))
 #endif
 
+#if SHARC_UPDATE
 #define gScene resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene)
+#else
+#define gScene resolveAccelerationStructure(getResourceParameterField<SceneResourceParameters, uint64_t>(kSceneSceneOffset))
+#endif
 
 #if !METALLIC_REALTIME_DEFERRED
 #include "StreamSceneRayQuery.slang"

@@ -238,7 +238,7 @@ struct PathSurfaceLights : ISurfaceLightProvider
         SurfaceLightSample result = (SurfaceLightSample)0;
         if (index < kCelestialLightCount) {
             PunctualLightSample light = samplePathCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, hit.position, seed);
+                getSceneEnvironmentResources().celestialLights), index, hit.position, seed);
             result.direction = light.direction;
             result.illuminance = light.illuminance;
             result.distance = light.distance;
@@ -248,8 +248,8 @@ struct PathSurfaceLights : ISurfaceLightProvider
         }
         uint source;
         float inversePdf;
-        if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, source, inversePdf)) {
-            PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), source, hit.position);
+        if (selectPunctualLight(PunctualSamplingResources(gSceneLights, gSceneReGIRGrid, gSceneLightsPdf), hit.position, seed, source, inversePdf)) {
+            PunctualLightSample light = samplePunctualLight(gSceneLights, source, hit.position);
             result.direction = light.direction;
             result.illuminance = light.illuminance;
             result.distance = light.distance;
@@ -262,7 +262,7 @@ struct PathSurfaceLights : ISurfaceLightProvider
     {
         if ((light.source & kCelestialSourceBit) != 0u &&
             !celestialLightCastsShadow(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights),
+                getSceneEnvironmentResources().celestialLights),
                 light.source & ~kCelestialSourceBit)) { return float3(1.0); }
         float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
         OpenPBRInteriorStack shadowStack = interiorStack;
@@ -432,7 +432,7 @@ void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
         color = openPbrDisplayDebugColor(push, color);
     } else if (push.outputLinear == 0u) {
         color = Metallic.WorkingColor::toLinearRec709(color);
-        color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
+        color *= lightingExposure(gSceneLights);
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);
