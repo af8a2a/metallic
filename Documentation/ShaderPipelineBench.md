@@ -1,9 +1,9 @@
 # Shader and pipeline timing harness
 
-`MetallicShaderPipelineBench` measures shader compilation and compute pipeline
-creation using Metallic's production shader request catalog. Requests run
-serially by default; `--pipeline-workers N` enables concurrent creation with a
-shared pipeline cache. Each result belongs to one request and one iteration. The harness
+`MetallicShaderPipelineBench` measures shader compilation and pipeline creation
+using Metallic's production shader request catalog or a captured PSO recipe.
+Requests run serially by default; explicit modes stage comparable creation batches.
+Each result belongs to one request, iteration and replica. The harness
 does not load a scene or render frames.
 
 The executable is a manual target outside the default build and application
@@ -59,6 +59,12 @@ evidence. By default each request completes all iterations before the next reque
 | --- | --- | --- |
 | `--iterations N` | `3` | Positive sample count per selected request; report iterations are zero-based. |
 | `--pipeline-workers N` | Serial, unstaged | Explicitly enable staged batches with N positive workers, including N=1 for a comparable serial baseline. |
+| `--mode serial\|parallel-shared\|parallel-sharded` | Unstaged `serial` | Explicit modes prepare all jobs before measuring each iteration. Shared mode uses one cache; sharded mode uses one cache per actual worker. |
+| `--workers N` | `1` | Worker count, capped by prepared jobs. Legacy `--pipeline-workers` also selects shared mode when no mode is specified. Serial mode requires one worker. |
+| `--pipeline-replicas N` | `1` | Create N copies of each selected PSO per iteration; useful for testing a fixed request with 1/2/4/8 workers. |
+| `--cache-lock-scope metadata\|creation` | `metadata` | Production short metadata lock or a controlled baseline holding the same lock through native creation. Both use the same Vulkan cache flags. |
+| `--merge-shards` | Off | Merge quiescent shards after every batch; separately time merge and final persistence. Requires sharded mode. |
+| `--recipe-file path` | Off | Replay one exported compute/graphics PSO from exact input SPIR-V and state, bypassing Slang. Replaces catalog selection. |
 | `--compile-only` | Off | Compile or load SPIR-V, then skip module and pipeline creation. |
 | `--shader-cache disabled\|reuse` | `disabled` | Disable shader disk-cache reads and writes, or reuse/populate the selected shader cache. |
 | `--pipeline-cache empty\|reuse` | `empty` | Create a new in-memory application cache per sample (per batch with `--pipeline-workers`), or load/share/save one cache across the run. |
@@ -108,10 +114,12 @@ cache policy. This keeps batching and preparation order identical. For example:
 & $bench --filter AutoExposure --iterations 3 --pipeline-workers 3 --output-dir build-pass-stages-nrd/bench-workers-3
 ```
 
-Actual worker count is capped by the number of successfully prepared compute
-requests in each batch; select at least N compute requests to exercise N-way
-concurrency. A single request index does not create simultaneous copies of the
-same pipeline. `--pipeline-workers` rejects `--compile-only`. A failed job is
+Actual worker count is capped by the number of successfully prepared jobs in
+each batch. `--pipeline-replicas 8` allows one request to exercise eight workers.
+Replicas intentionally repeat PSOs and may benefit from intra-batch driver/cache
+reuse; a varied request selection measures a different workload. Keep selection,
+replicas and iterations identical across comparisons. Explicit modes reject
+`--compile-only`. A failed job is
 recorded without abandoning other jobs, and workers finish before any cache is
 saved or destroyed. Only the main thread updates the report.
 
@@ -119,6 +127,119 @@ The cache uses Vulkan's internal synchronization. Metadata locking does not
 cover native pipeline creation, but the driver may still serialize internally.
 Batch elapsed time and per-call duration sums expose their measured scopes;
 their ratio alone does not establish cold-driver compilation throughput.
+
+For explicit `serial`, `parallel-shared` and `parallel-sharded`, each iteration
+prepares the same request/replica sequence. Preparation may acquire the shader
+disk cache for each replica. Workers use fixed strided assignments, so shard
+ownership repeats across iterations. `empty` creates one fresh cache per batch
+or worker; `reuse` retains those caches and loads/saves `pipeline.pso` or
+`pipeline-shard-N.pso`. A batch with preparation failures reports fewer actual
+workers; reject it for an otherwise matched comparison.
+Explicit `serial` uses the same per-batch cache policy as parallel modes.
+The default unstaged serial path retains its historical fresh cache per sample
+when `--pipeline-cache empty` is selected.
+
+Use the matrix helper for 1/2/4/8 workers and both shared lock scopes. It prefills
+SPIR-V, keeps job counts and input hashes fixed, and writes independent process
+reports plus a combined summary. Repeats reverse the cell order on alternate
+runs. Merge time is excluded from throughput and retained separately.
+
+```powershell
+python -B Tools/Perf/RunShaderPipelineMatrix.py --executable $bench `
+  --filter AutoExposure --iterations 5 --repeats 2 --pipeline-replicas 8 `
+  --merge-shards --output-dir build-release/bench-matrix
+```
+
+The `creation` lock scope emulates the broad application lock using the current
+backend; it is an A/B control, not an archived binary of an older renderer.
+The production default stays `metadata`. Vulkan only requires external cache
+synchronization during creation when the cache has the externally synchronized
+flag; see [vkCreateComputePipelines](https://docs.vulkan.org/refpages/latest/refpages/source/vkCreateComputePipelines.html).
+The harness joins workers before merging because merge destination access has
+its own external synchronization requirement; see
+[vkMergePipelineCaches](https://docs.vulkan.org/refpages/latest/refpages/source/vkMergePipelineCaches.html).
+
+## Independent-process driver cache experiments
+
+`--pipeline-cache empty` resets the application cache only. To isolate a fixed
+shader, first populate its SPIR-V cache, then start a fresh process for every
+native creation. The helper below selects one exact request index, excludes
+SPIR-V prefill and driver prime runs from timings, alternates controlled cache
+disabled/enabled-primed samples, and rejects changed bytecode, request settings,
+device/driver information, or a shader-cache miss during measurement.
+
+```powershell
+& $bench --list --filter OpenPBRRayQueryPathTrace
+# Replace N with one actual compute request index from that list.
+python -B Tools/Perf/RunShaderPipelineDriver.py --executable $bench `
+  --request-index N --pairs 3 --cache-dir build-release/bench-driver-cache `
+  --output-dir build-release/bench-driver
+```
+
+The helper explicitly uses `METALLIC_VK_INTERNAL_PIPELINE_CACHE=disabled` and
+`enabled` so both sides use the same diagnostic device feature/extension chain.
+Each measured process uses one iteration and an empty application cache.
+`enabled-primed` means a preceding independent process created that same PSO;
+the driver need not retain its internal cache across processes. `disabled`
+disables the controllable cache path; it does not guarantee every compiler, OS,
+or driver state is cold. The reports preserve SPIR-V hashes, debug/descriptor/
+validation settings, device and driver identifiers, process arguments and logs.
+Compare `native_create_ms` and valid `driver_ms` separately; an application-cache
+hit bit does not report hidden driver-cache hits.
+
+## Capture and replay real PSO recipes
+
+Set `METALLIC_PIPELINE_RECIPE_DIRECTORY` while exercising the desired renderer
+pass. ShaderRegistry exports successful RHI compute/graphics pipelines with
+their exact input SPIR-V, stage entry points, attachment formats, topology,
+raster/depth state, task subgroup requirements, bindless layout and indirect
+binding state. The manifest records source device features and debug/descriptor
+metadata. Content-addressed `.spv` files must remain beside the manifest.
+
+```powershell
+$env:METALLIC_PIPELINE_RECIPE_DIRECTORY = "$PWD/build-release/recipes"
+try { & .\build-release\Source\Metallic.exe --smoke-test }
+finally { Remove-Item Env:METALLIC_PIPELINE_RECIPE_DIRECTORY }
+
+# Choose a captured graphics *.recipe.json from the pass being investigated.
+& $bench --recipe-file .\build-release\recipes\graphics-<pso-hash>.recipe.json `
+  --mode parallel-shared --workers 4 --pipeline-replicas 8 --iterations 3 `
+  --pipeline-cache empty --output-dir build-release/bench-graphics
+
+python -B Tools/Perf/RunShaderPipelineDriver.py --executable $bench `
+  --recipe-file .\build-release\recipes\graphics-<pso-hash>.recipe.json `
+  --pairs 3 --output-dir build-release/bench-graphics-driver
+```
+
+Replay recreates source-device feature selections, bypasses Slang, verifies
+blob sizes/content hashes, and checks the resulting PSO hash against the
+captured hash. A changed backend state contract or feature-dependent shader
+rewrite fails the hash check instead of silently claiming an identical PSO.
+Source and replay devices and validation settings are reported separately.
+`--validation` controls replay validation. Graphics shader catalog entries
+still compile alone because they lack actual pass state; recipe replay supplies
+that state. External native graphics adapters with custom vertex/descriptor
+ABIs and shader-object programs are outside this RHI recipe format.
+Export requires modules created through ShaderRegistry while capture is enabled.
+Recipes deduplicate by native PSO hash; equivalent input requests that produce
+the same native PSO share a captured recipe rather than reporting their frequency.
+
+```powershell
+python -B Tools/Perf/PlotShaderPipelineBench.py --help
+python -B Tools/Perf/PlotShaderPipelineBench.py build-release/bench-driver-openpbr `
+  build-release/bench-driver-graphics build-release/bench-pipeline-matrix `
+  --log-scale --output-dir build-release/bench-pipeline-plots-log
+```
+
+The plotting helper flattens successful native creates to CSV, retaining
+pipeline type, per-stage module/entry metadata, SPIR-V bytes, driver feedback
+hit/unknown status and separate native/driver/lock timings. It writes scatter,
+CDF and module/entry distributions; graphics stages are retained as one PSO
+identity, with total SPIR-V size. It also works with a standard-library SVG
+fallback when Matplotlib is unavailable. Keep generated reports and charts in
+build/output directories.
+`--log-scale` makes microsecond-through-minute samples readable, using a display
+floor of 1 ns for zero-duration samples; raw CSV values remain unchanged.
 
 ## Measurement boundaries
 
@@ -141,13 +262,12 @@ identical when comparing changes. Retain individual iterations instead of
 reporting only an average.
 
 The harness does not establish rendering correctness, frame performance or
-startup duration. Production graphics requests can be compiled, but graphics
-pipeline creation requires pass-specific attachment and fixed-function state
-that is outside this harness's compute pipeline scope.
+startup duration. Production graphics requests can be compiled alone; actual
+graphics creation uses captured pass-specific recipes.
 
 ## Read the evidence
 
-`<output-dir>/report.json` has `schema_version: 2`, the configuration, selected
+`<output-dir>/report.json` has `schema_version: 3`, the configuration, selected
 request indices and an ordered `samples` array. Each sample retains its full
 request, effective descriptor mode, dependencies, SPIR-V size and FNV-1a hash,
 diagnostics and status. Times are milliseconds.
@@ -163,10 +283,16 @@ diagnostics and status. Times are milliseconds.
 
 Pipeline timings and feedback are immutable per-pipeline creation statistics,
 not cache-wide `last*` values that another worker can overwrite.
-`pipeline_batches` records requested/actual workers, sample indices, iteration,
+`pipeline_batches` records mode, cache count, requested/actual workers, sample indices, iteration,
 `pipeline_batch_wall_ms`, `pipeline_wall_sum_ms`, successful native duration and
-metadata lock wait sums, plus metadata/native hit/miss counter deltas. The sums
+metadata lock wait sums, P95 (nearest-rank), throughput in successful pipelines
+per second, plus per-call metadata/native hit/miss counts. The sums
 named `successful_*` exclude failed creates, whose wall time remains in samples.
+`pipeline_attempt` retains independent RHI metrics on native failures as well.
+`attempted_*` sums include those attempts; driver sums are `null` without valid
+feedback and retain the valid-feedback sample count. The P95 native/lock fields
+cover successful creates, while wall P95 covers attempted calls. Cache merge
+and save timings do not contribute to creation throughput.
 Worker mode records preparation validation errors per sample and pipeline-phase
 errors per batch, since concurrent validation callbacks cannot be attributed
 reliably to an individual request. Root validation errors cover the whole run.
@@ -204,6 +330,12 @@ Exit status `0` means all attempted phases passed; `1` means a runtime,
 compilation, pipeline, validation or evidence-write failure; `2` means invalid
 arguments, no matching request or an existing report. Per-sample failures include
 `failed_phase` and `error`; inspect both the report and process exit code.
+Unhandled native failures keep their OS exit code. The Windows harness suppresses
+modal crash dialogs; this does not convert an access violation into success.
+The Python regression runner stops on the first native crash or timeout and
+copies reports, arguments and captured output to `.cache/ShaderPipelineBenchFailures/`
+before deleting its temporary directory. Driver/matrix helpers retain process
+exit/crash/timeout metadata and logs in their evidence directories.
 
 ## Regression checks
 
@@ -217,6 +349,72 @@ python -B tests/perf/TestShaderPipelineBench.py --executable build-pass-stages-n
 The default checks use mapped compile-only requests without a GPU. `--gpu` adds
 pipeline creation and verifies empty caches, within-process hits, persisted cache
 reloads and timing fields; it does not render a scene or enable validation layers.
+
+The additional helper integrity checks run without a GPU:
+
+```powershell
+python -B tests/perf/TestShaderPipelineDriverTools.py
+```
+
+On 2026-10-12 the Release `build-release` benchmark and Debug
+`cmake-build-debug` RHI targets built successfully. The benchmark passed 9/9
+checks with `--gpu`, including 13 explicit mode/worker/lock-scope cells and
+shard merge/reload; helper integrity checks passed 9/9. Four focused RHI checks
+passed with Vulkan validation: cache concurrency/deferred saves, native
+compute/graphics feedback and recipe roundtrip. No Vulkan validation diagnostics
+appeared; the save-failure fixture produced its expected write-retry warning.
+
+Release validation exposed and fixed a Vulkan symbol collision with the
+Streamline import library. The benchmark explicitly links `MetallicRuntimeRender`
+then `metallic::volk`, resolving writable Volk PFN globals before the interposer's
+same-name Vulkan exports. Before the fix, device initialization wrote an import
+thunk in the executable's read-only code and raised `0xC0000005`, including in
+serial runs. A debugger trace identified that write; the fixed executable's
+import table has no Vulkan function imports from `sl.interposer.dll`, and its
+native startup and complete GPU regression now pass. Other targets' link
+configuration was not changed.
+
+Independent-process measurements on RTX 5060 / NVIDIA 616.92 / Release used
+mapped descriptors, disabled Slang debug output and no replay validation.
+Each condition has three samples, fixed SPIR-V and an empty application cache;
+Slang prefill and the enabled-driver prime process are excluded:
+
+| PSO | SPIR-V bytes | Cache control | Native median (ms) | Driver feedback median (ms) |
+| --- | ---: | --- | ---: | ---: |
+| OpenPBR Request 145 | 6,664,180 | Disabled | 57,382.17 | 57,382.16 |
+| OpenPBR Request 145 | 6,664,180 | Enabled, primed | 52,894.69 | 52,894.68 |
+| Captured Triangle graphics recipe | 1,716 | Disabled | 14.66 | 14.64 |
+| Captured Triangle graphics recipe | 1,716 | Enabled, primed | 14.39 | 14.38 |
+
+OpenPBR input hash is `c4d29c8e5629f6a6`; all Graphics replay hashes matched.
+Every sample reported valid feedback and an application-cache miss. Internal
+driver-cache hits remain unobserved. Durations drifted downward across the
+OpenPBR sequence, so the median difference is not sufficient evidence of a
+driver-cache speedup. These two PSOs do not establish the full scene's PSO mix.
+Evidence: `build-release/bench-driver-openpbr/summary.json` and
+`build-release/bench-driver-graphics/summary.json`.
+
+The AutoExposure matrix used three requests × eight replicas per batch, three
+batches per process, two process repeats with reversed order, warm SPIR-V,
+disabled controllable internal cache and fresh application caches. The rows
+below are medians of six batches; native and lock values are per-batch sums,
+P95 is the per-batch call-wall P95, and merge is excluded from throughput:
+
+| Mode / lock scope | Workers | Total (ms) | Native sum (ms) | Lock sum (ms) | P95 (ms) | Pipelines/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Serial / metadata | 1 | 89.97 | 89.12 | 0.0029 | 14.64 | 266.75 |
+| Shared / creation | 8 | 91.32 | 89.86 | 631.03 | 74.46 | 262.87 |
+| Shared / metadata | 8 | 98.99 | 779.21 | 0.0624 | 64.56 | 242.47 |
+| Sharded / metadata | 8 | 103.76 | 816.71 | 0.0116 | 64.88 | 231.76 |
+
+The short application lock removes its large wait contribution in this workload,
+but neither shared concurrency nor sharding improved batch throughput here.
+Overlapping native duration sums exceed elapsed time and can include driver
+synchronization; they are not additional elapsed time. Eight-shard merge median
+was 0.0075 ms. Keep the other worker counts and raw cache-hit samples in
+`build-release/bench-pipeline-matrix/summary.json`; the distribution export and
+CSV are in `build-release/bench-pipeline-plots-log/`. These are pipeline creation
+measurements without dispatch, frames, temporal or full-scene memory validation.
 
 Validated on 2026-10-11 using the existing Release `build-pass-stages-nrd` tree:
 six checks including the optional GPU case passed. GPUProbe also passed native

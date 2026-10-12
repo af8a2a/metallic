@@ -8,6 +8,9 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicShaderPipelineDriverToolsTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestShaderPipelineDriverTools.py")
+    set_tests_properties(MetallicShaderPipelineDriverToolsTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
     if(TARGET MetallicShaderPipelineBench)
         add_test(NAME MetallicShaderPipelineBenchTests
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestShaderPipelineBench.py"

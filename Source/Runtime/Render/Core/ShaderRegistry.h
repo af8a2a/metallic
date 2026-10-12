@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/PipelineRecipe.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -57,8 +58,10 @@ private:
     ShaderRegistry() = default;
     std::string cacheGroup(uint64_t shaderHash);
     void registerShaderModule(std::span<const uint32_t> spirv, uint64_t deviceShaderHash);
+    PipelineRecipeShader recipeShader(std::span<const uint32_t> spirv);
     std::mutex sourceMutex_;
     std::unordered_map<uint64_t, std::string> sourceGroups_;
+    std::unordered_map<uint64_t, PipelineRecipeShader> sourceIdentities_;
 };
 
 } // namespace metallic::render

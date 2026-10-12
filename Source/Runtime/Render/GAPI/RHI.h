@@ -1124,6 +1124,9 @@ struct PipelineCacheDesc {
     // path creates an in-memory cache.
     const char* filePath = nullptr;
     bool saveOnDestroy = true;
+    // Benchmark A/B control: hold the application metadata lock across native
+    // creation, reproducing a broad-lock baseline. Default creation overlaps.
+    bool serializeCreation = false;
 };
 
 // Immutable feedback for one pipeline creation; unlike cache-wide last* fields,
@@ -1131,13 +1134,16 @@ struct PipelineCacheDesc {
 struct PipelineCreationStats {
     uint64_t nativeCreateTimeNanoseconds = 0;
     uint64_t driverDurationNanoseconds = 0; // Undefined feedback is represented by zero.
-    uint64_t cacheLockWaitTimeNanoseconds = 0; // Metadata-lock acquisition waits only.
+    // Application metadata-lock acquisition waits, including the broad-lock
+    // baseline when PipelineCacheDesc::serializeCreation is enabled.
+    uint64_t cacheLockWaitTimeNanoseconds = 0;
     bool feedbackValid = false;
     bool nativeCacheHit = false; // Meaningful only when feedbackValid is true.
 };
 
 struct PipelineCacheStats {
     PipelineCacheLoadStatus loadStatus = PipelineCacheLoadStatus::NotFound;
+    // Known cached identities from loading, saving, or merging another cache.
     uint64_t storedPsoCount = 0;
     uint64_t sessionPsoCount = 0;
     uint64_t hitCount = 0;
@@ -1562,6 +1568,11 @@ class PipelineCache {
     // Persists pending cache changes. This is a no-op when no new PSO hash was
     // recorded since loading or the previous save.
     Result<> save();
+    // Merge native cache data and known PSO identities; destination creation
+    // counters remain unchanged. Quiesce creation/save/merge on participating
+    // caches for this call; all sources must be distinct from this cache and
+    // belong to the same device. Empty input is a no-op.
+    Result<> merge(std::span<PipelineCache* const> sources);
 };
 
 struct RasterExecutionState {
@@ -1878,8 +1889,12 @@ class Device {
     [[nodiscard]] Result<std::unique_ptr<TextureView>> createTextureView(Texture& texture, const TextureViewDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<ShaderModule>> createShaderModule(const ShaderModuleDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<PipelineCache>> createPipelineCache(const PipelineCacheDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> createGraphicsPipeline(const GraphicsPipelineDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> createComputePipeline(const ComputePipelineDesc& desc);
+    // Optional per-call feedback is reset before validation and populated after
+    // native creation, including native failures; callers own distinct outputs.
+    [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> createGraphicsPipeline(
+        const GraphicsPipelineDesc& desc, PipelineCreationStats* creationStats = nullptr);
+    [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> createComputePipeline(
+        const ComputePipelineDesc& desc, PipelineCreationStats* creationStats = nullptr);
     [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> createGraphicsShaderObjectProgram(const GraphicsShaderObjectProgramDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<BindlessHeap>> createBindlessHeap(const BindlessHeapDesc& desc);
     [[nodiscard]] Result<ClusterAccelerationStructureProperties> queryClusterAccelerationStructureProperties() const;

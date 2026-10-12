@@ -66,6 +66,16 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
         const std::string group = groupForSource(desc.moduleName);
         auto [it, inserted] = sourceGroups_.try_emplace(hash, group);
         if (!inserted && group < it->second) { it->second = group; }
+        PipelineRecipeShader identity;
+        identity.moduleName = desc.moduleName ? desc.moduleName : "";
+        identity.sourceEntryPoint = desc.entryPointName ? desc.entryPointName : "";
+        identity.descriptorHeapMode = slangUsesNativeDescriptorHeap(desc) ? "native" : "mapped";
+        switch (slangShaderDebugMode()) {
+        case SlangShaderDebugMode::Disabled: identity.debugMode = "release"; break;
+        case SlangShaderDebugMode::ShaderDebug: identity.debugMode = "debug"; break;
+        case SlangShaderDebugMode::CaptureSymbols: identity.debugMode = "capture"; break;
+        }
+        sourceIdentities_.try_emplace(hash, std::move(identity));
     }
     return compiled;
 }
@@ -88,6 +98,22 @@ void ShaderRegistry::registerShaderModule(std::span<const uint32_t> spirv, uint6
     const std::string group = source->second;
     auto [it, inserted] = sourceGroups_.try_emplace(deviceShaderHash, group);
     if (!inserted && group < it->second) { it->second = group; }
+}
+
+PipelineRecipeShader ShaderRegistry::recipeShader(std::span<const uint32_t> spirv)
+{
+    const uint64_t size = spirv.size_bytes();
+    auto inputHash = hashBytes(14695981039346656037ull, &size, sizeof(size));
+    inputHash = hashBytes(inputHash, spirv.data(), size_t(size));
+    PipelineRecipeShader shader;
+    {
+        std::lock_guard lock(sourceMutex_);
+        const auto identity = sourceIdentities_.find(inputHash);
+        if (identity != sourceIdentities_.end()) { shader = identity->second; }
+    }
+    shader.spirv.assign(spirv.begin(), spirv.end());
+    shader.inputSpirvHash = hashBytes(14695981039346656037ull, spirv.data(), size_t(size));
+    return shader;
 }
 
 } // namespace metallic::render

@@ -7,6 +7,16 @@ The production ZorahFull live baseline uses
 for the repeatable command, actual internal extent, process-level results and
 evidence limits. The historical frozen WorkControl case remains a separate workload.
 
+Native Vulkan PSO compilation experiments use
+[RunShaderPipelineDriver.py](RunShaderPipelineDriver.py) for independent-process
+controlled driver-cache comparisons, [RunShaderPipelineMatrix.py](RunShaderPipelineMatrix.py)
+for matched serial/shared/sharded 1/2/4/8-worker and lock-scope tests, and
+[PlotShaderPipelineBench.py](PlotShaderPipelineBench.py) for sample CSV and
+latency/size/module distributions. Plotting uses matplotlib when installed and
+otherwise exports SVG with Python's standard library. See the
+[benchmark commands and measured scopes](../../Documentation/ShaderPipelineBench.md).
+These tools time PSO creation; they do not dispatch shaders or measure frames.
+
 OpenPBR primary-hit reuse and shadow-query comparisons use
 [PathTraceQueries.py](PathTraceQueries.py). See the [capture, correctness and plotting
 workflow](PathTraceQueries.md): production PathTrace, transparent materials, moving

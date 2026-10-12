@@ -1888,11 +1888,13 @@ struct PipelineCacheImpl {
     PipelineCacheStats stats;
     std::unordered_set<uint64_t> storedPsoHashes;
     std::unordered_set<uint64_t> sessionPsoHashes;
-    // Protects application metadata only. The native cache uses Vulkan's
-    // internal synchronization so driver pipeline creation can overlap.
+    // Normally protects application metadata only; serializeCreation retains
+    // it across native calls for the benchmark's broad-lock baseline. Native
+    // cache access uses Vulkan's internal synchronization in either mode.
     mutable std::mutex metadataMutex;
     std::mutex saveMutex;
     bool saveOnDestroy = true;
+    bool serializeCreation = false;
 
     ~PipelineCacheImpl();
     Result<> initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
@@ -2443,6 +2445,7 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
 {
     device = &owningDevice;
     saveOnDestroy = desc.saveOnDestroy;
+    serializeCreation = desc.serializeCreation;
     fileIdentity = owningDevice.pipelineCacheFileIdentity;
     if (desc.filePath != nullptr && desc.filePath[0] != '\0') {
         filePath = desc.filePath;
@@ -3795,6 +3798,42 @@ Result<> PipelineCache::save()
         return makeError(Error::InvalidArgument);
     }
     return impl_->save();
+}
+
+Result<> PipelineCache::merge(std::span<PipelineCache* const> sources)
+{
+    if (impl_ == nullptr || impl_->device == nullptr || impl_->pipelineCache == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (sources.empty()) { return {}; }
+    if (sources.size() > std::numeric_limits<uint32_t>::max()) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::vector<VkPipelineCache> nativeSources;
+    std::unordered_set<uint64_t> mergedHashes;
+    nativeSources.reserve(sources.size());
+    for (const auto* source : sources) {
+        if (source == nullptr || source->impl_ == nullptr || source->impl_.get() == impl_.get() ||
+            source->impl_->device != impl_->device || source->impl_->pipelineCache == VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+        nativeSources.push_back(source->impl_->pipelineCache);
+        std::lock_guard sourceLock(source->impl_->metadataMutex);
+        mergedHashes.insert(source->impl_->storedPsoHashes.begin(), source->impl_->storedPsoHashes.end());
+        mergedHashes.insert(source->impl_->sessionPsoHashes.begin(), source->impl_->sessionPsoHashes.end());
+    }
+    // The caller quiesces participating caches. Unlike native creation with
+    // flags=0, vkMergePipelineCaches requires destination host synchronization.
+    std::scoped_lock destinationLock(impl_->saveMutex, impl_->metadataMutex);
+    const VkResult result = impl_->device->functions.vkMergePipelineCaches(impl_->device->device,
+        impl_->pipelineCache, static_cast<uint32_t>(nativeSources.size()), nativeSources.data());
+    if (result != VK_SUCCESS) { return resultFromVk(result); }
+    // Merged identities are known before this destination creates them. Keep
+    // its per-session creation counts separate from the sources' histories.
+    impl_->storedPsoHashes.insert(mergedHashes.begin(), mergedHashes.end());
+    impl_->stats.storedPsoCount = impl_->storedPsoHashes.size();
+    ++impl_->stats.dirtyRevision;
+    return {};
 }
 
 const void* PreparedExecution::deviceIdentity() const
@@ -8040,11 +8079,13 @@ VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::Pipe
     feedback.attach(info.pNext);
     uint64_t cacheLockWaitNs = 0;
     metadataHit = false;
+    std::unique_lock<std::mutex> creationLock;
     if (cache != nullptr) {
         const auto lockBegin = std::chrono::steady_clock::now();
-        std::lock_guard lock(cache->metadataMutex);
+        creationLock = std::unique_lock(cache->metadataMutex);
         cacheLockWaitNs = pipelineElapsedNanoseconds(lockBegin);
         metadataHit = cache->storedPsoHashes.contains(psoHash) || cache->sessionPsoHashes.contains(psoHash);
+        if (!cache->serializeCreation) { creationLock.unlock(); }
     }
     const std::string cachePath = cache != nullptr ? cache->filePath.string() : "<none>";
     const char* entry = entryPoint != nullptr ? entryPoint : "<none>";
@@ -8063,11 +8104,14 @@ VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::Pipe
     const bool nativeHit = feedbackValid &&
         (observed.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     if (result == VK_SUCCESS && cache != nullptr) {
-        const auto lockBegin = std::chrono::steady_clock::now();
-        std::lock_guard lock(cache->metadataMutex);
-        cacheLockWaitNs += pipelineElapsedNanoseconds(lockBegin);
+        if (!creationLock.owns_lock()) {
+            const auto lockBegin = std::chrono::steady_clock::now();
+            creationLock.lock();
+            cacheLockWaitNs += pipelineElapsedNanoseconds(lockBegin);
+        }
         metadataHit = cache->recordPsoLocked(psoHash, observed, nativeCreateNs, cacheLockWaitNs);
     }
+    if (creationLock.owns_lock()) { creationLock.unlock(); }
     creationStats = PipelineCreationStats{
         .nativeCreateTimeNanoseconds = nativeCreateNs,
         .driverDurationNanoseconds = feedbackValid ? observed.duration : 0,
@@ -8117,8 +8161,10 @@ Result<std::unique_ptr<PipelineImpl>> createPipelineOwner(detail::DeviceImpl& de
 
 } // namespace
 
-Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const GraphicsPipelineDesc& desc)
+Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(
+    const GraphicsPipelineDesc& desc, PipelineCreationStats* creationStats)
 {
+    if (creationStats != nullptr) { *creationStats = {}; }
     const bool usesTaskShader = desc.taskShader.module != nullptr;
     const bool usesMeshShader = desc.meshShader.module != nullptr;
     const bool usesVertexShader = desc.vertexShader.module != nullptr;
@@ -8390,6 +8436,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
                 nullptr,
                 &pipeline);
         });
+    if (creationStats != nullptr) { *creationStats = pipelineImpl->creationStats; }
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -8398,8 +8445,10 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     return std::unique_ptr<GraphicsPipeline>(new GraphicsPipeline(std::move(pipelineImpl)));
 }
 
-Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const ComputePipelineDesc& desc)
+Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
+    const ComputePipelineDesc& desc, PipelineCreationStats* creationStats)
 {
+    if (creationStats != nullptr) { *creationStats = {}; }
     if (impl_ == nullptr ||
         !validShaderStage(desc.computeShader)) {
         return makeError(Error::InvalidArgument);
@@ -8521,6 +8570,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                 nullptr,
                 &pipeline);
         });
+    if (creationStats != nullptr) { *creationStats = pipelineImpl->creationStats; }
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }

@@ -284,10 +284,13 @@ class PipelineCacheConcurrentCreateTest final : public RHITest {
         uint32_t entered = 0;
         bool released = false;
         bool overlap = false;
+        std::chrono::milliseconds arrivalTimeout;
+        bool failCreation;
 
-        explicit NativeCreateOverlap(render::Device& device)
+        explicit NativeCreateOverlap(render::Device& device,
+            std::chrono::milliseconds timeout = std::chrono::seconds(2), bool fail = false)
             : functions(*const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions)),
-              create(functions.vkCreateComputePipelines)
+              create(functions.vkCreateComputePipelines), arrivalTimeout(timeout), failCreation(fail)
         {
             active = this;
             functions.vkCreateComputePipelines = enter;
@@ -310,7 +313,7 @@ class PipelineCacheConcurrentCreateTest final : public RHITest {
                         capture.overlap = true;
                         capture.released = true;
                         capture.condition.notify_all();
-                    } else if (!capture.condition.wait_for(lock, std::chrono::seconds(2), [&] { return capture.released; })) {
+                    } else if (!capture.condition.wait_for(lock, capture.arrivalTimeout, [&] { return capture.released; })) {
                         // Bound the failure when an application lock serializes
                         // callers; this is an arrival check, not a speed target.
                         capture.released = true;
@@ -318,6 +321,7 @@ class PipelineCacheConcurrentCreateTest final : public RHITest {
                     }
                 }
             }
+            if (capture.failCreation) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
             return capture.create(device, cache, count, infos, allocator, pipelines);
         }
     };
@@ -365,9 +369,9 @@ public:
         if (!cache || (*cache)->stats().storedPsoCount != 0) {
             return RHITestResult::fail("concurrent cache fixture must start empty");
         }
-        const auto createVariant = [&](PipelineCache& target, uint32_t variant) {
+        const auto createVariant = [&](PipelineCache& target, uint32_t variant, PipelineCreationStats* output = nullptr) {
             return context.device.createComputePipeline({.computeShader = {modules[variant].get()},
-                .usesBindlessHeap = context.device.capabilities().bindlessDescriptorHeap, .pipelineCache = &target});
+                .usesBindlessHeap = context.device.capabilities().bindlessDescriptorHeap, .pipelineCache = &target}, output);
         };
         struct Creation {
             bool succeeded = false;
@@ -375,6 +379,7 @@ public:
             uint32_t variant = 0;
             uint64_t hash = 0;
             PipelineCreationStats stats;
+            bool outputMatches = false;
         };
         std::array<Creation, kCreateCount> creations{};
         // Installed before workers start and restored after every worker joins.
@@ -391,12 +396,16 @@ public:
                     auto& result = creations[round * kWorkerCount + worker];
                     result.variant = round < kVariantCount ? round : (round + worker) % kVariantCount;
                     roundBarrier.arrive_and_wait();
-                    auto pipeline = createVariant(**cache, result.variant);
+                    auto pipeline = createVariant(**cache, result.variant, &result.stats);
                     if (pipeline) {
                         result.succeeded = true;
                         result.hashHit = (*pipeline)->pipelineCacheHit();
                         result.hash = (*pipeline)->psoHash();
-                        result.stats = (*pipeline)->creationStats();
+                        const auto owned = (*pipeline)->creationStats();
+                        result.outputMatches = result.stats.nativeCreateTimeNanoseconds == owned.nativeCreateTimeNanoseconds &&
+                            result.stats.driverDurationNanoseconds == owned.driverDurationNanoseconds &&
+                            result.stats.cacheLockWaitTimeNanoseconds == owned.cacheLockWaitTimeNanoseconds &&
+                            result.stats.feedbackValid == owned.feedbackValid && result.stats.nativeCacheHit == owned.nativeCacheHit;
                     }
                     roundBarrier.arrive_and_wait();
                 }
@@ -452,7 +461,7 @@ public:
         uint64_t expectedRevision = 0;
         std::array<uint64_t, kVariantCount> hashes{};
         for (const auto& result : creations) {
-            require(result.succeeded && result.stats.nativeCreateTimeNanoseconds > 0,
+            require(result.succeeded && result.outputMatches && result.stats.nativeCreateTimeNanoseconds > 0,
                 "concurrent pipeline creation failed or lost its per-call timing");
             if (hashes[result.variant] == 0) { hashes[result.variant] = result.hash; }
             require(result.hash != 0 && result.hash == hashes[result.variant], "concurrent pipeline hash identity changed");
@@ -477,8 +486,83 @@ public:
                     "reloaded concurrent cache missed a persisted compute variant");
             }
         }
+        // The A/B baseline deliberately serializes the same native arrivals.
+        auto serialized = context.device.createPipelineCache({.saveOnDestroy = false, .serializeCreation = true});
+        require(static_cast<bool>(serialized), "could not create serialized baseline cache");
+        if (serialized) {
+            NativeCreateOverlap capture(context.device, std::chrono::milliseconds(50));
+            std::barrier start(3);
+            std::array<PipelineCreationStats, 2> outputs{};
+            std::array<std::future<bool>, 2> tasks;
+            for (uint32_t worker = 0; worker < tasks.size(); ++worker) {
+                tasks[worker] = std::async(std::launch::async, [&, worker] {
+                    start.arrive_and_wait();
+                    return static_cast<bool>(createVariant(**serialized, worker, &outputs[worker]));
+                });
+            }
+            start.arrive_and_wait();
+            for (auto& task : tasks) { require(task.get(), "serialized baseline creation failed"); }
+            require(!capture.overlap && outputs[0].cacheLockWaitTimeNanoseconds +
+                outputs[1].cacheLockWaitTimeNanoseconds > 0,
+                "serialized baseline overlapped native calls or lost lock acquisition wait");
+        }
+        PipelineCreationStats failedStats{.nativeCreateTimeNanoseconds = 1, .feedbackValid = true};
+        require(!context.device.createComputePipeline({}, &failedStats) &&
+            failedStats.nativeCreateTimeNanoseconds == 0 && !failedStats.feedbackValid,
+            "validation failure did not reset optional per-call feedback");
+        failedStats = {.nativeCreateTimeNanoseconds = 1, .feedbackValid = true};
+        require(!context.device.createGraphicsPipeline({}, &failedStats) &&
+            failedStats.nativeCreateTimeNanoseconds == 0 && !failedStats.feedbackValid,
+            "graphics validation failure did not reset optional per-call feedback");
+        {
+            NativeCreateOverlap failure(context.device, std::chrono::milliseconds(1), true);
+            require(!createVariant(**cache, 0, &failedStats) && failedStats.nativeCreateTimeNanoseconds > 0 &&
+                !failedStats.feedbackValid && failedStats.driverDurationNanoseconds == 0,
+                "native creation failure did not retain independent timing with invalid feedback");
+        }
+        const std::string mergePath = (root / "merged.pso").string();
+        auto merged = context.device.createPipelineCache({.filePath = mergePath.c_str(), .saveOnDestroy = false});
+        require(static_cast<bool>(merged), "could not create merge destination cache");
+        if (merged) {
+            PipelineCache* invalid = merged->get();
+            require(!(*merged)->merge({&invalid, 1}), "cache merge accepted its destination as a source");
+            invalid = nullptr;
+            require(!(*merged)->merge({&invalid, 1}), "cache merge accepted a null source");
+            require(static_cast<bool>((*merged)->merge({})) && (*merged)->stats().dirtyRevision == 0,
+                "empty cache merge changed metadata");
+            std::array<std::unique_ptr<PipelineCache>, 2> shards;
+            for (auto& shard : shards) {
+                auto created = context.device.createPipelineCache({.saveOnDestroy = false});
+                if (!created) { return RHITestResult::fail("could not create disjoint merge source cache"); }
+                shard = std::move(*created);
+            }
+            for (uint32_t variant = 0; variant < kVariantCount; ++variant) {
+                require(static_cast<bool>(createVariant(*shards[variant % shards.size()], variant)),
+                    "could not populate disjoint merge source caches");
+            }
+            require(shards[0]->stats().sessionPsoCount == kVariantCount / 2 &&
+                shards[1]->stats().sessionPsoCount == kVariantCount / 2,
+                "merge sources must contain distinct subsets of known hashes");
+            std::array<PipelineCache*, 2> sources{shards[0].get(), shards[1].get()};
+            require(static_cast<bool>((*merged)->merge(sources)), "native cache merge failed");
+            const auto mergedStats = (*merged)->stats();
+            require(mergedStats.storedPsoCount == kVariantCount && mergedStats.sessionPsoCount == 0 &&
+                mergedStats.hitCount == 0 && mergedStats.missCount == 0 && mergedStats.dirtyRevision == 1 &&
+                static_cast<bool>((*merged)->save()), "cache merge lost identities, creation counts, or pending persistence");
+            auto loadedMerge = context.device.createPipelineCache({.filePath = mergePath.c_str(), .saveOnDestroy = false});
+            require(loadedMerge && (*loadedMerge)->stats().loadStatus == PipelineCacheLoadStatus::Loaded &&
+                (*loadedMerge)->stats().storedPsoCount == kVariantCount,
+                "merged cache identities did not survive save and reload");
+            if (loadedMerge) {
+                for (uint32_t variant = 0; variant < kVariantCount; ++variant) {
+                    auto pipeline = createVariant(**loadedMerge, variant);
+                    require(pipeline && (*pipeline)->pipelineCacheHit() && (*pipeline)->psoHash() == hashes[variant],
+                        "reloaded merged cache missed a known variant");
+                }
+            }
+        }
         if (!error.empty()) { return RHITestResult::fail(error); }
-        return RHITestResult::pass("native-call overlap, 32 concurrent compute creations, exact feedback/revisions, concurrent save/stats and reload");
+        return RHITestResult::pass("native-call overlap, broad-lock baseline, per-call failure feedback, concurrent save/stats and merged-cache reload");
     }
 };
 METALLIC_REGISTER_RHI_TEST(PipelineCacheConcurrentCreateTest);

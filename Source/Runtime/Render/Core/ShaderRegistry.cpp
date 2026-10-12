@@ -1,10 +1,15 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <iomanip>
+#include <set>
+#include <sstream>
+#include <type_traits>
 #include <spdlog/spdlog.h>
 
 namespace metallic::render {
@@ -13,6 +18,9 @@ namespace {
 struct DeviceShaders {
     std::mutex mutex;
     std::map<std::string, std::unique_ptr<PipelineCache>> caches;
+    // Input code is retained only for an explicitly requested recipe capture.
+    std::map<const ShaderModule*, PipelineRecipeShader> recipeShaders;
+    std::set<std::string> exportedRecipes;
     // Reverse member destruction drains/joins the writer before cache handles.
     DeferredShaderCacheWriter writer;
 };
@@ -25,6 +33,101 @@ Result<std::shared_ptr<DeviceShaders>> deviceShaders(Device& device)
     });
     if (!state) { return makeError(state.error()); }
     return std::static_pointer_cast<DeviceShaders>(*state);
+}
+
+std::string recipeDirectory()
+{
+    const auto* value = std::getenv("METALLIC_PIPELINE_RECIPE_DIRECTORY");
+    return value ? value : "";
+}
+
+PipelineRecipeDevice recipeDevice(Device& device)
+{
+    PipelineRecipeDevice result;
+    result.capabilities = device.capabilities();
+    const auto native = vulkan::nativeDevice(device);
+    result.validationEnabled = native.validationEnabled;
+    result.synchronizationValidationEnabled = native.synchronizationValidationEnabled;
+    if (native.properties) {
+        const auto& core = native.properties->core;
+        result.deviceName = core.deviceName;
+        result.driverName = native.properties->driver.driverName;
+        result.vendorId = core.vendorID;
+        result.deviceId = core.deviceID;
+        result.driverVersion = core.driverVersion;
+        result.apiVersion = core.apiVersion;
+        std::ostringstream uuid;
+        for (const auto byte : core.pipelineCacheUUID) { uuid << std::hex << std::setw(2) << std::setfill('0') << unsigned(byte); }
+        result.pipelineCacheUUID = uuid.str();
+    }
+    return result;
+}
+
+bool recipeStage(const DeviceShaders& state, const ShaderStageDesc& stage, PipelineRecipeShader& shader)
+{
+    if (!stage.module) {
+        shader.entryPoint = stage.entryPoint ? stage.entryPoint : "main";
+        return true;
+    }
+    const auto found = state.recipeShaders.find(stage.module);
+    if (found == state.recipeShaders.end()) { return false; }
+    shader = found->second;
+    shader.entryPoint = stage.entryPoint ? stage.entryPoint : "main";
+    return true;
+}
+
+template<typename Desc>
+void exportRecipe(Device& device, const Desc& desc, uint64_t psoHash, const std::string& group)
+{
+    const auto directory = recipeDirectory();
+    if (directory.empty()) { return; }
+    auto state = deviceShaders(device);
+    if (!state) { return; }
+    // Capture is diagnostic and opt-in. Serialize exports per device so shared
+    // stages and repeated requests publish each manifest once.
+    std::lock_guard lock((*state)->mutex);
+    std::ostringstream filename;
+    filename << (std::is_same_v<Desc, ComputePipelineDesc> ? "compute-" : "graphics-")
+        << std::hex << std::setw(16) << std::setfill('0') << psoHash << ".recipe.json";
+    const auto path = std::filesystem::path(directory) / filename.str();
+    if ((*state)->exportedRecipes.contains(path.string())) { return; }
+    PipelineRecipe recipe;
+    recipe.expectedPsoHash = psoHash;
+    recipe.cacheGroup = group;
+    recipe.sourceDevice = recipeDevice(device);
+    recipe.usesBindlessHeap = desc.usesBindlessHeap;
+    recipe.indirectBindable = desc.indirectBindable;
+    bool complete;
+    if constexpr (std::is_same_v<Desc, ComputePipelineDesc>) {
+        recipe.type = PipelineRecipeType::Compute;
+        recipe.bindlessUserPushDataSize = desc.bindlessUserPushDataSize;
+        complete = recipeStage(**state, desc.computeShader, recipe.computeShader);
+    } else {
+        recipe.type = PipelineRecipeType::Graphics;
+        recipe.taskRequiredSubgroupSize = desc.taskRequiredSubgroupSize;
+        recipe.taskRequireFullSubgroups = desc.taskRequireFullSubgroups;
+        recipe.colorFormats = desc.colorFormats;
+        recipe.colorAttachmentCount = desc.colorAttachmentCount;
+        recipe.depthStencilFormat = desc.depthStencilFormat;
+        recipe.topology = desc.topology;
+        recipe.rasterization = desc.rasterization;
+        recipe.depthStencil = desc.depthStencil;
+        complete = recipeStage(**state, desc.vertexShader, recipe.vertexShader) &&
+            recipeStage(**state, desc.taskShader, recipe.taskShader) &&
+            recipeStage(**state, desc.meshShader, recipe.meshShader) &&
+            recipeStage(**state, desc.fragmentShader, recipe.fragmentShader);
+    }
+    if (!complete) {
+        spdlog::warn("[ShaderRegistry] Recipe {} requires modules created through the registry while capture is enabled", path.string());
+        return;
+    }
+    std::string log;
+    if (!writePipelineRecipe(recipe, path, log)) {
+        spdlog::warn("[ShaderRegistry] {}", log);
+    } else {
+        (*state)->exportedRecipes.insert(path.string());
+        spdlog::info("[ShaderRegistry] Exported pipeline recipe {}", path.string());
+    }
 }
 
 Result<PipelineCache*> acquireCache(Device& device, const std::string& group)
@@ -77,7 +180,20 @@ void persist(Device& device, PipelineCache& cache, const std::string& group)
 Result<std::unique_ptr<ShaderModule>> ShaderRegistry::getShaderModule(Device& device, const ShaderModuleDesc& desc)
 {
     auto module = device.createShaderModule(desc);
-    if (module) { registerShaderModule(desc.spirv, (*module)->contentHash()); }
+    if (module) {
+        registerShaderModule(desc.spirv, (*module)->contentHash());
+        if (!recipeDirectory().empty()) {
+            auto state = deviceShaders(device);
+            if (state) {
+                auto shader = recipeShader(desc.spirv);
+                std::lock_guard lock((*state)->mutex);
+                // Different inputs can finalize to identical native code. Keep
+                // capture associated with the exact live module wrapper; an
+                // allocator-reused address replaces its previous input snapshot.
+                (*state)->recipeShaders.insert_or_assign(module->get(), std::move(shader));
+            }
+        }
+    }
     return module;
 }
 
@@ -99,14 +215,21 @@ Result<> ShaderRegistry::getComputeKernel(Device& device, const SlangShaderDesc&
 Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Device& device, const ComputePipelineDesc& desc)
 {
     if (!desc.computeShader.module) { return makeError(Error::InvalidArgument); }
-    if (desc.pipelineCache) { return device.createComputePipeline(desc); }
     const std::string group = cacheGroup(desc.computeShader.module->contentHash());
+    if (desc.pipelineCache) {
+        auto pipeline = device.createComputePipeline(desc);
+        if (pipeline) { exportRecipe(device, desc, (*pipeline)->psoHash(), group); }
+        return pipeline;
+    }
     auto cache = acquireCache(device, group);
     if (!cache) { return makeError(cache.error()); }
     auto managed = desc;
     managed.pipelineCache = *cache;
     auto pipeline = device.createComputePipeline(managed);
-    if (pipeline) { persist(device, **cache, group); }
+    if (pipeline) {
+        persist(device, **cache, group);
+        exportRecipe(device, desc, (*pipeline)->psoHash(), group);
+    }
     return pipeline;
 }
 
@@ -114,14 +237,21 @@ Result<std::unique_ptr<GraphicsPipeline>> ShaderRegistry::getGraphicsPipeline(De
 {
     const ShaderModule* primary = desc.meshShader.module ? desc.meshShader.module : desc.vertexShader.module;
     if (!primary) { return makeError(Error::InvalidArgument); }
-    if (desc.pipelineCache) { return device.createGraphicsPipeline(desc); }
     const std::string group = cacheGroup(primary->contentHash());
+    if (desc.pipelineCache) {
+        auto pipeline = device.createGraphicsPipeline(desc);
+        if (pipeline) { exportRecipe(device, desc, (*pipeline)->psoHash(), group); }
+        return pipeline;
+    }
     auto cache = acquireCache(device, group);
     if (!cache) { return makeError(cache.error()); }
     auto managed = desc;
     managed.pipelineCache = *cache;
     auto pipeline = device.createGraphicsPipeline(managed);
-    if (pipeline) { persist(device, **cache, group); }
+    if (pipeline) {
+        persist(device, **cache, group);
+        exportRecipe(device, desc, (*pipeline)->psoHash(), group);
+    }
     return pipeline;
 }
 
