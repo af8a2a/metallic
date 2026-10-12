@@ -1,3 +1,5 @@
+module VisibilityMaterialBinning;
+
 import Core;
 import ParameterRoot;
 using Metallic;

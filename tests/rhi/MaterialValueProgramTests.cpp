@@ -411,8 +411,9 @@ public:
         const auto path = directory.string();
         const std::array paths{path.c_str()};
         ShaderCompileResult shader;
+        const SlangMacroDefine macros[] = {{"METALLIC_CUSTOM_MATERIALS", "1"}};
         result = compileSlangShaderToSpirv({.moduleName = "MaterialValueProbe", .entryPointName = "materialValueProbeMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths = paths}, log)
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths = paths, .macroDefines = macros}, log)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
         const std::array bindings{ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .kind = ComputeResourceBindingKind::StorageBuffer},

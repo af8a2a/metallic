@@ -1,3 +1,5 @@
+module NativeStrands;
+
 import ShaderCore;
 import Material;
 import MaterialProgram;

@@ -1,3 +1,5 @@
+module TextureFootprintProbe;
+
 import Core;
 import Material;
 using Metallic;

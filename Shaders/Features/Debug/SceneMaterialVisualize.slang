@@ -1,3 +1,5 @@
+#language slang 2026
+module SceneMaterialVisualize;
 import MaterialTextureDecode;
 import AlphaCoverage;
 import Material;
@@ -67,28 +69,7 @@ struct SceneMaterialVisualizationPush
     float bitangentFlip;
 };
 
-struct Ray
-{
-    float3 origin;
-    float3 direction;
-};
-
-struct HitInfo
-{
-    float t;
-    float3 position;
-    float3 normal;
-    float3 geometryNormal;
-    float4 tangent;
-    float3 bitangent;
-    float2 texcoord;
-    uint materialIndex;
-    bool frontFace;
-    uint instanceIndex;
-    uint primitiveIndex;
-    uint triangleIndex;
-    float rayConeLodConstant;
-};
+import ScenePathTypes;
 
 float3 safeNormalize(float3 value, float3 fallback)
 {
@@ -257,41 +238,13 @@ bool alphaMaskAcceptsHit(HitInfo hit, SceneMaterialVisualizationPush push)
     return coverageFromOpacity(context, context.baseAlpha).accepted;
 }
 
-void computeTriangleTangentSpace(
-    float3 p0,
-    float3 p1,
-    float3 p2,
-    float2 uv0,
-    float2 uv1,
-    float2 uv2,
-    float3 normal,
-    out float3 tangent,
-    out float3 bitangent)
-{
-    float3 edge1 = p1 - p0;
-    float3 edge2 = p2 - p0;
-    float2 deltaUv1 = uv1 - uv0;
-    float2 deltaUv2 = uv2 - uv0;
-    float determinant = deltaUv1.x * deltaUv2.y - deltaUv1.y * deltaUv2.x;
-
-    if (abs(determinant) <= 0.0000001) {
-        float3 referenceAxis = abs(normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
-        tangent = safeNormalize(cross(referenceAxis, normal), float3(1.0, 0.0, 0.0));
-        bitangent = safeNormalize(cross(normal, tangent), float3(0.0, 1.0, 0.0));
-        return;
-    }
-
-    float invDeterminant = 1.0 / determinant;
-    tangent = (edge1 * deltaUv2.y - edge2 * deltaUv1.y) * invDeterminant;
-    bitangent = (edge2 * deltaUv1.x - edge1 * deltaUv2.x) * invDeterminant;
-}
-
 float3 transformObjectNormalToWorld(float3 normal, float3x4 worldToObject)
 {
     return mul(normal, worldToObject).xyz;
 }
 
-#include "../PathTracing/StreamRayGeometry.slang"
+import StreamRayGeometry;
+using Metallic.StreamGeometry;
 
 bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
 {

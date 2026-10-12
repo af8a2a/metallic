@@ -1,5 +1,11 @@
+module StreamMeshProbe;
+
 // Previous duplicated-vertex schedule retained only for raster equivalence tests.
-#include "../../../Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang"
+import Features.GPUDriven.GPUDrivenStreamAsset;
+import ShaderCore;
+import GPUDriven;
+using Metallic;
+using Metallic.GPUDriven;
 struct ReferenceStreamVertexOutput
 {
     float4 position : SV_Position;

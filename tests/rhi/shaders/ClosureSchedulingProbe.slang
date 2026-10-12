@@ -1,3 +1,5 @@
+module ClosureSchedulingProbe;
+
 import ShaderCore;
 import MaterialProgram;
 import SlabClosure;

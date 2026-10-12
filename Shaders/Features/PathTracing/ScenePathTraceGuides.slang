@@ -1,7 +1,23 @@
+#language slang 2026
+module ScenePathTraceGuides;
 import Core;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
 using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
 
-#include "ScenePathTrace.slang"
+import ScenePathTracing;
+using Metallic.ScenePathTracing;
 
 #define gDlssRrAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideAlbedo)
 
@@ -17,13 +33,14 @@ using Metallic;
 
 #define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
 
-#include "SceneStandardGuides.slang"
+import SceneStandardGuides;
+using Metallic.SceneStandardGuides;
 
 void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
     gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
     gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
-    gDlssRrNormalRoughness[pixel] = float4(safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
+    gDlssRrNormalRoughness[pixel] = float4(Metallic.ScenePath::safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
     gDlssRrMotionVectors[pixel] = data.motionVector;
     gDlssRrLinearDepth[pixel] = max(data.linearDepth, 0.0);
     gDlssRrSpecularHitDistance[pixel] = max(data.specularHitDistance, 0.0);
@@ -100,6 +117,6 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         color = accumulateStreamPathTrace(pixel, color, push);
     }
 
-    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
+    sceneOutput()[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
     writeDlssRrGuides(pixel, guides, push);
 }

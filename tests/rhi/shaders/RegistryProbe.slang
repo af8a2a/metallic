@@ -1,3 +1,5 @@
+module RegistryProbe;
+
 import ShaderCore;
 #ifndef INLINE_PARAMETERS
 #define INLINE_PARAMETERS 0

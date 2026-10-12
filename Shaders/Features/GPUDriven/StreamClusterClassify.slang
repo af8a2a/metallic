@@ -1,16 +1,19 @@
+#language slang 2026
+implementing GPUDrivenStreamAsset;
+
 import ShaderCore;
 using Metallic;
 
 // Classification consumes only the selected camera, instance transform and
 // the cull pass's prevalidated geometry addresses. Keep the raster ABI unchanged.
-struct StreamClassifyDesc
+public struct StreamClassifyDesc
 {
-    float4 eye, center, upProjection, viewport, clipOrtho;
-    float4 world0, world1, world2, world3;
-    uint positionWord, positionStrideWords, vertexCount, triangleCount;
-    uint triangleBaseByte, renderCamera;
+    public float4 eye, center, upProjection, viewport, clipOrtho;
+    public float4 world0, world1, world2, world3;
+    public uint positionWord, positionStrideWords, vertexCount, triangleCount;
+    public uint triangleBaseByte, renderCamera;
 };
-groupshared StreamClassifyDesc g_StreamClassify;
+public groupshared StreamClassifyDesc g_StreamClassify;
 
 // Keep the original projectPosition arithmetic, including render-camera jitter.
 float4 projectStreamClassifyPosition(float3 worldPosition, StreamClassifyDesc c)

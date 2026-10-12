@@ -1,3 +1,5 @@
+module TestbenchBindings;
+
 import Core;
 import ParameterRoot;
 using Metallic;

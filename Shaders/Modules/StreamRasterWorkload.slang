@@ -1,9 +1,12 @@
-int workloadEdge(int2 a, int2 b, int2 p)
+#language slang 2026
+module StreamRasterWorkload;
+
+public int workloadEdge(int2 a, int2 b, int2 p)
 {
     int2 d = b - a, q = p - a;
     return d.x * q.y - d.y * q.x;
 }
-int workloadBias(int2 a, int2 b)
+public int workloadBias(int2 a, int2 b)
 {
     int2 d = b - a;
     return d.y < 0 || (d.y == 0 && d.x > 0) ? 0 : -1;
@@ -11,7 +14,7 @@ int workloadBias(int2 a, int2 b)
 
 // Integer setup and edge stepping match hybridRasterPreparedTriangle. The final
 // coverage count equals InterlockedMax attempts in that kernel (no depth reject).
-uint64_t4 workloadTriangle(int2 p0, int2 p1, int2 p2, bool doubleSided, uint width, uint height, uint bits)
+public uint64_t4 workloadTriangle(int2 p0, int2 p1, int2 p2, bool doubleSided, uint width, uint height, uint bits)
 {
     int area = workloadEdge(p0, p1, p2);
     if (area == 0 || (!doubleSided && area > 0)) { return uint64_t4(0); }

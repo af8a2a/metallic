@@ -1,3 +1,5 @@
+module AutoExposure;
+
 import ShaderCore;
 using Metallic;
 

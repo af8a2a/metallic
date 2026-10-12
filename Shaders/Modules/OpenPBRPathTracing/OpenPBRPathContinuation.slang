@@ -1,7 +1,45 @@
+implementing OpenPBRPathTracing;
+
+import Core;
+import MaterialTextureDecode;
+import RTXCRMaterialAdapter;
+import RayMaterialExecution;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRSurface;
+import SceneSurfaceMaterial;
+import SurfaceLighting;
+import ScenePathTracing;
+import SHARC;
+#if METALLIC_CUSTOM_MATERIALS
+import SlabClosure;
+#endif
+using Metallic.OpenPBR;
+using Metallic.SceneOpenPBR;
+using Metallic.ScenePathTracing;
+using Metallic.SHARC;
+
+namespace Metallic.OpenPBRPathTracing
+{
+#if !SHARC_UPDATE
 // One-ray continuation keeps only the original compact transport state live.
 // The primary HitInfo and guide/material payloads are consumed in the first
 // iteration. Subsequent iterations own only their current vertex HitInfo.
-float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone,
+public float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone,
     ScenePathTracePush push, uint seed, out float specularHitDistance)
 {
     float3 radiance = float3(0.0, 0.0, 0.0);
@@ -17,7 +55,7 @@ float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone,
     float3 primaryOrigin = ray.origin;
     bool primarySurface = false;
     bool primaryQueryConsumed = false;
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
     OpenPBRCacheContext cache = makeOpenPbrCacheContext();
 #endif
 
@@ -35,7 +73,7 @@ float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone,
             previousBsdfPdf, previousScatterDelta, interiorStack,
             specularHitDistance, captureSpecularHitDistance,
             alphaLayers, primaryEndpoint, primaryOrigin, primarySurface
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
             , cache
 #endif
         );
@@ -46,3 +84,6 @@ float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone,
     return primarySurface && push.debugView == kOpenPBRDebugViewFinal
         ? applyPrimaryAerialPerspective(radiance, primaryEndpoint, primaryOrigin) : radiance;
 }
+
+#endif
+} // namespace Metallic.OpenPBRPathTracing

@@ -1,10 +1,24 @@
+#language slang 2026
+module ScreenSpaceShadows;
 import Core;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
 
 // Reuse scene alpha-mask and neural-texture evaluation for closest-hit shadow rays.
-#include "../PathTracing/ScenePathTrace.slang"
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic.Material;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import ScenePathTracing;
+using Metallic.ScenePathTracing;
 
 import NRDEncoding;
 using Metallic.Interop.NRDEncoding;
@@ -17,34 +31,8 @@ using Metallic.Interop.NRDEncoding;
 #define gMotion resolveUniform(getResourceParameters<SceneResourceParameters>().shadowMotion)
 #define gShadow resolveUniform(getResourceParameters<SceneResourceParameters>().shadowOutput)
 
-struct ShadowGeometryPush
-{
-    uint materialTextureCount;
-};
-
-float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
-{
-    ShadowGeometryPush geometry = getConstants<ShadowGeometryPush>();
-    ScenePathTracePush push = (ScenePathTracePush)0;
-    push.materialTextureCount = geometry.materialTextureCount;
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.Direction = direction;
-    ray.TMin = 0.001;
-    ray.TMax = max(maxDistance, ray.TMin);
-    // SIGMA needs the closest blocker's distance, not the first traversal hit.
-    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, ray);
-    Ray surfaceRay; surfaceRay.origin = origin; surfaceRay.direction = direction;
-    while (query.Proceed()) {
-        if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
-                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), surfaceRay,
-                query.CandidateTriangleRayT(), push)) { query.CommitNonOpaqueTriangleHit(); }
-    }
-    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT
-        ? min(query.CommittedRayT(), kNRDFP16Max - 1.0) : kNRDFP16Max;
-}
+import SceneShadowQueries;
+using Metallic.SceneShadowQueries;
 
 void shadowCameraBasis(ViewCameraConstants camera, out float3 forward, out float3 right, out float3 up)
 {

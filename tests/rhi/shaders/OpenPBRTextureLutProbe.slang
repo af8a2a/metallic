@@ -1,3 +1,5 @@
+module OpenPBRTextureLutProbe;
+
 import ShaderCore;
 using Metallic;
 import OpenPBRTextureLUT;

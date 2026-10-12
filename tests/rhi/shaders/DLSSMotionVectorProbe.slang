@@ -1,8 +1,24 @@
+#language slang 2026
+module DLSSMotionVectorProbe;
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"
 
-#include "../../../Shaders/Features/PathTracing/ScenePathTrace.slang"
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import ScenePathTracing;
+using Metallic.ScenePathTracing;
 
 #define gMotionResults resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<DLSSMotionVectorProbeResources>().motionResults)
 

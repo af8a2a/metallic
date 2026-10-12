@@ -1,3 +1,5 @@
+module GeneratedCommandsProbe;
+
 import ShaderCore;
 using Metallic;
 

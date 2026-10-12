@@ -1,3 +1,5 @@
+module ColorResize;
+
 import ShaderCore;
 using Metallic;
 #include "../../../Source/Runtime/Render/Core/ColorResizeParameters.h"

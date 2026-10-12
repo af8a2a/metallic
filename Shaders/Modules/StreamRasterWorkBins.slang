@@ -1,9 +1,15 @@
+#language slang 2026
+module StreamRasterWorkBins;
+
+import GPUDriven;
+using Metallic.GPUDriven;
+
 // Local to a 128-thread cluster. The payload retains the original triangle
 // ordinal: bucket order must never become visibility/material identity.
-groupshared uint g_StreamRasterWorkCounts[16];
-groupshared uint g_StreamRasterWorkOrder[128];
+public groupshared uint g_StreamRasterWorkCounts[16];
+public groupshared uint g_StreamRasterWorkOrder[128];
 
-uint streamRasterWorkBucket(int2 p0, int2 p1, int2 p2, bool doubleSided,
+public uint streamRasterWorkBucket(int2 p0, int2 p1, int2 p2, bool doubleSided,
     uint width, uint height, uint bits)
 {
     int scale = 1 << bits;
@@ -22,7 +28,7 @@ uint streamRasterWorkBucket(int2 p0, int2 p1, int2 p2, bool doubleSided,
     return 2u;
 }
 
-uint streamRasterWorkBucket(float4 a, float4 b, float4 c, bool doubleSided,
+public uint streamRasterWorkBucket(float4 a, float4 b, float4 c, bool doubleSided,
     uint width, uint height, uint bits)
 {
     float2 viewport = float2(width, height);
@@ -33,7 +39,7 @@ uint streamRasterWorkBucket(float4 a, float4 b, float4 c, bool doubleSided,
 
 // All 128 lanes participate, including unused triangles (bucket 3). Stable
 // rank inside each bucket uses wave prefix + preceding-wave population.
-uint streamRasterReorderWork(uint bucket, uint lane)
+public uint streamRasterReorderWork(uint bucket, uint lane)
 {
     uint waveSize = WaveGetLaneCount();
     uint wave = lane / waveSize;

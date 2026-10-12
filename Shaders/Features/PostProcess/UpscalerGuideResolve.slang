@@ -1,3 +1,5 @@
+module UpscalerGuideResolve;
+
 import Core;
 using Metallic;
 

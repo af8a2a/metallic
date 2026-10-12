@@ -1,3 +1,5 @@
+module RayMaterialProbe;
+
 import ShaderCore;
 import ParameterRoot;
 import RayMaterialExecution;

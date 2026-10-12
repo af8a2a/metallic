@@ -1,3 +1,5 @@
+module BatchBarrierProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

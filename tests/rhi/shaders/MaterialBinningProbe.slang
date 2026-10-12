@@ -1,3 +1,9 @@
+module MaterialBinningProbe;
+
+#ifdef PROBE_STATIC_PROGRAM
+import ProgramBinningShading;
+#endif
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"
@@ -114,9 +120,7 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
+public void dispatchMaterialReadbackReset(uint3 id)
 {
     ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
@@ -133,9 +137,7 @@ void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[shader("compute")]
-[numthreads(32, 1, 1)]
-void materialIndirectProbeMain(uint3 group : SV_GroupID)
+public void dispatchMaterialIndirectProbe(uint3 group)
 {
     ProbePush push = probePush();
     MaterialBin bin = gBins[push.bin];
@@ -167,4 +169,18 @@ void materialIndirectProbeMain(uint3 group : SV_GroupID)
     // Detect ignored permutation switches as well as the actual subgroup width.
     addResult(result + 2u, 100u);
 #endif
+}
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void materialIndirectProbeMain(uint3 group : SV_GroupID)
+{
+    dispatchMaterialIndirectProbe(group);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
+{
+    dispatchMaterialReadbackReset(id);
 }

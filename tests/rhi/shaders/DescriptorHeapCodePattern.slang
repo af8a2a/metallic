@@ -1,3 +1,5 @@
+module DescriptorHeapCodePattern;
+
 import ShaderCore;
 using Metallic;
 

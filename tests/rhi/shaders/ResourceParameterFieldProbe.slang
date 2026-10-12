@@ -1,3 +1,5 @@
+module ResourceParameterFieldProbe;
+
 import Core;
 using Metallic;
 

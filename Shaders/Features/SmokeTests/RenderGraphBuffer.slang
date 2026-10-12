@@ -1,3 +1,5 @@
+module RenderGraphBuffer;
+
 import ShaderCore;
 using Metallic;
 

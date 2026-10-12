@@ -1,3 +1,5 @@
+module FrameEnvironmentProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

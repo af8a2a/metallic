@@ -1,3 +1,5 @@
+module ClusterLightGrid;
+
 #include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
 [[vk::push_constant]] ConstantBuffer<ClusterLightGridBuildParams> gParams;
 

@@ -1,3 +1,5 @@
+module CloudShadow;
+
 import Atmosphere;
 import Clouds;
 using Metallic;

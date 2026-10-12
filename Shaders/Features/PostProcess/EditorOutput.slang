@@ -1,3 +1,5 @@
+module EditorOutput;
+
 import Core;
 using Metallic;
 

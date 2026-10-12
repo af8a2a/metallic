@@ -1,18 +1,41 @@
+#language slang 2026
+module SceneStandardGuides;
+import Core;
+import MaterialTextureDecode;
+import RTXCRMaterialAdapter;
+import RayMaterialExecution;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import RTXCRFiber;
+namespace Metallic.SceneStandardGuides
+{
 // Standard renderer guide evaluation from an authored hit. Traversal remains
 // with the caller; the compute probe exercises this same production function.
 
-struct DLSSRRGuideData
+public struct DLSSRRGuideData
 {
-    float3 albedo;
-    float3 specularAlbedo;
-    float3 normal;
-    float roughness;
-    float2 motionVector;
-    float linearDepth;
-    float specularHitDistance;
+    public float3 albedo;
+    public float3 specularAlbedo;
+    public float3 normal;
+    public float roughness;
+    public float2 motionVector;
+    public float linearDepth;
+    public float specularHitDistance;
 };
 
-DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
+public DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
 {
     DLSSRRGuideData data;
     data.albedo = float3(0.0, 0.0, 0.0);
@@ -25,7 +48,7 @@ DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
     return data;
 }
 
-DLSSRRGuideData evaluateStandardDlssRrGuidesAtHit(
+public DLSSRRGuideData evaluateStandardDlssRrGuidesAtHit(
     Ray ray,
     RayCone rayCone,
     float2 samplePixel,
@@ -92,7 +115,7 @@ DLSSRRGuideData evaluateStandardDlssRrGuidesAtHit(
     dielectricF0 *= dielectricF0;
 
     data.albedo = baseColor * (1.0 - metallic);
-    data.normal = safeNormalize(hit.normal, hit.geometryNormal);
+    data.normal = Metallic.ScenePath::safeNormalize(hit.normal, hit.geometryNormal);
     float nDotV = saturate(dot(data.normal, -ray.direction));
     float3 specularReflectance = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
     data.specularAlbedo = saturate(approxSpecularIntegralGGX(specularReflectance, roughness * roughness, nDotV));
@@ -100,4 +123,5 @@ DLSSRRGuideData evaluateStandardDlssRrGuidesAtHit(
     data.motionVector = motionVectorToPrevious(hit.position, samplePixel, push);
     data.linearDepth = cameraLinearDepth(hit.position, push);
     return data;
+}
 }

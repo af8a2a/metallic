@@ -1,3 +1,5 @@
+module ResourceABIProbe;
+
 import ShaderCore;
 using Metallic;
 

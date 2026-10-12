@@ -1,3 +1,5 @@
+module TextureStreamingProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

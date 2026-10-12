@@ -1,3 +1,5 @@
+module PreparedRasterProbe;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 struct ProbePush {
@@ -24,7 +26,7 @@ void compareMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform Pr
         p.width,p.height,p.bits,p.prepared,p.incrementalDepth!=0);
 }
 
-#include "Features/GPUDriven/StreamRasterWorkBins.slang"
+import StreamRasterWorkBins;
 groupshared uint originalBucket[128];
 groupshared uint reorderedWork[128];
 [shader("compute")]
@@ -67,7 +69,7 @@ void compareWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, un
     }
 }
 
-#include "Features/GPUDriven/StreamRasterWorkload.slang"
+import StreamRasterWorkload;
 // Independently count the reference rasterizer's visible pixels for one triangle
 // at a time. There is no inter-triangle occlusion to hide attempted writes.
 [shader("compute")]

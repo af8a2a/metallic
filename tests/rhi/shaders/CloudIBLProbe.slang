@@ -1,3 +1,5 @@
+module CloudIBLProbe;
+
 import ShaderCore;
 using Metallic;
 

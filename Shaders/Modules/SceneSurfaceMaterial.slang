@@ -1,36 +1,53 @@
+#language slang 2026
+module SceneSurfaceMaterial;
+
+import ScenePathTypes;
+import MaterialProgram;
+import RTXCRMaterialParameters;
+import OpenPBR;
+import OpenPBRClosure;
+#if METALLIC_CUSTOM_MATERIALS
+import SlabClosure;
+#endif
+
+namespace Metallic
+{
+using Metallic.Material;
+using Metallic.OpenPBR;
+
 // Renderer diagnostics and environment approximations are independent of the
 // scattering model. These values never stand in for a model's resolved closure.
-struct SceneSurfaceSummary
+public struct SceneSurfaceSummary
 {
-    float3 baseColor;
-    float3 albedo;
-    float3 diffuseColor;
-    float3 specularReflectance;
-    float3 guideSpecularReflectance;
-    float3 dielectricReflectance;
-    float3 transmissionColor;
-    float conductorFraction;
-    float diffuseWeight;
-    float surfaceTransmission;
-    float roughness;
-    float ior;
-    float transmissionWeight;
-    float occlusion;
-    bool unlit;
-    bool numericalEnvironment;
+    public float3 baseColor;
+    public float3 albedo;
+    public float3 diffuseColor;
+    public float3 specularReflectance;
+    public float3 guideSpecularReflectance;
+    public float3 dielectricReflectance;
+    public float3 transmissionColor;
+    public float conductorFraction;
+    public float diffuseWeight;
+    public float surfaceTransmission;
+    public float roughness;
+    public float ior;
+    public float transmissionWeight;
+    public float occlusion;
+    public bool unlit;
+    public bool numericalEnvironment;
 };
 
-interface ISceneSurfaceMaterialProgram : ISurfaceMaterialProgram
+public interface ISceneSurfaceMaterialProgram : ISurfaceMaterialProgram
 {
-    HitInfo evaluatedHit();
-    uint evaluatedSeed();
-    float4 sampledNormal();
-    SceneSurfaceSummary surfaceSummary();
+    public HitInfo evaluatedHit();
+    public uint evaluatedSeed();
+    public float4 sampledNormal();
+    public SceneSurfaceSummary surfaceSummary();
 };
 
 // Fiber guides are bounded diagnostic approximations, independent of Surface
 // scattering. They use the same parameter limits as the native Fiber adapter.
-SceneSurfaceSummary summarizeFiberGuides(RTXCRHairMaterialParameters parameters)
+public SceneSurfaceSummary summarizeFiberGuides(RTXCRHairMaterialParameters parameters)
 {
     let guides = fiberGuideParameters(parameters);
     SceneSurfaceSummary summary = (SceneSurfaceSummary)0;
@@ -43,7 +60,7 @@ SceneSurfaceSummary summarizeFiberGuides(RTXCRHairMaterialParameters parameters)
     return summary;
 }
 
-SceneSurfaceSummary summarizeOpenPBRSurface(SceneOpenPBRClosure closure, bool unlit)
+public SceneSurfaceSummary summarizeOpenPBRSurface<TContext : IOpenPBRContext>(OpenPBRClosure<TContext> closure, bool unlit)
 {
     let inputs = closure.inputs;
     SceneSurfaceSummary summary = (SceneSurfaceSummary)0;
@@ -72,7 +89,7 @@ SceneSurfaceSummary summarizeOpenPBRSurface(SceneOpenPBRClosure closure, bool un
 }
 
 #if METALLIC_CUSTOM_MATERIALS
-SceneSurfaceSummary summarizeSlabSurface(SlabMaterialInputs inputs)
+public SceneSurfaceSummary summarizeSlabSurface(SlabMaterialInputs inputs)
 {
     SceneSurfaceSummary summary = (SceneSurfaceSummary)0;
     summary.baseColor = inputs.first.reflectance.rgb;
@@ -92,3 +109,5 @@ SceneSurfaceSummary summarizeSlabSurface(SlabMaterialInputs inputs)
     return summary;
 }
 #endif
+
+} // namespace Metallic

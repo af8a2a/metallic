@@ -1,45 +1,48 @@
+#language slang 2026
+implementing VisibilityTessellation;
+
 // Bounded recursive red/green subdivision in source-triangle domain. Each
 // task lane owns one root and a private DFS stack; only finished leaves enter
 // the task payload. No global append, inter-dispatch fence or CPU readback.
-static const uint kTessRootsPerTask = 16u;
-static const uint kTessTasksPerCluster = 8u;
+public static const uint kTessRootsPerTask = 16u;
+public static const uint kTessTasksPerCluster = 8u;
 // Fixed capacity shared by task and mesh stages; the draw's push constants
 // select the actual depth without changing the payload ABI or recompiling.
-static const uint kTessMaxSplitDepth = 3u;
-static const uint kTessLeavesPerRoot = 1u << (2u * kTessMaxSplitDepth);
-static const uint kTessDomainScale = 4096u;
+public static const uint kTessMaxSplitDepth = 3u;
+public static const uint kTessLeavesPerRoot = 1u << (2u * kTessMaxSplitDepth);
+public static const uint kTessDomainScale = 4096u;
 
-struct TessPatchPayload
+public struct TessPatchPayload
 {
-    uint record, first, count, material, enabled;
-    uint ends[16];
+    public uint record, first, count, material, enabled;
+    public uint ends[16];
     // Reserve 12,372 bytes at every runtime depth. Scalar storage avoids
     // uint3 array-stride padding.
-    uint patches[kTessRootsPerTask * kTessLeavesPerRoot * 3u];
+    public uint patches[kTessRootsPerTask * kTessLeavesPerRoot * 3u];
 };
-groupshared TessPatchPayload g_TessPatches;
+public groupshared TessPatchPayload g_TessPatches;
 
-struct TessView
+public struct TessView
 {
-    float3 eye, forward;
-    float pixelScale, nearPlane;
-    bool orthographic;
+    public float3 eye, forward;
+    public float pixelScale, nearPlane;
+    public bool orthographic;
 };
 
-float3 tessUnpackDomain(uint word)
+public float3 tessUnpackDomain(uint word)
 {
     float2 yz = float2(word & 65535u, word >> 16u) / float(kTessDomainScale);
     return float3(1.0 - yz.x - yz.y, yz);
 }
 
-uint tessDomainMidpoint(uint a, uint b)
+public uint tessDomainMidpoint(uint a, uint b)
 {
     // All coordinates remain dyadic and exact throughout the supported depth.
     return (((a & 65535u) + (b & 65535u)) >> 1u) |
         ((((a >> 16u) + (b >> 16u)) >> 1u) << 16u);
 }
 
-bool tessPointAfter(float3 a, float3 b)
+public bool tessPointAfter(float3 a, float3 b)
 {
     return a.x > b.x || (a.x == b.x && (a.y > b.y || (a.y == b.y && a.z > b.z)));
 }
@@ -47,7 +50,7 @@ bool tessPointAfter(float3 a, float3 b)
 // Evaluate directly from the original triangle, never repeatedly normalize
 // interpolated normals at split points. Canonical edge order is shared across
 // source triangles with opposite winding and across different split depths.
-void tessSourceDomain(float3 bary, float3 p[3], float3 n[3], float2 uv[3],
+public void tessSourceDomain(float3 bary, float3 p[3], float3 n[3], float2 uv[3],
     out float3 position, out float3 normal, out float2 texcoord)
 {
     uint zero = bary.z == 0.0 ? 2u : (bary.x == 0.0 ? 0u : (bary.y == 0.0 ? 1u : 3u));
@@ -65,7 +68,7 @@ void tessSourceDomain(float3 bary, float3 p[3], float3 n[3], float2 uv[3],
     normal = tessNormal(normal, tessNormal(cross(p[1] - p[0], p[2] - p[0]), float3(0, 1, 0)));
 }
 
-float3 tessSourcePosition(uint word, float3 p[3])
+public float3 tessSourcePosition(uint word, float3 p[3])
 {
     float3 b = tessUnpackDomain(word);
     uint zero = b.z == 0.0 ? 2u : (b.x == 0.0 ? 0u : (b.y == 0.0 ? 1u : 3u));
@@ -77,7 +80,7 @@ float3 tessSourcePosition(uint word, float3 p[3])
     return p[0] * b.x + p[1] * b.y + p[2] * b.z;
 }
 
-uint3 tessPatchRates(uint3 patch, float3 source[3], TessView view,
+public uint3 tessPatchRates(uint3 patch, float3 source[3], TessView view,
     float edgePixels, uint maximum)
 {
     float3 p[3];
@@ -90,7 +93,7 @@ uint3 tessPatchRates(uint3 patch, float3 source[3], TessView view,
     return rates;
 }
 
-uint tessSplitChildren(uint3 patch, uint mask, out uint3 children[4])
+public uint tessSplitChildren(uint3 patch, uint mask, out uint3 children[4])
 {
     if (mask == 7u) {
         uint ab = tessDomainMidpoint(patch.x, patch.y);
@@ -120,7 +123,7 @@ uint tessSplitChildren(uint3 patch, uint mask, out uint3 children[4])
     return 3u;
 }
 
-uint tessBuildLeaves(uint root, float3 source[3], TessView view, float edgePixels, uint maxFactor, uint maxDepth)
+public uint tessBuildLeaves(uint root, float3 source[3], TessView view, float edgePixels, uint maxFactor, uint maxDepth)
 {
     // A depth-first walk needs 1 + 3 * depth pending nodes, not 4^depth.
     uint4 stack[1u + 3u * kTessMaxSplitDepth];
@@ -149,7 +152,7 @@ uint tessBuildLeaves(uint root, float3 source[3], TessView view, float edgePixel
 }
 
 // Called by all task lanes, including lanes without a source triangle.
-void tessDispatchLeaves(uint lane, uint count)
+public void tessDispatchLeaves(uint lane, uint count)
 {
     bool singleWave = false;
 #if GPU_DRIVEN_AMPLIFICATION_WAVE_OPS
@@ -168,7 +171,7 @@ void tessDispatchLeaves(uint lane, uint count)
     DispatchMesh(g_TessPatches.ends[kTessRootsPerTask - 1u], 1, 1, g_TessPatches);
 }
 
-uint tessPayloadRoot(TessPatchPayload payload, uint index)
+public uint tessPayloadRoot(TessPatchPayload payload, uint index)
 {
     uint root = 0u;
     for (uint stride = 8u; stride > 0u; stride >>= 1u) {
@@ -177,7 +180,7 @@ uint tessPayloadRoot(TessPatchPayload payload, uint index)
     return root;
 }
 
-float3 tessPatchDomain(float3 local, uint3 rates, uint3 patch, float3 source[3])
+public float3 tessPatchDomain(float3 local, uint3 rates, uint3 patch, float3 source[3])
 {
     float3 corners[3];
     for (uint i = 0u; i < 3u; ++i) { corners[i] = tessUnpackDomain(patch[i]); }

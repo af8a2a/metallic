@@ -1,3 +1,5 @@
+module BindlessHeapConcurrency;
+
 import ShaderCore;
 using Metallic;
 

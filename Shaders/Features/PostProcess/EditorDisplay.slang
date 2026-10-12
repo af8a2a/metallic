@@ -1,3 +1,5 @@
+module EditorDisplay;
+
 import Core;
 using Metallic;
 

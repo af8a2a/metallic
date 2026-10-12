@@ -1,5 +1,11 @@
+module StreamClusterClassificationProbe;
+
 // Reference schedule retained only for GPU equivalence tests.
-#include "../../../Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang"
+import Features.GPUDriven.GPUDrivenStreamAsset;
+import ShaderCore;
+import GPUDriven;
+using Metallic;
+using Metallic.GPUDriven;
 
 [shader("compute")]
 [numthreads(128, 1, 1)]

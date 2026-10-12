@@ -1,3 +1,5 @@
+#language slang 2026
+module RayMaterialQueue;
 import ShaderCore;
 import ParameterRoot;
 using Metallic;

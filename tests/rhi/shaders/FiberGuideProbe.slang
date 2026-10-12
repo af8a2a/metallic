@@ -1,8 +1,28 @@
+#language slang 2026
+module FiberGuideProbe;
+
 import Core;
 using Metallic;
 
-#include "../../../Shaders/Features/PathTracing/OpenPBRSurface.slang"
-#include "../../../Shaders/Features/PathTracing/SceneStandardGuides.slang"
+import OpenPBRSurface;
+import SceneSurface;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurfaceMaterial;
+import Material;
+import MaterialProgram;
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRMaterialParameters;
+import SurfaceLighting;
+using Metallic.SceneOpenPBR;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+using Metallic.Material;
+using Metallic.OpenPBR;
+using Metallic.Lighting;
+import SceneStandardGuides;
+using Metallic.SceneStandardGuides;
 
 // Exercise the production guide dispatch against uploaded scene records, rather
 // than calling the Fiber summary helper directly or constructing its outputs.

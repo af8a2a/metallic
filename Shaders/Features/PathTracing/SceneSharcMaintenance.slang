@@ -1,3 +1,5 @@
+#language slang 2026
+module SceneSharcMaintenance;
 #include "../../../Source/Runtime/Render/Core/PathTraceStageParameters.h"
 #include "../../Interop/MeshletStreamBLAS.h"
 [[vk::push_constant]] ConstantBuffer<SharcMaintenanceParams> gStage;

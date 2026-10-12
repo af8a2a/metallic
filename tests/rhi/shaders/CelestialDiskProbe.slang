@@ -1,3 +1,5 @@
+module CelestialDiskProbe;
+
 import Atmosphere;
 import AtmosphereTypes;
 import Lighting;

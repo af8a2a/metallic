@@ -1,3 +1,5 @@
+module RTXDIComposite;
+
 #include "../../../Source/Runtime/Render/Core/RTXDIPostProcessParameters.h"
 
 [[vk::push_constant]] ConstantBuffer<RTXDICompositeParams> gParams;

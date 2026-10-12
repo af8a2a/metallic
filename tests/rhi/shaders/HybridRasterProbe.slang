@@ -1,3 +1,5 @@
+module HybridRasterProbe;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;

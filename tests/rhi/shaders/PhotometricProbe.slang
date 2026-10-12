@@ -1,3 +1,5 @@
+module PhotometricProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

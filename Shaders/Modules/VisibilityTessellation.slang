@@ -1,20 +1,23 @@
+#language slang 2026
+module VisibilityTessellation;
+
 import ShaderCore;
 using Metallic;
 
 // Domain evaluation for streamed patches. The table and
 // material descriptors are immutable for the lifetime of the graph bindings.
-struct TessMaterial
+public struct TessMaterial
 {
-    uint texture;
-    float magnitude;
-    float centre;
-    uint enabled;
-    float4 uv0;
-    float4 uv1;
-    uint4 reserved;
+    public uint texture;
+    public float magnitude;
+    public float centre;
+    public uint enabled;
+    public float4 uv0;
+    public float4 uv1;
+    public uint4 reserved;
 };
 
-TessMaterial tessMaterial(StructuredBuffer<uint> data, uint material)
+public TessMaterial tessMaterial(StructuredBuffer<uint> data, uint material)
 {
     TessMaterial m = (TessMaterial)0;
     m.texture = 0xffffffffu;
@@ -29,7 +32,7 @@ TessMaterial tessMaterial(StructuredBuffer<uint> data, uint material)
     return m;
 }
 
-float tessHeight(TessMaterial material, float2 uv)
+public float tessHeight(TessMaterial material, float2 uv)
 {
     if (material.enabled == 0u || material.texture == 0xffffffffu) { return 0.0; }
     uv = float2(dot(material.uv0.xy, uv) + material.uv0.z, dot(material.uv1.xy, uv) + material.uv1.z);
@@ -49,7 +52,7 @@ float tessHeight(TessMaterial material, float2 uv)
     return (saturate(h) - material.centre) * material.magnitude;
 }
 
-uint tessEdgeRate(float3 a, float3 b, float3 eye, float3 forward, float pixelScale,
+public uint tessEdgeRate(float3 a, float3 b, float3 eye, float3 forward, float pixelScale,
     float nearPlane, bool orthographic, float targetPixels, uint maximum)
 {
     // Unjittered, endpoint-symmetric rate. Projection is conservatively based
@@ -59,32 +62,32 @@ uint tessEdgeRate(float3 a, float3 b, float3 eye, float3 forward, float pixelSca
     return uint(clamp(rate, 1.0, float(maximum)));
 }
 
-uint4 tessPattern(StructuredBuffer<uint> data, uint3 rates)
+public uint4 tessPattern(StructuredBuffer<uint> data, uint3 rates)
 {
     uint index = data[0] + ((rates.x - 1u) + 8u * (rates.y - 1u) + 64u * (rates.z - 1u)) * 4u;
     return uint4(data[index], data[index + 1u], data[index + 2u], data[index + 3u]);
 }
 
-float3 tessBary(StructuredBuffer<uint> data, uint4 pattern, uint vertex)
+public float3 tessBary(StructuredBuffer<uint> data, uint4 pattern, uint vertex)
 {
     uint word = data[data[0] + pattern.x + vertex];
     float2 yz = float2(word & 65535u, word >> 16u) / 65535.0;
     return float3(1.0 - yz.x - yz.y, yz);
 }
 
-uint3 tessTriangle(StructuredBuffer<uint> data, uint4 pattern, uint triangle)
+public uint3 tessTriangle(StructuredBuffer<uint> data, uint4 pattern, uint triangle)
 {
     uint word = data[data[0] + pattern.z + triangle];
     return uint3(word & 255u, (word >> 8u) & 255u, (word >> 16u) & 255u);
 }
 
-float2 tessEncodeNormal(float3 n)
+public float2 tessEncodeNormal(float3 n)
 {
     n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-20);
     return n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
 }
 
-float4 tessSurfaceDomain(float2 bary, float3 world, float2 uv, bool front)
+public float4 tessSurfaceDomain(float2 bary, float3 world, float2 uv, bool front)
 {
     float3 dx = ddx(world), dy = ddy(world);
     float3 area = cross(dx, dy);
@@ -99,34 +102,18 @@ float4 tessSurfaceDomain(float2 bary, float3 world, float2 uv, bool front)
     return float4(bary, lod, packedNormal);
 }
 
-struct TessVertex
+public struct TessPrimitive
 {
-    float4 position : SV_Position;
-    [vk::location(0)] float2 uv : TEXCOORD0;
-    [vk::location(1)] float2 bary : TEXCOORD1;
-#if VISIBILITY_BUFFER_ALPHA_MASKED
-    [vk::location(2)] nointerpolation uint material : TEXCOORD2;
-#endif
-    [vk::location(3)] float3 world : TEXCOORD3;
-    [vk::location(5)] nointerpolation uint originalVisibilityId : TEXCOORD5;
-    [vk::location(6)] nointerpolation uint debugPatchSeed : TEXCOORD6;
-#if VISIBILITY_TESSELLATION_STREAM
-    [vk::location(4)] nointerpolation uint doubleSided : TEXCOORD4;
-    [vk::location(7)] nointerpolation uint streamInstance : TEXCOORD7;
-#endif
+    public uint visibilityId : SV_PrimitiveID;
 };
-struct TessPrimitive
+public struct TessFragment
 {
-    uint visibilityId : SV_PrimitiveID;
-};
-struct TessFragment
-{
-    uint visibility : SV_Target0;
-    float4 domain : SV_Target1;
-    float4 debugColor : SV_Target2;
+    public uint visibility : SV_Target0;
+    public float4 domain : SV_Target1;
+    public float4 debugColor : SV_Target2;
 };
 
-uint tessDebugHash(uint value)
+public uint tessDebugHash(uint value)
 {
     value ^= value >> 16u; value *= 0x7feb352du;
     value ^= value >> 15u; value *= 0x846ca68bu;
@@ -135,21 +122,17 @@ uint tessDebugHash(uint value)
 
 // Geometry identity and source-domain corners survive temporary draw-record
 // relocation. SV_PrimitiveID supplies the diced triangle within this patch.
-uint tessDebugPatchSeed(uint geometrySeed, uint sourceTriangle, uint3 patch)
+public uint tessDebugPatchSeed(uint geometrySeed, uint sourceTriangle, uint3 patch)
 {
     return geometrySeed ^ tessDebugHash(sourceTriangle + 1u) ^
         tessDebugHash(patch.x) ^ tessDebugHash(patch.y + 0x9e3779b9u) ^
         tessDebugHash(patch.z + 0x85ebca6bu);
 }
 
-float4 tessDebugColor(TessVertex input, uint primitiveId)
-{
-    uint triangle = input.originalVisibilityId != 0u ? primitiveId : (primitiveId & 127u);
-    uint color = tessDebugHash(input.debugPatchSeed ^ tessDebugHash(triangle + 1u));
-    return float4(0.3 + 0.5 * float3(color & 255u, (color >> 8u) & 255u, (color >> 16u) & 255u) / 255.0, 1.0);
-}
 
-float3 tessNormal(float3 n, float3 fallback)
+public float3 tessNormal(float3 n, float3 fallback)
 {
     return dot(n, n) > 1e-20 ? normalize(n) : fallback;
 }
+
+__include "VisibilityTessellation/VisibilityTessellationSplit.slang";

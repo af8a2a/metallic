@@ -1,3 +1,5 @@
+module MaterialFacadeProbe;
+
 import ShaderCore;
 import MaterialProgram;
 import FiberMaterial;

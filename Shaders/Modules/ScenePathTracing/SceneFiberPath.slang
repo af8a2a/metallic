@@ -1,11 +1,33 @@
-// Program-independent fiber path integration. Geometry, visibility, RNG and
-// continuation stay in the renderer; projected scattering belongs to Prepared.
+implementing ScenePathTracing;
+
+import Core;
+import MaterialTextureDecode;
+import RTXCRMaterialAdapter;
+import RayMaterialExecution;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
 import FiberMaterial;
 import RTXCRFiber;
 import FiberLighting;
-using Metallic.Material;
 
-bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
+namespace Metallic.ScenePathTracing
+{
+// Program-independent fiber path integration. Geometry, visibility, RNG and
+// continuation stay in the renderer; projected scattering belongs to Prepared.
+
+public bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     float misRoughness, HitInfo hit, ScenePathTracePush push, uint depth,
     inout Ray ray, inout RayCone rayCone, inout uint seed,
     inout float3 throughput, inout float3 radiance,
@@ -31,8 +53,8 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     }
     uint fiberLightIndex;
     float fiberInverseSourcePdf;
-    if (selectPunctualLight(PunctualSamplingResources(gSceneLights, gSceneReGIRGrid, gSceneLightsPdf), hit.position, seed, fiberLightIndex, fiberInverseSourcePdf)) {
-        PunctualLightSample light = samplePunctualLight(gSceneLights, fiberLightIndex, hit.position);
+    if (selectPunctualLight(PunctualSamplingResources(sceneLights(), sceneReGIRGrid(), sceneLightsPdf()), hit.position, seed, fiberLightIndex, fiberInverseSourcePdf)) {
+        PunctualLightSample light = samplePunctualLight(sceneLights(), fiberLightIndex, hit.position);
         float3 fiberScattering = max(prepared.evalProjected(light.direction), 0.0);
         if (luminanceMax(fiberScattering * light.illuminance) > 0.0) {
             float3 shadowOrigin = offsetRay(hit.position,
@@ -83,7 +105,7 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     };
     FiberSample scatter = prepared.sampleWeighted(float4(fiberRandom[0], fiberRandom[1]));
     if (scatter.pdf <= 0.0) { return false; }
-    ray.direction = safeNormalize(scatter.wiWS, reflect(ray.direction, hit.normal));
+    ray.direction = Metallic.ScenePath::safeNormalize(scatter.wiWS, reflect(ray.direction, hit.normal));
     throughput *= scatter.weight;
     previousBsdfPdf = max(scatter.pdf, 0.000001);
     previousScatterDelta = false;
@@ -103,7 +125,7 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     return true;
 }
 
-bool shadeSceneFiber(RTXCRHairMaterialParameters material, HitInfo hit, float3 stableNormal,
+public bool shadeSceneFiber(RTXCRHairMaterialParameters material, HitInfo hit, float3 stableNormal,
     ScenePathTracePush push, uint depth, inout Ray ray, inout RayCone rayCone,
     inout uint seed, inout float3 throughput, inout float3 radiance,
     inout float previousBsdfPdf, inout bool previousScatterDelta)
@@ -122,3 +144,4 @@ bool shadeSceneFiber(RTXCRHairMaterialParameters material, HitInfo hit, float3 s
     return integrateSceneFiber(prepared, sceneFiberMISRoughness(material), hit, push, depth,
         ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta);
 }
+} // namespace Metallic.ScenePathTracing

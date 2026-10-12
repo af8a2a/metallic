@@ -1,3 +1,5 @@
+module ShaderToHumanProbe;
+
 import ShaderCore;
 using Metallic;
 

@@ -1,3 +1,5 @@
+module HZBSPD;
+
 import ShaderCore;
 using Metallic;
 

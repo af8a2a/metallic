@@ -1,21 +1,24 @@
+#language slang 2026
+implementing GPUDrivenStreamAsset;
+
 import ShaderCore;
 using Metallic;
 
 // SW-only descriptor. No traversal/culling params, bounds, material or request state.
-struct StreamSoftwareRasterDesc
+public struct StreamSoftwareRasterDesc
 {
-    float4 eye, center, upProjection, viewport, clipOrtho;
-    float4 world0, world1, world2, world3;
-    uint positionWord, positionStride, vertexCount, triangleCount;
-    uint triangleByte, recordIndex, instanceFlags, renderCamera;
+    public float4 eye, center, upProjection, viewport, clipOrtho;
+    public float4 world0, world1, world2, world3;
+    public uint positionWord, positionStride, vertexCount, triangleCount;
+    public uint triangleByte, recordIndex, instanceFlags, renderCamera;
 };
-groupshared StreamSoftwareRasterDesc g_StreamSoftware;
-groupshared uint g_StreamSoftwareValid;
-groupshared float4 g_StreamSoftwareClip[128];
+public groupshared StreamSoftwareRasterDesc g_StreamSoftware;
+public groupshared uint g_StreamSoftwareValid;
+public groupshared float4 g_StreamSoftwareClip[128];
 
 // Called by the complete first wave only. Every return is wave-uniform;
 // all waves rejoin at the caller's group barrier, including rejected pages.
-bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
+public bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
 {
     uint lane = WaveGetLaneIndex();
     StructuredBuffer<GPUDrivenStreamAssetParams> params =
@@ -135,7 +138,7 @@ bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
     return true;
 }
 
-float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
+public float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
 {
     StructuredBuffer<uint> pages =
         resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
@@ -169,7 +172,7 @@ float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
     return clip;
 }
 
-uint3 streamSoftwareTriangle(uint triangle, GPUDrivenStreamAssetPush push)
+public uint3 streamSoftwareTriangle(uint triangle, GPUDrivenStreamAssetPush push)
 {
     StructuredBuffer<uint> pages =
         resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));

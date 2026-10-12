@@ -1,5 +1,24 @@
-#define METALLIC_LIGHTING_NAMED_PARAMETERS 1
-#include "OpenPBRClosureProbe.slang"
+#language slang 2026
+module SurfaceLightingProbe;
+
+import Core;
+import OpenPBRProbe;
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRSurface;
+import OpenPBRMaterialParameters;
+import ScenePathTypes;
+import Material;
+import MaterialProgram;
+import SurfaceLighting;
+using Metallic;
+using Metallic.Material;
+using Metallic.OpenPBR;
+using Metallic.SceneOpenPBR;
+using Metallic.Lighting;
+using Metallic.Tests;
+
+#define gProbe lightingProbeParameters()
 import DebugLambert;
 import DebugMirror;
 
@@ -18,9 +37,13 @@ ProbeParams lightingProbeParameters()
 
 struct LightingProbeSource : IOpenPBRMaterialSource, IDebugLambertSource
 {
+    ProbeParams probe;
+    typealias Context = ProbeOpenPBRContext;
+    Context context() { Context result; result.probe = probe; return result; }
     OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
     {
         ProbeSource source;
+        source.probe = probe;
         return source.loadParameters(instance);
     }
     float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
@@ -28,6 +51,7 @@ struct LightingProbeSource : IOpenPBRMaterialSource, IDebugLambertSource
         bool deterministicMip0, inout uint seed, TextureFootprint footprint)
     {
         ProbeSource source;
+        source.probe = probe;
         return source.loadTexture(info, uv, fallback, push, cone, hit, rayDirection, deterministicMip0, seed, footprint);
     }
     DebugLambertInputs evaluateInputs(SurfaceMaterialContext context, MaterialInstanceRef instance)
@@ -77,7 +101,7 @@ struct DiagnosticLights : ISurfaceLightProvider
     uint count() { return gProbe.lightCount; }
     SurfaceLightSample sample(uint index)
     {
-        countStage(4);
+        countStage(gProbe, 4);
         float angle = float(index) * 6.28318530718 / max(gProbe.lightCount, 1u);
         SurfaceLightSample result;
         result.direction = normalize(float3(cos(angle), 1.5, sin(angle)));
@@ -89,7 +113,7 @@ struct DiagnosticLights : ISurfaceLightProvider
     }
     float3 visibility(SurfaceLightSample light)
     {
-        countStage(5);
+        countStage(gProbe, 5);
         SurfaceMaterialContext shadowHit;
         uint materialIndex;
         return traceDiagnosticScene(context.positionWS + context.geometryNormalWS * 0.0005,
@@ -122,25 +146,26 @@ void surfaceLightingProbeMain(uint3 id : SV_DispatchThreadID)
         instance.resourceOffset = 0;
         // All programs have a source; no model-specific preparation/lighting.
         METALLIC_SURFACE_PROGRAM<LightingProbeSource> program = {};
+        program.source.probe = gProbe;
         DiagnosticLights lights;
         lights.context = context;
         SurfaceSamplingContext sampling;
         sampling.throughput = throughput;
         sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
         sampling.exteriorIor = OpenPBRVacuumIor;
-        countStage(3);
+        countStage(gProbe, 3);
         let shaded = shadeSurface(program, context, instance, -direction, TransportMode.Radiance, sampling, lights);
         radiance += throughput * shaded.radiance;
         float3 random = frac(float3(id.x * 0.75487766 + id.y * 0.56984029 + bounce * 0.438289,
             id.x * 0.438579 + id.y * 0.819172 + bounce * 0.246817, 0.5));
-        countStage(6);
+        countStage(gProbe, 6);
         BSDFWeightSample scatter = sampleSurfaceWeight(shaded.prepared, random);
         if (bounce == 0) {
             firstNormalPdf = float4(shaded.prepared.shadingNormal(), scatter.pdf);
             firstDirectionFlags = float4(scatter.wiWS, scatter.flags);
         }
         if (scatter.pdf <= 0) { break; }
-        if (scatter.flags & kBSDFDelta) { countStage(7); }
+        if (scatter.flags & kBSDFDelta) { countStage(gProbe, 7); }
         throughput *= scatter.weight;
         direction = scatter.wiWS;
         origin = context.positionWS + context.geometryNormalWS * (dot(direction, context.geometryNormalWS) >= 0 ? 0.0005 : -0.0005);

@@ -1,3 +1,5 @@
+module GPUProbe;
+
 import Core;
 using Metallic;
 

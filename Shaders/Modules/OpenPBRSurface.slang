@@ -1,17 +1,37 @@
-#ifndef METALLIC_OPENPBR_SURFACE
-#define METALLIC_OPENPBR_SURFACE
+#language slang 2026
+module OpenPBRSurface;
 
 import Core;
-using Metallic;
-
 import OpenPBR;
 import OpenPBRClosure;
 import OpenPBRTextureLUT;
 import MaterialProgram;
-using Metallic.OpenPBR;
-using Metallic.Material;
+import SurfaceLighting;
+import SceneSurface;
+import SceneSurfaceMaterial;
+import Material;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import ScenePathTypes;
+import ScenePathMath;
+import MaterialTextureDecode;
+import Lighting;
+import WorkingColor;
+#if METALLIC_CUSTOM_MATERIALS
+import SlabClosure;
+#endif
 
-float4 sampleOpenPBRLut2D(int lutId, float2 uv)
+namespace Metallic.SceneOpenPBR
+{
+using Metallic;
+using Metallic.Material;
+using Metallic.OpenPBR;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+
+
+
+public float4 sampleOpenPBRLut2D(int lutId, float2 uv)
 {
 #if SHARC_UPDATE
     let resources = getResourceParameters<SceneResourceParameters>();
@@ -22,7 +42,7 @@ float4 sampleOpenPBRLut2D(int lutId, float2 uv)
     return sampleOpenPBRTexture2D(resolveNonUniform(texture), resolveUniform(resources.openPBRLutSampler), uv);
 }
 
-float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
+public float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 {
 #if SHARC_UPDATE
     let resources = getResourceParameters<SceneResourceParameters>();
@@ -35,12 +55,9 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 
 // The closure module receives a statically specialized BSDF LUT context.
 // Tests can supply a concrete context without importing this program's resources.
-#ifdef METALLIC_OPENPBR_CONTEXT_TYPE
-typealias SceneOpenPBRContext = METALLIC_OPENPBR_CONTEXT_TYPE;
-#else
-struct SceneOpenPBRContext : IOpenPBRContext
+public struct SceneOpenPBRContext : IOpenPBRContext
 {
-    static bool enableSheenAndCoat()
+    public static bool enableSheenAndCoat()
     {
 #if METALLIC_CUSTOM_MATERIALS
         return true;
@@ -48,57 +65,49 @@ struct SceneOpenPBRContext : IOpenPBRContext
         return false;
 #endif
     }
-    static bool enableDispersion() { return false; }
-    static bool enableTranslucency() { return true; }
-    static bool enableMetallic() { return true; }
-    float4 sample2D(int id, float2 uv) { return sampleOpenPBRLut2D(id, uv); }
-    float4 sample3D(int id, float3 uvw) { return sampleOpenPBRLut3D(id, uvw); }
+    public static bool enableDispersion() { return false; }
+    public static bool enableTranslucency() { return true; }
+    public static bool enableMetallic() { return true; }
+    public float4 sample2D(int id, float2 uv) { return sampleOpenPBRLut2D(id, uv); }
+    public float4 sample3D(int id, float3 uvw) { return sampleOpenPBRLut3D(id, uvw); }
 };
-#endif
-typealias SceneOpenPBRClosure = OpenPBRClosure<SceneOpenPBRContext>;
-typealias SceneOpenPBRPreparedClosure = OpenPBRPreparedClosure<SceneOpenPBRContext>;
+public typealias SceneOpenPBRClosure = OpenPBRClosure<SceneOpenPBRContext>;
+public typealias SceneOpenPBRPreparedClosure = OpenPBRPreparedClosure<SceneOpenPBRContext>;
 
-import SurfaceLighting;
-using Metallic.Lighting;
-#include "SceneSurface.slang"
-#if METALLIC_CUSTOM_MATERIALS
-import SlabClosure;
-#endif
-#include "../../Interop/SceneSurfaceMaterial.slang"
 
-static const uint kOpenPBRDebugViewFinal = 0u;
-static const uint kOpenPBRDebugViewGeometryNormal = 1u;
-static const uint kOpenPBRDebugViewShadingNormal = 2u;
-static const uint kOpenPBRDebugViewMappedNormal = 3u;
-static const uint kOpenPBRDebugViewTangent = 4u;
-static const uint kOpenPBRDebugViewBitangent = 5u;
-static const uint kOpenPBRDebugViewTangentHandedness = 6u;
-static const uint kOpenPBRDebugViewTexcoord = 7u;
-static const uint kOpenPBRDebugViewFrontFace = 8u;
-static const uint kOpenPBRDebugViewMaterial = 9u;
-static const uint kOpenPBRDebugViewInstance = 10u;
-static const uint kOpenPBRDebugViewTriangle = 11u;
-static const uint kOpenPBRDebugViewBaseColor = 12u;
-static const uint kOpenPBRDebugViewNormalTexture = 13u;
-static const uint kOpenPBRDebugViewShadowTransmittance = 14u;
-static const uint kOpenPBRDebugViewShadingSide = 15u;
-static const uint kOpenPBRDebugDisableNormalMap = 1u << 0u;
-static const uint kOpenPBRDebugForceGeometryNormal = 1u << 1u;
-static const uint kOpenPBRDebugDisableMaterialTextures = 1u << 2u;
-static const uint kOpenPBRDebugDisableDirectLighting = 1u << 3u;
-static const uint kOpenPBRDebugUseOpaqueShadows = 1u << 4u;
-static const uint kOpenPBRDebugDisableTransmission = 1u << 5u;
-static const uint kOpenPBRDebugDisableShadows = 1u << 6u;
-static const uint kOpenPBRDebugDisableVolumeAttenuation = 1u << 7u;
+public static const uint kOpenPBRDebugViewFinal = 0u;
+public static const uint kOpenPBRDebugViewGeometryNormal = 1u;
+public static const uint kOpenPBRDebugViewShadingNormal = 2u;
+public static const uint kOpenPBRDebugViewMappedNormal = 3u;
+public static const uint kOpenPBRDebugViewTangent = 4u;
+public static const uint kOpenPBRDebugViewBitangent = 5u;
+public static const uint kOpenPBRDebugViewTangentHandedness = 6u;
+public static const uint kOpenPBRDebugViewTexcoord = 7u;
+public static const uint kOpenPBRDebugViewFrontFace = 8u;
+public static const uint kOpenPBRDebugViewMaterial = 9u;
+public static const uint kOpenPBRDebugViewInstance = 10u;
+public static const uint kOpenPBRDebugViewTriangle = 11u;
+public static const uint kOpenPBRDebugViewBaseColor = 12u;
+public static const uint kOpenPBRDebugViewNormalTexture = 13u;
+public static const uint kOpenPBRDebugViewShadowTransmittance = 14u;
+public static const uint kOpenPBRDebugViewShadingSide = 15u;
+public static const uint kOpenPBRDebugDisableNormalMap = 1u << 0u;
+public static const uint kOpenPBRDebugForceGeometryNormal = 1u << 1u;
+public static const uint kOpenPBRDebugDisableMaterialTextures = 1u << 2u;
+public static const uint kOpenPBRDebugDisableDirectLighting = 1u << 3u;
+public static const uint kOpenPBRDebugUseOpaqueShadows = 1u << 4u;
+public static const uint kOpenPBRDebugDisableTransmission = 1u << 5u;
+public static const uint kOpenPBRDebugDisableShadows = 1u << 6u;
+public static const uint kOpenPBRDebugDisableVolumeAttenuation = 1u << 7u;
 
-bool openPbrDebugFlag(ScenePathTracePush push, uint flag)
+public bool openPbrDebugFlag(ScenePathTracePush push, uint flag)
 {
     return (push.debugFlags & flag) != 0u;
 }
 
-float3 openPbrDebugIdColor(uint id)
+public float3 openPbrDebugIdColor(uint id)
 {
-    uint value = hash(id + 1u);
+    uint value = Metallic.ScenePath.hash(id + 1u);
     return float3(
         float(value & 0xffu),
         float((value >> 8u) & 0xffu),
@@ -107,21 +116,23 @@ float3 openPbrDebugIdColor(uint id)
 
 // Statically supplied resource access. The test provider uses actual GPU data
 // and counts logical texture reads without adding counters to production.
-interface ISceneMaterialTextureSource
+public interface ISceneMaterialTextureSource
 {
-    float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
+    public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint);
 };
 
-interface IOpenPBRMaterialSource : ISceneMaterialTextureSource
+public interface IOpenPBRMaterialSource : ISceneMaterialTextureSource
 {
-    OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance);
+    public associatedtype Context : IOpenPBRContext;
+    public Context context();
+    public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance);
 };
 
-struct SceneMaterialTextureSource : ISceneMaterialTextureSource
+public struct SceneMaterialTextureSource : ISceneMaterialTextureSource
 {
-    float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
+    public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint)
     {
@@ -130,13 +141,15 @@ struct SceneMaterialTextureSource : ISceneMaterialTextureSource
     }
 };
 
-struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
+public struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
 {
-    OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
+    public typealias Context = SceneOpenPBRContext;
+    public Context context() { return SceneOpenPBRContext(); }
+    public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
     {
         return loadSceneOpenPBRMaterial(instance.parameterOffset / kSceneMaterialRecordBytes);
     }
-    float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
+    public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint)
     {
@@ -146,7 +159,7 @@ struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
     }
 };
 
-void updateSceneSurfaceHit(inout HitInfo hit, SurfaceMaterialContext context, uint materialIndex)
+public void updateSceneSurfaceHit(inout HitInfo hit, SurfaceMaterialContext context, uint materialIndex)
 {
     hit.position = context.positionWS;
     hit.geometryNormal = context.geometryNormalWS;
@@ -158,7 +171,7 @@ void updateSceneSurfaceHit(inout HitInfo hit, SurfaceMaterialContext context, ui
     hit.materialIndex = materialIndex;
 }
 
-void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
+public void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
     inout HitInfo hit, MaterialTextureInfo normalTexture, float normalScale,
     ScenePathTracePush push, RayCone rayCone, float3 rayDirection, bool deterministicMip0,
     bool faceForwardNormal, bool applyDebugNormalOverrides, TextureFootprint footprint,
@@ -176,12 +189,12 @@ void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
     if (applyDebugNormalOverrides && openPbrDebugFlag(push, kOpenPBRDebugForceGeometryNormal)) {
         hit.normal = hit.geometryNormal;
         float3 referenceAxis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
-        float3 fallbackTangent = safeNormalize(cross(referenceAxis, hit.normal), float3(1, 0, 0));
+        float3 fallbackTangent = Metallic.SceneSurface.safeNormalize(cross(referenceAxis, hit.normal), float3(1, 0, 0));
         float3 tangent = hit.tangent.xyz - hit.normal * dot(hit.normal, hit.tangent.xyz);
-        tangent = safeNormalize(tangent, fallbackTangent);
+        tangent = Metallic.SceneSurface.safeNormalize(tangent, fallbackTangent);
         float tangentSign = hit.tangent.w >= 0.0 ? 1.0 : -1.0;
         hit.tangent = float4(tangent, tangentSign);
-        hit.bitangent = safeNormalize(cross(hit.normal, tangent) * tangentSign,
+        hit.bitangent = Metallic.SceneSurface.safeNormalize(cross(hit.normal, tangent) * tangentSign,
             cross(hit.normal, fallbackTangent));
     }
     // Apply the per-pass face-forward policy only after authored TBN mapping.
@@ -190,7 +203,7 @@ void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
     }
 }
 
-SceneOpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
+public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     inout HitInfo hit,
     inout OpenPBRMaterialParameters material,
     ScenePathTracePush push,
@@ -211,7 +224,7 @@ SceneOpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
         !openPbrDebugFlag(push, kOpenPBRDebugForceGeometryNormal)) {
         // Graph normals replace the legacy map, using stable authored TBN before face-forward.
         hit.normal = applyNormalMap(authoredNormal, hit.geometryNormal, hit.tangent, hit.bitangent,
-            float4(safeNormalize(surface.normalTS, float3(0,0,1)) * 0.5 + 0.5, 1), 1.0);
+            float4(Metallic.SceneSurface.safeNormalize(surface.normalTS, float3(0,0,1)) * 0.5 + 0.5, 1), 1.0);
         if (faceForwardNormal) { hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, rayDirection); }
     }
 #endif
@@ -294,8 +307,8 @@ SceneOpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     if ((surface.overrideMask & 8u) != 0u) { emissive = material.emissive.rgb; }
 #endif
 
-    SceneOpenPBRClosure result;
-    result.context = SceneOpenPBRContext();
+    OpenPBRClosure<TSource.Context> result;
+    result.context = source.context();
     result.inputs = openPBRMakeDefaultResolvedInputs();
     result.occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
@@ -334,9 +347,9 @@ SceneOpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     result.inputs.geometry_opacity = saturate(material.baseColor.a * baseColorSample.a);
     result.inputs.geometry_thin_walled = false;
     result.inputs.geometry_basis = openPBRMakeBasis(
-        safeNormalize(hit.normal, hit.geometryNormal),
-        safeNormalize(hit.tangent.xyz, float3(1.0, 0.0, 0.0)),
-        safeNormalize(hit.bitangent, float3(0.0, 1.0, 0.0)));
+        Metallic.SceneSurface.safeNormalize(hit.normal, hit.geometryNormal),
+        Metallic.SceneSurface.safeNormalize(hit.tangent.xyz, float3(1.0, 0.0, 0.0)),
+        Metallic.SceneSurface.safeNormalize(hit.bitangent, float3(0.0, 1.0, 0.0)));
     result.inputs.geometry_coat_basis = result.inputs.geometry_basis;
 #if METALLIC_CUSTOM_MATERIALS
     result.inputs.coat_weight = surface.coatWeight;
@@ -357,29 +370,29 @@ SceneOpenPBRClosure resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
 
 // Program-local source state is discarded after evaluate. Closures contain only
 // resolved numeric inputs; stochastic filtering never advances inside lighting.
-struct OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> : ISceneSurfaceMaterialProgram
+public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISceneSurfaceMaterialProgram
 {
-    typealias Closure = SceneOpenPBRClosure;
-    TSource source;
-    ScenePathTracePush push;
-    RayCone rayCone;
-    float3 rayDirection;
-    HitInfo hit;
-    uint seed;
-    bool faceForwardNormal;
-    bool applyDebugNormalOverrides;
-    int fixedMetalness;
-    bool opaquePrimary;
-    OpenPBRMaterialParameters material;
-    float4 normalSample;
-    SceneSurfaceSummary summary;
-    HitInfo evaluatedHit() { return hit; }
-    uint evaluatedSeed() { return seed; }
-    float4 sampledNormal() { return normalSample; }
-    SceneSurfaceSummary surfaceSummary() { return summary; }
+    public typealias Closure = OpenPBRClosure<TSource.Context>;
+    public TSource source;
+    public ScenePathTracePush push;
+    public RayCone rayCone;
+    public float3 rayDirection;
+    public HitInfo hit;
+    public uint seed;
+    public bool faceForwardNormal;
+    public bool applyDebugNormalOverrides;
+    public int fixedMetalness;
+    public bool opaquePrimary;
+    public OpenPBRMaterialParameters material;
+    public float4 normalSample;
+    public SceneSurfaceSummary summary;
+    public HitInfo evaluatedHit() { return hit; }
+    public uint evaluatedSeed() { return seed; }
+    public float4 sampledNormal() { return normalSample; }
+    public SceneSurfaceSummary surfaceSummary() { return summary; }
 
     [mutating]
-    SurfaceMaterialResult<Closure> evaluate(SurfaceMaterialContext context, MaterialInstanceRef instance)
+    public SurfaceMaterialResult<Closure> evaluate(SurfaceMaterialContext context, MaterialInstanceRef instance)
     {
         material = source.loadParameters(instance);
         updateSceneSurfaceHit(hit, context, instance.parameterOffset / kSceneMaterialRecordBytes);
@@ -398,9 +411,11 @@ struct OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> : ISceneSurfaceM
     }
 };
 
-typealias SceneOpenPBRMaterialProgram = OpenPBRMaterialProgram<SceneOpenPBRMaterialSource>;
+public typealias OpenPBRMaterialProgram<TSource : IOpenPBRMaterialSource> = OpenPBRMaterialProgramImpl<TSource>;
 
-uint sceneSurfaceMaterialFamily(uint materialIndex, uint specializedProgram = 0u)
+public typealias SceneOpenPBRMaterialProgram = OpenPBRMaterialProgram<SceneOpenPBRMaterialSource>;
+
+public uint sceneSurfaceMaterialFamily(uint materialIndex, uint specializedProgram = 0u)
 {
 #if METALLIC_CUSTOM_MATERIALS
     return materialClosureFamily(materialIndex, specializedProgram);
@@ -412,16 +427,16 @@ uint sceneSurfaceMaterialFamily(uint materialIndex, uint specializedProgram = 0u
 #if METALLIC_CUSTOM_MATERIALS
 // Each static model produces only its own closure. Family selection belongs to
 // the renderer's hit/pass boundary, outside material evaluation and lighting.
-interface ISceneSlabModel
+public interface ISceneSlabModel
 {
-    associatedtype Closure : ISurfaceClosure;
-    Closure resolve(SlabMaterialInputs inputs, float3 normalWS);
+    public associatedtype Closure : ISurfaceClosure;
+    public Closure resolve(SlabMaterialInputs inputs, float3 normalWS);
 };
 
-struct SceneSingleSlabModel : ISceneSlabModel
+public struct SceneSingleSlabModel : ISceneSlabModel
 {
-    typealias Closure = SingleSlabClosure;
-    Closure resolve(SlabMaterialInputs inputs, float3 normalWS)
+    public typealias Closure = SingleSlabClosure;
+    public Closure resolve(SlabMaterialInputs inputs, float3 normalWS)
     {
         Closure closure;
         closure.slab = inputs.first;
@@ -430,10 +445,10 @@ struct SceneSingleSlabModel : ISceneSlabModel
     }
 };
 
-struct SceneDualSlabModel : ISceneSlabModel
+public struct SceneDualSlabModel : ISceneSlabModel
 {
-    typealias Closure = DualSlabClosure;
-    Closure resolve(SlabMaterialInputs inputs, float3 normalWS)
+    public typealias Closure = DualSlabClosure;
+    public Closure resolve(SlabMaterialInputs inputs, float3 normalWS)
     {
         Closure closure;
         closure.first = inputs.first;
@@ -444,28 +459,28 @@ struct SceneDualSlabModel : ISceneSlabModel
     }
 };
 
-struct SceneSlabMaterialProgram<TModel : ISceneSlabModel> : ISceneSurfaceMaterialProgram
+public struct SceneSlabMaterialProgram<TModel : ISceneSlabModel> : ISceneSurfaceMaterialProgram
 {
-    typealias Closure = TModel.Closure;
-    TModel model;
-    uint specializedProgramId;
-    ScenePathTracePush push;
-    RayCone rayCone;
-    float3 rayDirection;
-    HitInfo hit;
-    uint seed;
-    bool faceForwardNormal;
-    bool applyDebugNormalOverrides;
-    float4 normalSample;
-    SceneSurfaceSummary summary;
+    public typealias Closure = TModel.Closure;
+    public TModel model;
+    public uint specializedProgramId;
+    public ScenePathTracePush push;
+    public RayCone rayCone;
+    public float3 rayDirection;
+    public HitInfo hit;
+    public uint seed;
+    public bool faceForwardNormal;
+    public bool applyDebugNormalOverrides;
+    public float4 normalSample;
+    public SceneSurfaceSummary summary;
 
-    HitInfo evaluatedHit() { return hit; }
-    uint evaluatedSeed() { return seed; }
-    float4 sampledNormal() { return normalSample; }
-    SceneSurfaceSummary surfaceSummary() { return summary; }
+    public HitInfo evaluatedHit() { return hit; }
+    public uint evaluatedSeed() { return seed; }
+    public float4 sampledNormal() { return normalSample; }
+    public SceneSurfaceSummary surfaceSummary() { return summary; }
 
     [mutating]
-    SurfaceMaterialResult<Closure> evaluate(SurfaceMaterialContext context, MaterialInstanceRef instance)
+    public SurfaceMaterialResult<Closure> evaluate(SurfaceMaterialContext context, MaterialInstanceRef instance)
     {
         uint materialIndex = instance.parameterOffset / kSceneMaterialRecordBytes;
         updateSceneSurfaceHit(hit, context, materialIndex);
@@ -489,10 +504,10 @@ struct SceneSlabMaterialProgram<TModel : ISceneSlabModel> : ISceneSurfaceMateria
     }
 };
 
-typealias SceneSingleSlabMaterialProgram = SceneSlabMaterialProgram<SceneSingleSlabModel>;
-typealias SceneDualSlabMaterialProgram = SceneSlabMaterialProgram<SceneDualSlabModel>;
+public typealias SceneSingleSlabMaterialProgram = SceneSlabMaterialProgram<SceneSingleSlabModel>;
+public typealias SceneDualSlabMaterialProgram = SceneSlabMaterialProgram<SceneDualSlabModel>;
 
-Material<SceneSlabMaterialProgram<TModel>> makeSceneSlabMaterialProgram<TModel : ISceneSlabModel>(
+public Material<SceneSlabMaterialProgram<TModel>> makeSceneSlabMaterialProgram<TModel : ISceneSlabModel>(
     HitInfo hit, ScenePathTracePush push, RayCone rayCone, float3 rayDirection, uint seed,
     bool faceForwardNormal, bool debugNormalOverrides, uint specializedProgram = 0u)
 {
@@ -510,7 +525,7 @@ Material<SceneSlabMaterialProgram<TModel>> makeSceneSlabMaterialProgram<TModel :
 #endif
 
 #if METALLIC_CUSTOM_MATERIALS
-float sceneEnvironmentRadicalInverse(uint index, uint base)
+public float sceneEnvironmentRadicalInverse(uint index, uint base)
 {
     float value = 0.0;
     float scale = 1.0 / float(base);
@@ -525,7 +540,7 @@ float sceneEnvironmentRadicalInverse(uint index, uint base)
 // Integrate the actual layered/anisotropic BSDF where split-sum IBL is insufficient.
 // These passes have no temporal accumulation. Share deterministic quadrature across
 // pixels instead of decorrelating a few samples into high-variance spatial noise.
-float3 sceneSurfaceEnvironment<TPrepared : IPreparedSurfaceClosure>(TPrepared prepared, ScenePathTracePush push)
+public float3 sceneSurfaceEnvironment<TPrepared : IPreparedSurfaceClosure>(TPrepared prepared, ScenePathTracePush push)
 {
     if (push.environmentMode == kEnvironmentModeDisabled || push.environmentIntensity <= 0.0) { return float3(0); }
     float3 radiance = float3(0);
@@ -559,7 +574,7 @@ float3 sceneSurfaceEnvironment<TPrepared : IPreparedSurfaceClosure>(TPrepared pr
 }
 #endif
 
-Material<SceneOpenPBRMaterialProgram> makeOpenPBRMaterialProgram(HitInfo hit, ScenePathTracePush push,
+public Material<SceneOpenPBRMaterialProgram> makeOpenPBRMaterialProgram(HitInfo hit, ScenePathTracePush push,
     RayCone rayCone, float3 rayDirection, uint seed, bool faceForwardNormal, bool debugNormalOverrides)
 {
     Material<SceneOpenPBRMaterialProgram> material = {};
@@ -574,7 +589,7 @@ Material<SceneOpenPBRMaterialProgram> makeOpenPBRMaterialProgram(HitInfo hit, Sc
     return material;
 }
 
-SceneSurfaceSummary evaluateSceneSurfaceSummary<TProgram : ISceneSurfaceMaterialProgram>(
+public SceneSurfaceSummary evaluateSceneSurfaceSummary<TProgram : ISceneSurfaceMaterialProgram>(
     inout Material<TProgram> material, SurfaceMaterialContext context, MaterialInstanceRef instance,
     inout HitInfo hit, inout uint seed)
 {
@@ -584,12 +599,12 @@ SceneSurfaceSummary evaluateSceneSurfaceSummary<TProgram : ISceneSurfaceMaterial
     return material.program.surfaceSummary();
 }
 
-SceneSurfaceSummary evaluateSceneSurfaceGuides(inout HitInfo hit, ScenePathTracePush push,
+public SceneSurfaceSummary evaluateSceneSurfaceGuides(inout HitInfo hit, ScenePathTracePush push,
     RayCone rayCone, float3 rayDirection, inout uint seed)
 {
     let transport = loadSceneMaterial(hit.materialIndex);
     if (materialDomain(transport) == kMaterialDomainFiber) {
-        hit.normal = faceForwardShadingNormal(safeNormalize(hit.normal, hit.geometryNormal),
+        hit.normal = faceForwardShadingNormal(Metallic.SceneSurface.safeNormalize(hit.normal, hit.geometryNormal),
             hit.geometryNormal, rayDirection);
         return summarizeFiberGuides(sceneFiberParameters(transport));
     }
@@ -610,7 +625,7 @@ SceneSurfaceSummary evaluateSceneSurfaceGuides(inout HitInfo hit, ScenePathTrace
     return evaluateSceneSurfaceSummary(material, context, instance, hit, seed);
 }
 
-float3 openPbrPrimaryDebugColor(
+public float3 openPbrPrimaryDebugColor(
     ScenePathTracePush push,
     HitInfo hit,
     float3 shadingNormal,
@@ -628,10 +643,10 @@ float3 openPbrPrimaryDebugColor(
         return hit.normal * 0.5 + 0.5;
     }
     if (push.debugView == kOpenPBRDebugViewTangent) {
-        return safeNormalize(hit.tangent.xyz, float3(1.0, 0.0, 0.0)) * 0.5 + 0.5;
+        return Metallic.SceneSurface.safeNormalize(hit.tangent.xyz, float3(1.0, 0.0, 0.0)) * 0.5 + 0.5;
     }
     if (push.debugView == kOpenPBRDebugViewBitangent) {
-        return safeNormalize(hit.bitangent, float3(0.0, 1.0, 0.0)) * 0.5 + 0.5;
+        return Metallic.SceneSurface.safeNormalize(hit.bitangent, float3(0.0, 1.0, 0.0)) * 0.5 + 0.5;
     }
     if (push.debugView == kOpenPBRDebugViewTangentHandedness) {
         return hit.tangent.w >= 0.0
@@ -669,7 +684,7 @@ float3 openPbrPrimaryDebugColor(
     return float3(1.0, 0.0, 1.0);
 }
 
-float3 openPbrDisplayDebugColor(ScenePathTracePush push, float3 color)
+public float3 openPbrDisplayDebugColor(ScenePathTracePush push, float3 color)
 {
     // BaseColor is already display-linear Rec.709; normal/ID values are display code values.
     if (push.debugView == kOpenPBRDebugViewShadowTransmittance) {
@@ -678,4 +693,4 @@ float3 openPbrDisplayDebugColor(ScenePathTracePush push, float3 color)
     return saturate(color);
 }
 
-#endif
+} // namespace Metallic.SceneOpenPBR

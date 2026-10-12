@@ -1,13 +1,50 @@
+implementing OpenPBRPathTracing;
+
+import Core;
+import MaterialTextureDecode;
+import RTXCRMaterialAdapter;
+import RayMaterialExecution;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRSurface;
+import SceneSurfaceMaterial;
+import SurfaceLighting;
+import ScenePathTracing;
+import SHARC;
+#if METALLIC_CUSTOM_MATERIALS
+import SlabClosure;
+#endif
+using Metallic.OpenPBR;
+using Metallic.SceneOpenPBR;
+using Metallic.ScenePathTracing;
+using Metallic.SHARC;
+
+namespace Metallic.OpenPBRPathTracing
+{
 // OpenPBR keeps the two native BSDF components through direct lighting and
 // continuation. Sampling still uses the complete mixture PDF.
-OpenPBRDiffuseSpecular openPbrSelectComponents(OpenPBRDiffuseSpecular value, uint replacedMask)
+public OpenPBRDiffuseSpecular openPbrSelectComponents(OpenPBRDiffuseSpecular value, uint replacedMask)
 {
     if (replacedMask & 1u) { value.diffuse = float3(0); }
     if (replacedMask & 2u) { value.specular = float3(0); }
     return value;
 }
 
-OpenPBRDiffuseSpecular openPbrDirectComponents<TLights : ISurfaceLightProvider>(
+public OpenPBRDiffuseSpecular openPbrDirectComponents<TLights : ISurfaceLightProvider>(
     SceneOpenPBRPreparedClosure prepared, inout TLights lights, uint replacedMask)
 {
     OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
@@ -24,32 +61,32 @@ OpenPBRDiffuseSpecular openPbrDirectComponents<TLights : ISurfaceLightProvider>(
     return result;
 }
 
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
 // Independent half-tables in the existing allocation: diffuse outgoing radiance
 // and directional specular outgoing radiance, both in scene-linear units.
 // No changes to SHaRC's vendor key format or the standard-material cache.
 // OpenPBR resolve disables adjacent-level reprojection: these are opaque keys.
-static const uint kOpenPBRCacheTrackedVertices = 2u;
+public static const uint kOpenPBRCacheTrackedVertices = 2u;
 
-struct OpenPBRCacheAddress
+public struct OpenPBRCacheAddress
 {
-    uint64_t diffuse;
-    uint64_t specular;
-    uint eligibleMask;
-    uint absentMask;
+    public uint64_t diffuse;
+    public uint64_t specular;
+    public uint eligibleMask;
+    public uint absentMask;
 };
 
-struct OpenPBRCacheContext
+public struct OpenPBRCacheContext
 {
-    SHARCParameters sharc;
+    public SHARCParameters sharc;
 #if SHARC_UPDATE
-    uint2 indices[kOpenPBRCacheTrackedVertices];
-    OpenPBRDiffuseSpecular weights[kOpenPBRCacheTrackedVertices];
-    uint count;
+    public uint2 indices[kOpenPBRCacheTrackedVertices];
+    public OpenPBRDiffuseSpecular weights[kOpenPBRCacheTrackedVertices];
+    public uint count;
 #endif
 };
 
-OpenPBRCacheContext makeOpenPbrCacheContext()
+public OpenPBRCacheContext makeOpenPbrCacheContext()
 {
     OpenPBRCacheContext result;
     result.sharc = makeCacheContext().sharc;
@@ -59,7 +96,7 @@ OpenPBRCacheContext makeOpenPbrCacheContext()
     return result;
 }
 
-uint openPbrCacheDirectionBin(float3 direction, uint resolution)
+public uint openPbrCacheDirectionBin(float3 direction, uint resolution)
 {
     float3 n = direction / max(dot(abs(direction), float3(1)), 1e-8);
     float2 p = n.xy;
@@ -70,14 +107,14 @@ uint openPbrCacheDirectionBin(float3 direction, uint resolution)
     return cell.x + cell.y * resolution;
 }
 
-uint64_t openPbrCacheMixKey(uint64_t value)
+public uint64_t openPbrCacheMixKey(uint64_t value)
 {
     value = (value ^ (value >> 30)) * uint64_t(0xbf58476d1ce4e5b9);
     value = (value ^ (value >> 27)) * uint64_t(0x94d049bb133111eb);
     return (value ^ (value >> 31)) | uint64_t(1); // Never the empty key (zero).
 }
 
-OpenPBRCacheAddress openPbrCacheAddress(OpenPBRCacheContext cache, HitInfo hit,
+public OpenPBRCacheAddress openPbrCacheAddress(OpenPBRCacheContext cache, HitInfo hit,
     OpenPBRResolvedInputs inputs, OpenPBRMaterialParameters material, OpenPBRInteriorStack interiorStack, float3 wo)
 {
     OpenPBRCacheAddress address = (OpenPBRCacheAddress)0;
@@ -93,10 +130,10 @@ OpenPBRCacheAddress openPbrCacheAddress(OpenPBRCacheContext cache, HitInfo hit,
     // cache entry or be traced; low amplitude alone never counts as a cache hit.
     if (inputs.base_metalness == 1.0) { address.absentMask = 1u; }
     address.eligibleMask = address.absentMask == 0u ? 1u : 0u;
-    if (inputs.specular_roughness >= max(gCacheParams[0].sharcMinRoughness, 0.2)) {
+    if (inputs.specular_roughness >= max(scenePathCacheParams()[0].sharcMinRoughness, 0.2)) {
         address.eligibleMask |= 2u;
     }
-    address.eligibleMask &= gCacheParams[0].sharcLobeMask;
+    address.eligibleMask &= scenePathCacheParams()[0].sharcLobeMask;
     if (address.eligibleMask == 0u) { return address; }
     uint64_t spatial = hashGridComputeSpatialHash(hit.position, hit.geometryNormal, cache.sharc.hashGridParameters);
     // Distinguish materials, shading normals and local textured parameters so
@@ -119,13 +156,13 @@ OpenPBRCacheAddress openPbrCacheAddress(OpenPBRCacheContext cache, HitInfo hit,
     return address;
 }
 
-uint openPbrCacheBaseSlot(OpenPBRCacheContext cache, uint64_t key, uint component)
+public uint openPbrCacheBaseSlot(OpenPBRCacheContext cache, uint64_t key, uint component)
 {
     uint capacity = cache.sharc.hashGridData.capacity / 2u;
     return component * capacity + hashGridGetBaseSlot(key, capacity);
 }
 
-bool openPbrCacheFind(OpenPBRCacheContext cache, uint64_t key, uint component, out float3 radiance)
+public bool openPbrCacheFind(OpenPBRCacheContext cache, uint64_t key, uint component, out float3 radiance)
 {
     radiance = float3(0);
     uint index, bucketOffset;
@@ -138,10 +175,10 @@ bool openPbrCacheFind(OpenPBRCacheContext cache, uint64_t key, uint component, o
     return true;
 }
 
-bool openPbrCacheCanQuery(OpenPBRCacheContext cache, HitInfo hit, RayCone cone,
+public bool openPbrCacheCanQuery(OpenPBRCacheContext cache, HitInfo hit, RayCone cone,
     uint depth, bool previousScatterDelta)
 {
-    if (depth < max(gCacheParams[0].sharcQueryMinDepth, 1u) || previousScatterDelta) { return false; }
+    if (depth < max(scenePathCacheParams()[0].sharcQueryMinDepth, 1u) || previousScatterDelta) { return false; }
     uint level = hashGridGetLevel(hit.position, cache.sharc.hashGridParameters);
     float voxelSize = hashGridGetVoxelSize(level, cache.sharc.hashGridParameters);
     if (hit.t <= voxelSize * sqrt(3.0) || cone.width <= voxelSize) { return false; }
@@ -149,7 +186,7 @@ bool openPbrCacheCanQuery(OpenPBRCacheContext cache, HitInfo hit, RayCone cone,
 }
 
 // Call only after openPbrCacheCanQuery; rejected query paths need no address.
-uint openPbrCacheQuery(OpenPBRCacheContext cache, OpenPBRCacheAddress address, out float3 radiance)
+public uint openPbrCacheQuery(OpenPBRCacheContext cache, OpenPBRCacheAddress address, out float3 radiance)
 {
     radiance = float3(0);
     if (address.eligibleMask == 0u) { return 0u; }
@@ -168,7 +205,7 @@ uint openPbrCacheQuery(OpenPBRCacheContext cache, OpenPBRCacheAddress address, o
 
 // Count each registered component once. Every later light/miss contributes to
 // that sample with its own first-vertex component weight, then total BSDF weights.
-void openPbrCacheAddLighting(inout OpenPBRCacheContext cache, float3 lighting)
+public void openPbrCacheAddLighting(inout OpenPBRCacheContext cache, float3 lighting)
 {
 #if SHARC_UPDATE
     for (uint i = 0u; i < cache.count; ++i) {
@@ -182,7 +219,7 @@ void openPbrCacheAddLighting(inout OpenPBRCacheContext cache, float3 lighting)
 #endif
 }
 
-void openPbrCacheSetThroughput(inout OpenPBRCacheContext cache, float3 throughput)
+public void openPbrCacheSetThroughput(inout OpenPBRCacheContext cache, float3 throughput)
 {
 #if SHARC_UPDATE
     for (uint i = 0u; i < cache.count; ++i) {
@@ -191,7 +228,7 @@ void openPbrCacheSetThroughput(inout OpenPBRCacheContext cache, float3 throughpu
 #endif
 }
 
-bool openPbrCacheRecordHit(inout OpenPBRCacheContext cache, OpenPBRCacheAddress address,
+public bool openPbrCacheRecordHit(inout OpenPBRCacheContext cache, OpenPBRCacheAddress address,
     OpenPBRDiffuseSpecular lighting, float3 emission)
 {
 #if SHARC_UPDATE
@@ -217,7 +254,7 @@ bool openPbrCacheRecordHit(inout OpenPBRCacheContext cache, OpenPBRCacheAddress 
 #endif
 }
 
-void openPbrCacheScatter(inout OpenPBRCacheContext cache, OpenPBRDiffuseSpecular weight, bool registered)
+public void openPbrCacheScatter(inout OpenPBRCacheContext cache, OpenPBRDiffuseSpecular weight, bool registered)
 {
 #if SHARC_UPDATE
     openPbrCacheSetThroughput(cache, openPBRGetSumOfDiffuseSpecular(weight));
@@ -227,3 +264,4 @@ void openPbrCacheScatter(inout OpenPBRCacheContext cache, OpenPBRDiffuseSpecular
 #endif
 }
 #endif
+} // namespace Metallic.OpenPBRPathTracing

@@ -1,11 +1,15 @@
+module GPUDrivenStreamWorkload;
+
 import ShaderCore;
 using Metallic;
 
 // Diagnostic replay only. No visibility/depth writes and no changes to production
 // raster kernels. Counts coverage and attempted pixel atomics, not winning writes.
-#include "GPUDrivenStreamAsset.slang"
+import GPUDrivenStreamAsset;
+import GPUDriven;
+using Metallic.GPUDriven;
 
-#include "StreamRasterWorkload.slang"
+import StreamRasterWorkload;
 
 [shader("compute")]
 [numthreads(16, 1, 1)]

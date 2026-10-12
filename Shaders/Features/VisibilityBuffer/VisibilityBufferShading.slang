@@ -1,3 +1,5 @@
+module VisibilityBufferShading;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 import Core;

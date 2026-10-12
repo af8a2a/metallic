@@ -1,3 +1,5 @@
+module MaterialProgramProbe;
+
 import ShaderCore;
 import MaterialProgram;
 using Metallic;

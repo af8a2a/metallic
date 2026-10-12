@@ -1,5 +1,14 @@
+module MaterialValueIRTextureProbe;
+
+import Core;
+import Material;
+import OpenPBRMaterialParameters;
+using Metallic;
+using Metallic.Material;
 // Uses the production Value IR dispatch and deterministic footprint adapter.
-#include "../../../Shaders/Features/PathTracing/SceneSurface.slang"
+import SceneSurface;
+import ScenePathTypes;
+using Metallic.SceneSurface;
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void materialValueIRTextureProbeMain(uint3 id : SV_DispatchThreadID)

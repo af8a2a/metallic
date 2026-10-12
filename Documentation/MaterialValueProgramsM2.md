@@ -44,7 +44,7 @@
 
 每个程序带 manifest：参数槽 mask、输入/输出 mask、节点数。该版本只有受控算术节点，外部资源和副作用集合固定为空。运行时参数绑定 97，CPU/Slang 记录为 80 字节：16 字节 ID/保留位，64 字节参数。旧 720 字节模型载荷不扩展。
 
-生成 include 写入 `.cache/materials/<key>/MaterialValueDispatch.hlsli`，已有内容不符时拒绝使用。路径参与 Slang 请求，include 内容进入现有依赖追踪；场景程序集改变会重建 kernel，单纯参数更新保持 kernel key。缓存和测试图像均为本地输出。
+生成的 `implementing SceneSurface;` 单元写入 `.cache/materials/<key>/MaterialValueDispatch.slang`，由 SceneSurface 通过 `__include` 加载；Slang 模块加载要求使用 `.slang` 扩展名。已有内容不符时拒绝使用。路径参与 Slang 请求，单元内容进入现有依赖追踪；场景程序集改变会重建 kernel，单纯参数更新保持 kernel key。缓存和测试图像均为本地输出。
 
 程序集、参数缓冲和内建模型载荷由同一 `MaterialBindingGeneration` 发布并通过 frame 保留；上传/前端验证失败不替换原发布。场景参数变化沿用既有历史失效机制。初次 Slang/pipeline 编译失败仍走 M1 错误材质/诊断路径；本批并未扩大任意用户 Slang 热重载支持。
 

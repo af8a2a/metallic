@@ -1,3 +1,5 @@
+module ShaderToHumanExample;
+
 import Core;
 using Metallic;
 

@@ -1,3 +1,5 @@
+module OptimizationProbe;
+
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint> output;
 
 uint evaluate(uint value)

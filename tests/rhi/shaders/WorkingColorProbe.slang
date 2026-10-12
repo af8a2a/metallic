@@ -1,8 +1,13 @@
+module WorkingColorProbe;
+
+import MaterialTextureDecode;
 import Core;
 import NRDEncoding;
 using Metallic;
 #include "../TestResourceParameters.h"
-#include "../../../Shaders/Features/PathTracing/SceneSurface.slang"
+import SceneSurface;
+import ScenePathTypes;
+using Metallic.SceneSurface;
 #define output resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<BatchBarrierProbeResources>().output)
 [shader("compute")]
 [numthreads(1, 1, 1)]

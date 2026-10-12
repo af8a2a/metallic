@@ -1,7 +1,11 @@
+module TessellationSplitProbe;
+
 import GPUDriven;
 using Metallic.GPUDriven;
-#include "../../../Shaders/Features/VisibilityBuffer/VisibilityTessellation.slang"
-#include "../../../Shaders/Features/VisibilityBuffer/VisibilityTessellationSplit.slang"
+import VisibilityTessellation;
+import ShaderCore;
+using Metallic;
+
 
 struct ProbeCase { float4 position[3]; float4 eyeNear; float4 forwardScale; float4 options; };
 struct Push { uint input, output; };

@@ -1,3 +1,5 @@
+module SkyView;
+
 import Atmosphere;
 using Metallic;
 using Metallic.Atmosphere;

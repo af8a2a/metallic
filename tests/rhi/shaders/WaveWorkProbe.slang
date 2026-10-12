@@ -1,3 +1,5 @@
+module WaveWorkProbe;
+
 import WaveWorkDistribution;
 using Metallic.GPUDriven;
 

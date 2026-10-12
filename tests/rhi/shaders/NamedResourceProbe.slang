@@ -1,3 +1,5 @@
+module NamedResourceProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

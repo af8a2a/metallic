@@ -1,14 +1,51 @@
+implementing OpenPBRPathTracing;
+
+import Core;
+import MaterialTextureDecode;
+import RTXCRMaterialAdapter;
+import RayMaterialExecution;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRSurface;
+import SceneSurfaceMaterial;
+import SurfaceLighting;
+import ScenePathTracing;
+import SHARC;
+#if METALLIC_CUSTOM_MATERIALS
+import SlabClosure;
+#endif
+using Metallic.OpenPBR;
+using Metallic.SceneOpenPBR;
+using Metallic.ScenePathTracing;
+using Metallic.SHARC;
+
+namespace Metallic.OpenPBRPathTracing
+{
 // Shared vertex transition. Callers own traversal and the compact transport state.
 // Explicit control results preserve termination, alpha retry and debug-return behavior.
-enum OpenPBRPathControl { Stop, Next, Return };
+public enum OpenPBRPathControl { Stop, Next, Return };
 
-OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
+public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     HitInfo hit, ScenePathTracePush push,
     inout Ray ray, inout RayCone rayCone, inout uint seed, uint depth,
     inout float3 radiance, inout float3 throughput,
     inout float previousBsdfPdf, inout bool previousScatterDelta,
     inout OpenPBRInteriorStack interiorStack, inout bool captureSpecularHitDistance
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
     , inout OpenPBRCacheContext cache
 #endif
 )
@@ -37,9 +74,9 @@ OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
             ray.direction);
         return OpenPBRPathControl.Return;
     }
-    float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
+    float3 viewDirection = Metallic.ScenePath::safeNormalize(-ray.direction, hit.normal);
     uint replacedMask = 0u;
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
     OpenPBRCacheAddress cacheAddress = (OpenPBRCacheAddress)0;
 #if SHARC_UPDATE
     // Training registers hits even when depth, delta or footprint rejects reuse.
@@ -86,7 +123,7 @@ OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     float3 localRadiance = emission;
     if (material.emissive.w != 0.0) {
         radiance += throughput * localRadiance;
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
         openPbrCacheAddLighting(cache, localRadiance);
 #endif
         return OpenPBRPathControl.Stop;
@@ -191,7 +228,7 @@ OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
 
     localRadiance = emission + openPBRGetSumOfDiffuseSpecular(localComponents);
     radiance += throughput * localRadiance;
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
     bool cacheRegistered = openPbrCacheRecordHit(cache, cacheAddress, localComponents, emission);
 #endif
 
@@ -210,7 +247,7 @@ OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
             bool(scatter.flags & (kBSDFGlossy | kBSDFDelta));
     }
 
-    sampledDirection = safeNormalize(sampledDirection, hit.normal);
+    sampledDirection = Metallic.ScenePath::safeNormalize(sampledDirection, hit.normal);
     throughput *= max(scatter.weight, float3(0.0, 0.0, 0.0));
     previousBsdfPdf = scatter.pdf;
     previousScatterDelta = bool(scatter.flags & kBSDFDelta);
@@ -223,7 +260,7 @@ OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(sampledDirection, hit.geometryNormal));
     ray.direction = sampledDirection;
 
-#if METALLIC_PT_SHARC && SHARC_UPDATE
+#if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
     openPbrCacheScatter(cache, scatterComponents, cacheRegistered);
 #endif
     if (depth >= 2u) {
@@ -232,7 +269,7 @@ OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
             return OpenPBRPathControl.Stop;
         }
         throughput /= max(continueProbability, 0.001);
-#if METALLIC_PT_SHARC && SHARC_UPDATE
+#if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
         openPbrCacheSetThroughput(cache, 1.0 / max(continueProbability, 0.001));
 #endif
     }
@@ -240,13 +277,13 @@ OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
 }
 
 #if METALLIC_CUSTOM_MATERIALS
-OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMaterialProgram>(
+public OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMaterialProgram>(
     inout Material<TProgram> material, HitInfo hit, ScenePathTracePush push,
     inout Ray ray, inout RayCone rayCone, inout uint seed, uint depth,
     inout float3 radiance, inout float3 throughput,
     inout float previousBsdfPdf, inout bool previousScatterDelta,
     OpenPBRInteriorStack interiorStack, inout bool captureSpecularHitDistance
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
     , inout OpenPBRCacheContext cache
 #endif
 )
@@ -275,7 +312,7 @@ OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMaterialPr
     lights.surfaceIor = 1.0;
     lights.transmittingSurface = false;
     lights.interiorStack = interiorStack;
-    lights.viewDirection = safeNormalize(-ray.direction, hit.normal);
+    lights.viewDirection = Metallic.ScenePath::safeNormalize(-ray.direction, hit.normal);
     lights.seed = seed;
     localRadiance = integrateDirectLighting(prepared, lights, localRadiance);
     seed = lights.seed;
@@ -306,7 +343,7 @@ OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMaterialPr
         return OpenPBRPathControl.Return;
     }
     radiance += throughput * localRadiance;
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
     // Slab never enters the OpenPBR component cache, but exact suffixes still
     // contribute to any earlier registered OpenPBR vertex.
     openPbrCacheAddLighting(cache, localRadiance);
@@ -321,16 +358,16 @@ OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMaterialPr
     previousBsdfPdf = scatter.pdf;
     previousScatterDelta = bool(scatter.flags & kBSDFDelta);
     if (!previousScatterDelta) { rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf); }
-    ray.direction = safeNormalize(scatter.wiWS, hit.normal);
+    ray.direction = Metallic.ScenePath::safeNormalize(scatter.wiWS, hit.normal);
     ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
-#if METALLIC_PT_SHARC && SHARC_UPDATE
+#if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
     openPbrCacheSetThroughput(cache, max(scatter.weight, float3(0)));
 #endif
     if (depth >= 2u) {
         float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
         if (rand(seed) > continueProbability) { return OpenPBRPathControl.Stop; }
         throughput /= max(continueProbability, 0.001);
-#if METALLIC_PT_SHARC && SHARC_UPDATE
+#if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
         openPbrCacheSetThroughput(cache, 1.0 / max(continueProbability, 0.001));
 #endif
     }
@@ -338,7 +375,7 @@ OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMaterialPr
 }
 #endif
 
-OpenPBRPathControl shadeOpenPBRPathVertex(
+public OpenPBRPathControl shadeOpenPBRPathVertex(
     bool found, HitInfo hit, ScenePathTracePush push,
     inout Ray ray, inout RayCone rayCone, inout uint seed, inout uint depth,
     inout float3 radiance, inout float3 throughput,
@@ -347,7 +384,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
     inout float specularHitDistance, inout bool captureSpecularHitDistance,
     inout uint alphaLayers, inout float3 primaryEndpoint,
     float3 primaryOrigin, inout bool primarySurface
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
     , inout OpenPBRCacheContext cache
 #endif
 )
@@ -371,7 +408,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
                 ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
         }
         radiance += throughput * missRadiance;
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
         openPbrCacheAddLighting(cache, missRadiance);
 #endif
         return OpenPBRPathControl.Stop;
@@ -386,7 +423,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
     if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
         float3 volumeTransmittance = openPbrVolumeTransmittance(interiorStack, hit.t);
         throughput *= volumeTransmittance;
-#if METALLIC_PT_SHARC && SHARC_UPDATE
+#if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
         openPbrCacheSetThroughput(cache, volumeTransmittance);
 #endif
     }
@@ -398,13 +435,13 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
     if (materialDomain(transport) == kMaterialDomainFiber) {
         const float3 stableNormal = hit.normal;
         if (dot(hit.normal, ray.direction) > 0) { hit.normal = -hit.normal; }
-#if METALLIC_PT_SHARC && SHARC_UPDATE
+#if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
         float3 beforeRadiance = radiance;
         float3 beforeThroughput = throughput;
 #endif
         bool continued = shadeSceneFiber(sceneFiberParameters(transport), hit, stableNormal, push, depth,
             ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta);
-#if METALLIC_PT_SHARC && SHARC_UPDATE
+#if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
         openPbrCacheAddLighting(cache, max(radiance - beforeRadiance, 0.0) / max(beforeThroughput, 1e-20));
         openPbrCacheSetThroughput(cache, throughput / max(beforeThroughput, 1e-20));
 #endif
@@ -428,7 +465,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
         return shadeSlabSurfacePathVertex(material, hit, push, ray, rayCone, seed, depth,
             radiance, throughput, previousBsdfPdf, previousScatterDelta,
             interiorStack, captureSpecularHitDistance
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
             , cache
 #endif
         );
@@ -438,7 +475,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
         return shadeSlabSurfacePathVertex(material, hit, push, ray, rayCone, seed, depth,
             radiance, throughput, previousBsdfPdf, previousScatterDelta,
             interiorStack, captureSpecularHitDistance
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
             , cache
 #endif
         );
@@ -447,8 +484,9 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
     return shadeOpenPBRSurfacePathVertex(hit, push,
         ray, rayCone, seed, depth, radiance, throughput, previousBsdfPdf,
         previousScatterDelta, interiorStack, captureSpecularHitDistance
-#if METALLIC_PT_SHARC
+#if (SHARC_UPDATE || SHARC_QUERY)
         , cache
 #endif
     );
 }
+} // namespace Metallic.OpenPBRPathTracing

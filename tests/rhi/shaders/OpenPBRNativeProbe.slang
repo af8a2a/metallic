@@ -1,3 +1,5 @@
+module OpenPBRNativeProbe;
+
 import ShaderCore;
 using Metallic;
 

@@ -1,3 +1,5 @@
+module TestbenchState;
+
 [shader("vertex")]
 float4 vertexMain(uint id : SV_VertexID) : SV_Position
 {

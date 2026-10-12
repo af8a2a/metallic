@@ -1,3 +1,5 @@
+module MaterialClosureProbe;
+
 import ShaderCore;
 import MaterialProgram;
 import DebugLambert;

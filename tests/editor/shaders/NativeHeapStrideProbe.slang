@@ -1,3 +1,5 @@
+module NativeHeapStrideProbe;
+
 import ShaderCore;
 using Metallic;
 

@@ -1,7 +1,31 @@
-#include "StreamRayGeometry.slang"
+implementing ScenePathTracing;
+
+import Core;
+import MaterialTextureDecode;
+import RTXCRMaterialAdapter;
+import RayMaterialExecution;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import StreamRayGeometry;
+using Metallic.StreamGeometry;
+
+namespace Metallic.ScenePathTracing
+{
 #include "../../Interop/MeshletStreamBLAS.h"
 
-bool streamRayGeometryChanged()
+public bool streamRayGeometryChanged()
 {
 #if SHARC_UPDATE
     StructuredBuffer<uint> changes = resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamChanges);
@@ -11,7 +35,7 @@ bool streamRayGeometryChanged()
     return changes[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD] != 0u;
 }
 
-float3 accumulateStreamPathTrace(uint2 pixel, float3 color, ScenePathTracePush push)
+public float3 accumulateStreamPathTrace(uint2 pixel, float3 color, ScenePathTracePush push)
 {
     // Actual cut changes reset globally, including offscreen geometry that can
     // affect reflections and shadows. AS address changes do not change radiance.
@@ -19,22 +43,21 @@ float3 accumulateStreamPathTrace(uint2 pixel, float3 color, ScenePathTracePush p
     // on the following frame, independently of the CPU accumulation counter.
     float count = 1.0;
     if (push.hasHistory != 0u && !streamRayGeometryChanged()) {
-        float4 previous = gHistoryPrevious[pixel];
+        float4 previous = sceneHistoryPrevious()[pixel];
         count = min(previous.a + 1.0, 16777216.0);
         color = lerp(previous.rgb, color, rcp(count));
     }
-    gHistoryCurrent[pixel] = float4(color, count);
+    sceneHistoryCurrent()[pixel] = float4(color, count);
     return color;
 }
 
-bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
+public bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
     Ray ray, float t, ScenePathTracePush push)
 {
+    uint materialIndex;
+    if (!streamRayMaterialIndex(instanceIndex, materialIndex)) { return false; }
     uint count, stride;
-    gRayStreamInstances.GetDimensions(count, stride);
-    if (instanceIndex >= count) { return false; }
-    uint materialIndex = gRayStreamInstances[instanceIndex].materialIndex;
-    gMaterials.GetDimensions(count, stride);
+    sceneMaterials().GetDimensions(count, stride);
     if (materialIndex >= count) { return false; }
     MaterialCoverageParameters material = sceneMaterialCoverageParameters(loadSceneMaterial(materialIndex));
     if (material.alphaMode < 0.5) { return true; }
@@ -43,7 +66,7 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
     return evaluateSceneCoverage(materialIndex, material, hit.texcoord, push).accepted;
 }
 
-bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,
+public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,
     out HitInfo hit, bool occlusionOnly = false)
 {
     hit = (HitInfo)0;
@@ -52,7 +75,7 @@ bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePat
     desc.TMin = nearDistance; desc.TMax = farDistance;
     // Force candidate callbacks even for CLAS built with the opaque default.
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
+    query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
             streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
@@ -66,3 +89,4 @@ bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePat
     return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
         query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), push.bitangentFlip, hit);
 }
+} // namespace Metallic.ScenePathTracing

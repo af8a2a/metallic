@@ -1,3 +1,5 @@
+module MaterialShaderObject;
+
 import ShaderCore;
 using Metallic;
 

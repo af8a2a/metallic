@@ -1,6 +1,16 @@
-// CLAS IDs are pageIndex * maxPageClusters + localCluster. IDs survive arena moves.
+#language slang 2026
+module StreamRayGeometry;
+
+import Core;
 import GPUDriven;
+import ScenePathTypes;
+import ScenePathMath;
+
+namespace Metallic.StreamGeometry
+{
 using Metallic.GPUDriven;
+
+// CLAS IDs are pageIndex * maxPageClusters + localCluster. IDs survive arena moves.
 struct StreamRayInstance
 {
     uint primitiveIndex, materialIndex, visible, gpuSceneInstanceIndex;
@@ -21,6 +31,17 @@ struct StreamRayInstance
 #define gRayStreamPageCount resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))
 #endif
 
+// Keep resource resolution lazy and preserve the original bounds-check/load order.
+public bool streamRayMaterialIndex(uint instanceIndex, out uint materialIndex)
+{
+    materialIndex = 0u;
+    uint count, stride;
+    gRayStreamInstances.GetDimensions(count, stride);
+    if (instanceIndex >= count) { return false; }
+    materialIndex = gRayStreamInstances[instanceIndex].materialIndex;
+    return true;
+}
+
 float3 streamRayTriangleNormal(float3 a, float3 b, float3 fallback)
 {
     float3 n = cross(a, b);
@@ -37,11 +58,11 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
     float3 c0 = cross(instance.world1.xyz, instance.world2.xyz);
     float3 c1 = cross(instance.world2.xyz, instance.world0.xyz);
     float3 c2 = cross(instance.world0.xyz, instance.world1.xyz);
-    return safeNormalize((c0 * n.x + c1 * n.y + c2 * n.z) *
+    return Metallic.ScenePath.safeNormalize((c0 * n.x + c1 * n.y + c2 * n.z) *
         (dot(instance.world0.xyz, c0) < 0.0 ? -1.0 : 1.0), n);
 }
 
-bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
+public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
     Ray ray, float t, float bitangentFlip, out HitInfo hit)
 {
     hit = (HitInfo)0;
@@ -58,7 +79,7 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = streamRayTriangleNormal(b - a, c - a, float3(0, 1, 0));
-    float3 localNormal = safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
+    float3 localNormal = Metallic.ScenePath.safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
     hit.normal = streamRayNormal(instance, localNormal);
     hit.geometryNormal = streamRayNormal(instance, localGeometry);
     hit.texcoord = uv[0] * weights.x + uv[1] * weights.y + uv[2] * weights.z;
@@ -66,9 +87,9 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     float uvArea = abs((uv[1].x - uv[0].x) * (uv[2].y - uv[0].y) - (uv[1].y - uv[0].y) * (uv[2].x - uv[0].x));
     hit.rayConeLodConstant = uvArea > 1e-7 ? 0.5 * log2(uvArea / max(length(cross(wt, wb)), 1e-20)) : 0.0;
     float3 triangleTangent, triangleBitangent;
-    computeTriangleTangentSpace(float3(0), wt, wb, uv[0], uv[1], uv[2], hit.normal, triangleTangent, triangleBitangent);
+    Metallic.ScenePath.computeTriangleTangentSpace(float3(0), wt, wb, uv[0], uv[1], uv[2], hit.normal, triangleTangent, triangleBitangent);
     float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
-    float3 fallback = safeNormalize(cross(axis, hit.normal), float3(1, 0, 0));
+    float3 fallback = Metallic.ScenePath.safeNormalize(cross(axis, hit.normal), float3(1, 0, 0));
     float3 tangent = triangleTangent;
     float sign;
     if ((attributes & 16u) != 0u) {
@@ -77,7 +98,7 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
         sign = (authored.w < 0.0 ? -1.0 : 1.0) *
             (dot(instance.world0.xyz, cross(instance.world1.xyz, instance.world2.xyz)) < 0.0 ? -1.0 : 1.0);
     } else { sign = dot(cross(hit.normal, tangent), triangleBitangent) < 0.0 ? -1.0 : 1.0; }
-    tangent = safeNormalize(tangent - hit.normal * dot(hit.normal, tangent), fallback);
+    tangent = Metallic.ScenePath.safeNormalize(tangent - hit.normal * dot(hit.normal, tangent), fallback);
     hit.tangent = float4(tangent, sign * bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * hit.tangent.w;
     hit.position = ray.origin + ray.direction * t;
@@ -90,3 +111,5 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     return true;
 }
 
+
+} // namespace Metallic.StreamGeometry

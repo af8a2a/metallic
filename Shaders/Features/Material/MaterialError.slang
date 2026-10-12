@@ -1,3 +1,5 @@
+module MaterialError;
+
 import Core;
 using Metallic;
 struct ErrorParameters { uint color; };

@@ -1,3 +1,5 @@
+module ShaderTraceFixture;
+
 import ShaderTrace;
 struct Push { uint inputBuffer; uint cookie; };
 

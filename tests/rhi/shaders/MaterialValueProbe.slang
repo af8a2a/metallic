@@ -1,9 +1,12 @@
+module MaterialValueProbe;
+
 import Core;
 using Metallic;
 import Material;
 import OpenPBRMaterialParameters;
 using Metallic.Material;
-#include "MaterialValueDispatch.hlsli"
+import SceneSurface;
+using Metallic.SceneSurface;
 
 [shader("compute")]
 [numthreads(4, 1, 1)]

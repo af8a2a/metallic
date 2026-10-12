@@ -1,3 +1,5 @@
+module FiberProbe;
+
 import ShaderCore;
 using Metallic;
 

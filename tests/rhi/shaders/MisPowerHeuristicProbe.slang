@@ -1,8 +1,12 @@
+module MisPowerHeuristicProbe;
+
 import Core;
 using Metallic;
 
 #include "../TestResourceParameters.h"
-#include "../../../Shaders/Features/PathTracing/SceneSurface.slang"
+import SceneSurface;
+import ScenePathTypes;
+using Metallic.SceneSurface;
 
 #define gMisInput resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<FrameCopyProbeResources>().input)
 #define gMisOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<FrameCopyProbeResources>().output)

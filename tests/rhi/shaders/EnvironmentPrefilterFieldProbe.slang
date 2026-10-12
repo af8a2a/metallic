@@ -1,3 +1,5 @@
+module EnvironmentPrefilterFieldProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

@@ -1,3 +1,5 @@
+module ClusterLightGridLookupProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

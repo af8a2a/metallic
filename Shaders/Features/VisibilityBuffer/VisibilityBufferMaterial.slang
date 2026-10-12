@@ -1,3 +1,5 @@
+module VisibilityBufferMaterial;
+
 import Core;
 using Metallic;
 import GPUDriven;
