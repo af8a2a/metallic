@@ -17,11 +17,13 @@ import RunComputePipelineExperiments as experiment
 def native_fixture():
     return dict(status="passed", validation_errors=0, build_configuration="Release", slang_build="test",
         shader_target=dict(id="vulkan", revision=1),
+        pipeline_cache_preparation_wall_ms=0.3,
         configuration=dict(debug_mode="disabled", validation=False, pipeline_cache="empty", compile_only=False,
                            slang_optimization="O1", compute_backend="pipeline", disable_driver_optimization=False),
         environment={experiment.driver.CACHE_ENVIRONMENT: "disabled"}, device=dict(name="test", driver_version=1),
         samples=[dict(status="passed", pipeline_status="created", request=dict(index=146, module="Guides", entry="main"),
             pipeline_wall_ms=4.5,
+            pipeline_cache_preparation_wall_ms=0.3, pipeline_load_and_create_wall_ms=4.8,
             execution_model=5, spirv_fnv1a64="1234", spirv_bytes=512, effective_descriptor_mode="mapped",
             resource_heap_stride=0, sampler_heap_stride=0, shader_cache_hit=True, effective_slang_optimization="O1",
             spirv_statistics=dict(instruction_count=64, function_count=2, basic_block_count=8),
@@ -129,6 +131,112 @@ class NativeExperimentTests(unittest.TestCase):
                 experiment.verify_native(report, shader, arm, imported=True)
             pipeline.update(original)
 
+    def test_application_import_requires_loaded_file_metadata_and_native_feedback(self):
+        report = native_fixture()
+        report["configuration"]["pipeline_cache"] = "reuse"
+        report["pipeline_cache_load_status"] = 1
+        report["samples"][0]["pipeline"].update(metadata_hit=True, feedback_valid=True, native_cache_hit=True)
+        shader = experiment.shader_identity(report, report["samples"][0])
+        arm, = experiment.arms(["O1"], ["pipeline"], "normal")
+        experiment.verify_native(report, shader, arm, imported=True, application_cache=True)
+        for mutate in (lambda r: r.update(pipeline_cache_load_status=2),
+                       lambda r: r["samples"][0]["pipeline"].update(metadata_hit=False),
+                       lambda r: r["samples"][0]["pipeline"].update(feedback_valid=False),
+                       lambda r: r["samples"][0]["pipeline"].update(native_cache_hit=None),
+                       lambda r: r["samples"][0]["pipeline"].update(native_object_reused=True)):
+            changed = copy.deepcopy(report)
+            mutate(changed)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                experiment.verify_native(changed, shader, arm, imported=True, application_cache=True)
+
+    def test_complete_load_cost_rejects_missing_double_counted_or_unattributed_preparation(self):
+        report = native_fixture()
+        sample = report["samples"][0]
+        self.assertEqual(experiment.creation_costs(report, sample),
+                         dict(pipeline_cache_preparation_wall_ms=.3, pipeline_load_and_create_wall_ms=4.8))
+        mutations = [lambda r: r["samples"][0].pop("pipeline_cache_preparation_wall_ms"),
+                     lambda r: r["samples"][0].update(pipeline_load_and_create_wall_ms=5.1),
+                     lambda r: r.update(pipeline_cache_preparation_wall_ms=.6),
+                     lambda r: r["samples"][0].update(pipeline_cache_preparation_wall_ms=float("nan"))]
+        for mutate in mutations:
+            changed = copy.deepcopy(report)
+            mutate(changed)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                experiment.creation_costs(changed, changed["samples"][0])
+
+    def test_three_backend_cache_matrix_primes_once_and_verifies_artifacts_and_full_load_cost(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "bench.exe"
+            executable.write_bytes(b"fixture only")
+            source = root / "Guides.slang"
+            source.write_text("fixed source")
+            calls = []
+
+            def process(command, environment, destination, timeout):
+                calls.append((command, environment))
+                destination.mkdir()
+                report = native_fixture()
+                sample = report["samples"][0]
+                compiled_only = "--compile-only" in command
+                backend = command[command.index("--compute-backend") + 1] if "--compute-backend" in command else "pipeline"
+                report["configuration"].update(compile_only=compiled_only, compute_backend=backend)
+                report["environment"] = environment
+                sample.update(dependencies=[str(source)], compile_wall_ms=3., shader_module_wall_ms=1.,
+                    shader_cache_hit=not compiled_only, device_spirv_bytes=512, device_spirv_fnv1a64="device-code",
+                    device_spirv_statistics=sample["spirv_statistics"], device_shader_content_hash="content")
+                pipeline = sample["pipeline"]
+                pipeline.update(compute_backend=backend, native_binary_import_ms=0., native_binary_export_ms=0.)
+                preparation = .3 if backend == "pipeline" else 0.
+                if "--pipeline-cache-file" in command:
+                    artifact = Path(command[command.index("--pipeline-cache-file") + 1])
+                    existed = artifact.exists()
+                    artifact.write_bytes(b"persistent .pso")
+                    report["configuration"]["pipeline_cache"] = "reuse"
+                    report["pipeline_cache_load_status"] = 1 if existed else 0
+                    pipeline.update(metadata_hit=existed, feedback_valid=True, native_cache_hit=existed)
+                    preparation = 2.
+                if "--native-binary-cache-dir" in command:
+                    directory = Path(command[command.index("--native-binary-cache-dir") + 1])
+                    artifact = directory / "native.bin"
+                    existed = artifact.exists()
+                    directory.mkdir(parents=True, exist_ok=True)
+                    artifact.write_bytes(b"persistent native binary")
+                    pipeline.update(native_binary_cache_hit=existed, native_binary_persisted=not existed)
+                report["pipeline_cache_preparation_wall_ms"] = preparation
+                sample.update(pipeline_cache_preparation_wall_ms=preparation, pipeline_load_and_create_wall_ms=4.5 + preparation)
+                if compiled_only:
+                    sample["pipeline_status"] = "compile_only"
+                experiment.save(destination / "report.json", report)
+                return dict(exit_code=0, timed_out=False), report
+
+            args = SimpleNamespace(executable=executable, optimizations=["O1"], backends=list(experiment.BACKENDS),
+                driver_optimization="normal", native_binary_cache=True, application_pipeline_cache=True,
+                descriptor_mode="mapped", validation=False, pairs=2, request_index=146, timeout=10)
+            output = root / "evidence"
+            output.mkdir()
+            summary = dict(schema_version=2, command="compile", status="passed", runs=[], excluded_runs=[])
+            with patch.object(experiment, "input_identity", return_value=experiment.snapshots([source, executable])), \
+                 patch.object(experiment.driver, "run_process", side_effect=process):
+                experiment.compile_experiment(args, output, summary)
+            self.assertEqual(len(calls), 16)  # prefill + 3 primes + 2 blocks * 3 arms * source/import
+            self.assertEqual(len(summary["excluded_runs"]), 4)
+            self.assertEqual(len(summary["runs"]), 12)
+            imports = [run for run in summary["runs"] if run["imported"]]
+            self.assertEqual({run["cache_kind"] for run in imports}, {"application-pipeline-cache", "native-binary"})
+            self.assertEqual(len(summary["application_pipeline_cache_identities"]), 1)
+            self.assertEqual(len(summary["native_binary_identities"]), 2)
+            self.assertEqual(summary["runs"][0]["imported"], False)
+            self.assertEqual(summary["runs"][6]["imported"], True)
+            experiment.save(output / "summary.json", summary)
+            experiment.seal(output)
+            experiment.verify(output)
+            summary["runs"][0]["pipeline_load_and_create_wall_ms"] += 1
+            experiment.save(output / "summary.json", summary)
+            experiment.seal(output)
+            with self.assertRaisesRegex(ValueError, "load/preparation"):
+                experiment.verify(output)
+
     def test_excludes_invalid_shader_object_flags_and_duplicate_conditions(self):
         conditions = experiment.arms(["O0", "O1", "O2"], ["shader-object", "pipeline"], "both")
         self.assertEqual(len(conditions), 9)
@@ -140,6 +248,25 @@ class NativeExperimentTests(unittest.TestCase):
         for block in range(8):
             ordered = experiment.balanced_order(conditions, block)
             self.assertEqual({arm["name"] for arm in ordered}, {arm["name"] for arm in conditions})
+
+    def test_mixed_dispatch_native_cache_leaves_pipeline_reference_without_binary_directory(self):
+        experiment.validate_dispatch_binary_backends(experiment.BACKENDS, True)
+        conditions = experiment.arms(["O1"], experiment.BACKENDS, "normal")
+        output = Path("isolated-evidence")
+        for arm in conditions:
+            directory = experiment.dispatch_binary_directory(output, arm, True)
+            environment = experiment.environment_for(arm, {}, directory, internal_cache="enabled")
+            with self.subTest(backend=arm["backend"]):
+                if arm["backend"] == "pipeline":
+                    self.assertIsNone(directory)
+                    self.assertNotIn("METALLIC_VK_NATIVE_BINARY_CACHE_DIR", environment)
+                else:
+                    self.assertEqual(directory, output / "native-binaries" / arm["name"])
+                    self.assertEqual(environment["METALLIC_VK_NATIVE_BINARY_CACHE_DIR"], str(directory))
+                self.assertIsNone(experiment.dispatch_binary_directory(output, arm, False))
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            experiment.validate_dispatch_binary_backends(["pipeline"], True)
+        experiment.validate_dispatch_binary_backends(["pipeline"], False)
 
     def test_binary_file_drift_and_empty_extraction_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

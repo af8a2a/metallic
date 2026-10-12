@@ -38,7 +38,7 @@ using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
 struct Options {
-    std::string filter, outputDirectory, cacheDirectory;
+    std::string filter, outputDirectory, cacheDirectory, pipelineCacheFile;
     std::string shaderCache = "disabled", pipelineCache = "empty";
     std::string descriptorMode = "request", debugMode = "disabled";
     std::string mode = "serial", cacheLockScope = "metadata", recipeFile;
@@ -49,7 +49,7 @@ struct Options {
     std::optional<uint32_t> requestIndex;
     bool list = false, all = false, compileOnly = false, validation = false;
     bool explicitMode = false, mergeShards = false, explicitComputeBackend = false;
-    bool disableDriverOptimization = false;
+    bool disableDriverOptimization = false, slangPerfDiagnostics = false;
 };
 
 struct CapturedValidationMessage {
@@ -124,6 +124,7 @@ Options parse(int argc, char** argv)
         else if (arg == "--validation") { options.validation = true; }
         else if (arg == "--merge-shards") { options.mergeShards = true; }
         else if (arg == "--disable-driver-optimization") { options.disableDriverOptimization = true; }
+        else if (arg == "--slang-perf-diagnostics") { options.slangPerfDiagnostics = true; }
         else {
             if (i + 1 == argc) { throw std::invalid_argument("Missing value for " + arg); }
             const std::string value = argv[++i];
@@ -139,6 +140,7 @@ Options parse(int argc, char** argv)
             else if (arg == "--cache-dir") { options.cacheDirectory = value; }
             else if (arg == "--shader-cache") { options.shaderCache = value; }
             else if (arg == "--pipeline-cache") { options.pipelineCache = value; }
+            else if (arg == "--pipeline-cache-file") { options.pipelineCacheFile = value; }
             else if (arg == "--descriptor-mode") { options.descriptorMode = value; }
             else if (arg == "--debug-mode") { options.debugMode = value; }
             else if (arg == "--slang-optimization") { options.slangOptimization = value; }
@@ -172,6 +174,9 @@ Options parse(int argc, char** argv)
     }
     if (options.pipelineCache != "empty" && options.pipelineCache != "reuse") {
         throw std::invalid_argument("--pipeline-cache requires empty or reuse");
+    }
+    if (!options.pipelineCacheFile.empty() && (options.pipelineCache != "reuse" || options.mode == "parallel-sharded")) {
+        throw std::invalid_argument("--pipeline-cache-file requires --pipeline-cache reuse and serial or parallel-shared mode");
     }
     if (options.descriptorMode != "request" && options.descriptorMode != "mapped" && options.descriptorMode != "native") {
         throw std::invalid_argument("--descriptor-mode requires request, mapped or native");
@@ -356,6 +361,26 @@ Json metricsJson(const PipelineCreationStats& stats)
         {"native_binary_export_ms", double(stats.nativeBinaryExportTimeNanoseconds) / 1e6}};
 }
 
+Json compilationMetricsJson(const ShaderCompileMetrics& metrics)
+{
+    return {{"total_ms", double(metrics.totalTimeNanoseconds) / 1e6},
+        {"cache_lookup_ms", double(metrics.cacheLookupTimeNanoseconds) / 1e6},
+        {"compiler_setup_ms", double(metrics.compilerSetupTimeNanoseconds) / 1e6},
+        {"module_load_ms", double(metrics.moduleLoadTimeNanoseconds) / 1e6},
+        {"dependency_tracking_ms", double(metrics.dependencyTrackingTimeNanoseconds) / 1e6},
+        {"entry_point_composition_ms", double(metrics.entryPointCompositionTimeNanoseconds) / 1e6},
+        {"link_ms", double(metrics.linkTimeNanoseconds) / 1e6},
+        {"code_generation_ms", double(metrics.codeGenerationTimeNanoseconds) / 1e6},
+        {"target_finalize_ms", double(metrics.targetFinalizeTimeNanoseconds) / 1e6},
+        {"dependency_validation_ms", double(metrics.dependencyValidationTimeNanoseconds) / 1e6},
+        {"cache_write_ms", double(metrics.cacheWriteTimeNanoseconds) / 1e6},
+        {"compiler_reported_total_ms", double(metrics.compilerReportedTotalTimeNanoseconds) / 1e6},
+        {"compiler_reported_downstream_ms", double(metrics.compilerReportedDownstreamTimeNanoseconds) / 1e6},
+        {"cache_hit", metrics.cacheHit}, {"compiler_executed", metrics.compilerExecuted},
+        {"detailed_compiler_perf_requested", metrics.detailedCompilerPerfRequested},
+        {"compiler_reported_timing_available", metrics.compilerReportedTimingAvailable}};
+}
+
 template<typename T>
 Json pipelineJson(const T& pipeline)
 {
@@ -376,7 +401,7 @@ struct PreparedPipeline {
     std::string nativeBinaryCacheDirectory;
 };
 
-void createPreparedPipeline(Device& device, PipelineCache& cache, const PreparedPipeline& item, Json& result)
+void createPreparedPipeline(Device& device, PipelineCache* cache, const PreparedPipeline& item, Json& result)
 {
     if (item.recipe) {
         const auto capturedHash = item.recipe->type == PipelineRecipeType::Compute ?
@@ -392,7 +417,7 @@ void createPreparedPipeline(Device& device, PipelineCache& cache, const Prepared
     PipelineCreationStats metrics;
     if (item.recipe && item.recipe->type == PipelineRecipeType::Graphics) {
         auto desc = item.recipe->graphicsDesc(item.graphicsModules[0].get(),
-            item.graphicsModules[1].get(), item.graphicsModules[2].get(), item.graphicsModules[3].get(), &cache);
+                item.graphicsModules[1].get(), item.graphicsModules[2].get(), item.graphicsModules[3].get(), cache);
         desc.disableOptimization |= item.disableOptimization;
         result["disable_driver_optimization"] = desc.disableOptimization;
         auto created = device.createGraphicsPipeline(desc, &metrics);
@@ -401,9 +426,9 @@ void createPreparedPipeline(Device& device, PipelineCache& cache, const Prepared
         auto pipeline = require(std::move(created), "create graphics pipeline");
         result["pipeline"] = pipelineJson(*pipeline);
     } else {
-        auto desc = item.recipe ? item.recipe->computeDesc(item.module.get(), &cache) :
+        auto desc = item.recipe ? item.recipe->computeDesc(item.module.get(), cache) :
             ComputePipelineDesc{.computeShader = {item.module.get(), item.entry.c_str()},
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(GPUBufferSpan), .pipelineCache = &cache};
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(GPUBufferSpan), .pipelineCache = cache};
         desc.disableOptimization |= item.disableOptimization;
         result["disable_driver_optimization"] = desc.disableOptimization;
         desc.backend = item.backend;
@@ -415,6 +440,8 @@ void createPreparedPipeline(Device& device, PipelineCache& cache, const Prepared
         auto pipeline = require(std::move(created), "create compute pipeline");
         result["pipeline"] = pipelineJson(*pipeline);
     }
+    result["pipeline_load_and_create_wall_ms"] = result.value("pipeline_cache_preparation_wall_ms", 0.0) +
+        result.at("pipeline_wall_ms").get<double>();
     if (item.recipe) {
         result["pipeline"]["expected_pso_hash"] = item.recipe->expectedPsoHash;
         result["pipeline"]["recipe_hash_matches"] = result["pipeline"].at("pso_hash") == item.recipe->expectedPsoHash;
@@ -444,10 +471,11 @@ Json createPipelineBatch(Device& device, const std::vector<PipelineCache*>& cach
             workers.emplace_back([&, worker] {
                 start.arrive_and_wait();
                 // Stable striding keeps each shard's workload identical across rounds.
-                auto& cache = *caches[caches.size() == 1 ? 0 : worker];
+                auto* cache = caches[caches.size() == 1 ? 0 : worker];
                 for (size_t i = worker; i < prepared.size(); i += workerCount) {
                     const auto& item = prepared[i];
                     auto& result = results[i];
+                    result["pipeline_cache_preparation_wall_ms"] = samples[item.sampleIndex].value("pipeline_cache_preparation_wall_ms", 0.0);
                     const auto begin = Clock::now();
                     try {
                         createPreparedPipeline(device, cache, item, result);
@@ -573,8 +601,11 @@ int run(const Options& options)
     std::filesystem::create_directories(output);
     const auto cache = options.cacheDirectory.empty() ? output / "cache" : std::filesystem::absolute(options.cacheDirectory);
     const std::string shaderCache = (cache / "spirv").string();
-    const std::string pipelineCache = (cache / "pipeline.pso").string();
-    Json report{{"schema_version", 4}, {"status", "initializing"}, {"samples", Json::array()}, {"pipeline_batches", Json::array()},
+    const std::string pipelineCache = options.pipelineCacheFile.empty() ? (cache / "pipeline.pso").string() :
+        std::filesystem::absolute(options.pipelineCacheFile).string();
+    Json report{{"schema_version", 5}, {"status", "initializing"}, {"samples", Json::array()}, {"pipeline_batches", Json::array()},
+        {"pipeline_cache_preparation_wall_ms", 0.0}, {"pipeline_cache_preparations", Json::array()},
+        {"pipeline_cache_preparation_scope", "createPipelineCache wall time includes file loading and native cache creation. Report totals count each cache once; concurrent batch preparation belongs to the batch. Load-and-create fields sum preparation and creation segments, excluding device/shader module creation and cache save."},
         {"build_configuration", METALLIC_BENCH_BUILD_CONFIGURATION},
         {"slang_build", spGetBuildTagString()},
         {"shader_target", {{"id", vulkanSpirvTarget().id}, {"revision", vulkanSpirvTarget().revision}}},
@@ -584,12 +615,14 @@ int run(const Options& options)
             {"pipeline_replicas", options.pipelineReplicas}, {"cache_lock_scope", options.cacheLockScope},
             {"merge_shards", options.mergeShards}, {"recipe_file", options.recipeFile},
             {"shader_cache", options.shaderCache}, {"pipeline_cache", options.pipelineCache},
+            {"pipeline_cache_file", pipelineCache},
             {"descriptor_mode", options.descriptorMode}, {"debug_mode", options.debugMode},
             {"slang_optimization", options.slangOptimization},
+            {"slang_perf_diagnostics", options.slangPerfDiagnostics},
             {"requested_disable_driver_optimization", options.disableDriverOptimization},
             {"disable_driver_optimization", options.disableDriverOptimization || (recipe && recipe->disableOptimization)},
             {"compute_backend", computeBackendName(backend)}, {"native_binary_cache_directory", options.nativeBinaryCacheDirectory},
-            {"application_pipeline_cache_used", backend == ComputePipelineBackend::Pipeline},
+            {"application_pipeline_cache_used", backend == ComputePipelineBackend::Pipeline && !options.compileOnly},
             {"compile_only", options.compileOnly}, {"validation", options.validation},
             {"cache_directory", cache.string()}, {"selected_requests", selected}}},
         {"scope", "Serial preparation and optional concurrent PSO creation; no dispatch or frame timing. Empty application caches do not guarantee cold driver/OS caches."}};
@@ -620,6 +653,18 @@ int run(const Options& options)
         item.backend = backend;
         item.nativeBinaryCacheDirectory = options.nativeBinaryCacheDirectory;
     };
+    const auto createMeasuredCache = [&](const PipelineCacheDesc& desc, const char* operation, Json* sample = nullptr) {
+        const auto begin = Clock::now();
+        auto created = device->createPipelineCache(desc);
+        const double elapsed = milliseconds(begin);
+        report["pipeline_cache_preparation_wall_ms"] = report["pipeline_cache_preparation_wall_ms"].get<double>() + elapsed;
+        report["pipeline_cache_preparations"].push_back({{"operation", operation},
+            {"file", desc.filePath ? desc.filePath : ""}, {"wall_ms", elapsed}});
+        if (sample) { (*sample)["pipeline_cache_preparation_wall_ms"] = elapsed; }
+        auto preparedCache = require(std::move(created), operation);
+        report["pipeline_cache_preparations"].back()["load_status"] = static_cast<int>(preparedCache->stats().loadStatus);
+        return preparedCache;
+    };
     uint32_t batchIteration = 0;
     const auto flushBatch = [&] {
         if (prepared.empty()) { return; }
@@ -627,18 +672,21 @@ int run(const Options& options)
         const uint32_t cacheCount = options.mode == "parallel-sharded" ? workerCount : 1;
         std::vector<std::unique_ptr<PipelineCache>> emptyCaches;
         std::vector<PipelineCache*> activeCaches;
+        const double initialCachePreparation = report["pipeline_cache_preparation_wall_ms"].get<double>();
         for (const auto& item : prepared) { report["samples"][item.sampleIndex]["status"] = "creating_pipeline_cache"; }
         save();
         for (uint32_t shard = 0; shard < cacheCount; ++shard) {
-            if (options.pipelineCache == "empty") {
-                emptyCaches.push_back(require(device->createPipelineCache({.saveOnDestroy = false,
-                    .serializeCreation = options.cacheLockScope == "creation"}), "create empty batch cache"));
+            if (backend != ComputePipelineBackend::Pipeline) {
+                activeCaches.push_back(nullptr);
+            } else if (options.pipelineCache == "empty") {
+                emptyCaches.push_back(createMeasuredCache({.saveOnDestroy = false,
+                    .serializeCreation = options.cacheLockScope == "creation"}, "create empty batch cache"));
                 activeCaches.push_back(emptyCaches.back().get());
             } else if (options.mode == "parallel-sharded") {
                 if (shard >= reusedShardCaches.size()) {
                     const auto path = (cache / ("pipeline-shard-" + std::to_string(shard) + ".pso")).string();
-                    reusedShardCaches.push_back(require(device->createPipelineCache({.filePath = path.c_str(),
-                        .saveOnDestroy = false, .serializeCreation = options.cacheLockScope == "creation"}), "create reusable shard cache"));
+                    reusedShardCaches.push_back(createMeasuredCache({.filePath = path.c_str(),
+                        .saveOnDestroy = false, .serializeCreation = options.cacheLockScope == "creation"}, "create reusable shard cache"));
                     report["pipeline_cache_shard_load_status"].push_back(static_cast<int>(reusedShardCaches.back()->stats().loadStatus));
                 }
                 activeCaches.push_back(reusedShardCaches[shard].get());
@@ -652,12 +700,15 @@ int run(const Options& options)
         save();
         const uint32_t initialErrors = validation.errors.load();
         auto batch = createPipelineBatch(*device, activeCaches, prepared, *options.pipelineWorkers, options.mode, report["samples"], failures);
+        batch["pipeline_cache_preparation_wall_ms"] = report["pipeline_cache_preparation_wall_ms"].get<double>() - initialCachePreparation;
+        batch["pipeline_load_and_create_wall_ms"] = batch["pipeline_cache_preparation_wall_ms"].get<double>() +
+            batch["pipeline_batch_wall_ms"].get<double>();
         batch["iteration"] = batchIteration;
         batch["validation_errors"] = validation.errors.load() - initialErrors;
         if (options.mergeShards) {
             if (!mergedPipelineCache) {
                 const auto path = (output / "pipeline-merged.pso").string();
-                mergedPipelineCache = require(device->createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = false}), "create merge destination");
+                mergedPipelineCache = createMeasuredCache({.filePath = path.c_str(), .saveOnDestroy = false}, "create merge destination");
             }
             const auto begin = Clock::now();
             require(mergedPipelineCache->merge(activeCaches), "merge shard caches");
@@ -717,10 +768,10 @@ int run(const Options& options)
                 source.deviceId == properties.core.deviceID && source.driverVersion == properties.core.driverVersion;
         }
     };
-    const auto ensureReusedCache = [&] {
+    const auto ensureReusedCache = [&](Json* sample = nullptr) {
         if (options.pipelineCache != "reuse" || options.mode == "parallel-sharded" || reusedPipelineCache) { return; }
-        reusedPipelineCache = require(device->createPipelineCache({.filePath = pipelineCache.c_str(), .saveOnDestroy = false,
-            .serializeCreation = options.cacheLockScope == "creation"}), "create reusable cache");
+        reusedPipelineCache = createMeasuredCache({.filePath = pipelineCache.c_str(), .saveOnDestroy = false,
+            .serializeCreation = options.cacheLockScope == "creation"}, "create reusable cache", sample);
         report["pipeline_cache_load_status"] = static_cast<int>(reusedPipelineCache->stats().loadStatus);
     };
     setSlangShaderDebugMode(options.debugMode == "capture" ? SlangShaderDebugMode::CaptureSymbols :
@@ -756,10 +807,11 @@ int run(const Options& options)
                     {"status", "creating_device"}, {"shader_source", "recipe_spirv"}});
                 const size_t sampleIndex = report["samples"].size() - 1;
                 auto& sample = report["samples"].back();
+                sample["pipeline_cache_preparation_wall_ms"] = 0.0;
                 save();
                 try {
                     ensureDevice(false);
-                    ensureReusedCache();
+                    ensureReusedCache(&sample);
                     PreparedPipeline item{.sampleIndex = sampleIndex, .recipe = &*recipe};
                     configurePrepared(item);
                     if (graphics && backend != ComputePipelineBackend::Pipeline) {
@@ -831,6 +883,7 @@ int run(const Options& options)
                 {"sampler_heap_stride", native ? nativeStrides.sampler : 0}, {"status", "compiling"}});
             report["samples"].back()["effective_slang_optimization"] = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(source));
             auto& sample = report["samples"].back();
+            sample["pipeline_cache_preparation_wall_ms"] = 0.0;
             const uint32_t initialValidationErrors = validation.errors.load();
             report["status"] = "running";
             save();
@@ -840,11 +893,13 @@ int run(const Options& options)
                 std::string diagnostics;
                 auto begin = Clock::now();
                 auto compiled = ShaderRegistry::instance().getShader(source,
-                    {.cacheDirectory = shaderCache.c_str(), .enableDiskCache = options.shaderCache == "reuse", .outCacheHit = &cacheHit}, diagnostics);
+                    {.cacheDirectory = shaderCache.c_str(), .enableDiskCache = options.shaderCache == "reuse", .outCacheHit = &cacheHit,
+                        .reportDetailedCompilerPerf = options.slangPerfDiagnostics}, diagnostics);
                 sample["compile_wall_ms"] = milliseconds(begin);
                 sample["shader_cache_hit"] = cacheHit;
                 sample["diagnostics"] = diagnostics;
                 auto code = require(std::move(compiled), "compile shader");
+                sample["compilation_phases"] = compilationMetricsJson(code.metrics);
                 sample["spirv_bytes"] = code.spirv.size() * sizeof(uint32_t);
                 sample["spirv_fnv1a64"] = hashSpirv(code.spirv);
                 sample["spirv_statistics"] = spirvStatisticsJson(code.spirv);
@@ -871,7 +926,7 @@ int run(const Options& options)
                 if (options.pipelineCache == "reuse" && options.mode != "parallel-sharded" && !reusedPipelineCache) {
                     sample["status"] = "creating_pipeline_cache";
                     save();
-                    ensureReusedCache();
+                    ensureReusedCache(&sample);
                 }
                 sample["status"] = "creating_shader_module";
                 save();
@@ -889,13 +944,13 @@ int run(const Options& options)
                     continue;
                 }
                 std::unique_ptr<PipelineCache> emptyCache;
-                if (options.pipelineCache == "empty") {
+                if (backend == ComputePipelineBackend::Pipeline && options.pipelineCache == "empty") {
                     sample["status"] = "creating_pipeline_cache";
                     save();
-                    emptyCache = require(device->createPipelineCache({.saveOnDestroy = false,
-                        .serializeCreation = options.cacheLockScope == "creation"}), "create empty cache");
+                    emptyCache = createMeasuredCache({.saveOnDestroy = false,
+                        .serializeCreation = options.cacheLockScope == "creation"}, "create empty cache", &sample);
                 }
-                auto& activeCache = emptyCache ? *emptyCache : *reusedPipelineCache;
+                auto* activeCache = emptyCache ? emptyCache.get() : reusedPipelineCache.get();
                 sample["status"] = "creating_pipeline";
                 save();
                 PreparedPipeline item{report["samples"].size() - 1, std::move(module), entry};

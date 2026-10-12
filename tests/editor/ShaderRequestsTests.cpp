@@ -206,6 +206,75 @@ TEST_F(ShaderRequestCompileTest, OptimizationLevelsSeparateTheCompilerCache)
     EXPECT_TRUE(hit); // Preserve the existing release default's effective O1 identity.
 }
 
+TEST_F(ShaderRequestCompileTest, CompilationMetricsBelongToTheCurrentInvocation)
+{
+    const std::string directory = uniqueShaderCacheDirectory("compilation-metrics");
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str()};
+    const auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    std::string diagnostics;
+    const auto compiled = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(compiled) << diagnostics;
+    const auto& metrics = compiled->metrics;
+    EXPECT_TRUE(metrics.compilerExecuted);
+    EXPECT_FALSE(metrics.cacheHit);
+    EXPECT_FALSE(metrics.detailedCompilerPerfRequested);
+    const uint64_t phaseSum = metrics.cacheLookupTimeNanoseconds + metrics.compilerSetupTimeNanoseconds +
+        metrics.moduleLoadTimeNanoseconds + metrics.dependencyTrackingTimeNanoseconds +
+        metrics.entryPointCompositionTimeNanoseconds + metrics.linkTimeNanoseconds +
+        metrics.codeGenerationTimeNanoseconds + metrics.targetFinalizeTimeNanoseconds +
+        metrics.dependencyValidationTimeNanoseconds + metrics.cacheWriteTimeNanoseconds;
+    EXPECT_LE(phaseSum, metrics.totalTimeNanoseconds);
+
+    const auto cached = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(cached) << diagnostics;
+    EXPECT_EQ(cached->spirv, compiled->spirv);
+    const auto& reused = cached->metrics;
+    EXPECT_TRUE(reused.cacheHit);
+    EXPECT_FALSE(reused.compilerExecuted);
+    EXPECT_EQ(reused.compilerSetupTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.moduleLoadTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.entryPointCompositionTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.linkTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.codeGenerationTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.targetFinalizeTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.dependencyValidationTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.cacheWriteTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.compilerReportedTotalTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.compilerReportedDownstreamTimeNanoseconds, 0u);
+    EXPECT_FALSE(reused.compilerReportedTimingAvailable);
+    EXPECT_LE(reused.cacheLookupTimeNanoseconds + reused.dependencyTrackingTimeNanoseconds,
+        reused.totalTimeNanoseconds);
+}
+
+TEST_F(ShaderRequestCompileTest, DetailedCompilerProfilingPreservesBytecodeAndCacheIdentity)
+{
+    const std::string directory = uniqueShaderCacheDirectory("detailed-compiler-profiling");
+    const auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    std::string diagnostics;
+    const auto baseline = compileSlangShaderToSpirv(source.desc(), {.enableDiskCache = false}, diagnostics);
+    ASSERT_TRUE(baseline) << diagnostics;
+    const auto profiled = compileSlangShaderToSpirv(source.desc(),
+        {.cacheDirectory = directory.c_str(), .reportDetailedCompilerPerf = true}, diagnostics);
+    ASSERT_TRUE(profiled) << diagnostics;
+    EXPECT_EQ(profiled->spirv, baseline->spirv);
+    EXPECT_TRUE(profiled->metrics.compilerExecuted);
+    EXPECT_TRUE(profiled->metrics.detailedCompilerPerfRequested);
+
+    const auto normalHit = compileSlangShaderToSpirv(source.desc(),
+        {.cacheDirectory = directory.c_str()}, diagnostics);
+    ASSERT_TRUE(normalHit) << diagnostics;
+    EXPECT_TRUE(normalHit->metrics.cacheHit);
+    EXPECT_FALSE(normalHit->metrics.detailedCompilerPerfRequested);
+    const auto requestedHit = compileSlangShaderToSpirv(source.desc(),
+        {.cacheDirectory = directory.c_str(), .reportDetailedCompilerPerf = true}, diagnostics);
+    ASSERT_TRUE(requestedHit) << diagnostics;
+    EXPECT_TRUE(requestedHit->metrics.cacheHit);
+    EXPECT_TRUE(requestedHit->metrics.detailedCompilerPerfRequested);
+    EXPECT_FALSE(requestedHit->metrics.compilerExecuted);
+}
+
 TEST_F(ShaderRequestCompileTest, OptimizationOverrideDefaultsAndDebugInformationStayIndependent)
 {
     const auto request = optimizationProbe();

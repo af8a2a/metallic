@@ -1,7 +1,7 @@
 """Measure compute compilation separately from production RenderGraph GPU work.
 
-compile: one fixed catalog request, prefilled SPIR-V, empty application cache,
-independent driver-cache-disabled processes; optionally import native binaries.
+compile: one fixed catalog request, prefilled SPIR-V, independent processes with
+the controllable driver cache disabled; optionally compare .pso/native imports.
 dispatch: fixed MaterialBaseline scene/resources/settings, GPU timestamps and
 HDR/guide readbacks outside the timing window. No empty-resource dispatches.
 """
@@ -132,15 +132,16 @@ def device_shader_identity(sample):
             ("device_spirv_bytes", "device_spirv_fnv1a64", "device_spirv_statistics", "device_shader_content_hash")}
 
 
-def verify_native(report, expected_shader, arm, *, imported=False, device=None):
+def verify_native(report, expected_shader, arm, *, imported=False, application_cache=False, device=None):
     sample = driver.single_sample(report, native=True)
     if shader_identity(report, sample) != expected_shader:
         raise ValueError("SPIR-V or compiler configuration changed after prefill")
     if not sample.get("shader_cache_hit"):
         raise ValueError("Measured process did not load prefilled SPIR-V")
     configuration = report["configuration"]
-    if configuration["pipeline_cache"] != "empty" or configuration["compile_only"]:
-        raise ValueError("Native experiment requires an empty application cache and native creation")
+    expected_cache = "reuse" if application_cache else "empty"
+    if configuration["pipeline_cache"] != expected_cache or configuration["compile_only"]:
+        raise ValueError("Native experiment application cache condition or native creation differs")
     if configuration["slang_optimization"] != arm["optimization"]:
         raise ValueError("Wrong requested Slang optimization")
     if configuration["compute_backend"] != arm["backend"] or \
@@ -162,11 +163,58 @@ def verify_native(report, expected_shader, arm, *, imported=False, device=None):
             raise ValueError(f"Invalid {metric}")
     if pipeline.get("driver_ms") is not None and (not math.isfinite(pipeline["driver_ms"]) or pipeline["driver_ms"] < 0):
         raise ValueError("Invalid driver_ms")
-    if pipeline.get("native_binary_cache_hit", False) != imported:
+    if pipeline.get("native_object_reused", False):
+        raise ValueError("Native object reuse bypassed driver creation")
+    if pipeline.get("native_binary_cache_hit", False) != (imported and not application_cache):
         raise ValueError("Native binary import did not match the requested experiment arm")
     if pipeline.get("native_binary_driver_rejected", False):
         raise ValueError("Driver rejected a cached native binary; fallback is not an import measurement")
+    if application_cache:
+        if arm["backend"] != "pipeline":
+            raise ValueError("Application VkPipelineCache requires the ordinary pipeline backend")
+        if imported:
+            if report.get("pipeline_cache_load_status") != 1 or not pipeline.get("metadata_hit") or \
+               not pipeline.get("feedback_valid") or pipeline.get("native_cache_hit") is not True:
+                raise ValueError("Application pipeline cache import requires Loaded metadata and a valid native cache hit")
+        elif report.get("pipeline_cache_load_status") != 0:
+            raise ValueError("Application pipeline cache prime must start with a missing .pso file")
     return sample
+
+
+def creation_costs(report, sample):
+    """Include file/cache preparation once, where this single request performed it."""
+    preparation = sample.get("pipeline_cache_preparation_wall_ms")
+    total = sample.get("pipeline_load_and_create_wall_ms")
+    values = (preparation, total, report.get("pipeline_cache_preparation_wall_ms"))
+    if any(not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("Missing or invalid pipeline cache preparation/load timing; rebuild the benchmark")
+    if not math.isclose(total, preparation + sample["pipeline_wall_ms"], rel_tol=1e-12, abs_tol=1e-9):
+        raise ValueError("Pipeline load-and-create timing does not include cache preparation exactly once")
+    if not math.isclose(preparation, report["pipeline_cache_preparation_wall_ms"], rel_tol=1e-12, abs_tol=1e-9):
+        raise ValueError("Single-request pipeline cache preparation was not attributed to its request")
+    return dict(pipeline_cache_preparation_wall_ms=preparation, pipeline_load_and_create_wall_ms=total)
+
+
+def import_modes(arm, native_binary_cache, application_pipeline_cache):
+    enabled = application_pipeline_cache if arm["backend"] == "pipeline" else native_binary_cache
+    return (False, True) if enabled else (False,)
+
+
+def artifact_snapshot(path):
+    if not path.is_file() or not path.stat().st_size:
+        raise ValueError("Application pipeline cache prime produced no .pso artifact")
+    return snapshots([path])
+
+
+def dispatch_binary_directory(output, arm, enabled):
+    # An ordinary Pipeline reference uses VkPipelineCache; only experimental
+    # backends accept the separate native binary cache directory.
+    return output / "native-binaries" / arm["name"] if enabled and arm["backend"] != "pipeline" else None
+
+
+def validate_dispatch_binary_backends(backends, enabled):
+    if enabled and not any(backend != "pipeline" for backend in backends):
+        raise ValueError("Native binary cache requires at least one shader-object or pipeline-binary backend")
 
 
 def binary_snapshot(directory):
@@ -179,8 +227,11 @@ def binary_snapshot(directory):
 def compile_experiment(args, output, summary):
     executable = args.executable.resolve(strict=True)
     conditions = arms(args.optimizations, args.backends, args.driver_optimization)
-    if args.native_binary_cache and "pipeline" in args.backends:
+    application_pipeline_cache = getattr(args, "application_pipeline_cache", False)
+    if args.native_binary_cache and "pipeline" in args.backends and not application_pipeline_cache:
         raise ValueError("Native binary import requires shader-object or pipeline-binary; select --backends explicitly")
+    if application_pipeline_cache and "pipeline" not in args.backends:
+        raise ValueError("--application-pipeline-cache requires a pipeline backend arm")
     inputs = input_identity(executable)
     save(output / "Inputs.json", inputs)
     base = clean_environment()
@@ -190,12 +241,15 @@ def compile_experiment(args, output, summary):
               "--descriptor-mode", args.descriptor_mode, "--debug-mode", "disabled"]
     summary.update(conditions=conditions, pairs=args.pairs, validation=args.validation,
                    native_binary_cache=args.native_binary_cache,
-                   scope="One native compute creation per independent process; compilation, uploads and dispatch excluded.",
+                   application_pipeline_cache=application_pipeline_cache,
+                   scope="One native compute creation per independent process. pipeline_load_and_create_wall_ms includes application cache file/preparation plus pipeline_wall_ms; native binary file preparation is already inside pipeline_wall_ms. Device, shader loading/module preparation, cache export/save, uploads and dispatch excluded.",
                    caveats=["Disabled driver cache does not guarantee all compiler/OS state is cold.",
                             "native_cache_hit is application VkPipelineCache feedback, not an internal driver-cache hit.",
                             "Creation speed alone does not establish GPU execution speed or numerical correctness."])
     if args.validation:
         common.append("--validation")
+    if getattr(args, "slang_perf_diagnostics", False):
+        common.append("--slang-perf-diagnostics")
     shaders = {}
     for optimization in args.optimizations:
         check_snapshots(inputs)
@@ -213,80 +267,105 @@ def compile_experiment(args, output, summary):
         save(output / "Inputs.json", inputs)
         summary["excluded_runs"].append(dict(condition="SPIR-V prefill", optimization=optimization,
                                                process=process, report=str(destination / "report.json"),
-                                               compile_wall_ms=sample.get("compile_wall_ms")))
+                                               compile_wall_ms=sample.get("compile_wall_ms"),
+                                               compilation_phases=sample.get("compilation_phases")))
         save(output / "summary.json", summary)
     summary["shaders"] = shaders
     device_shaders = {}
     summary["device_shaders"] = device_shaders
     binary_identities = {}
-    if args.native_binary_cache:
-        for arm in conditions:
+    application_identities = {}
+    device = None
+    for arm in conditions:
+        if len(import_modes(arm, args.native_binary_cache, application_pipeline_cache)) > 1:
             check_snapshots(inputs)
-            directory = output / "native-binaries" / arm["name"]
-            destination = output / f"binary-prime-{arm['name']}"
-            command = native_command(common, arm, destination, directory)
+            application = arm["backend"] == "pipeline"
+            directory = None if application else output / "native-binaries" / arm["name"]
+            cache_file = output / "application-pipeline-caches" / f"{arm['name']}.pso" if application else None
+            if application:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+            destination = output / f"{'application-cache' if application else 'binary'}-prime-{arm['name']}"
+            command = native_command(common, arm, destination, directory, cache_file)
             process, report = driver.run_process(command, environment_for(arm, base, directory), destination, args.timeout)
-            sample = verify_native(report, shaders[arm["optimization"]], arm)
+            sample = verify_native(report, shaders[arm["optimization"]], arm, application_cache=application, device=device)
+            device = report["device"]
+            costs = creation_costs(report, sample)
             identity = device_shader_identity(sample)
             previous = device_shaders.setdefault(arm["optimization"], identity)
             if previous != identity:
                 raise ValueError("Final device SPIR-V changed between native backend/optimization-flag arms")
-            if not sample["pipeline"].get("native_binary_persisted"):
+            if not application and not sample["pipeline"].get("native_binary_persisted"):
                 raise ValueError("Native binary prime did not persist a reusable artifact")
-            binary_identities[arm["name"]] = binary_snapshot(directory)
-            summary["excluded_runs"].append(dict(condition="Native binary extraction", arm=arm,
+            if application:
+                application_identities[arm["name"]] = artifact_snapshot(cache_file)
+            else:
+                binary_identities[arm["name"]] = binary_snapshot(directory)
+            summary["excluded_runs"].append(dict(condition="Application pipeline cache prime" if application else "Native binary extraction", arm=arm,
                                                    process=process, pipeline=sample["pipeline"], pipeline_wall_ms=sample["pipeline_wall_ms"],
-                                                   report=str(destination / "report.json")))
+                                                   report=str(destination / "report.json"), **costs))
             save(output / "summary.json", summary)
     summary["native_binary_identities"] = binary_identities
-    device = None
+    summary["application_pipeline_cache_identities"] = application_identities
     for block in range(args.pairs):
         for arm in balanced_order(conditions, block):
             # When importing, retain both source and import arms for a direct
             # same-bytecode comparison; extraction/priming is never a sample.
-            modes = (False, True) if args.native_binary_cache else (False,)
+            modes = import_modes(arm, args.native_binary_cache, application_pipeline_cache)
             if block % 2:
                 modes = tuple(reversed(modes))
             for imported in modes:
                 check_snapshots(inputs)
-                directory = output / "native-binaries" / arm["name"] if imported else None
+                application = imported and arm["backend"] == "pipeline"
+                directory = output / "native-binaries" / arm["name"] if imported and not application else None
+                cache_file = output / "application-pipeline-caches" / f"{arm['name']}.pso" if application else None
                 if imported:
-                    if binary_snapshot(directory) != binary_identities[arm["name"]]:
-                        raise ValueError("Native binary files changed after extraction")
+                    identity = artifact_snapshot(cache_file) if application else binary_snapshot(directory)
+                    expected = application_identities[arm["name"]] if application else binary_identities[arm["name"]]
+                    if identity != expected:
+                        raise ValueError("Cache files changed after priming/extraction")
                 label = f"block-{block:02}-{arm['name']}-{'import' if imported else 'source'}"
                 destination = output / label
                 print(label, flush=True)
-                process, report = driver.run_process(native_command(common, arm, destination, directory),
+                process, report = driver.run_process(native_command(common, arm, destination, directory, cache_file),
                     environment_for(arm, base, directory), destination, args.timeout)
-                sample = verify_native(report, shaders[arm["optimization"]], arm, imported=imported, device=device)
+                sample = verify_native(report, shaders[arm["optimization"]], arm, imported=imported, application_cache=application, device=device)
+                costs = creation_costs(report, sample)
                 identity = device_shader_identity(sample)
                 previous = device_shaders.setdefault(arm["optimization"], identity)
                 if previous != identity:
                     raise ValueError("Final device SPIR-V changed between native backend/optimization-flag arms")
                 device = report["device"]
-                if imported and binary_snapshot(directory) != binary_identities[arm["name"]]:
-                    raise ValueError("Native binary files changed during import")
+                if imported:
+                    identity = artifact_snapshot(cache_file) if application else binary_snapshot(directory)
+                    if identity != expected:
+                        raise ValueError("Cache files changed during import")
                 summary["runs"].append(dict(block=block, arm=arm, imported=imported, process=process,
+                                            cache_kind="application-pipeline-cache" if application else "native-binary" if imported else "none",
                                             pipeline=sample["pipeline"], pipeline_wall_ms=sample["pipeline_wall_ms"],
-                                            report=str(destination / "report.json")))
+                                            compile_wall_ms=sample.get("compile_wall_ms"), shader_module_wall_ms=sample.get("shader_module_wall_ms"),
+                                            compilation_phases=sample.get("compilation_phases"), report=str(destination / "report.json"), **costs))
                 save(output / "summary.json", summary)
     summary["device"] = device
     summary["timings"] = {f"{arm['name']}-{'import' if imported else 'source'}": {
-        metric: driver.timings([(run[metric] if metric == "pipeline_wall_ms" else run["pipeline"][metric]) for run in summary["runs"]
+        metric: driver.timings([(run[metric] if metric in run else run["pipeline"][metric]) for run in summary["runs"]
             if run["arm"] == arm and run["imported"] == imported and
-               (run.get(metric) if metric == "pipeline_wall_ms" else run["pipeline"].get(metric)) is not None])
-        for metric in ("pipeline_wall_ms", "native_create_ms", "driver_ms", "cache_lock_wait_ms", "native_binary_import_ms", "native_binary_export_ms")}
-        for arm in conditions for imported in ((False, True) if args.native_binary_cache else (False,))}
+               (run.get(metric) if metric in run else run["pipeline"].get(metric)) is not None])
+        for metric in ("pipeline_wall_ms", "pipeline_cache_preparation_wall_ms", "pipeline_load_and_create_wall_ms",
+                       "compile_wall_ms", "shader_module_wall_ms", "native_create_ms", "driver_ms", "cache_lock_wait_ms", "native_binary_import_ms", "native_binary_export_ms")}
+        for arm in conditions for imported in import_modes(arm, args.native_binary_cache, application_pipeline_cache)}
     check_snapshots(inputs)
 
 
-def native_command(common, arm, destination, binary_directory=None):
+def native_command(common, arm, destination, binary_directory=None, application_pipeline_cache=None):
     command = common + ["--slang-optimization", arm["optimization"], "--compute-backend", arm["backend"],
                         "--output-dir", str(destination)]
     if arm["disable_driver_optimization"]:
         command.append("--disable-driver-optimization")
     if binary_directory is not None:
         command += ["--native-binary-cache-dir", str(binary_directory)]
+    if application_pipeline_cache is not None:
+        command[command.index("--pipeline-cache") + 1] = "reuse"
+        command += ["--pipeline-cache-file", str(application_pipeline_cache)]
     return command
 
 
@@ -524,8 +603,7 @@ def recipe_evidence(directory, arm):
 def dispatch_experiment(args, output, summary):
     executable = args.executable.resolve(strict=True)
     conditions = arms(args.optimizations, args.backends, args.driver_optimization)
-    if args.native_binary_cache and "pipeline" in args.backends:
-        raise ValueError("Native binary cache requires shader-object or pipeline-binary")
+    validate_dispatch_binary_backends(args.backends, args.native_binary_cache)
     cases_path, configuration, extra = workload_configuration(args, output)
     inputs = input_identity(executable, extra, production=True)
     save(output / "Inputs.json", inputs)
@@ -555,7 +633,7 @@ def dispatch_experiment(args, output, summary):
             destination.mkdir(parents=True, exist_ok=False)
             command = [str(executable), "--gtest_filter=RHIRendering.material_phase0_baseline",
                        "--rhi-validation" if args.validation else "--rhi-no-validation", "--output-dir", str(destination)]
-            directory = output / "native-binaries" / arm["name"] if args.native_binary_cache else None
+            directory = dispatch_binary_directory(output, arm, args.native_binary_cache)
             environment = environment_for(arm, base, directory, internal_cache="enabled")
             environment["METALLIC_PIPELINE_RECIPE_DIRECTORY"] = str(destination / "recipes")
             print(label, flush=True)
@@ -632,7 +710,8 @@ def verify(output):
     expected_sequence = []
     for block in range(summary["pairs"]):
         for arm in balanced_order(summary["conditions"], block):
-            modes = (False, True) if summary["command"] == "compile" and summary["native_binary_cache"] else (False,)
+            modes = import_modes(arm, summary["native_binary_cache"], summary.get("application_pipeline_cache", False)) \
+                if summary["command"] == "compile" else (False,)
             if block % 2:
                 modes = tuple(reversed(modes))
             expected_sequence.extend((block, arm, imported) for imported in modes)
@@ -652,12 +731,25 @@ def verify(output):
     else:
         for run in runs:
             report = read(run["report"])
+            if summary.get("schema_version", 1) >= 2:
+                expected_kind = "none" if not run["imported"] else \
+                    "application-pipeline-cache" if run["arm"]["backend"] == "pipeline" else "native-binary"
+                if run.get("cache_kind") != expected_kind:
+                    raise ValueError("Import artifact kind differs from its backend")
             sample = verify_native(report, summary["shaders"][run["arm"]["optimization"]], run["arm"],
-                                   imported=run["imported"], device=summary["device"])
+                                   imported=run["imported"], application_cache=run.get("cache_kind") == "application-pipeline-cache",
+                                   device=summary["device"])
             if sample["pipeline"] != run["pipeline"]:
                 raise ValueError("Native timing summary changed")
             if sample["pipeline_wall_ms"] != run["pipeline_wall_ms"]:
                 raise ValueError("Total pipeline creation wall time changed")
+            if summary.get("schema_version", 1) >= 2:
+                for field, value in creation_costs(report, sample).items():
+                    if run[field] != value:
+                        raise ValueError("Pipeline load/preparation timing summary changed")
+                for field in ("compile_wall_ms", "shader_module_wall_ms", "compilation_phases"):
+                    if run.get(field) != sample.get(field):
+                        raise ValueError("Shader preparation timing summary changed")
             if device_shader_identity(sample) != summary["device_shaders"][run["arm"]["optimization"]]:
                 raise ValueError("Device SPIR-V identity summary changed")
     return summary
@@ -680,6 +772,10 @@ def main():
     native = sub.choices["compile"]
     native.add_argument("--request-index", type=int, required=True)
     native.add_argument("--descriptor-mode", choices=("request", "mapped", "native"), default="request")
+    native.add_argument("--application-pipeline-cache", action="store_true",
+                        help="Prime a per-arm .pso (excluded), then compare empty-cache source with independent-process cache import")
+    native.add_argument("--slang-perf-diagnostics", action="store_true",
+                        help="Request detailed Slang performance reports during excluded SPIR-V prefill; SDK counters overlap wall phases")
     dispatch = sub.choices["dispatch"]
     dispatch.add_argument("--cases", type=Path, required=True)
     dispatch.add_argument("--case-id", nargs="+")
@@ -710,7 +806,7 @@ def main():
     lock.parent.mkdir(parents=True, exist_ok=True)
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    summary = dict(schema_version=1, command=args.command, status="running", runs=[], excluded_runs=[])
+    summary = dict(schema_version=2, command=args.command, status="running", runs=[], excluded_runs=[])
     save(output / "summary.json", summary)
     with lock.open("x", encoding="utf-8") as file:
         json.dump(dict(pid=os.getpid(), output=str(output), command=args.command), file)

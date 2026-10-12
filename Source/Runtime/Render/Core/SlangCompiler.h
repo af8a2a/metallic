@@ -58,10 +58,36 @@ struct SlangShaderDesc {
     SlangShaderOptimizationLevel optimizationLevel = SlangShaderOptimizationLevel::Default;
 };
 
+// Per-call wall-clock measurements. Compiler code generation includes Slang IR
+// optimization, SPIR-V emission and any downstream compiler work; the SDK's
+// elapsed-time counters below overlap those phases and must not be added to them.
+// Cache hits leave all compiler phases at zero. Timings are not persisted in the
+// SPIR-V cache, so loading code never reports another invocation's measurements.
+struct ShaderCompileMetrics {
+    uint64_t totalTimeNanoseconds = 0;
+    uint64_t cacheLookupTimeNanoseconds = 0;
+    uint64_t compilerSetupTimeNanoseconds = 0;
+    uint64_t moduleLoadTimeNanoseconds = 0;
+    uint64_t dependencyTrackingTimeNanoseconds = 0;
+    uint64_t entryPointCompositionTimeNanoseconds = 0;
+    uint64_t linkTimeNanoseconds = 0;
+    uint64_t codeGenerationTimeNanoseconds = 0;
+    uint64_t targetFinalizeTimeNanoseconds = 0;
+    uint64_t dependencyValidationTimeNanoseconds = 0;
+    uint64_t cacheWriteTimeNanoseconds = 0;
+    uint64_t compilerReportedTotalTimeNanoseconds = 0;
+    uint64_t compilerReportedDownstreamTimeNanoseconds = 0;
+    bool cacheHit = false;
+    bool compilerExecuted = false;
+    bool compilerReportedTimingAvailable = false;
+    bool detailedCompilerPerfRequested = false;
+};
+
 struct ShaderCompileResult {
     std::vector<uint32_t> spirv;
     std::string diagnostics;
     std::vector<std::string> dependencies;
+    ShaderCompileMetrics metrics;
 };
 
 struct SlangShaderCacheOptions {
@@ -69,6 +95,9 @@ struct SlangShaderCacheOptions {
     const char* cacheDirectory = nullptr;
     bool enableDiskCache = true;
     bool* outCacheHit = nullptr;
+    // Diagnostic output only. A cache hit does not invoke the compiler or
+    // fabricate a per-pass report. Use a cache miss for detailed profiling.
+    bool reportDetailedCompilerPerf = false;
 };
 
 // Process-global compilation policy. Configure it before shader compilation begins.
