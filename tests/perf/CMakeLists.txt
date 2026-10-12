@@ -8,6 +8,9 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicSPIRVComplexityTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestSPIRVComplexity.py")
+    set_tests_properties(MetallicSPIRVComplexityTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
     add_test(NAME MetallicComputeShaderFrontendTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestComputeShaderFrontend.py")
     set_tests_properties(MetallicComputeShaderFrontendTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)

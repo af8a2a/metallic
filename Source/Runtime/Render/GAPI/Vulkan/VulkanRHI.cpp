@@ -36,6 +36,7 @@
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_vulkan.h>
 #include <spdlog/spdlog.h>
+#include <json.hpp>
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
@@ -51,6 +52,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -2082,6 +2084,7 @@ struct DeviceImpl {
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderUntypedPointersEnabled = false;
     bool pipelineExecutableStatistics = false;
+    std::string pipelineExecutableDirectory;
     bool logPipelineKeys = false;
     bool pipelineBinaryEnabled = false;
     bool bufferDeviceAddressEnabled = false;
@@ -8540,6 +8543,170 @@ Result<> Device::validateComputePipelineDesc(const ComputePipelineDesc& desc) co
 }
 
 namespace {
+// These are diagnostics of a captured executable, not a native cache format.
+// Preserve the driver's bytes and descriptions without assuming they are ISA.
+template <typename T, typename Query>
+VkResult queryExecutableArray(std::vector<T>& values, VkStructureType type, Query&& query)
+{
+    constexpr uint32_t kMaxEntries = 256;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        uint32_t count = 0;
+        VkResult result = query(&count, nullptr);
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) { return result; }
+        if (count > kMaxEntries) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
+        values.assign(count, T{});
+        for (auto& value : values) { value.sType = type; }
+        if (count == 0) { return VK_SUCCESS; }
+        result = query(&count, values.data());
+        if (result == VK_SUCCESS && count <= values.size()) {
+            values.resize(count);
+            return result;
+        }
+        if (result == VK_SUCCESS) { result = VK_INCOMPLETE; }
+        if (result != VK_INCOMPLETE) { return result; }
+    }
+    values.clear();
+    return VK_INCOMPLETE;
+}
+
+void captureComputeExecutable(detail::DeviceImpl& device, VkPipeline pipeline, uint64_t psoHash,
+    const detail::ShaderModuleImpl& shader, const char* entry)
+{
+    if (device.pipelineExecutableDirectory.empty()) { return; }
+    // File I/O and queries deliberately happen after the native creation timer.
+    try {
+        using Json = nlohmann::json;
+        static std::atomic<uint64_t> sequence = 0;
+        const auto begin = std::chrono::steady_clock::now();
+        const auto root = std::filesystem::path(device.pipelineExecutableDirectory);
+        std::filesystem::create_directories(root);
+        std::filesystem::path directory;
+        for (int attempt = 0; attempt < 32; ++attempt) {
+            const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto candidate = root / (std::to_string(psoHash) + "-" + std::to_string(stamp) + "-" +
+                std::to_string(sequence.fetch_add(1)));
+            if (std::filesystem::create_directory(candidate)) { directory = std::move(candidate); break; }
+        }
+        if (directory.empty()) { throw std::runtime_error("Cannot allocate a unique pipeline capture directory"); }
+        const auto& core = device.physicalProperties.core;
+        Json report{{"schema_version", 1}, {"pso_hash", psoHash}, {"shader", shader.diagnosticName},
+            {"entry_point", entry}, {"input_spirv_fnv1a64", shader.inputSpirvFnv1a64},
+            {"device_spirv_fnv1a64", shader.deviceSpirvFnv1a64},
+            {"device", {{"name", core.deviceName}, {"vendor_id", core.vendorID}, {"device_id", core.deviceID},
+                {"driver_version", core.driverVersion}, {"api_version", core.apiVersion},
+                {"pipeline_cache_uuid", std::vector<uint8_t>(core.pipelineCacheUUID, core.pipelineCacheUUID + VK_UUID_SIZE)}}},
+            {"capture_statistics", device.pipelineExecutableStatistics},
+            {"capture_internal_representations", device.pipelineExecutableStatistics},
+            {"scope", "Opt-in captured Compute Pipeline; driver representations are implementation-dependent. Query/export time is outside native_create_ms. Capture flags may change compilation; do not pool timings with ordinary pipelines."},
+            {"executables", Json::array()}};
+        const auto& functions = device.functions;
+        const bool available = device.pipelineExecutableStatistics && functions.vkGetPipelineExecutablePropertiesKHR &&
+            functions.vkGetPipelineExecutableStatisticsKHR && functions.vkGetPipelineExecutableInternalRepresentationsKHR;
+        report["status"] = available ? "queried" : "unsupported";
+        size_t exportedBytes = 0;
+        constexpr size_t kMaxCaptureBytes = 256u * 1024u * 1024u;
+        if (available) {
+            VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
+            std::vector<VkPipelineExecutablePropertiesKHR> properties;
+            const auto result = queryExecutableArray(properties, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR,
+                [&](uint32_t* count, VkPipelineExecutablePropertiesKHR* values) {
+                    return functions.vkGetPipelineExecutablePropertiesKHR(device.device, &info, count, values);
+                });
+            report["properties_result"] = int(result);
+            if (result != VK_SUCCESS) { report["status"] = "query_failed"; }
+            for (uint32_t index = 0; result == VK_SUCCESS && index < properties.size(); ++index) {
+                const auto& property = properties[index];
+                VkPipelineExecutableInfoKHR executable{.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR,
+                    .pipeline = pipeline, .executableIndex = index};
+                Json item{{"index", index}, {"name", property.name}, {"description", property.description},
+                    {"stages", property.stages}, {"subgroup_size", property.subgroupSize},
+                    {"statistics", Json::array()}, {"representations", Json::array()}};
+                std::vector<VkPipelineExecutableStatisticKHR> statistics;
+                const auto statResult = queryExecutableArray(statistics, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR,
+                    [&](uint32_t* count, VkPipelineExecutableStatisticKHR* values) {
+                        return functions.vkGetPipelineExecutableStatisticsKHR(device.device, &executable, count, values);
+                    });
+                item["statistics_result"] = int(statResult);
+                for (const auto& stat : statistics) {
+                    if (statResult != VK_SUCCESS) { break; }
+                    Json value{{"name", stat.name}, {"description", stat.description}, {"format", int(stat.format)}};
+                    switch (stat.format) {
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: value["value"] = bool(stat.value.b32); break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: value["value"] = stat.value.i64; break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: value["value"] = stat.value.u64; break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR: value["value"] = stat.value.f64; break;
+                    default: value["value"] = nullptr; break;
+                    }
+                    item["statistics"].push_back(std::move(value));
+                }
+                VkResult representationResult = VK_INCOMPLETE;
+                std::vector<VkPipelineExecutableInternalRepresentationKHR> representations;
+                std::vector<std::vector<uint8_t>> buffers;
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    representationResult = queryExecutableArray(representations,
+                        VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR,
+                        [&](uint32_t* count, VkPipelineExecutableInternalRepresentationKHR* values) {
+                            return functions.vkGetPipelineExecutableInternalRepresentationsKHR(device.device, &executable, count, values);
+                        });
+                    if (representationResult != VK_SUCCESS || representations.empty()) { break; }
+                    size_t pendingBytes = 0;
+                    bool oversized = false;
+                    for (const auto& representation : representations) {
+                        if (representation.dataSize > kMaxCaptureBytes - exportedBytes - pendingBytes) { oversized = true; break; }
+                        pendingBytes += representation.dataSize;
+                    }
+                    if (oversized) { representationResult = VK_ERROR_OUT_OF_HOST_MEMORY; break; }
+                    buffers.clear();
+                    buffers.resize(representations.size());
+                    for (size_t i = 0; i < representations.size(); ++i) {
+                        buffers[i].resize(representations[i].dataSize);
+                        representations[i].pData = buffers[i].empty() ? nullptr : buffers[i].data();
+                    }
+                    uint32_t count = static_cast<uint32_t>(representations.size());
+                    representationResult = functions.vkGetPipelineExecutableInternalRepresentationsKHR(device.device, &executable,
+                        &count, representations.data());
+                    if (representationResult == VK_SUCCESS && count <= representations.size()) {
+                        representations.resize(count);
+                        for (size_t i = 0; i < representations.size(); ++i) {
+                            if (representations[i].dataSize > buffers[i].size()) { representationResult = VK_INCOMPLETE; break; }
+                        }
+                        if (representationResult == VK_SUCCESS) { break; }
+                    }
+                    if (representationResult == VK_SUCCESS) { representationResult = VK_INCOMPLETE; }
+                    if (representationResult != VK_INCOMPLETE) { break; }
+                }
+                item["representations_result"] = int(representationResult);
+                if (representationResult == VK_SUCCESS) {
+                    for (size_t i = 0; i < representations.size(); ++i) {
+                        const auto& representation = representations[i];
+                        const auto fileName = std::to_string(index) + "-" + std::to_string(i) +
+                            (representation.isText ? ".txt" : ".bin");
+                        std::ofstream stream(directory / fileName, std::ios::binary | std::ios::trunc);
+                        if (representation.dataSize) {
+                            stream.write(reinterpret_cast<const char*>(buffers[i].data()), static_cast<std::streamsize>(representation.dataSize));
+                        }
+                        stream.close();
+                        if (!stream) { throw std::runtime_error("Cannot export pipeline internal representation"); }
+                        exportedBytes += representation.dataSize;
+                        item["representations"].push_back({{"name", representation.name}, {"description", representation.description},
+                            {"is_text", bool(representation.isText)}, {"bytes", representation.dataSize}, {"file", fileName}});
+                    }
+                }
+                report["executables"].push_back(std::move(item));
+            }
+        }
+        report["exported_bytes"] = exportedBytes;
+        report["query_export_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+        std::ofstream stream(directory / "manifest.json", std::ios::trunc);
+        stream << report.dump(2) << '\n';
+        stream.close();
+        if (!stream) { throw std::runtime_error("Cannot write pipeline executable manifest"); }
+        spdlog::info("[PipelineExecutable] manifest='{}' exportedBytes={}", (directory / "manifest.json").string(), exportedBytes);
+    } catch (const std::exception& error) {
+        spdlog::warn("[PipelineExecutable] export failed: {}", error.what());
+    }
+}
+
 Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
     const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner);
 VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
@@ -8648,8 +8815,14 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
     if (impl_->pipelineExecutableStatistics) {
         if (pipelineInfo.pNext != nullptr) {
             bindlessPipelineFlags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+            if (!impl_->pipelineExecutableDirectory.empty()) {
+                bindlessPipelineFlags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+            }
         } else {
             pipelineInfo.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+            if (!impl_->pipelineExecutableDirectory.empty()) {
+                pipelineInfo.flags |= VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+            }
         }
     }
     VkPipeline& pipeline = pipelineImpl->pipeline;
@@ -8681,23 +8854,21 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
         spdlog::info("[PipelineStatisticsBinding] cacheKey={:016x} inputSpirvFnv1a64={} deviceSpirvFnv1a64={} shader={} entry={}",
             shader.contentHash, shader.inputSpirvFnv1a64, shader.deviceSpirvFnv1a64, shader.diagnosticName, stage.pName);
         VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
-        uint32_t count = 0;
-        VkResult query = impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, nullptr);
-        std::vector<VkPipelineExecutablePropertiesKHR> executables(count, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
-        if (query == VK_SUCCESS && count) {
-            query = impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, executables.data());
-        }
+        std::vector<VkPipelineExecutablePropertiesKHR> executables;
+        VkResult query = queryExecutableArray(executables, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR,
+            [&](uint32_t* count, VkPipelineExecutablePropertiesKHR* values) {
+                return impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, count, values);
+            });
         if (query != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] properties unavailable: {}", int(query)); }
-        for (uint32_t i = 0; query == VK_SUCCESS && i < count; ++i) {
+        for (uint32_t i = 0; query == VK_SUCCESS && i < executables.size(); ++i) {
             VkPipelineExecutableInfoKHR executable{.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = pipeline, .executableIndex = i};
-            uint32_t statCount = 0;
-            VkResult statQuery = impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, nullptr);
-            std::vector<VkPipelineExecutableStatisticKHR> stats(statCount, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
-            if (statQuery == VK_SUCCESS && statCount) {
-                statQuery = impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, stats.data());
-            }
+            std::vector<VkPipelineExecutableStatisticKHR> stats;
+            VkResult statQuery = queryExecutableArray(stats, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR,
+                [&](uint32_t* count, VkPipelineExecutableStatisticKHR* values) {
+                    return impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, count, values);
+                });
             if (statQuery != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] statistics unavailable: {}", int(statQuery)); continue; }
-            for (uint32_t j = 0; j < statCount; ++j) {
+            for (uint32_t j = 0; j < stats.size(); ++j) {
                 const auto& stat = stats[j];
                 std::string value;
                 switch (stat.format) {
@@ -8713,6 +8884,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
             }
         }
     }
+    captureComputeExecutable(*impl_, pipeline, psoHash, *desc.computeShader.module->impl_, stage.pName);
     pipelineImpl->replayInputSpirv = desc.computeShader.module->impl_->replayInputSpirv;
     pipelineImpl->replayDeviceSpirv = desc.computeShader.module->impl_->replayDeviceSpirv;
     pipelineImpl->psoHash = psoHash;
@@ -9819,7 +9991,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR,
     };
     const char* executableStats = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
-    if (executableStats != nullptr && std::strcmp(executableStats, "1") == 0) {
+    if (const char* directory = std::getenv("METALLIC_VK_PIPELINE_EXECUTABLE_DIRECTORY"); directory != nullptr && directory[0] != '\0') {
+        deviceImpl->pipelineExecutableDirectory = directory;
+    }
+    if (!deviceImpl->pipelineExecutableDirectory.empty() || (executableStats != nullptr && std::strcmp(executableStats, "1") == 0)) {
         if (selectedDeviceExtensions.has(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
             VkPhysicalDeviceFeatures2 probe{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &executableFeatures};
             vkGetPhysicalDeviceFeatures2(deviceImpl->physicalDevice, &probe);

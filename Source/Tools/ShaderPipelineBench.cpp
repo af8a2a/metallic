@@ -628,7 +628,8 @@ int run(const Options& options)
         {"scope", "Serial preparation and optional concurrent PSO creation; no dispatch or frame timing. Empty application caches do not guarantee cold driver/OS caches."}};
     for (const char* name : {"METALLIC_SLANG_DESCRIPTOR_MODE", "METALLIC_WORKING_COLOR_SPACE",
         "METALLIC_VK_INTERNAL_PIPELINE_CACHE", "METALLIC_VK_LOG_PIPELINE_KEYS", "METALLIC_SLANG_OPTIMIZATION",
-        "METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION", "METALLIC_VK_PIPELINE_BINARY"}) {
+        "METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION", "METALLIC_VK_PIPELINE_BINARY",
+        "METALLIC_VK_PIPELINE_STATISTICS", "METALLIC_VK_PIPELINE_EXECUTABLE_DIRECTORY"}) {
         const char* value = std::getenv(name);
         report["environment"][name] = value ? Json(value) : Json(nullptr);
     }

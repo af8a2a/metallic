@@ -7,6 +7,10 @@ records its schedule, inputs, process logs and results. It never edits shaders.
 Run from the repository root using a current build and Python 3.11 or later;
 dispatch readback comparisons also require numpy.
 
+For exact SPIR-V CFG/callgraph analysis, opt-in Driver executable statistics,
+ISA availability checks and the measured shadow-only noinline feasibility
+experiment, see [Shader compilation complexity](ShaderCompilationComplexity.md).
+
 ## Native compilation
 
 First list the current catalog. Indices can change; retain the selected request
