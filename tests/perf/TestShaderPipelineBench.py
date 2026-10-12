@@ -76,6 +76,10 @@ class ShaderPipelineBenchTests(unittest.TestCase):
         self.run_bench("--pipeline-workers", "0", expected=2)
         self.run_bench("--pipeline-workers", "2", "--compile-only", expected=2)
         self.run_bench("--unknown-option", expected=2)
+        self.run_bench("--slang-optimization", "fast", expected=2)
+        self.run_bench("--compute-backend", "fast", expected=2)
+        self.run_bench("--compute-backend", "shader-object", "--disable-driver-optimization", expected=2)
+        self.run_bench("--native-binary-cache-dir", self.root / "binary", expected=2)
         self.run_bench("--output-dir", self.root / "unselected", expected=2)
         self.assertFalse((self.root / "unselected").exists())
 
@@ -139,6 +143,27 @@ class ShaderPipelineBenchTests(unittest.TestCase):
         self.assertEqual([s["shader_cache_hit"] for s in subsequent["samples"]], [True, True])
         self.assertEqual(initial["samples"][0]["spirv_fnv1a64"],
                          subsequent["samples"][0]["spirv_fnv1a64"])
+
+    def test_optimization_variants_keep_prefilled_spirv_and_report_structure(self):
+        cache = self.root / "optimization-cache"
+        for optimization in ("O0", "O1", "O2"):
+            for iteration in range(2):
+                destination = self.root / f"{optimization}-{iteration}"
+                self.run_bench("--filter", "Features/Debug/GPUProbe.probe", "--compile-only",
+                               "--iterations", "1", "--descriptor-mode", "mapped", "--shader-cache", "reuse",
+                               "--slang-optimization", optimization, "--cache-dir", cache, "--output-dir", destination)
+                report = json.loads((destination / "report.json").read_text())
+                sample = report["samples"][0]
+                self.assertEqual(sample["effective_slang_optimization"], optimization)
+                self.assertEqual(sample["shader_cache_hit"], bool(iteration))
+                stats = sample["spirv_statistics"]
+                for field in ("instruction_count", "function_count", "basic_block_count", "max_function_instructions"):
+                    self.assertGreater(stats[field], 0)
+                self.assertGreaterEqual(stats["instruction_count"], stats["max_function_instructions"])
+                if iteration:
+                    self.assertEqual(sample["spirv_fnv1a64"], previous["spirv_fnv1a64"])
+                    self.assertEqual(stats, previous["spirv_statistics"])
+                previous = sample
 
     def test_gpu_pipeline_cache_and_timing(self):
         if not self.gpu:

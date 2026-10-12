@@ -64,6 +64,8 @@ NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
 // Borrowed module; the owning ShaderModule must outlive native creation.
 VkShaderModule nativeShaderModule(ShaderModule& shader);
+// Borrowed final device bytecode; the ShaderModule must remain alive.
+std::span<const uint32_t> nativeShaderSpirv(ShaderModule& shader);
 // For external ABIs (e.g. ImGui). Lock creation and record a successful stable
 // state key in the same RHI cache. The caller owns the resulting native pipeline.
 Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,

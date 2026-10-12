@@ -72,6 +72,8 @@ uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc)
     hash = hashValue(hash, static_cast<uint32_t>(desc.depthStencil.depthCompareOp));
     hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
     hash = hashValue(hash, hashBool(desc.indirectBindable));
+    // Preserve all existing default PSO identities while distinguishing experiments.
+    if (desc.disableOptimization) { hash = hashValue(hash, uint32_t{0x444f5054u}); }
     return hash;
 }
 
@@ -87,6 +89,11 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
     hash = hashValue(hash, desc.bindlessUserPushDataSize);
     // Preserve the existing default-pipeline cache identity (zero custom mappings).
     hash = hashValue(hash, uint32_t{0});
+    if (desc.disableOptimization || desc.backend != ComputePipelineBackend::Pipeline) {
+        hash = hashValue(hash, uint32_t{0x45585031u});
+        hash = hashValue(hash, hashBool(desc.disableOptimization));
+        hash = hashValue(hash, static_cast<uint8_t>(desc.backend));
+    }
     return hash;
 }
 

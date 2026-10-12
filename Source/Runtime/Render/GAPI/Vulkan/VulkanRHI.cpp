@@ -10,6 +10,7 @@
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/ShaderObjectCacheFile.h"
+#include "Runtime/Render/GAPI/NativeBinaryCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -1918,6 +1919,7 @@ struct ComputePipelineImpl {
     DeviceImpl* device = nullptr;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderEXT shaderObject = VK_NULL_HANDLE;
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
@@ -1965,6 +1967,7 @@ struct CommandBufferImpl {
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
     VkPipeline currentComputePipeline = VK_NULL_HANDLE;
+    VkShaderEXT currentComputeShaderObject = VK_NULL_HANDLE;
     BindlessHeapImpl* currentBindlessHeap = nullptr;
     bool currentGraphicsPipelineUsesBindlessHeap = false;
     bool currentComputePipelineUsesBindlessHeap = false;
@@ -2080,6 +2083,7 @@ struct DeviceImpl {
     bool shaderUntypedPointersEnabled = false;
     bool pipelineExecutableStatistics = false;
     bool logPipelineKeys = false;
+    bool pipelineBinaryEnabled = false;
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingPipelineEnabled = false;
     bool streamlineInitialized = false;
@@ -3915,6 +3919,10 @@ namespace detail {
 ComputePipelineImpl::~ComputePipelineImpl()
 {
     if (device != nullptr) {
+        if (shaderObject != VK_NULL_HANDLE) {
+            device->functions.vkDestroyShaderEXT(device->device, shaderObject, nullptr);
+            shaderObject = VK_NULL_HANDLE;
+        }
         if (pipeline != VK_NULL_HANDLE) {
             device->functions.vkDestroyPipeline(device->device, pipeline, nullptr);
             pipeline = VK_NULL_HANDLE;
@@ -4295,6 +4303,7 @@ Result<> CommandBuffer::begin(std::shared_ptr<CommandSubmissionContext> context)
     impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipeline = VK_NULL_HANDLE;
+    impl_->currentComputeShaderObject = VK_NULL_HANDLE;
     impl_->currentBindlessHeap = nullptr;
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
     impl_->currentComputePipelineUsesBindlessHeap = false;
@@ -5211,8 +5220,14 @@ Result<> CommandBuffer::bindExecutionImpl(
         auto result = retainResource(execution.compute_);
         if (!result) { return result; }
         const auto& pipeline = *execution.compute_;
-        impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+        if (pipeline.shaderObject != VK_NULL_HANDLE) {
+            const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            impl_->device->functions.vkCmdBindShadersEXT(impl_->commandBuffer, 1, &stage, &pipeline.shaderObject);
+        } else {
+            impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+        }
         impl_->currentComputePipeline = pipeline.pipeline;
+        impl_->currentComputeShaderObject = pipeline.shaderObject;
         impl_->currentComputePipelineLayout = pipeline.layout;
         impl_->currentComputePipelineUsesBindlessHeap = pipeline.usesBindlessHeap;
     } else if (execution.graphics_) {
@@ -5404,17 +5419,22 @@ Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& r
         return makeError(Error::InvalidArgument);
     }
     const auto pipeline = impl_->currentComputePipeline;
+    const auto shaderObject = impl_->currentComputeShaderObject;
     const auto layout = impl_->currentComputePipelineLayout;
     const auto usesHeap = impl_->currentComputePipelineUsesBindlessHeap;
     auto* heap = impl_->currentBindlessHeap;
     auto data = impl_->currentBindlessUserData;
     const auto restore = [&] {
         impl_->currentComputePipeline = pipeline;
+        impl_->currentComputeShaderObject = shaderObject;
         impl_->currentComputePipelineLayout = layout;
         impl_->currentComputePipelineUsesBindlessHeap = usesHeap;
         impl_->currentBindlessHeap = heap;
         impl_->currentBindlessUserData = std::move(data);
-        if (pipeline) { impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
+        if (shaderObject) {
+            const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            impl_->device->functions.vkCmdBindShadersEXT(impl_->commandBuffer, 1, &stage, &shaderObject);
+        } else if (pipeline) { impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
         if (heap) {
             heap->heap.bind(impl_->commandBuffer, heap->samplerHeap.address, heap->resourceHeap.address);
             pushCurrentBindlessData(*impl_);
@@ -8430,11 +8450,12 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
         .pNext = &renderingInfo,
         .flags = (desc.usesBindlessHeap ? VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT : 0) |
-            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0),
+            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0) |
+            (desc.disableOptimization ? VK_PIPELINE_CREATE_2_DISABLE_OPTIMIZATION_BIT : 0),
     };
     VkGraphicsPipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .pNext = (desc.usesBindlessHeap || desc.indirectBindable) ? static_cast<const void*>(&bindlessPipelineFlags) :
+        .pNext = (desc.usesBindlessHeap || desc.indirectBindable || desc.disableOptimization) ? static_cast<const void*>(&bindlessPipelineFlags) :
             static_cast<const void*>(&renderingInfo),
         .stageCount = static_cast<uint32_t>(stages.size()),
         .pStages = stages.data(),
@@ -8477,6 +8498,23 @@ Result<> Device::validateComputePipelineDesc(const ComputePipelineDesc& desc) co
         !validShaderStage(desc.computeShader)) {
         return makeError(Error::InvalidArgument);
     }
+    if (desc.backend > ComputePipelineBackend::PipelineBinary ||
+        (desc.backend != ComputePipelineBackend::Pipeline && desc.pipelineCache != nullptr) ||
+        (desc.backend == ComputePipelineBackend::ShaderObject && desc.disableOptimization)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.backend == ComputePipelineBackend::ShaderObject &&
+        (!impl_->capabilities.shaderObject || !impl_->functions.vkCreateShadersEXT || !impl_->functions.vkCmdBindShadersEXT)) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.backend == ComputePipelineBackend::PipelineBinary && !impl_->pipelineBinaryEnabled) {
+        return makeError(Error::Unsupported);
+    }
+    // The pipeline execution-set API accepts VkPipeline only. Compute shader
+    // objects require a separate shader execution-set API and are not exposed here.
+    if (desc.backend == ComputePipelineBackend::ShaderObject && desc.indirectBindable) {
+        return makeError(Error::Unsupported);
+    }
 
     if (desc.indirectBindable && !supportsIndirectBinding(*impl_,
         VK_SHADER_STAGE_COMPUTE_BIT, IndirectBinding::Pipeline)) {
@@ -8500,6 +8538,14 @@ Result<> Device::validateComputePipelineDesc(const ComputePipelineDesc& desc) co
     }
     return {};
 }
+
+namespace {
+Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner);
+VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const VkComputePipelineCreateInfo& suppliedInfo, VkPipelineCreateFlags2CreateInfo flags,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner);
+} // namespace
 
 Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
     const ComputePipelineDesc& desc, PipelineCreationStats* creationStats)
@@ -8535,17 +8581,29 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
     auto owner = createPipelineOwner<detail::ComputePipelineImpl>(*impl_, desc.usesBindlessHeap);
     if (!owner) { return std::unexpected(owner.error()); }
     auto pipelineImpl = std::move(*owner);
+    pipelineImpl->psoHash = psoHash;
+    pipelineImpl->replayInputSpirv = desc.computeShader.module->impl_->replayInputSpirv;
+    pipelineImpl->replayDeviceSpirv = desc.computeShader.module->impl_->replayDeviceSpirv;
+    spdlog::info("[ComputeCreatePolicy] backend={} disableOptimization={} pso={:016x}",
+        static_cast<uint32_t>(desc.backend), desc.disableOptimization, psoHash);
+    if (desc.backend == ComputePipelineBackend::ShaderObject) {
+        auto created = createComputeShaderObject(*impl_, desc, *desc.computeShader.module->impl_, *pipelineImpl);
+        if (creationStats) { *creationStats = pipelineImpl->creationStats; }
+        if (!created) { return std::unexpected(created.error()); }
+        return std::unique_ptr<ComputePipeline>(new ComputePipeline(std::move(pipelineImpl)));
+    }
     const VkPipelineLayout layout = pipelineImpl->layout;
     VkResult result = VK_SUCCESS;
 
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
         .flags = (desc.usesBindlessHeap ? VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT : 0) |
-            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0),
+            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0) |
+            (desc.disableOptimization ? VK_PIPELINE_CREATE_2_DISABLE_OPTIMIZATION_BIT : 0),
     };
     VkComputePipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .pNext = (desc.usesBindlessHeap || desc.indirectBindable) ? static_cast<const void*>(&bindlessPipelineFlags) : nullptr,
+        .pNext = (desc.usesBindlessHeap || desc.indirectBindable || desc.disableOptimization) ? static_cast<const void*>(&bindlessPipelineFlags) : nullptr,
         .stage = stage,
         .layout = layout,
     };
@@ -8595,7 +8653,11 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
         }
     }
     VkPipeline& pipeline = pipelineImpl->pipeline;
-    result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "compute",
+    if (desc.backend == ComputePipelineBackend::PipelineBinary) {
+        result = createComputePipelineBinary(*impl_, desc, pipelineInfo, bindlessPipelineFlags,
+            *desc.computeShader.module->impl_, *pipelineImpl);
+    } else {
+        result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "compute",
         desc.computeShader.module->impl_->diagnosticName, computeEntryPoint,
         pipelineImpl->pipelineCacheHit, pipelineImpl->creationStats, [&](const VkComputePipelineCreateInfo& info) {
             return impl_->functions.vkCreateComputePipelines(
@@ -8606,6 +8668,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
                 nullptr,
                 &pipeline);
         });
+    }
     if (creationStats != nullptr) { *creationStats = pipelineImpl->creationStats; }
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
@@ -8717,6 +8780,283 @@ bool exportShaderObjectBinary(detail::DeviceImpl& device, VkShaderEXT shader,
         return true;
     }
     return false;
+}
+
+std::filesystem::path nativeBinaryPath(const ComputePipelineDesc& desc,
+    const detail::NativeBinaryCacheData& identity)
+{
+    if (!desc.nativeBinaryCacheDirectory || !desc.nativeBinaryCacheDirectory[0]) { return {}; }
+    const uint64_t compatibilityHash = detail::hashBytes(detail::kFnvOffset,
+        identity.compatibilityKey.data(), identity.compatibilityKey.size());
+    return std::filesystem::path(desc.nativeBinaryCacheDirectory) /
+        fmt::format("{:016x}", compatibilityHash) /
+        fmt::format("{:016x}.{}", identity.programHash, identity.kind == 1 ? "computeshaderbin" : "pipelinebin");
+}
+
+Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner)
+{
+    auto& stats = owner.creationStats;
+    stats.computeBackend = ComputePipelineBackend::ShaderObject;
+    const auto mappings = defaultHeapMappings(device.descriptorHeapWriter);
+    const VkShaderDescriptorSetAndBindingMappingInfoEXT mappingInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
+        .mappingCount = static_cast<uint32_t>(mappings.size()), .pMappings = mappings.data(),
+    };
+    VkShaderCreateInfoEXT info{
+        .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+        .pNext = desc.usesBindlessHeap && shader.hasDescriptorBindings ? &mappingInfo : nullptr,
+        .flags = desc.usesBindlessHeap ? VkShaderCreateFlagsEXT{VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT} : VkShaderCreateFlagsEXT{0},
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+        .codeSize = shader.deviceSpirv.size() * sizeof(uint32_t),
+        .pCode = shader.deviceSpirv.data(), .pName = desc.computeShader.entryPoint,
+    };
+    detail::NativeBinaryCacheData identity{.programHash = owner.psoHash, .kind = 1};
+    const auto& properties = device.physicalProperties.shaderObject;
+    identity.compatibilityKey.assign(std::begin(properties.shaderBinaryUUID), std::end(properties.shaderBinaryUUID));
+    const auto* version = reinterpret_cast<const uint8_t*>(&properties.shaderBinaryVersion);
+    identity.compatibilityKey.insert(identity.compatibilityKey.end(), version, version + sizeof(properties.shaderBinaryVersion));
+    const auto path = nativeBinaryPath(desc, identity);
+    std::unique_lock<std::mutex> cacheLock;
+    if (!path.empty()) {
+        cacheLock = std::unique_lock(device.shaderObjectCacheMutexes[owner.psoHash % device.shaderObjectCacheMutexes.size()]);
+    }
+    auto create = [&](const VkShaderCreateInfoEXT& supplied) {
+        const auto begin = std::chrono::steady_clock::now();
+        const VkResult result = device.functions.vkCreateShadersEXT(device.device, 1, &supplied, nullptr, &owner.shaderObject);
+        stats.nativeCreateTimeNanoseconds += pipelineElapsedNanoseconds(begin);
+        if (result != VK_SUCCESS && owner.shaderObject != VK_NULL_HANDLE) {
+            device.functions.vkDestroyShaderEXT(device.device, owner.shaderObject, nullptr);
+            owner.shaderObject = VK_NULL_HANDLE;
+        }
+        return result;
+    };
+    if (!path.empty()) {
+        const auto begin = std::chrono::steady_clock::now();
+        detail::NativeBinaryCacheData loaded;
+        std::string reason;
+        const auto load = detail::loadNativeBinaryCacheFile(path, identity, loaded, reason);
+        stats.nativeBinaryImportTimeNanoseconds += pipelineElapsedNanoseconds(begin);
+        if (load == detail::NativeBinaryCacheLoadStatus::Loaded && loaded.entries.size() == 1) {
+            const auto& bytes = loaded.entries[0].data;
+            AlignedShaderBinary storage((bytes.size() + 15) / 16);
+            std::memcpy(storage.data(), bytes.data(), bytes.size());
+            auto binaryInfo = info;
+            binaryInfo.pNext = nullptr; // Descriptor mappings are baked into BINARY.
+            binaryInfo.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT;
+            binaryInfo.codeSize = bytes.size(); binaryInfo.pCode = storage.data();
+            const VkResult result = create(binaryInfo);
+            if (result == VK_SUCCESS) {
+                stats.nativeBinaryCacheHit = true;
+                stats.nativeBinaryPersisted = true;
+                stats.nativeBinaryDataSize = bytes.size();
+            } else {
+                stats.nativeBinaryDriverRejected = true;
+                spdlog::warn("[ComputeShaderBinary] Driver rejected {}: {}; rebuilding SPIR-V", path.string(), static_cast<int>(result));
+            }
+        } else if (load != detail::NativeBinaryCacheLoadStatus::NotFound) {
+            spdlog::warn("[ComputeShaderBinary] Ignoring {}: {}", path.string(), reason);
+        }
+    }
+    if (!stats.nativeBinaryCacheHit) {
+        const VkResult result = create(info);
+        if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+        if (!path.empty()) {
+            const auto begin = std::chrono::steady_clock::now();
+            auto data = identity;
+            data.entries.resize(1);
+            std::string reason;
+            if (exportShaderObjectBinary(device, owner.shaderObject, data.entries[0].data)) {
+                stats.nativeBinaryDataSize = data.entries[0].data.size();
+                stats.nativeBinaryPersisted = detail::saveNativeBinaryCacheFile(path, data, reason);
+            }
+            stats.nativeBinaryExportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+            if (!stats.nativeBinaryPersisted) { spdlog::warn("[ComputeShaderBinary] Export unavailable for {}: {}", path.string(), reason); }
+        }
+    }
+    spdlog::info("[ComputeShaderBinary] pso={:016x} binaryHit={} persisted={} bytes={} nativeMs={:.3f}",
+        owner.psoHash, stats.nativeBinaryCacheHit, stats.nativeBinaryPersisted, stats.nativeBinaryDataSize,
+        static_cast<double>(stats.nativeCreateTimeNanoseconds) / 1'000'000.0);
+    vulkan::toolingHooks().shaderBinary(shader.deviceSpirv.data(), shader.deviceSpirv.size() * sizeof(uint32_t));
+    return {};
+}
+
+#if defined(VK_KHR_pipeline_binary)
+struct PipelineBinaryHandles {
+    detail::DeviceImpl& device;
+    std::vector<VkPipelineBinaryKHR> handles;
+    ~PipelineBinaryHandles()
+    {
+        for (auto handle : handles) {
+            if (handle != VK_NULL_HANDLE) { device.functions.vkDestroyPipelineBinaryKHR(device.device, handle, nullptr); }
+        }
+    }
+};
+
+VkResult obtainPipelineBinaries(detail::DeviceImpl& device, const VkPipelineBinaryCreateInfoKHR& info,
+    PipelineBinaryHandles& binaries)
+{
+    VkPipelineBinaryHandlesInfoKHR output{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR};
+    VkResult result = device.functions.vkCreatePipelineBinariesKHR(device.device, &info, nullptr, &output);
+    if (result != VK_SUCCESS || output.pipelineBinaryCount == 0 || output.pipelineBinaryCount > 64) {
+        return result == VK_SUCCESS ? VK_ERROR_UNKNOWN : result;
+    }
+    binaries.handles.resize(output.pipelineBinaryCount, VK_NULL_HANDLE);
+    output.pPipelineBinaries = binaries.handles.data();
+    return device.functions.vkCreatePipelineBinariesKHR(device.device, &info, nullptr, &output);
+}
+#endif
+
+VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const VkComputePipelineCreateInfo& suppliedInfo, VkPipelineCreateFlags2CreateInfo flags,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner)
+{
+#if defined(VK_KHR_pipeline_binary)
+    // flags2 overrides the legacy flags member. Preserve diagnostics requested
+    // through that member before normalizing this experiment to flags2.
+    flags.flags |= suppliedInfo.flags;
+    flags.pNext = nullptr;
+    VkComputePipelineCreateInfo info = suppliedInfo;
+    info.pNext = &flags;
+    VkPipelineBinaryKeyKHR globalKey{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    VkResult result = device.functions.vkGetPipelineKeyKHR(device.device, nullptr, &globalKey);
+    if (result != VK_SUCCESS || globalKey.keySize == 0 || globalKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) {
+        return result == VK_SUCCESS ? VK_ERROR_UNKNOWN : result;
+    }
+    VkPipelineBinaryKeyKHR pipelineKey{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    const VkPipelineCreateInfoKHR keyInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_INFO_KHR, .pNext = &info};
+    result = device.functions.vkGetPipelineKeyKHR(device.device, &keyInfo, &pipelineKey);
+    if (result != VK_SUCCESS || pipelineKey.keySize == 0 || pipelineKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) {
+        return result == VK_SUCCESS ? VK_ERROR_UNKNOWN : result;
+    }
+    detail::NativeBinaryCacheData identity{.compatibilityKey = {globalKey.key, globalKey.key + globalKey.keySize},
+        .programHash = owner.psoHash, .kind = 2};
+    // Driver keys cover the complete effective creation state, including
+    // optional statistics flags and descriptor mapping ABI.
+    identity.compatibilityKey.insert(identity.compatibilityKey.end(), pipelineKey.key, pipelineKey.key + pipelineKey.keySize);
+    const auto path = nativeBinaryPath(desc, identity);
+    std::unique_lock<std::mutex> cacheLock;
+    if (!path.empty()) {
+        cacheLock = std::unique_lock(device.shaderObjectCacheMutexes[owner.psoHash % device.shaderObjectCacheMutexes.size()]);
+    }
+    PipelineCreationStats binaryStats{.computeBackend = ComputePipelineBackend::PipelineBinary};
+    auto create = [&](VkComputePipelineCreateInfo info, const char* kind) {
+        PipelineCreationStats measured;
+        bool ignoredHit = false;
+        const VkResult created = createPipelineWithFeedback(info, nullptr, owner.psoHash, kind,
+            shader.diagnosticName, desc.computeShader.entryPoint, ignoredHit, measured,
+            [&](const VkComputePipelineCreateInfo& nativeInfo) {
+                return device.functions.vkCreateComputePipelines(device.device, VK_NULL_HANDLE, 1,
+                    &nativeInfo, nullptr, &owner.pipeline);
+            });
+        binaryStats.nativeCreateTimeNanoseconds += measured.nativeCreateTimeNanoseconds;
+        binaryStats.driverDurationNanoseconds = measured.driverDurationNanoseconds;
+        binaryStats.feedbackValid = measured.feedbackValid;
+        if (created != VK_SUCCESS && owner.pipeline != VK_NULL_HANDLE) {
+            device.functions.vkDestroyPipeline(device.device, owner.pipeline, nullptr);
+            owner.pipeline = VK_NULL_HANDLE;
+        }
+        return created;
+    };
+    if (!path.empty()) {
+        const auto begin = std::chrono::steady_clock::now();
+        detail::NativeBinaryCacheData loaded;
+        std::string reason;
+        const auto load = detail::loadNativeBinaryCacheFile(path, identity, loaded, reason);
+        if (load == detail::NativeBinaryCacheLoadStatus::Loaded) {
+            std::vector<VkPipelineBinaryKeyKHR> keys;
+            std::vector<VkPipelineBinaryDataKHR> data;
+            bool valid = true;
+            for (const auto& entry : loaded.entries) {
+                if (entry.key.empty() || entry.key.size() > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) { valid = false; break; }
+                VkPipelineBinaryKeyKHR key{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR,
+                    .keySize = static_cast<uint32_t>(entry.key.size())};
+                std::copy(entry.key.begin(), entry.key.end(), key.key);
+                keys.push_back(key);
+                data.push_back({.dataSize = entry.data.size(), .pData = const_cast<uint8_t*>(entry.data.data())});
+            }
+            PipelineBinaryHandles binaries{device};
+            if (valid) {
+                const VkPipelineBinaryKeysAndDataKHR keyData{.binaryCount = static_cast<uint32_t>(keys.size()),
+                    .pPipelineBinaryKeys = keys.data(), .pPipelineBinaryData = data.data()};
+                const VkPipelineBinaryCreateInfoKHR importInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR,
+                    .pKeysAndDataInfo = &keyData};
+                result = obtainPipelineBinaries(device, importInfo, binaries);
+                binaryStats.nativeBinaryImportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+                if (result == VK_SUCCESS) {
+                    const VkPipelineBinaryInfoKHR binaryInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR,
+                        .pNext = &flags, .binaryCount = static_cast<uint32_t>(binaries.handles.size()),
+                        .pPipelineBinaries = binaries.handles.data()};
+                    info.pNext = &binaryInfo;
+                    result = create(info, "compute-binary-import");
+                    info.pNext = &flags;
+                    if (result == VK_SUCCESS) {
+                        binaryStats.nativeBinaryCacheHit = true;
+                        binaryStats.nativeBinaryPersisted = true;
+                        for (const auto& entry : loaded.entries) { binaryStats.nativeBinaryDataSize += entry.data.size(); }
+                        // Preserve valid driver-duration feedback while keeping
+                        // native-binary hits separate from VkPipelineCache hits.
+                    }
+                }
+                if (result != VK_SUCCESS) { binaryStats.nativeBinaryDriverRejected = true; }
+            } else { spdlog::warn("[ComputePipelineBinary] Invalid key sizes in {}", path.string()); }
+        } else if (load != detail::NativeBinaryCacheLoadStatus::NotFound) {
+            spdlog::warn("[ComputePipelineBinary] Ignoring {}: {}", path.string(), reason);
+        }
+        if (!binaryStats.nativeBinaryImportTimeNanoseconds) {
+            binaryStats.nativeBinaryImportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+        }
+    }
+    if (!binaryStats.nativeBinaryCacheHit) {
+        if (!path.empty()) { flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_DATA_BIT_KHR; }
+        result = create(info, "compute-binary-source");
+        if (result == VK_SUCCESS && !path.empty()) {
+            const auto begin = std::chrono::steady_clock::now();
+            PipelineBinaryHandles binaries{device};
+            const VkPipelineBinaryCreateInfoKHR exportInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR,
+                .pipeline = owner.pipeline};
+            const VkResult exported = obtainPipelineBinaries(device, exportInfo, binaries);
+            auto saved = identity;
+            std::string reason;
+            bool valid = exported == VK_SUCCESS;
+            for (auto handle : binaries.handles) {
+                if (!valid) { break; }
+                const VkPipelineBinaryDataInfoKHR query{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_DATA_INFO_KHR,
+                    .pipelineBinary = handle};
+                VkPipelineBinaryKeyKHR key{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+                size_t size = 0;
+                VkResult queried = device.functions.vkGetPipelineBinaryDataKHR(device.device, &query, &key, &size, nullptr);
+                if (queried != VK_SUCCESS || !size || size > kMaxShaderBinarySize || !key.keySize ||
+                    key.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) { valid = false; break; }
+                detail::NativeBinaryCacheEntry entry;
+                entry.data.resize(size);
+                queried = device.functions.vkGetPipelineBinaryDataKHR(device.device, &query, &key, &size, entry.data.data());
+                if (queried != VK_SUCCESS || size > entry.data.size()) { valid = false; break; }
+                entry.data.resize(size); entry.key.assign(key.key, key.key + key.keySize);
+                binaryStats.nativeBinaryDataSize += size;
+                saved.entries.push_back(std::move(entry));
+            }
+            if (valid) { binaryStats.nativeBinaryPersisted = detail::saveNativeBinaryCacheFile(path, saved, reason); }
+            const VkReleaseCapturedPipelineDataInfoKHR release{
+                .sType = VK_STRUCTURE_TYPE_RELEASE_CAPTURED_PIPELINE_DATA_INFO_KHR, .pipeline = owner.pipeline};
+            const VkResult released = device.functions.vkReleaseCapturedPipelineDataKHR(device.device, &release, nullptr);
+            binaryStats.nativeBinaryExportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+            if (!binaryStats.nativeBinaryPersisted || released != VK_SUCCESS) {
+                spdlog::warn("[ComputePipelineBinary] Export={} release={} path={} reason={}",
+                    binaryStats.nativeBinaryPersisted, static_cast<int>(released), path.string(), reason);
+            }
+        }
+    }
+    owner.creationStats = binaryStats;
+    spdlog::info("[ComputePipelineBinary] pso={:016x} binaryHit={} persisted={} bytes={} importMs={:.3f} exportMs={:.3f}",
+        owner.psoHash, binaryStats.nativeBinaryCacheHit, binaryStats.nativeBinaryPersisted, binaryStats.nativeBinaryDataSize,
+        static_cast<double>(binaryStats.nativeBinaryImportTimeNanoseconds) / 1'000'000.0,
+        static_cast<double>(binaryStats.nativeBinaryExportTimeNanoseconds) / 1'000'000.0);
+    return result;
+#else
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+#endif
 }
 
 } // namespace
@@ -9419,7 +9759,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     VkDevicePipelineBinaryInternalCacheControlKHR internalCacheControl{
         .sType = VK_STRUCTURE_TYPE_DEVICE_PIPELINE_BINARY_INTERNAL_CACHE_CONTROL_KHR,
     };
-    if (diagnoseInternalPipelineCache) {
+    const char* pipelineBinaryValue = std::getenv("METALLIC_VK_PIPELINE_BINARY");
+    const bool enablePipelineBinary = desc.enablePipelineBinary || diagnoseInternalPipelineCache ||
+        (pipelineBinaryValue != nullptr && std::strcmp(pipelineBinaryValue, "1") == 0);
+    if (enablePipelineBinary) {
         const VulkanExtensionSet extensions = queryDeviceExtensions(deviceImpl->physicalDevice);
         if (!extensions.has(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME)) {
             spdlog::error("Internal pipeline cache diagnostic requires VK_KHR_pipeline_binary.");
@@ -9440,7 +9783,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         };
         vkGetPhysicalDeviceProperties2(deviceImpl->physicalDevice, &binaryPropertyProbe);
         if (pipelineBinaryFeatures.pipelineBinaries != VK_TRUE ||
-            pipelineBinaryProperties.pipelineBinaryInternalCacheControl != VK_TRUE) {
+            (diagnoseInternalPipelineCache && pipelineBinaryProperties.pipelineBinaryInternalCacheControl != VK_TRUE)) {
             spdlog::error(
                 "Internal pipeline cache diagnostic unsupported: pipelineBinaries={}, cacheControl={}.",
                 pipelineBinaryFeatures.pipelineBinaries,
@@ -9452,12 +9795,16 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         // Only the cache-control value changes; an unset environment keeps the default path.
         deviceExtensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
         pipelineBinaryFeatures.pNext = &enabledFeatureChain.features;
-        internalCacheControl.pNext = &pipelineBinaryFeatures;
-        internalCacheControl.disableInternalCache = disableInternalPipelineCache ? VK_TRUE : VK_FALSE;
-        deviceCreateNext = &internalCacheControl;
+        deviceCreateNext = &pipelineBinaryFeatures;
+        if (diagnoseInternalPipelineCache) {
+            internalCacheControl.pNext = &pipelineBinaryFeatures;
+            internalCacheControl.disableInternalCache = disableInternalPipelineCache ? VK_TRUE : VK_FALSE;
+            deviceCreateNext = &internalCacheControl;
+        }
+        deviceImpl->pipelineBinaryEnabled = true;
         spdlog::info(
             "Internal pipeline cache diagnostic: mode={}, internalCache={}, cacheControl={}.",
-            internalPipelineCacheMode,
+            diagnoseInternalPipelineCache ? internalPipelineCacheMode : "default",
             pipelineBinaryProperties.pipelineBinaryInternalCache,
             pipelineBinaryProperties.pipelineBinaryInternalCacheControl);
     }
@@ -9835,6 +10182,10 @@ struct VulkanNativeAccess {
     {
         return shader.impl_ ? shader.impl_->module : VK_NULL_HANDLE;
     }
+    static std::span<const uint32_t> nativeShaderSpirv(ShaderModule& shader)
+    {
+        return shader.impl_ ? std::span<const uint32_t>(shader.impl_->deviceSpirv) : std::span<const uint32_t>{};
+    }
 
     static Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,
         uint64_t stateHash, VkPipeline& pipeline)
@@ -9900,6 +10251,7 @@ struct VulkanNativeAccess {
         if (!commands.impl_) { return; }
         auto& state = *commands.impl_;
         state.currentComputePipeline = VK_NULL_HANDLE;
+        state.currentComputeShaderObject = VK_NULL_HANDLE;
         state.currentComputePipelineLayout = VK_NULL_HANDLE;
         state.currentGraphicsPipelineLayout = VK_NULL_HANDLE;
         state.currentComputePipelineUsesBindlessHeap = false;
@@ -10063,6 +10415,11 @@ NativeTexture nativeTexture(Texture& texture)
 VkShaderModule nativeShaderModule(ShaderModule& shader)
 {
     return detail::VulkanNativeAccess::nativeShaderModule(shader);
+}
+
+std::span<const uint32_t> nativeShaderSpirv(ShaderModule& shader)
+{
+    return detail::VulkanNativeAccess::nativeShaderSpirv(shader);
 }
 
 Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,

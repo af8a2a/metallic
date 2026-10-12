@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "Runtime/Render/Core/PipelineRecipe.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/GAPI/PipelineStateHash.h"
 
 #include <json.hpp>
 
@@ -124,8 +125,38 @@ public:
         if (!changedPipeline || (*changedPipeline)->psoHash() == graphicsRecipe->expectedPsoHash) {
             return RHITestResult::fail("recipe replay aliased a changed graphics state");
         }
+        auto experimental = *computeRecipe;
+        experimental.disableOptimization = true;
+        experimental.computeBackend = ComputePipelineBackend::PipelineBinary;
+        experimental.expectedPsoHash = detail::computePipelineStateHash(experimental.computeDesc(replayCompute->get()));
+        const auto experimentalPath = directory / "experimental.recipe.json";
+        if (!writePipelineRecipe(experimental, experimentalPath, log)) {
+            return RHITestResult::fail("could not serialize experimental compute recipe: " + log);
+        }
+        auto importedExperiment = readPipelineRecipe(experimentalPath, log);
+        if (!importedExperiment || !importedExperiment->disableOptimization ||
+            importedExperiment->computeBackend != ComputePipelineBackend::PipelineBinary ||
+            detail::computePipelineStateHash(importedExperiment->computeDesc(replayCompute->get())) != experimental.expectedPsoHash) {
+            return RHITestResult::fail("recipe import lost driver optimization or compute backend identity");
+        }
+        changedDesc.disableOptimization = true;
+        auto changedOptimization = context.device.createGraphicsPipeline(changedDesc);
+        if (!changedOptimization || (*changedOptimization)->psoHash() == (*changedPipeline)->psoHash()) {
+            return RHITestResult::fail("graphics creation optimization policy reused the optimized PSO identity");
+        }
         nlohmann::json manifest;
         { std::ifstream input(computePath); manifest = nlohmann::json::parse(input); }
+        auto legacyManifest = manifest;
+        legacyManifest["state"].erase("disable_optimization");
+        legacyManifest["state"].erase("compute_backend");
+        legacyManifest["shaders"]["compute"].erase("slang_optimization");
+        const auto legacyPath = directory / "legacy.recipe.json";
+        { std::ofstream output(legacyPath); output << legacyManifest.dump(2); }
+        auto legacy = readPipelineRecipe(legacyPath, log);
+        if (!legacy || legacy->disableOptimization || legacy->computeBackend != ComputePipelineBackend::Pipeline ||
+            legacy->expectedPsoHash != computeRecipe->expectedPsoHash) {
+            return RHITestResult::fail("legacy recipe defaults changed its pipeline creation identity");
+        }
         auto zeroHashManifest = manifest;
         zeroHashManifest["shaders"]["compute"]["input_spirv_hash"] = "0000000000000000";
         const auto zeroHashPath = directory / "zero-hash.recipe.json";

@@ -71,6 +71,10 @@ evidence. By default each request completes all iterations before the next reque
 | `--cache-dir path` | `<output-dir>/cache` | Cache root, independent of the evidence directory. SPIR-V uses `spirv/`; pipelines use `pipeline.pso`. |
 | `--descriptor-mode request\|mapped\|native` | `request` | Preserve the catalog request's descriptor mode, or explicitly override it. |
 | `--debug-mode disabled\|capture\|debug` | `disabled` | Select the Slang debug mode, which also affects shader cache identity. |
+| `--slang-optimization default\|O0\|O1\|O2\|O3` | `default` | Per-request frontend optimization; default honors `METALLIC_SLANG_OPTIMIZATION`, otherwise O1 except ShaderDebug's O0. Record the effective level and final SPIR-V hash. |
+| `--disable-driver-optimization` | Off | Set Vulkan's disable-optimization creation flag for compute/graphics pipelines; uses a distinct PSO identity. |
+| `--compute-backend pipeline\|shader-object\|pipeline-binary` | `pipeline` | Direct pipeline creation, compute `vkCreateShadersEXT`, or KHR pipeline-binary experiment. Experimental backends use no `VkPipelineCache`. |
+| `--native-binary-cache-dir path` | Off | Persist/import native shader-object or pipeline binaries in an independent cache; prime and import are separate conditions. |
 | `--validation` | Off | Enable Vulkan validation and count error messages in the report. |
 
 The default pipeline cache is explicit and isolated from normal renderer PSO
@@ -93,6 +97,53 @@ requests still query a supported adapter for descriptor strides. The report
 records each effective mode and stride; `request` preserves explicit catalog
 modes and allows the normal resolution of auto modes. Device initialization is
 timed separately from the first pipeline sample.
+
+## Large compute compilation experiments
+
+Use one catalog request and explicit optimization levels. The output includes
+`effective_slang_optimization`, `spirv_statistics`, and the input SPIR-V hash.
+Statistics count instructions, functions, calls, basic blocks, merges, branches,
+switches, Phi nodes, and the largest functions in the final module. They describe
+module structure, not GPU executable instruction counts or proof of a compiler
+bottleneck. Recipe replay records statistics for each stage and uses the captured
+bytecode, so it rejects frontend optimization overrides.
+
+```powershell
+& $bench --request-index N --iterations 1 --slang-optimization O1 `
+  --shader-cache reuse --compile-only --cache-dir build-release/compile-cache `
+  --output-dir build-release/compile-prefill
+
+$env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = 'disabled'
+& $bench --request-index N --iterations 1 --slang-optimization O1 `
+  --shader-cache reuse --pipeline-cache empty --cache-dir build-release/compile-cache `
+  --disable-driver-optimization --output-dir build-release/compile-disable-opt
+Remove-Item Env:METALLIC_VK_INTERNAL_PIPELINE_CACHE
+```
+
+Replace `N` with the listed request index. Prefill separately for every Slang
+level. Driver A/B measurements at one level must reuse identical SPIR-V; O0/O1/O2
+comparisons deliberately change the input module. Keep debug information,
+validation, descriptor ABI, device/driver, scene and settings fixed. The Vulkan
+flag may reduce creation time; it guarantees no particular speedup
+([VkPipelineCreateFlagBits](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineCreateFlagBits.html)).
+Shader Object has no equivalent pipeline flag and rejects that combination.
+Experimental compute backends require serial mode. Their native binary file
+locks are distinct from the `VkPipelineCache` metadata lock measured by the
+concurrency modes.
+
+Binary import reports `native_binary_cache_hit`, `native_binary_driver_rejected`,
+`native_binary_data_bytes`, and separate import/export time. This hit describes
+an explicitly imported native blob. Pipeline creation feedback describes the
+application pipeline cache; internal driver-cache hits remain unobserved. Compare
+binary import to both source creation and existing `.pso` reuse with the same
+shader and settings. Prime/export samples and persistence time are outside the
+import sample distribution.
+
+Creation-only runs never dispatch arbitrary production shaders with dummy
+resources. Use the [compute experiment runners](ComputePipelineExperiments.md)
+for process-isolated matrices and real RenderGraph dispatch/readback comparisons.
+Evaluate GPU time and image differences before adopting a faster creation policy;
+production defaults remain unchanged.
 
 ## Concurrent pipeline creation
 
@@ -267,7 +318,7 @@ graphics creation uses captured pass-specific recipes.
 
 ## Read the evidence
 
-`<output-dir>/report.json` has `schema_version: 3`, the configuration, selected
+`<output-dir>/report.json` has `schema_version: 4`, the configuration, selected
 request indices and an ordered `samples` array. Each sample retains its full
 request, effective descriptor mode, dependencies, SPIR-V size and FNV-1a hash,
 diagnostics and status. Times are milliseconds.
@@ -277,7 +328,7 @@ diagnostics and status. Times are milliseconds.
 | `compile_wall_ms` | ShaderRegistry shader acquisition: Slang compilation or cached-binary acquisition. |
 | `shader_module_wall_ms` | RHI shader module creation. |
 | `pipeline_wall_ms` | RHI compute pipeline creation, including its wrapper work. |
-| `pipeline.native_create_ms` | Native Vulkan compute pipeline creation call. |
+| `pipeline.native_create_ms` | Native Vulkan pipeline or shader-object creation calls, excluding binary-file I/O and pipeline-binary handle import/export. |
 | `pipeline.driver_ms` | Valid driver pipeline-creation feedback duration; otherwise `null`. |
 | `pipeline.cache_lock_wait_ms` | Time waiting to acquire the short application cache metadata locks. |
 

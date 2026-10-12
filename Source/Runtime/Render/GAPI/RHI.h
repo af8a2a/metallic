@@ -486,6 +486,8 @@ struct DeviceDesc {
     MemoryBudgetPolicy memoryBudget;
     bool enableStreamline = false;
     bool enableAftermath = false;
+    // Opt-in native binary export/import experiments; independent of .pso caches.
+    bool enablePipelineBinary = false;
     // Optional backend-owned configuration value. Copies own independent options;
     // each backend validates the payload type before initialization. Empty uses defaults.
     std::any backendExtensions;
@@ -1132,6 +1134,8 @@ struct PipelineCacheDesc {
 
 // Immutable feedback for one pipeline acquisition; unlike cache-wide last* fields,
 // this remains attributable to its caller during concurrent creation.
+enum class ComputePipelineBackend : uint8_t { Pipeline, ShaderObject, PipelineBinary };
+
 struct PipelineCreationStats {
     uint64_t nativeCreateTimeNanoseconds = 0;
     uint64_t driverDurationNanoseconds = 0; // Undefined feedback is represented by zero.
@@ -1144,6 +1148,14 @@ struct PipelineCreationStats {
     // creation task and remains separate from driver-cache metadata-lock waits.
     uint64_t singleFlightWaitTimeNanoseconds = 0;
     bool nativeObjectReused = false;
+    ComputePipelineBackend computeBackend = ComputePipelineBackend::Pipeline;
+    bool nativeBinaryCacheHit = false;
+    bool nativeBinaryPersisted = false;
+    bool nativeBinaryDriverRejected = false;
+    uint64_t nativeBinaryDataSize = 0;
+    // Binary handle import/export and disk work are excluded from nativeCreateTime.
+    uint64_t nativeBinaryImportTimeNanoseconds = 0;
+    uint64_t nativeBinaryExportTimeNanoseconds = 0;
 };
 
 struct PipelineCacheStats {
@@ -1200,6 +1212,8 @@ struct GraphicsPipelineDesc {
     class PipelineCache* pipelineCache = nullptr;
     // Required for membership in a DGC indirect execution set.
     bool indirectBindable = false;
+    // Experimental driver creation policy; part of the PSO identity.
+    bool disableOptimization = false;
 };
 
 struct ComputePipelineDesc {
@@ -1209,6 +1223,11 @@ struct ComputePipelineDesc {
     class PipelineCache* pipelineCache = nullptr;
     // Required for membership in a DGC indirect execution set.
     bool indirectBindable = false;
+    bool disableOptimization = false;
+    ComputePipelineBackend backend = ComputePipelineBackend::Pipeline;
+    // Shader-object and pipeline-binary paths never fill a VkPipelineCache.
+    // This directory opts into their separate native binary persistence.
+    const char* nativeBinaryCacheDirectory = nullptr;
 };
 
 struct GraphicsShaderObjectProgramDesc {

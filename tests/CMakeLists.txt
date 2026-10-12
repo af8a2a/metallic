@@ -45,7 +45,7 @@ add_test(NAME MetallicShaderWarmupStartupTests COMMAND MetallicShaderWarmupStart
 set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;shader" TIMEOUT 30)
 
 
-add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp)
+add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp editor/SPIRVStatisticsTests.cpp)
 target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source" "${CMAKE_SOURCE_DIR}")
 target_compile_definitions(MetallicShaderRequestsTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -430,6 +430,7 @@ add_executable(MetallicRHITests
     rhi/PipelineRecipeTests.cpp
     rhi/PipelineCacheSaveTests.cpp
     rhi/PipelineCacheFeedbackTests.cpp
+    rhi/ComputeCreationExperimentTests.cpp
     rhi/ShaderObjectBinaryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
@@ -687,6 +688,17 @@ if(MSVC)
 endif()
 add_test(NAME MetallicShaderObjectCacheFileTests COMMAND MetallicShaderObjectCacheFileTests --gtest_color=no)
 set_tests_properties(MetallicShaderObjectCacheFileTests PROPERTIES LABELS "shader;cache" TIMEOUT 30)
+
+add_executable(MetallicNativeBinaryCacheFileTests
+    rhi/NativeBinaryCacheFileTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/GAPI/NativeBinaryCacheFile.cpp")
+target_include_directories(MetallicNativeBinaryCacheFileTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicNativeBinaryCacheFileTests PRIVATE GTest::gtest_main Threads::Threads)
+if(MSVC)
+    target_compile_options(MetallicNativeBinaryCacheFileTests PRIVATE /EHsc /utf-8)
+endif()
+add_test(NAME MetallicNativeBinaryCacheFileTests COMMAND MetallicNativeBinaryCacheFileTests --gtest_color=no)
+set_tests_properties(MetallicNativeBinaryCacheFileTests PROPERTIES LABELS "shader;cache;cpu" TIMEOUT 30)
 
 # Deferred persistence scheduling is host-only and needs no renderer or GPU.
 add_executable(MetallicDeferredShaderCacheWriterTests

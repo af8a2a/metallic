@@ -12,8 +12,17 @@ inline constexpr const char* kDefaultSlangProfileName = "spirv_1_6";
 
 enum class SlangShaderDebugMode : uint8_t {
     Disabled,
-    CaptureSymbols, // Default O1 optimization with embedded source and NonSemantic debug information (-g2).
-    ShaderDebug, // Full variable debug information without optimization (-g2 -O0).
+    CaptureSymbols, // Embedded source and NonSemantic debug information (-g2); defaults to O1.
+    ShaderDebug, // Full variable debug information (-g2); defaults to O0.
+};
+
+enum class SlangShaderOptimizationLevel : uint8_t {
+    // Uses METALLIC_SLANG_OPTIMIZATION when set; otherwise O1, or O0 for ShaderDebug.
+    Default,
+    O0,
+    O1,
+    O2,
+    O3,
 };
 
 enum class SlangDescriptorHeapMode : uint8_t {
@@ -45,6 +54,8 @@ struct SlangShaderDesc {
     // Native compilation uses this explicit device ABI, or the active device's
     // strides when both are zero. Mapped compilation ignores this field.
     DescriptorHeapShaderStrides descriptorHeapStrides;
+    // Explicit levels override the process environment and the debug-mode default.
+    SlangShaderOptimizationLevel optimizationLevel = SlangShaderOptimizationLevel::Default;
 };
 
 struct ShaderCompileResult {
@@ -63,6 +74,10 @@ struct SlangShaderCacheOptions {
 // Process-global compilation policy. Configure it before shader compilation begins.
 void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept;
 SlangShaderDebugMode slangShaderDebugMode() noexcept;
+// Returns the effective O0..O3, or Default for an invalid request/environment.
+// Configure METALLIC_SLANG_OPTIMIZATION before shader compilation begins.
+SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept;
+const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept;
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept;
 
 // The selected Vulkan device publishes its heap ABI before runtime compilation.

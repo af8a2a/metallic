@@ -2,7 +2,9 @@
 #include "Runtime/Render/Core/PipelineRecipe.h"
 #include "Runtime/Render/Core/ShaderResourceABI.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Tools/ShaderWarmupRequests.h"
+#include "Tools/SPIRVStatistics.h"
 
 #include <SDL3/SDL.h>
 #include <json.hpp>
@@ -40,12 +42,14 @@ struct Options {
     std::string shaderCache = "disabled", pipelineCache = "empty";
     std::string descriptorMode = "request", debugMode = "disabled";
     std::string mode = "serial", cacheLockScope = "metadata", recipeFile;
+    std::string slangOptimization = "default", computeBackend = "pipeline", nativeBinaryCacheDirectory;
     uint32_t iterations = 3;
     uint32_t pipelineReplicas = 1;
     std::optional<uint32_t> pipelineWorkers;
     std::optional<uint32_t> requestIndex;
     bool list = false, all = false, compileOnly = false, validation = false;
-    bool explicitMode = false, mergeShards = false;
+    bool explicitMode = false, mergeShards = false, explicitComputeBackend = false;
+    bool disableDriverOptimization = false;
 };
 
 struct CapturedValidationMessage {
@@ -119,6 +123,7 @@ Options parse(int argc, char** argv)
         else if (arg == "--compile-only") { options.compileOnly = true; }
         else if (arg == "--validation") { options.validation = true; }
         else if (arg == "--merge-shards") { options.mergeShards = true; }
+        else if (arg == "--disable-driver-optimization") { options.disableDriverOptimization = true; }
         else {
             if (i + 1 == argc) { throw std::invalid_argument("Missing value for " + arg); }
             const std::string value = argv[++i];
@@ -136,6 +141,9 @@ Options parse(int argc, char** argv)
             else if (arg == "--pipeline-cache") { options.pipelineCache = value; }
             else if (arg == "--descriptor-mode") { options.descriptorMode = value; }
             else if (arg == "--debug-mode") { options.debugMode = value; }
+            else if (arg == "--slang-optimization") { options.slangOptimization = value; }
+            else if (arg == "--compute-backend") { options.computeBackend = value; options.explicitComputeBackend = true; }
+            else if (arg == "--native-binary-cache-dir") { options.nativeBinaryCacheDirectory = value; }
             else { throw std::invalid_argument("Unknown argument: " + arg); }
         }
     }
@@ -175,11 +183,64 @@ Options parse(int argc, char** argv)
         (!options.all && options.filter.empty() && !options.requestIndex && options.recipeFile.empty()))) {
         throw std::invalid_argument("Runs require --output-dir and --filter, --request-index or --all");
     }
+    if (options.slangOptimization.size() == 2 && options.slangOptimization[0] == 'o') { options.slangOptimization[0] = 'O'; }
+    if (options.slangOptimization != "default" && options.slangOptimization != "O0" && options.slangOptimization != "O1" &&
+        options.slangOptimization != "O2" && options.slangOptimization != "O3") {
+        throw std::invalid_argument("--slang-optimization requires default, O0, O1, O2 or O3");
+    }
+    if (options.computeBackend != "pipeline" && options.computeBackend != "shader-object" && options.computeBackend != "pipeline-binary") {
+        throw std::invalid_argument("--compute-backend requires pipeline, shader-object or pipeline-binary");
+    }
+    if (options.computeBackend == "shader-object" && options.disableDriverOptimization) {
+        throw std::invalid_argument("Shader Object has no DISABLE_OPTIMIZATION pipeline flag");
+    }
+    if (!options.nativeBinaryCacheDirectory.empty() && options.computeBackend == "pipeline" &&
+        (options.recipeFile.empty() || options.explicitComputeBackend)) {
+        throw std::invalid_argument("--native-binary-cache-dir requires shader-object or pipeline-binary backend");
+    }
+    if (options.computeBackend != "pipeline" && (options.pipelineCache != "empty" || options.mergeShards || options.cacheLockScope != "metadata")) {
+        throw std::invalid_argument("Experimental compute backends do not use VkPipelineCache or its merge/lock controls");
+    }
     if (!options.recipeFile.empty() && (options.all || !options.filter.empty() || options.requestIndex || options.compileOnly)) {
         throw std::invalid_argument("--recipe-file cannot be combined with catalog selectors or --compile-only");
     }
     if (!options.recipeFile.empty()) { options.pipelineWorkers = options.pipelineWorkers.value_or(1); }
+    if (!options.recipeFile.empty() && options.slangOptimization != "default") {
+        throw std::invalid_argument("Recipe replay uses captured SPIR-V; --slang-optimization requires a catalog request");
+    }
     return options;
+}
+
+SlangShaderOptimizationLevel optimizationLevel(const std::string& name)
+{
+    if (name == "O0") { return SlangShaderOptimizationLevel::O0; }
+    if (name == "O1") { return SlangShaderOptimizationLevel::O1; }
+    if (name == "O2") { return SlangShaderOptimizationLevel::O2; }
+    if (name == "O3") { return SlangShaderOptimizationLevel::O3; }
+    return SlangShaderOptimizationLevel::Default;
+}
+
+const char* computeBackendName(ComputePipelineBackend backend)
+{
+    switch (backend) {
+    case ComputePipelineBackend::Pipeline: return "pipeline";
+    case ComputePipelineBackend::ShaderObject: return "shader-object";
+    case ComputePipelineBackend::PipelineBinary: return "pipeline-binary";
+    default: return "unknown";
+    }
+}
+
+Json spirvStatisticsJson(std::span<const uint32_t> code)
+{
+    const auto stats = metallic::tools::inspectSPIRV(code);
+    return {{"id_bound", stats.idBound}, {"instruction_count", stats.instructions},
+        {"function_count", stats.functions}, {"function_call_count", stats.functionCalls},
+        {"basic_block_count", stats.basicBlocks}, {"loop_merge_count", stats.loopMerges},
+        {"selection_merge_count", stats.selectionMerges}, {"branch_count", stats.branches},
+        {"conditional_branch_count", stats.conditionalBranches}, {"switch_count", stats.switches},
+        {"phi_count", stats.phiNodes}, {"max_function_instructions", stats.maxFunctionInstructions},
+        {"max_function_basic_blocks", stats.maxFunctionBasicBlocks},
+        {"largest_function_instruction_counts", stats.largestFunctionInstructions}};
 }
 
 Json requestJson(const ShaderRequest& request, size_t index)
@@ -201,6 +262,13 @@ std::string hashSpirv(std::span<const uint32_t> code)
     std::ostringstream stream;
     stream << std::hex << std::setw(16) << std::setfill('0') << hash;
     return stream.str();
+}
+
+Json deviceShaderJson(ShaderModule& module)
+{
+    const auto code = vulkan::nativeShaderSpirv(module);
+    return {{"device_spirv_bytes", code.size_bytes()}, {"device_spirv_fnv1a64", hashSpirv(code)},
+        {"device_spirv_statistics", spirvStatisticsJson(code)}, {"device_shader_content_hash", module.contentHash()}};
 }
 
 // Slang compiles one entry per request. Read its actual SPIR-V stage/name;
@@ -280,7 +348,12 @@ Json metricsJson(const PipelineCreationStats& stats)
     return {{"native_cache_hit", stats.feedbackValid ? Json(stats.nativeCacheHit) : Json(nullptr)},
         {"feedback_valid", stats.feedbackValid}, {"native_create_ms", double(stats.nativeCreateTimeNanoseconds) / 1e6},
         {"driver_ms", stats.feedbackValid ? Json(double(stats.driverDurationNanoseconds) / 1e6) : Json(nullptr)},
-        {"cache_lock_wait_ms", double(stats.cacheLockWaitTimeNanoseconds) / 1e6}};
+        {"cache_lock_wait_ms", double(stats.cacheLockWaitTimeNanoseconds) / 1e6},
+        {"native_object_reused", stats.nativeObjectReused}, {"compute_backend", computeBackendName(stats.computeBackend)},
+        {"native_binary_cache_hit", stats.nativeBinaryCacheHit}, {"native_binary_persisted", stats.nativeBinaryPersisted},
+        {"native_binary_driver_rejected", stats.nativeBinaryDriverRejected}, {"native_binary_data_bytes", stats.nativeBinaryDataSize},
+        {"native_binary_import_ms", double(stats.nativeBinaryImportTimeNanoseconds) / 1e6},
+        {"native_binary_export_ms", double(stats.nativeBinaryExportTimeNanoseconds) / 1e6}};
 }
 
 template<typename T>
@@ -298,23 +371,44 @@ struct PreparedPipeline {
     std::string entry;
     const PipelineRecipe* recipe = nullptr;
     std::array<std::unique_ptr<ShaderModule>, 4> graphicsModules;
+    bool disableOptimization = false;
+    ComputePipelineBackend backend = ComputePipelineBackend::Pipeline;
+    std::string nativeBinaryCacheDirectory;
 };
 
 void createPreparedPipeline(Device& device, PipelineCache& cache, const PreparedPipeline& item, Json& result)
 {
+    if (item.recipe) {
+        const auto capturedHash = item.recipe->type == PipelineRecipeType::Compute ?
+            detail::computePipelineStateHash(item.recipe->computeDesc(item.module.get())) :
+            detail::graphicsPipelineStateHash(item.recipe->graphicsDesc(item.graphicsModules[0].get(),
+                item.graphicsModules[1].get(), item.graphicsModules[2].get(), item.graphicsModules[3].get()));
+        result["recipe_baseline_pso_hash"] = capturedHash;
+        if (capturedHash != item.recipe->expectedPsoHash) {
+            throw std::runtime_error("Captured recipe baseline PSO hash differs on this device before experiment overrides");
+        }
+    }
     const auto begin = Clock::now();
     PipelineCreationStats metrics;
     if (item.recipe && item.recipe->type == PipelineRecipeType::Graphics) {
-        auto created = device.createGraphicsPipeline(item.recipe->graphicsDesc(item.graphicsModules[0].get(),
-            item.graphicsModules[1].get(), item.graphicsModules[2].get(), item.graphicsModules[3].get(), &cache), &metrics);
+        auto desc = item.recipe->graphicsDesc(item.graphicsModules[0].get(),
+            item.graphicsModules[1].get(), item.graphicsModules[2].get(), item.graphicsModules[3].get(), &cache);
+        desc.disableOptimization |= item.disableOptimization;
+        result["disable_driver_optimization"] = desc.disableOptimization;
+        auto created = device.createGraphicsPipeline(desc, &metrics);
         result["pipeline_wall_ms"] = milliseconds(begin);
         result["pipeline_attempt"] = metricsJson(metrics);
         auto pipeline = require(std::move(created), "create graphics pipeline");
         result["pipeline"] = pipelineJson(*pipeline);
     } else {
-        const auto desc = item.recipe ? item.recipe->computeDesc(item.module.get(), &cache) :
+        auto desc = item.recipe ? item.recipe->computeDesc(item.module.get(), &cache) :
             ComputePipelineDesc{.computeShader = {item.module.get(), item.entry.c_str()},
                 .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(GPUBufferSpan), .pipelineCache = &cache};
+        desc.disableOptimization |= item.disableOptimization;
+        result["disable_driver_optimization"] = desc.disableOptimization;
+        desc.backend = item.backend;
+        desc.nativeBinaryCacheDirectory = item.nativeBinaryCacheDirectory.empty() ? nullptr : item.nativeBinaryCacheDirectory.c_str();
+        if (item.backend != ComputePipelineBackend::Pipeline) { desc.pipelineCache = nullptr; }
         auto created = device.createComputePipeline(desc, &metrics);
         result["pipeline_wall_ms"] = milliseconds(begin);
         result["pipeline_attempt"] = metricsJson(metrics);
@@ -324,7 +418,9 @@ void createPreparedPipeline(Device& device, PipelineCache& cache, const Prepared
     if (item.recipe) {
         result["pipeline"]["expected_pso_hash"] = item.recipe->expectedPsoHash;
         result["pipeline"]["recipe_hash_matches"] = result["pipeline"].at("pso_hash") == item.recipe->expectedPsoHash;
-        if (!result["pipeline"]["recipe_hash_matches"].get<bool>()) {
+        result["pipeline"]["recipe_state_overridden"] = (item.disableOptimization && !item.recipe->disableOptimization) ||
+            (item.recipe->type == PipelineRecipeType::Compute && item.backend != item.recipe->computeBackend);
+        if (!result["pipeline"]["recipe_hash_matches"].get<bool>() && !result["pipeline"]["recipe_state_overridden"].get<bool>()) {
             throw std::runtime_error("Replayed PSO hash differs from captured recipe; device features or backend state changed");
         }
     }
@@ -438,6 +534,21 @@ int run(const Options& options)
         if (!loaded) { throw std::invalid_argument("Cannot read pipeline recipe: " + log); }
         recipe = std::move(*loaded);
     }
+    const auto backend = recipe && recipe->type == PipelineRecipeType::Compute && !options.explicitComputeBackend ? recipe->computeBackend :
+        options.computeBackend == "shader-object" ? ComputePipelineBackend::ShaderObject :
+        options.computeBackend == "pipeline-binary" ? ComputePipelineBackend::PipelineBinary : ComputePipelineBackend::Pipeline;
+    if (backend == ComputePipelineBackend::Pipeline && !options.nativeBinaryCacheDirectory.empty()) {
+        throw std::invalid_argument("--native-binary-cache-dir requires shader-object or pipeline-binary backend");
+    }
+    if (backend == ComputePipelineBackend::ShaderObject && (options.disableDriverOptimization || (recipe && recipe->disableOptimization))) {
+        throw std::invalid_argument("Shader Object has no DISABLE_OPTIMIZATION pipeline flag");
+    }
+    if (backend != ComputePipelineBackend::Pipeline && (options.pipelineCache != "empty" || options.mergeShards || options.cacheLockScope != "metadata")) {
+        throw std::invalid_argument("Experimental compute recipe does not use VkPipelineCache or merge/lock controls");
+    }
+    if (backend != ComputePipelineBackend::Pipeline && options.mode != "serial") {
+        throw std::invalid_argument("Experimental compute backends require --mode serial; VkPipelineCache concurrency modes use the pipeline backend");
+    }
     const auto catalog = metallic::tools::shaderWarmupRequests();
     std::vector<size_t> selected;
     for (size_t i = 0; i < catalog.size(); ++i) {
@@ -463,7 +574,7 @@ int run(const Options& options)
     const auto cache = options.cacheDirectory.empty() ? output / "cache" : std::filesystem::absolute(options.cacheDirectory);
     const std::string shaderCache = (cache / "spirv").string();
     const std::string pipelineCache = (cache / "pipeline.pso").string();
-    Json report{{"schema_version", 3}, {"status", "initializing"}, {"samples", Json::array()}, {"pipeline_batches", Json::array()},
+    Json report{{"schema_version", 4}, {"status", "initializing"}, {"samples", Json::array()}, {"pipeline_batches", Json::array()},
         {"build_configuration", METALLIC_BENCH_BUILD_CONFIGURATION},
         {"slang_build", spGetBuildTagString()},
         {"shader_target", {{"id", vulkanSpirvTarget().id}, {"revision", vulkanSpirvTarget().revision}}},
@@ -474,11 +585,17 @@ int run(const Options& options)
             {"merge_shards", options.mergeShards}, {"recipe_file", options.recipeFile},
             {"shader_cache", options.shaderCache}, {"pipeline_cache", options.pipelineCache},
             {"descriptor_mode", options.descriptorMode}, {"debug_mode", options.debugMode},
+            {"slang_optimization", options.slangOptimization},
+            {"requested_disable_driver_optimization", options.disableDriverOptimization},
+            {"disable_driver_optimization", options.disableDriverOptimization || (recipe && recipe->disableOptimization)},
+            {"compute_backend", computeBackendName(backend)}, {"native_binary_cache_directory", options.nativeBinaryCacheDirectory},
+            {"application_pipeline_cache_used", backend == ComputePipelineBackend::Pipeline},
             {"compile_only", options.compileOnly}, {"validation", options.validation},
             {"cache_directory", cache.string()}, {"selected_requests", selected}}},
         {"scope", "Serial preparation and optional concurrent PSO creation; no dispatch or frame timing. Empty application caches do not guarantee cold driver/OS caches."}};
     for (const char* name : {"METALLIC_SLANG_DESCRIPTOR_MODE", "METALLIC_WORKING_COLOR_SPACE",
-        "METALLIC_VK_INTERNAL_PIPELINE_CACHE", "METALLIC_VK_LOG_PIPELINE_KEYS"}) {
+        "METALLIC_VK_INTERNAL_PIPELINE_CACHE", "METALLIC_VK_LOG_PIPELINE_KEYS", "METALLIC_SLANG_OPTIMIZATION",
+        "METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION", "METALLIC_VK_PIPELINE_BINARY"}) {
         const char* value = std::getenv(name);
         report["environment"][name] = value ? Json(value) : Json(nullptr);
     }
@@ -498,6 +615,11 @@ int run(const Options& options)
     DescriptorHeapShaderStrides nativeStrides;
     size_t failures = 0;
     std::vector<PreparedPipeline> prepared;
+    const auto configurePrepared = [&](PreparedPipeline& item) {
+        item.disableOptimization = options.disableDriverOptimization;
+        item.backend = backend;
+        item.nativeBinaryCacheDirectory = options.nativeBinaryCacheDirectory;
+    };
     uint32_t batchIteration = 0;
     const auto flushBatch = [&] {
         if (prepared.empty()) { return; }
@@ -556,6 +678,7 @@ int run(const Options& options)
             .enableRayTracingAccelerationStructure = rayQuery, .enableRayQuery = rayQuery,
             .enableClusterAccelerationStructure = rayQuery,
             .validationSink = {.callback = ValidationCapture::callback, .context = &validation}};
+        desc.enablePipelineBinary = backend == ComputePipelineBackend::PipelineBinary;
         if (recipe) {
             const auto& caps = recipe->sourceDevice.capabilities;
             desc.enableBindlessDescriptorHeap = caps.bindlessDescriptorHeap;
@@ -638,9 +761,14 @@ int run(const Options& options)
                     ensureDevice(false);
                     ensureReusedCache();
                     PreparedPipeline item{.sampleIndex = sampleIndex, .recipe = &*recipe};
+                    configurePrepared(item);
+                    if (graphics && backend != ComputePipelineBackend::Pipeline) {
+                        throw std::invalid_argument("Experimental compute backend requires a compute recipe");
+                    }
                     sample["status"] = "creating_shader_module";
                     save();
                     const auto begin = Clock::now();
+                    double moduleWall = 0;
                     size_t bytes = 0;
                     sample["shader_stages"] = Json::array();
                     const auto makeModule = [&](const PipelineRecipeShader& stage, const char* name) -> std::unique_ptr<ShaderModule> {
@@ -649,8 +777,14 @@ int run(const Options& options)
                         sample["shader_stages"].push_back({{"stage", name}, {"module", stage.moduleName},
                             {"entry", stage.entryPoint}, {"source_entry", stage.sourceEntryPoint},
                             {"debug_mode", stage.debugMode}, {"descriptor_mode", stage.descriptorHeapMode},
-                            {"spirv_bytes", stage.spirv.size() * sizeof(uint32_t)}, {"spirv_fnv1a64", hashSpirv(stage.spirv)}});
-                        return require(device->createShaderModule({.spirv = stage.spirv, .debugName = stage.moduleName.c_str()}), "create recipe shader module");
+                            {"slang_optimization", stage.optimizationLevel},
+                            {"spirv_bytes", stage.spirv.size() * sizeof(uint32_t)}, {"spirv_fnv1a64", hashSpirv(stage.spirv)},
+                            {"spirv_statistics", spirvStatisticsJson(stage.spirv)}});
+                        const auto moduleBegin = Clock::now();
+                        auto module = require(device->createShaderModule({.spirv = stage.spirv, .debugName = stage.moduleName.c_str()}), "create recipe shader module");
+                        moduleWall += milliseconds(moduleBegin);
+                        sample["shader_stages"].back().update(deviceShaderJson(*module));
+                        return module;
                     };
                     if (graphics) {
                         item.graphicsModules[0] = makeModule(recipe->vertexShader, "vertex");
@@ -658,8 +792,15 @@ int run(const Options& options)
                         item.graphicsModules[2] = makeModule(recipe->meshShader, "mesh");
                         item.graphicsModules[3] = makeModule(recipe->fragmentShader, "fragment");
                     } else { item.module = makeModule(recipe->computeShader, "compute"); }
+                    if (!graphics) {
+                        sample["spirv_statistics"] = spirvStatisticsJson(mainShader.spirv);
+                        sample["effective_slang_optimization"] = mainShader.optimizationLevel;
+                        sample["spirv_fnv1a64"] = hashSpirv(mainShader.spirv);
+                        sample.update(deviceShaderJson(*item.module));
+                    }
                     sample["spirv_bytes"] = bytes;
-                    sample["shader_module_wall_ms"] = milliseconds(begin);
+                    sample["shader_module_wall_ms"] = moduleWall;
+                    sample["recipe_preparation_wall_ms"] = milliseconds(begin);
                     sample["status"] = "prepared";
                     prepared.push_back(std::move(item));
                 } catch (const std::exception& error) {
@@ -677,6 +818,7 @@ int run(const Options& options)
             }
             const ShaderRequestView view(request);
             auto source = view.desc();
+            source.optimizationLevel = optimizationLevel(options.slangOptimization);
             const bool native = slangUsesNativeDescriptorHeap(source);
             if (native && !nativeStrides.resource) {
                 std::string diagnostics;
@@ -687,6 +829,7 @@ int run(const Options& options)
                 {"effective_descriptor_mode", native ? "native" : "mapped"},
                 {"resource_heap_stride", native ? nativeStrides.resource : 0},
                 {"sampler_heap_stride", native ? nativeStrides.sampler : 0}, {"status", "compiling"}});
+            report["samples"].back()["effective_slang_optimization"] = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(source));
             auto& sample = report["samples"].back();
             const uint32_t initialValidationErrors = validation.errors.load();
             report["status"] = "running";
@@ -704,6 +847,7 @@ int run(const Options& options)
                 auto code = require(std::move(compiled), "compile shader");
                 sample["spirv_bytes"] = code.spirv.size() * sizeof(uint32_t);
                 sample["spirv_fnv1a64"] = hashSpirv(code.spirv);
+                sample["spirv_statistics"] = spirvStatisticsJson(code.spirv);
                 sample["dependencies"] = code.dependencies;
                 const auto [model, entry] = entryPoint(code.spirv);
                 sample["execution_model"] = model;
@@ -735,8 +879,10 @@ int run(const Options& options)
                 auto moduleResult = device->createShaderModule({.spirv = code.spirv, .debugName = request.module.c_str()});
                 sample["shader_module_wall_ms"] = milliseconds(begin);
                 auto module = require(std::move(moduleResult), "create shader module");
+                sample.update(deviceShaderJson(*module));
                 if (options.pipelineWorkers) {
                     prepared.push_back({report["samples"].size() - 1, std::move(module), entry});
+                    configurePrepared(prepared.back());
                     sample["status"] = "prepared";
                     sample["preparation_validation_errors"] = validation.errors.load() - initialValidationErrors;
                     save();
@@ -753,6 +899,7 @@ int run(const Options& options)
                 sample["status"] = "creating_pipeline";
                 save();
                 PreparedPipeline item{report["samples"].size() - 1, std::move(module), entry};
+                configurePrepared(item);
                 createPreparedPipeline(*device, activeCache, item, sample);
             } catch (const std::exception& error) {
                 sample["failed_phase"] = sample["status"];
@@ -829,6 +976,8 @@ int main(int argc, char** argv)
             "  [--pipeline-workers N] (legacy alias for parallel-shared --workers N)\n"
             "  [--shader-cache disabled|reuse] [--pipeline-cache empty|reuse] [--cache-dir path]\n"
             "  [--descriptor-mode request|mapped|native] [--debug-mode disabled|capture|debug]\n"
+            "  [--slang-optimization default|O0|O1|O2|O3] [--disable-driver-optimization]\n"
+            "  [--compute-backend pipeline|shader-object|pipeline-binary] [--native-binary-cache-dir path]\n"
             "Defaults: 3 iterations, disabled shader cache, empty pipeline cache, request descriptor mode, disabled debug.\n"
             "Explicit modes stage one batch per iteration. Recipe replay uses captured PSO state and SPIR-V.\n"
             "Graphics catalog requests compile only; use --recipe-file for actual graphics PSOs.\n";

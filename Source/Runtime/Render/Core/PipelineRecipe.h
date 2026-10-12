@@ -17,6 +17,7 @@ struct PipelineRecipeShader {
     std::string descriptorHeapMode;
     std::string entryPoint = "main";
     uint64_t inputSpirvHash = 0;
+    std::string optimizationLevel;
 };
 
 // Exported device configuration allows replay to preserve feature-dependent
@@ -60,6 +61,8 @@ struct PipelineRecipe {
     bool usesBindlessHeap = false;
     bool indirectBindable = false;
     uint32_t bindlessUserPushDataSize = 0;
+    bool disableOptimization = false;
+    ComputePipelineBackend computeBackend = ComputePipelineBackend::Pipeline;
 
     ComputePipelineDesc computeDesc(ShaderModule* module, PipelineCache* cache = nullptr) const;
     GraphicsPipelineDesc graphicsDesc(ShaderModule* vertex, ShaderModule* task,

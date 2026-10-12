@@ -57,10 +57,26 @@ def sample_rows(report, path):
                    shader_stages=json.dumps(stages, separators=(",", ":")),
                    pipeline_type=pipeline_type, spirv_bytes=sample.get("spirv_bytes", 0),
                    spirv_fnv1a64=sample.get("spirv_fnv1a64", ""),
+                   slang_optimization=sample.get("effective_slang_optimization", configuration.get("slang_optimization", "unspecified")),
+                   disable_driver_optimization=configuration.get("disable_driver_optimization", False),
+                   compute_backend=pipeline.get("compute_backend", "pipeline"),
+                   native_binary_cache_hit=pipeline.get("native_binary_cache_hit", False),
+                   native_binary_import_ms=pipeline.get("native_binary_import_ms"),
+                   native_binary_export_ms=pipeline.get("native_binary_export_ms"),
+                   spirv_instruction_count=sample.get("spirv_statistics", {}).get("instruction_count"),
+                   spirv_function_count=sample.get("spirv_statistics", {}).get("function_count"),
+                   spirv_basic_block_count=sample.get("spirv_statistics", {}).get("basic_block_count"),
+                   spirv_max_function_instructions=sample.get("spirv_statistics", {}).get("max_function_instructions"),
                    native_create_ms=native_ms, driver_ms=pipeline.get("driver_ms"),
                    cache_lock_wait_ms=pipeline.get("cache_lock_wait_ms"),
                    pipeline_wall_ms=sample.get("pipeline_wall_ms"),
                    application_pipeline_cache_hit="unknown" if hit is None else "hit" if hit else "miss")
+
+
+def variant_label(row):
+    return (f'{row.get("slang_optimization", "unspecified")}, {row.get("compute_backend", "pipeline")}, '
+            f'driver {"disable-opt" if row.get("disable_driver_optimization") else "normal"}, '
+            f'{"binary import" if row.get("native_binary_cache_hit") else "source"}')
 
 
 def svg_distribution(rows, output, top, log_scale=False):
@@ -125,7 +141,7 @@ def svg_distribution(rows, output, top, log_scale=False):
         xmax, ymax, xmin=xmin, ymin=ymin, log_x=log_scale, log_y=log_scale)
     for row in rows:
         x, y = point(row["spirv_bytes"] / 1024, row["native_create_ms"])
-        label = f'{row["shader_module"]}.{row["entry_point"]}: {row["native_create_ms"]:.4g} ms ({row["pipeline_type"]})'
+        label = f'{row["shader_module"]}.{row["entry_point"]}: {row["native_create_ms"]:.4g} ms ({row["pipeline_type"]}; {variant_label(row)})'
         hit = row["application_pipeline_cache_hit"]
         parts.append(marker(x, y, row["pipeline_type"], colors[hit], label, .7))
     legends(parts, legend)
@@ -151,15 +167,15 @@ def svg_distribution(rows, output, top, log_scale=False):
     (output / "PipelineLatencyCDF.svg").write_text("\n".join(parts), encoding="utf-8")
     module_groups = {}
     for row in rows:
-        module_groups.setdefault((row["shader_module"], row["entry_point"], row["pipeline_type"]), []).append(row["native_create_ms"])
+        module_groups.setdefault((row["shader_module"], row["entry_point"], row["pipeline_type"], variant_label(row)), []).append(row["native_create_ms"])
     module_groups = sorted(module_groups.items(), key=lambda item: max(item[1]), reverse=True)[:top]
     height, left, width = max(220, 120 + 32 * len(module_groups)), 490, 1100
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">', '<rect width="100%" height="100%" fill="white"/>',
              '<g font-family="Arial,sans-serif" fill="#243244">', text(20, 30, "Slowest module/entry groups; range and median", 20)]
     scale = lambda value: left + 560 * (transform(value, log_scale) - transform(ymin, log_scale)) / (transform(ymax, log_scale) - transform(ymin, log_scale))
-    for index, ((module, entry, kind), values) in enumerate(module_groups):
+    for index, ((module, entry, kind, variant), values) in enumerate(module_groups):
         y = 75 + index * 32
-        label = f"{module}.{entry} ({kind})"
+        label = f"{module}.{entry} ({kind}; {variant})"
         parts.append(text(left - 12, y + 4, label if len(label) < 64 else "..." + label[-60:], 12, "end"))
         parts.append(f'<line x1="{scale(min(values))}" x2="{scale(max(values))}" y1="{y}" y2="{y}" stroke="#637c94" stroke-width="3"/>')
         parts.append(marker(scale(statistics.median(values)), y, kind, "#243244", f"{label}; n={len(values)}"))
@@ -249,12 +265,12 @@ def main():
     plt.close(fig)
     groups = {}
     for row in rows:
-        key = (row["shader_module"], row["entry_point"], row["pipeline_type"])
+        key = (row["shader_module"], row["entry_point"], row["pipeline_type"], variant_label(row))
         groups.setdefault(key, []).append(row["native_create_ms"])
     groups = sorted(groups.items(), key=lambda item: max(item[1]), reverse=True)[:args.top]
     fig, axis = plt.subplots(figsize=(11, max(4, len(groups) * .35)), layout="constrained")
     axis.boxplot([[plot_value(value, args.log_scale) for value in values] for _, values in reversed(groups)], vert=False,
-                 tick_labels=[f"{module}.{entry} ({kind})" for (module, entry, kind), _ in reversed(groups)],
+                 tick_labels=[f"{module}.{entry} ({kind}; {variant})" for (module, entry, kind, variant), _ in reversed(groups)],
                  showfliers=True)
     axis.set(xlabel="Native pipeline creation (ms)", title=f"Slowest {len(groups)} module/entry groups by maximum observed latency")
     if args.log_scale:

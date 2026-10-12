@@ -48,9 +48,6 @@ namespace {
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
 constexpr uint32_t kShaderCacheRequestVersion = 28;
-// Use Slang's default O1 policy, including its default SPIR-V optimization
-// passes. Explicit shader debugging retains O0 for variable inspection.
-constexpr SlangOptimizationLevel kSlangOptimizationLevel = SLANG_OPTIMIZATION_LEVEL_DEFAULT;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -473,7 +470,47 @@ bool nativeDescriptorHeapEnabled(const SlangShaderDesc& desc)
     return mode != nullptr && std::string_view(mode) == "native";
 }
 
+std::optional<SlangShaderOptimizationLevel> resolveOptimizationLevel(
+    const SlangShaderDesc& desc, SlangShaderDebugMode debugMode)
+{
+    auto level = desc.optimizationLevel;
+    if (level == SlangShaderOptimizationLevel::Default) {
+        const char* optimizationOverride = std::getenv("METALLIC_SLANG_OPTIMIZATION");
+        if (optimizationOverride != nullptr && optimizationOverride[0] != '\0' &&
+            std::string_view(optimizationOverride) != "default") {
+            const std::string_view value(optimizationOverride);
+            if (value == "O0" || value == "o0") { level = SlangShaderOptimizationLevel::O0; }
+            else if (value == "O1" || value == "o1") { level = SlangShaderOptimizationLevel::O1; }
+            else if (value == "O2" || value == "o2") { level = SlangShaderOptimizationLevel::O2; }
+            else if (value == "O3" || value == "o3") { level = SlangShaderOptimizationLevel::O3; }
+            else { return std::nullopt; }
+        }
+        if (level == SlangShaderOptimizationLevel::Default) {
+            level = debugMode == SlangShaderDebugMode::ShaderDebug
+                ? SlangShaderOptimizationLevel::O0 : SlangShaderOptimizationLevel::O1;
+        }
+    }
+    switch (level) {
+    case SlangShaderOptimizationLevel::O0:
+    case SlangShaderOptimizationLevel::O1:
+    case SlangShaderOptimizationLevel::O2:
+    case SlangShaderOptimizationLevel::O3: return level;
+    default: return std::nullopt;
+    }
+}
+
+SlangOptimizationLevel compilerOptimizationLevel(SlangShaderOptimizationLevel level)
+{
+    switch (level) {
+    case SlangShaderOptimizationLevel::O0: return SLANG_OPTIMIZATION_LEVEL_NONE;
+    case SlangShaderOptimizationLevel::O2: return SLANG_OPTIMIZATION_LEVEL_HIGH;
+    case SlangShaderOptimizationLevel::O3: return SLANG_OPTIMIZATION_LEVEL_MAXIMAL;
+    default: return SLANG_OPTIMIZATION_LEVEL_DEFAULT;
+    }
+}
+
 uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode,
+    SlangOptimizationLevel optimizationLevel,
     const ShaderTargetPostprocess& target)
 {
     uint64_t hash = kFnvOffset;
@@ -482,8 +519,7 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
     hash = hashValue(hash, target.revision);
     hash = hashValue(hash, static_cast<uint8_t>(sceneWorkingColorSpace()));
     hash = hashText(hash, SLANG_VERSION_NUMERIC);
-    hash = hashValue(hash, static_cast<int32_t>(debugMode == SlangShaderDebugMode::ShaderDebug
-        ? SLANG_OPTIMIZATION_LEVEL_NONE : kSlangOptimizationLevel));
+    hash = hashValue(hash, static_cast<int32_t>(optimizationLevel));
     hash = hashText(hash, "spirv-direct");
     hash = hashText(hash, "slang-default-optimization-passes");
     hash = hashValue(hash, nativeDescriptorHeapEnabled(desc));
@@ -852,6 +888,23 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept
     return gSlangShaderDebugMode.load(std::memory_order_relaxed);
 }
 
+SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept
+{
+    return resolveOptimizationLevel(desc, slangShaderDebugMode()).value_or(SlangShaderOptimizationLevel::Default);
+}
+
+const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept
+{
+    switch (level) {
+    case SlangShaderOptimizationLevel::Default: return "default";
+    case SlangShaderOptimizationLevel::O0: return "O0";
+    case SlangShaderOptimizationLevel::O1: return "O1";
+    case SlangShaderOptimizationLevel::O2: return "O2";
+    case SlangShaderOptimizationLevel::O3: return "O3";
+    default: return "invalid";
+    }
+}
+
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept
 {
     return nativeDescriptorHeapEnabled(desc);
@@ -938,8 +991,15 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         resolvedDesc.descriptorHeapStrides = strides;
     }
     const SlangShaderDebugMode debugMode = slangShaderDebugMode();
+    const auto effectiveOptimization = resolveOptimizationLevel(desc, debugMode);
+    if (!effectiveOptimization) {
+        log = "Invalid Slang optimization level; METALLIC_SLANG_OPTIMIZATION and explicit requests "
+            "must select default, O0, O1, O2 or O3.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    const SlangOptimizationLevel optimizationLevel = compilerOptimizationLevel(*effectiveOptimization);
     const auto& target = vulkanSpirvTarget();
-    const uint64_t requestHash = shaderRequestHash(resolvedDesc, debugMode, target);
+    const uint64_t requestHash = shaderRequestHash(resolvedDesc, debugMode, optimizationLevel, target);
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
     std::vector<ShaderDependencySnapshot> cachedDependencies;
     if (cacheOptions.enableDiskCache &&
@@ -949,17 +1009,18 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         }
         publishShaderDependencies(cachedDependencies, outResult);
         spdlog::info(
-            "[ShaderCache] Loaded {}.{} from '{}'",
+            "[ShaderCache] Loaded {}.{} from '{}' (optimization={})",
             desc.moduleName,
             desc.entryPointName,
-            cachePath.string());
+            cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization));
         outResult.diagnostics = log;
         return outResult;
     }
 
     const auto compileStart = std::chrono::steady_clock::now();
-    spdlog::info("[Slang] Begin compile {}.{} (debugMode={})",
-        desc.moduleName, desc.entryPointName, static_cast<uint32_t>(debugMode));
+    spdlog::info("[Slang] Begin compile {}.{} (debugMode={}, optimization={})",
+        desc.moduleName, desc.entryPointName, static_cast<uint32_t>(debugMode),
+        slangShaderOptimizationLevelName(*effectiveOptimization));
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     if (SLANG_FAILED(slang::createGlobalSession(globalSession.writeRef())) || globalSession == nullptr) {
         return makeError(Error::Failure);
@@ -1019,8 +1080,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         .name = slang::CompilerOptionName::Optimization,
         .value = slang::CompilerOptionValue{
             .kind = slang::CompilerOptionValueKind::Int,
-            .intValue0 = static_cast<int32_t>(debugMode == SlangShaderDebugMode::ShaderDebug
-                ? SLANG_OPTIMIZATION_LEVEL_NONE : kSlangOptimizationLevel),
+            .intValue0 = static_cast<int32_t>(optimizationLevel),
         },
     });
     if (native) {

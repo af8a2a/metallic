@@ -68,6 +68,9 @@ def shader_identity(report, sample):
                     build_configuration=report["build_configuration"], slang_build=report["slang_build"],
                     shader_target=report["shader_target"], debug_mode=report["configuration"]["debug_mode"],
                     validation=report["configuration"]["validation"])
+    identity.update(slang_optimization=sample.get("effective_slang_optimization"),
+                    compute_backend=report["configuration"].get("compute_backend", "pipeline"),
+                    disable_driver_optimization=report["configuration"].get("disable_driver_optimization", False))
     if sample.get("shader_source") == "recipe_spirv":
         identity.update(shader_source="recipe_spirv", shader_stages=sample["shader_stages"],
                         pipeline_type=sample["pipeline_type"])

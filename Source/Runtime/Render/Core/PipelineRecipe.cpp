@@ -121,6 +121,11 @@ void validateRecipe(const PipelineRecipe& recipe)
         throw std::runtime_error("unsupported recipe pipeline type");
     }
     if (recipe.colorAttachmentCount > recipe.colorFormats.size()) { throw std::runtime_error("too many color attachments"); }
+    if (recipe.computeBackend > ComputePipelineBackend::PipelineBinary ||
+        (recipe.type == PipelineRecipeType::Graphics && recipe.computeBackend != ComputePipelineBackend::Pipeline) ||
+        (recipe.computeBackend == ComputePipelineBackend::ShaderObject && recipe.disableOptimization)) {
+        throw std::runtime_error("invalid recipe compute backend or optimization policy");
+    }
     if (recipe.type == PipelineRecipeType::Compute) {
         validateShader(recipe.computeShader);
         if (!recipe.vertexShader.spirv.empty() || !recipe.taskShader.spirv.empty() ||
@@ -169,7 +174,8 @@ Json writeShader(const PipelineRecipeShader& shader, const std::filesystem::path
     return {{"spirv_file", name}, {"spirv_bytes", shader.spirv.size() * sizeof(uint32_t)},
         {"input_spirv_hash", hash}, {"module_name", shader.moduleName},
         {"source_entry_point", shader.sourceEntryPoint}, {"entry_point", shader.entryPoint},
-        {"debug_mode", shader.debugMode}, {"descriptor_heap_mode", shader.descriptorHeapMode}};
+        {"debug_mode", shader.debugMode}, {"descriptor_heap_mode", shader.descriptorHeapMode},
+        {"slang_optimization", shader.optimizationLevel}};
 }
 
 PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& directory)
@@ -200,6 +206,7 @@ PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& d
     shader.entryPoint = json.at("entry_point").get<std::string>();
     shader.debugMode = json.at("debug_mode").get<std::string>();
     shader.descriptorHeapMode = json.at("descriptor_heap_mode").get<std::string>();
+    shader.optimizationLevel = json.value("slang_optimization", std::string{});
     if (shader.inputSpirvHash != shaderHash(shader)) { throw std::runtime_error("recipe SPIR-V content hash mismatch"); }
     validateShader(shader);
     return shader;
@@ -210,7 +217,8 @@ PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& d
 ComputePipelineDesc PipelineRecipe::computeDesc(ShaderModule* module, PipelineCache* cache) const
 {
     return {.computeShader = {module, computeShader.entryPoint.c_str()}, .usesBindlessHeap = usesBindlessHeap,
-        .bindlessUserPushDataSize = bindlessUserPushDataSize, .pipelineCache = cache, .indirectBindable = indirectBindable};
+        .bindlessUserPushDataSize = bindlessUserPushDataSize, .pipelineCache = cache, .indirectBindable = indirectBindable,
+        .disableOptimization = disableOptimization, .backend = computeBackend};
 }
 
 GraphicsPipelineDesc PipelineRecipe::graphicsDesc(ShaderModule* vertex, ShaderModule* task,
@@ -223,7 +231,7 @@ GraphicsPipelineDesc PipelineRecipe::graphicsDesc(ShaderModule* vertex, ShaderMo
         .colorFormats = colorFormats, .colorAttachmentCount = colorAttachmentCount,
         .depthStencilFormat = depthStencilFormat, .topology = topology, .rasterization = rasterization,
         .depthStencil = depthStencil, .usesBindlessHeap = usesBindlessHeap,
-        .pipelineCache = cache, .indirectBindable = indirectBindable};
+        .pipelineCache = cache, .indirectBindable = indirectBindable, .disableOptimization = disableOptimization};
 }
 
 Result<> writePipelineRecipe(const PipelineRecipe& recipe, const std::filesystem::path& path, std::string& log)
@@ -241,6 +249,7 @@ Result<> writePipelineRecipe(const PipelineRecipe& recipe, const std::filesystem
                 {"vertex", writeShader(recipe.vertexShader, directory)}, {"task", writeShader(recipe.taskShader, directory)},
                 {"mesh", writeShader(recipe.meshShader, directory)}, {"fragment", writeShader(recipe.fragmentShader, directory)}}},
             {"state", {{"uses_bindless_heap", recipe.usesBindlessHeap}, {"indirect_bindable", recipe.indirectBindable},
+                {"disable_optimization", recipe.disableOptimization}, {"compute_backend", static_cast<uint32_t>(recipe.computeBackend)},
                 {"bindless_user_push_data_size", recipe.bindlessUserPushDataSize},
                 {"task_required_subgroup_size", recipe.taskRequiredSubgroupSize},
                 {"task_require_full_subgroups", recipe.taskRequireFullSubgroups},
@@ -302,6 +311,9 @@ Result<PipelineRecipe> readPipelineRecipe(const std::filesystem::path& path, std
         const auto& state = json.at("state");
         recipe.usesBindlessHeap = state.at("uses_bindless_heap").get<bool>();
         recipe.indirectBindable = state.at("indirect_bindable").get<bool>();
+        recipe.disableOptimization = state.value("disable_optimization", false);
+        recipe.computeBackend = state.contains("compute_backend")
+            ? readEnum(state.at("compute_backend"), ComputePipelineBackend::PipelineBinary) : ComputePipelineBackend::Pipeline;
         recipe.bindlessUserPushDataSize = readUint32(state.at("bindless_user_push_data_size"));
         recipe.taskRequiredSubgroupSize = readUint32(state.at("task_required_subgroup_size"));
         recipe.taskRequireFullSubgroups = state.at("task_require_full_subgroups").get<bool>();

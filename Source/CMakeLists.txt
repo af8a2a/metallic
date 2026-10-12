@@ -86,6 +86,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/MeshletStreamRuntime.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
+    Runtime/Render/GAPI/NativeBinaryCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/Streamer/UploadStreamer.cpp
     Runtime/Render/RenderSample.cpp

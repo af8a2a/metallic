@@ -107,7 +107,12 @@ For multi-configuration generators the executable is under Source/<Config>/.
 The default shader debug mode is disabled, independently of C++ Debug/Release.
 capture corresponds to CaptureSymbols; debug corresponds to ShaderDebug.
 Disabled and capture modes use Slang O1 with default backend optimization passes.
-The explicit debug mode retains O0 for variable inspection. Runtime and warmup
+`METALLIC_SLANG_OPTIMIZATION=O0|O1|O2|O3` overrides that default for standalone
+warmup and runtime requests. Unset it, or use `default`, to retain the existing
+debug-mode policy. Set the same value before launching warmup and the renderer;
+each effective optimization level has a separate shader-cache identity. Explicit
+`ShaderRequest::optimizationLevel` values take precedence over the environment.
+Without an optimization override, the explicit debug mode retains O0 for variable inspection. Runtime and warmup
 share this policy and its versioned cache identity.
 The tool also honors the runtime METALLIC_SLANG_DESCRIPTOR_MODE environment
 variable. Cache entries for different modes are separate.

@@ -70,6 +70,7 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
         identity.moduleName = desc.moduleName ? desc.moduleName : "";
         identity.sourceEntryPoint = desc.entryPointName ? desc.entryPointName : "";
         identity.descriptorHeapMode = slangUsesNativeDescriptorHeap(desc) ? "native" : "mapped";
+        identity.optimizationLevel = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(desc));
         switch (slangShaderDebugMode()) {
         case SlangShaderDebugMode::Disabled: identity.debugMode = "release"; break;
         case SlangShaderDebugMode::ShaderDebug: identity.debugMode = "debug"; break;
