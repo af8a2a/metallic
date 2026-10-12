@@ -1,31 +1,33 @@
-#ifndef METALLIC_VISIBILITY_STREAM_DECODE
-#define METALLIC_VISIBILITY_STREAM_DECODE
-#include "StreamAttributeDecode.slang"
+#language slang 2026
+implementing GPUDriven;
+
+namespace Metallic.GPUDriven
+{
 // Large descriptor-heap buffers can report zero from GetDimensions(). Use the
 // producer's bounded pool capacity, just as the raster decoder does. Offset is
 // asserted against MeshletStreamGPUParams::pageBufferBytes on the CPU.
-uint streamPageWordCount(ByteAddressBuffer params)
+public uint streamPageWordCount(ByteAddressBuffer params)
 {
     return params.Load(100u) / 4u;
 }
 // Shared validation and position decoding for the cooked StreamAsset format.
 // Callers supply their descriptors; no pass-specific bindings live here.
-struct StreamActiveGroup {
-    uint pageOffset, pageIndex, clusterCount, primitiveIndex;
-    uint lodLevel, materialIndex, mask, flags;
-    uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
-    float4 world0, world1, world2, world3;
+public struct StreamActiveGroup {
+    public uint pageOffset, pageIndex, clusterCount, primitiveIndex;
+    public uint lodLevel, materialIndex, mask, flags;
+    public uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
+    public float4 world0, world1, world2, world3;
 };
-uint streamPageByte(StructuredBuffer<uint> pages, uint address)
+public uint streamPageByte(StructuredBuffer<uint> pages, uint address)
 {
     return (pages[address / 4] >> ((address & 3u) * 8u)) & 255u;
 }
-float3 streamPagePosition(StructuredBuffer<uint> pages, uint word)
+public float3 streamPagePosition(StructuredBuffer<uint> pages, uint word)
 {
     return asfloat(uint3(pages[word], pages[word + 1], pages[word + 2]));
 }
 
-bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle,
+public bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle,
     StructuredBuffer<uint> pages, StructuredBuffer<uint2> pageTable, uint pageWordCount,
     out float3 a, out float3 b, out float3 c)
 {
@@ -63,7 +65,7 @@ bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle
     return true;
 }
 
-bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStreamVisibleRecord> records,
+public bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStreamVisibleRecord> records,
     StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
     StructuredBuffer<uint2> pageTable, uint pageWordCount, out VisibleClusterRecord record,
     out float3 a, out float3 b, out float3 c)
@@ -87,7 +89,7 @@ bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStr
 
 // Optional shading streams. Position-only pages continue to use geometric
 // normals and zero UV; every optional range is validated before dereferencing.
-uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint triangle,
+public uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint triangle,
     StructuredBuffer<uint> pages,
     StructuredBuffer<uint2> pageTable, out float3 normals[3], out float2 uvs[3], out float4 tangents[3])
 {
@@ -123,11 +125,11 @@ uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint triang
     return (hasNormal ? 2u : 0u) | (hasUv ? 4u : 0u) | (hasTangent ? 16u : 0u);
 }
 
-uint decodeStreamAttributes(VisibleClusterRecord record, uint triangle,
+public uint decodeStreamAttributes(VisibleClusterRecord record, uint triangle,
     StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
     StructuredBuffer<uint2> pageTable, out float3 normals[3], out float2 uvs[3], out float4 tangents[3])
 {
     return decodeStreamAttributesAtPage(groups[record.dataIndex].pageIndex, record.clusterIndex, triangle,
         pages, pageTable, normals, uvs, tangents);
 }
-#endif
+} // namespace Metallic.GPUDriven

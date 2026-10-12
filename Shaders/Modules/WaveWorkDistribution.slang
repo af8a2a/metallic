@@ -1,9 +1,14 @@
+#language slang 2026
+module WaveWorkDistribution;
+
+namespace Metallic.GPUDriven
+{
 // Wave-local expansion of variable-sized sources. Compact once, then count
 // source boundaries in each output batch instead of searching via shuffles.
 // All lanes must participate, including zero sources and the final batch tail.
 // Counts must have a representable wave sum (stream leaves contain <= 64 items).
 
-uint waveWorkSelectBit(uint bits, uint rank)
+internal uint waveWorkSelectBit(uint bits, uint rank)
 {
     uint lane = 0u;
     [unroll] for (uint half = 16u; half != 0u; half >>= 1u) {
@@ -22,7 +27,7 @@ uint waveWorkSelectBit(uint bits, uint rank)
 
 // Ballots can contain up to 128 lanes. Never shift a uint by 32 or use a
 // workgroup index as a wave index (a 64-thread group can contain two waves).
-uint waveWorkSelectSource(uint4 ballot, uint rank)
+internal uint waveWorkSelectSource(uint4 ballot, uint rank)
 {
     uint base = 0u;
     [unroll] for (uint word = 0u; word < 3u; ++word) {
@@ -34,16 +39,16 @@ uint waveWorkSelectSource(uint4 ballot, uint rank)
     return base + waveWorkSelectBit(ballot.w, rank);
 }
 
-struct WaveWorkDistribution
+public struct WaveWorkDistribution
 {
-    uint source;
-    uint end;
-    uint total;
-    uint sourceCount;
-    uint sourceHead;
+    public uint source;
+    public uint end;
+    public uint total;
+    public uint sourceCount;
+    public uint sourceHead;
 };
 
-WaveWorkDistribution waveWorkBegin(uint count)
+public WaveWorkDistribution waveWorkBegin(uint count)
 {
     WaveWorkDistribution work;
     uint prefix = WavePrefixSum(count);
@@ -64,7 +69,7 @@ WaveWorkDistribution waveWorkBegin(uint count)
     return work;
 }
 
-uint waveWorkNext(inout WaveWorkDistribution work, uint batch, out uint localItem)
+public uint waveWorkNext(inout WaveWorkDistribution work, uint batch, out uint localItem)
 {
     uint lane = WaveGetLaneIndex();
     uint last = work.end - batch - 1u;
@@ -94,3 +99,4 @@ uint waveWorkNext(inout WaveWorkDistribution work, uint batch, out uint localIte
     work.sourceHead += finished;
     return source;
 }
+} // namespace Metallic.GPUDriven

@@ -3,7 +3,8 @@ using Metallic;
 
 // Task/mesh patch path for the same active cut used by ordinary stream raster.
 #include "VisibilityTessellationSplit.slang"
-#include "StreamAttributeDecode.slang"
+import GPUDriven;
+using Metallic.GPUDriven;
 groupshared float3 g_StreamTessSource[3];
 groupshared float3 g_StreamTessNormal[3];
 groupshared float2 g_StreamTessUv[3];

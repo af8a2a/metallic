@@ -1,4 +1,3 @@
-#include "StreamAttributeDecode.slang"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Core;

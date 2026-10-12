@@ -1,12 +1,11 @@
 import ShaderCore;
 using Metallic;
 
-#include "../VisibilityBuffer/StreamAttributeDecode.slang"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
-#include "WaveWorkDistribution.slang"
+import WaveWorkDistribution;
 import AlphaCoverage;
 #include "../../Interop/MeshletStreamBLAS.h"
 #define VISIBILITY_TESSELLATION_STREAM 1

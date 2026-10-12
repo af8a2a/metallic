@@ -14,3 +14,5 @@ __include "GPUDriven/HybridRasterTriangle.slang";
 __include "GPUDriven/MaterialBinningCommon.slang";
 __include "GPUDriven/MeshletLOD.slang";
 __include "GPUDriven/MeshletLODMetric.slang";
+__include "GPUDriven/StreamAttributeDecode.slang";
+__include "GPUDriven/VisibilityStreamDecode.slang";

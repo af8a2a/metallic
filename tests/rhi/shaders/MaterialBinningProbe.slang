@@ -5,7 +5,6 @@ import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
-#include "../../../Shaders/Features/VisibilityBuffer/VisibilityStreamDecode.slang"
 
 #define gVisibility resolveUniform(getResourceParameters<MaterialBinningProbeResources>().visibility)
 #define gRecords resolveBuffer<RWStructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)

@@ -1,4 +1,5 @@
-#include "../../../Shaders/Features/GPUDriven/WaveWorkDistribution.slang"
+import WaveWorkDistribution;
+using Metallic.GPUDriven;
 
 struct ProbePush
 {

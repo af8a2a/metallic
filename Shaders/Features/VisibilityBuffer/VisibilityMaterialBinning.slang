@@ -6,7 +6,6 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-#include "VisibilityStreamDecode.slang"
 
 // Wire layout matches MaterialBinningParams.h, verified by GPU producer/consumer tests.
 struct MaterialBinningParams

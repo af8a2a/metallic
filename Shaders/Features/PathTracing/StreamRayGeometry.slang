@@ -1,7 +1,6 @@
 // CLAS IDs are pageIndex * maxPageClusters + localCluster. IDs survive arena moves.
 import GPUDriven;
 using Metallic.GPUDriven;
-#include "../VisibilityBuffer/VisibilityStreamDecode.slang"
 struct StreamRayInstance
 {
     uint primitiveIndex, materialIndex, visible, gpuSceneInstanceIndex;

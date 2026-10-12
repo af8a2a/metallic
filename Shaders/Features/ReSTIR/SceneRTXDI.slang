@@ -518,7 +518,16 @@ float2 transformMaterialUv(MaterialTextureInfo textureInfo, float2 uv)
         dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
 }
 
-#include "../PathTracing/StreamTextureSampling.slang"
+import StreamTextureSampling;
+
+RWStructuredBuffer<uint> sceneStreamTextureFeedback()
+{
+#if SHARC_UPDATE
+    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback);
+#else
+    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+#endif
+}
 
 float4 loadMaterialTexture(
     MaterialTextureInfo textureInfo,
@@ -532,8 +541,8 @@ float4 loadMaterialTexture(
     uint width = 1u;
     uint height = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    requestStreamTextureMip0(textureIndex);
-    uint mip = uint(ceil(streamTextureSamplingFloor(textureIndex)));
+    requestStreamTextureMip0(sceneStreamTextureFeedback(), textureIndex);
+    uint mip = uint(ceil(streamTextureSamplingFloor(sceneStreamTextureFeedback(), textureIndex)));
     uint mipCount;
     gMaterialTextures(textureIndex).GetDimensions(mip, width, height, mipCount);
     if (width == 0u || height == 0u) {
@@ -566,8 +575,8 @@ bool alphaMaskAcceptsHit(HitInfo hit, SceneRTXDIPush push)
     }
     if (needsAlpha) {
         if (hasMaterialTexture(material.baseColorTexture, push)) {
-            requestStreamTextureMip0(material.baseColorTexture.textureIndex);
-            context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv), uint(ceil(streamTextureSamplingFloor(material.baseColorTexture.textureIndex))));
+            requestStreamTextureMip0(sceneStreamTextureFeedback(), material.baseColorTexture.textureIndex);
+            context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv), uint(ceil(streamTextureSamplingFloor(sceneStreamTextureFeedback(), material.baseColorTexture.textureIndex))));
         }
     }
     if (custom) { return program.evaluateCoverage(context, coverageInstanceRef(hit.materialIndex)).accepted; }

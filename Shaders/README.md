@@ -24,7 +24,10 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/RTXCRHair.slang`、`Modules/RTXCRHair/` | RTXCR Chiang / Separate Chiang / Far Field 原生 Slang vendored 实现；见 [来源与接口](Modules/RTXCRHair/README.md) |
 | `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
 | `Features/PathTracing/OpenPBRSurface.slang`、`Modules/OpenPBRClosure.slang` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
-| `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
+| `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码、材质分箱与流式几何属性解码 |
+| `Modules/WaveWorkDistribution.slang` | 无资源依赖的 wave 工作分配；`Metallic.GPUDriven` 命名空间 |
+| `Modules/ScenePathTypes.slang`、`Modules/ScenePathMath.slang` | 场景路径追踪布局与纯数学：ray cone、RNG、相机和 motion；数学使用 `Metallic.ScenePath` 命名空间 |
+| `Modules/StreamTextureSampling.slang` | 显式传入 metadata/feedback buffer 的纹理采样下限和 mip 请求，不隐式读取 pass 参数 |
 | `Features/VisibilityBuffer/VisibilityMaterialBinning.slang` | 8×4 Wave32 稀疏 Program 分箱、prefix allocation 和 indirect dispatch；见 [Phase 6](../Documentation/MaterialSystemPhase6.md) |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |
@@ -77,6 +80,10 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 实现文件声明 `implementing GPUDriven;`，公开 API 标为 `public`，辅助实现标为 `internal`。
 命名空间使用 `Metallic`、`Metallic.GPUDriven`、`Metallic.Material`、`Metallic.Lighting`。
 消费者直接导入自己使用的模块，不依赖其他模块的间接导入。
+`SceneSurface.slang` 组合路径类型、数学与纹理反馈模块，并保留路径专用 `safeNormalize` 转发，
+避免与 GPUDriven 同名函数产生歧义。入口文件中的资源宏、SHARC/guide 局部编译选项、
+OpenPBR context 配置和 tessellation 类型/入口组合仍使用文本包含；迁移这些边界前必须先显式化依赖，
+不能用 `import` 机械替换调用方 `#define` 影响的 `#include`。
 当前固定的 Slang 2026.18.2 下，模块公开结构体的成员仍显式标注 `public`。
 
 新 compute pass 使用 `ComputeKernel` + `ParameterWriter`，以具名 typed 参数承载资源。

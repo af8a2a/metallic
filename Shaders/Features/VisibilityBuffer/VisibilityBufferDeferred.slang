@@ -38,7 +38,6 @@ ScenePathTracePush deferredViewPush()
 #define gVisibilityDepth resolveUniform(getResourceParameters<SceneResourceParameters>().visibilityDepth)
 #define gRasterInstances resolveBuffer<StructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<SceneResourceParameters>().rasterInstances)
 #define gRasterMaterials resolveBuffer<StructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<SceneResourceParameters>().rasterMaterials)
-#include "VisibilityStreamDecode.slang"
 #define gStreamRecords resolveBuffer<StructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<SceneResourceParameters>().streamRecords)
 #define gStreamGroups resolveBuffer<StructuredBuffer<StreamActiveGroup>>(getResourceParameters<SceneResourceParameters>().streamGroups)
 #define gStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().streamPages)
