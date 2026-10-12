@@ -1,6 +1,7 @@
 import MaterialTextureDecode;
 import AlphaCoverage;
 import Material;
+import OpenPBRMaterialParameters;
 using Metallic.Material;
 
 import Core;
@@ -31,47 +32,7 @@ struct MaterialVisualizeInstance
     uint padding;
 };
 
-struct MaterialVisualizeTextureInfo
-{
-    uint textureIndex;
-    uint texCoord;
-    // Required for float4 alignment in StructuredBuffer std430 layout.
-    uint2 alignmentPadding;
-    float4 transform0;
-    float4 transform1;
-};
-
-struct MaterialVisualizeMaterial
-{
-    float4 baseColor;
-    float4 emissive;
-    float4 params;
-    float4 textureParams;
-    float4 glassParams;
-    float4 attenuationColor;
-    float4 diffuseTransmission;
-    float4 rtxcrHairBaseColor;
-    float4 rtxcrHairParams0;
-    float4 rtxcrHairParams1;
-    float4 rtxcrHairDiffuseTint;
-    MaterialVisualizeTextureInfo baseColorTexture;
-    MaterialVisualizeTextureInfo metallicRoughnessTexture;
-    MaterialVisualizeTextureInfo normalTexture;
-    MaterialVisualizeTextureInfo occlusionTexture;
-    MaterialVisualizeTextureInfo emissiveTexture;
-    MaterialVisualizeTextureInfo transmissionTexture;
-    MaterialVisualizeTextureInfo thicknessTexture;
-    MaterialVisualizeTextureInfo diffuseTransmissionTexture;
-    MaterialVisualizeTextureInfo diffuseTransmissionColorTexture;
-    float4 specular;
-    MaterialVisualizeTextureInfo specularTexture;
-    MaterialVisualizeTextureInfo specularColorTexture;
-};
-
-
-
-
-#define gMaterials resolveBuffer<StructuredBuffer<MaterialVisualizeMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
+#define gMaterials resolveBuffer<StructuredBuffer<SceneMaterialData>>(getResourceParameters<SceneResourceParameters>().materials)
 
 #define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
 
@@ -214,13 +175,13 @@ float3 rayOriginFromPixel(float2 pixel, SceneMaterialVisualizationPush push)
     return push.eye.xyz + right * (ndc.x * halfHeight * aspect) + up * (ndc.y * halfHeight);
 }
 
-bool hasMaterialTexture(MaterialVisualizeTextureInfo textureInfo, SceneMaterialVisualizationPush push)
+bool hasMaterialTexture(MaterialTextureInfo textureInfo, SceneMaterialVisualizationPush push)
 {
     return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
         textureInfo.textureIndex < push.materialTextureCount;
 }
 
-float2 transformMaterialUv(MaterialVisualizeTextureInfo textureInfo, float2 uv)
+float2 transformMaterialUv(MaterialTextureInfo textureInfo, float2 uv)
 {
     return float2(
         dot(textureInfo.transform0.xy, uv) + textureInfo.transform0.z,
@@ -230,7 +191,7 @@ float2 transformMaterialUv(MaterialVisualizeTextureInfo textureInfo, float2 uv)
 #include "../PathTracing/StreamTextureSampling.slang"
 
 float4 loadMaterialTexture(
-    MaterialVisualizeTextureInfo textureInfo,
+    MaterialTextureInfo textureInfo,
     float2 uv,
     float4 fallback,
     SceneMaterialVisualizationPush push)
@@ -259,7 +220,7 @@ float4 loadMaterialTexture(
 
 bool alphaMaskAcceptsHit(HitInfo hit, SceneMaterialVisualizationPush push)
 {
-    MaterialVisualizeMaterial material = gMaterials[hit.materialIndex];
+    OpenPBRMaterialParameters material = sceneOpenPBRParameters(gMaterials[hit.materialIndex]);
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
@@ -377,7 +338,7 @@ float3 applyNormalMap(
 
 float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
 {
-    MaterialVisualizeMaterial material = gMaterials[hit.materialIndex];
+    OpenPBRMaterialParameters material = sceneOpenPBRParameters(gMaterials[hit.materialIndex]);
     float4 baseColorSample = loadMaterialTexture(
         material.baseColorTexture,
         hit.texcoord,

@@ -12,7 +12,7 @@ using Metallic.Material;
 #define gGroups resolveBuffer<RWStructuredBuffer<StreamActiveGroup>>(getResourceParameters<MaterialBinningProbeResources>().groups)
 #define gInstances resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<MaterialBinningProbeResources>().instances)
 #define gMaterials resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<MaterialBinningProbeResources>().materials)
-#define gShadingMaterials resolveBuffer<RWStructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
+#define gShadingMaterials resolveBuffer<RWStructuredBuffer<SceneMaterialData>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
 #if defined(PROBE_TYPED)
 import ParameterRoot;
 struct MaterialProbeParams {
@@ -91,7 +91,7 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
         gMaterials[i] = material;
         // Change executable features while keeping source material IDs stable.
         uint type = 1u + (i + push.bin) % 4u;
-        PathTraceMaterial shading = {};
+        SceneMaterialData shading = {};
         shading.params.x = type == 1u ? 0.0 : (type == 2u ? 1.0 : 0.5);
         shading.glassParams.x = type == 4u ? 1.0 : 0.0;
         shading.metallicRoughnessTexture.textureIndex = 0xffffffffu;

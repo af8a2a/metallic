@@ -1,7 +1,7 @@
 # Material System Phase 10 — Closure IR / Slab Prototype
 
 本阶段提供独立的 `Slab / Mix / Layer` Closure DAG，以及可执行的 Single / Dual Slab 后端。
-OpenPBR 保留 vendor reference；`OpenPBRCompositeClosure<TContext>` 是原生 `OpenPBRClosure<TContext>` 的类型别名，
+OpenPBR 保留 vendor reference；原生 OpenPBR 使用 `OpenPBRClosure<TContext>`；未使用的 `OpenPBRCompositeClosure<TContext>` 别名已移除，
 现有 Surface Program 使用这个 canonical family 名称，散射、采样和 LUT 路径不变。
 
 ## IR 与后端边界

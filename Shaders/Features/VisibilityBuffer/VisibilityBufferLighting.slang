@@ -99,28 +99,21 @@ struct VisibilitySurfaceLights : ISurfaceLightProvider
     }
 };
 
-float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
+float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed)
 {
-    RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
+    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
+        propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t), ray.direction),
+        sceneMaterialInstanceRef(hit.materialIndex));
     float3 authoredNormal = hit.normal;
-    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
-#if defined(MATERIAL_PROGRAM_ID)
-    program.specializedProgramId = MATERIAL_PROGRAM_ID;
-#endif
-    program.fixedMetalness = fixedMetalness;
-    program.opaquePrimary = opaquePrimary;
-    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, ray.direction),
-        legacyMaterialInstanceRef(hit.materialIndex));
-    let surface = evaluated.closure;
-    hit = program.hit;
-    seed = program.seed;
-    float4 normalSample = program.normalSample;
-    PathTraceMaterial material = program.material;
+    hit = program.program.evaluatedHit();
+    seed = program.program.evaluatedSeed();
+    float4 normalSample = program.program.sampledNormal();
+    SceneSurfaceSummary summary = program.program.surfaceSummary();
     if (push.debugView != kOpenPBRDebugViewFinal) {
-        return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
+        return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, summary, ray.direction);
     }
-    if (material.emissive.w != 0.0) { return applyPrimaryAerialPerspective(surface.inputs.base_color, hit.position, ray.origin); }
+    if (summary.unlit) { return applyPrimaryAerialPerspective(summary.baseColor, hit.position, ray.origin); }
     float3 viewDirection = -ray.direction;
     VisibilitySurfaceLights lights;
     lights.push = push;
@@ -136,39 +129,64 @@ float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
     let shaded = shadeEvaluatedSurface(evaluated, viewDirection, TransportMode.Radiance, sampling, lights);
     float3 radiance = shaded.radiance;
 #if METALLIC_CUSTOM_MATERIALS
-    if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
-        surface.inputs.specular_roughness_anisotropy > 0.0) {
-        return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(shaded.prepared, push) * surface.occlusion, hit.position, ray.origin);
+    if (summary.numericalEnvironment) {
+        return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(shaded.prepared, push) * summary.occlusion, hit.position, ray.origin);
     }
 #endif
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
         float3 normal = hit.normal;
-        float roughness = saturate(surface.inputs.specular_roughness);
-        // Bounded scalar energy uses FP16. AP1 color-vector weights retain FP32
-        // through WorkingColor to bound display-conversion error.
-        DeferredInput metalness = DeferredInput(saturate(surface.inputs.base_metalness));
-        float ior = max(surface.inputs.specular_ior, 1.0);
-        float dielectricF0 = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
-        float3 f0 = lerp(dielectricF0 * surface.inputs.specular_color * surface.inputs.specular_weight,
-            surface.inputs.base_color, metalness);
-        DeferredColor specularWeight = DeferredColor(saturate(approxSpecularIntegralGGX(f0, max(roughness * roughness, 0.0001),
-            saturate(dot(normal, viewDirection)))));
-        DeferredInput transmissionWeight = DeferredInput(saturate(surface.inputs.transmission_weight));
-        DeferredWeight diffuseWeight = DeferredWeight(saturate(surface.inputs.base_weight)) * (DeferredWeight(1.0) - metalness) *
-            (DeferredWeight(1.0) - transmissionWeight);
-        DeferredColor diffuseColor = DeferredColor(surface.inputs.base_color) * diffuseWeight * (DeferredColor(1.0) - specularWeight);
-        DeferredColor transmissionColor = DeferredColor(surface.inputs.transmission_color) * transmissionWeight *
-            (DeferredWeight(1.0) - metalness) * (DeferredColor(1.0) - specularWeight);
+        float roughness = saturate(summary.roughness);
+        float ior = summary.ior;
+        // Keep the established FP16 approximation policy: round bounded
+        // coefficients before deriving color weights, while HDR stays FP32.
+        DeferredInput conductorFraction = DeferredInput(summary.conductorFraction);
+        DeferredInput surfaceTransmission = DeferredInput(saturate(summary.surfaceTransmission));
+        float3 f0 = lerp(summary.dielectricReflectance, summary.baseColor, conductorFraction);
+        DeferredColor specularWeight = DeferredColor(saturate(approxSpecularIntegralGGX(f0,
+            max(roughness * roughness, 0.0001), saturate(dot(normal, viewDirection)))));
+        DeferredWeight diffuseWeight = DeferredWeight(saturate(summary.diffuseWeight)) *
+            (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
+        DeferredColor diffuseColor = DeferredColor(summary.baseColor) * diffuseWeight *
+            (DeferredColor(1.0) - specularWeight);
+        DeferredColor transmissionColor = DeferredColor(summary.transmissionColor) * surfaceTransmission *
+            (DeferredWeight(1.0) - conductorFraction) * (DeferredColor(1.0) - specularWeight);
         float3 diffuse = environmentDiffuseIrradiance(normal, push) / kPi *
             float3(diffuseColor);
         float3 specular = realtimeEnvironmentSpecular(reflect(-viewDirection, normal), roughness, push) * float3(specularWeight);
         float3 transmitted = float3(0.0);
         float3 refraction = refract(-viewDirection, normal, hit.frontFace ? 1.0 / ior : ior);
-        if (dot(refraction, refraction) > 0.0 && surface.inputs.transmission_weight > 0.0) {
+        if (dot(refraction, refraction) > 0.0 && summary.transmissionWeight > 0.0) {
             transmitted = realtimeEnvironmentSpecular(refraction, roughness, push) *
                 float3(transmissionColor);
         }
-        radiance += (diffuse + specular + transmitted) * surface.occlusion;
+        radiance += (diffuse + specular + transmitted) * summary.occlusion;
     }
     return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
+}
+
+
+float3 shadeVisibilitySurface(Ray ray, HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed, int fixedMetalness = -1, bool opaquePrimary = false)
+{
+    RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
+#if METALLIC_CUSTOM_MATERIALS
+#if defined(MATERIAL_PROGRAM_ID)
+    uint specializedProgram = MATERIAL_PROGRAM_ID;
+#else
+    uint specializedProgram = 0u;
+#endif
+    uint family = sceneSurfaceMaterialFamily(hit.materialIndex, specializedProgram);
+    if (family == 1u) {
+        var program = makeSceneSlabMaterialProgram<SceneSingleSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
+        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed);
+    }
+    if (family == 2u) {
+        var program = makeSceneSlabMaterialProgram<SceneDualSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
+        return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed);
+    }
+#endif
+    var program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+    program.program.fixedMetalness = fixedMetalness;
+    program.program.opaquePrimary = opaquePrimary;
+    return shadeSceneVisibilitySurface(program, ray, hit, samplePixel, push, seed);
 }

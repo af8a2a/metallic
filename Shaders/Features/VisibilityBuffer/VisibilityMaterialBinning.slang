@@ -14,7 +14,7 @@ struct MaterialBinningParams
     ResourceHandle<Texture2D<uint>> visibility;
     RWBufferSpan<GPUDrivenPreviewInstance> instances;
     RWBufferSpan<GPUDrivenPreviewMaterial> materials;
-    RWBufferSpan<PathTraceMaterial> shadingMaterials;
+    RWBufferSpan<SceneMaterialData> shadingMaterials;
     RWBufferSpan<MaterialBin> bins;
     RWBufferSpan<MaterialTile> tiles;
     RWBufferSpan<uint> arguments;

@@ -18,12 +18,12 @@ ProbeParams lightingProbeParameters()
 
 struct LightingProbeSource : IOpenPBRMaterialSource, IDebugLambertSource
 {
-    PathTraceMaterial loadParameters(MaterialInstanceRef instance)
+    OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
     {
         ProbeSource source;
         return source.loadParameters(instance);
     }
-    float4 loadTexture(PathTraceTextureInfo info, float2 uv, float4 fallback,
+    float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint)
     {
@@ -32,7 +32,7 @@ struct LightingProbeSource : IOpenPBRMaterialSource, IDebugLambertSource
     }
     DebugLambertInputs evaluateInputs(SurfaceMaterialContext context, MaterialInstanceRef instance)
     {
-        PathTraceMaterial material = loadParameters(instance);
+        OpenPBRMaterialParameters material = loadParameters(instance);
         uint seed = 0;
         float4 color = loadTexture(material.baseColorTexture, context.texCoord0, float4(1),
             (ScenePathTracePush)0, (RayCone)0, (HitInfo)0, float3(0), true, seed, context.footprint);

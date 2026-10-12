@@ -225,6 +225,11 @@ public:
                 if (!scene.setMaterialProperties(0, edited)) { return RHITestResult::fail("Coverage edit failed"); }
             }
             if (!preview.render(sample.graph, 64, 64, "Deferred.color")) { return RHITestResult::fail(preview.lastLog()); }
+            std::ofstream(context.outputDirectory / ("Coverage-" + std::to_string(step) + ".compile.log")) << preview.lastLog();
+            if (preview.lastLog().find("Initial material compilation failed") != std::string::npos ||
+                preview.lastLog().find("error[") != std::string::npos) {
+                return RHITestResult::fail("Coverage raster shader failed step=" + std::to_string(step) + ": " + preview.lastLog());
+            }
             const auto rasterBytes = preview.readbackBytes();
             if (preview.readbackFormat() != Format::RGBA32Sfloat || rasterBytes.size() != 64 * 64 * 16) { return RHITestResult::fail("Raster readback format"); }
             std::vector<float> colors(rasterBytes.size() / 4);
@@ -248,7 +253,8 @@ public:
                         std::abs(colors[i + 2] - (front && step == 6 ? 1.0f : 0.0f)) > 1e-5f) {
                         return RHITestResult::fail("Coverage winner mismatch step=" + std::to_string(step) + " x=" + std::to_string(x) +
                             " red=" + std::to_string(colors[i]) + " green=" + std::to_string(colors[i + 1]) +
-                            " ray=" + std::to_string(rays[i]) + " shadow=" + std::to_string(rays[i + 1]));
+                            " blue=" + std::to_string(colors[i + 2]) + " ray=" + std::to_string(rays[i]) +
+                            " shadow=" + std::to_string(rays[i + 1]) + " expectedDistance=" + std::to_string(t));
                     }
                     winners += front;
                 }

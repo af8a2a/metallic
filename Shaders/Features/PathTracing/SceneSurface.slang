@@ -6,6 +6,8 @@ import AlphaCoverage;
 import Core;
 using Metallic;
 import Material;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
 using Metallic.Material;
 import MaterialProgram;
 #if METALLIC_CUSTOM_MATERIALS
@@ -62,9 +64,9 @@ struct PathTraceInstance
 
 
 #if SHARC_UPDATE
-#define gMaterials resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
+#define gMaterials resolveBuffer<StructuredBuffer<SceneMaterialData>>(getResourceParameters<SceneResourceParameters>().materials)
 #else
-#define gMaterials resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset))
+#define gMaterials resolveBuffer<StructuredBuffer<SceneMaterialData>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset))
 #endif
 
 #if SHARC_UPDATE
@@ -204,10 +206,19 @@ SurfaceMaterialContext sceneSurfaceMaterialContext(HitInfo hit, TextureFootprint
     return context;
 }
 
-PathTraceMaterial loadSceneMaterial(uint materialIndex)
+SceneMaterialData loadSceneMaterial(uint materialIndex)
 {
-    LegacyMaterialProgram program;
-    return program.loadParameters(gMaterials, legacyMaterialInstanceRef(materialIndex));
+    return gMaterials[materialIndex];
+}
+
+OpenPBRMaterialParameters loadSceneOpenPBRMaterial(uint materialIndex)
+{
+    return sceneOpenPBRParameters(loadSceneMaterial(materialIndex));
+}
+
+RTXCRHairMaterialParameters loadSceneFiberMaterial(uint materialIndex)
+{
+    return sceneFiberParameters(loadSceneMaterial(materialIndex));
 }
 
 static const float kPi = 3.14159265358979323846;
@@ -770,20 +781,20 @@ float3 sampleCosineHemisphere(float3 normal, inout uint seed)
         normal);
 }
 
-bool hasMaterialTexture(PathTraceTextureInfo textureInfo, ScenePathTracePush push)
+bool hasMaterialTexture(MaterialTextureInfo textureInfo, ScenePathTracePush push)
 {
     return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
         textureInfo.textureIndex < push.materialTextureCount;
 }
 
-float2 transformMaterialUv(PathTraceTextureInfo textureInfo, float2 uv)
+float2 transformMaterialUv(MaterialTextureInfo textureInfo, float2 uv)
 {
     return float2(
         dot(textureInfo.transform0.xy, uv) + textureInfo.transform0.z,
         dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
 }
 
-float textureTransformLodBias(PathTraceTextureInfo textureInfo)
+float textureTransformLodBias(MaterialTextureInfo textureInfo)
 {
     float determinant =
         textureInfo.transform0.x * textureInfo.transform1.y -
@@ -792,7 +803,7 @@ float textureTransformLodBias(PathTraceTextureInfo textureInfo)
 }
 
 float rayConeTextureLod(
-    PathTraceTextureInfo textureInfo,
+    MaterialTextureInfo textureInfo,
     RayCone rayCone,
     HitInfo hit,
     float3 rayDirection,
@@ -827,7 +838,7 @@ RayMaterialWork sceneRayMaterialWork(HitInfo hit, RayCone cone, float3 direction
     RayMaterialWork work = (RayMaterialWork)0;
     work.surface = sceneSurfaceMaterialContextForRay(hit, cone, direction);
     work.woWS = safeNormalize(-direction, hit.normal);
-    work.instance = legacyMaterialInstanceRef(hit.materialIndex);
+    work.instance = sceneMaterialInstanceRef(hit.materialIndex);
     work.seed = seed;
     work.bounce = bounce;
     return work;
@@ -854,7 +865,7 @@ float materialTextureSamplingFloor(uint textureIndex)
 }
 
 float4 loadMaterialTextureMip0(
-    PathTraceTextureInfo textureInfo,
+    MaterialTextureInfo textureInfo,
     float2 uv,
     float4 fallback,
     ScenePathTracePush push)
@@ -888,7 +899,7 @@ float4 loadMaterialTextureMip0(
 #endif
 }
 
-float loadMaterialAlphaCoverage(PathTraceTextureInfo textureInfo, float2 uv, ScenePathTracePush push)
+float loadMaterialAlphaCoverage(MaterialTextureInfo textureInfo, float2 uv, ScenePathTracePush push)
 {
     if (!hasMaterialTexture(textureInfo, push)) { return 1.0; }
     requestStreamTextureMip0(textureInfo.textureIndex);
@@ -896,7 +907,7 @@ float loadMaterialAlphaCoverage(PathTraceTextureInfo textureInfo, float2 uv, Sce
 }
 
 float4 loadMaterialTexture(
-    PathTraceTextureInfo textureInfo,
+    MaterialTextureInfo textureInfo,
     float2 uv,
     float4 fallback,
     ScenePathTracePush push,
@@ -939,7 +950,7 @@ float4 loadMaterialTexture(
 }
 
 float4 loadMaterialTextureForMaterial(
-    PathTraceTextureInfo textureInfo,
+    MaterialTextureInfo textureInfo,
     float2 uv,
     float4 fallback,
     ScenePathTracePush push,
@@ -973,7 +984,7 @@ float4 loadMaterialTextureForMaterial(
 
 #include "MaterialValueTextures.slang"
 
-bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)
+bool materialNeedsDeterministicTextureMip0(OpenPBRMaterialParameters material)
 {
     // Specular transmission magnifies stochastic/material-unaware mips into hard surface bands.
     return material.glassParams.x > 0.01;
@@ -981,24 +992,23 @@ bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)
 
 
 
-CoverageResult evaluateSceneCoverage(uint materialIndex, PathTraceMaterial material, float2 uv, ScenePathTracePush push)
+CoverageResult evaluateSceneCoverage(uint materialIndex, MaterialCoverageParameters material, float2 uv, ScenePathTracePush push)
 {
     CoverageContext context;
     context.uv = uv; context.baseAlpha = 1.0;
-    context.cutoff = material.params.z; context.alphaMode = material.textureParams.w;
+    context.cutoff = material.cutoff; context.alphaMode = material.alphaMode;
     if (context.alphaMode < 0.5) { return coverageFromOpacity(context, 1.0); }
-    if (material.attenuationColor.w > 0.5) {
+    if (material.hasProgram) {
         CoverageProgram program;
         program.inputs = gMaterialValues;
         MaterialInstanceRef instance = coverageInstanceRef(materialIndex);
         if (program.usesBaseAlpha(instance)) {
-            context.baseAlpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
+            context.baseAlpha = material.baseAlpha * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
         }
         return program.evaluateCoverage(context, instance);
     }
-    context.baseAlpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
-    LegacyCoverageEvaluator legacy;
-    return legacy.evaluateCoverage(context, coverageInstanceRef(materialIndex));
+    context.baseAlpha = material.baseAlpha * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
+    return coverageFromOpacity(context, context.baseAlpha);
 }
 
 

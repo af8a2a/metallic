@@ -43,7 +43,7 @@ public:
             reflection.addBufferOutput("groups").buffer((materialCount_ + 3) * 112, 112).storageReadWrite();
             reflection.addBufferOutput("instances").buffer((materialCount_ + 3) * 160, 160).storageReadWrite();
             reflection.addBufferOutput("materials").buffer(materialCount_ * 560, 560).storageReadWrite();
-            reflection.addBufferOutput("shadingMaterials").buffer(materialCount_ * sizeof(render::LegacyMaterialPayload), sizeof(render::LegacyMaterialPayload)).storageReadWrite();
+            reflection.addBufferOutput("shadingMaterials").buffer(materialCount_ * sizeof(render::SceneMaterialData), sizeof(render::SceneMaterialData)).storageReadWrite();
         } else {
             reflection.addTextureInput("visibility").sampledRead();
             for (const char* name : {"records", "groups", "instances", "materials", "shadingMaterials"}) {
@@ -451,7 +451,7 @@ public:
         auto& commands = context.commandBuffer();
         const uint32_t phase = uint32_t(context.frameIndex() % 4);
         // Mapping changes are instance data. They never compile/create a Program.
-        std::vector<uint32_t> mapping(context.inputBuffer("shadingMaterials").buffer()->desc().size / sizeof(render::LegacyMaterialPayload));
+        std::vector<uint32_t> mapping(context.inputBuffer("shadingMaterials").buffer()->desc().size / sizeof(render::SceneMaterialData));
         for (uint32_t i = 0; i < mapping.size(); ++i) {
             mapping[i] = count_ == 5 ? (i == 1 || i == 2 ? 3 : 1 + (i + phase) % 4) : 1 + (i + phase) % (count_ - 1);
         }

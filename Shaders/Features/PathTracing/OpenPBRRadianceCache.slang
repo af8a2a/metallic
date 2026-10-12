@@ -8,7 +8,7 @@ OpenPBRDiffuseSpecular openPbrSelectComponents(OpenPBRDiffuseSpecular value, uin
 }
 
 OpenPBRDiffuseSpecular openPbrDirectComponents<TLights : ISurfaceLightProvider>(
-    SceneSurfaceClosure.Prepared prepared, inout TLights lights, uint replacedMask)
+    SceneOpenPBRPreparedClosure prepared, inout TLights lights, uint replacedMask)
 {
     OpenPBRDiffuseSpecular result = openPBRMakeZeroDiffuseSpecular();
     uint count = lights.count();
@@ -78,7 +78,7 @@ uint64_t openPbrCacheMixKey(uint64_t value)
 }
 
 OpenPBRCacheAddress openPbrCacheAddress(OpenPBRCacheContext cache, HitInfo hit,
-    OpenPBRResolvedInputs inputs, PathTraceMaterial material, OpenPBRInteriorStack interiorStack, float3 wo)
+    OpenPBRResolvedInputs inputs, OpenPBRMaterialParameters material, OpenPBRInteriorStack interiorStack, float3 wo)
 {
     OpenPBRCacheAddress address = (OpenPBRCacheAddress)0;
     // Media and layered/transmitting closures continue exact transport. Sharp

@@ -40,7 +40,7 @@
 | --- | --- |
 | [MaterialBinning.h](../Source/Runtime/Render/MaterialBinning.h) 与 [分类模块](../Shaders/Modules/GPUDriven/MaterialBinningCommon.slang) 已提供 8×4 tile、lane mask 和 5 类特征分箱 | 保留为固定模板的优化路径；新增 Program 分类，不把 5 个满屏队列直接扩成任意数量 |
 | [VBuffer Deferred](VisibilityBufferDeferred.md) 已支持 resident 与 StreamAsset realtime 路径；补充路径追踪默认关闭、按变体显式启用 | 迁移必须分别覆盖两类场景来源和开关状态；固定采样数、估计器和 guides 设置进行对照 |
-| [SceneMaterial.slang](../Shaders/Modules/Material/SceneMaterial.slang) 的 `PathTraceMaterial` 同时保存表面、透射、RTXCR hair 和纹理字段 | 用 legacy adapter 接入，逐步分离类型化 payload；保留旧资产和上传入口的兼容性 |
+| [SceneMaterial.slang](../Shaders/Modules/Material/SceneMaterial.slang) 的 `SceneMaterialData` 保留 720 字节场景上传记录 | 传输布局与 shader 模型解耦；OpenPBR 与 RTXCR 提取独立参数类型，Slab 使用独立输入，泛型 `Material` 封装求值 |
 | [Slang 模块组织](../Shaders/README.md) 已建立 Modules / Interop / Features 边界和传递依赖缓存 | 新材质编译器复用现有 Slang 后端；无需重新进行全仓库 shader 模块化 |
 | [RTXCR groom](RtxcrSample.md) 已有 Chiang BSDF 和 groom → DOTS → triangle BLAS 路径 | 早期即可验证 Fiber adapter；LSS、动画和 strand 光栅覆盖仍是后续项目 |
 | [DGC](DeviceGeneratedCommands.md) 已有可选能力、execution set、preprocess 和读回测试 | 后续任务是接入材质 active-program 调度及测量收益，不是从零实现扩展 |
@@ -157,7 +157,7 @@ ABeautifulGame、StreamAsset、程序数量压力与 Claire groom 分别在后�
 
 **状态：已完成（2026-10-01）。** 已交付内置模型注册、带稳定 ID/类型的参数布局迁移、编译产物与资源 manifest、失败保留与首次错误材质、CPU/GPU 发布对象和完成点退休。23 项回归通过，LookDev PT / Deferred 与 Claire 256 帧原始 HDR 迁移前后逐字节一致；详见 [M1 实现与验收记录](MaterialRuntimeM1.md)。当前内置 GPU 布局保留兼容 ABI，自定义 Value Program 与新模型编译扩展进入 M2。
 
-交付 Definition / Program / Instance / Schema / Capabilities，生成式或集中式模型注册，以及 legacy 数据适配。保留现有 OpenPBR composite 和 RTXCR Chiang 实现；旧 `PathTraceMaterial` 作为输入兼容层，不继续承担所有新模型的通用字段集合。
+交付 Definition / Program / Instance / Schema / Capabilities，生成式或集中式模型注册，以及场景上传数据适配。保留现有 OpenPBR composite 和 RTXCR Chiang 实现；`SceneMaterialData` 仅承担当前上传传输记录，不承担新模型的通用参数类型。
 
 接入两条现有路径：VBuffer / OpenPBR PT 的 Surface，以及 RTXCR DOTS PT 的 Fiber。先复用各自已有几何与积分器，通过共同材质 API 求值，不强制合并全部 transport 代码。定义 FiberInteraction 的最小真实需求，并显式标注 DOTS 可提供的信息及近似。Fiber adapter 修改前补采现有 Claire DOTS / RTXCR 基线，作为 M1 的专用证据；Surface 继续使用 M0 冻结的 LookDev。
 

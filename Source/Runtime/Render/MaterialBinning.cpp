@@ -4,7 +4,7 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/MaterialBinning.h"
-#include "Runtime/Render/Material/LegacyMaterialPayload.h"
+#include "Runtime/Render/Material/SceneMaterialData.h"
 #include "Runtime/Render/MaterialBinningParams.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -50,7 +50,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
     const bool sparse = desc.programBinCount != 0;
     const uint32_t binCount = sparse ? desc.programBinCount : kMaterialClassCount;
     if (sparse && (binCount > kMaxMaterialProgramBins || desc.materialProgramBins.empty() ||
-        desc.shadingMaterials == nullptr || desc.materialProgramBins.size() != desc.shadingMaterials->desc().size / sizeof(LegacyMaterialPayload) ||
+        desc.shadingMaterials == nullptr || desc.materialProgramBins.size() != desc.shadingMaterials->desc().size / sizeof(SceneMaterialData) ||
         std::any_of(desc.materialProgramBins.begin(), desc.materialProgramBins.end(),
             [binCount](uint32_t bin) { return bin == 0 || bin >= binCount; }))) {
         log = "Program binning requires a complete instance-to-active-program table; slot zero is reserved for background";
@@ -170,7 +170,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
     const MaterialBinningParams params{
         .visibility = writer.sampledImage(desc.visibility),
         .instances = writer.bufferSpan(desc.instances, 160, 16),
-        .materials = writer.bufferSpan(desc.materials, 560, 16), .shadingMaterials = writer.bufferSpan(desc.shadingMaterials, sizeof(LegacyMaterialPayload), 16),
+        .materials = writer.bufferSpan(desc.materials, 560, 16), .shadingMaterials = writer.bufferSpan(desc.shadingMaterials, sizeof(SceneMaterialData), 16),
         .bins = writer.bufferSpan(buffers[0].get(), 8, 8), .tiles = writer.bufferSpan(buffers[1].get(), 8, 8),
         .arguments = writer.bufferSpan(buffers[2].get(), 4, 4),
         .streamRecords = desc.streamRecords ? writer.bufferSpan(desc.streamRecords, 4, 4) : GPUBufferSpan{},

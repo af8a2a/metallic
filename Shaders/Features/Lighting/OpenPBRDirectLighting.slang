@@ -130,29 +130,21 @@ struct RealtimeSurfaceLights : ISurfaceLightProvider
     }
 };
 
-float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
-    ScenePathTracePush push, inout uint seed, bool sampledEnvironment,
-    int fixedMetalness = -1, bool opaquePrimary = false)
+float3 shadeSceneDirectSurface<TProgram : ISceneSurfaceMaterialProgram>(inout Material<TProgram> program, Ray ray, HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed, bool sampledEnvironment)
 {
-    RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
+    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
+        propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t), ray.direction),
+        sceneMaterialInstanceRef(hit.materialIndex));
     float3 authoredNormal = hit.normal;
-    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
-#if defined(MATERIAL_PROGRAM_ID)
-    program.specializedProgramId = MATERIAL_PROGRAM_ID;
-#endif
-    program.fixedMetalness = fixedMetalness;
-    program.opaquePrimary = opaquePrimary;
-    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, ray.direction),
-        legacyMaterialInstanceRef(hit.materialIndex));
-    let surface = evaluated.closure;
-    hit = program.hit;
-    seed = program.seed;
-    float4 normalSample = program.normalSample;
-    PathTraceMaterial material = program.material;
+    hit = program.program.evaluatedHit();
+    seed = program.program.evaluatedSeed();
+    float4 normalSample = program.program.sampledNormal();
+    SceneSurfaceSummary summary = program.program.surfaceSummary();
     if (push.debugView != kOpenPBRDebugViewFinal) {
-        return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, surface, ray.direction);
+        return openPbrPrimaryDebugColor(push, hit, authoredNormal, normalSample, summary, ray.direction);
     }
-    if (material.emissive.w != 0.0) { return applyPrimaryAerialPerspective(surface.inputs.base_color, hit.position, ray.origin); }
+    if (summary.unlit) { return applyPrimaryAerialPerspective(summary.baseColor, hit.position, ray.origin); }
     float3 viewDirection = -ray.direction;
     RealtimeSurfaceLights lights;
     lights.push = push;
@@ -173,33 +165,25 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
 #if METALLIC_REALTIME_DEFERRED
     if (push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
 #if METALLIC_CUSTOM_MATERIALS
-        if (surface.family != 0u || surface.inputs.coat_weight > 0.0 || surface.inputs.fuzz_weight > 0.0 ||
-            surface.inputs.specular_roughness_anisotropy > 0.0) {
-            return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push) * surface.occlusion, hit.position, ray.origin);
+        if (summary.numericalEnvironment) {
+            return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push) * summary.occlusion, hit.position, ray.origin);
         }
 #endif
         float3 normal = hit.normal;
-        float roughness = saturate(surface.inputs.specular_roughness);
-        float metalness = saturate(surface.inputs.base_metalness);
-        float ior = max(surface.inputs.specular_ior, 1.0);
-        float dielectricF0 = ((ior - 1.0) / (ior + 1.0)) * ((ior - 1.0) / (ior + 1.0));
-        float3 f0 = lerp(dielectricF0 * surface.inputs.specular_color * surface.inputs.specular_weight,
-            surface.inputs.base_color, metalness);
-        float3 specularWeight = saturate(approxSpecularIntegralGGX(f0, max(roughness * roughness, 0.0001),
-            saturate(dot(normal, viewDirection))));
-        float diffuseWeight = surface.inputs.base_weight * (1.0 - metalness) *
-            (1.0 - surface.inputs.transmission_weight);
+        float roughness = saturate(summary.roughness);
+        float ior = summary.ior;
+        float3 specularWeight = saturate(approxSpecularIntegralGGX(summary.specularReflectance,
+            max(roughness * roughness, 0.0001), saturate(dot(normal, viewDirection))));
         float3 diffuse = environmentDiffuseIrradiance(normal, push) / kPi *
-            surface.inputs.base_color * diffuseWeight * (1.0 - specularWeight);
+            summary.diffuseColor * (1.0 - specularWeight);
         float3 specular = realtimeEnvironmentSpecular(reflect(-viewDirection, normal), roughness, push) * specularWeight;
         float3 transmitted = float3(0.0);
         float3 refraction = refract(-viewDirection, normal, hit.frontFace ? 1.0 / ior : ior);
-        if (dot(refraction, refraction) > 0.0 && surface.inputs.transmission_weight > 0.0) {
+        if (dot(refraction, refraction) > 0.0 && summary.transmissionWeight > 0.0) {
             transmitted = realtimeEnvironmentSpecular(refraction, roughness, push) *
-                surface.inputs.transmission_color * surface.inputs.transmission_weight *
-                (1.0 - metalness) * (1.0 - specularWeight);
+                summary.transmissionColor * summary.transmissionWeight * (1.0 - specularWeight);
         }
-        radiance += (diffuse + specular + transmitted) * surface.occlusion;
+        radiance += (diffuse + specular + transmitted) * summary.occlusion;
     }
 #else
     if (sampledEnvironment && push.environmentMode != kEnvironmentModeDisabled && push.environmentIntensity > 0.0) {
@@ -217,17 +201,43 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             environment += max(scatter.weight, float3(0.0)) *
                 environmentRadiance(direction, push, false) * visibility;
         }
-        radiance += environment * surface.occlusion / float(count);
+        radiance += environment * summary.occlusion / float(count);
     } else if (!sampledEnvironment) {
 #if METALLIC_CUSTOM_MATERIALS
-        if (surface.family != 0u) { return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push), hit.position, ray.origin); }
+        if (summary.numericalEnvironment) { return applyPrimaryAerialPerspective(radiance + sceneSurfaceEnvironment(prepared, push), hit.position, ray.origin); }
 #endif
         float3 normal = dot(hit.normal, viewDirection) >= 0.0 ? hit.normal : -hit.normal;
-        float diffuseWeight = surface.inputs.base_weight * (1.0 - surface.inputs.base_metalness) *
-            (1.0 - surface.inputs.transmission_weight);
-        radiance += surface.inputs.base_color * diffuseWeight * surface.occlusion *
+        radiance += summary.diffuseColor * summary.occlusion *
             environmentDiffuseIrradiance(normal, push) / kPi;
     }
 #endif
     return applyPrimaryAerialPerspective(radiance, hit.position, ray.origin);
+}
+
+
+float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
+    ScenePathTracePush push, inout uint seed, bool sampledEnvironment,
+    int fixedMetalness = -1, bool opaquePrimary = false)
+{
+    RayCone cone = propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t);
+#if METALLIC_CUSTOM_MATERIALS
+#if defined(MATERIAL_PROGRAM_ID)
+    uint specializedProgram = MATERIAL_PROGRAM_ID;
+#else
+    uint specializedProgram = 0u;
+#endif
+    uint family = sceneSurfaceMaterialFamily(hit.materialIndex, specializedProgram);
+    if (family == 1u) {
+        var program = makeSceneSlabMaterialProgram<SceneSingleSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
+        return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment);
+    }
+    if (family == 2u) {
+        var program = makeSceneSlabMaterialProgram<SceneDualSlabModel>(hit, push, cone, ray.direction, seed, true, false, specializedProgram);
+        return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment);
+    }
+#endif
+    var program = makeOpenPBRMaterialProgram(hit, push, cone, ray.direction, seed, true, false);
+    program.program.fixedMetalness = fixedMetalness;
+    program.program.opaquePrimary = opaquePrimary;
+    return shadeSceneDirectSurface(program, ray, hit, samplePixel, push, seed, sampledEnvironment);
 }

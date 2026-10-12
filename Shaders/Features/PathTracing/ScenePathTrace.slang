@@ -93,7 +93,7 @@ bool traceClosestImpl(Ray ray, ScenePathTracePush push, bool classifyShadow,
 #else
     bool found = traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
     if (found && classifyShadow) {
-        PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
+        SceneMaterialData material = loadSceneMaterial(hit.materialIndex);
         opaqueShadow = material.textureParams.w <= 1.5 && material.glassParams.x == 0.0;
     }
     return found;
@@ -184,7 +184,17 @@ float3 pathTrace(
 #endif
 
         rayCone = propagateRayCone(rayCone, hit.t);
-        PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
+        SceneMaterialData sceneMaterial = loadSceneMaterial(hit.materialIndex);
+        if (materialDomain(sceneMaterial) == kMaterialDomainFiber) {
+            // Fiber keeps the authored frame. Surface maps, emission and their
+            // texture RNG never participate in Fiber evaluation or transport.
+            float3 stableShadingNormal = hit.normal;
+            hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
+            if (!shadeSceneFiber(sceneFiberParameters(sceneMaterial), hit, stableShadingNormal, push, depth,
+                    ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta)) { break; }
+            continue;
+        }
+        OpenPBRMaterialParameters material = sceneOpenPBRParameters(sceneMaterial);
         bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
         float4 baseColorSample = loadMaterialTextureForMaterial(
             material.baseColorTexture,
@@ -277,7 +287,6 @@ float3 pathTrace(
             deterministicGlassTextures,
             seed);
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
-        float3 stableShadingNormal = hit.normal;
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));
 
@@ -299,12 +308,6 @@ float3 pathTrace(
 
         float3 emissive = max(materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
         radiance += throughput * emissive;
-
-        if (materialDomain(material) == kMaterialDomainFiber) {
-            if (!shadeSceneFiber(material, hit, stableShadingNormal, push, depth,
-                    ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta)) { break; }
-            continue;
-        }
 
         if (transmission > 0.01) {
             float eta = hit.frontFace ? 1.0 / max(ior, 1.001) : max(ior, 1.001);

@@ -57,4 +57,14 @@ public interface IFiberMaterialProgram
     [mutating]
     public FiberMaterialResult<Closure> evaluate(FiberMaterialContext context, MaterialInstanceRef instance);
 };
+
+public extension<TProgram : IFiberMaterialProgram> Material<TProgram>
+{
+    [mutating]
+    public FiberMaterialResult<TProgram.Closure> evaluate(
+        FiberMaterialContext context, MaterialInstanceRef instance)
+    {
+        return program.evaluate(context, instance);
+    }
+};
 } // namespace Metallic.Material

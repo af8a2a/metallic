@@ -85,11 +85,4 @@ public interface ISurfaceMaterialProgram
     public SurfaceMaterialResult<Closure> evaluate(SurfaceMaterialContext context, MaterialInstanceRef instance);
 };
 
-// Optional lossless integration path for BSDF libraries whose native API
-// returns projected values and importance weights. Avoid f/cos/pdf round trips.
-public interface IWeightedPreparedSurfaceClosure : IPreparedSurfaceClosure
-{
-    // Compatibility marker for Phase 4 callers; overrides now dispatch through
-    // IPreparedSurfaceClosure so every model shares one lighting loop.
-};
 } // namespace Metallic.Material

@@ -24,7 +24,7 @@ OpenPBRInteriorStack makeOpenPBRInteriorStack()
     return stack;
 }
 
-float openPbrMaterialIor(PathTraceMaterial material)
+float openPbrMaterialIor(OpenPBRMaterialParameters material)
 {
     return clamp(material.glassParams.y, 1.0, 3.0);
 }
@@ -56,7 +56,7 @@ float3 openPbrVolumeTransmittance(OpenPBRInteriorStack stack, float distance)
         return float3(1.0, 1.0, 1.0);
     }
 
-    PathTraceMaterial mediumMaterial = loadSceneMaterial(stack.entries[stack.count - 1u].materialIndex);
+    OpenPBRMaterialParameters mediumMaterial = loadSceneOpenPBRMaterial(stack.entries[stack.count - 1u].materialIndex);
     float attenuationDistance = max(mediumMaterial.glassParams.w, 0.0);
     if (attenuationDistance <= 0.0001) {
         return float3(1.0, 1.0, 1.0);
@@ -115,7 +115,7 @@ void openPbrInteriorStackPopMaterial(inout OpenPBRInteriorStack stack, uint mate
 void openPbrUpdateInteriorStackAfterTransmission(
     inout OpenPBRInteriorStack stack,
     HitInfo hit,
-    PathTraceMaterial material)
+    OpenPBRMaterialParameters material)
 {
     if (hit.frontFace) {
         openPbrInteriorStackPush(stack, hit.materialIndex, openPbrMaterialIor(material));
@@ -158,15 +158,20 @@ float3 openPbrShadowTransmittance(
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
             transmittance *= openPbrVolumeTransmittance(interiorStack, shadowHit.t);
         }
-        PathTraceMaterial shadowMaterial = loadSceneMaterial(shadowHit.materialIndex);
-        if (shadowMaterial.textureParams.w > 1.5) {
-            float alpha = evaluateSceneCoverage(shadowHit.materialIndex, shadowMaterial, shadowHit.texcoord, push).opacity;
+        let shadowTransport = loadSceneMaterial(shadowHit.materialIndex);
+        if (shadowTransport.textureParams.w > 1.5) {
+            float alpha = evaluateSceneCoverage(shadowHit.materialIndex, sceneMaterialCoverageParameters(shadowTransport), shadowHit.texcoord, push).opacity;
             transmittance *= 1.0 - alpha;
             remainingDistance -= shadowHit.t;
             ray.origin = offsetRay(shadowHit.position, openPbrRayOffsetNormal(ray.direction, shadowHit.geometryNormal));
             if (remainingDistance <= 0.001 || luminanceMax(transmittance) <= 0.0001) { return transmittance; }
             continue;
         }
+        // Slab and Fiber have independent scattering contracts and do not
+        // participate in this OpenPBR straight-through transmission policy.
+        if (materialDomain(shadowTransport) == kMaterialDomainFiber ||
+            sceneSurfaceMaterialFamily(shadowHit.materialIndex) != 0u) { return float3(0); }
+        let shadowMaterial = sceneOpenPBRParameters(shadowTransport);
         float4 transmissionSample = loadMaterialTextureMip0(
             shadowMaterial.transmissionTexture,
             shadowHit.texcoord,
@@ -227,7 +232,8 @@ struct PathSurfaceLights : ISurfaceLightProvider
 {
     ScenePathTracePush push;
     HitInfo hit;
-    PathTraceMaterial material;
+    float surfaceIor;
+    bool transmittingSurface;
     OpenPBRInteriorStack interiorStack;
     float3 viewDirection;
     uint seed;
@@ -266,8 +272,9 @@ struct PathSurfaceLights : ISurfaceLightProvider
                 light.source & ~kCelestialSourceBit)) { return float3(1.0); }
         float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
         OpenPBRInteriorStack shadowStack = interiorStack;
-        if (dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
-            openPbrUpdateInteriorStackAfterTransmission(shadowStack, hit, material);
+        if (transmittingSurface && dot(viewDirection, hit.geometryNormal) * dot(light.direction, hit.geometryNormal) < 0.0) {
+            if (hit.frontFace) { openPbrInteriorStackPush(shadowStack, hit.materialIndex, surfaceIor); }
+            else { openPbrInteriorStackPopMaterial(shadowStack, hit.materialIndex); }
         }
         float distance = max(light.distance - length(origin - hit.position), 0.0);
         return openPbrDebugFlag(push, kOpenPBRDebugDisableShadows) ? float3(1)

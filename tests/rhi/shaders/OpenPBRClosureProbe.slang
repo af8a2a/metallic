@@ -69,12 +69,12 @@ void countStage(uint index)
 
 struct ProbeSource : IOpenPBRMaterialSource
 {
-    PathTraceMaterial loadParameters(MaterialInstanceRef instance)
+    OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
     {
         countStage(0);
         uint variant = instance.resourceOffset;
         float4 factors = gProbe.parameters.load(instance.parameterOffset / 16);
-        PathTraceMaterial material = (PathTraceMaterial)0;
+        OpenPBRMaterialParameters material = (OpenPBRMaterialParameters)0;
         material.baseColor = float4(factors.rgb, 1);
         material.specular = float4(1);
         material.params = float4(variant == 1 ? 1 : 0, variant == 3 ? 0.001 : 0.35, 0, 0);
@@ -88,7 +88,7 @@ struct ProbeSource : IOpenPBRMaterialSource
         if (variant == 7) { material.baseColor = float4(0); material.specular = float4(0); }
         return material;
     }
-    float4 loadTexture(PathTraceTextureInfo info, float2 uv, float4 fallback,
+    float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint)
     {
@@ -101,9 +101,9 @@ struct ProbeSource : IOpenPBRMaterialSource
 };
 
 SurfaceMaterialResult<T.Closure> evaluateHit<T : ISurfaceMaterialProgram>(
-    T program, SurfaceMaterialContext context, MaterialInstanceRef instance)
+    Material<T> material, SurfaceMaterialContext context, MaterialInstanceRef instance)
 {
-    return program.evaluate(context, instance);
+    return material.evaluate(context, instance);
 }
 
 [shader("compute")]
@@ -112,9 +112,9 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
 {
     uint lane = id.x;
     uint variant = lane / 128;
-    OpenPBRMaterialProgram<ProbeSource> program = (OpenPBRMaterialProgram<ProbeSource>)0;
-    program.fixedMetalness = -1;
-    program.hit.tangent = float4(1, 0, 0, 1);
+    Material<OpenPBRMaterialProgram<ProbeSource>> material = {};
+    material.program.fixedMetalness = -1;
+    material.program.hit.tangent = float4(1, 0, 0, 1);
     SurfaceMaterialContext context = (SurfaceMaterialContext)0;
     context.shadingNormalWS = context.geometryNormalWS = float3(0, 0, 1);
     context.tangentWS = float3(1, 0, 0);
@@ -125,7 +125,7 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
     MaterialInstanceRef instance;
     instance.parameterOffset = (lane & 1) * 16;
     instance.resourceOffset = variant;
-    let evaluated = evaluateHit(program, context, instance);
+    let evaluated = evaluateHit(material, context, instance);
     let closure = evaluated.closure;
     float3 wo = normalize(float3(0.2, 0.1, variant == 6 ? -1 : 1));
     SurfaceSamplingContext sampling;

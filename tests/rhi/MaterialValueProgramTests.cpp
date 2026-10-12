@@ -8,6 +8,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
@@ -661,6 +662,9 @@ public:
             check(reloaded.materials()[0].valueProgram == document.materials()[0].valueProgram, "Lost persistent Closure program");
             RenderSampleLoadResult sample;
             check(loadBuiltInRenderSample("lookdev-vbuffer", sample, log), "Load graph");
+            // Keep both material paths active and exported when selecting a
+            // readback output, so that capture does not replace their passes.
+            check(sample.graph.markOutput("Reference.color") && sample.graph.markOutput("Deferred.color"), "Export comparison paths");
             for (const char* pass : {"Reference", "Deferred", "VBuffer"}) { sample.graph.findNode(pass)->properties["path"] = scenePath.string(); }
             for (const char* pass : {"Reference", "Deferred"}) {
                 auto& p = sample.graph.findNode(pass)->properties;
@@ -697,17 +701,92 @@ public:
             };
             const auto initial = MaterialValueProgramSet::create(reloaded.materials(), log);
             check(initial && initial->programCount() == 3, "Expected three actual Closure programs");
+            // Initial readiness covers fallback roots. Match the existing
+            // geometry-stability protocol before comparing material schedules.
+            const auto referenceId = sample.graph.findNode("Reference")->id;
+            const auto deferredId = sample.graph.findNode("Deferred")->id;
+            const auto setBinning = [&](const char* setting, bool enabled) {
+                check(sample.graph.setNodeRuntimeProperty(deferredId, setting, enabled), "Configure material schedule");
+            };
+            check(sample.graph.setNodeRuntimeProperty(referenceId, "debugView", "geometryNormal") &&
+                sample.graph.setNodeRuntimeProperty(deferredId, "debugView", "geometryNormal"), "Configure geometry warmup");
+            std::vector<uint32_t> previousGeometryPixels;
+            std::vector<std::byte> firstGeometryBytes;
+            std::vector<uint32_t> firstGeometryPixels;
+            Json geometryFrames = Json::array();
+            uint32_t stableGeometryFrames = 0;
+            uint32_t geometryWarmupFrames = 0;
+            bool geometrySettled = false;
+            for (uint32_t frame = 0; frame < 256; ++frame) {
+                check(preview.render(sample.graph, 128, 128, "Deferred.color"), "Geometry warmup: " + preview.lastLog());
+                const auto* streamer = preview.subsystemHost()->get<StreamerSubsystem>();
+                const auto readiness = streamer ? streamer->sceneReadiness() : StreamSceneReadiness{};
+                const bool unchanged = previousGeometryPixels == preview.pixels();
+                stableGeometryFrames = readiness.ready && unchanged ? stableGeometryFrames + 1 : 0;
+                geometryFrames.push_back({{"frame", frame + 1}, {"execution", preview.executionStats().executionId},
+                    {"fallbackReady", readiness.ready}, {"fallbackCompletedResources", readiness.completedPages},
+                    {"fallbackRequiredResources", readiness.requiredPages}, {"stableGeometryFrames", stableGeometryFrames}});
+                previousGeometryPixels = preview.pixels();
+                if (frame == 0) {
+                    firstGeometryBytes = preview.readbackBytes();
+                    firstGeometryPixels = preview.pixels();
+                }
+                geometryWarmupFrames = frame + 1;
+                if (frame >= 31 && stableGeometryFrames >= 8) {
+                    geometrySettled = true;
+                    break;
+                }
+            }
+            std::ofstream(root / "ClosureGeometryWarmup.json") << Json{{"frames", geometryFrames},
+                {"warmupFrames", geometryWarmupFrames}, {"stableGeometryFrames", stableGeometryFrames},
+                {"settled", geometrySettled},
+                {"scope", "Same binned geometryNormal view; minimum 32 frames and 8 unchanged geometry frames with fallback readiness; detail cut is not inferred from fallback readiness"}}.dump(2);
+            check(geometrySettled, "Closure scene geometry did not stabilize within 256 frames");
+            { std::ofstream hdr(root / "geometry-initial.rgba32f", std::ios::binary);
+                hdr.write(reinterpret_cast<const char*>(firstGeometryBytes.data()), firstGeometryBytes.size()); }
+            { std::ofstream hdr(root / "geometry-stable.rgba32f", std::ios::binary);
+                const auto& bytes = preview.readbackBytes(); hdr.write(reinterpret_cast<const char*>(bytes.data()), bytes.size()); }
+            check(saveRgba8Png(root / "geometry-initial.png", reinterpret_cast<const uint8_t*>(firstGeometryPixels.data()), 128, 128, log), "Save initial geometry");
+            check(saveRgba8Png(root / "geometry-stable.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()), 128, 128, log), "Save stable geometry");
+            check(sample.graph.setNodeRuntimeProperty(referenceId, "debugView", "final") &&
+                sample.graph.setNodeRuntimeProperty(deferredId, "debugView", "final"), "Restore final material view");
             const auto directPT = capture("Reference.color", "direct-pt");
             const auto direct = capture("Deferred.color", "direct-binned");
             check(energy(directPT) > 1 && energy(direct) > 1, "Slab direct lighting is empty");
-            sample.graph.findNode("Deferred")->properties["materialBinning"] = false; sample.graph.markDirty();
+            setBinning("materialBinning", false);
             const auto unbinned = capture("Deferred.color", "direct-unbinned");
-            check(error(direct, unbinned) < 1e-5, "Actual Program/Family bins changed lighting");
-            sample.graph.findNode("Deferred")->properties["materialBinning"] = true; sample.graph.markDirty();
-            sample.graph.findNode("Deferred")->properties["programBinning"] = false;
+            const double binError = error(direct, unbinned);
+            if (binError >= 1e-5) {
+                Json diagnostics{{"lightingRelativeError", binError},
+                    {"binnedEnergy", energy(direct)}, {"unbinnedEnergy", energy(unbinned)}};
+                for (const char* view : {"geometryNormal", "shadingNormal", "mappedNormal", "baseColor"}) {
+                    // The comparison pass requires both inputs to use the same
+                    // encoding, even when this capture exports Deferred directly.
+                    check(sample.graph.setNodeRuntimeProperty(referenceId, "debugView", view) &&
+                        sample.graph.setNodeRuntimeProperty(deferredId, "debugView", view), "Configure bin diagnostic view");
+                    setBinning("materialBinning", true);
+                    const auto binnedDiagnostic = capture("Deferred.color", std::string("bin-diagnostic-") + view + "-binned");
+                    setBinning("materialBinning", false);
+                    const auto unbinnedDiagnostic = capture("Deferred.color", std::string("bin-diagnostic-") + view + "-unbinned");
+                    diagnostics[view] = {{"relativeError", error(binnedDiagnostic, unbinnedDiagnostic)},
+                        {"binnedEnergy", energy(binnedDiagnostic)}, {"unbinnedEnergy", energy(unbinnedDiagnostic)}};
+                }
+                check(sample.graph.setNodeRuntimeProperty(referenceId, "debugView", "final") &&
+                    sample.graph.setNodeRuntimeProperty(deferredId, "debugView", "final"), "Restore bin diagnostic view");
+                setBinning("materialBinning", true);
+                const auto repeatedBinned = capture("Deferred.color", "bin-diagnostic-final-binned");
+                setBinning("materialBinning", false);
+                const auto repeatedUnbinned = capture("Deferred.color", "bin-diagnostic-final-unbinned");
+                diagnostics["repeatedLighting"] = {{"relativeError", error(repeatedBinned, repeatedUnbinned)},
+                    {"binnedEnergy", energy(repeatedBinned)}, {"unbinnedEnergy", energy(repeatedUnbinned)}};
+                std::ofstream(root / "ClosureBinningDifference.json") << diagnostics.dump(2);
+            }
+            check(binError < 1e-5, "Actual Program/Family bins changed lighting (relative error " + std::to_string(binError) + ")");
+            setBinning("materialBinning", true);
+            setBinning("programBinning", false);
             const auto legacyFallback = capture("Deferred.color", "legacy-bin-fallback");
             check(error(direct, legacyFallback) < 1e-5, "Legacy class schedule failed to fall back for custom programs");
-            sample.graph.findNode("Deferred")->properties["programBinning"] = true; sample.graph.markDirty();
+            setBinning("programBinning", true);
             // Mix at weight zero and transparent black top Layer at tau zero
             // must both equal the same single diffuse receiver, in scene lighting.
             check(reloaded.setMaterialAsset(1, "asset://Layer.material", root, log), "Switch Mix to Layer");
@@ -734,6 +813,8 @@ public:
             check(MaterialValueProgramSet::create(reloaded.materials(), log)->key() == initial->key(), "Texture resource changed program identity");
             // Only secondary Slab emission now illuminates the receivers.
             lighting.lights.clear(); preview.setLighting(lighting);
+            celestial.sun.enabled = false;
+            check(preview.setWorldEnvironment(celestial), "Disable direct celestial lighting");
             edited = reloaded.materials()[2]; edited.valueParameters[8] = edited.valueParameters[9] = edited.valueParameters[10] = 1;
             check(reloaded.setMaterialProperties(2, edited), "Edit hidden emitter");
             const auto primaryOnly = capture("Reference.color", "primary-only");

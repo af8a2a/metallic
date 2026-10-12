@@ -1,6 +1,6 @@
 # Phase 2：Slang Material Program 数据接口
 
-外部路线图 Phase 2 建立 shader 侧的模型无关数据契约。Phase 1 的作者资产、共享 CPU Program 与旧 720 字节上传保持兼容；`ISurfaceMaterialProgram` / Closure / PreparedClosure 的三阶段散射调用属于 Phase 3，本阶段不预先引入另一套散射接口。
+外部路线图 Phase 2 建立 shader 侧的模型无关数据契约。Phase 1 的作者资产、共享 CPU Program 与 720 字节场景上传保持兼容。当前 `MaterialProgram` 还导出已实现的 `ISurfaceMaterialProgram` / Closure / PreparedClosure 三阶段散射接口和 `Material<TProgram>` 泛型封装；下方 2026-10-04 验收记录保留 Phase 2 当时的数据接口验证范围。
 
 ## 独立模块
 
@@ -13,6 +13,7 @@
 | `MaterialInstanceRef` | 相对当前 Program 绑定的参数表/资源表的两个 **字节偏移**；不保存 descriptor、实例 ID 或 shader variant |
 | `BSDFEval` | `f`、`pdf`、事件 flags |
 | `BSDFSample` | 向外的世界空间 `wiWS`、`f`、`pdf`、`eta`、事件 flags |
+| `Material<TProgram>` | 封装具体 Program，按 Surface/Fiber 各自的 context、输入与 Closure 类型静态调用；不定义共享材质 union |
 
 入口：[MaterialProgram.slang](../Shaders/Modules/MaterialProgram.slang)。此模块没有任何 import，不依赖 OpenPBR、RTXCR、Lighting、Core、Scene 或 Vulkan 资源声明，也不声明 push constants。资源由实际 Program 和调用方显式绑定。
 
@@ -20,21 +21,23 @@ Context 的 normal/tangent/bitangent 保持 authored/world-space 方向，不根
 
 Footprint 的导数以一个内部渲染像素为单位，位于纹理 UV transform 之前。`isotropicLodN` 是 normalized-UV footprint 的 log2，可以为负；还没有加入纹理分辨率的 `0.5 * log2(width * height)` 或 UV transform LOD bias。ray producer 先把 cone 投影到表面，再写入这个标量，因此 Context 不携带灯光、观察方向或 BSDF 参数。valid flags 区分“有效的零”与“数据不可用”，并允许消费者按自身过滤算法选择有效的梯度或各向同性表示。
 
-散射数值约定：`f` 不乘 cosine，不除以 pdf；连续分布的 `pdf` 是包含 lobe 选择概率的完整方向采样密度。delta sample 设置 `kBSDFDelta`，pdf 使用离散概率，任意方向 eval 为零；消费者不能把离散与连续密度直接做 MIS。反射/透射、diffuse/glossy/delta 使用具名 bits。透射 `eta = eta_i / eta_t`，反射为 1。传输模式缩放由后续 prepared closure 负责。本阶段仅定义这些记录，没有改变既有 OpenPBR/RTXCR 的计算公式。
+散射数值约定：`f` 不乘 cosine，不除以 pdf；连续分布的 `pdf` 是包含 lobe 选择概率的完整方向采样密度。delta sample 设置 `kBSDFDelta`，pdf 使用离散概率，任意方向 eval 为零；消费者不能把离散与连续密度直接做 MIS。反射/透射、diffuse/glossy/delta 使用具名 bits。透射 `eta = eta_i / eta_t`，反射为 1。传输模式缩放由具体 prepared closure 负责。这些接口声明约定数值含义，不改变既有 OpenPBR/RTXCR 的 BSDF 计算公式。
 
-## 旧路径兼容接入
+## 场景传输与模型加载
 
-[MaterialRuntime.slang](../Shaders/Modules/Material/MaterialRuntime.slang) 提供 stateless `LegacyMaterialProgram` 与 `legacyMaterialInstanceRef()`。旧上传把参数与纹理描述嵌在同一 720 字节 record，因此该 adapter 的两个偏移必须相等、按 720 字节对齐、落在绑定表范围内；它只接收兼容转换函数生成的引用。偏移为 32 位，旧表不能超过 4 GiB 的可寻址范围。后续拆表由具体 Program/schema 定义两个偏移的布局，不修改作者 `.material`。
+[MaterialRuntime.slang](../Shaders/Modules/Material/MaterialRuntime.slang) 提供内置 Program ID 和 `sceneMaterialInstanceRef()`。参数与纹理描述仍以同一 720 字节 `SceneMaterialData` 场景传输记录上传；shader 的材质类型不再依赖旧 storage program adapter。当前引用的两个字节偏移相等、按记录大小对齐；偏移为 32 位，表不能超过 4 GiB 的可寻址范围。后续拆表由具体 Program/schema 定义两个偏移的布局，不修改作者 `.material`。
 
-[SceneSurface.slang](../Shaders/Features/PathTracing/SceneSurface.slang) 的 `loadSceneMaterial()` 用同一 concrete storage program 读取任意实例。OpenPBR/standard PT、secondary medium/shadow、guides、stream ray 和 VBuffer lighting 都调用这条兼容入口；没有按 material instance ID 选择 concrete shader code，也没有增加生产 variant。原有按 Program identity 区分 Surface/Fiber 的逻辑仍保留，Phase 2 不宣称完成后续模型适配。
+[SceneSurface.slang](../Shaders/Features/PathTracing/SceneSurface.slang) 的 `loadSceneMaterial()` 读取场景传输记录，`loadSceneOpenPBRMaterial()` 与 `loadSceneFiberMaterial()` 提取模型独立参数。OpenPBR/standard PT、secondary medium/shadow、guides、stream ray 和 VBuffer lighting 在该边界选择对应参数。模型求值由 `Material<TProgram>` 泛型封装；OpenPBR、Slab 与 Fiber 保持各自输入和结果类型，不通过共用材质 union 求值。
 
 `sceneSurfaceMaterialContext()` 适配 ray-query / VBuffer 共用的 HitInfo。当前 HitInfo 只有 UV0，所以 UV1 为零、mask 为 1。旧 cone LOD 计算通过 Context 读取几何法线并写入 footprint，运算顺序、UV transform 与 mip clamp 保持原样；TBN 构造与 normal mapping 未改变。没有强行生成 raster ddx/ddy；当前 VBuffer 仍沿用原有 cone 近似。
 
 ## 验证入口
 
 - `material_program_shader_contract`：禁用磁盘缓存，独立编译新模块并检查完整依赖不含模型/场景/光照。单个静态泛型 concrete 测试程序，8 组重复/乱序实例、独立参数与资源偏移，两次 dispatch 只改变数据；GPU 逐位读回全部 Context、BSDFEval、BSDFSample 与实例引用。两种 footprint 和正反面均覆盖。
-- `material_runtime_gpu_abi`：旧 probe 通过 LegacyMaterialProgram 读取三个不同实例，逐 word 验证原 720 字节 payload，避免只验证 CPU 名称或结构大小。
-- `material_program_guide_compile`：复用生产 `makeSceneShaderRequest()`，编译 standard/OpenPBR guides 的 hardware/fallback position-fetch 四个请求；此项只验证编译，不验证 denoiser 输出。
+- `material_runtime_gpu_abi`：probe 读取三个不同实例，逐 word 验证 720 字节传输记录；源 hair 标志与显式 Program ID 故意冲突，确认 shader 只使用已发布的 ID。
+- `material_generic_facade_contract`：验证 `Material<TProgram>` 的两个独立 Surface Closure 和一个 Fiber Closure，检查实例偏移、重复求值的可变状态、模型无关依赖，并要求 Surface/Fiber 混用 context 的代码编译失败。
+- `material_fiber_guide_parameters`：标准与 OpenPBR 的生产 guide 入口读取八条 Fiber 记录；修改配对记录的 Surface 因子不影响结果，验证 Fiber 独立参数、法线方向和 RNG。
+- `material_program_guide_compile`：复用生产 `makeSceneShaderRequest()`，编译 standard/OpenPBR guides 两个基础请求，以及 OpenPBR 普通/guide 入口的 SHaRC update/query 四个请求，共六个请求；统一使用 streamed CLAS 几何。此项只验证编译，不验证 denoiser 输出。
 - Phase 0 三条 HDR、材质资产往返、streamed textured/masked/transmission/shadow 及原 footprint 测试验证生产兼容路径。
 
 新模块中的 Context 是 shader 瞬态值，不是新 GPU 上传大结构；测试故意通过 scalar-layout buffer 传输，测得/约定 Context 128、Ref 8、Eval 20、Sample 36 字节。测试参数使用现有 ComputeKernel / ParameterWriter inline ABI，没有增加旧 slot 访问。

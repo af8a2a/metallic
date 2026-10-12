@@ -17,7 +17,7 @@ namespace metallic::render {
 inline constexpr uint32_t kMaxMaterialValuePrograms = 64;
 inline constexpr size_t kMaxMaterialValueSourceBytes = 16384;
 
-// Separate from the legacy model payload. Program zero preserves its inputs.
+// Separate from scene transport data. Program zero preserves its inputs.
 struct alignas(16) MaterialValueInstance
 {
     uint32_t programId = 0;

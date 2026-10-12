@@ -8,7 +8,7 @@ using Metallic.OpenPBR;
 namespace Metallic.Material
 {
 
-public struct OpenPBRPreparedClosure<TContext : IOpenPBRContext> : IWeightedPreparedSurfaceClosure
+public struct OpenPBRPreparedClosure<TContext : IOpenPBRContext> : IPreparedSurfaceClosure
 {
     // Immutable BSDF LUT context only; no material texture/instance provider.
     public TContext context;
@@ -132,8 +132,5 @@ public struct OpenPBRClosure<TContext : IOpenPBRContext> : ISurfaceClosure
         return prepare(woWS, transportMode, sampling);
     }
 };
-
-// Canonical Phase 10 family name; the implementation is the native OpenPBR module.
-public typealias OpenPBRCompositeClosure<TContext : IOpenPBRContext> = OpenPBRClosure<TContext>;
 
 } // namespace Metallic.Material

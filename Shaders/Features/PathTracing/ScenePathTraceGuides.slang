@@ -17,29 +17,7 @@ using Metallic;
 
 #define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
 
-struct DLSSRRGuideData
-{
-    float3 albedo;
-    float3 specularAlbedo;
-    float3 normal;
-    float roughness;
-    float2 motionVector;
-    float linearDepth;
-    float specularHitDistance;
-};
-
-DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
-{
-    DLSSRRGuideData data;
-    data.albedo = float3(0.0, 0.0, 0.0);
-    data.specularAlbedo = float3(0.0, 0.0, 0.0);
-    data.normal = float3(0.0, 1.0, 0.0);
-    data.roughness = 1.0;
-    data.motionVector = float2(0.0, 0.0);
-    data.linearDepth = max(push.clipOrtho.y, 0.0);
-    data.specularHitDistance = 0.0;
-    return data;
-}
+#include "SceneStandardGuides.slang"
 
 void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
@@ -70,59 +48,7 @@ DLSSRRGuideData evaluateStandardDlssRrGuides(
         return data;
     }
 
-    rayCone = propagateRayCone(rayCone, hit.t);
-    PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
-    bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
-    float4 baseColorSample = loadMaterialTextureForMaterial(
-        material.baseColorTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        ray.direction,
-        deterministicGlassTextures,
-        seed);
-    float4 metallicRoughnessSample = loadMaterialTextureForMaterial(
-        material.metallicRoughnessTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        ray.direction,
-        deterministicGlassTextures,
-        seed);
-    float4 normalSample = loadMaterialTextureForMaterial(
-        material.normalTexture,
-        hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        ray.direction,
-        deterministicGlassTextures,
-        seed);
-
-    hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
-    hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
-
-    float3 baseColor = saturate(materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w));
-    float metallic = saturate(material.params.x * metallicRoughnessSample.b);
-    float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.02, 1.0);
-    float ior = clamp(material.glassParams.y, 1.0, 3.0);
-    float dielectricF0 = (ior - 1.0) / (ior + 1.0);
-    dielectricF0 *= dielectricF0;
-
-    data.albedo = baseColor * (1.0 - metallic);
-    data.normal = safeNormalize(hit.normal, hit.geometryNormal);
-    float nDotV = saturate(dot(data.normal, -ray.direction));
-    float3 specularReflectance = lerp(float3(dielectricF0, dielectricF0, dielectricF0), baseColor, metallic);
-    data.specularAlbedo = saturate(approxSpecularIntegralGGX(specularReflectance, roughness * roughness, nDotV));
-    data.roughness = roughness;
-    data.motionVector = motionVectorToPrevious(hit.position, samplePixel, push);
-    data.linearDepth = cameraLinearDepth(hit.position, push);
-    return data;
+    return evaluateStandardDlssRrGuidesAtHit(ray, rayCone, samplePixel, push, seed, hit);
 }
 
 [shader("compute")]

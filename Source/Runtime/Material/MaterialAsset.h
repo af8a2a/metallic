@@ -39,7 +39,7 @@ struct MaterialDefinition
 {
     uint32_t version = 1;
     uint32_t definitionVersion = 1;
-    std::string implementation = "OpenPBRComposite.Legacy";
+    std::string implementation = "OpenPBRComposite.Surface";
     std::string surfaceProgram; // Validated Value/Closure IR authoring source, never generated Slang.
     nlohmann::json valueParameters = nlohmann::json::object(); // Sparse float4 slots 0..3.
     MaterialSchema schema;

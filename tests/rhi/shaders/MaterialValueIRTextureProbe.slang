@@ -4,7 +4,7 @@
 [numthreads(1, 1, 1)]
 void materialValueIRTextureProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    PathTraceMaterial material = (PathTraceMaterial)0;
+    OpenPBRMaterialParameters material = (OpenPBRMaterialParameters)0;
     material.baseColorTexture.textureIndex = 0;
     MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[id.x];
     material.baseColorTexture.transform0 = float4(1, 0, 0, instance.parameters[3].x);
@@ -12,7 +12,7 @@ void materialValueIRTextureProbeMain(uint3 id : SV_DispatchThreadID)
     material.emissiveTexture = material.baseColorTexture;
     MaterialValueTextureContext context;
     context.textureCount = 1; context.normalizedRayLod = 0;
-    PathTraceMaterial result = evaluateMaterialValue(id.x, 0, float3(0, 0, 1), float2(0.25), material, context);
+    OpenPBRMaterialParameters result = evaluateMaterialValue(id.x, 0, float3(0, 0, 1), float2(0.25), material, context);
     resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().probeOutput)[id.x] =
         id.x == 11u || id.x == 12u ? result.emissive : result.baseColor;
 }

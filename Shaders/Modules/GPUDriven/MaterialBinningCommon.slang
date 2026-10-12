@@ -39,7 +39,7 @@ public uint2 materialTilePixel(MaterialTile tile, uint lane, uint width)
         uint2(kMaterialTileWidth, kMaterialTileHeight) + uint2(lane & 7u, lane >> 3u);
 }
 
-public uint classifyDeferredMaterial(PathTraceMaterial material)
+public uint classifyDeferredMaterial(SceneMaterialData material)
 {
     // Conservative classification needs no texture sampling. Even a currently
     // black transmission texel stays in the ray-continuation permutation.

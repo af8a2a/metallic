@@ -75,7 +75,7 @@ public:
                                  .shaderRead();
             segments.memoryLocation = MemoryLocation::HostUpload;
             auto& materials = r.addBufferOutput("materials")
-                                  .buffer(kMaxMaterials * sizeof(LegacyMaterialPayload), sizeof(LegacyMaterialPayload))
+                                  .buffer(kMaxMaterials * sizeof(SceneMaterialData), sizeof(SceneMaterialData))
                                   .shaderRead();
             materials.memoryLocation = MemoryLocation::HostUpload;
             auto& frame = r.addBufferOutput("frame").buffer(sizeof(StrandFrame), sizeof(StrandFrame)).shaderRead();
@@ -145,7 +145,7 @@ public:
             if (!scene::loadStrandAsset(path, asset, log)) {
                 return makeError(Error::InvalidArgument);
             }
-            std::vector<LegacyMaterialPayload> payloads;
+            std::vector<SceneMaterialData> payloads;
             std::vector<scene::RenderMaterial> authored;
             material::MaterialAssetLibrary library(asset.materialRoot);
             for (const auto& uri : asset.materials) {
@@ -156,7 +156,7 @@ public:
                     log += " Strand geometry requires a Fiber material asset";
                     return makeError(Error::InvalidArgument);
                 }
-                LegacyMaterialPayload p;
+                SceneMaterialData p;
                 p.textureParams[2] = float(MaterialProgramId::RTXCRChiang);
                 p.rtxcrHairBaseColor[3] = 1;
                 p.rtxcrHairParams0[0] = semantic.rtxcrHairLongitudinalRoughness;
@@ -287,7 +287,7 @@ public:
         ParameterWriter writer(*device_, **registry, RenderFrameContext::from(commands));
         StrandParameters p{};
         p.segments = writer.bufferSpan<StrandSegment>(segments.buffer());
-        p.materials = writer.bufferSpan<LegacyMaterialPayload>(materials.buffer());
+        p.materials = writer.bufferSpan<SceneMaterialData>(materials.buffer());
         p.frame = writer.bufferSpan<StrandFrame>(frame.buffer());
         p.records = writer.bufferSpan<StrandVisibilityRecord>(records.buffer());
         p.counts = writer.storageImageHandle(

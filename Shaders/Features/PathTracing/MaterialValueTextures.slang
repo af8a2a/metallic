@@ -1,12 +1,12 @@
 // Included after the production texture adapters and the generated Value IR
 // declarations. Explicit footprints work in compute bins without quad derivatives.
 #if METALLIC_CUSTOM_MATERIALS
-float4 materialValueTexel(PathTraceTextureInfo info, int2 texel, uint mip)
+float4 materialValueTexel(MaterialTextureInfo info, int2 texel, uint mip)
 {
     return decodeMaterialTextureSample(gMaterialTextures(info.textureIndex).Load(int3(texel, mip)), info.transform0.w);
 }
 
-float4 materialValueBilinear(PathTraceTextureInfo info, float2 uv, uint mip)
+float4 materialValueBilinear(MaterialTextureInfo info, float2 uv, uint mip)
 {
     uint2 dimensions; uint count;
     gMaterialTextures(info.textureIndex).GetDimensions(mip, dimensions.x, dimensions.y, count);
@@ -20,10 +20,10 @@ float4 materialValueBilinear(PathTraceTextureInfo info, float2 uv, uint mip)
         lerp(materialValueTexel(info, int2(lo.x, hi.y), mip), materialValueTexel(info, hi, mip), f.x), f.y);
 }
 
-float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 uv,
+float4 sampleMaterialValueTexture(MaterialValueParameters material, uint slot, float2 uv,
     uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context, bool linearColor)
 {
-    PathTraceTextureInfo info = material.baseColorTexture;
+    MaterialTextureInfo info = material.baseColorTexture;
     if (slot == 1u) { info = material.metallicRoughnessTexture; }
     else if (slot == 2u) { info = material.normalTexture; }
     else if (slot == 3u) { info = material.occlusionTexture; }

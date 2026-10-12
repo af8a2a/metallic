@@ -6,14 +6,15 @@
 
 namespace metallic::render {
 
-// Compatibility upload ABI shared by existing PT, VBuffer and stream consumers.
-// New models must define their own schema instead of adding fields here.
-struct LegacyMaterialPayload
+// Scene upload transport shared by PT, VBuffer and streaming consumers.
+// Shader models extract their own parameter types; this record is not a
+// material interface and must not grow to hold additional material models.
+struct SceneMaterialData
 {
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float emissive[4] = {};
     float params[4] = {};
-    // z: 0 = legacy inference, otherwise the stable MaterialProgramId.
+    // z: stable MaterialProgramId, normalized before GPU publication.
     float textureParams[4] = {1.0f, 1.0f, 0.0f, 0.0f};
     float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
     float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
@@ -45,13 +46,13 @@ struct LegacyMaterialPayload
     TextureInfo specularColorTexture;
 };
 
-static_assert(std::is_trivially_copyable_v<LegacyMaterialPayload>);
+static_assert(std::is_trivially_copyable_v<SceneMaterialData>);
 // Match Slang StructuredBuffer std430 offsets, including required float4 alignment.
-static_assert(sizeof(LegacyMaterialPayload::TextureInfo) == 48);
-static_assert(offsetof(LegacyMaterialPayload::TextureInfo, transform0) == 16);
-static_assert(offsetof(LegacyMaterialPayload::TextureInfo, transform1) == 32);
-static_assert(sizeof(LegacyMaterialPayload) == 720);
-static_assert(offsetof(LegacyMaterialPayload, baseColorTexture) == 176);
-static_assert(offsetof(LegacyMaterialPayload, specular) == 608);
+static_assert(sizeof(SceneMaterialData::TextureInfo) == 48);
+static_assert(offsetof(SceneMaterialData::TextureInfo, transform0) == 16);
+static_assert(offsetof(SceneMaterialData::TextureInfo, transform1) == 32);
+static_assert(sizeof(SceneMaterialData) == 720);
+static_assert(offsetof(SceneMaterialData, baseColorTexture) == 176);
+static_assert(offsetof(SceneMaterialData, specular) == 608);
 
 } // namespace metallic::render

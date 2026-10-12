@@ -62,26 +62,12 @@ DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
     }
 
     rayCone = propagateRayCone(rayCone, hit.t);
-    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, true, false);
-    let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit, rayCone, ray.direction),
-        legacyMaterialInstanceRef(hit.materialIndex));
-    let materialEval = evaluated.closure;
-    hit = program.hit;
-    seed = program.seed;
-    float metallic = saturate(materialEval.inputs.base_metalness);
-    float roughness = clamp(materialEval.inputs.specular_roughness, 0.001, 1.0);
-    float ior = clamp(materialEval.inputs.specular_ior, 1.0, 3.0);
-    float dielectricF0 = (ior - 1.0) / (ior + 1.0);
-    dielectricF0 *= dielectricF0;
-
-    data.albedo = saturate(materialEval.inputs.base_color) * (1.0 - metallic);
+    SceneSurfaceSummary summary = evaluateSceneSurfaceGuides(hit, push, rayCone, ray.direction, seed);
+    float roughness = clamp(summary.roughness, 0.001, 1.0);
+    data.albedo = summary.albedo;
     data.normal = safeNormalize(hit.normal, hit.geometryNormal);
     float nDotV = saturate(dot(data.normal, -ray.direction));
-    float3 specularReflectance = lerp(
-        saturate(materialEval.inputs.specular_color) * dielectricF0,
-        saturate(materialEval.inputs.base_color),
-        metallic);
-    data.specularAlbedo = saturate(approxSpecularIntegralGGX(specularReflectance, roughness * roughness, nDotV));
+    data.specularAlbedo = saturate(approxSpecularIntegralGGX(summary.guideSpecularReflectance, roughness * roughness, nDotV));
     data.roughness = roughness;
     data.motionVector = motionVectorToPrevious(hit.position, samplePixel, push);
     data.linearDepth = cameraLinearDepth(hit.position, push);

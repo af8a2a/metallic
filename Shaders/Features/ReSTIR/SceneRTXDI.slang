@@ -1,6 +1,7 @@
 import MaterialTextureDecode;
 import AlphaCoverage;
 import Material;
+import OpenPBRMaterialParameters;
 using Metallic.Material;
 
 import Core;
@@ -38,47 +39,7 @@ struct RTXDIInstance
     float padding;
 };
 
-struct RTXDITextureInfo
-{
-    uint textureIndex;
-    uint texCoord;
-    // Required for float4 alignment in StructuredBuffer std430 layout.
-    uint2 alignmentPadding;
-    float4 transform0;
-    float4 transform1;
-};
-
-struct RTXDIMaterial
-{
-    float4 baseColor;
-    float4 emissive;
-    float4 params;
-    float4 textureParams;
-    float4 glassParams;
-    float4 attenuationColor;
-    float4 diffuseTransmission;
-    float4 rtxcrHairBaseColor;
-    float4 rtxcrHairParams0;
-    float4 rtxcrHairParams1;
-    float4 rtxcrHairDiffuseTint;
-    RTXDITextureInfo baseColorTexture;
-    RTXDITextureInfo metallicRoughnessTexture;
-    RTXDITextureInfo normalTexture;
-    RTXDITextureInfo occlusionTexture;
-    RTXDITextureInfo emissiveTexture;
-    RTXDITextureInfo transmissionTexture;
-    RTXDITextureInfo thicknessTexture;
-    RTXDITextureInfo diffuseTransmissionTexture;
-    RTXDITextureInfo diffuseTransmissionColorTexture;
-    float4 specular;
-    RTXDITextureInfo specularTexture;
-    RTXDITextureInfo specularColorTexture;
-};
-
-
-
-
-#define gMaterials resolveBuffer<StructuredBuffer<RTXDIMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
+#define gMaterials resolveBuffer<StructuredBuffer<SceneMaterialData>>(getResourceParameters<SceneResourceParameters>().materials)
 
 #define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
 
@@ -544,13 +505,13 @@ float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, S
     return previousUv - currentUv;
 }
 
-bool hasMaterialTexture(RTXDITextureInfo textureInfo, SceneRTXDIPush push)
+bool hasMaterialTexture(MaterialTextureInfo textureInfo, SceneRTXDIPush push)
 {
     return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
         textureInfo.textureIndex < push.materialTextureCount;
 }
 
-float2 transformMaterialUv(RTXDITextureInfo textureInfo, float2 uv)
+float2 transformMaterialUv(MaterialTextureInfo textureInfo, float2 uv)
 {
     return float2(
         dot(textureInfo.transform0.xy, uv) + textureInfo.transform0.z,
@@ -560,7 +521,7 @@ float2 transformMaterialUv(RTXDITextureInfo textureInfo, float2 uv)
 #include "../PathTracing/StreamTextureSampling.slang"
 
 float4 loadMaterialTexture(
-    RTXDITextureInfo textureInfo,
+    MaterialTextureInfo textureInfo,
     float2 uv,
     float4 fallback,
     SceneRTXDIPush push)
@@ -587,7 +548,7 @@ float4 loadMaterialTexture(
 
 bool alphaMaskAcceptsHit(HitInfo hit, SceneRTXDIPush push)
 {
-    RTXDIMaterial material = gMaterials[hit.materialIndex];
+    OpenPBRMaterialParameters material = sceneOpenPBRParameters(gMaterials[hit.materialIndex]);
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
@@ -729,7 +690,7 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, SceneRTXDIP
 
 Surface makeSurface(HitInfo hit, Ray ray, SceneRTXDIPush push)
 {
-    RTXDIMaterial material = gMaterials[hit.materialIndex];
+    OpenPBRMaterialParameters material = sceneOpenPBRParameters(gMaterials[hit.materialIndex]);
     float4 baseColorSample = loadMaterialTexture(
         material.baseColorTexture,
         hit.texcoord,

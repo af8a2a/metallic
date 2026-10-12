@@ -2,101 +2,29 @@
 // Explicit control results preserve termination, alpha retry and debug-return behavior.
 enum OpenPBRPathControl { Stop, Next, Return };
 
-OpenPBRPathControl shadeOpenPBRPathVertex(
-    bool found, HitInfo hit, ScenePathTracePush push,
-    inout Ray ray, inout RayCone rayCone, inout uint seed, inout uint depth,
+OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
+    HitInfo hit, ScenePathTracePush push,
+    inout Ray ray, inout RayCone rayCone, inout uint seed, uint depth,
     inout float3 radiance, inout float3 throughput,
     inout float previousBsdfPdf, inout bool previousScatterDelta,
-    inout OpenPBRInteriorStack interiorStack,
-    inout float specularHitDistance, inout bool captureSpecularHitDistance,
-    inout uint alphaLayers, inout float3 primaryEndpoint,
-    float3 primaryOrigin, inout bool primarySurface
+    inout OpenPBRInteriorStack interiorStack, inout bool captureSpecularHitDistance
 #if METALLIC_PT_SHARC
     , inout OpenPBRCacheContext cache
 #endif
 )
 {
-    if (!found) {
-        // Diagnostic colors carry display/data encoding, not scene radiance.
-        if (push.debugView != kOpenPBRDebugViewFinal) {
-            radiance = float3(0.0);
-            return OpenPBRPathControl.Return;
-        }
-        if (captureSpecularHitDistance) {
-            specularHitDistance = 65504.0;
-            captureSpecularHitDistance = false;
-        }
-        float misWeight = depth == 0u
-            ? 1.0
-            : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
-        float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
-        if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
-            missRadiance += physicalDeltaMissDisks(getSceneEnvironmentResources(),
-                ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
-        }
-        radiance += throughput * missRadiance;
-#if METALLIC_PT_SHARC
-        openPbrCacheAddLighting(cache, missRadiance);
-#endif
-        return OpenPBRPathControl.Stop;
-    }
-    if (captureSpecularHitDistance) {
-        specularHitDistance = hit.t;
-        captureSpecularHitDistance = false;
-    }
-    if (depth == 0u) { primaryEndpoint = hit.position; primarySurface = true; }
-
-    rayCone = propagateRayCone(rayCone, hit.t);
-    if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
-        float3 volumeTransmittance = openPbrVolumeTransmittance(interiorStack, hit.t);
-        throughput *= volumeTransmittance;
-#if METALLIC_PT_SHARC && SHARC_UPDATE
-        openPbrCacheSetThroughput(cache, volumeTransmittance);
-#endif
-    }
-    if (luminanceMax(throughput) <= 0.000001) {
-        return OpenPBRPathControl.Stop;
-    }
-
-    PathTraceMaterial material = loadSceneMaterial(hit.materialIndex);
-    if (materialDomain(material) == kMaterialDomainFiber) {
-        const float3 stableNormal = hit.normal;
-        if (dot(hit.normal, ray.direction) > 0) { hit.normal = -hit.normal; }
-#if METALLIC_PT_SHARC && SHARC_UPDATE
-        float3 beforeRadiance = radiance;
-        float3 beforeThroughput = throughput;
-#endif
-        bool continued = shadeSceneFiber(material, hit, stableNormal, push, depth,
-            ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta);
-#if METALLIC_PT_SHARC && SHARC_UPDATE
-        openPbrCacheAddLighting(cache, max(radiance - beforeRadiance, 0.0) / max(beforeThroughput, 1e-20));
-        openPbrCacheSetThroughput(cache, throughput / max(beforeThroughput, 1e-20));
-#endif
-        if (!continued) { return OpenPBRPathControl.Stop; }
-        return OpenPBRPathControl.Next;
-    }
-    if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
-        float alpha = evaluateSceneCoverage(hit.materialIndex, material, hit.texcoord, push).opacity;
-        if (rand(seed) >= alpha) {
-            if (++alphaLayers >= 16u) { return OpenPBRPathControl.Stop; }
-            ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
-            if (depth == 0u) { primarySurface = false; }
-            --depth;
-            return OpenPBRPathControl.Next;
-        }
-    }
     float3 shadingNormal = hit.normal;
     RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
-    SceneOpenPBRMaterialProgram program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, false, true);
+    var program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, false, true);
     // Always dispatch from this hit's instance. Raster specialization and
     // primary PreparedClosure are never inherited by a secondary hit.
     let evaluated = evaluateRaySurface(program, work);
     let materialEval = evaluated.closure;
     // Value inputs (including textured volume absorption) belong to this hit.
-    material = program.material;
-    hit = program.hit;
-    seed = program.seed;
-    float4 normalSample = program.normalSample;
+    OpenPBRMaterialParameters material = program.program.material;
+    hit = program.program.hit;
+    seed = program.program.seed;
+    float4 normalSample = program.program.normalSample;
     if (depth == 0u &&
         push.debugView != kOpenPBRDebugViewFinal &&
         push.debugView != kOpenPBRDebugViewShadowTransmittance) {
@@ -105,7 +33,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
             hit,
             shadingNormal,
             normalSample,
-            materialEval,
+            program.program.surfaceSummary(),
             ray.direction);
         return OpenPBRPathControl.Return;
     }
@@ -122,13 +50,7 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
     if (queryAllowed)
 #endif
     {
-#if METALLIC_CUSTOM_MATERIALS
-        // Slab's OpenPBR inputs are guide summaries, not its scattering model.
-        if (materialEval.family == 0u)
-#endif
-        {
-            cacheAddress = openPbrCacheAddress(cache, hit, materialEval.inputs, material, interiorStack, viewDirection);
-        }
+        cacheAddress = openPbrCacheAddress(cache, hit, materialEval.inputs, material, interiorStack, viewDirection);
     }
 #if SHARC_UPDATE
     queryAllowed = push.debugView == kOpenPBRDebugViewFinal && cacheAddress.eligibleMask != 0u &&
@@ -173,7 +95,8 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
     PathSurfaceLights lights;
     lights.push = push;
     lights.hit = hit;
-    lights.material = material;
+    lights.surfaceIor = openPbrMaterialIor(material);
+    lights.transmittingSurface = true;
     lights.interiorStack = interiorStack;
     lights.viewDirection = viewDirection;
     lights.seed = seed;
@@ -314,4 +237,218 @@ OpenPBRPathControl shadeOpenPBRPathVertex(
 #endif
     }
     return OpenPBRPathControl.Next;
+}
+
+#if METALLIC_CUSTOM_MATERIALS
+OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMaterialProgram>(
+    inout Material<TProgram> material, HitInfo hit, ScenePathTracePush push,
+    inout Ray ray, inout RayCone rayCone, inout uint seed, uint depth,
+    inout float3 radiance, inout float3 throughput,
+    inout float previousBsdfPdf, inout bool previousScatterDelta,
+    OpenPBRInteriorStack interiorStack, inout bool captureSpecularHitDistance
+#if METALLIC_PT_SHARC
+    , inout OpenPBRCacheContext cache
+#endif
+)
+{
+    float3 authoredNormal = hit.normal;
+    RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
+    let evaluated = evaluateRaySurface(material, work);
+    hit = material.program.evaluatedHit();
+    seed = material.program.evaluatedSeed();
+    let summary = material.program.surfaceSummary();
+    if (depth == 0u && push.debugView != kOpenPBRDebugViewFinal &&
+        push.debugView != kOpenPBRDebugViewShadowTransmittance) {
+        radiance = openPbrPrimaryDebugColor(push, hit, authoredNormal,
+            material.program.sampledNormal(), summary, ray.direction);
+        return OpenPBRPathControl.Return;
+    }
+    SurfaceSamplingContext sampling;
+    sampling.throughput = throughput;
+    sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
+    sampling.exteriorIor = openPbrExteriorIorForHit(interiorStack, hit);
+    let prepared = prepareRaySurface(evaluated.closure, work, sampling);
+    float3 localRadiance = max(prepared.surfaceEmission(evaluated.emission), float3(0));
+    PathSurfaceLights lights;
+    lights.push = push;
+    lights.hit = hit;
+    lights.surfaceIor = 1.0;
+    lights.transmittingSurface = false;
+    lights.interiorStack = interiorStack;
+    lights.viewDirection = safeNormalize(-ray.direction, hit.normal);
+    lights.seed = seed;
+    localRadiance = integrateDirectLighting(prepared, lights, localRadiance);
+    seed = lights.seed;
+    EnvironmentLightSample lightSample;
+    bool sampledEnvironment = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting) &&
+        sampleEnvironmentLight(push, seed, lightSample);
+    float3 shadowTransmittance = float3(0);
+    if (sampledEnvironment) {
+        float density = prepared.pdf(lightSample.direction);
+        float3 weight = prepared.evalProjected(lightSample.direction);
+        if (density > 0.0 && luminanceMax(weight) > 0.0) {
+            float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(lightSample.direction, hit.geometryNormal));
+            if (openPbrDebugFlag(push, kOpenPBRDebugDisableShadows)) {
+                shadowTransmittance = float3(1);
+            } else if (openPbrDebugFlag(push, kOpenPBRDebugUseOpaqueShadows)) {
+                shadowTransmittance = traceShadow(origin, lightSample.direction, 10000.0, push) ? float3(0) : float3(1);
+            } else {
+                shadowTransmittance = openPbrShadowTransmittance(origin, lightSample.direction,
+                    10000.0, interiorStack, push);
+            }
+        }
+        float misWeight = environmentLightMisWeight(push, lightSample.pdfSolidAngle, density);
+        localRadiance += weight * shadowTransmittance * lightSample.radiance *
+            (misWeight / max(lightSample.pdfSolidAngle, 0.000001));
+    }
+    if (depth == 0u && push.debugView == kOpenPBRDebugViewShadowTransmittance) {
+        radiance = sampledEnvironment ? shadowTransmittance : float3(1, 0, 1);
+        return OpenPBRPathControl.Return;
+    }
+    radiance += throughput * localRadiance;
+#if METALLIC_PT_SHARC
+    // Slab never enters the OpenPBR component cache, but exact suffixes still
+    // contribute to any earlier registered OpenPBR vertex.
+    openPbrCacheAddLighting(cache, localRadiance);
+#endif
+    BSDFWeightSample scatter = sampleSurfaceWeight(prepared, float3(rand(seed), rand(seed), rand(seed)));
+    if (scatter.pdf <= 0.0 || scatter.flags == 0u) { return OpenPBRPathControl.Stop; }
+    if (depth == 0u) {
+        captureSpecularHitDistance = bool(scatter.flags & kBSDFReflection) &&
+            bool(scatter.flags & (kBSDFGlossy | kBSDFDelta));
+    }
+    throughput *= max(scatter.weight, float3(0));
+    previousBsdfPdf = scatter.pdf;
+    previousScatterDelta = bool(scatter.flags & kBSDFDelta);
+    if (!previousScatterDelta) { rayCone = expandRayConeAfterScatter(rayCone, previousBsdfPdf); }
+    ray.direction = safeNormalize(scatter.wiWS, hit.normal);
+    ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+    openPbrCacheSetThroughput(cache, max(scatter.weight, float3(0)));
+#endif
+    if (depth >= 2u) {
+        float continueProbability = min(luminanceMax(throughput) + 0.05, 0.92);
+        if (rand(seed) > continueProbability) { return OpenPBRPathControl.Stop; }
+        throughput /= max(continueProbability, 0.001);
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+        openPbrCacheSetThroughput(cache, 1.0 / max(continueProbability, 0.001));
+#endif
+    }
+    return OpenPBRPathControl.Next;
+}
+#endif
+
+OpenPBRPathControl shadeOpenPBRPathVertex(
+    bool found, HitInfo hit, ScenePathTracePush push,
+    inout Ray ray, inout RayCone rayCone, inout uint seed, inout uint depth,
+    inout float3 radiance, inout float3 throughput,
+    inout float previousBsdfPdf, inout bool previousScatterDelta,
+    inout OpenPBRInteriorStack interiorStack,
+    inout float specularHitDistance, inout bool captureSpecularHitDistance,
+    inout uint alphaLayers, inout float3 primaryEndpoint,
+    float3 primaryOrigin, inout bool primarySurface
+#if METALLIC_PT_SHARC
+    , inout OpenPBRCacheContext cache
+#endif
+)
+{
+    if (!found) {
+        // Diagnostic colors carry display/data encoding, not scene radiance.
+        if (push.debugView != kOpenPBRDebugViewFinal) {
+            radiance = float3(0.0);
+            return OpenPBRPathControl.Return;
+        }
+        if (captureSpecularHitDistance) {
+            specularHitDistance = 65504.0;
+            captureSpecularHitDistance = false;
+        }
+        float misWeight = depth == 0u
+            ? 1.0
+            : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
+        float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
+        if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
+            missRadiance += physicalDeltaMissDisks(getSceneEnvironmentResources(),
+                ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
+        }
+        radiance += throughput * missRadiance;
+#if METALLIC_PT_SHARC
+        openPbrCacheAddLighting(cache, missRadiance);
+#endif
+        return OpenPBRPathControl.Stop;
+    }
+    if (captureSpecularHitDistance) {
+        specularHitDistance = hit.t;
+        captureSpecularHitDistance = false;
+    }
+    if (depth == 0u) { primaryEndpoint = hit.position; primarySurface = true; }
+
+    rayCone = propagateRayCone(rayCone, hit.t);
+    if (!openPbrDebugFlag(push, kOpenPBRDebugDisableVolumeAttenuation)) {
+        float3 volumeTransmittance = openPbrVolumeTransmittance(interiorStack, hit.t);
+        throughput *= volumeTransmittance;
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+        openPbrCacheSetThroughput(cache, volumeTransmittance);
+#endif
+    }
+    if (luminanceMax(throughput) <= 0.000001) {
+        return OpenPBRPathControl.Stop;
+    }
+
+    SceneMaterialData transport = loadSceneMaterial(hit.materialIndex);
+    if (materialDomain(transport) == kMaterialDomainFiber) {
+        const float3 stableNormal = hit.normal;
+        if (dot(hit.normal, ray.direction) > 0) { hit.normal = -hit.normal; }
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+        float3 beforeRadiance = radiance;
+        float3 beforeThroughput = throughput;
+#endif
+        bool continued = shadeSceneFiber(sceneFiberParameters(transport), hit, stableNormal, push, depth,
+            ray, rayCone, seed, throughput, radiance, previousBsdfPdf, previousScatterDelta);
+#if METALLIC_PT_SHARC && SHARC_UPDATE
+        openPbrCacheAddLighting(cache, max(radiance - beforeRadiance, 0.0) / max(beforeThroughput, 1e-20));
+        openPbrCacheSetThroughput(cache, throughput / max(beforeThroughput, 1e-20));
+#endif
+        if (!continued) { return OpenPBRPathControl.Stop; }
+        return OpenPBRPathControl.Next;
+    }
+    if (transport.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {
+        float alpha = evaluateSceneCoverage(hit.materialIndex, sceneMaterialCoverageParameters(transport), hit.texcoord, push).opacity;
+        if (rand(seed) >= alpha) {
+            if (++alphaLayers >= 16u) { return OpenPBRPathControl.Stop; }
+            ray.origin = offsetRay(hit.position, openPbrRayOffsetNormal(ray.direction, hit.geometryNormal));
+            if (depth == 0u) { primarySurface = false; }
+            --depth;
+            return OpenPBRPathControl.Next;
+        }
+    }
+#if METALLIC_CUSTOM_MATERIALS
+    uint family = sceneSurfaceMaterialFamily(hit.materialIndex);
+    if (family == 1u) {
+        var material = makeSceneSlabMaterialProgram<SceneSingleSlabModel>(hit, push, rayCone, ray.direction, seed, false, true);
+        return shadeSlabSurfacePathVertex(material, hit, push, ray, rayCone, seed, depth,
+            radiance, throughput, previousBsdfPdf, previousScatterDelta,
+            interiorStack, captureSpecularHitDistance
+#if METALLIC_PT_SHARC
+            , cache
+#endif
+        );
+    }
+    if (family == 2u) {
+        var material = makeSceneSlabMaterialProgram<SceneDualSlabModel>(hit, push, rayCone, ray.direction, seed, false, true);
+        return shadeSlabSurfacePathVertex(material, hit, push, ray, rayCone, seed, depth,
+            radiance, throughput, previousBsdfPdf, previousScatterDelta,
+            interiorStack, captureSpecularHitDistance
+#if METALLIC_PT_SHARC
+            , cache
+#endif
+        );
+    }
+#endif
+    return shadeOpenPBRSurfacePathVertex(hit, push,
+        ray, rayCone, seed, depth, radiance, throughput, previousBsdfPdf,
+        previousScatterDelta, interiorStack, captureSpecularHitDistance
+#if METALLIC_PT_SHARC
+        , cache
+#endif
+    );
 }

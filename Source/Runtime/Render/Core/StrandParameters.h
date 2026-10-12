@@ -61,7 +61,7 @@ using StrandSampled = GPUResourceHandle<ResourceViewKind::SampledImage>;
 import Material;
 typealias StrandData = BufferSpan<StrandSegment>;
 typealias StrandRecords = RWBufferSpan<StrandVisibilityRecord>;
-typealias StrandMaterials = BufferSpan<PathTraceMaterial>;
+typealias StrandMaterials = BufferSpan<SceneMaterialData>;
 typealias StrandFrames = BufferSpan<StrandFrame>;
 typealias StrandStorage = ResourceHandle<RWTexture2D<float4>>;
 typealias StrandCounts = ResourceHandle<RWTexture2D<uint4>>;

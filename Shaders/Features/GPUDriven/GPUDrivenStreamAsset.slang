@@ -4291,8 +4291,7 @@ bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush 
         program.inputs = resolveUniform(ResourceHandle<ByteAddressBuffer>(bindings.coverageInputs));
         return program.evaluateCoverage(context, reference).accepted;
     }
-    LegacyCoverageEvaluator legacy;
-    return legacy.evaluateCoverage(context, reference).accepted;
+    return coverageFromOpacity(context, context.baseAlpha).accepted;
 }
 
 // Used by the bounded-queue HW fallback as well as tessellation task shaders.

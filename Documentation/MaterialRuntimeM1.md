@@ -10,15 +10,15 @@
 - Schema 用稳定参数 ID、类型、偏移和大小描述布局。校验拒绝重复 ID、重叠、越界、无效大小/对齐与未支持类型。
 - `migrateMaterialParameters` 接受源布局、目标布局和目标默认值，按 ID 与类型迁移；重排不丢失值，新增或类型变化保留默认值并报告诊断。非法布局不覆盖上一份输出。
 - `MaterialGeneration::create(schema, bytes, ...)` 将版本化参数布局降为内置执行 ABI。它与固定布局入口使用同一个生成和发布流程。
-- [LegacyMaterialPayload](../Source/Runtime/Render/Material/LegacyMaterialPayload.h) 保留既有 720 字节 GPU ABI，作为当前内置模型的兼容布局；不会通过添加所有未来模型字段来扩展它。迁移 API 支持已注册类型的布局变化，当前类型是 Float、UInt、Float4 和 Texture。
-- GPU `textureParams.z` 编码 Program ID：1 为 OpenPBR，2 为 RTXCR，0 按旧 hair 标志推导。CPU 拒绝冲突或非有限身份。
-- 生产 pass 在编译和材质 revision 变化时校验目标能力。Fiber 只能进入支持 RTXCR 的 ray-hit 入口；不支持的 VBuffer / OpenPBR-only 目标返回明确诊断，避免静默套用 Surface 模型。
+- [SceneMaterialData](../Source/Runtime/Render/Material/SceneMaterialData.h) 保留既有 720 字节场景上传 ABI，仅作为传输记录；shader 模型提取独立参数类型，不把该记录当作材质抽象，也不会添加未来模型字段。迁移 API 支持已注册类型的布局变化，当前类型是 Float、UInt、Float4 和 Texture。
+- GPU `textureParams.z` 显式编码 Program ID：1 为 OpenPBR，2 为 RTXCR，3/4 为 Single/Dual Slab。CPU 输入允许 0 并在发布前归一化；GPU 不再根据 hair 参数推导类型。CPU 拒绝冲突或非有限身份。
+- 生产 pass 在编译和材质 revision 变化时校验目标能力。Fiber 支持 `RayHitWithFiber` 和 `StrandVisibility`，拒绝 `VisibilityBuffer` 与 `SurfaceRayHit` 目标。当前普通与 OpenPBR 路径追踪均选择 `RayHitWithFiber`，不会把 Fiber 静默套用为 Surface 模型。
 
 这里的布局迁移是数据契约。M1 内置消费者仍使用明确的兼容 ABI；任意自定义 Slang 模型、Value Program 与资源依赖分析属于 M2。
 
 ## 编译、发布与退休
 
-[MaterialExecutable](../Source/Runtime/Render/Material/MaterialExecutable.h) 已接入 `ScenePathTracePass` 的普通、OpenPBR、VBuffer 分箱及缓存 permutation 编译。编译产物包含 SPIR-V、依赖、内容 key、参数 ABI 和资源 manifest。manifest 直接用于 `ComputeProgram` 的检查与参数编码；不是只记录在文档中的描述。当前 manifest 由受控内置程序声明，尚不代表能自动证明任意外部 Slang 的资源访问安全。
+[MaterialExecutable](../Source/Runtime/Render/Material/MaterialExecutable.h) 已接入 `ScenePathTracePass` 的普通、OpenPBR、VBuffer 分箱及缓存 permutation 编译。编译产物包含 SPIR-V、依赖、内容 key、参数 ABI 和资源 manifest。manifest 直接用于 `ComputeResourceEncoder` 的检查与参数编码，生成的参数交给 `ComputeKernel` 执行；不是只记录在文档中的描述。当前 manifest 由受控内置程序声明，尚不代表能自动证明任意外部 Slang 的资源访问安全。
 
 编译和 pipeline 创建先在候选对象完成，全部成功才替换 executable 与 artifact。编译或 manifest/pipeline 创建失败保留旧对象及诊断；没有成功版本时，实际 PT / Deferred pass 使用独立错误材质显示品红棋盘格。错误路径同时初始化已声明的辅助输出。
 
@@ -26,7 +26,7 @@
 
 `MaterialBindingGeneration` 同时拥有 CPU 快照与 GPU 参数 buffer。resident、materials-only 上传和编辑均发布这个对象；材质编辑先创建/映射候选 buffer，成功后才替换发布对象并推进 material revision。可选分配策略用于预算拒绝及故障注入，默认仍调用 `Device::createBuffer`。
 
-帧准备通过已有 `RenderFrameContext` 保留材质发布对象。ComputeProgram/PreparedComputeDispatch 继续保留 executable、编码参数和 descriptor 所用分配，纹理沿用现有不可变纹理快照。旧提交完成、命令记录和帧所有权释放后才回收；没有另建一套 fence 或资源回收器。材质 revision 变化使现有 PT / Deferred 累积历史和相关缓存失效。
+帧准备通过已有 `RenderFrameContext` 保留材质发布对象。`ComputeKernel` / `PreparedComputeDispatch` 继续保留 executable、编码参数和 descriptor 所用分配，纹理沿用现有不可变纹理快照。旧提交完成、命令记录和帧所有权释放后才回收；没有另建一套 fence 或资源回收器。材质 revision 变化使现有 PT / Deferred 累积历史和相关缓存失效。
 
 这些入口要求沿用现有帧协调器，不能在并发录制中途修改发布状态。现有 `Buffer::flush` 为 void，驱动级 flush/device-loss 错误仍遵循 RHI 的设备错误处理；本批故障注入验证的是可观察的分配、映射、编译和 pipeline/manifest 拒绝。
 

@@ -13,7 +13,8 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/ShaderCore.slang`、`Modules/Core/` | ResourceHandle、BufferSpan、旧资源兼容接口、相机、顶点解码、SH、显示颜色；不声明 push constant |
 | `Modules/Core.slang` | ComputeProgram 具名资源参数、常量和底层测试兼容入口，重新导出 ShaderCore |
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
-| `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
+| `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 `Material<TProgram>` 泛型封装、SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
+| `Modules/OpenPBRMaterialParameters.slang`、`Modules/RTXCRMaterialParameters.slang` | 各模型独立参数；在场景资源边界从上传记录提取，求值与 Closure 不携带其他模型 |
 | `Modules/DebugLambert.slang`、`Modules/DebugMirror.slang`、`Modules/SurfaceLighting.slang` | 三阶段 Surface Programs、泛型 `shadeSurface` 与生产共用的直接光循环；见 [Phase 3](../Documentation/MaterialSystemPhase3.md)、[Phase 5](../Documentation/MaterialSystemPhase5.md) |
 | `Modules/SlabClosure.slang` | Single / Dual Slab canonical families、Mix / Layer 原型；见 [Phase 10](../Documentation/MaterialSystemPhase10.md) |
 | `Modules/OpenPBR.slang`、`Modules/OpenPBR/` | Adobe OpenPBR 1.1 原生 Slang 移植、静态泛型 LUT/Feature provider；见 [模块说明](Modules/OpenPBR/README.md) |
@@ -158,16 +159,25 @@ Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `Punctua
 
 `AlphaCoverage`、`MaterialTextureDecode` 和 `RTXCRMaterialAdapter` 使用独立 Slang
 module，通过 `import` 显式共享。依赖调用程序类型和编译配置的
-`SceneSurfaceClosure.slang` 保留程序内 `#include`；这些入口没有统一命名 module，
+`SceneSurfaceMaterial.slang` 保留程序内 `#include`；这些入口没有统一命名 module，
 不能使用要求 `implementing` 命名模块的 `__include`。
 `OpenPBRPathVertex.slang` 提供显式状态参数和控制结果的顶点处理函数，通用路径循环与
 单样本 continuation 共同调用，不再通过 HLSL 文本宏注入 `break`、`continue` 或 `return`。
 `MeshletStreamBLAS.h` 是 C++/Slang 共享常量契约，使用普通头文件。
 第三方 SDK 和 NRD 快照保留其原始 HLSL 适配边界及许可证。
 
-材质 `TextureInfo` 为 48 字节，`LegacyMaterialPayload` 为 720 字节。两个索引后只保留
+材质 `TextureInfo` 为 48 字节，`SceneMaterialData` 为 720 字节。两个索引后只保留
 8 字节对齐 padding，使 StructuredBuffer 的两个 float4 位于偏移 16/32；不保留 NTC 字段。
 Slang `sizeof` 与 SPIR-V StructuredBuffer 布局不能混为一谈；GPU 字段/数组步长探针验证两端契约。
+
+`SceneMaterialData` 仅定义现有场景上传布局。OpenPBR、SingleSlab、DualSlab 和 Fiber
+使用独立泛型 Program 与具体 Closure；模型选择在命中点或 pass 边界进行，公共光照循环
+通过静态类型调用。Slab 的 Value 表达式只读取 `MaterialValueParameters`，不构造 OpenPBR
+输入或 Closure。诊断、guides 和近似环境光读取 `SceneSurfaceSummary` 的数值摘要。
+标准与 OpenPBR 路径的 Fiber 求值和 RR guide 在模型分支后单独读取 Fiber 参数，
+共用颜色、粗糙度和 Fresnel guide 近似，不读取 Surface 纹理或发光参数。
+`LegacyMaterialProgram`、`LegacyCoverageEvaluator`、混合 `SceneSurfaceClosure` 与
+空的 weighted-closure 标记接口已移除，不提供旧类型别名。
 
 ## SDK 兼容边界
 

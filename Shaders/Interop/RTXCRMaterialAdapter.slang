@@ -2,7 +2,7 @@
 module RTXCRMaterialAdapter;
 
 
-import Material;
+import RTXCRMaterialParameters;
 import RTXCRHair;
 import MaterialProgram;
 import FiberMaterial;
@@ -14,19 +14,19 @@ internal float3 normalizeHairVector(float3 value, float3 fallback, float minimum
     float lengthSquared = dot(value, value);
     return lengthSquared > minimumLengthSquared ? value * rsqrt(lengthSquared) : fallback;
 }
-public Metallic.RTXCR.HairMaterialData makeRTXCRHairMaterial(PathTraceMaterial material)
+public Metallic.RTXCR.HairMaterialData makeRTXCRHairMaterial(RTXCRHairMaterialParameters material)
 {
     Metallic.RTXCR.HairMaterialData hair;
-    hair.baseColor = saturate(material.rtxcrHairBaseColor.rgb);
-    hair.longitudinalRoughness = clamp(material.rtxcrHairParams0.x, 0.02, 1.0);
-    hair.azimuthalRoughness = clamp(material.rtxcrHairParams0.y, 0.02, 1.0);
-    hair.ior = clamp(material.rtxcrHairParams0.z, 1.01, 3.0);
+    hair.baseColor = saturate(material.baseColor.rgb);
+    hair.longitudinalRoughness = clamp(material.roughnessIOR.x, 0.02, 1.0);
+    hair.azimuthalRoughness = clamp(material.roughnessIOR.y, 0.02, 1.0);
+    hair.ior = clamp(material.roughnessIOR.z, 1.01, 3.0);
     hair.eta = 1.0 / hair.ior;
     hair.fresnelApproximation = 1u;
     hair.absorptionModel = Metallic.RTXCR.kHairAbsorptionModelNormalized;
-    hair.melanin = saturate(material.rtxcrHairParams1.x);
-    hair.melaninRedness = saturate(material.rtxcrHairParams1.y);
-    hair.cuticleAngleInDegrees = clamp(material.rtxcrHairParams0.w, -10.0, 10.0);
+    hair.melanin = saturate(material.melanin.x);
+    hair.melaninRedness = saturate(material.melanin.y);
+    hair.cuticleAngleInDegrees = clamp(material.roughnessIOR.w, -10.0, 10.0);
     return hair;
 }
 
@@ -50,7 +50,7 @@ public Metallic.RTXCR.HairInteractionSurface makeRTXCRHairSurface(
 
 public struct SceneRTXCRHairParameters : IRTXCRHairParameterProvider
 {
-    public PathTraceMaterial value;
+    public RTXCRHairMaterialParameters value;
     // The scene has already selected this immutable instance record. Offset 0
     // is relative to that record, as required by MaterialInstanceRef.
     [mutating] public Metallic.RTXCR.HairMaterialData load(MaterialInstanceRef instance)
@@ -60,19 +60,19 @@ public struct SceneRTXCRHairParameters : IRTXCRHairParameterProvider
 };
 
 public FiberMaterialResult<RTXCRChiangClosure> evaluateSceneFiberMaterial(
-    PathTraceMaterial parameters, FiberMaterialContext context, float minimumLengthSquared = 1e-8)
+    RTXCRHairMaterialParameters parameters, FiberMaterialContext context, float minimumLengthSquared = 1e-8)
 {
     let surface = makeRTXCRHairSurface(context.normalWS, context.tangentWS, context.normalWS, minimumLengthSquared);
     context.normalWS = surface.shadingNormal;
     context.tangentWS = surface.tangent;
     context.bitangentWS = cross(context.normalWS, context.tangentWS);
-    RTXCRChiangMaterialProgram<SceneRTXCRHairParameters> program;
-    program.parameters.value = parameters;
-    return program.evaluate(context, (MaterialInstanceRef)0);
+    Material<RTXCRChiangMaterialProgram<SceneRTXCRHairParameters>> material;
+    material.program.parameters.value = parameters;
+    return material.evaluate(context, (MaterialInstanceRef)0);
 }
 
-public float sceneFiberMISRoughness(PathTraceMaterial parameters)
+public float sceneFiberMISRoughness(RTXCRHairMaterialParameters parameters)
 {
-    return clamp(parameters.rtxcrHairParams0.x, 0.02, 1.0);
+    return clamp(parameters.roughnessIOR.x, 0.02, 1.0);
 }
 

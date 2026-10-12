@@ -103,7 +103,7 @@ bool integrateSceneFiber<TPrepared : IPreparedFiberClosure>(TPrepared prepared,
     return true;
 }
 
-bool shadeSceneFiber(PathTraceMaterial material, HitInfo hit, float3 stableNormal,
+bool shadeSceneFiber(RTXCRHairMaterialParameters material, HitInfo hit, float3 stableNormal,
     ScenePathTracePush push, uint depth, inout Ray ray, inout RayCone rayCone,
     inout uint seed, inout float3 throughput, inout float3 radiance,
     inout float previousBsdfPdf, inout bool previousScatterDelta)
@@ -113,8 +113,8 @@ bool shadeSceneFiber(PathTraceMaterial material, HitInfo hit, float3 stableNorma
     work.surface.shadingNormalWS = frame.shadingNormal;
     work.surface.tangentWS = frame.tangent;
     work.surface.bitangentWS = cross(frame.shadingNormal, frame.tangent);
-    RTXCRChiangMaterialProgram<SceneRTXCRHairParameters> program;
-    program.parameters.value = material;
+    Material<RTXCRChiangMaterialProgram<SceneRTXCRHairParameters>> program;
+    program.program.parameters.value = material;
     // Adapter holds the already selected instance, so offsets are relative to it.
     work.instance = (MaterialInstanceRef)0;
     let materialResult = evaluateRayFiber(program, work);

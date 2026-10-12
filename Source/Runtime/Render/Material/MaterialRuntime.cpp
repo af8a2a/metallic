@@ -14,7 +14,7 @@ namespace metallic::render {
 namespace {
 
 #define MATERIAL_FIELD(name, type) MaterialParameterSchema{#name, MaterialParameterType::type, \
-    offsetof(LegacyMaterialPayload, name), sizeof(LegacyMaterialPayload::name)}
+    offsetof(SceneMaterialData, name), sizeof(SceneMaterialData::name)}
 
 constexpr std::array kParameters{
     MATERIAL_FIELD(baseColor, Float4), MATERIAL_FIELD(emissive, Float4),
@@ -32,10 +32,10 @@ constexpr std::array kParameters{
 };
 #undef MATERIAL_FIELD
 
-constexpr MaterialSchema kSchema{kLegacyMaterialABI, sizeof(LegacyMaterialPayload),
-    alignof(LegacyMaterialPayload), kParameters};
+constexpr MaterialSchema kSchema{kSceneMaterialABI, sizeof(SceneMaterialData),
+    alignof(SceneMaterialData), kParameters};
 constexpr std::array kDefinitions{
-    MaterialDefinition{MaterialProgramId::OpenPBRComposite, "OpenPBRComposite.Legacy", MaterialDomain::Surface,
+    MaterialDefinition{MaterialProgramId::OpenPBRComposite, "OpenPBRComposite.Surface", MaterialDomain::Surface,
         1, {true, true, false, true},
         "Existing glTF mapping; sheen/coat and dispersion disabled; straight transmission shadows"},
     MaterialDefinition{MaterialProgramId::RTXCRChiang, "RTXCRChiang.DOTS", MaterialDomain::Fiber,
@@ -83,7 +83,7 @@ const MaterialProgram* findMaterialProgram(MaterialProgramId id)
     return nullptr;
 }
 
-MaterialProgramId legacyMaterialProgramId(const LegacyMaterialPayload& parameters)
+MaterialProgramId sceneMaterialProgramId(const SceneMaterialData& parameters)
 {
     return parameters.rtxcrHairBaseColor[3] > 0.5f
         ? MaterialProgramId::RTXCRChiang : MaterialProgramId::OpenPBRComposite;
@@ -110,7 +110,7 @@ bool validateMaterialSchema(const MaterialSchema& schema, std::string& diagnosti
         uint32_t size = 0;
         switch (field.type) {
         case MaterialParameterType::Float4: size = 16; break;
-        case MaterialParameterType::Texture: size = sizeof(LegacyMaterialPayload::TextureInfo); break;
+        case MaterialParameterType::Texture: size = sizeof(SceneMaterialData::TextureInfo); break;
         case MaterialParameterType::Float:
         case MaterialParameterType::UInt: size = 4; break;
         }
@@ -164,8 +164,8 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
         diagnostics = "Material parameter array has an invalid stride or count.";
         return {};
     }
-    const LegacyMaterialPayload defaults;
-    std::vector<LegacyMaterialPayload> lowered(parameters.size() / source.byteSize);
+    const SceneMaterialData defaults;
+    std::vector<SceneMaterialData> lowered(parameters.size() / source.byteSize);
     std::string warnings;
     for (size_t index = 0; index < lowered.size(); ++index) {
         std::vector<std::byte> migrated;
@@ -173,7 +173,7 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
                 kSchema, std::as_bytes(std::span(&defaults, 1)), migrated, diagnostics)) { return {}; }
         // One layout diagnostic rather than repeating it per instance.
         if (index == 0) { warnings = diagnostics; }
-        std::memcpy(&lowered[index], migrated.data(), sizeof(LegacyMaterialPayload));
+        std::memcpy(&lowered[index], migrated.data(), sizeof(SceneMaterialData));
     }
     auto generation = create(lowered, sourceRevision, diagnostics);
     if (generation) { diagnostics = std::move(warnings); }
@@ -201,7 +201,7 @@ bool MaterialGeneration::supports(MaterialEvaluationTarget target, std::string& 
 }
 
 std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
-    std::span<const LegacyMaterialPayload> parameters,
+    std::span<const SceneMaterialData> parameters,
     uint64_t sourceRevision,
     std::string& diagnostics, std::span<const scene::RenderMaterial> authored)
 {
@@ -222,9 +222,9 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
     std::array<bool, kPrograms.size()> used{};
     for (uint32_t index = 0; index < parameters.size(); ++index) {
         auto& payload = candidate->parameters_[index];
-        auto id = legacyMaterialProgramId(payload);
+        auto id = sceneMaterialProgramId(payload);
         const float encoded = payload.textureParams[2];
-        const auto legacyId = id;
+        const auto sourceId = id;
         if (!authored.empty() && !authored[index].valueProgram.empty()) {
             try {
                 const auto ir = MaterialValueIR::parse(authored[index].valueProgram);
@@ -236,7 +236,7 @@ std::shared_ptr<const MaterialGeneration> MaterialGeneration::create(
             } catch (const std::exception& error) { diagnostics = error.what(); return {}; }
         }
         if (!std::isfinite(payload.rtxcrHairBaseColor[3]) ||
-            (encoded != 0.0f && encoded != static_cast<float>(legacyId) && encoded != static_cast<float>(id))) {
+            (encoded != 0.0f && encoded != static_cast<float>(sourceId) && encoded != static_cast<float>(id))) {
             diagnostics = "Material " + std::to_string(index) + " has an incompatible program identity.";
             return {};
         }
