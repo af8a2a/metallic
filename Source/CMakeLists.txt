@@ -53,6 +53,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/ACESTables.cpp
     Runtime/Render/Core/ComputeKernel.cpp
     Runtime/Render/Core/ShaderRegistry.cpp
+    Runtime/Render/Core/NativePipelineCache.cpp
     Runtime/Render/Core/PipelineRecipe.cpp
     Runtime/Render/Core/DeferredShaderCacheWriter.cpp
     Runtime/Render/Core/ResourceRegistry.cpp

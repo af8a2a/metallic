@@ -426,6 +426,7 @@ add_executable(MetallicRHITests
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
     rhi/ShaderRegistryTests.cpp
+    rhi/ShaderRegistryNativePipelineTests.cpp
     rhi/PipelineRecipeTests.cpp
     rhi/PipelineCacheSaveTests.cpp
     rhi/PipelineCacheFeedbackTests.cpp
@@ -698,6 +699,18 @@ if(MSVC)
 endif()
 add_test(NAME MetallicDeferredShaderCacheWriterTests COMMAND MetallicDeferredShaderCacheWriterTests --gtest_color=no)
 set_tests_properties(MetallicDeferredShaderCacheWriterTests PROPERTIES LABELS "shader;cache" TIMEOUT 30)
+
+# Device-local object reuse and single-flight contracts are deterministic without a GPU.
+add_executable(MetallicNativePipelineCacheTests
+    rhi/NativePipelineCacheTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/NativePipelineCache.cpp")
+target_include_directories(MetallicNativePipelineCacheTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicNativePipelineCacheTests PRIVATE GTest::gtest_main Threads::Threads)
+if(MSVC)
+    target_compile_options(MetallicNativePipelineCacheTests PRIVATE /EHsc /utf-8)
+endif()
+add_test(NAME MetallicNativePipelineCacheTests COMMAND MetallicNativePipelineCacheTests --gtest_color=no)
+set_tests_properties(MetallicNativePipelineCacheTests PROPERTIES LABELS "shader;cache;cpu" TIMEOUT 30)
 
 add_test(NAME MetallicShaderObjectBinaryProcessSmoke COMMAND ${CMAKE_COMMAND}
     "-DRHI_EXECUTABLE=$<TARGET_FILE:MetallicRHITests>"

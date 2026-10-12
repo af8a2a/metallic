@@ -2,6 +2,7 @@
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/PipelineStateHash.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -21,6 +22,7 @@ struct DeviceShaders {
     // Input code is retained only for an explicitly requested recipe capture.
     std::map<const ShaderModule*, PipelineRecipeShader> recipeShaders;
     std::set<std::string> exportedRecipes;
+    detail::NativePipelineCache nativePipelines;
     // Reverse member destruction drains/joins the writer before cache handles.
     DeferredShaderCacheWriter writer;
 };
@@ -214,44 +216,70 @@ Result<> ShaderRegistry::getComputeKernel(Device& device, const SlangShaderDesc&
 
 Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Device& device, const ComputePipelineDesc& desc)
 {
-    if (!desc.computeShader.module) { return makeError(Error::InvalidArgument); }
+    auto valid = device.validateComputePipelineDesc(desc);
+    if (!valid) { return makeError(valid.error()); }
     const std::string group = cacheGroup(desc.computeShader.module->contentHash());
     if (desc.pipelineCache) {
         auto pipeline = device.createComputePipeline(desc);
         if (pipeline) { exportRecipe(device, desc, (*pipeline)->psoHash(), group); }
         return pipeline;
     }
-    auto cache = acquireCache(device, group);
-    if (!cache) { return makeError(cache.error()); }
-    auto managed = desc;
-    managed.pipelineCache = *cache;
-    auto pipeline = device.createComputePipeline(managed);
-    if (pipeline) {
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    const auto key = detail::NativePipelineKey{detail::NativePipelineType::Compute, detail::computePipelineStateHash(desc)};
+    auto acquired = (*state)->nativePipelines.acquire(key, [&]() -> Result<std::shared_ptr<void>> {
+        auto cache = acquireCache(device, group);
+        if (!cache) { return makeError(cache.error()); }
+        auto managed = desc;
+        managed.pipelineCache = *cache;
+        auto pipeline = device.createComputePipeline(managed);
+        if (!pipeline) { return makeError(pipeline.error()); }
         persist(device, **cache, group);
-        exportRecipe(device, desc, (*pipeline)->psoHash(), group);
+        return std::shared_ptr<void>((*pipeline)->impl_);
+    });
+    if (!acquired) { return makeError(acquired.error()); }
+    auto pipeline = std::unique_ptr<ComputePipeline>(new ComputePipeline(
+        std::static_pointer_cast<detail::ComputePipelineImpl>(acquired->owner)));
+    if (acquired->nativeObjectReused) {
+        pipeline->acquisitionStats_ = PipelineCreationStats{
+            .singleFlightWaitTimeNanoseconds = acquired->singleFlightWaitTimeNanoseconds, .nativeObjectReused = true};
     }
+    exportRecipe(device, desc, pipeline->psoHash(), group);
     return pipeline;
 }
 
 Result<std::unique_ptr<GraphicsPipeline>> ShaderRegistry::getGraphicsPipeline(Device& device, const GraphicsPipelineDesc& desc)
 {
+    auto valid = device.validateGraphicsPipelineDesc(desc);
+    if (!valid) { return makeError(valid.error()); }
     const ShaderModule* primary = desc.meshShader.module ? desc.meshShader.module : desc.vertexShader.module;
-    if (!primary) { return makeError(Error::InvalidArgument); }
     const std::string group = cacheGroup(primary->contentHash());
     if (desc.pipelineCache) {
         auto pipeline = device.createGraphicsPipeline(desc);
         if (pipeline) { exportRecipe(device, desc, (*pipeline)->psoHash(), group); }
         return pipeline;
     }
-    auto cache = acquireCache(device, group);
-    if (!cache) { return makeError(cache.error()); }
-    auto managed = desc;
-    managed.pipelineCache = *cache;
-    auto pipeline = device.createGraphicsPipeline(managed);
-    if (pipeline) {
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    const auto key = detail::NativePipelineKey{detail::NativePipelineType::Graphics, detail::graphicsPipelineStateHash(desc)};
+    auto acquired = (*state)->nativePipelines.acquire(key, [&]() -> Result<std::shared_ptr<void>> {
+        auto cache = acquireCache(device, group);
+        if (!cache) { return makeError(cache.error()); }
+        auto managed = desc;
+        managed.pipelineCache = *cache;
+        auto pipeline = device.createGraphicsPipeline(managed);
+        if (!pipeline) { return makeError(pipeline.error()); }
         persist(device, **cache, group);
-        exportRecipe(device, desc, (*pipeline)->psoHash(), group);
+        return std::shared_ptr<void>((*pipeline)->impl_);
+    });
+    if (!acquired) { return makeError(acquired.error()); }
+    auto pipeline = std::unique_ptr<GraphicsPipeline>(new GraphicsPipeline(
+        std::static_pointer_cast<detail::GraphicsPipelineImpl>(acquired->owner)));
+    if (acquired->nativeObjectReused) {
+        pipeline->acquisitionStats_ = PipelineCreationStats{
+            .singleFlightWaitTimeNanoseconds = acquired->singleFlightWaitTimeNanoseconds, .nativeObjectReused = true};
     }
+    exportRecipe(device, desc, pipeline->psoHash(), group);
     return pipeline;
 }
 
@@ -293,6 +321,21 @@ Result<std::vector<ShaderRegistryCacheStats>> ShaderRegistry::pipelineCacheStats
     std::vector<ShaderRegistryCacheStats> result;
     for (const auto& [group, cache] : (*state)->caches) { result.push_back({group, cache->stats()}); }
     return result;
+}
+
+Result<NativePipelineCacheStats> ShaderRegistry::nativePipelineCacheStats(Device& device)
+{
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    return (*state)->nativePipelines.stats();
+}
+
+Result<> ShaderRegistry::setNativePipelineCacheCapacity(Device& device, size_t strongCapacity)
+{
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    (*state)->nativePipelines.setCapacity(strongCapacity);
+    return {};
 }
 
 Result<> ShaderRegistry::flushPipelineCaches(Device& device)

@@ -3868,6 +3868,11 @@ const char* GraphicsShaderObjectProgram::binaryCacheFilePath() const
 
 METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsPipeline)
 
+GraphicsPipeline::GraphicsPipeline(std::shared_ptr<detail::GraphicsPipelineImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
 namespace detail {
 GraphicsPipelineImpl::~GraphicsPipelineImpl()
 {
@@ -3896,10 +3901,15 @@ bool GraphicsPipeline::pipelineCacheHit() const
 
 PipelineCreationStats GraphicsPipeline::creationStats() const
 {
-    return impl_ != nullptr ? impl_->creationStats : PipelineCreationStats{};
+    return impl_ != nullptr ? acquisitionStats_.value_or(impl_->creationStats) : PipelineCreationStats{};
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(ComputePipeline)
+
+ComputePipeline::ComputePipeline(std::shared_ptr<detail::ComputePipelineImpl> impl)
+    : impl_(std::move(impl))
+{
+}
 
 namespace detail {
 ComputePipelineImpl::~ComputePipelineImpl()
@@ -3929,7 +3939,7 @@ bool ComputePipeline::pipelineCacheHit() const
 
 PipelineCreationStats ComputePipeline::creationStats() const
 {
-    return impl_ != nullptr ? impl_->creationStats : PipelineCreationStats{};
+    return impl_ != nullptr ? acquisitionStats_.value_or(impl_->creationStats) : PipelineCreationStats{};
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsShaderObjectProgram)
@@ -8161,10 +8171,8 @@ Result<std::unique_ptr<PipelineImpl>> createPipelineOwner(detail::DeviceImpl& de
 
 } // namespace
 
-Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(
-    const GraphicsPipelineDesc& desc, PipelineCreationStats* creationStats)
+Result<> Device::validateGraphicsPipelineDesc(const GraphicsPipelineDesc& desc) const
 {
-    if (creationStats != nullptr) { *creationStats = {}; }
     const bool usesTaskShader = desc.taskShader.module != nullptr;
     const bool usesMeshShader = desc.meshShader.module != nullptr;
     const bool usesVertexShader = desc.vertexShader.module != nullptr;
@@ -8248,6 +8256,24 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(
     if (auto validation = validatePipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache); !validation) {
         return std::unexpected(validation.error());
     }
+    return {};
+}
+
+Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(
+    const GraphicsPipelineDesc& desc, PipelineCreationStats* creationStats)
+{
+    if (creationStats != nullptr) { *creationStats = {}; }
+    if (auto validation = validateGraphicsPipelineDesc(desc); !validation) {
+        return std::unexpected(validation.error());
+    }
+    const bool usesTaskShader = desc.taskShader.module != nullptr;
+    const bool usesMeshShader = desc.meshShader.module != nullptr;
+    const bool configuresTaskSubgroups =
+        desc.taskRequiredSubgroupSize != 0 || desc.taskRequireFullSubgroups;
+    const uint32_t colorCount = desc.colorAttachmentCount;
+    const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
+    detail::PipelineCacheImpl* pipelineCache =
+        desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
     const uint64_t psoHash = detail::graphicsPipelineStateHash(desc);
 
     const char* vertexEntryPoint = desc.vertexShader.entryPoint;
@@ -8445,10 +8471,8 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(
     return std::unique_ptr<GraphicsPipeline>(new GraphicsPipeline(std::move(pipelineImpl)));
 }
 
-Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
-    const ComputePipelineDesc& desc, PipelineCreationStats* creationStats)
+Result<> Device::validateComputePipelineDesc(const ComputePipelineDesc& desc) const
 {
-    if (creationStats != nullptr) { *creationStats = {}; }
     if (impl_ == nullptr ||
         !validShaderStage(desc.computeShader)) {
         return makeError(Error::InvalidArgument);
@@ -8474,6 +8498,18 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
     if (auto validation = validatePipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache); !validation) {
         return std::unexpected(validation.error());
     }
+    return {};
+}
+
+Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
+    const ComputePipelineDesc& desc, PipelineCreationStats* creationStats)
+{
+    if (creationStats != nullptr) { *creationStats = {}; }
+    if (auto validation = validateComputePipelineDesc(desc); !validation) {
+        return std::unexpected(validation.error());
+    }
+    detail::PipelineCacheImpl* pipelineCache =
+        desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
     const uint64_t psoHash = detail::computePipelineStateHash(desc);
 
     const char* computeEntryPoint = desc.computeShader.entryPoint;

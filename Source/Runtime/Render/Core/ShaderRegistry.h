@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/PipelineRecipe.h"
+#include "Runtime/Render/Core/NativePipelineCache.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -34,9 +35,9 @@ public:
     // layout.spirv is replaced by the requested source's code.
     [[nodiscard]] Result<> getComputeKernel(Device& device, const SlangShaderDesc& source,
         const ComputeKernelDesc& layout, ComputeKernel& kernel, std::string& log);
-    // A null desc.pipelineCache automatically uses a device-owned persistent
-    // cache selected from shader identity. Explicit RHI caches remain supported
-    // for callers testing/controlling their own cache; those callers own saving.
+    // Null desc.pipelineCache uses the device's single-flight native object
+    // cache above its persistent binary cache. Explicit caches bypass object
+    // reuse and always enter the RHI; those callers own binary-cache saving.
     [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> getComputePipeline(Device& device, const ComputePipelineDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> getGraphicsPipeline(Device& device, const GraphicsPipelineDesc& desc);
     // Native interop adapters with external descriptor/vertex ABIs still use
@@ -49,6 +50,10 @@ public:
     [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> getGraphicsShaderObjectProgram(
         Device& device, const GraphicsShaderObjectProgramDesc& desc);
     [[nodiscard]] Result<std::vector<ShaderRegistryCacheStats>> pipelineCacheStats(Device& device);
+    [[nodiscard]] Result<NativePipelineCacheStats> nativePipelineCacheStats(Device& device);
+    // Capacity counts native objects across compute and graphics. Zero keeps
+    // weak reuse/single-flight while disabling strong retention; default 128.
+    [[nodiscard]] Result<> setNativePipelineCacheCapacity(Device& device, size_t strongCapacity);
     // Automatic saves run on the device-owned worker. This explicit durability
     // barrier blocks until pending attempts finish; ordinary acquisition never
     // calls it. Device teardown drains the worker before native cache teardown.

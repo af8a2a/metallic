@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <span>
 
@@ -1129,7 +1130,7 @@ struct PipelineCacheDesc {
     bool serializeCreation = false;
 };
 
-// Immutable feedback for one pipeline creation; unlike cache-wide last* fields,
+// Immutable feedback for one pipeline acquisition; unlike cache-wide last* fields,
 // this remains attributable to its caller during concurrent creation.
 struct PipelineCreationStats {
     uint64_t nativeCreateTimeNanoseconds = 0;
@@ -1139,6 +1140,10 @@ struct PipelineCreationStats {
     uint64_t cacheLockWaitTimeNanoseconds = 0;
     bool feedbackValid = false;
     bool nativeCacheHit = false; // Meaningful only when feedbackValid is true.
+    // Registry reuse skips native creation. Wait covers an existing same-key
+    // creation task and remains separate from driver-cache metadata-lock waits.
+    uint64_t singleFlightWaitTimeNanoseconds = 0;
+    bool nativeObjectReused = false;
 };
 
 struct PipelineCacheStats {
@@ -1603,35 +1608,47 @@ private:
 class GraphicsPipeline {
     METALLIC_RHI_HANDLE(GraphicsPipeline, shared_ptr,
         friend class Device;
+        friend class ShaderRegistry;
         friend class CommandBuffer;
         friend struct detail::DeviceImpl;
         friend struct detail::VulkanNativeAccess;
     )
 
-    // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
-    // still perform implementation-defined validation when creating the PSO.
+    // pipelineCacheHit reports the original native creation's exact PSO
+    // hash-table hit, including when this wrapper reuses that native object.
+    // The backend may still perform implementation-defined validation when creating the PSO.
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
     PipelineCreationStats creationStats() const;
 
     PreparedExecution execution() const;
+
+private:
+    explicit GraphicsPipeline(std::shared_ptr<detail::GraphicsPipelineImpl> impl);
+    std::optional<PipelineCreationStats> acquisitionStats_;
 };
 
 class ComputePipeline {
     METALLIC_RHI_HANDLE(ComputePipeline, shared_ptr,
         friend class Device;
+        friend class ShaderRegistry;
         friend class CommandBuffer;
         friend struct detail::DeviceImpl;
         friend struct detail::VulkanNativeAccess;
     )
 
-    // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
-    // still perform implementation-defined validation when creating the PSO.
+    // pipelineCacheHit reports the original native creation's exact PSO
+    // hash-table hit, including when this wrapper reuses that native object.
+    // The backend may still perform implementation-defined validation when creating the PSO.
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
     PipelineCreationStats creationStats() const;
 
     PreparedExecution execution() const;
+
+private:
+    explicit ComputePipeline(std::shared_ptr<detail::ComputePipelineImpl> impl);
+    std::optional<PipelineCreationStats> acquisitionStats_;
 };
 
 class GraphicsShaderObjectProgram {
@@ -1834,6 +1851,7 @@ class Device {
     METALLIC_RHI_HANDLE(Device, unique_ptr,
         friend Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
         friend class CommandBuffer;
+        friend class ShaderRegistry;
         friend struct detail::VulkanNativeAccess;
     )
 
@@ -1907,6 +1925,10 @@ class Device {
 
 private:
     bool validShaderStage(const ShaderStageDesc& stage) const;
+    // Registry reuse must apply the same checks as native creation before
+    // looking up a PSO; matching bytecode never authorizes cross-device stages.
+    Result<> validateGraphicsPipelineDesc(const GraphicsPipelineDesc& desc) const;
+    Result<> validateComputePipelineDesc(const ComputePipelineDesc& desc) const;
     static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
 };
 
