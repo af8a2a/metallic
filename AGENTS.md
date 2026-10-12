@@ -66,7 +66,3 @@ Every repository-owned `.slang` file, including feature entrypoints, SDK wrapper
 Third-party HLSL headers and shared C++/Slang interop headers may retain textual `#include` inside their canonical module owner. Do not convert authored Slang snippets to `.hlsli` to evade module ownership. Local preprocessor definitions do not cross `import` or `__include`; expose dependencies through explicit imports, resource parameters, generics, or interfaces. Existing global shader permutations remain in `SlangShaderDesc::macroDefines` and shader cache identity.
 
 Run `python -B Tools/CheckShaderModules.py` (or CTest `MetallicShaderModuleOwnershipAudit` when Python is available) after changing shader structure, followed by compilation and behavior-appropriate validation. The audit covers `Shaders/` and all test Slang sources; external vendor source trees are excluded.
-
-## Shader Normal/TBN Pitfall
-
-For ray-query scene shaders, keep `HitInfo.normal` and `HitInfo.geometryNormal` as stable authored/world-space data when building tangent space and applying normal maps. Do not flip either field toward the current ray inside `traceClosest()` before tangent/bitangent construction; doing so makes the TBN basis view/path dependent and can reintroduce hard color bands or seam-like artifacts in normal visualization and path tracing. If a BSDF needs a same-hemisphere normal, apply a separate face-forward step only to the final shading normal after normal map evaluation, and keep `geometryNormal` available for front-face tests and ray offsets.
