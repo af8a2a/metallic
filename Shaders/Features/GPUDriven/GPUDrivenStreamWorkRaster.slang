@@ -1,10 +1,14 @@
+module GPUDrivenStreamWorkRaster;
+
 import ShaderCore;
 using Metallic;
 
 // Separate module keeps the histogram/remap shared allocation out of the
 // measured cooperative reference and other stream raster entrypoints.
-#include "GPUDrivenStreamAsset.slang"
-#include "StreamRasterWorkBins.slang"
+import GPUDrivenStreamAsset;
+import GPUDriven;
+using Metallic.GPUDriven;
+import StreamRasterWorkBins;
 #ifndef METALLIC_WORK_CONTROL_TRACE
 #define METALLIC_WORK_CONTROL_TRACE 0
 #endif

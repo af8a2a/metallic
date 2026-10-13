@@ -68,13 +68,13 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
         case MaterialValueOp::Select: value = "(" + a + ".x>0.0?" + b + ":" + c + ")"; break;
         case MaterialValueOp::TextureSample:
         case MaterialValueOp::TextureSampleLinear:
-            value = "sampleMaterialValueTexture(material," + std::to_string(node.index) + "u," + a + ".xy," +
+            value = "sampleMaterialValueTexture(materialValueParameters(material)," + std::to_string(node.index) + "u," + a + ".xy," +
                 std::to_string(static_cast<uint32_t>(node.footprint)) + "u," + b + "," +
                 (node.operandCount == 3 ? c : "float4(0)") + ",textureContext," +
                 (node.op == MaterialValueOp::TextureSampleLinear ? "true" : "false") + ")"; break;
         default: throw std::runtime_error("Surface IR cannot consume Coverage alpha input");
         }
-        // Preserve the legacy input semantics; bound arithmetic intermediates.
+        // Preserve authored input semantics; bound arithmetic intermediates.
         if (node.operandCount) { value = "clamp(" + value + ",-1e6,1e6)"; }
         statements += "    float4 v" + std::to_string(index) + " = " + value + ";\n";
     }
@@ -132,12 +132,12 @@ std::string emitProgram(const MaterialValueIR& ir, uint32_t id, MaterialValueMan
         statements += "    result.inputs.control = float4(" + std::to_string(static_cast<uint32_t>(closure.op)) + "," +
             (closure.op == MaterialClosureOp::Mix ? "saturate(" + value(root, "Weight") + ".x)" : "0") + ",0,0);\n";
         return "SlabMaterialEvaluation materialSlab" + std::to_string(id) +
-            "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext)\n{\n"
+            "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, MaterialValueParameters material, MaterialValueTextureContext textureContext)\n{\n"
             "    SlabMaterialEvaluation result = (SlabMaterialEvaluation)0;\n" + statements + "    return result;\n}\n";
     }
-    return "PathTraceMaterial materialValue" + std::to_string(id) +
-        "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext, inout MaterialValueOpenPBRInputs surface)\n{\n"
-        "    PathTraceMaterial result = material;\n" + statements + "    return result;\n}\n";
+    return "OpenPBRMaterialParameters materialValue" + std::to_string(id) +
+        "(MaterialValueInstance instance, float3 position, float3 geometryNormal, float2 uv, OpenPBRMaterialParameters material, MaterialValueTextureContext textureContext, inout MaterialValueOpenPBRInputs surface)\n{\n"
+        "    OpenPBRMaterialParameters result = material;\n" + statements + "    return result;\n}\n";
 }
 } // namespace
 
@@ -183,22 +183,25 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             require(coveragePrograms.size() <= kMaxMaterialValuePrograms, "Scene exceeds 64 Coverage programs");
             sources.push_back(source);
         }
-        result->source_ = "// Material Value IR; generated Surface slice, shared 80-byte instance ABI.\n"
+        result->source_ = "#language slang 2026\nimplementing SceneSurface;\n// Material Value IR; generated Surface slice, shared 80-byte instance ABI.\n"
             "import SlabClosure;\n"
-            "struct SlabMaterialEvaluation { Metallic.Material.SlabMaterialInputs inputs; float3 emission; };\n"
-            "struct MaterialValueTextureContext { float normalizedRayLod; uint textureCount; };\n"
-            "struct MaterialValueOpenPBRInputs { float coatWeight; float coatRoughness; float coatIOR; float fuzzWeight; float3 fuzzColor; float fuzzRoughness; float specularAnisotropy; float2 anisotropyTangent; bool volumeColor; uint overrideMask; float3 normalTS; bool hasNormal; };\n"
-            "MaterialValueOpenPBRInputs defaultMaterialValueOpenPBRInputs() { MaterialValueOpenPBRInputs v = (MaterialValueOpenPBRInputs)0; v.coatIOR=1.5; v.coatRoughness=0.03; v.fuzzRoughness=0.5; v.fuzzColor=1.0; v.anisotropyTangent=float2(1,0); return v; }\n"
-            "struct MaterialValueInstance { uint programId; uint coverageOffset; uint coverageCount; uint coverageFlags; float4 parameters[4]; };\n"
+            "import OpenPBRMaterialParameters;\n"
+            "import Core;\nimport Material;\nimport WorkingColor;\n"
+            "namespace Metallic.SceneSurface\n{\nusing Metallic;\nusing Metallic.Material;\n"
+            "public struct SlabMaterialEvaluation { public Metallic.Material.SlabMaterialInputs inputs; public float3 emission; };\n"
+            "public struct MaterialValueTextureContext { public float normalizedRayLod; public uint textureCount; };\n"
+            "public struct MaterialValueOpenPBRInputs { public float coatWeight; public float coatRoughness; public float coatIOR; public float fuzzWeight; public float3 fuzzColor; public float fuzzRoughness; public float specularAnisotropy; public float2 anisotropyTangent; public bool volumeColor; public uint overrideMask; public float3 normalTS; public bool hasNormal; };\n"
+            "public MaterialValueOpenPBRInputs defaultMaterialValueOpenPBRInputs() { MaterialValueOpenPBRInputs v = (MaterialValueOpenPBRInputs)0; v.coatIOR=1.5; v.coatRoughness=0.03; v.fuzzRoughness=0.5; v.fuzzColor=1.0; v.anisotropyTangent=float2(1,0); return v; }\n"
+            "public struct MaterialValueInstance { public uint programId; public uint coverageOffset; public uint coverageCount; public uint coverageFlags; public float4 parameters[4]; };\n"
             "float4 materialValueNormalize(float4 v) { return float4(dot(v.xyz,v.xyz)>1e-20?normalize(v.xyz):float3(0,0,1),0); }\n";
         const bool usesTextures = std::any_of(surfaceIR.begin(), surfaceIR.end(), [](const auto& item) { return item.second.usage().textureMask != 0; });
-        if (usesTextures) { result->source_ += "float4 sampleMaterialValueTexture(PathTraceMaterial material, uint slot, float2 uv, uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context, bool linearColor);\n"; }
+        if (usesTextures) { result->source_ += "internal float4 sampleMaterialValueTexture(MaterialValueParameters material, uint slot, float2 uv, uint policy, float4 dxLod, float4 dy, MaterialValueTextureContext context, bool linearColor);\n"; }
         for (auto& [source, id] : programs) {
             id = ++result->programCount_;
             result->manifests_.emplace_back();
             result->source_ += emitProgram(surfaceIR.at(source), id, result->manifests_.back());
         }
-        result->source_ += "PathTraceMaterial evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext, inout MaterialValueOpenPBRInputs surface)\n{\n"
+        result->source_ += "public OpenPBRMaterialParameters evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, OpenPBRMaterialParameters material, MaterialValueTextureContext textureContext, inout MaterialValueOpenPBRInputs surface)\n{\n"
             "    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex];\n"
             "    switch (instance.programId) {\n";
         for (const auto& [source, id] : programs) {
@@ -207,8 +210,8 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             result->source_ += "    case " + name + ": return materialValue" + name + "(instance, position, geometryNormal, uv, material, textureContext, surface);\n";
         }
         result->source_ += "    default: return material;\n    }\n}\n";
-        result->source_ += "PathTraceMaterial evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext = (MaterialValueTextureContext)0) { MaterialValueOpenPBRInputs surface = defaultMaterialValueOpenPBRInputs(); return evaluateMaterialValue(materialIndex,position,geometryNormal,uv,material,textureContext,surface); }\n";
-        result->source_ += "uint materialClosureFamily(uint materialIndex, uint specializedProgram = 0u)\n{\n"
+        result->source_ += "public OpenPBRMaterialParameters evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, OpenPBRMaterialParameters material, MaterialValueTextureContext textureContext = (MaterialValueTextureContext)0) { MaterialValueOpenPBRInputs surface = defaultMaterialValueOpenPBRInputs(); return evaluateMaterialValue(materialIndex,position,geometryNormal,uv,material,textureContext,surface); }\n";
+        result->source_ += "public uint materialClosureFamily(uint materialIndex, uint specializedProgram = 0u)\n{\n"
             "    uint id = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex].programId;\n"
             "    switch(specializedProgram != 0u ? specializedProgram : id) {\n";
         for (const auto& manifest : result->manifests_) {
@@ -217,7 +220,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
                 (manifest.closureFamily == MaterialClosureFamily::SingleSlabClosure ? "1u" : "2u") + ";\n";
         }
         result->source_ += "    default: return 0u; }\n}\n"
-            "SlabMaterialEvaluation evaluateMaterialSlab(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material, MaterialValueTextureContext textureContext, uint specializedProgram = 0u)\n{\n"
+            "public SlabMaterialEvaluation evaluateMaterialSlab(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, MaterialValueParameters material, MaterialValueTextureContext textureContext, uint specializedProgram = 0u)\n{\n"
             "    MaterialValueInstance instance = resolveBuffer<StructuredBuffer<MaterialValueInstance>>(getResourceParameters<SceneResourceParameters>().materialValues)[materialIndex];\n"
             "    switch (specializedProgram != 0u ? specializedProgram : instance.programId) {\n";
         for (const auto& [source, id] : programs) {
@@ -226,6 +229,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
                 "(instance,position,geometryNormal,uv,material,textureContext);\n";
         }
         result->source_ += "    default: return (SlabMaterialEvaluation)0; }\n}\n";
+        result->source_ += "} // namespace Metallic.SceneSurface\n";
         result->key_ = 14695981039346656037ull;
         for (unsigned char c : result->source_) { result->key_ = (result->key_ ^ c) * 1099511628211ull; }
         for (size_t i = 0; i < materials.size(); ++i) {
@@ -268,7 +272,7 @@ bool MaterialValueProgramSet::writeInclude(const std::filesystem::path& root,
     try {
         directory = root / std::to_string(key_);
         std::filesystem::create_directories(directory);
-        const auto path = directory / "MaterialValueDispatch.hlsli";
+        const auto path = directory / "MaterialValueDispatch.slang";
         if (std::filesystem::exists(path)) {
             std::ifstream file(path, std::ios::binary);
             const std::string existing{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};

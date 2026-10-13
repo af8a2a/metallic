@@ -1,3 +1,5 @@
+module AtmosphereNamedResourceProbe;
+
 import Core;
 import Atmosphere;
 using Metallic;

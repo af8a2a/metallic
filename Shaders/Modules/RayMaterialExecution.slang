@@ -19,9 +19,9 @@ public struct RayMaterialWork
 };
 
 public SurfaceMaterialResult<TProgram.Closure> evaluateRaySurface<TProgram : ISurfaceMaterialProgram>(
-    inout TProgram program, RayMaterialWork work)
+    inout Material<TProgram> material, RayMaterialWork work)
 {
-    return program.evaluate(work.surface, work.instance);
+    return material.evaluate(work.surface, work.instance);
 }
 
 public FiberMaterialContext rayFiberContext(RayMaterialWork work)
@@ -38,9 +38,9 @@ public FiberMaterialContext rayFiberContext(RayMaterialWork work)
 }
 
 public FiberMaterialResult<TProgram.Closure> evaluateRayFiber<TProgram : IFiberMaterialProgram>(
-    inout TProgram program, RayMaterialWork work)
+    inout Material<TProgram> material, RayMaterialWork work)
 {
-    return program.evaluate(rayFiberContext(work), work.instance);
+    return material.evaluate(rayFiberContext(work), work.instance);
 }
 
 public TClosure.Prepared prepareRaySurface<TClosure : ISurfaceClosure>(

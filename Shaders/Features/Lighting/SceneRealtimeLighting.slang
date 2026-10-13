@@ -1,7 +1,37 @@
+#language slang 2026
+module SceneRealtimeLighting;
 import Core;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
 using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRSurface;
+import SceneSurfaceMaterial;
+import SurfaceLighting;
+import ScenePathTracing;
+import SHARC;
+#if METALLIC_CUSTOM_MATERIALS
+import SlabClosure;
+#endif
+using Metallic.OpenPBR;
+using Metallic.SceneOpenPBR;
+using Metallic.ScenePathTracing;
+using Metallic.SHARC;
 
-#include "OpenPBRDirectLighting.slang"
+import OpenPBRDirectLighting;
+using Metallic.SceneDirectLighting;
 
 // Ray-query primary visibility, shared OpenPBR punctual lighting and SH GI.
 [shader("compute")]
@@ -22,10 +52,10 @@ void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         ? shadeOpenPBRDirectSurface(ray, hit, samplePixel, push, seed, false)
         : (push.debugView != kOpenPBRDebugViewFinal ? float3(0.0) : environmentRadiance(ray.direction, push, true, ray.origin));
     if (push.outputLinear != 0u) {
-        gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
+        sceneOutput()[pixel] = float4(max(radiance, float3(0.0)), 1.0);
         return;
     }
     float3 exposed = max(Metallic.WorkingColor::toLinearRec709(radiance) * lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights)), float3(0.0));
     float3 color = pow(exposed / (exposed + 1.0), 1.0 / 2.2);
-    gOutput[pixel] = float4(saturate(color), 1.0);
+    sceneOutput()[pixel] = float4(saturate(color), 1.0);
 }

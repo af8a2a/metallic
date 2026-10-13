@@ -53,6 +53,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/ACESTables.cpp
     Runtime/Render/Core/ComputeKernel.cpp
     Runtime/Render/Core/ShaderRegistry.cpp
+    Runtime/Render/Core/NativePipelineCache.cpp
+    Runtime/Render/Core/PipelineRecipe.cpp
     Runtime/Render/Core/DeferredShaderCacheWriter.cpp
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
@@ -84,6 +86,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/MeshletStreamRuntime.cpp
     Runtime/Render/GAPI/PipelineCacheFile.cpp
     Runtime/Render/GAPI/ShaderObjectCacheFile.cpp
+    Runtime/Render/GAPI/NativeBinaryCacheFile.cpp
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/Streamer/UploadStreamer.cpp
     Runtime/Render/RenderSample.cpp
@@ -598,11 +601,15 @@ metallic_copy_spdlog_runtime(MetallicShaderPrintfProbe)
 
 # Explicit benchmark only: no editor/sample dependency or default warmup.
 add_executable(MetallicShaderPipelineBench EXCLUDE_FROM_ALL Tools/ShaderPipelineBench.cpp)
-target_link_libraries(MetallicShaderPipelineBench PRIVATE MetallicRuntimeRender)
+# Resolve Volk's writable PFN globals before Streamline's identically named
+# Vulkan exports. MSVC otherwise satisfies the tentative C definitions with
+# interposer import thunks, which Volk then attempts to write during startup.
+target_link_libraries(MetallicShaderPipelineBench PRIVATE MetallicRuntimeRender metallic::volk)
 target_include_directories(MetallicShaderPipelineBench PRIVATE "${CMAKE_SOURCE_DIR}")
 target_include_directories(MetallicShaderPipelineBench BEFORE PRIVATE "${METALLIC_SLANG_ROOT}/include")
 target_compile_definitions(MetallicShaderPipelineBench PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    METALLIC_BENCH_BUILD_CONFIGURATION="$<CONFIG>"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
 if(WIN32)
     target_compile_definitions(MetallicShaderPipelineBench PRIVATE NOMINMAX)

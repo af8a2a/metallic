@@ -1,3 +1,5 @@
+module ShaderPrintfEcho;
+
 // P0 fixture: the selector is explicit; unrelated invocations do not print.
 struct Push { uint inputBuffer; uint cookie; };
 

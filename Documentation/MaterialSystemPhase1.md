@@ -6,7 +6,9 @@
 
 - `material::MaterialDefinition` 是作者定义：版本、注册实现名与 `MaterialSchema`。Schema 分开描述参数、资源、feature 的类型、范围和默认值，不保存 GPU offset。
 - `material::MaterialInstance` 是可序列化的稀疏覆盖：Definition URI、可选 Parent URI、参数/资源/feature overrides。解析结果为 `ResolvedMaterialInstance`，每次解析重新读取依赖，不缓存过时默认值。
-- `render::MaterialProgram` 是已有共享执行程序；`MaterialProgramKey` 命名其现有语义 key。Definition 的 `implementation` 通过 `findMaterialProgram(string_view)` 对应既有注册程序。当前注册的资产实现是 `OpenPBRComposite.Legacy`；实例值不进入 key、不增加 variant。
+- `render::MaterialProgram` 是已有共享执行程序；`MaterialProgramKey` 命名其现有语义 key。Definition 的 `implementation` 通过 `findMaterialProgram(string_view)` 对应既有注册程序。当前注册的资产实现是 `OpenPBRComposite.Surface`；实例值不进入 key、不增加 variant。
+
+读取旧资产时，解析器将 `OpenPBRComposite.Legacy` 迁移为 `OpenPBRComposite.Surface` 并保留所有作者默认值；保存时写入新实现名。旧名字只存在于文件格式迁移边界，不参与 shader 抽象或运行时注册。
 
 现有 `render::MaterialDefinition/MaterialSchema/MaterialInstance` 是 **GPU 兼容执行描述与快照条目**；它们与新的作者资产分处命名空间，继续管理已发布 generation 与 GPU 布局。作者 schema 不取代 720 字节 ABI。转换链为：
 

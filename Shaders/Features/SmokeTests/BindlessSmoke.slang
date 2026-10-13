@@ -1,3 +1,5 @@
+module BindlessSmoke;
+
 import ShaderCore;
 using Metallic;
 

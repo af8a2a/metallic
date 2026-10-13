@@ -1,3 +1,5 @@
+module RegistryTextureProbe;
+
 import Core;
 import ParameterRoot;
 using Metallic;

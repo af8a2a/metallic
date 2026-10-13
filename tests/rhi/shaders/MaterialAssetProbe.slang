@@ -1,3 +1,5 @@
+module MaterialAssetProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

@@ -1,3 +1,5 @@
+module AtmosphereRayOriginProbe;
+
 import Atmosphere;
 import Lighting;
 using Metallic;

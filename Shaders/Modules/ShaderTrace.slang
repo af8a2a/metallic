@@ -1,3 +1,5 @@
+module ShaderTrace;
+
 // MTS1 wire v1. Fixed unsigned words only; f32 uses asuint, u64 is low/high.
 // Do not change production control flow or barriers to enforce a logging quota.
 public struct ShaderTraceIdentity

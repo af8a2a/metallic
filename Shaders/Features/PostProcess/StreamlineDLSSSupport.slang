@@ -1,3 +1,5 @@
+module StreamlineDLSSSupport;
+
 import ShaderCore;
 using Metallic;
 

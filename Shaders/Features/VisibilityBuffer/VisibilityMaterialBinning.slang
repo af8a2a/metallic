@@ -1,3 +1,5 @@
+module VisibilityMaterialBinning;
+
 import Core;
 import ParameterRoot;
 using Metallic;
@@ -6,7 +8,6 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-#include "VisibilityStreamDecode.slang"
 
 // Wire layout matches MaterialBinningParams.h, verified by GPU producer/consumer tests.
 struct MaterialBinningParams
@@ -14,7 +15,7 @@ struct MaterialBinningParams
     ResourceHandle<Texture2D<uint>> visibility;
     RWBufferSpan<GPUDrivenPreviewInstance> instances;
     RWBufferSpan<GPUDrivenPreviewMaterial> materials;
-    RWBufferSpan<PathTraceMaterial> shadingMaterials;
+    RWBufferSpan<SceneMaterialData> shadingMaterials;
     RWBufferSpan<MaterialBin> bins;
     RWBufferSpan<MaterialTile> tiles;
     RWBufferSpan<uint> arguments;

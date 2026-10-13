@@ -1,3 +1,5 @@
+module RealtimeGuideProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

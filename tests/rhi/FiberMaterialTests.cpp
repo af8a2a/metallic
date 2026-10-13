@@ -1,5 +1,7 @@
 #include "harness/Fixtures.h"
+#include "TestComputeProgram.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -8,6 +10,7 @@
 #include "Runtime/Scene/SceneDocument.h"
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -120,6 +123,140 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(FiberMaterialTest);
+
+class FiberGuideParametersTest final : public RHITest
+{
+public:
+    FiberGuideParametersTest() { name = "material_fiber_guide_parameters"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        try {
+            constexpr uint32_t kCases = 8, kGuideSlots = 10;
+            const std::array<Float4, 4> colors{{
+                {0.15f, 0.35f, 0.55f, 0}, {-0.3f, 1.4f, 0.7f, 0},
+                {0.8f, 0.1f, 0.25f, 0}, {0.4f, 0.6f, 0.9f, 0}}};
+            const std::array roughness{-4.0f, 0.18f, 1.6f, 0.6f};
+            const std::array iors{0.2f, 1.7f, 4.5f, 2.3f};
+            std::array<SceneMaterialData, kCases> records;
+            for (uint32_t index = 0; index < kCases; ++index) {
+                auto& record = records[index];
+                const uint32_t pair = index / 2;
+                std::copy(colors[pair].begin(), colors[pair].end(), record.rtxcrHairBaseColor);
+                record.rtxcrHairParams0[0] = roughness[pair];
+                record.rtxcrHairParams0[2] = iors[pair];
+                record.textureParams[2] = float(MaterialProgramId::RTXCRChiang);
+                // Identical Fiber inputs, deliberately conflicting Surface
+                // factors and a clear source hair flag. Only the explicit
+                // published domain and typed Fiber parameters may guide shading.
+                const bool alternate = (index & 1u) != 0;
+                record.baseColor[0] = alternate ? 0.97f : 0.02f;
+                record.baseColor[1] = alternate ? 0.01f : 0.95f;
+                record.baseColor[2] = alternate ? 0.9f : 0.03f;
+                record.params[0] = alternate ? 1.0f : 0.0f;
+                record.params[1] = alternate ? 0.93f : 0.03f;
+                record.glassParams[0] = alternate ? 0.65f : 0.0f;
+                record.glassParams[1] = alternate ? 2.9f : 1.2f;
+                record.textureParams[0] = alternate ? 50.0f : 0.0f;
+                record.textureParams[1] = alternate ? 0.0f : 1.0f;
+                record.emissive[0] = alternate ? 10.0f : 0.0f;
+                record.emissive[3] = alternate ? 1.0f : 0.0f;
+                if (alternate) {
+                    record.baseColorTexture.textureIndex = 0u;
+                    record.normalTexture.textureIndex = 0u;
+                    record.emissiveTexture.textureIndex = 0u;
+                }
+            }
+            std::atomic_uint validationErrors{0};
+            bench::TestDevice device;
+            check(bench::createTestDevice(context, {.applicationName = "Fiber guide parameters",
+                .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+                .validationSink = {[](void* target, const ValidationMessage& message) noexcept {
+                    if (message.severity == ValidationSeverity::Error && hasFlag(message.type, ValidationCategory::Validation)) {
+                        ++*static_cast<std::atomic_uint*>(target);
+                    }
+                }, &validationErrors}}).transform([&](auto value) { device = std::move(value); }), "Guide device");
+            std::unique_ptr<Buffer> input, output;
+            check(device->createBuffer({.size = sizeof(records), .structureStride = sizeof(SceneMaterialData),
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload})
+                .transform([&](auto value) { input = std::move(value); }), "Guide input");
+            check(device->createBuffer({.size = kCases * kGuideSlots * sizeof(Float4),
+                .structureStride = sizeof(Float4), .usage = BufferUsageBits::Storage,
+                .memoryLocation = MemoryLocation::HostReadback})
+                .transform([&](auto value) { output = std::move(value); }), "Guide output");
+            void* mappedInput = input->map();
+            check(mappedInput != nullptr, "Guide input mapping");
+            std::memcpy(mappedInput, records.data(), sizeof(records));
+            input->flush();
+            input->unmap();
+            std::string log;
+            auto shader = compileSlangShaderToSpirv({.moduleName = "FiberGuideProbe",
+                .entryPointName = "fiberGuideProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"},
+                {.enableDiskCache = false}, log);
+            check(shader, log);
+            const std::array layout{
+                ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
+                    .kind = ComputeResourceBindingKind::StorageBuffer},
+                ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput),
+                    .kind = ComputeResourceBindingKind::StorageBuffer}};
+            ComputeProgram program;
+            check(program.initialize(*device, {.spirv = shader->spirv, .bindings = layout,
+                .requiresRayQuery = false, .resourceParameterSize = sizeof(SceneResourceParameters)}, log), log);
+            const std::array bindings{
+                ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials),
+                    .buffer = input.get()},
+                ComputeDispatchBinding{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput),
+                    .buffer = output.get()}};
+            bench::GPUCommands gpu(*device->getQueue(QueueType::Graphics));
+            check(gpu.initialize(*device), "Guide commands");
+            check(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = bindings}), "Guide dispatch");
+            check(gpu.submitAndWait(), "Guide completion");
+            output->invalidate();
+            const auto* mapped = static_cast<const Float4*>(output->map());
+            check(mapped != nullptr, "Guide readback");
+            const std::vector<Float4> actual(mapped, mapped + kCases * kGuideSlots);
+            bench::readbackEvidence(context, "FiberGuides.bin", std::span(mapped, kCases * kGuideSlots));
+            output->unmap();
+            for (uint32_t index = 0; index < kCases; ++index) {
+                const uint32_t pair = index / 2;
+                const float r = std::clamp(roughness[pair], 0.02f, 1.0f);
+                const float ior = std::clamp(iors[pair], 1.01f, 3.0f);
+                const float f0 = (ior - 1.0f) / (ior + 1.0f);
+                const float red = std::clamp(colors[pair][0], 0.0f, 1.0f);
+                const float green = std::clamp(colors[pair][1], 0.0f, 1.0f);
+                const float blue = std::clamp(colors[pair][2], 0.0f, 1.0f);
+                // Independent scalar evaluation of the established GGX guide
+                // approximation at normal incidence; Fiber supplies Fresnel F0.
+                const double alpha = double(r) * r;
+                const double alphaCubed = alpha * alpha * alpha;
+                const double bias = (-0.393023 + 1.72691 * alpha) /
+                    (56.04732 + 71.40998 * alpha + 2794.14169 * alphaCubed) *
+                    std::clamp(double(f0) * f0 * 50.0, 0.0, 1.0);
+                const double scale = (3.7725574 + 5.8797 * alpha) /
+                    (3.73232 + 7.2821 * alpha + 17.195586 * alphaCubed);
+                const float specular = float(std::clamp(double(f0) * f0 * std::max(scale, 0.0) +
+                    std::max(bias, 0.0), 0.0, 1.0));
+                const std::array<Float4, kGuideSlots> expected{{
+                    {red, green, blue, r}, {red, green, blue, ior},
+                    {f0 * f0, f0 * f0, f0 * f0, 1}, {0, -1, 0, 97},
+                    {0, 1, 0, 0}, {0, 0, 0, 0}, {red, green, blue, r},
+                    {0, -1, 0, 97}, {specular, specular, specular, 2}, {0, 0, 0, 0}}};
+                for (uint32_t slot = 0; slot < kGuideSlots; ++slot) {
+                    for (uint32_t component = 0; component < 4; ++component) {
+                        const float value = actual[index * kGuideSlots + slot][component];
+                        check(std::isfinite(value) && std::abs(value - expected[slot][component]) <= 2e-6f,
+                            "Fiber guide mismatch case=" + std::to_string(index) + " slot=" + std::to_string(slot) +
+                            " component=" + std::to_string(component));
+                    }
+                    check(actual[index * kGuideSlots + slot] == actual[(index ^ 1u) * kGuideSlots + slot],
+                        "Unrelated Surface factors changed Fiber guides");
+                }
+            }
+            check(validationErrors == 0, "Fiber guide Vulkan validation errors");
+            return RHITestResult::pass("Standard/OpenPBR production Fiber guides use typed color/roughness/IOR; Surface factors do not affect guides, normal policy or RNG");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FiberGuideParametersTest);
 
 #if defined(METALLIC_HAS_RTXCR_ASSETS) && METALLIC_HAS_RTXCR_ASSETS && \
     defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY
@@ -243,9 +380,58 @@ public:
             }
             check(openpbrEnergy > 10, "OpenPBR path failed to execute Fiber domain");
             check(squaredDifference <= 1e-8 * squaredReference, "OpenPBR path changed Fiber transport");
+
+            // Restart both production paths at frame zero with the same Fiber
+            // asset, geometry and settings, but live, unrelated Surface inputs.
+            // A valid map exercises both normal mapping and stochastic texture
+            // RNG if Surface evaluation accidentally runs before Fiber dispatch.
+            const uint8_t surfaceTexel[] = {255, 32, 128, 255};
+            check(saveRgba8Png(root / "SurfaceOnly.png", surfaceTexel, 1, 1, log), log);
+            auto contaminated = gltf;
+            if (!contaminated.contains("images")) { contaminated["images"] = nlohmann::json::array(); }
+            if (!contaminated.contains("textures")) { contaminated["textures"] = nlohmann::json::array(); }
+            const auto imageIndex = contaminated["images"].size();
+            contaminated["images"].push_back({{"uri", "SurfaceOnly.png"}});
+            const auto textureIndex = contaminated["textures"].size();
+            contaminated["textures"].push_back({{"source", imageIndex}});
+            auto& surfaceInputs = contaminated["materials"][0];
+            auto& pbr = surfaceInputs["pbrMetallicRoughness"];
+            pbr["baseColorFactor"] = {0.07, 0.8, 0.12, 1.0};
+            pbr["metallicFactor"] = 0.9;
+            pbr["roughnessFactor"] = 0.04;
+            pbr["baseColorTexture"] = {{"index", textureIndex}};
+            pbr["metallicRoughnessTexture"] = {{"index", textureIndex}};
+            surfaceInputs["emissiveFactor"] = {0.5, 1.0, 2.0};
+            surfaceInputs["emissiveTexture"] = {{"index", textureIndex}};
+            surfaceInputs["normalTexture"] = {{"index", textureIndex}, {"scale", 8.0}};
+            surfaceInputs["occlusionTexture"] = {{"index", textureIndex}, {"strength", 0.0}};
+            surfaceInputs["extensions"]["KHR_materials_transmission"] = {{"transmissionFactor", 0.8}};
+            surfaceInputs["extensions"]["KHR_materials_ior"] = {{"ior", 2.7}};
+            const auto contaminatedPath = root / "FiberSurfaceInputs.gltf";
+            std::ofstream(contaminatedPath) << contaminated.dump();
+            std::filesystem::remove(root / "FiberSurfaceInputs.metallic_scene.json");
+            scene::SceneDocument contaminatedScene;
+            check(contaminatedScene.load(contaminatedPath), contaminatedScene.lastLoadResult().error);
+            check(contaminatedScene.setMaterialAsset(0, "asset://Fiber.material", root, log), log);
+            const auto& contaminatedMaterial = contaminatedScene.materials()[0];
+            check(contaminatedMaterial.normalTexture.textureIndex >= 0 &&
+                contaminatedMaterial.baseColorTexture.textureIndex >= 0 &&
+                contaminatedMaterial.emissiveFactor.x > 0 && contaminatedMaterial.normalTextureScale == 8.0f &&
+                contaminatedMaterial.transmissionFactor > 0.0f && contaminatedMaterial.rtxcrHair,
+                "Fiber isolation fixture did not retain unrelated Surface inputs");
+            pass->properties["path"] = contaminatedPath.string();
+            pass->properties["bsdf"] = "standard";
+            sample.graph.markDirty();
+            const auto contaminatedStandard = renderImage(contaminatedScene, "SurfaceInputsStandard");
+            check(contaminatedStandard == changed, "Surface emission, normal maps or texture RNG changed standard Fiber HDR");
+            pass->properties["bsdf"] = "openpbr";
+            sample.graph.markDirty();
+            const auto contaminatedOpenPBR = renderImage(contaminatedScene, "SurfaceInputsOpenPBR");
+            check(contaminatedOpenPBR == openpbr, "Surface inputs changed OpenPBR Fiber HDR");
             std::ofstream(context.outputDirectory / "FiberAsset.txt") << "imported==asset; changedAbsoluteRGB=" << energy
-                << "; programs=1; opaqueVBufferRejected=true; OpenPBRPathEnergy=" << openpbrEnergy << '\n';
-            return RHITestResult::pass("Claire DOTS imported/asset pixels identical; saved melanin edit changes HDR; shared Fiber program; OpenPBR ray path supports Fiber; opaque VBuffer rejects Fiber");
+                << "; programs=1; opaqueVBufferRejected=true; OpenPBRPathEnergy=" << openpbrEnergy
+                << "; SurfaceInputsStandard==Edited; SurfaceInputsOpenPBR==OpenPBRPathFiber\n";
+            return RHITestResult::pass("Claire DOTS asset edits affect Fiber HDR; standard/OpenPBR paths ignore live Surface emission, normal maps and texture RNG; opaque VBuffer rejects Fiber");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

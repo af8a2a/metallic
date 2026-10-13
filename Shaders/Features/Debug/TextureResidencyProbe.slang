@@ -1,3 +1,5 @@
+module TextureResidencyProbe;
+
 import Core;
 using Metallic;
 struct Push { uint slot; uint wantedMip; uint samples; uint unused; };

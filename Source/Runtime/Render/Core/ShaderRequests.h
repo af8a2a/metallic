@@ -20,6 +20,7 @@ struct ShaderRequest {
     std::string profile = kDefaultSlangProfileName;
     SlangDescriptorHeapMode descriptorHeapMode = SlangDescriptorHeapMode::Default;
     DescriptorHeapShaderStrides descriptorHeapStrides;
+    SlangShaderOptimizationLevel optimizationLevel = SlangShaderOptimizationLevel::Default;
 
     bool operator==(const ShaderRequest&) const = default;
 };
@@ -40,7 +41,8 @@ public:
             .searchPath = request_.searchPath.c_str(), .additionalSearchPaths = paths_,
             .profileName = request_.profile.c_str(), .capabilities = capabilities_, .macroDefines = defines_,
             .descriptorHeapMode = request_.descriptorHeapMode,
-            .descriptorHeapStrides = request_.descriptorHeapStrides};
+            .descriptorHeapStrides = request_.descriptorHeapStrides,
+            .optimizationLevel = request_.optimizationLevel};
     }
 
 private:

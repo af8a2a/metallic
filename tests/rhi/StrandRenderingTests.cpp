@@ -26,7 +26,7 @@ public:
                 }
             };
             std::string log;
-            LegacyMaterialPayload hair;
+            SceneMaterialData hair;
             hair.textureParams[2] = float(MaterialProgramId::RTXCRChiang);
             hair.rtxcrHairBaseColor[3] = 1;
             auto generation = MaterialGeneration::create(std::span(&hair, 1), 1, log);
@@ -62,7 +62,11 @@ public:
             auto capture = [&](const char* output) {
                 require(bool(preview.render(sample.graph, w, h, output)), preview.lastLog());
                 require(preview.lastLog().find("error[E") == std::string::npos, preview.lastLog());
-                require(preview.readbackBytes().size() == w * h * 16, "Unexpected readback size");
+                require(preview.readbackBytes().size() == w * h * 16,
+                    std::string("Unexpected readback size for ") + output + ": " +
+                    std::to_string(preview.readbackBytes().size()) + " bytes, " +
+                    std::to_string(preview.width()) + "x" + std::to_string(preview.height()) +
+                    ", format " + std::to_string(uint32_t(preview.readbackFormat())));
                 return preview.readbackBytes();
             };
             auto floats = [&](const char* output) {
@@ -141,6 +145,7 @@ public:
 
             // The editor's shared RenderView must drive native strands and camera motion.
             RenderView view;
+            require(view.setRenderResolution(w, h), "Set strand render resolution");
             ViewCamera camera;
             camera.eye = {0, 0, 2.4f};
             camera.center = {0, 0, 0};

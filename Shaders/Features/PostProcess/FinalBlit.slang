@@ -1,3 +1,5 @@
+module FinalBlit;
+
 import ShaderCore;
 import ColorGrading;
 using Metallic;

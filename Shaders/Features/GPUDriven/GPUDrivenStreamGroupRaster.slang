@@ -1,8 +1,12 @@
+module GPUDrivenStreamGroupRaster;
+
 import ShaderCore;
 using Metallic;
 
 // Production stream raster for fixed wave32 devices; 64/128 are A/B references.
-#include "GPUDrivenStreamWorkRaster.slang"
+import GPUDrivenStreamAsset;
+import GPUDriven;
+using Metallic.GPUDriven;
 
 void rasterStreamClusterGroup(uint3 group, uint lane, GPUDrivenStreamAssetPush push, uint groupSize)
 {

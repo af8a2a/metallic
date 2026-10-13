@@ -279,6 +279,20 @@ separately from Slang compilation. Use
 `--nsight-shader-debug` for explicit shader debugging (`-g2 -O0`),
 not representative runtime profiling. Capture-symbol profiling uses the runtime
 O1 policy; actual source/call-site correlation must be verified in Nsight.
+For controlled compiler experiments, `SlangShaderDesc::optimizationLevel` and
+the owning `ShaderRequest::optimizationLevel` accept `Default`, `O0`, `O1`, `O2`
+and `O3`. `Default` uses `METALLIC_SLANG_OPTIMIZATION=O0|O1|O2|O3` when set;
+an unset, empty or `default` value retains O1 for release/capture and O0 for shader
+debugging. Explicit request levels override both the environment and the debug
+mode's optimization default, allowing the same debug information to be held fixed.
+Set the environment before launching each benchmark or renderer process. Invalid
+values fail shader compilation with `InvalidArgument`. Slang's O2 is aggressive;
+O3 includes optimizations that can take much longer or trade code size for speed.
+Cache identity uses the effective optimization level and the debug mode, so an
+explicit O1 and the existing release default share the same cache request while
+O0/O2/O3 variants remain separate. Compile and cache-hit logs record `optimization=O0`
+(or the selected level). These options are experimental settings; compare fixed
+scene GPU dispatch times and output correctness before changing production policy.
 The former `-g1` mode only emitted paths/lines and was insufficient for Nsight's
 high-level source and function views. The cache request version has been bumped
 so those old binaries are not reused. Restart the rebuilt executable and make a

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <span>
 
@@ -485,6 +486,8 @@ struct DeviceDesc {
     MemoryBudgetPolicy memoryBudget;
     bool enableStreamline = false;
     bool enableAftermath = false;
+    // Opt-in native binary export/import experiments; independent of .pso caches.
+    bool enablePipelineBinary = false;
     // Optional backend-owned configuration value. Copies own independent options;
     // each backend validates the payload type before initialization. Empty uses defaults.
     std::any backendExtensions;
@@ -1124,10 +1127,40 @@ struct PipelineCacheDesc {
     // path creates an in-memory cache.
     const char* filePath = nullptr;
     bool saveOnDestroy = true;
+    // Benchmark A/B control: hold the application metadata lock across native
+    // creation, reproducing a broad-lock baseline. Default creation overlaps.
+    bool serializeCreation = false;
+};
+
+// Immutable feedback for one pipeline acquisition; unlike cache-wide last* fields,
+// this remains attributable to its caller during concurrent creation.
+enum class ComputePipelineBackend : uint8_t { Pipeline, ShaderObject, PipelineBinary };
+
+struct PipelineCreationStats {
+    uint64_t nativeCreateTimeNanoseconds = 0;
+    uint64_t driverDurationNanoseconds = 0; // Undefined feedback is represented by zero.
+    // Application metadata-lock acquisition waits, including the broad-lock
+    // baseline when PipelineCacheDesc::serializeCreation is enabled.
+    uint64_t cacheLockWaitTimeNanoseconds = 0;
+    bool feedbackValid = false;
+    bool nativeCacheHit = false; // Meaningful only when feedbackValid is true.
+    // Registry reuse skips native creation. Wait covers an existing same-key
+    // creation task and remains separate from driver-cache metadata-lock waits.
+    uint64_t singleFlightWaitTimeNanoseconds = 0;
+    bool nativeObjectReused = false;
+    ComputePipelineBackend computeBackend = ComputePipelineBackend::Pipeline;
+    bool nativeBinaryCacheHit = false;
+    bool nativeBinaryPersisted = false;
+    bool nativeBinaryDriverRejected = false;
+    uint64_t nativeBinaryDataSize = 0;
+    // Binary handle import/export and disk work are excluded from nativeCreateTime.
+    uint64_t nativeBinaryImportTimeNanoseconds = 0;
+    uint64_t nativeBinaryExportTimeNanoseconds = 0;
 };
 
 struct PipelineCacheStats {
     PipelineCacheLoadStatus loadStatus = PipelineCacheLoadStatus::NotFound;
+    // Known cached identities from loading, saving, or merging another cache.
     uint64_t storedPsoCount = 0;
     uint64_t sessionPsoCount = 0;
     uint64_t hitCount = 0;
@@ -1179,6 +1212,8 @@ struct GraphicsPipelineDesc {
     class PipelineCache* pipelineCache = nullptr;
     // Required for membership in a DGC indirect execution set.
     bool indirectBindable = false;
+    // Experimental driver creation policy; part of the PSO identity.
+    bool disableOptimization = false;
 };
 
 struct ComputePipelineDesc {
@@ -1188,6 +1223,11 @@ struct ComputePipelineDesc {
     class PipelineCache* pipelineCache = nullptr;
     // Required for membership in a DGC indirect execution set.
     bool indirectBindable = false;
+    bool disableOptimization = false;
+    ComputePipelineBackend backend = ComputePipelineBackend::Pipeline;
+    // Shader-object and pipeline-binary paths never fill a VkPipelineCache.
+    // This directory opts into their separate native binary persistence.
+    const char* nativeBinaryCacheDirectory = nullptr;
 };
 
 struct GraphicsShaderObjectProgramDesc {
@@ -1552,6 +1592,11 @@ class PipelineCache {
     // Persists pending cache changes. This is a no-op when no new PSO hash was
     // recorded since loading or the previous save.
     Result<> save();
+    // Merge native cache data and known PSO identities; destination creation
+    // counters remain unchanged. Quiesce creation/save/merge on participating
+    // caches for this call; all sources must be distinct from this cache and
+    // belong to the same device. Empty input is a no-op.
+    Result<> merge(std::span<PipelineCache* const> sources);
 };
 
 struct RasterExecutionState {
@@ -1582,33 +1627,47 @@ private:
 class GraphicsPipeline {
     METALLIC_RHI_HANDLE(GraphicsPipeline, shared_ptr,
         friend class Device;
+        friend class ShaderRegistry;
         friend class CommandBuffer;
         friend struct detail::DeviceImpl;
         friend struct detail::VulkanNativeAccess;
     )
 
-    // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
-    // still perform implementation-defined validation when creating the PSO.
+    // pipelineCacheHit reports the original native creation's exact PSO
+    // hash-table hit, including when this wrapper reuses that native object.
+    // The backend may still perform implementation-defined validation when creating the PSO.
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
+    PipelineCreationStats creationStats() const;
 
     PreparedExecution execution() const;
+
+private:
+    explicit GraphicsPipeline(std::shared_ptr<detail::GraphicsPipelineImpl> impl);
+    std::optional<PipelineCreationStats> acquisitionStats_;
 };
 
 class ComputePipeline {
     METALLIC_RHI_HANDLE(ComputePipeline, shared_ptr,
         friend class Device;
+        friend class ShaderRegistry;
         friend class CommandBuffer;
         friend struct detail::DeviceImpl;
         friend struct detail::VulkanNativeAccess;
     )
 
-    // pipelineCacheHit reports an exact PSO hash-table hit. The backend may
-    // still perform implementation-defined validation when creating the PSO.
+    // pipelineCacheHit reports the original native creation's exact PSO
+    // hash-table hit, including when this wrapper reuses that native object.
+    // The backend may still perform implementation-defined validation when creating the PSO.
     uint64_t psoHash() const;
     bool pipelineCacheHit() const;
+    PipelineCreationStats creationStats() const;
 
     PreparedExecution execution() const;
+
+private:
+    explicit ComputePipeline(std::shared_ptr<detail::ComputePipelineImpl> impl);
+    std::optional<PipelineCreationStats> acquisitionStats_;
 };
 
 class GraphicsShaderObjectProgram {
@@ -1811,6 +1870,7 @@ class Device {
     METALLIC_RHI_HANDLE(Device, unique_ptr,
         friend Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
         friend class CommandBuffer;
+        friend class ShaderRegistry;
         friend struct detail::VulkanNativeAccess;
     )
 
@@ -1866,8 +1926,12 @@ class Device {
     [[nodiscard]] Result<std::unique_ptr<TextureView>> createTextureView(Texture& texture, const TextureViewDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<ShaderModule>> createShaderModule(const ShaderModuleDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<PipelineCache>> createPipelineCache(const PipelineCacheDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> createGraphicsPipeline(const GraphicsPipelineDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> createComputePipeline(const ComputePipelineDesc& desc);
+    // Optional per-call feedback is reset before validation and populated after
+    // native creation, including native failures; callers own distinct outputs.
+    [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> createGraphicsPipeline(
+        const GraphicsPipelineDesc& desc, PipelineCreationStats* creationStats = nullptr);
+    [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> createComputePipeline(
+        const ComputePipelineDesc& desc, PipelineCreationStats* creationStats = nullptr);
     [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> createGraphicsShaderObjectProgram(const GraphicsShaderObjectProgramDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<BindlessHeap>> createBindlessHeap(const BindlessHeapDesc& desc);
     [[nodiscard]] Result<ClusterAccelerationStructureProperties> queryClusterAccelerationStructureProperties() const;
@@ -1880,6 +1944,10 @@ class Device {
 
 private:
     bool validShaderStage(const ShaderStageDesc& stage) const;
+    // Registry reuse must apply the same checks as native creation before
+    // looking up a PSO; matching bytecode never authorizes cross-device stages.
+    Result<> validateGraphicsPipelineDesc(const GraphicsPipelineDesc& desc) const;
+    Result<> validateComputePipelineDesc(const ComputePipelineDesc& desc) const;
     static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
 };
 

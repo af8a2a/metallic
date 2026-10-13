@@ -1,3 +1,5 @@
+module MaterialRuntimeProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"
@@ -8,12 +10,10 @@ using Metallic.Material;
 [numthreads(3, 1, 1)]
 void materialRuntimeProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    LegacyMaterialProgram program;
-    PathTraceMaterial m = program.loadParameters(
-        resolveBuffer<StructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialRuntimeProbeResources>().materials),
-        legacyMaterialInstanceRef(id.x));
+    SceneMaterialData m = resolveBuffer<StructuredBuffer<SceneMaterialData>>(
+        getResourceParameters<MaterialRuntimeProbeResources>().materials)[id.x];
     RWStructuredBuffer<uint> output = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<MaterialRuntimeProbeResources>().output);
-    uint cursor = id.x * (kLegacyMaterialRecordBytes / 4u + 1u);
+    uint cursor = id.x * (kSceneMaterialRecordBytes / 4u + 1u);
     { uint4 v = asuint(m.baseColor); for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }
     { uint4 v = asuint(m.emissive); for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }
     { uint4 v = asuint(m.params); for (uint i = 0; i < 4; ++i) { output[cursor++] = v[i]; } }

@@ -18,7 +18,7 @@ struct MaterialExecutableArtifact
     uint64_t key = 0;
     MaterialProgramKey programKey;
     uint64_t generation = 0;
-    uint64_t parameterABI = kLegacyMaterialABI;
+    uint64_t parameterABI = kSceneMaterialABI;
     uint32_t constantsSize = 0;
     std::vector<ComputeResourceBindingDesc> resources;
     ShaderCompileResult shader;
@@ -35,7 +35,7 @@ struct MaterialProgramCompileOptions
     uint64_t definitionHash = 0; // zero derives identity from module + entry
     MaterialDomain domain = MaterialDomain::Surface;
     uint64_t qualityProfile = 0;
-    uint64_t parameterABI = kLegacyMaterialABI;
+    uint64_t parameterABI = kSceneMaterialABI;
 };
 
 struct MaterialProgramCacheStats

@@ -4,18 +4,18 @@ Phase 4 将生产 OpenPBR 的参数/纹理求值、法线映射与散射准备�
 
 ## 生产调用
 
-[OpenPBRSurface.slang](../Shaders/Features/PathTracing/OpenPBRSurface.slang) 定义 `OpenPBRMaterialProgram<TSource> : ISurfaceMaterialProgram`；生产别名 `SceneOpenPBRMaterialProgram` 静态绑定 `SceneOpenPBRMaterialSource`：
+[OpenPBRSurface.slang](../Shaders/Features/PathTracing/OpenPBRSurface.slang) 定义 `OpenPBRMaterialProgram<TSource> : ISceneSurfaceMaterialProgram`；生产别名 `SceneOpenPBRMaterialProgram` 静态绑定 `SceneOpenPBRMaterialSource`：
 
-1. `evaluate(context, instance)` 读取材质参数，依次求值 normal、base color、metallic/roughness、emission、occlusion、transmission、specular 和 specular color，完成 glTF/OpenPBR 参数映射，返回 `SurfaceMaterialResult<SceneOpenPBRClosure>`（自定义 family 由 `SceneSurfaceClosure` 包装）。
+1. `evaluate(context, instance)` 读取材质参数，依次求值 normal、base color、metallic/roughness、emission、occlusion、transmission、specular 和 specular color，完成 glTF/OpenPBR 参数映射，返回 `SurfaceMaterialResult<SceneOpenPBRClosure>`。Slab 通过 `SceneSlabMaterialProgram<TModel>` 分别产生 `SingleSlabClosure` 或 `DualSlabClosure`，不再包装进混合 Closure，也不再生成伪 OpenPBR inputs。
 2. `OpenPBRClosure<TContext>` 保存已解析的 `OpenPBRResolvedInputs`、occlusion 和不可变 BSDF LUT context。生产 context 是静态绑定的空类型；不保留材质纹理求值 provider、实例引用、观察方向或随机状态。
 3. `prepare(wo, mode)` 生成 `OpenPBRPreparedClosure<TContext>`。路径追踪使用额外的 `SurfaceSamplingContext` overload，明确传入原有 throughput、RGB wavelengths 和嵌套介质 exterior IOR；这些采样状态不会进入 view-independent Closure。
 4. 光源循环只消费 Prepared；路径延续使用统一 `BSDFWeightSample` 和事件位，不再读取 vendor 的 lobe 类型或返回结构。
 
 `ISurfaceMaterialProgram.evaluate` 标记为 `[mutating]`，允许 STF 在 Program 内推进 RNG。生产调用在 evaluate 后取回 RNG 和 mapped hit；法线 debug 数据只留在 Program，不污染 Closure。纯函数式 Debug Lambert 仍满足同一接口。
 
-生产 PT、VBuffer Deferred、ray-query realtime/direct lighting 与 OpenPBR guides 共用同一个 Program 和 Closure。材质在光源循环之外求值/准备。PT 在 alpha 随机覆盖测试前保留一次轻量参数读取，以保持先前的采样顺序；被 alpha 拒绝的 hit 不求值全部纹理。旧 GPU-driven visibility preview 的独立资源布局暂时保留，散射准备改用同一个 Closure。
+生产 PT、VBuffer Deferred、ray-query realtime/direct lighting 与 OpenPBR guides 通过 `Material<TProgram>` 静态封装具体 Program。OpenPBR 使用独立参数视图，Slab 使用模型无关的 Value inputs；材质类型与 Surface/Fiber domain 保持独立。材质在光源循环之外求值/准备。PT 在 alpha 随机覆盖测试前保留一次轻量参数读取，以保持先前的采样顺序；被 alpha 拒绝的 hit 不求值全部纹理。旧 GPU-driven visibility preview 的独立资源布局暂时保留，散射准备改用同一个 Closure。
 
-VBuffer/realtime 的环境 SH/prefilter 近似、guide albedo 近似、介质堆栈和阴影透射仍保留原算法。Phase 4 不把它们重写成 Phase 5 的完整统一 LightingKernel，也不合并 Fiber/OpenPBR 的管线入口。散射调用没有按实例 ID 选择模型的新分支。
+VBuffer/realtime 的环境 SH/prefilter 近似、guide albedo 近似、介质堆栈和阴影透射仍保留原算法。Phase 4 不把它们重写成 Phase 5 的完整统一 LightingKernel，也不合并 Fiber/OpenPBR 的管线入口。材质 family 只在 pass/hit 边界分派；求值、prepare 和光照循环保留具体泛型类型。分箱特化只用于对应 primary pass，secondary ray 与 guides 根据自己的命中实例选择材质。`SceneSurfaceSummary` 仅提供 debug、guide 和环境近似数据，不替代模型的散射 Closure。
 
 ## 法线、纹理与发光
 
@@ -30,7 +30,7 @@ VBuffer/realtime 的环境 SH/prefilter 近似、guide albedo 近似、介质堆
 
 统一 `eval().f` 不含 cosine：适配器把 vendor projected value 除以 shading normal 的绝对 cosine；`sample().f` 从 vendor 的 `weight * pdf / abs(cosine)` 恢复。失败样本只依据 vendor 保证有效的 pdf 判断，其余未定义输出不再被读取。Reflection、Transmission、Diffuse、Glossy、Delta 显式映射到统一位；透射 eta 取 vendor 实际准备后的、含 specular-weight 修正和 clamp 的相对 IOR 的倒数，反射/失败为 1。
 
-新增可选 `IWeightedPreparedSurfaceClosure`，用于本来就返回 projected value / importance weight 的库。`SurfaceLighting.evaluateSurfaceProjected` 和 `sampleSurfaceWeight` 通过泛型约束消费它。生产路径使用这一接口以避免除 cosine 后又乘回、恢复 f 后又除 pdf 的浮点往返；原有直接光、MIS 和 throughput 运算顺序保留。基础 `IPreparedSurfaceClosure` 与 Lambert 消费者继续可用。
+`IPreparedSurfaceClosure` 同时提供 projected value、PDF、weighted sample 和 emission 的默认接口。OpenPBR override 使用原生值，以避免除 cosine 后又乘回、恢复 f 后又除 pdf 的浮点往返；Lambert 等模型继续使用默认实现。旧 `IWeightedPreparedSurfaceClosure` 兼容标记已移除。
 
 **TransportMode 边界：** 本适配保留 vendor 的现有相机路径传输约定，仅支持 Radiance。vendor API 没有 adjoint 模式；Importance prepared 的 `validTransport=false`，eval/pdf/sample/emission 返回零/无效样本。不能将此实现用于双向/光源起点积分器并假定已实现 Importance。未增加新的 eta 能量缩放来改变现有 PT 外观。
 

@@ -1,3 +1,5 @@
+module AtmosphereSeamProbe;
+
 import Atmosphere;
 import Lighting;
 using Metallic;

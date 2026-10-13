@@ -1,3 +1,5 @@
+module TextureResourceProbe;
+
 import Core;
 using Metallic;
 import MaterialTextureDecode;

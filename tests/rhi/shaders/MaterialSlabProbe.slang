@@ -1,3 +1,5 @@
+module MaterialSlabProbe;
+
 import ShaderCore;
 import SlabClosure;
 import MaterialProgram;

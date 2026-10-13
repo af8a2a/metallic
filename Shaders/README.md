@@ -5,15 +5,22 @@ See [Color Pipeline](../Documentation/ColorPipeline.md) for ACEScg working-space
 Renderer 默认使用 scene-linear ACEScg/AP1/D60 HDR；Rec.709/D65 保留为兼容模式。显示变换、SDR/scRGB/HDR10 输出与
 LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 
-Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import`，同一模块的实现
-文件用 `__include`，第三方 HLSL 的宏配置与文本包含留在 Interop 或程序内部。
+所有项目自有 `.slang` 文件（含 Features 入口、Interop 包装、生成源码和测试）必须声明
+`module Name;` 或 `implementing Name;`。子系统之间用 `import`；同模块拆分使用
+`__include` 与匹配的 `implementing`，不允许无归属代码片段或对 `.slang` 的裸 `#include`。
+第三方 HLSL 和共享 C++/Slang 头文件可以在唯一的模块 owner 内保留文本包含；不能通过改名
+`.hlsli` 绕过模块归属。在仓库根执行 `python -B Tools/CheckShaderModules.py`，递归检查 `Shaders/**/*.slang`
+和 `tests/**/*.slang`（含 editor 与 RHI 探针），验证唯一归属、同 owner 的实现引用和裸 include 禁令。
+外部 SDK 源码不在扫描范围；运行时生成的 MaterialValueDispatch 则单独检查生成器的归属声明。
+配置了 Python 的测试构建同时注册 `MetallicShaderModuleOwnershipAudit` 和检查器回归测试。
 
 | 目录 | 职责 |
 | --- | --- |
 | `Modules/ShaderCore.slang`、`Modules/Core/` | ResourceHandle、BufferSpan、旧资源兼容接口、相机、顶点解码、SH、显示颜色；不声明 push constant |
 | `Modules/Core.slang` | ComputeProgram 具名资源参数、常量和底层测试兼容入口，重新导出 ShaderCore |
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
-| `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
+| `Modules/MaterialProgram.slang`、`Modules/MaterialProgram/` | 无模型/资源依赖的 `Material<TProgram>` 泛型封装、SurfaceMaterialContext、MaterialInstanceRef 与 BSDFEval/BSDFSample；见 [Phase 2](../Documentation/MaterialSystemPhase2.md) |
+| `Modules/OpenPBRMaterialParameters.slang`、`Modules/RTXCRMaterialParameters.slang` | 各模型独立参数；在场景资源边界从上传记录提取，求值与 Closure 不携带其他模型 |
 | `Modules/DebugLambert.slang`、`Modules/DebugMirror.slang`、`Modules/SurfaceLighting.slang` | 三阶段 Surface Programs、泛型 `shadeSurface` 与生产共用的直接光循环；见 [Phase 3](../Documentation/MaterialSystemPhase3.md)、[Phase 5](../Documentation/MaterialSystemPhase5.md) |
 | `Modules/SlabClosure.slang` | Single / Dual Slab canonical families、Mix / Layer 原型；见 [Phase 10](../Documentation/MaterialSystemPhase10.md) |
 | `Modules/OpenPBR.slang`、`Modules/OpenPBR/` | Adobe OpenPBR 1.1 原生 Slang 移植、静态泛型 LUT/Feature provider；见 [模块说明](Modules/OpenPBR/README.md) |
@@ -22,8 +29,18 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/RayMaterialExecution.slang`、`Features/PathTracing/RayMaterialQueue.slang` | 按命中点独立的 Surface/Fiber 求值与 prepare、有界 Program 分类；见 [M8](../Documentation/MaterialSystemM8RayExecution.md) |
 | `Modules/RTXCRHair.slang`、`Modules/RTXCRHair/` | RTXCR Chiang / Separate Chiang / Far Field 原生 Slang vendored 实现；见 [来源与接口](Modules/RTXCRHair/README.md) |
 | `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
-| `Features/PathTracing/OpenPBRSurface.slang`、`Modules/OpenPBRClosure.slang` | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
-| `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
+| [OpenPBRSurface](Modules/OpenPBRSurface.slang)、[OpenPBRClosure](Modules/OpenPBRClosure.slang) | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
+| `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码、材质分箱与流式几何属性解码 |
+| `Modules/WaveWorkDistribution.slang` | 无资源依赖的 wave 工作分配；`Metallic.GPUDriven` 命名空间 |
+| `Modules/ScenePathTypes.slang`、`Modules/ScenePathMath.slang` | 场景路径追踪布局与纯数学：ray cone、RNG、相机和 motion；数学使用 `Metallic.ScenePath` 命名空间 |
+| `Modules/StreamTextureSampling.slang` | 显式传入 metadata/feedback buffer 的纹理采样下限和 mip 请求，不隐式读取 pass 参数 |
+| `Modules/MaterialValueTextureSampling.slang` | 显式纹理与 feedback 参数的 Value IR 双线性/三线性采样、UV 变换与 LOD；生成代码的薄回调留在 SceneSurface |
+| [SceneSurface](Modules/SceneSurface.slang) | 场景材质、纹理、环境与惰性资源 getter；保留 Update/Query 的参数读取策略 |
+| [ScenePathTracing](Modules/ScenePathTracing.slang)、[OpenPBRPathTracing](Modules/OpenPBRPathTracing.slang) | 标准/OpenPBR 积分器的 module owner；路径顶点、缓存、guides、continuation 以 `implementing` 归属 |
+| [SceneStandardGuides](Modules/SceneStandardGuides.slang)、[SceneShadowQueries](Modules/SceneShadowQueries.slang) | 独立 guides 求值与生产阴影查询，入口和探针显式导入 |
+| [VisibilityBufferLighting](Modules/VisibilityBufferLighting.slang)、[OpenPBRDirectLighting](Modules/OpenPBRDirectLighting.slang) | Deferred/实时着色共用的直接光、阴影输入和环境光求值 |
+| `Modules/SceneSurfaceMaterial.slang` | 材质诊断摘要和场景材质程序接口；OpenPBR 摘要显式泛型化 context |
+| `Modules/StreamRayGeometry.slang` | 流式 ray 命中重建、authored TBN；封装惰性资源读取，保留 SHARC Update/Query 分支 |
 | `Features/VisibilityBuffer/VisibilityMaterialBinning.slang` | 8×4 Wave32 稀疏 Program 分箱、prefix allocation 和 indirect dispatch；见 [Phase 6](../Documentation/MaterialSystemPhase6.md) |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Modules/ShaderToHuman.slang`、`Modules/ShaderToHuman/` | 原生 Slang 调试文本、2D/3D 绘制和泛型 Scatter；`Metallic.ShaderDebug` 命名空间 |
@@ -43,11 +60,12 @@ SHARC 使用 `import SHARC;` 和 `using Metallic.SHARC;`，固定当前 renderer
 update/query 宏仅控制调用方 pass，不改变模块类型或函数语义。
 ShaderToHuman 使用 `import ShaderToHuman;`，仅保留原生 Slang 移植；
 来源记录、许可证和使用说明见 [ShaderToHuman](Modules/ShaderToHuman/README.md)。
-所有 vendor 文件与许可证保持原有内容。
+外部 vendor 算法和许可证保持原有内容；项目维护的 NRD Slang 包装显式声明 module。
 
 ## 使用库
 
 ```slang
+module ExampleGPUProbe;
 import Core;
 import GPUDriven;
 using Metallic;
@@ -76,6 +94,11 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 实现文件声明 `implementing GPUDriven;`，公开 API 标为 `public`，辅助实现标为 `internal`。
 命名空间使用 `Metallic`、`Metallic.GPUDriven`、`Metallic.Material`、`Metallic.Lighting`。
 消费者直接导入自己使用的模块，不依赖其他模块的间接导入。
+[SceneSurface](Modules/SceneSurface.slang) 组合路径类型、数学与纹理反馈模块，并保留路径专用
+`safeNormalize` 转发。跨模块资源访问使用 getter；SHARC Update/Query 继续使用全局编译排列。
+OpenPBR context 由材质 source 显式提供，guide 写出由独立参数控制，tessellation 实现归属
+`GPUDrivenStreamAsset` 或 [VisibilityTessellation](Modules/VisibilityTessellation.slang)。
+这些边界均不再依赖调用方 `#define` 或 `.slang` 文本注入；第三方 HLSL 配置保持在其 owner 内。
 当前固定的 Slang 2026.18.2 下，模块公开结构体的成员仍显式标注 `public`。
 
 新 compute pass 使用 `ComputeKernel` + `ParameterWriter`，以具名 typed 参数承载资源。
@@ -130,8 +153,9 @@ VisibilityBuffer Deferred 是纯光栅表面的实时 resolve，不包含 ray-qu
 在 VBuffer 写入深度/可见性之前及 RT/shadow 候选命中处求值，和 Surface 共用不可变材质参数快照。
 [Value IR](../Documentation/MaterialSystemPhase9.md) 统一 Surface/Coverage 的验证、优化、切片与稳定身份；
 TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的隐式导数。
-`Features/PathTracing/SceneSurface.slang` 和 `OpenPBRSurface.slang` 提供共享表面求值，
-`Features/VisibilityBuffer/VisibilityBufferLighting.slang` 负责 ClusterLightGrid、显式阴影输入和 IBL。
+[SceneSurface](Modules/SceneSurface.slang) 和 [OpenPBRSurface](Modules/OpenPBRSurface.slang)
+提供共享表面求值，[VisibilityBufferLighting](Modules/VisibilityBufferLighting.slang)
+负责 ClusterLightGrid、显式阴影输入和 IBL。
 有界 IBL 权重默认使用 native FP16，几何与 HDR 累加保持 FP32；`halfPrecision: false`
 提供相同算法的 FP32 对照。详见 [VisibilityBufferDeferred](../Documentation/VisibilityBufferDeferred.md)。
 
@@ -157,17 +181,33 @@ Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `Punctua
 ## 项目自有 Slang 实现
 
 `AlphaCoverage`、`MaterialTextureDecode` 和 `RTXCRMaterialAdapter` 使用独立 Slang
-module，通过 `import` 显式共享。依赖调用程序类型和编译配置的
-`SceneSurfaceClosure.slang` 保留程序内 `#include`；这些入口没有统一命名 module，
-不能使用要求 `implementing` 命名模块的 `__include`。
-`OpenPBRPathVertex.slang` 提供显式状态参数和控制结果的顶点处理函数，通用路径循环与
-单样本 continuation 共同调用，不再通过 HLSL 文本宏注入 `break`、`continue` 或 `return`。
+module，通过 `import` 显式共享。`SceneSurfaceMaterial` 的 OpenPBR 摘要以 context 泛型
+消除程序局部 closure alias 依赖；`StreamRayGeometry` 使用共享 `ScenePathTypes`，
+其资源宏不再泄漏到调用方。三角形 TBN 计算由 `ScenePathMath` 统一提供。
+生成的 `MaterialValueDispatch.slang` 声明 `implementing SceneSurface;`，由 SceneSurface
+以 `__include` 纳入同模块；生成器的 owner 声明受静态检查约束。纹理 adapter 先处理缺失索引，
+再调用 `MaterialValueTextureSampling`，保留手动过滤、LOD 和颜色空间策略。
+路径循环、阴影、guides 和 continuation 必须由命名 module 统一拥有；同模块实现单元
+使用 `implementing`，入口只导入明确依赖，不再依赖调用点注入代码或宏。
+[OpenPBRPathVertex](Modules/OpenPBRPathTracing/OpenPBRPathVertex.slang) 提供显式状态参数和
+控制结果的顶点处理函数，通用路径循环与单样本
+[continuation](Modules/OpenPBRPathTracing/OpenPBRPathContinuation.slang) 共同调用；两者均声明
+`implementing OpenPBRPathTracing;`，不再作为无归属片段注入调用点。
 `MeshletStreamBLAS.h` 是 C++/Slang 共享常量契约，使用普通头文件。
 第三方 SDK 和 NRD 快照保留其原始 HLSL 适配边界及许可证。
 
-材质 `TextureInfo` 为 48 字节，`LegacyMaterialPayload` 为 720 字节。两个索引后只保留
+材质 `TextureInfo` 为 48 字节，`SceneMaterialData` 为 720 字节。两个索引后只保留
 8 字节对齐 padding，使 StructuredBuffer 的两个 float4 位于偏移 16/32；不保留 NTC 字段。
 Slang `sizeof` 与 SPIR-V StructuredBuffer 布局不能混为一谈；GPU 字段/数组步长探针验证两端契约。
+
+`SceneMaterialData` 仅定义现有场景上传布局。OpenPBR、SingleSlab、DualSlab 和 Fiber
+使用独立泛型 Program 与具体 Closure；模型选择在命中点或 pass 边界进行，公共光照循环
+通过静态类型调用。Slab 的 Value 表达式只读取 `MaterialValueParameters`，不构造 OpenPBR
+输入或 Closure。诊断、guides 和近似环境光读取 `SceneSurfaceSummary` 的数值摘要。
+标准与 OpenPBR 路径的 Fiber 求值和 RR guide 在模型分支后单独读取 Fiber 参数，
+共用颜色、粗糙度和 Fresnel guide 近似，不读取 Surface 纹理或发光参数。
+`LegacyMaterialProgram`、`LegacyCoverageEvaluator`、混合 `SceneSurfaceClosure` 与
+空的 weighted-closure 标记接口已移除，不提供旧类型别名。
 
 ## SDK 兼容边界
 
@@ -178,9 +218,9 @@ Slang `sizeof` 与 SPIR-V StructuredBuffer 布局不能混为一谈；GPU 字段
   SDK 全局排列使用 `SlangShaderDesc::macroDefines`，它们也参与缓存键。
 - 同一程序中，每个 vendor header 有一个 canonical owner。其他模块导入 owner，
   不重复包含 vendor header；include guard 不能跨 module 去重。
-- NRD pass、OpenPBR 的纹理回调和 feature 宏等仍允许
-  程序内 `#define` + `#include`。`Features/` 中复用这些配置的路径追踪、引导图和实时着色
-  文件仍属于程序组合层，不能被 `Modules/` 反向引用。
+- NRD pass 等包装自身也是 module；SDK 的 `.hlsli` 配置可以在包装内使用
+  `#define` + `#include`。OpenPBR context 和自有 feature 的跨文件特化使用显式参数、
+  泛型或接口，不能再通过包含 `.slang` 注入调用方上下文。
 - 新的 Metallic 子系统使用 `import`，不要通过 `#include` 引入 `Modules/` 的实现文件。
   同一模块拆文件使用 `__include`；新功能特化优先使用泛型、接口或显式参数。
 

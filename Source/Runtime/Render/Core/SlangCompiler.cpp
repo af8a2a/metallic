@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -48,9 +49,6 @@ namespace {
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
 constexpr uint32_t kShaderCacheRequestVersion = 28;
-// Use Slang's default O1 policy, including its default SPIR-V optimization
-// passes. Explicit shader debugging retains O0 for variable inspection.
-constexpr SlangOptimizationLevel kSlangOptimizationLevel = SLANG_OPTIMIZATION_LEVEL_DEFAULT;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -473,7 +471,47 @@ bool nativeDescriptorHeapEnabled(const SlangShaderDesc& desc)
     return mode != nullptr && std::string_view(mode) == "native";
 }
 
+std::optional<SlangShaderOptimizationLevel> resolveOptimizationLevel(
+    const SlangShaderDesc& desc, SlangShaderDebugMode debugMode)
+{
+    auto level = desc.optimizationLevel;
+    if (level == SlangShaderOptimizationLevel::Default) {
+        const char* optimizationOverride = std::getenv("METALLIC_SLANG_OPTIMIZATION");
+        if (optimizationOverride != nullptr && optimizationOverride[0] != '\0' &&
+            std::string_view(optimizationOverride) != "default") {
+            const std::string_view value(optimizationOverride);
+            if (value == "O0" || value == "o0") { level = SlangShaderOptimizationLevel::O0; }
+            else if (value == "O1" || value == "o1") { level = SlangShaderOptimizationLevel::O1; }
+            else if (value == "O2" || value == "o2") { level = SlangShaderOptimizationLevel::O2; }
+            else if (value == "O3" || value == "o3") { level = SlangShaderOptimizationLevel::O3; }
+            else { return std::nullopt; }
+        }
+        if (level == SlangShaderOptimizationLevel::Default) {
+            level = debugMode == SlangShaderDebugMode::ShaderDebug
+                ? SlangShaderOptimizationLevel::O0 : SlangShaderOptimizationLevel::O1;
+        }
+    }
+    switch (level) {
+    case SlangShaderOptimizationLevel::O0:
+    case SlangShaderOptimizationLevel::O1:
+    case SlangShaderOptimizationLevel::O2:
+    case SlangShaderOptimizationLevel::O3: return level;
+    default: return std::nullopt;
+    }
+}
+
+SlangOptimizationLevel compilerOptimizationLevel(SlangShaderOptimizationLevel level)
+{
+    switch (level) {
+    case SlangShaderOptimizationLevel::O0: return SLANG_OPTIMIZATION_LEVEL_NONE;
+    case SlangShaderOptimizationLevel::O2: return SLANG_OPTIMIZATION_LEVEL_HIGH;
+    case SlangShaderOptimizationLevel::O3: return SLANG_OPTIMIZATION_LEVEL_MAXIMAL;
+    default: return SLANG_OPTIMIZATION_LEVEL_DEFAULT;
+    }
+}
+
 uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode,
+    SlangOptimizationLevel optimizationLevel,
     const ShaderTargetPostprocess& target)
 {
     uint64_t hash = kFnvOffset;
@@ -482,8 +520,7 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
     hash = hashValue(hash, target.revision);
     hash = hashValue(hash, static_cast<uint8_t>(sceneWorkingColorSpace()));
     hash = hashText(hash, SLANG_VERSION_NUMERIC);
-    hash = hashValue(hash, static_cast<int32_t>(debugMode == SlangShaderDebugMode::ShaderDebug
-        ? SLANG_OPTIMIZATION_LEVEL_NONE : kSlangOptimizationLevel));
+    hash = hashValue(hash, static_cast<int32_t>(optimizationLevel));
     hash = hashText(hash, "spirv-direct");
     hash = hashText(hash, "slang-default-optimization-passes");
     hash = hashValue(hash, nativeDescriptorHeapEnabled(desc));
@@ -852,6 +889,23 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept
     return gSlangShaderDebugMode.load(std::memory_order_relaxed);
 }
 
+SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept
+{
+    return resolveOptimizationLevel(desc, slangShaderDebugMode()).value_or(SlangShaderOptimizationLevel::Default);
+}
+
+const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept
+{
+    switch (level) {
+    case SlangShaderOptimizationLevel::Default: return "default";
+    case SlangShaderOptimizationLevel::O0: return "O0";
+    case SlangShaderOptimizationLevel::O1: return "O1";
+    case SlangShaderOptimizationLevel::O2: return "O2";
+    case SlangShaderOptimizationLevel::O3: return "O3";
+    default: return "invalid";
+    }
+}
+
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept
 {
     return nativeDescriptorHeapEnabled(desc);
@@ -896,7 +950,15 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     const SlangShaderCacheOptions& cacheOptions,
     std::string& log)
 {
+    using Clock = std::chrono::steady_clock;
+    const auto requestStart = Clock::now();
+    const auto elapsed = [](Clock::time_point start) {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now() - start).count());
+    };
     ShaderCompileResult outResult;
+    auto& metrics = outResult.metrics;
+    metrics.detailedCompilerPerfRequested = cacheOptions.reportDetailedCompilerPerf;
     log.clear();
     if (cacheOptions.outCacheHit != nullptr) {
         *cacheOptions.outCacheHit = false;
@@ -938,28 +1000,44 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         resolvedDesc.descriptorHeapStrides = strides;
     }
     const SlangShaderDebugMode debugMode = slangShaderDebugMode();
+    const auto effectiveOptimization = resolveOptimizationLevel(desc, debugMode);
+    if (!effectiveOptimization) {
+        log = "Invalid Slang optimization level; METALLIC_SLANG_OPTIMIZATION and explicit requests "
+            "must select default, O0, O1, O2 or O3.\n";
+        return makeError(Error::InvalidArgument);
+    }
+    const SlangOptimizationLevel optimizationLevel = compilerOptimizationLevel(*effectiveOptimization);
     const auto& target = vulkanSpirvTarget();
-    const uint64_t requestHash = shaderRequestHash(resolvedDesc, debugMode, target);
+    const uint64_t requestHash = shaderRequestHash(resolvedDesc, debugMode, optimizationLevel, target);
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
     std::vector<ShaderDependencySnapshot> cachedDependencies;
-    if (cacheOptions.enableDiskCache &&
-        loadCachedShader(cachePath, requestHash, outResult.spirv, cachedDependencies)) {
+    const auto cacheLookupStart = Clock::now();
+    const bool cacheHit = cacheOptions.enableDiskCache &&
+        loadCachedShader(cachePath, requestHash, outResult.spirv, cachedDependencies);
+    metrics.cacheLookupTimeNanoseconds = cacheOptions.enableDiskCache ? elapsed(cacheLookupStart) : 0;
+    metrics.cacheHit = cacheHit;
+    if (cacheHit) {
         if (cacheOptions.outCacheHit != nullptr) {
             *cacheOptions.outCacheHit = true;
         }
+        const auto dependencyTrackingStart = Clock::now();
         publishShaderDependencies(cachedDependencies, outResult);
+        metrics.dependencyTrackingTimeNanoseconds = elapsed(dependencyTrackingStart);
         spdlog::info(
-            "[ShaderCache] Loaded {}.{} from '{}'",
+            "[ShaderCache] Loaded {}.{} from '{}' (optimization={})",
             desc.moduleName,
             desc.entryPointName,
-            cachePath.string());
+            cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization));
         outResult.diagnostics = log;
+        metrics.totalTimeNanoseconds = elapsed(requestStart);
         return outResult;
     }
 
-    const auto compileStart = std::chrono::steady_clock::now();
-    spdlog::info("[Slang] Begin compile {}.{} (debugMode={})",
-        desc.moduleName, desc.entryPointName, static_cast<uint32_t>(debugMode));
+    const auto compileStart = Clock::now();
+    metrics.compilerExecuted = true;
+    spdlog::info("[Slang] Begin compile {}.{} (debugMode={}, optimization={})",
+        desc.moduleName, desc.entryPointName, static_cast<uint32_t>(debugMode),
+        slangShaderOptimizationLevelName(*effectiveOptimization));
     Slang::ComPtr<slang::IGlobalSession> globalSession;
     if (SLANG_FAILED(slang::createGlobalSession(globalSession.writeRef())) || globalSession == nullptr) {
         return makeError(Error::Failure);
@@ -1015,12 +1093,21 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
             .intValue0 = 1,
         },
     });
+    if (cacheOptions.reportDetailedCompilerPerf) {
+        // Reporting options do not alter generated code or its cache identity.
+        for (const auto option : {slang::CompilerOptionName::ReportDetailedPerfBenchmark,
+                slang::CompilerOptionName::ReportDownstreamTime}) {
+            compilerOptions.push_back(slang::CompilerOptionEntry{
+                .name = option,
+                .value = {.kind = slang::CompilerOptionValueKind::Int, .intValue0 = 1},
+            });
+        }
+    }
     compilerOptions.push_back(slang::CompilerOptionEntry{
         .name = slang::CompilerOptionName::Optimization,
         .value = slang::CompilerOptionValue{
             .kind = slang::CompilerOptionValueKind::Int,
-            .intValue0 = static_cast<int32_t>(debugMode == SlangShaderDebugMode::ShaderDebug
-                ? SLANG_OPTIMIZATION_LEVEL_NONE : kSlangOptimizationLevel),
+            .intValue0 = static_cast<int32_t>(optimizationLevel),
         },
     });
     if (native) {
@@ -1114,9 +1201,12 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     if (SLANG_FAILED(globalSession->createSession(sessionDesc, session.writeRef())) || session == nullptr) {
         return makeError(Error::Failure);
     }
+    metrics.compilerSetupTimeNanoseconds = elapsed(compileStart);
 
     Slang::ComPtr<slang::IBlob> diagnostics;
+    const auto moduleLoadStart = Clock::now();
     Slang::ComPtr<slang::IModule> module(session->loadModule(desc.moduleName, diagnostics.writeRef()));
+    metrics.moduleLoadTimeNanoseconds = elapsed(moduleLoadStart);
     appendDiagnostics(diagnostics, log);
     if (module == nullptr) {
         // loadModule can fail before Slang exposes its dependency list. Watch
@@ -1147,6 +1237,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         registerShaderDependencies(failedSources);
         return makeError(Error::Failure);
     }
+    const auto dependencyTrackingStart = Clock::now();
     const std::vector<std::filesystem::path> dependencies = collectShaderDependencies(
         *module,
         normalizedSearchPaths);
@@ -1159,8 +1250,10 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     // a fix to an included file trigger another attempt even when linking or
     // code generation fails.
     registerShaderDependencies(dependencySnapshots);
+    metrics.dependencyTrackingTimeNanoseconds = elapsed(dependencyTrackingStart);
 
     diagnostics.setNull();
+    const auto entryPointCompositionStart = Clock::now();
     Slang::ComPtr<slang::IEntryPoint> entryPoint;
     if (SLANG_FAILED(module->findEntryPointByName(desc.entryPointName, entryPoint.writeRef())) || entryPoint == nullptr) {
         log += "Slang entry point not found: ";
@@ -1177,16 +1270,20 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         return makeError(Error::Failure);
     }
     appendDiagnostics(diagnostics, log);
+    metrics.entryPointCompositionTimeNanoseconds = elapsed(entryPointCompositionStart);
 
     diagnostics.setNull();
+    const auto linkStart = Clock::now();
     Slang::ComPtr<slang::IComponentType> linkedProgram;
     if (SLANG_FAILED(program->link(linkedProgram.writeRef(), diagnostics.writeRef())) || linkedProgram == nullptr) {
         appendDiagnostics(diagnostics, log);
         return makeError(Error::Failure);
     }
     appendDiagnostics(diagnostics, log);
+    metrics.linkTimeNanoseconds = elapsed(linkStart);
 
     diagnostics.setNull();
+    const auto codeGenerationStart = Clock::now();
     Slang::ComPtr<slang::IBlob> shaderCode;
     if (SLANG_FAILED(linkedProgram->getEntryPointCode(0, 0, shaderCode.writeRef(), diagnostics.writeRef()))
         || shaderCode == nullptr) {
@@ -1194,6 +1291,16 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         return makeError(Error::Failure);
     }
     appendDiagnostics(diagnostics, log);
+    metrics.codeGenerationTimeNanoseconds = elapsed(codeGenerationStart);
+    double compilerSeconds = 0, downstreamSeconds = 0;
+    globalSession->getCompilerElapsedTime(&compilerSeconds, &downstreamSeconds);
+    if (std::isfinite(compilerSeconds) && std::isfinite(downstreamSeconds) &&
+        compilerSeconds >= 0 && downstreamSeconds >= 0 &&
+        compilerSeconds < double(UINT64_MAX) / 1e9 && downstreamSeconds < double(UINT64_MAX) / 1e9) {
+        metrics.compilerReportedTotalTimeNanoseconds = static_cast<uint64_t>(compilerSeconds * 1e9);
+        metrics.compilerReportedDownstreamTimeNanoseconds = static_cast<uint64_t>(downstreamSeconds * 1e9);
+        metrics.compilerReportedTimingAvailable = compilerSeconds > 0 || downstreamSeconds > 0;
+    }
 
     const size_t byteSize = shaderCode->getBufferSize();
     if (byteSize == 0 || (byteSize % sizeof(uint32_t)) != 0) {
@@ -1201,6 +1308,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         return makeError(Error::Failure);
     }
 
+    const auto targetFinalizeStart = Clock::now();
     outResult.spirv.resize(byteSize / sizeof(uint32_t));
     std::memcpy(outResult.spirv.data(), shaderCode->getBufferPointer(), byteSize);
     std::string normalizationError;
@@ -1209,6 +1317,8 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         log += normalizationError + "\n";
         return makeError(Error::Failure);
     }
+    metrics.targetFinalizeTimeNanoseconds = elapsed(targetFinalizeStart);
+    const auto dependencyValidationStart = Clock::now();
     if (!shaderDependencySnapshotsMatch(dependencySnapshots)) {
         outResult.spirv.clear();
         log +=
@@ -1216,7 +1326,9 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         return makeError(Error::Failure);
     }
     publishShaderDependencies(dependencySnapshots, outResult);
+    metrics.dependencyValidationTimeNanoseconds = elapsed(dependencyValidationStart);
     if (cacheOptions.enableDiskCache) {
+        const auto cacheWriteStart = Clock::now();
         if (!saveCachedShader(cachePath, requestHash, dependencySnapshots, outResult.spirv)) {
             spdlog::debug(
                 "[ShaderCache] Could not persist {}.{} to '{}'",
@@ -1224,12 +1336,14 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
                 desc.entryPointName,
                 cachePath.string());
         }
+        metrics.cacheWriteTimeNanoseconds = elapsed(cacheWriteStart);
     }
     spdlog::info("[Slang] End compile {}.{} in {:.2f} ms ({} bytes)",
         desc.moduleName, desc.entryPointName,
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - compileStart).count(), byteSize);
     outResult.diagnostics = log;
+    metrics.totalTimeNanoseconds = elapsed(requestStart);
     return outResult;
 }
 

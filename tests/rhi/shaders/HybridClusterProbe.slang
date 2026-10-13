@@ -1,3 +1,5 @@
+module HybridClusterProbe;
+
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;

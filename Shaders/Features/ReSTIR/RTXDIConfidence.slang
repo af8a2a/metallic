@@ -1,3 +1,5 @@
+module RTXDIConfidence;
+
 #include "../../../Source/Runtime/Render/Core/RTXDIPostProcessParameters.h"
 
 [[vk::push_constant]] ConstantBuffer<RTXDIConfidenceParams> gParams;

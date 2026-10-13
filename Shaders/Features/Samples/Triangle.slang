@@ -1,3 +1,5 @@
+module Triangle;
+
 struct TriangleVertexOutput
 {
     float4 position : SV_Position;

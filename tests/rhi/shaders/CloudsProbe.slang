@@ -1,3 +1,5 @@
+module CloudsProbe;
+
 import Atmosphere;
 import Clouds;
 import Lighting;

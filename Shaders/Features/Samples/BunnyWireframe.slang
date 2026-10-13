@@ -1,3 +1,5 @@
+module BunnyWireframe;
+
 import ShaderCore;
 using Metallic;
 

@@ -1,110 +1,24 @@
-import ShaderCore;
-using Metallic;
+#language slang 2026
+module OpenPBRClosureProbe;
 
-struct ProbeParams
-{
-    BufferSpan<float4> parameters;
-    RWBufferSpan<float4> output;
-    ResourceHandle<Texture2D<float4>> texture;
-    ResourceHandle<RWByteAddressBuffer> counters;
-    uint lightCount;
-};
-#if METALLIC_LIGHTING_NAMED_PARAMETERS
-#define gProbe lightingProbeParameters()
-#else
-[[vk::push_constant]] ConstantBuffer<ProbeParams> gProbe;
-#endif
-
-// Raw vendor uint16 tables normalized exactly as the production texture upload.
-// Buffer lookup avoids embedding giant arrays in the driver's shader compiler.
-static const uint kLutOffsets[7] = {2, 32770, 33794, 34818, 67586, 68610, 69634};
-float probeLutTexel(int id, int3 p, int3 size)
-{
-    return gProbe.parameters.load(kLutOffsets[id] + uint((p.z * size.y + p.y) * size.x + p.x)).x;
-}
-float4 probeLut(int id, float3 uvw, int3 size)
-{
-    float3 p = clamp(uvw * float3(size) - 0.5, float3(0), float3(size - 1));
-    int3 lo = int3(floor(p));
-    int3 hi = min(lo + 1, size - 1);
-    float3 f = p - float3(lo);
-    float a = lerp(lerp(probeLutTexel(id, lo, size), probeLutTexel(id, int3(hi.x, lo.yz), size), f.x),
-        lerp(probeLutTexel(id, int3(lo.x, hi.y, lo.z), size), probeLutTexel(id, int3(hi.xy, lo.z), size), f.x), f.y);
-    float b = lerp(lerp(probeLutTexel(id, int3(lo.xy, hi.z), size), probeLutTexel(id, int3(hi.x, lo.y, hi.z), size), f.x),
-        lerp(probeLutTexel(id, int3(lo.x, hi.yz), size), probeLutTexel(id, hi, size), f.x), f.y);
-    return float4(lerp(a, b, f.z));
-}
+import Core;
+import OpenPBRProbe;
 import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRSurface;
+import OpenPBRMaterialParameters;
+import ScenePathTypes;
+import Material;
+import MaterialProgram;
+import SurfaceLighting;
+using Metallic;
+using Metallic.Material;
 using Metallic.OpenPBR;
-struct ProbeOpenPBRContext : IOpenPBRContext
-{
-    static bool enableSheenAndCoat() { return false; }
-    static bool enableDispersion() { return false; }
-    static bool enableTranslucency() { return true; }
-    static bool enableMetallic() { return true; }
-    float4 sample2D(int id, float2 uv) { return probeLut(id, float3(uv, 0.5), int3(32, id == 6 ? 1 : 32, 1)); }
-    float4 sample3D(int id, float3 uvw) { return probeLut(id, uvw, int3(32)); }
-};
-#define METALLIC_OPENPBR_CONTEXT_TYPE ProbeOpenPBRContext
-#include "../../../Shaders/Features/PathTracing/OpenPBRSurface.slang"
+using Metallic.SceneOpenPBR;
+using Metallic.Lighting;
+using Metallic.Tests;
 
-// Exercise a second specialization with nonempty context state. Both prepare
-// and subsequent evaluation must use the supplied LUT context, not a default.
-struct StatefulOpenPBRContext : IOpenPBRContext
-{
-    float scale;
-    static bool enableSheenAndCoat() { return true; }
-    static bool enableDispersion() { return false; }
-    static bool enableTranslucency() { return true; }
-    static bool enableMetallic() { return true; }
-    float4 sample2D(int id, float2 uv) { return ProbeOpenPBRContext().sample2D(id, uv) * scale; }
-    float4 sample3D(int id, float3 uvw) { return ProbeOpenPBRContext().sample3D(id, uvw) * scale; }
-};
-
-void countStage(uint index)
-{
-    uint previous;
-    resolveUniform(gProbe.counters).InterlockedAdd(index * 4, 1, previous);
-}
-
-struct ProbeSource : IOpenPBRMaterialSource
-{
-    PathTraceMaterial loadParameters(MaterialInstanceRef instance)
-    {
-        countStage(0);
-        uint variant = instance.resourceOffset;
-        float4 factors = gProbe.parameters.load(instance.parameterOffset / 16);
-        PathTraceMaterial material = (PathTraceMaterial)0;
-        material.baseColor = float4(factors.rgb, 1);
-        material.specular = float4(1);
-        material.params = float4(variant == 1 ? 1 : 0, variant == 3 ? 0.001 : 0.35, 0, 0);
-        material.glassParams = float4(variant == 2 || variant == 3 || variant == 6 ? 1 : 0, 1.5, 0, 0);
-        material.textureParams = float4(1, 1, 0, 0);
-        material.emissive = float4(variant == 4 ? factors.rgb : float3(0), variant == 5 ? 1 : 0);
-        material.baseColorTexture.textureIndex = 1;
-        material.baseColorTexture.transform0 = float4(1, 0, 0, 1);
-        material.baseColorTexture.transform1 = float4(0, 1, 0, 0);
-        material.normalTexture.textureIndex = 2;
-        if (variant == 7) { material.baseColor = float4(0); material.specular = float4(0); }
-        return material;
-    }
-    float4 loadTexture(PathTraceTextureInfo info, float2 uv, float4 fallback,
-        ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
-        bool deterministicMip0, inout uint seed, TextureFootprint footprint)
-    {
-        countStage(1);
-        if (info.textureIndex == 0) { return fallback; }
-        countStage(2);
-        uint2 texel = info.textureIndex == 2 ? uint2(0, 1) : min(uint2(frac(uv) * 2), uint2(1));
-        return resolveUniform(gProbe.texture).Load(int3(texel, 0));
-    }
-};
-
-SurfaceMaterialResult<T.Closure> evaluateHit<T : ISurfaceMaterialProgram>(
-    T program, SurfaceMaterialContext context, MaterialInstanceRef instance)
-{
-    return program.evaluate(context, instance);
-}
+[[vk::push_constant]] ConstantBuffer<ProbeParams> gProbe;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -112,9 +26,10 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
 {
     uint lane = id.x;
     uint variant = lane / 128;
-    OpenPBRMaterialProgram<ProbeSource> program = (OpenPBRMaterialProgram<ProbeSource>)0;
-    program.fixedMetalness = -1;
-    program.hit.tangent = float4(1, 0, 0, 1);
+    Material<OpenPBRMaterialProgram<ProbeSource>> material = {};
+    material.program.source.probe = gProbe;
+    material.program.fixedMetalness = -1;
+    material.program.hit.tangent = float4(1, 0, 0, 1);
     SurfaceMaterialContext context = (SurfaceMaterialContext)0;
     context.shadingNormalWS = context.geometryNormalWS = float3(0, 0, 1);
     context.tangentWS = float3(1, 0, 0);
@@ -125,17 +40,19 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
     MaterialInstanceRef instance;
     instance.parameterOffset = (lane & 1) * 16;
     instance.resourceOffset = variant;
-    let evaluated = evaluateHit(program, context, instance);
+    let evaluated = evaluateHit(material, context, instance);
     let closure = evaluated.closure;
     float3 wo = normalize(float3(0.2, 0.1, variant == 6 ? -1 : 1));
     SurfaceSamplingContext sampling;
     sampling.throughput = float3(0.2, 0.7, 0.4);
     sampling.wavelengths = OpenPBRBaseRGBWavelengthsNm;
     sampling.exteriorIor = 1.1;
-    countStage(3);
+    countStage(gProbe, 3);
     let prepared = closure.prepare(wo, TransportMode.Radiance, sampling);
-    let native = openPBRPrepare(ProbeOpenPBRContext(), closure.inputs, sampling.throughput, sampling.wavelengths, sampling.exteriorIor, wo);
+    let probeContext = material.program.source.context();
+    let native = openPBRPrepare(probeContext, closure.inputs, sampling.throughput, sampling.wavelengths, sampling.exteriorIor, wo);
     OpenPBRClosure<StatefulOpenPBRContext> standalone;
+    standalone.context.base = probeContext;
     standalone.context.scale = 0.8;
     standalone.inputs = closure.inputs;
     standalone.occlusion = closure.occlusion;
@@ -145,13 +62,13 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
     float3 error = float3(0);
     for (uint light = 0; light < gProbe.lightCount; ++light) {
         float3 wi = normalize(float3(float(light) * 0.13 - 0.3, 0.2, (light & 1) ? -1 : 1));
-        float3 expected = openPBRGetSumOfDiffuseSpecular(openPBREval(ProbeOpenPBRContext(), native, wi));
-        countStage(4);
+        float3 expected = openPBRGetSumOfDiffuseSpecular(openPBREval(probeContext, native, wi));
+        countStage(gProbe, 4);
         float3 projected = evaluateSurfaceProjected(prepared, wi);
         BSDFEval value = prepared.eval(wi);
         error = max(error, abs(projected - expected));
         error = max(error, abs(value.f * abs(dot(closure.inputs.geometry_basis.n, wi)) - expected));
-        error = max(error, float3(abs(value.pdf - openPBRPdf(ProbeOpenPBRContext(), native, wi))));
+        error = max(error, float3(abs(value.pdf - openPBRPdf(probeContext, native, wi))));
         error = max(error, abs(standalonePrepared.evalProjected(wi) -
             openPBRGetSumOfDiffuseSpecular(openPBREval(standalone.context, standaloneNative, wi))));
         error = max(error, float3(abs(standalonePrepared.pdf(wi) - openPBRPdf(standalone.context, standaloneNative, wi))));
@@ -167,7 +84,7 @@ void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)
     OpenPBRDiffuseSpecular nativeWeight;
     float nativePdf;
     uint nativeType;
-    openPBRSample(ProbeOpenPBRContext(), native, random, nativeDirection, nativeWeight, nativePdf, nativeType);
+    openPBRSample(probeContext, native, random, nativeDirection, nativeWeight, nativePdf, nativeType);
     float3 sampleError = float3(abs(weighted.pdf - nativePdf));
     if (nativePdf > 0) {
         sampleError = max(sampleError, abs(weighted.wiWS - nativeDirection));

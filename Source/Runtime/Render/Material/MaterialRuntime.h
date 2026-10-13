@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/Material/LegacyMaterialPayload.h"
+#include "Runtime/Render/Material/SceneMaterialData.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Material/MaterialFeatures.h"
@@ -19,7 +19,8 @@ using MaterialBufferAllocator = Result<std::unique_ptr<Buffer>> (*)(Device&, con
 
 enum class MaterialDomain : uint32_t { Surface, Fiber };
 enum class MaterialEvaluationTarget : uint32_t { SurfaceRayHit, RayHitWithFiber, VisibilityBuffer, StrandVisibility };
-// Stable shader ABI; zero remains reserved for old uploads/test fixtures.
+// Stable shader IDs. CPU input normalization accepts zero; GPU publications
+// always carry an explicit ID so shader models need no parameter inference.
 enum class MaterialProgramId : uint32_t { OpenPBRComposite = 1, RTXCRChiang = 2, SingleSlab = 3, DualSlab = 4 };
 enum class MaterialParameterType : uint32_t { Float4, Texture, Float, UInt };
 
@@ -85,14 +86,16 @@ struct MaterialInstance
     uint32_t parameterIndex;
 };
 
-inline constexpr uint64_t kLegacyMaterialABI = 0x4d41544c00000001ull;
+// Version of the scene upload transport, independent of shader model types.
+inline constexpr uint64_t kSceneMaterialABI = 0x4d41544c00000001ull;
 
 std::span<const MaterialProgram> builtinMaterialPrograms();
 const MaterialProgram* findMaterialProgram(MaterialProgramId id);
 // Authoring definition implementation -> shared existing program. Defaults,
 // resource URIs and instance overrides never add shader variants.
 const MaterialProgram* findMaterialProgram(std::string_view implementation);
-MaterialProgramId legacyMaterialProgramId(const LegacyMaterialPayload& parameters);
+// Resolve an authored CPU input record before its explicit ID is published.
+MaterialProgramId sceneMaterialProgramId(const SceneMaterialData& parameters);
 
 // Strict layout validation precedes allocation/copy. Destination defaults are
 // always supplied by its definition; incompatible or absent values keep them.
@@ -108,7 +111,7 @@ class MaterialGeneration final
 {
 public:
     static std::shared_ptr<const MaterialGeneration> create(
-        std::span<const LegacyMaterialPayload> parameters,
+        std::span<const SceneMaterialData> parameters,
         uint64_t sourceRevision,
         std::string& diagnostics,
         std::span<const scene::RenderMaterial> authored = {});
@@ -121,7 +124,7 @@ public:
     uint64_t serial() const { return serial_; }
     uint64_t sourceRevision() const { return sourceRevision_; }
     std::span<const MaterialInstance> instances() const { return instances_; }
-    std::span<const LegacyMaterialPayload> parameters() const { return parameters_; }
+    std::span<const SceneMaterialData> parameters() const { return parameters_; }
     std::span<const material::MaterialFeatureResolution> features() const { return features_; }
     uint32_t programCount() const { return programCount_; }
     bool supports(MaterialEvaluationTarget target, std::string& diagnostics) const;
@@ -131,7 +134,7 @@ private:
     uint64_t sourceRevision_ = 0;
     uint32_t programCount_ = 0;
     std::vector<MaterialInstance> instances_;
-    std::vector<LegacyMaterialPayload> parameters_;
+    std::vector<SceneMaterialData> parameters_;
     std::vector<material::MaterialFeatureResolution> features_;
 };
 

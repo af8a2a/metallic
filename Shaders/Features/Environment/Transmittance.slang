@@ -1,3 +1,5 @@
+module Transmittance;
+
 import Atmosphere;
 using Metallic;
 using Metallic.Atmosphere;

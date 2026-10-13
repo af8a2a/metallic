@@ -1,3 +1,5 @@
+module VisibilityBufferMaterial;
+
 import Core;
 using Metallic;
 import GPUDriven;
@@ -6,7 +8,6 @@ import Material;
 using Metallic.Material;
 
 struct MaterialPush { uint width, height, streamCount, mode; float3 eye; };
-#include "VisibilityStreamDecode.slang"
 #define gOutput resolveUniform(getResourceParameters<VisibilityMaterialResourceParameters>().output)
 #define gVisibility resolveUniform(getResourceParameters<VisibilityMaterialResourceParameters>().visibility)
 #define gInstances resolveBuffer<StructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<VisibilityMaterialResourceParameters>().instances)

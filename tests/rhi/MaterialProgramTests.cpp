@@ -147,6 +147,96 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MaterialProgramContractTest);
 
+class MaterialFacadeContractTest final : public RHITest
+{
+public:
+    MaterialFacadeContractTest()
+    {
+        name = "material_generic_facade_contract";
+        type = RHITestType::Resource;
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"material.generic_facade", "material.typed_closures", "material.domain_isolation"},
+            bench::Layer::Core, "binding", "binding", {"readback.bin"});
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        using Float4 = std::array<float, 4>;
+        struct Params { GPUBufferSpan output; };
+        constexpr uint64_t kABI = 0x4d46414341440001ull;
+        static_assert(sizeof(Params) == 12);
+        std::string log;
+        ShaderCompileResult shader;
+        PROGRAM_REQUIRE(compileSlangShaderToSpirv({.moduleName = "MaterialFacadeProbe",
+            .entryPointName = "materialFacadeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"},
+            {.enableDiskCache = false}, log).transform([&](auto value) { shader = std::move(value); }));
+        for (const auto& dependency : shader.dependencies) {
+            if (dependency.find("OpenPBR") != std::string::npos || dependency.find("RTXCR") != std::string::npos ||
+                dependency.find("SceneMaterial") != std::string::npos || dependency.find("SceneSurface") != std::string::npos) {
+                return RHITestResult::fail("Generic facade depends on a concrete model or scene: " + dependency);
+            }
+        }
+        for (const char* invalidContext : {"1", "2"}) {
+            const SlangMacroDefine define{"MATERIAL_FACADE_INVALID_CONTEXT", invalidContext};
+            std::string invalidLog;
+            if (compileSlangShaderToSpirv({.moduleName = "MaterialFacadeProbe",
+                    .entryPointName = "materialFacadeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                    .macroDefines = {&define, 1}}, {.enableDiskCache = false}, invalidLog)) {
+                return RHITestResult::fail("Generic facade accepted a context from the other material domain");
+            }
+            if (invalidLog.empty()) { return RHITestResult::fail("Invalid material domain failed without compiler diagnostics"); }
+        }
+        std::atomic_uint validationErrors{0};
+        bench::TestDevice device;
+        PROGRAM_REQUIRE(bench::createTestDevice(context, {.applicationName = "Generic material facade",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .validationSink = {[](void* target, const ValidationMessage& message) noexcept {
+                if ((message.severity == ValidationSeverity::Error) && hasFlag(message.type, ValidationCategory::Validation)) {
+                    ++*static_cast<std::atomic_uint*>(target);
+                }
+            }, &validationErrors}}).transform([&](auto value) { device = std::move(value); }));
+        ResourceRegistry registry;
+        PROGRAM_REQUIRE(registry.initialize(*device));
+        ComputeKernel kernel;
+        PROGRAM_REQUIRE(kernel.initialize(*device, {.spirv = shader.spirv,
+            .parameters = parameterAbi<Params>(kABI, ParameterTransport::InlinePush)}, log));
+        std::unique_ptr<Buffer> output;
+        PROGRAM_REQUIRE(device->createBuffer({.size = 8 * 6 * sizeof(Float4), .usage = BufferUsageBits::Storage,
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { output = std::move(value); }));
+        ParameterWriter writer(*device, registry);
+        auto encoded = writer.encode(Params{writer.bufferSpan<Float4>(output.get())}, kABI, ParameterTransport::InlinePush);
+        if (!encoded) { return RHITestResult::fail("Generic facade parameters failed"); }
+        bench::GPUCommands gpu(*device->getQueue(QueueType::Graphics));
+        PROGRAM_REQUIRE(gpu.initialize(*device));
+        PROGRAM_REQUIRE(kernel.dispatch(*gpu.commands, *encoded, 1));
+        PROGRAM_REQUIRE(gpu.submitAndWait());
+        output->invalidate();
+        const auto* actual = static_cast<const Float4*>(output->map());
+        if (!actual) { return RHITestResult::fail("Generic facade readback failed"); }
+        bool equal = true;
+        for (uint32_t lane = 0; lane < 8; ++lane) {
+            const float parameterOffset = float(((lane * 3u) & 7u) * 4u);
+            const float resourceOffset = float((7u - lane) * 4u);
+            const std::array<Float4, 6> expected{{
+                {parameterOffset * 0.25f, resourceOffset * 0.5f, float(lane) * 0.125f, 0.25f},
+                {resourceOffset * 0.5f, float(lane) * 0.5f, parameterOffset, 0.5f},
+                {float(lane + 1u) * 0.25f, float(lane) * 0.5f - 2.0f, (parameterOffset + resourceOffset) * 2.0f, 6},
+                {1, 2, 3, 0}, {2, 4, 6, 0}, {2, 2, 2, 0}}};
+            for (uint32_t slot = 0; slot < expected.size(); ++slot) {
+                equal &= actual[lane * 6u + slot] == expected[slot];
+            }
+        }
+        bench::readbackEvidence(context, "readback.bin", std::span(actual, 8 * 6));
+        output->unmap();
+        if (!equal) { return RHITestResult::fail("Typed closures, domain measures, instance offsets or mutable program state changed"); }
+        if (validationErrors != 0) { return RHITestResult::fail("Generic facade caused Vulkan validation errors"); }
+        return RHITestResult::pass("One generic facade preserves two unrelated Surface closures, Fiber projected measure, offsets and per-program mutation");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialFacadeContractTest);
+
 class MaterialProgramGuideCompileTest final : public RHITest
 {
 public:

@@ -251,9 +251,14 @@ bool deserializeMaterialDefinition(std::string_view text, MaterialDefinition& ou
         const bool fiber = document.at("implementation") == "RTXCRChiang.DOTS";
         MaterialDefinition candidate = fiber ? defaultRTXCRChiangDefinition() : defaultOpenPBRDefinition();
         candidate.implementation = document.at("implementation").get<std::string>();
-        require(candidate.implementation == "OpenPBRComposite.Legacy" || candidate.implementation == "Slab.Surface" ||
+        // Migrate persisted definitions at the authoring boundary. Runtime
+        // registration and newly saved assets use only the Surface identity.
+        if (candidate.implementation == "OpenPBRComposite.Legacy") {
+            candidate.implementation = "OpenPBRComposite.Surface";
+        }
+        require(candidate.implementation == "OpenPBRComposite.Surface" || candidate.implementation == "Slab.Surface" ||
             candidate.implementation == "OpenPBR.Value" || fiber, "Unsupported material implementation");
-        if (!fiber && candidate.implementation != "OpenPBRComposite.Legacy") {
+        if (!fiber && candidate.implementation != "OpenPBRComposite.Surface") {
             require(document.contains("surfaceProgram") && document["surfaceProgram"].is_object(), "Program definition requires surfaceProgram");
             candidate.surfaceProgram = document["surfaceProgram"].dump();
             require(render::MaterialValueIR::parse(candidate.surfaceProgram).closure().has_value() == (candidate.implementation == "Slab.Surface"),
@@ -297,6 +302,7 @@ std::string serializeMaterialDefinition(const MaterialDefinition& definition)
     MaterialDefinition checked;
     std::string error;
     if (!deserializeMaterialDefinition(document.dump(), checked, error)) { throw std::runtime_error(error); }
+    document["implementation"] = checked.implementation;
     return document.dump(4) + '\n';
 }
 
@@ -474,7 +480,7 @@ bool lowerMaterialInstance(const ResolvedMaterialInstance& instance, const Mater
         }
         const bool slab = instance.definition.implementation == "Slab.Surface";
         const bool value = instance.definition.implementation == "OpenPBR.Value";
-        require(slab || value || instance.definition.implementation == "OpenPBRComposite.Legacy", "Unsupported material implementation");
+        require(slab || value || instance.definition.implementation == "OpenPBRComposite.Surface", "Unsupported material implementation");
         require(!output.rtxcrHair, "OpenPBR asset cannot replace a Fiber material");
         auto candidate = output;
         if (slab || value) {

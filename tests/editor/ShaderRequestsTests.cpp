@@ -7,9 +7,11 @@
 #include <json.hpp>
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <unordered_map>
 
 using namespace metallic::render;
@@ -38,6 +40,35 @@ std::string uniqueShaderCacheDirectory(const char* name)
 {
     return (std::filesystem::path(TEST_BINARY_DIR) / "shader-request-cache" / name /
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())).string();
+}
+
+class ScopedOptimizationEnvironment {
+public:
+    ScopedOptimizationEnvironment()
+    {
+        if (const char* value = std::getenv("METALLIC_SLANG_OPTIMIZATION")) { original_ = value; }
+        set(nullptr);
+    }
+    ~ScopedOptimizationEnvironment() { set(original_ ? original_->c_str() : nullptr); }
+
+    void set(const char* value)
+    {
+#if defined(_WIN32)
+        _putenv_s("METALLIC_SLANG_OPTIMIZATION", value ? value : "");
+#else
+        if (value) { setenv("METALLIC_SLANG_OPTIMIZATION", value, 1); }
+        else { unsetenv("METALLIC_SLANG_OPTIMIZATION"); }
+#endif
+    }
+
+private:
+    std::optional<std::string> original_;
+};
+
+ShaderRequest optimizationProbe()
+{
+    return {.module = "OptimizationProbe", .entry = "main",
+        .searchPath = PROJECT_SOURCE_DIR "/tests/editor/shaders"};
 }
 
 void expectNativeHeapStrides(const std::vector<uint32_t>& words, DescriptorHeapShaderStrides expected,
@@ -88,6 +119,8 @@ void expectNativeHeapStrides(const std::vector<uint32_t>& words, DescriptorHeapS
 
 class ShaderRequestCompileTest : public testing::Test {
 protected:
+    ScopedOptimizationEnvironment optimizationEnvironment_;
+
     void SetUp() override
     {
         oldMode_ = slangShaderDebugMode();
@@ -131,6 +164,189 @@ TEST(ShaderRequests, OwnsNativeDescriptorHeapStridesAcrossCopiesAndMoves)
     EXPECT_NE(original, moved);
     const ShaderRequestView source(moved);
     EXPECT_EQ(source.desc().descriptorHeapStrides, (DescriptorHeapShaderStrides{48, 16}));
+}
+
+TEST(ShaderRequests, OwnsOptimizationLevelAcrossCopiesAndMoves)
+{
+    auto original = optimizationProbe();
+    original.optimizationLevel = SlangShaderOptimizationLevel::O2;
+    auto copied = original;
+    original.optimizationLevel = SlangShaderOptimizationLevel::O0;
+    const auto moved = std::move(copied);
+    EXPECT_NE(original, moved);
+    const ShaderRequestView source(moved);
+    EXPECT_EQ(source.desc().optimizationLevel, SlangShaderOptimizationLevel::O2);
+}
+
+TEST_F(ShaderRequestCompileTest, OptimizationLevelsSeparateTheCompilerCache)
+{
+    const std::string directory = uniqueShaderCacheDirectory("optimization-levels");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    auto request = optimizationProbe();
+    for (const auto level : {SlangShaderOptimizationLevel::O0, SlangShaderOptimizationLevel::O1,
+            SlangShaderOptimizationLevel::O2, SlangShaderOptimizationLevel::O3}) {
+        SCOPED_TRACE(slangShaderOptimizationLevelName(level));
+        request.optimizationLevel = level;
+        const ShaderRequestView source(request);
+        const auto compiled = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_FALSE(hit);
+        EXPECT_EQ(slangShaderOptimizationLevel(source.desc()), level);
+        const auto reused = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_EQ(compiled->spirv, reused->spirv);
+    }
+    request.optimizationLevel = SlangShaderOptimizationLevel::Default;
+    const ShaderRequestView source(request);
+    const auto defaultResult = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(defaultResult) << diagnostics;
+    EXPECT_TRUE(hit); // Preserve the existing release default's effective O1 identity.
+}
+
+TEST_F(ShaderRequestCompileTest, CompilationMetricsBelongToTheCurrentInvocation)
+{
+    const std::string directory = uniqueShaderCacheDirectory("compilation-metrics");
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str()};
+    const auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    std::string diagnostics;
+    const auto compiled = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(compiled) << diagnostics;
+    const auto& metrics = compiled->metrics;
+    EXPECT_TRUE(metrics.compilerExecuted);
+    EXPECT_FALSE(metrics.cacheHit);
+    EXPECT_FALSE(metrics.detailedCompilerPerfRequested);
+    const uint64_t phaseSum = metrics.cacheLookupTimeNanoseconds + metrics.compilerSetupTimeNanoseconds +
+        metrics.moduleLoadTimeNanoseconds + metrics.dependencyTrackingTimeNanoseconds +
+        metrics.entryPointCompositionTimeNanoseconds + metrics.linkTimeNanoseconds +
+        metrics.codeGenerationTimeNanoseconds + metrics.targetFinalizeTimeNanoseconds +
+        metrics.dependencyValidationTimeNanoseconds + metrics.cacheWriteTimeNanoseconds;
+    EXPECT_LE(phaseSum, metrics.totalTimeNanoseconds);
+
+    const auto cached = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(cached) << diagnostics;
+    EXPECT_EQ(cached->spirv, compiled->spirv);
+    const auto& reused = cached->metrics;
+    EXPECT_TRUE(reused.cacheHit);
+    EXPECT_FALSE(reused.compilerExecuted);
+    EXPECT_EQ(reused.compilerSetupTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.moduleLoadTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.entryPointCompositionTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.linkTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.codeGenerationTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.targetFinalizeTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.dependencyValidationTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.cacheWriteTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.compilerReportedTotalTimeNanoseconds, 0u);
+    EXPECT_EQ(reused.compilerReportedDownstreamTimeNanoseconds, 0u);
+    EXPECT_FALSE(reused.compilerReportedTimingAvailable);
+    EXPECT_LE(reused.cacheLookupTimeNanoseconds + reused.dependencyTrackingTimeNanoseconds,
+        reused.totalTimeNanoseconds);
+}
+
+TEST_F(ShaderRequestCompileTest, DetailedCompilerProfilingPreservesBytecodeAndCacheIdentity)
+{
+    const std::string directory = uniqueShaderCacheDirectory("detailed-compiler-profiling");
+    const auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    std::string diagnostics;
+    const auto baseline = compileSlangShaderToSpirv(source.desc(), {.enableDiskCache = false}, diagnostics);
+    ASSERT_TRUE(baseline) << diagnostics;
+    const auto profiled = compileSlangShaderToSpirv(source.desc(),
+        {.cacheDirectory = directory.c_str(), .reportDetailedCompilerPerf = true}, diagnostics);
+    ASSERT_TRUE(profiled) << diagnostics;
+    EXPECT_EQ(profiled->spirv, baseline->spirv);
+    EXPECT_TRUE(profiled->metrics.compilerExecuted);
+    EXPECT_TRUE(profiled->metrics.detailedCompilerPerfRequested);
+
+    const auto normalHit = compileSlangShaderToSpirv(source.desc(),
+        {.cacheDirectory = directory.c_str()}, diagnostics);
+    ASSERT_TRUE(normalHit) << diagnostics;
+    EXPECT_TRUE(normalHit->metrics.cacheHit);
+    EXPECT_FALSE(normalHit->metrics.detailedCompilerPerfRequested);
+    const auto requestedHit = compileSlangShaderToSpirv(source.desc(),
+        {.cacheDirectory = directory.c_str(), .reportDetailedCompilerPerf = true}, diagnostics);
+    ASSERT_TRUE(requestedHit) << diagnostics;
+    EXPECT_TRUE(requestedHit->metrics.cacheHit);
+    EXPECT_TRUE(requestedHit->metrics.detailedCompilerPerfRequested);
+    EXPECT_FALSE(requestedHit->metrics.compilerExecuted);
+}
+
+TEST_F(ShaderRequestCompileTest, OptimizationOverrideDefaultsAndDebugInformationStayIndependent)
+{
+    const auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    EXPECT_EQ(slangShaderOptimizationLevel(source.desc()), SlangShaderOptimizationLevel::O1);
+    setSlangShaderDebugMode(SlangShaderDebugMode::ShaderDebug);
+    EXPECT_EQ(slangShaderOptimizationLevel(source.desc()), SlangShaderOptimizationLevel::O0);
+    optimizationEnvironment_.set("O2");
+    EXPECT_EQ(slangShaderOptimizationLevel(source.desc()), SlangShaderOptimizationLevel::O2);
+    std::string diagnostics;
+    const auto debugOptimized = compileSlangShaderToSpirv(source.desc(), {.enableDiskCache = false}, diagnostics);
+    ASSERT_TRUE(debugOptimized) << diagnostics;
+    optimizationEnvironment_.set("default");
+    EXPECT_EQ(slangShaderOptimizationLevel(source.desc()), SlangShaderOptimizationLevel::O0);
+    setSlangShaderDebugMode(SlangShaderDebugMode::CaptureSymbols);
+    EXPECT_EQ(slangShaderOptimizationLevel(source.desc()), SlangShaderOptimizationLevel::O1);
+}
+
+TEST_F(ShaderRequestCompileTest, EnvironmentAndExplicitOptimizationShareOnlyTheSameEffectiveCache)
+{
+    const std::string directory = uniqueShaderCacheDirectory("optimization-environment");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    optimizationEnvironment_.set("o2");
+    const auto fromEnvironment = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(fromEnvironment) << diagnostics;
+    EXPECT_FALSE(hit);
+    request.optimizationLevel = SlangShaderOptimizationLevel::O2;
+    optimizationEnvironment_.set("O0");
+    const auto explicitO2 = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(explicitO2) << diagnostics;
+    EXPECT_TRUE(hit);
+    EXPECT_EQ(fromEnvironment->spirv, explicitO2->spirv);
+    request.optimizationLevel = SlangShaderOptimizationLevel::Default;
+    const auto fromO0 = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(fromO0) << diagnostics;
+    EXPECT_FALSE(hit);
+    optimizationEnvironment_.set("O2");
+    const auto reusedO2 = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(reusedO2) << diagnostics;
+    EXPECT_TRUE(hit);
+    EXPECT_EQ(fromEnvironment->spirv, reusedO2->spirv);
+}
+
+TEST_F(ShaderRequestCompileTest, InvalidOptimizationFailsWithoutCreatingCacheEntries)
+{
+    const std::string directory = uniqueShaderCacheDirectory("invalid-optimization");
+    bool hit = true;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    optimizationEnvironment_.set("O4");
+    EXPECT_EQ(slangShaderOptimizationLevel(source.desc()), SlangShaderOptimizationLevel::Default);
+    const auto invalidEnvironment = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_FALSE(invalidEnvironment);
+    EXPECT_EQ(invalidEnvironment.error(), Error::InvalidArgument);
+    EXPECT_FALSE(hit);
+    EXPECT_FALSE(diagnostics.empty());
+    EXPECT_FALSE(std::filesystem::exists(directory));
+    request.optimizationLevel = static_cast<SlangShaderOptimizationLevel>(255);
+    const auto invalidRequest = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_FALSE(invalidRequest);
+    EXPECT_EQ(invalidRequest.error(), Error::InvalidArgument);
+    EXPECT_FALSE(std::filesystem::exists(directory));
+    request.optimizationLevel = SlangShaderOptimizationLevel::O1;
+    const auto validExplicit = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+    ASSERT_TRUE(validExplicit) << diagnostics; // An explicit valid level ignores an invalid process default.
+    EXPECT_FALSE(hit);
 }
 
 TEST_F(ShaderRequestCompileTest, NativeDescriptorHeapStridesSeparateTheCompilerCache)

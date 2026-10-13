@@ -1,3 +1,5 @@
+module ColorGradingParameterLayout;
+
 #include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
 import ShaderCore;
 using Metallic;

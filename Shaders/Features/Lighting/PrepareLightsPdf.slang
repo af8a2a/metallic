@@ -1,3 +1,5 @@
+module PrepareLightsPdf;
+
 #include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
 [[vk::push_constant]] ConstantBuffer<PrepareLightsPdfParams> gParams;
 

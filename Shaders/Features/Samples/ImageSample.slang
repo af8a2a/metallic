@@ -1,3 +1,5 @@
+module ImageSample;
+
 import ShaderCore;
 using Metallic;
 

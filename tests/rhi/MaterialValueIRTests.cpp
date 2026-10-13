@@ -165,7 +165,7 @@ public:
             check(bool(values), log.c_str());
             using Float4 = std::array<float, 4>;
             const std::array<Float4, 5> texels{{{1,0,0,1}, {1,0,0,1}, {1,0,0,1}, {1,0,0,1}, {0,1,0,1}}};
-            std::unique_ptr<Buffer> input, upload, output;
+            std::unique_ptr<Buffer> input, upload, output, feedback;
             auto allocate = [&](size_t bytes, MemoryLocation memory, BufferUsageBits usage, auto& target) {
                 check(bool(device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = memory})
                     .transform([&](auto value) { target = std::move(value); })), "IR buffer failed");
@@ -173,11 +173,16 @@ public:
             allocate(values->inputBytes().size_bytes(), MemoryLocation::HostUpload, BufferUsageBits::Storage, input);
             allocate(sizeof(texels), MemoryLocation::HostUpload, BufferUsageBits::TransferSource, upload);
             allocate(materials.size() * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
+            // The production texture adapter reads the residency sampling floor.
+            // This probe has one fully resident texture and no streaming demand.
+            const std::array<uint32_t, 8> feedbackWords{};
+            allocate(sizeof(feedbackWords), MemoryLocation::HostUpload, BufferUsageBits::Storage, feedback);
             auto write = [&](Buffer& buffer, const void* data, size_t bytes) {
                 void* mapped = buffer.map(); check(mapped != nullptr, "IR upload mapping failed");
                 std::memcpy(mapped, data, bytes); buffer.flush(); buffer.unmap();
             };
             write(*input, values->inputBytes().data(), values->inputBytes().size_bytes()); write(*upload, texels.data(), sizeof(texels));
+            write(*feedback, feedbackWords.data(), sizeof(feedbackWords));
             std::unique_ptr<Texture> texture;
             std::unique_ptr<TextureView> view;
             check(bool(device->createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
@@ -211,7 +216,8 @@ public:
             const ComputeResourceBindingDesc bindings[] = {
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput)},
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, 1},
-                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues)}};
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues)},
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback)}};
             ComputeProgram program;
             const auto initialized = program.initialize(*device, {.spirv = shader->spirv, .bindings = bindings, .requiresRayQuery = false,
                 .resourceParameterSize = sizeof(SceneResourceParameters)}, log);
@@ -220,7 +226,8 @@ public:
             const ComputeDispatchBinding dispatch[] = {
                 {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = output.get()},
                 {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = views},
-                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = input.get()}};
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = input.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = feedback.get()}};
             check(bool(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = dispatch, .groupCountX = uint32_t(materials.size())})), "IR dispatch failed");
             check(bool(gpu.submitAndWait()), "IR GPU execution failed");
             output->invalidate(); const auto* data = static_cast<const Float4*>(output->map());

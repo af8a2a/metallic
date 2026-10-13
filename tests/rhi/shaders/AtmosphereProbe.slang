@@ -1,3 +1,5 @@
+module AtmosphereProbe;
+
 import Atmosphere;
 using Metallic;
 using Metallic.Atmosphere;

@@ -1,15 +1,39 @@
+#language slang 2026
+module VisibilityBufferDeferred;
 import Core;
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
 using Metallic;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import OpenPBR;
+import OpenPBRClosure;
+import OpenPBRSurface;
+import SceneSurfaceMaterial;
+import SurfaceLighting;
+#if METALLIC_CUSTOM_MATERIALS
+import SlabClosure;
+#endif
+using Metallic.OpenPBR;
+using Metallic.SceneOpenPBR;
 import GPUDriven;
 using Metallic.GPUDriven;
-import Material;
-using Metallic.Material;
 
 #ifndef MATERIAL_CLASS
 #define MATERIAL_CLASS -1
 #endif
 
-#include "VisibilityBufferLighting.slang"
+import VisibilityBufferLighting;
+using Metallic.VisibilityLighting;
 
 ScenePathTracePush deferredViewPush()
 {
@@ -38,7 +62,6 @@ ScenePathTracePush deferredViewPush()
 #define gVisibilityDepth resolveUniform(getResourceParameters<SceneResourceParameters>().visibilityDepth)
 #define gRasterInstances resolveBuffer<StructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<SceneResourceParameters>().rasterInstances)
 #define gRasterMaterials resolveBuffer<StructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<SceneResourceParameters>().rasterMaterials)
-#include "VisibilityStreamDecode.slang"
 #define gStreamRecords resolveBuffer<StructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<SceneResourceParameters>().streamRecords)
 #define gStreamGroups resolveBuffer<StructuredBuffer<StreamActiveGroup>>(getResourceParameters<SceneResourceParameters>().streamGroups)
 #define gStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().streamPages)
@@ -86,7 +109,7 @@ float3 rasterWorldNormal(GPUDrivenPreviewInstance instance, float3 normal)
     float3 c2 = cross(instance.world0.xyz, instance.world1.xyz);
     float determinant = dot(instance.world0.xyz, c0);
     // Preserve authored orientation under mirrored transforms, as the ray path does.
-    return safeNormalize((c0 * normal.x + c1 * normal.y + c2 * normal.z) *
+    return Metallic.ScenePath::safeNormalize((c0 * normal.x + c1 * normal.y + c2 * normal.z) *
         (determinant < 0.0 ? -1.0 : 1.0), normal);
 }
 
@@ -133,7 +156,7 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     float3 normals[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributes(record, triangleIndex, gStreamGroups, gStreamPages, gStreamPageTable, normals, uv, tangents);
     hit.normal = domain.x >= 0.0 ? hit.geometryNormal : rasterWorldNormal(instance,
-        safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
+        Metallic.ScenePath::safeNormalize(normals[0] * bary.x + normals[1] * bary.y + normals[2] * bary.z, localNormal));
     hit.texcoord = uv[0] * bary.x + uv[1] * bary.y + uv[2] * bary.z;
     float2 du = uv[1] - uv[0], dv = uv[2] - uv[0];
     float uvArea = abs(du.x * dv.y - du.y * dv.x);
@@ -143,12 +166,12 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
     // Keep the authored geometric normal stable until normal map evaluation.
     float3 axis = abs(hit.normal.z) < 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
-    float3 tangent = safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
+    float3 tangent = Metallic.ScenePath::safeNormalize(uvTangent - hit.normal * dot(hit.normal, uvTangent), Metallic.ScenePath::safeNormalize(cross(axis, hit.normal), float3(1, 0, 0)));
     float tangentSign = dot(cross(hit.normal, tangent), uvBitangent) < 0.0 ? -1.0 : 1.0;
     if ((attributes & 16u) != 0u && domain.x < 0.0) {
         float4 authored = tangents[0] * bary.x + tangents[1] * bary.y + tangents[2] * bary.z;
         float3 worldTangent = rasterWorldVector(instance, authored.xyz);
-        tangent = safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), tangent);
+        tangent = Metallic.ScenePath::safeNormalize(worldTangent - hit.normal * dot(hit.normal, worldTangent), tangent);
         tangentSign = (authored.w < 0.0 ? -1.0 : 1.0) * rasterHandedness(instance);
     }
     hit.tangent = float4(tangent, tangentSign * push.bitangentFlip);
@@ -156,7 +179,7 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     gRasterMaterials.GetDimensions(count, stride);
     if (instance.identity.y >= count) { return false; }
     hit.materialIndex = gRasterMaterials[instance.identity.y].identity.z;
-    gMaterials.GetDimensions(count, stride);
+    sceneMaterials().GetDimensions(count, stride);
     if (hit.materialIndex >= count) { return false; }
     hit.instanceIndex = instance.identity.z;
     hit.primitiveIndex = gStreamGroups[record.dataIndex].primitiveIndex;
@@ -206,11 +229,11 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
     }
 #endif
     if (push.debugView != kOpenPBRDebugViewFinal && !hasSurface) { radiance = float3(0.0); }
-    if (gRealtimeShadowParameters[0].control.w != 0u) {
-        float encoded = gRealtimeShadow.Load(int3(pixel, 0));
+    if (resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameters<SceneResourceParameters>().shadowParameters)[0].control.w != 0u) {
+        float encoded = resolveUniform(getResourceParameters<SceneResourceParameters>().shadowVisibility).Load(int3(pixel, 0));
         radiance = float3(encoded * encoded);
     }
-    gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
+    sceneOutput()[pixel] = float4(max(radiance, float3(0.0)), 1.0);
 }
 
 [shader("compute")]

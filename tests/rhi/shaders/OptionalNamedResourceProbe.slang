@@ -1,3 +1,5 @@
+module OptionalNamedResourceProbe;
+
 import Core;
 using Metallic;
 

@@ -1,3 +1,5 @@
+module GPUDrivenCulling;
+
 import ShaderCore;
 using Metallic;
 

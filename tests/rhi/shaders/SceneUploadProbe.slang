@@ -1,3 +1,5 @@
+module SceneUploadProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

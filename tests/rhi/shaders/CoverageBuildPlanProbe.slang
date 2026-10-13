@@ -1,3 +1,5 @@
+module CoverageBuildPlanProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

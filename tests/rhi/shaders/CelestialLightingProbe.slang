@@ -1,3 +1,5 @@
+module CelestialLightingProbe;
+
 import Core;
 using Metallic;
 import Lighting;

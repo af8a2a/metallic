@@ -52,7 +52,7 @@ private:
 };
 
 bool checkUpload(render::Device& device, render::Queue& queue, const std::shared_ptr<render::MaterialBindingGeneration>& binding,
-    std::span<const render::LegacyMaterialPayload> expected, std::string& log)
+    std::span<const render::SceneMaterialData> expected, std::string& log)
 {
     using namespace render;
     registerRenderGraphPassType("MaterialAssetProbe", "Material asset readback",
@@ -133,7 +133,7 @@ public:
             const auto current = resources.materialGeneration();
             if (current->parameters().size_bytes() != original->parameters().size_bytes() ||
                 std::memcmp(current->parameters().data(), original->parameters().data(), original->parameters().size_bytes()) != 0) {
-                return RHITestResult::fail("Asset round trip changed the legacy GPU payload");
+                return RHITestResult::fail("Asset round trip changed the scene transport data");
             }
             const auto* sharedProgram = findMaterialProgram(definition.implementation);
             if (!sharedProgram) { return RHITestResult::fail("Definition has no existing MaterialProgram"); }

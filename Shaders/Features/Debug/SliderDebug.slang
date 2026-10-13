@@ -1,3 +1,5 @@
+module SliderDebug;
+
 import ShaderCore;
 using Metallic;
 

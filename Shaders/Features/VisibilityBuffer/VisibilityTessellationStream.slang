@@ -1,9 +1,35 @@
+#language slang 2026
+implementing GPUDrivenStreamAsset;
+
+struct TessVertex
+{
+    float4 position : SV_Position;
+    [vk::location(0)] float2 uv : TEXCOORD0;
+    [vk::location(1)] float2 bary : TEXCOORD1;
+#if VISIBILITY_BUFFER_ALPHA_MASKED
+    [vk::location(2)] nointerpolation uint material : TEXCOORD2;
+#endif
+    [vk::location(3)] float3 world : TEXCOORD3;
+    [vk::location(5)] nointerpolation uint originalVisibilityId : TEXCOORD5;
+    [vk::location(6)] nointerpolation uint debugPatchSeed : TEXCOORD6;
+    [vk::location(4)] nointerpolation uint doubleSided : TEXCOORD4;
+    [vk::location(7)] nointerpolation uint streamInstance : TEXCOORD7;
+};
+
+float4 tessDebugColor(TessVertex input, uint primitiveId)
+{
+    uint triangle = input.originalVisibilityId != 0u ? primitiveId : (primitiveId & 127u);
+    uint color = tessDebugHash(input.debugPatchSeed ^ tessDebugHash(triangle + 1u));
+    return float4(0.3 + 0.5 * float3(color & 255u, (color >> 8u) & 255u, (color >> 16u) & 255u) / 255.0, 1.0);
+}
+
 import ShaderCore;
 using Metallic;
 
 // Task/mesh patch path for the same active cut used by ordinary stream raster.
-#include "VisibilityTessellationSplit.slang"
-#include "StreamAttributeDecode.slang"
+import VisibilityTessellation;
+import GPUDriven;
+using Metallic.GPUDriven;
 groupshared float3 g_StreamTessSource[3];
 groupshared float3 g_StreamTessNormal[3];
 groupshared float2 g_StreamTessUv[3];

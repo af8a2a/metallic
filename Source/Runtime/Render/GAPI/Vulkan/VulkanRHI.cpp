@@ -10,6 +10,7 @@
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/ShaderObjectCacheFile.h"
+#include "Runtime/Render/GAPI/NativeBinaryCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -35,6 +36,7 @@
 #include <SDL3/SDL_loadso.h>
 #include <SDL3/SDL_vulkan.h>
 #include <spdlog/spdlog.h>
+#include <json.hpp>
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
@@ -50,6 +52,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <new>
@@ -1888,9 +1891,13 @@ struct PipelineCacheImpl {
     PipelineCacheStats stats;
     std::unordered_set<uint64_t> storedPsoHashes;
     std::unordered_set<uint64_t> sessionPsoHashes;
-    mutable std::mutex mutex;
+    // Normally protects application metadata only; serializeCreation retains
+    // it across native calls for the benchmark's broad-lock baseline. Native
+    // cache access uses Vulkan's internal synchronization in either mode.
+    mutable std::mutex metadataMutex;
     std::mutex saveMutex;
     bool saveOnDestroy = true;
+    bool serializeCreation = false;
 
     ~PipelineCacheImpl();
     Result<> initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
@@ -1906,6 +1913,7 @@ struct GraphicsPipelineImpl {
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
+    PipelineCreationStats creationStats;
     ~GraphicsPipelineImpl();
 };
 
@@ -1913,9 +1921,11 @@ struct ComputePipelineImpl {
     DeviceImpl* device = nullptr;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    VkShaderEXT shaderObject = VK_NULL_HANDLE;
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
+    PipelineCreationStats creationStats;
     std::vector<uint8_t> replayInputSpirv, replayDeviceSpirv;
     ~ComputePipelineImpl();
 };
@@ -1959,6 +1969,7 @@ struct CommandBufferImpl {
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
     VkPipeline currentComputePipeline = VK_NULL_HANDLE;
+    VkShaderEXT currentComputeShaderObject = VK_NULL_HANDLE;
     BindlessHeapImpl* currentBindlessHeap = nullptr;
     bool currentGraphicsPipelineUsesBindlessHeap = false;
     bool currentComputePipelineUsesBindlessHeap = false;
@@ -2073,7 +2084,9 @@ struct DeviceImpl {
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderUntypedPointersEnabled = false;
     bool pipelineExecutableStatistics = false;
+    std::string pipelineExecutableDirectory;
     bool logPipelineKeys = false;
+    bool pipelineBinaryEnabled = false;
     bool bufferDeviceAddressEnabled = false;
     bool rayTracingPipelineEnabled = false;
     bool streamlineInitialized = false;
@@ -2439,6 +2452,7 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
 {
     device = &owningDevice;
     saveOnDestroy = desc.saveOnDestroy;
+    serializeCreation = desc.serializeCreation;
     fileIdentity = owningDevice.pipelineCacheFileIdentity;
     if (desc.filePath != nullptr && desc.filePath[0] != '\0') {
         filePath = desc.filePath;
@@ -2519,8 +2533,8 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
 
 Result<> PipelineCacheImpl::save()
 {
-    // Serialize file replacement without holding the PSO creation/statistics
-    // mutex during driver extraction, checksum calculation or durable I/O.
+    // Serialize file replacement without holding the metadata mutex during
+    // driver extraction, checksum calculation or durable I/O.
     std::lock_guard saveLock(saveMutex);
     if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
@@ -2532,7 +2546,7 @@ Result<> PipelineCacheImpl::save()
     uint64_t revision = 0;
     std::vector<uint64_t> hashes;
     {
-        std::lock_guard lock(mutex);
+        std::lock_guard lock(metadataMutex);
         if (stats.dirtyRevision == stats.persistedRevision) {
             return {};
         }
@@ -2549,7 +2563,7 @@ Result<> PipelineCacheImpl::save()
         ~SaveAttempt()
         {
             if (!completed) {
-                std::lock_guard lock(cache.mutex);
+                std::lock_guard lock(cache.metadataMutex);
                 ++cache.stats.saveFailureCount;
                 cache.stats.saveInProgress = false;
             }
@@ -2624,7 +2638,7 @@ Result<> PipelineCacheImpl::save()
     const uint64_t writeNs = nanoseconds(writeEnd - writeBegin);
     uint64_t saveNs = 0;
     {
-        std::lock_guard lock(mutex);
+        std::lock_guard lock(metadataMutex);
         storedPsoHashes.insert(hashes.begin(), hashes.end());
         storedCount = stats.storedPsoCount = storedPsoHashes.size();
         stats.backendDataSize = backendData.size();
@@ -3781,7 +3795,7 @@ PipelineCacheStats PipelineCache::stats() const
     if (impl_ == nullptr) {
         return {};
     }
-    std::lock_guard lock(impl_->mutex);
+    std::lock_guard lock(impl_->metadataMutex);
     return impl_->stats;
 }
 
@@ -3791,6 +3805,42 @@ Result<> PipelineCache::save()
         return makeError(Error::InvalidArgument);
     }
     return impl_->save();
+}
+
+Result<> PipelineCache::merge(std::span<PipelineCache* const> sources)
+{
+    if (impl_ == nullptr || impl_->device == nullptr || impl_->pipelineCache == VK_NULL_HANDLE) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (sources.empty()) { return {}; }
+    if (sources.size() > std::numeric_limits<uint32_t>::max()) {
+        return makeError(Error::InvalidArgument);
+    }
+    std::vector<VkPipelineCache> nativeSources;
+    std::unordered_set<uint64_t> mergedHashes;
+    nativeSources.reserve(sources.size());
+    for (const auto* source : sources) {
+        if (source == nullptr || source->impl_ == nullptr || source->impl_.get() == impl_.get() ||
+            source->impl_->device != impl_->device || source->impl_->pipelineCache == VK_NULL_HANDLE) {
+            return makeError(Error::InvalidArgument);
+        }
+        nativeSources.push_back(source->impl_->pipelineCache);
+        std::lock_guard sourceLock(source->impl_->metadataMutex);
+        mergedHashes.insert(source->impl_->storedPsoHashes.begin(), source->impl_->storedPsoHashes.end());
+        mergedHashes.insert(source->impl_->sessionPsoHashes.begin(), source->impl_->sessionPsoHashes.end());
+    }
+    // The caller quiesces participating caches. Unlike native creation with
+    // flags=0, vkMergePipelineCaches requires destination host synchronization.
+    std::scoped_lock destinationLock(impl_->saveMutex, impl_->metadataMutex);
+    const VkResult result = impl_->device->functions.vkMergePipelineCaches(impl_->device->device,
+        impl_->pipelineCache, static_cast<uint32_t>(nativeSources.size()), nativeSources.data());
+    if (result != VK_SUCCESS) { return resultFromVk(result); }
+    // Merged identities are known before this destination creates them. Keep
+    // its per-session creation counts separate from the sources' histories.
+    impl_->storedPsoHashes.insert(mergedHashes.begin(), mergedHashes.end());
+    impl_->stats.storedPsoCount = impl_->storedPsoHashes.size();
+    ++impl_->stats.dirtyRevision;
+    return {};
 }
 
 const void* PreparedExecution::deviceIdentity() const
@@ -3825,6 +3875,11 @@ const char* GraphicsShaderObjectProgram::binaryCacheFilePath() const
 
 METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsPipeline)
 
+GraphicsPipeline::GraphicsPipeline(std::shared_ptr<detail::GraphicsPipelineImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
 namespace detail {
 GraphicsPipelineImpl::~GraphicsPipelineImpl()
 {
@@ -3851,12 +3906,26 @@ bool GraphicsPipeline::pipelineCacheHit() const
     return impl_ != nullptr && impl_->pipelineCacheHit;
 }
 
+PipelineCreationStats GraphicsPipeline::creationStats() const
+{
+    return impl_ != nullptr ? acquisitionStats_.value_or(impl_->creationStats) : PipelineCreationStats{};
+}
+
 METALLIC_RHI_HANDLE_DEFINITIONS(ComputePipeline)
+
+ComputePipeline::ComputePipeline(std::shared_ptr<detail::ComputePipelineImpl> impl)
+    : impl_(std::move(impl))
+{
+}
 
 namespace detail {
 ComputePipelineImpl::~ComputePipelineImpl()
 {
     if (device != nullptr) {
+        if (shaderObject != VK_NULL_HANDLE) {
+            device->functions.vkDestroyShaderEXT(device->device, shaderObject, nullptr);
+            shaderObject = VK_NULL_HANDLE;
+        }
         if (pipeline != VK_NULL_HANDLE) {
             device->functions.vkDestroyPipeline(device->device, pipeline, nullptr);
             pipeline = VK_NULL_HANDLE;
@@ -3877,6 +3946,11 @@ uint64_t ComputePipeline::psoHash() const
 bool ComputePipeline::pipelineCacheHit() const
 {
     return impl_ != nullptr && impl_->pipelineCacheHit;
+}
+
+PipelineCreationStats ComputePipeline::creationStats() const
+{
+    return impl_ != nullptr ? acquisitionStats_.value_or(impl_->creationStats) : PipelineCreationStats{};
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsShaderObjectProgram)
@@ -4232,6 +4306,7 @@ Result<> CommandBuffer::begin(std::shared_ptr<CommandSubmissionContext> context)
     impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipeline = VK_NULL_HANDLE;
+    impl_->currentComputeShaderObject = VK_NULL_HANDLE;
     impl_->currentBindlessHeap = nullptr;
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
     impl_->currentComputePipelineUsesBindlessHeap = false;
@@ -5148,8 +5223,14 @@ Result<> CommandBuffer::bindExecutionImpl(
         auto result = retainResource(execution.compute_);
         if (!result) { return result; }
         const auto& pipeline = *execution.compute_;
-        impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+        if (pipeline.shaderObject != VK_NULL_HANDLE) {
+            const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            impl_->device->functions.vkCmdBindShadersEXT(impl_->commandBuffer, 1, &stage, &pipeline.shaderObject);
+        } else {
+            impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+        }
         impl_->currentComputePipeline = pipeline.pipeline;
+        impl_->currentComputeShaderObject = pipeline.shaderObject;
         impl_->currentComputePipelineLayout = pipeline.layout;
         impl_->currentComputePipelineUsesBindlessHeap = pipeline.usesBindlessHeap;
     } else if (execution.graphics_) {
@@ -5341,17 +5422,22 @@ Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& r
         return makeError(Error::InvalidArgument);
     }
     const auto pipeline = impl_->currentComputePipeline;
+    const auto shaderObject = impl_->currentComputeShaderObject;
     const auto layout = impl_->currentComputePipelineLayout;
     const auto usesHeap = impl_->currentComputePipelineUsesBindlessHeap;
     auto* heap = impl_->currentBindlessHeap;
     auto data = impl_->currentBindlessUserData;
     const auto restore = [&] {
         impl_->currentComputePipeline = pipeline;
+        impl_->currentComputeShaderObject = shaderObject;
         impl_->currentComputePipelineLayout = layout;
         impl_->currentComputePipelineUsesBindlessHeap = usesHeap;
         impl_->currentBindlessHeap = heap;
         impl_->currentBindlessUserData = std::move(data);
-        if (pipeline) { impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
+        if (shaderObject) {
+            const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            impl_->device->functions.vkCmdBindShadersEXT(impl_->commandBuffer, 1, &stage, &shaderObject);
+        } else if (pipeline) { impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
         if (heap) {
             heap->heap.bind(impl_->commandBuffer, heap->samplerHeap.address, heap->resourceHeap.address);
             pushCurrentBindlessData(*impl_);
@@ -8019,13 +8105,21 @@ struct PipelineCreationFeedback {
 template<class CreateInfo, class NativeCreate>
 VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::PipelineCacheImpl* cache,
     uint64_t psoHash, const char* kind, const std::string& shaderName, const char* entryPoint,
-    uint64_t cacheLockWaitNs, bool& metadataHit, NativeCreate&& nativeCreate)
+    bool& metadataHit, PipelineCreationStats& creationStats, NativeCreate&& nativeCreate)
 {
     CreateInfo info = suppliedInfo;
     PipelineCreationFeedback feedback;
     feedback.attach(info.pNext);
-    metadataHit = cache != nullptr &&
-        (cache->storedPsoHashes.contains(psoHash) || cache->sessionPsoHashes.contains(psoHash));
+    uint64_t cacheLockWaitNs = 0;
+    metadataHit = false;
+    std::unique_lock<std::mutex> creationLock;
+    if (cache != nullptr) {
+        const auto lockBegin = std::chrono::steady_clock::now();
+        creationLock = std::unique_lock(cache->metadataMutex);
+        cacheLockWaitNs = pipelineElapsedNanoseconds(lockBegin);
+        metadataHit = cache->storedPsoHashes.contains(psoHash) || cache->sessionPsoHashes.contains(psoHash);
+        if (!cache->serializeCreation) { creationLock.unlock(); }
+    }
     const std::string cachePath = cache != nullptr ? cache->filePath.string() : "<none>";
     const char* entry = entryPoint != nullptr ? entryPoint : "<none>";
     spdlog::info("[PipelineCreate] Begin kind={} pso={:016x} cache='{}' shader='{}' entry={} metadataHit={} cacheLockWaitMs={:.3f}",
@@ -8043,8 +8137,21 @@ VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::Pipe
     const bool nativeHit = feedbackValid &&
         (observed.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
     if (result == VK_SUCCESS && cache != nullptr) {
+        if (!creationLock.owns_lock()) {
+            const auto lockBegin = std::chrono::steady_clock::now();
+            creationLock.lock();
+            cacheLockWaitNs += pipelineElapsedNanoseconds(lockBegin);
+        }
         metadataHit = cache->recordPsoLocked(psoHash, observed, nativeCreateNs, cacheLockWaitNs);
     }
+    if (creationLock.owns_lock()) { creationLock.unlock(); }
+    creationStats = PipelineCreationStats{
+        .nativeCreateTimeNanoseconds = nativeCreateNs,
+        .driverDurationNanoseconds = feedbackValid ? observed.duration : 0,
+        .cacheLockWaitTimeNanoseconds = cacheLockWaitNs,
+        .feedbackValid = feedbackValid,
+        .nativeCacheHit = nativeHit,
+    };
     // Driver duration is undefined when VALID is clear; do not read it then.
     const std::string driverMs = feedbackValid
         ? fmt::format("{:.3f}", static_cast<double>(observed.duration) / 1'000'000.0)
@@ -8057,15 +8164,16 @@ VkResult createPipelineWithFeedback(const CreateInfo& suppliedInfo, detail::Pipe
     return result;
 }
 
-// The returned lock stays alive through Vulkan creation and recordPsoLocked().
-Result<std::unique_lock<std::mutex>> lockPipelineCache(
+// Cache ownership and the native handle are immutable after initialization.
+// Flags are zero, so Vulkan synchronizes native cache access internally.
+Result<> validatePipelineCache(
     const detail::DeviceImpl& device, bool requested, detail::PipelineCacheImpl* cache)
 {
-    if (!requested) { return std::unique_lock<std::mutex>{}; }
+    if (!requested) { return {}; }
     if (cache == nullptr || cache->device != &device || cache->pipelineCache == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
     }
-    return std::unique_lock<std::mutex>(cache->mutex);
+    return {};
 }
 
 template<class PipelineImpl>
@@ -8086,7 +8194,7 @@ Result<std::unique_ptr<PipelineImpl>> createPipelineOwner(detail::DeviceImpl& de
 
 } // namespace
 
-Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const GraphicsPipelineDesc& desc)
+Result<> Device::validateGraphicsPipelineDesc(const GraphicsPipelineDesc& desc) const
 {
     const bool usesTaskShader = desc.taskShader.module != nullptr;
     const bool usesMeshShader = desc.meshShader.module != nullptr;
@@ -8168,10 +8276,27 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
-    const auto cacheLockBegin = std::chrono::steady_clock::now();
-    auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
-    if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
-    const uint64_t cacheLockWaitNs = pipelineCache != nullptr ? pipelineElapsedNanoseconds(cacheLockBegin) : 0;
+    if (auto validation = validatePipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache); !validation) {
+        return std::unexpected(validation.error());
+    }
+    return {};
+}
+
+Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(
+    const GraphicsPipelineDesc& desc, PipelineCreationStats* creationStats)
+{
+    if (creationStats != nullptr) { *creationStats = {}; }
+    if (auto validation = validateGraphicsPipelineDesc(desc); !validation) {
+        return std::unexpected(validation.error());
+    }
+    const bool usesTaskShader = desc.taskShader.module != nullptr;
+    const bool usesMeshShader = desc.meshShader.module != nullptr;
+    const bool configuresTaskSubgroups =
+        desc.taskRequiredSubgroupSize != 0 || desc.taskRequireFullSubgroups;
+    const uint32_t colorCount = desc.colorAttachmentCount;
+    const bool hasDepthStencilFormat = desc.depthStencilFormat != Format::Unknown;
+    detail::PipelineCacheImpl* pipelineCache =
+        desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
     const uint64_t psoHash = detail::graphicsPipelineStateHash(desc);
 
     const char* vertexEntryPoint = desc.vertexShader.entryPoint;
@@ -8328,11 +8453,12 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
         .pNext = &renderingInfo,
         .flags = (desc.usesBindlessHeap ? VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT : 0) |
-            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0),
+            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0) |
+            (desc.disableOptimization ? VK_PIPELINE_CREATE_2_DISABLE_OPTIMIZATION_BIT : 0),
     };
     VkGraphicsPipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .pNext = (desc.usesBindlessHeap || desc.indirectBindable) ? static_cast<const void*>(&bindlessPipelineFlags) :
+        .pNext = (desc.usesBindlessHeap || desc.indirectBindable || desc.disableOptimization) ? static_cast<const void*>(&bindlessPipelineFlags) :
             static_cast<const void*>(&renderingInfo),
         .stageCount = static_cast<uint32_t>(stages.size()),
         .pStages = stages.data(),
@@ -8351,7 +8477,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     const ShaderModule* primaryShader = usesMeshShader ? desc.meshShader.module : desc.vertexShader.module;
     result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "graphics",
         primaryShader->impl_->diagnosticName, usesMeshShader ? meshEntryPoint : vertexEntryPoint,
-        cacheLockWaitNs, pipelineImpl->pipelineCacheHit, [&](const VkGraphicsPipelineCreateInfo& info) {
+        pipelineImpl->pipelineCacheHit, pipelineImpl->creationStats, [&](const VkGraphicsPipelineCreateInfo& info) {
             return impl_->functions.vkCreateGraphicsPipelines(
                 impl_->device,
                 pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
@@ -8360,6 +8486,7 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
                 nullptr,
                 &pipeline);
         });
+    if (creationStats != nullptr) { *creationStats = pipelineImpl->creationStats; }
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -8368,11 +8495,28 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
     return std::unique_ptr<GraphicsPipeline>(new GraphicsPipeline(std::move(pipelineImpl)));
 }
 
-Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const ComputePipelineDesc& desc)
+Result<> Device::validateComputePipelineDesc(const ComputePipelineDesc& desc) const
 {
     if (impl_ == nullptr ||
         !validShaderStage(desc.computeShader)) {
         return makeError(Error::InvalidArgument);
+    }
+    if (desc.backend > ComputePipelineBackend::PipelineBinary ||
+        (desc.backend != ComputePipelineBackend::Pipeline && desc.pipelineCache != nullptr) ||
+        (desc.backend == ComputePipelineBackend::ShaderObject && desc.disableOptimization)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.backend == ComputePipelineBackend::ShaderObject &&
+        (!impl_->capabilities.shaderObject || !impl_->functions.vkCreateShadersEXT || !impl_->functions.vkCmdBindShadersEXT)) {
+        return makeError(Error::Unsupported);
+    }
+    if (desc.backend == ComputePipelineBackend::PipelineBinary && !impl_->pipelineBinaryEnabled) {
+        return makeError(Error::Unsupported);
+    }
+    // The pipeline execution-set API accepts VkPipeline only. Compute shader
+    // objects require a separate shader execution-set API and are not exposed here.
+    if (desc.backend == ComputePipelineBackend::ShaderObject && desc.indirectBindable) {
+        return makeError(Error::Unsupported);
     }
 
     if (desc.indirectBindable && !supportsIndirectBinding(*impl_,
@@ -8392,10 +8536,193 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
 
     detail::PipelineCacheImpl* pipelineCache =
         desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
-    const auto cacheLockBegin = std::chrono::steady_clock::now();
-    auto pipelineCacheLock = lockPipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache);
-    if (!pipelineCacheLock) { return std::unexpected(pipelineCacheLock.error()); }
-    const uint64_t cacheLockWaitNs = pipelineCache != nullptr ? pipelineElapsedNanoseconds(cacheLockBegin) : 0;
+    if (auto validation = validatePipelineCache(*impl_, desc.pipelineCache != nullptr, pipelineCache); !validation) {
+        return std::unexpected(validation.error());
+    }
+    return {};
+}
+
+namespace {
+// These are diagnostics of a captured executable, not a native cache format.
+// Preserve the driver's bytes and descriptions without assuming they are ISA.
+template <typename T, typename Query>
+VkResult queryExecutableArray(std::vector<T>& values, VkStructureType type, Query&& query)
+{
+    constexpr uint32_t kMaxEntries = 256;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        uint32_t count = 0;
+        VkResult result = query(&count, nullptr);
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) { return result; }
+        if (count > kMaxEntries) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
+        values.assign(count, T{});
+        for (auto& value : values) { value.sType = type; }
+        if (count == 0) { return VK_SUCCESS; }
+        result = query(&count, values.data());
+        if (result == VK_SUCCESS && count <= values.size()) {
+            values.resize(count);
+            return result;
+        }
+        if (result == VK_SUCCESS) { result = VK_INCOMPLETE; }
+        if (result != VK_INCOMPLETE) { return result; }
+    }
+    values.clear();
+    return VK_INCOMPLETE;
+}
+
+void captureComputeExecutable(detail::DeviceImpl& device, VkPipeline pipeline, uint64_t psoHash,
+    const detail::ShaderModuleImpl& shader, const char* entry)
+{
+    if (device.pipelineExecutableDirectory.empty()) { return; }
+    // File I/O and queries deliberately happen after the native creation timer.
+    try {
+        using Json = nlohmann::json;
+        static std::atomic<uint64_t> sequence = 0;
+        const auto begin = std::chrono::steady_clock::now();
+        const auto root = std::filesystem::path(device.pipelineExecutableDirectory);
+        std::filesystem::create_directories(root);
+        std::filesystem::path directory;
+        for (int attempt = 0; attempt < 32; ++attempt) {
+            const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+            auto candidate = root / (std::to_string(psoHash) + "-" + std::to_string(stamp) + "-" +
+                std::to_string(sequence.fetch_add(1)));
+            if (std::filesystem::create_directory(candidate)) { directory = std::move(candidate); break; }
+        }
+        if (directory.empty()) { throw std::runtime_error("Cannot allocate a unique pipeline capture directory"); }
+        const auto& core = device.physicalProperties.core;
+        Json report{{"schema_version", 1}, {"pso_hash", psoHash}, {"shader", shader.diagnosticName},
+            {"entry_point", entry}, {"input_spirv_fnv1a64", shader.inputSpirvFnv1a64},
+            {"device_spirv_fnv1a64", shader.deviceSpirvFnv1a64},
+            {"device", {{"name", core.deviceName}, {"vendor_id", core.vendorID}, {"device_id", core.deviceID},
+                {"driver_version", core.driverVersion}, {"api_version", core.apiVersion},
+                {"pipeline_cache_uuid", std::vector<uint8_t>(core.pipelineCacheUUID, core.pipelineCacheUUID + VK_UUID_SIZE)}}},
+            {"capture_statistics", device.pipelineExecutableStatistics},
+            {"capture_internal_representations", device.pipelineExecutableStatistics},
+            {"scope", "Opt-in captured Compute Pipeline; driver representations are implementation-dependent. Query/export time is outside native_create_ms. Capture flags may change compilation; do not pool timings with ordinary pipelines."},
+            {"executables", Json::array()}};
+        const auto& functions = device.functions;
+        const bool available = device.pipelineExecutableStatistics && functions.vkGetPipelineExecutablePropertiesKHR &&
+            functions.vkGetPipelineExecutableStatisticsKHR && functions.vkGetPipelineExecutableInternalRepresentationsKHR;
+        report["status"] = available ? "queried" : "unsupported";
+        size_t exportedBytes = 0;
+        constexpr size_t kMaxCaptureBytes = 256u * 1024u * 1024u;
+        if (available) {
+            VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
+            std::vector<VkPipelineExecutablePropertiesKHR> properties;
+            const auto result = queryExecutableArray(properties, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR,
+                [&](uint32_t* count, VkPipelineExecutablePropertiesKHR* values) {
+                    return functions.vkGetPipelineExecutablePropertiesKHR(device.device, &info, count, values);
+                });
+            report["properties_result"] = int(result);
+            if (result != VK_SUCCESS) { report["status"] = "query_failed"; }
+            for (uint32_t index = 0; result == VK_SUCCESS && index < properties.size(); ++index) {
+                const auto& property = properties[index];
+                VkPipelineExecutableInfoKHR executable{.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR,
+                    .pipeline = pipeline, .executableIndex = index};
+                Json item{{"index", index}, {"name", property.name}, {"description", property.description},
+                    {"stages", property.stages}, {"subgroup_size", property.subgroupSize},
+                    {"statistics", Json::array()}, {"representations", Json::array()}};
+                std::vector<VkPipelineExecutableStatisticKHR> statistics;
+                const auto statResult = queryExecutableArray(statistics, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR,
+                    [&](uint32_t* count, VkPipelineExecutableStatisticKHR* values) {
+                        return functions.vkGetPipelineExecutableStatisticsKHR(device.device, &executable, count, values);
+                    });
+                item["statistics_result"] = int(statResult);
+                for (const auto& stat : statistics) {
+                    if (statResult != VK_SUCCESS) { break; }
+                    Json value{{"name", stat.name}, {"description", stat.description}, {"format", int(stat.format)}};
+                    switch (stat.format) {
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: value["value"] = bool(stat.value.b32); break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: value["value"] = stat.value.i64; break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: value["value"] = stat.value.u64; break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR: value["value"] = stat.value.f64; break;
+                    default: value["value"] = nullptr; break;
+                    }
+                    item["statistics"].push_back(std::move(value));
+                }
+                VkResult representationResult = VK_INCOMPLETE;
+                std::vector<VkPipelineExecutableInternalRepresentationKHR> representations;
+                std::vector<std::vector<uint8_t>> buffers;
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    representationResult = queryExecutableArray(representations,
+                        VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR,
+                        [&](uint32_t* count, VkPipelineExecutableInternalRepresentationKHR* values) {
+                            return functions.vkGetPipelineExecutableInternalRepresentationsKHR(device.device, &executable, count, values);
+                        });
+                    if (representationResult != VK_SUCCESS || representations.empty()) { break; }
+                    size_t pendingBytes = 0;
+                    bool oversized = false;
+                    for (const auto& representation : representations) {
+                        if (representation.dataSize > kMaxCaptureBytes - exportedBytes - pendingBytes) { oversized = true; break; }
+                        pendingBytes += representation.dataSize;
+                    }
+                    if (oversized) { representationResult = VK_ERROR_OUT_OF_HOST_MEMORY; break; }
+                    buffers.clear();
+                    buffers.resize(representations.size());
+                    for (size_t i = 0; i < representations.size(); ++i) {
+                        buffers[i].resize(representations[i].dataSize);
+                        representations[i].pData = buffers[i].empty() ? nullptr : buffers[i].data();
+                    }
+                    uint32_t count = static_cast<uint32_t>(representations.size());
+                    representationResult = functions.vkGetPipelineExecutableInternalRepresentationsKHR(device.device, &executable,
+                        &count, representations.data());
+                    if (representationResult == VK_SUCCESS && count <= representations.size()) {
+                        representations.resize(count);
+                        for (size_t i = 0; i < representations.size(); ++i) {
+                            if (representations[i].dataSize > buffers[i].size()) { representationResult = VK_INCOMPLETE; break; }
+                        }
+                        if (representationResult == VK_SUCCESS) { break; }
+                    }
+                    if (representationResult == VK_SUCCESS) { representationResult = VK_INCOMPLETE; }
+                    if (representationResult != VK_INCOMPLETE) { break; }
+                }
+                item["representations_result"] = int(representationResult);
+                if (representationResult == VK_SUCCESS) {
+                    for (size_t i = 0; i < representations.size(); ++i) {
+                        const auto& representation = representations[i];
+                        const auto fileName = std::to_string(index) + "-" + std::to_string(i) +
+                            (representation.isText ? ".txt" : ".bin");
+                        std::ofstream stream(directory / fileName, std::ios::binary | std::ios::trunc);
+                        if (representation.dataSize) {
+                            stream.write(reinterpret_cast<const char*>(buffers[i].data()), static_cast<std::streamsize>(representation.dataSize));
+                        }
+                        stream.close();
+                        if (!stream) { throw std::runtime_error("Cannot export pipeline internal representation"); }
+                        exportedBytes += representation.dataSize;
+                        item["representations"].push_back({{"name", representation.name}, {"description", representation.description},
+                            {"is_text", bool(representation.isText)}, {"bytes", representation.dataSize}, {"file", fileName}});
+                    }
+                }
+                report["executables"].push_back(std::move(item));
+            }
+        }
+        report["exported_bytes"] = exportedBytes;
+        report["query_export_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+        std::ofstream stream(directory / "manifest.json", std::ios::trunc);
+        stream << report.dump(2) << '\n';
+        stream.close();
+        if (!stream) { throw std::runtime_error("Cannot write pipeline executable manifest"); }
+        spdlog::info("[PipelineExecutable] manifest='{}' exportedBytes={}", (directory / "manifest.json").string(), exportedBytes);
+    } catch (const std::exception& error) {
+        spdlog::warn("[PipelineExecutable] export failed: {}", error.what());
+    }
+}
+
+Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner);
+VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const VkComputePipelineCreateInfo& suppliedInfo, VkPipelineCreateFlags2CreateInfo flags,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner);
+} // namespace
+
+Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
+    const ComputePipelineDesc& desc, PipelineCreationStats* creationStats)
+{
+    if (creationStats != nullptr) { *creationStats = {}; }
+    if (auto validation = validateComputePipelineDesc(desc); !validation) {
+        return std::unexpected(validation.error());
+    }
+    detail::PipelineCacheImpl* pipelineCache =
+        desc.pipelineCache != nullptr ? desc.pipelineCache->impl_.get() : nullptr;
     const uint64_t psoHash = detail::computePipelineStateHash(desc);
 
     const char* computeEntryPoint = desc.computeShader.entryPoint;
@@ -8421,17 +8748,29 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
     auto owner = createPipelineOwner<detail::ComputePipelineImpl>(*impl_, desc.usesBindlessHeap);
     if (!owner) { return std::unexpected(owner.error()); }
     auto pipelineImpl = std::move(*owner);
+    pipelineImpl->psoHash = psoHash;
+    pipelineImpl->replayInputSpirv = desc.computeShader.module->impl_->replayInputSpirv;
+    pipelineImpl->replayDeviceSpirv = desc.computeShader.module->impl_->replayDeviceSpirv;
+    spdlog::info("[ComputeCreatePolicy] backend={} disableOptimization={} pso={:016x}",
+        static_cast<uint32_t>(desc.backend), desc.disableOptimization, psoHash);
+    if (desc.backend == ComputePipelineBackend::ShaderObject) {
+        auto created = createComputeShaderObject(*impl_, desc, *desc.computeShader.module->impl_, *pipelineImpl);
+        if (creationStats) { *creationStats = pipelineImpl->creationStats; }
+        if (!created) { return std::unexpected(created.error()); }
+        return std::unique_ptr<ComputePipeline>(new ComputePipeline(std::move(pipelineImpl)));
+    }
     const VkPipelineLayout layout = pipelineImpl->layout;
     VkResult result = VK_SUCCESS;
 
     VkPipelineCreateFlags2CreateInfo bindlessPipelineFlags{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
         .flags = (desc.usesBindlessHeap ? VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT : 0) |
-            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0),
+            (desc.indirectBindable ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0) |
+            (desc.disableOptimization ? VK_PIPELINE_CREATE_2_DISABLE_OPTIMIZATION_BIT : 0),
     };
     VkComputePipelineCreateInfo pipelineInfo{
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .pNext = (desc.usesBindlessHeap || desc.indirectBindable) ? static_cast<const void*>(&bindlessPipelineFlags) : nullptr,
+        .pNext = (desc.usesBindlessHeap || desc.indirectBindable || desc.disableOptimization) ? static_cast<const void*>(&bindlessPipelineFlags) : nullptr,
         .stage = stage,
         .layout = layout,
     };
@@ -8476,14 +8815,24 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
     if (impl_->pipelineExecutableStatistics) {
         if (pipelineInfo.pNext != nullptr) {
             bindlessPipelineFlags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_STATISTICS_BIT_KHR;
+            if (!impl_->pipelineExecutableDirectory.empty()) {
+                bindlessPipelineFlags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+            }
         } else {
             pipelineInfo.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+            if (!impl_->pipelineExecutableDirectory.empty()) {
+                pipelineInfo.flags |= VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+            }
         }
     }
     VkPipeline& pipeline = pipelineImpl->pipeline;
-    result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "compute",
+    if (desc.backend == ComputePipelineBackend::PipelineBinary) {
+        result = createComputePipelineBinary(*impl_, desc, pipelineInfo, bindlessPipelineFlags,
+            *desc.computeShader.module->impl_, *pipelineImpl);
+    } else {
+        result = createPipelineWithFeedback(pipelineInfo, pipelineCache, psoHash, "compute",
         desc.computeShader.module->impl_->diagnosticName, computeEntryPoint,
-        cacheLockWaitNs, pipelineImpl->pipelineCacheHit, [&](const VkComputePipelineCreateInfo& info) {
+        pipelineImpl->pipelineCacheHit, pipelineImpl->creationStats, [&](const VkComputePipelineCreateInfo& info) {
             return impl_->functions.vkCreateComputePipelines(
                 impl_->device,
                 pipelineCache != nullptr ? pipelineCache->pipelineCache : VK_NULL_HANDLE,
@@ -8492,6 +8841,8 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                 nullptr,
                 &pipeline);
         });
+    }
+    if (creationStats != nullptr) { *creationStats = pipelineImpl->creationStats; }
     if (result != VK_SUCCESS) {
         return std::unexpected(resultFromVk(result).error());
     }
@@ -8503,23 +8854,21 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         spdlog::info("[PipelineStatisticsBinding] cacheKey={:016x} inputSpirvFnv1a64={} deviceSpirvFnv1a64={} shader={} entry={}",
             shader.contentHash, shader.inputSpirvFnv1a64, shader.deviceSpirvFnv1a64, shader.diagnosticName, stage.pName);
         VkPipelineInfoKHR info{.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, .pipeline = pipeline};
-        uint32_t count = 0;
-        VkResult query = impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, nullptr);
-        std::vector<VkPipelineExecutablePropertiesKHR> executables(count, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
-        if (query == VK_SUCCESS && count) {
-            query = impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, &count, executables.data());
-        }
+        std::vector<VkPipelineExecutablePropertiesKHR> executables;
+        VkResult query = queryExecutableArray(executables, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR,
+            [&](uint32_t* count, VkPipelineExecutablePropertiesKHR* values) {
+                return impl_->functions.vkGetPipelineExecutablePropertiesKHR(impl_->device, &info, count, values);
+            });
         if (query != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] properties unavailable: {}", int(query)); }
-        for (uint32_t i = 0; query == VK_SUCCESS && i < count; ++i) {
+        for (uint32_t i = 0; query == VK_SUCCESS && i < executables.size(); ++i) {
             VkPipelineExecutableInfoKHR executable{.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, .pipeline = pipeline, .executableIndex = i};
-            uint32_t statCount = 0;
-            VkResult statQuery = impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, nullptr);
-            std::vector<VkPipelineExecutableStatisticKHR> stats(statCount, {.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
-            if (statQuery == VK_SUCCESS && statCount) {
-                statQuery = impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, &statCount, stats.data());
-            }
+            std::vector<VkPipelineExecutableStatisticKHR> stats;
+            VkResult statQuery = queryExecutableArray(stats, VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR,
+                [&](uint32_t* count, VkPipelineExecutableStatisticKHR* values) {
+                    return impl_->functions.vkGetPipelineExecutableStatisticsKHR(impl_->device, &executable, count, values);
+                });
             if (statQuery != VK_SUCCESS) { spdlog::warn("[PipelineStatistics] statistics unavailable: {}", int(statQuery)); continue; }
-            for (uint32_t j = 0; j < statCount; ++j) {
+            for (uint32_t j = 0; j < stats.size(); ++j) {
                 const auto& stat = stats[j];
                 std::string value;
                 switch (stat.format) {
@@ -8535,6 +8884,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             }
         }
     }
+    captureComputeExecutable(*impl_, pipeline, psoHash, *desc.computeShader.module->impl_, stage.pName);
     pipelineImpl->replayInputSpirv = desc.computeShader.module->impl_->replayInputSpirv;
     pipelineImpl->replayDeviceSpirv = desc.computeShader.module->impl_->replayDeviceSpirv;
     pipelineImpl->psoHash = psoHash;
@@ -8602,6 +8952,283 @@ bool exportShaderObjectBinary(detail::DeviceImpl& device, VkShaderEXT shader,
         return true;
     }
     return false;
+}
+
+std::filesystem::path nativeBinaryPath(const ComputePipelineDesc& desc,
+    const detail::NativeBinaryCacheData& identity)
+{
+    if (!desc.nativeBinaryCacheDirectory || !desc.nativeBinaryCacheDirectory[0]) { return {}; }
+    const uint64_t compatibilityHash = detail::hashBytes(detail::kFnvOffset,
+        identity.compatibilityKey.data(), identity.compatibilityKey.size());
+    return std::filesystem::path(desc.nativeBinaryCacheDirectory) /
+        fmt::format("{:016x}", compatibilityHash) /
+        fmt::format("{:016x}.{}", identity.programHash, identity.kind == 1 ? "computeshaderbin" : "pipelinebin");
+}
+
+Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner)
+{
+    auto& stats = owner.creationStats;
+    stats.computeBackend = ComputePipelineBackend::ShaderObject;
+    const auto mappings = defaultHeapMappings(device.descriptorHeapWriter);
+    const VkShaderDescriptorSetAndBindingMappingInfoEXT mappingInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
+        .mappingCount = static_cast<uint32_t>(mappings.size()), .pMappings = mappings.data(),
+    };
+    VkShaderCreateInfoEXT info{
+        .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+        .pNext = desc.usesBindlessHeap && shader.hasDescriptorBindings ? &mappingInfo : nullptr,
+        .flags = desc.usesBindlessHeap ? VkShaderCreateFlagsEXT{VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT} : VkShaderCreateFlagsEXT{0},
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+        .codeSize = shader.deviceSpirv.size() * sizeof(uint32_t),
+        .pCode = shader.deviceSpirv.data(), .pName = desc.computeShader.entryPoint,
+    };
+    detail::NativeBinaryCacheData identity{.programHash = owner.psoHash, .kind = 1};
+    const auto& properties = device.physicalProperties.shaderObject;
+    identity.compatibilityKey.assign(std::begin(properties.shaderBinaryUUID), std::end(properties.shaderBinaryUUID));
+    const auto* version = reinterpret_cast<const uint8_t*>(&properties.shaderBinaryVersion);
+    identity.compatibilityKey.insert(identity.compatibilityKey.end(), version, version + sizeof(properties.shaderBinaryVersion));
+    const auto path = nativeBinaryPath(desc, identity);
+    std::unique_lock<std::mutex> cacheLock;
+    if (!path.empty()) {
+        cacheLock = std::unique_lock(device.shaderObjectCacheMutexes[owner.psoHash % device.shaderObjectCacheMutexes.size()]);
+    }
+    auto create = [&](const VkShaderCreateInfoEXT& supplied) {
+        const auto begin = std::chrono::steady_clock::now();
+        const VkResult result = device.functions.vkCreateShadersEXT(device.device, 1, &supplied, nullptr, &owner.shaderObject);
+        stats.nativeCreateTimeNanoseconds += pipelineElapsedNanoseconds(begin);
+        if (result != VK_SUCCESS && owner.shaderObject != VK_NULL_HANDLE) {
+            device.functions.vkDestroyShaderEXT(device.device, owner.shaderObject, nullptr);
+            owner.shaderObject = VK_NULL_HANDLE;
+        }
+        return result;
+    };
+    if (!path.empty()) {
+        const auto begin = std::chrono::steady_clock::now();
+        detail::NativeBinaryCacheData loaded;
+        std::string reason;
+        const auto load = detail::loadNativeBinaryCacheFile(path, identity, loaded, reason);
+        stats.nativeBinaryImportTimeNanoseconds += pipelineElapsedNanoseconds(begin);
+        if (load == detail::NativeBinaryCacheLoadStatus::Loaded && loaded.entries.size() == 1) {
+            const auto& bytes = loaded.entries[0].data;
+            AlignedShaderBinary storage((bytes.size() + 15) / 16);
+            std::memcpy(storage.data(), bytes.data(), bytes.size());
+            auto binaryInfo = info;
+            binaryInfo.pNext = nullptr; // Descriptor mappings are baked into BINARY.
+            binaryInfo.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT;
+            binaryInfo.codeSize = bytes.size(); binaryInfo.pCode = storage.data();
+            const VkResult result = create(binaryInfo);
+            if (result == VK_SUCCESS) {
+                stats.nativeBinaryCacheHit = true;
+                stats.nativeBinaryPersisted = true;
+                stats.nativeBinaryDataSize = bytes.size();
+            } else {
+                stats.nativeBinaryDriverRejected = true;
+                spdlog::warn("[ComputeShaderBinary] Driver rejected {}: {}; rebuilding SPIR-V", path.string(), static_cast<int>(result));
+            }
+        } else if (load != detail::NativeBinaryCacheLoadStatus::NotFound) {
+            spdlog::warn("[ComputeShaderBinary] Ignoring {}: {}", path.string(), reason);
+        }
+    }
+    if (!stats.nativeBinaryCacheHit) {
+        const VkResult result = create(info);
+        if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+        if (!path.empty()) {
+            const auto begin = std::chrono::steady_clock::now();
+            auto data = identity;
+            data.entries.resize(1);
+            std::string reason;
+            if (exportShaderObjectBinary(device, owner.shaderObject, data.entries[0].data)) {
+                stats.nativeBinaryDataSize = data.entries[0].data.size();
+                stats.nativeBinaryPersisted = detail::saveNativeBinaryCacheFile(path, data, reason);
+            }
+            stats.nativeBinaryExportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+            if (!stats.nativeBinaryPersisted) { spdlog::warn("[ComputeShaderBinary] Export unavailable for {}: {}", path.string(), reason); }
+        }
+    }
+    spdlog::info("[ComputeShaderBinary] pso={:016x} binaryHit={} persisted={} bytes={} nativeMs={:.3f}",
+        owner.psoHash, stats.nativeBinaryCacheHit, stats.nativeBinaryPersisted, stats.nativeBinaryDataSize,
+        static_cast<double>(stats.nativeCreateTimeNanoseconds) / 1'000'000.0);
+    vulkan::toolingHooks().shaderBinary(shader.deviceSpirv.data(), shader.deviceSpirv.size() * sizeof(uint32_t));
+    return {};
+}
+
+#if defined(VK_KHR_pipeline_binary)
+struct PipelineBinaryHandles {
+    detail::DeviceImpl& device;
+    std::vector<VkPipelineBinaryKHR> handles;
+    ~PipelineBinaryHandles()
+    {
+        for (auto handle : handles) {
+            if (handle != VK_NULL_HANDLE) { device.functions.vkDestroyPipelineBinaryKHR(device.device, handle, nullptr); }
+        }
+    }
+};
+
+VkResult obtainPipelineBinaries(detail::DeviceImpl& device, const VkPipelineBinaryCreateInfoKHR& info,
+    PipelineBinaryHandles& binaries)
+{
+    VkPipelineBinaryHandlesInfoKHR output{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR};
+    VkResult result = device.functions.vkCreatePipelineBinariesKHR(device.device, &info, nullptr, &output);
+    if (result != VK_SUCCESS || output.pipelineBinaryCount == 0 || output.pipelineBinaryCount > 64) {
+        return result == VK_SUCCESS ? VK_ERROR_UNKNOWN : result;
+    }
+    binaries.handles.resize(output.pipelineBinaryCount, VK_NULL_HANDLE);
+    output.pPipelineBinaries = binaries.handles.data();
+    return device.functions.vkCreatePipelineBinariesKHR(device.device, &info, nullptr, &output);
+}
+#endif
+
+VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
+    const VkComputePipelineCreateInfo& suppliedInfo, VkPipelineCreateFlags2CreateInfo flags,
+    const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner)
+{
+#if defined(VK_KHR_pipeline_binary)
+    // flags2 overrides the legacy flags member. Preserve diagnostics requested
+    // through that member before normalizing this experiment to flags2.
+    flags.flags |= suppliedInfo.flags;
+    flags.pNext = nullptr;
+    VkComputePipelineCreateInfo info = suppliedInfo;
+    info.pNext = &flags;
+    VkPipelineBinaryKeyKHR globalKey{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    VkResult result = device.functions.vkGetPipelineKeyKHR(device.device, nullptr, &globalKey);
+    if (result != VK_SUCCESS || globalKey.keySize == 0 || globalKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) {
+        return result == VK_SUCCESS ? VK_ERROR_UNKNOWN : result;
+    }
+    VkPipelineBinaryKeyKHR pipelineKey{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+    const VkPipelineCreateInfoKHR keyInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_INFO_KHR, .pNext = &info};
+    result = device.functions.vkGetPipelineKeyKHR(device.device, &keyInfo, &pipelineKey);
+    if (result != VK_SUCCESS || pipelineKey.keySize == 0 || pipelineKey.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) {
+        return result == VK_SUCCESS ? VK_ERROR_UNKNOWN : result;
+    }
+    detail::NativeBinaryCacheData identity{.compatibilityKey = {globalKey.key, globalKey.key + globalKey.keySize},
+        .programHash = owner.psoHash, .kind = 2};
+    // Driver keys cover the complete effective creation state, including
+    // optional statistics flags and descriptor mapping ABI.
+    identity.compatibilityKey.insert(identity.compatibilityKey.end(), pipelineKey.key, pipelineKey.key + pipelineKey.keySize);
+    const auto path = nativeBinaryPath(desc, identity);
+    std::unique_lock<std::mutex> cacheLock;
+    if (!path.empty()) {
+        cacheLock = std::unique_lock(device.shaderObjectCacheMutexes[owner.psoHash % device.shaderObjectCacheMutexes.size()]);
+    }
+    PipelineCreationStats binaryStats{.computeBackend = ComputePipelineBackend::PipelineBinary};
+    auto create = [&](VkComputePipelineCreateInfo info, const char* kind) {
+        PipelineCreationStats measured;
+        bool ignoredHit = false;
+        const VkResult created = createPipelineWithFeedback(info, nullptr, owner.psoHash, kind,
+            shader.diagnosticName, desc.computeShader.entryPoint, ignoredHit, measured,
+            [&](const VkComputePipelineCreateInfo& nativeInfo) {
+                return device.functions.vkCreateComputePipelines(device.device, VK_NULL_HANDLE, 1,
+                    &nativeInfo, nullptr, &owner.pipeline);
+            });
+        binaryStats.nativeCreateTimeNanoseconds += measured.nativeCreateTimeNanoseconds;
+        binaryStats.driverDurationNanoseconds = measured.driverDurationNanoseconds;
+        binaryStats.feedbackValid = measured.feedbackValid;
+        if (created != VK_SUCCESS && owner.pipeline != VK_NULL_HANDLE) {
+            device.functions.vkDestroyPipeline(device.device, owner.pipeline, nullptr);
+            owner.pipeline = VK_NULL_HANDLE;
+        }
+        return created;
+    };
+    if (!path.empty()) {
+        const auto begin = std::chrono::steady_clock::now();
+        detail::NativeBinaryCacheData loaded;
+        std::string reason;
+        const auto load = detail::loadNativeBinaryCacheFile(path, identity, loaded, reason);
+        if (load == detail::NativeBinaryCacheLoadStatus::Loaded) {
+            std::vector<VkPipelineBinaryKeyKHR> keys;
+            std::vector<VkPipelineBinaryDataKHR> data;
+            bool valid = true;
+            for (const auto& entry : loaded.entries) {
+                if (entry.key.empty() || entry.key.size() > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) { valid = false; break; }
+                VkPipelineBinaryKeyKHR key{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR,
+                    .keySize = static_cast<uint32_t>(entry.key.size())};
+                std::copy(entry.key.begin(), entry.key.end(), key.key);
+                keys.push_back(key);
+                data.push_back({.dataSize = entry.data.size(), .pData = const_cast<uint8_t*>(entry.data.data())});
+            }
+            PipelineBinaryHandles binaries{device};
+            if (valid) {
+                const VkPipelineBinaryKeysAndDataKHR keyData{.binaryCount = static_cast<uint32_t>(keys.size()),
+                    .pPipelineBinaryKeys = keys.data(), .pPipelineBinaryData = data.data()};
+                const VkPipelineBinaryCreateInfoKHR importInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR,
+                    .pKeysAndDataInfo = &keyData};
+                result = obtainPipelineBinaries(device, importInfo, binaries);
+                binaryStats.nativeBinaryImportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+                if (result == VK_SUCCESS) {
+                    const VkPipelineBinaryInfoKHR binaryInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR,
+                        .pNext = &flags, .binaryCount = static_cast<uint32_t>(binaries.handles.size()),
+                        .pPipelineBinaries = binaries.handles.data()};
+                    info.pNext = &binaryInfo;
+                    result = create(info, "compute-binary-import");
+                    info.pNext = &flags;
+                    if (result == VK_SUCCESS) {
+                        binaryStats.nativeBinaryCacheHit = true;
+                        binaryStats.nativeBinaryPersisted = true;
+                        for (const auto& entry : loaded.entries) { binaryStats.nativeBinaryDataSize += entry.data.size(); }
+                        // Preserve valid driver-duration feedback while keeping
+                        // native-binary hits separate from VkPipelineCache hits.
+                    }
+                }
+                if (result != VK_SUCCESS) { binaryStats.nativeBinaryDriverRejected = true; }
+            } else { spdlog::warn("[ComputePipelineBinary] Invalid key sizes in {}", path.string()); }
+        } else if (load != detail::NativeBinaryCacheLoadStatus::NotFound) {
+            spdlog::warn("[ComputePipelineBinary] Ignoring {}: {}", path.string(), reason);
+        }
+        if (!binaryStats.nativeBinaryImportTimeNanoseconds) {
+            binaryStats.nativeBinaryImportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+        }
+    }
+    if (!binaryStats.nativeBinaryCacheHit) {
+        if (!path.empty()) { flags.flags |= VK_PIPELINE_CREATE_2_CAPTURE_DATA_BIT_KHR; }
+        result = create(info, "compute-binary-source");
+        if (result == VK_SUCCESS && !path.empty()) {
+            const auto begin = std::chrono::steady_clock::now();
+            PipelineBinaryHandles binaries{device};
+            const VkPipelineBinaryCreateInfoKHR exportInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR,
+                .pipeline = owner.pipeline};
+            const VkResult exported = obtainPipelineBinaries(device, exportInfo, binaries);
+            auto saved = identity;
+            std::string reason;
+            bool valid = exported == VK_SUCCESS;
+            for (auto handle : binaries.handles) {
+                if (!valid) { break; }
+                const VkPipelineBinaryDataInfoKHR query{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_DATA_INFO_KHR,
+                    .pipelineBinary = handle};
+                VkPipelineBinaryKeyKHR key{.sType = VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};
+                size_t size = 0;
+                VkResult queried = device.functions.vkGetPipelineBinaryDataKHR(device.device, &query, &key, &size, nullptr);
+                if (queried != VK_SUCCESS || !size || size > kMaxShaderBinarySize || !key.keySize ||
+                    key.keySize > VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR) { valid = false; break; }
+                detail::NativeBinaryCacheEntry entry;
+                entry.data.resize(size);
+                queried = device.functions.vkGetPipelineBinaryDataKHR(device.device, &query, &key, &size, entry.data.data());
+                if (queried != VK_SUCCESS || size > entry.data.size()) { valid = false; break; }
+                entry.data.resize(size); entry.key.assign(key.key, key.key + key.keySize);
+                binaryStats.nativeBinaryDataSize += size;
+                saved.entries.push_back(std::move(entry));
+            }
+            if (valid) { binaryStats.nativeBinaryPersisted = detail::saveNativeBinaryCacheFile(path, saved, reason); }
+            const VkReleaseCapturedPipelineDataInfoKHR release{
+                .sType = VK_STRUCTURE_TYPE_RELEASE_CAPTURED_PIPELINE_DATA_INFO_KHR, .pipeline = owner.pipeline};
+            const VkResult released = device.functions.vkReleaseCapturedPipelineDataKHR(device.device, &release, nullptr);
+            binaryStats.nativeBinaryExportTimeNanoseconds = pipelineElapsedNanoseconds(begin);
+            if (!binaryStats.nativeBinaryPersisted || released != VK_SUCCESS) {
+                spdlog::warn("[ComputePipelineBinary] Export={} release={} path={} reason={}",
+                    binaryStats.nativeBinaryPersisted, static_cast<int>(released), path.string(), reason);
+            }
+        }
+    }
+    owner.creationStats = binaryStats;
+    spdlog::info("[ComputePipelineBinary] pso={:016x} binaryHit={} persisted={} bytes={} importMs={:.3f} exportMs={:.3f}",
+        owner.psoHash, binaryStats.nativeBinaryCacheHit, binaryStats.nativeBinaryPersisted, binaryStats.nativeBinaryDataSize,
+        static_cast<double>(binaryStats.nativeBinaryImportTimeNanoseconds) / 1'000'000.0,
+        static_cast<double>(binaryStats.nativeBinaryExportTimeNanoseconds) / 1'000'000.0);
+    return result;
+#else
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+#endif
 }
 
 } // namespace
@@ -9304,7 +9931,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     VkDevicePipelineBinaryInternalCacheControlKHR internalCacheControl{
         .sType = VK_STRUCTURE_TYPE_DEVICE_PIPELINE_BINARY_INTERNAL_CACHE_CONTROL_KHR,
     };
-    if (diagnoseInternalPipelineCache) {
+    const char* pipelineBinaryValue = std::getenv("METALLIC_VK_PIPELINE_BINARY");
+    const bool enablePipelineBinary = desc.enablePipelineBinary || diagnoseInternalPipelineCache ||
+        (pipelineBinaryValue != nullptr && std::strcmp(pipelineBinaryValue, "1") == 0);
+    if (enablePipelineBinary) {
         const VulkanExtensionSet extensions = queryDeviceExtensions(deviceImpl->physicalDevice);
         if (!extensions.has(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME)) {
             spdlog::error("Internal pipeline cache diagnostic requires VK_KHR_pipeline_binary.");
@@ -9325,7 +9955,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         };
         vkGetPhysicalDeviceProperties2(deviceImpl->physicalDevice, &binaryPropertyProbe);
         if (pipelineBinaryFeatures.pipelineBinaries != VK_TRUE ||
-            pipelineBinaryProperties.pipelineBinaryInternalCacheControl != VK_TRUE) {
+            (diagnoseInternalPipelineCache && pipelineBinaryProperties.pipelineBinaryInternalCacheControl != VK_TRUE)) {
             spdlog::error(
                 "Internal pipeline cache diagnostic unsupported: pipelineBinaries={}, cacheControl={}.",
                 pipelineBinaryFeatures.pipelineBinaries,
@@ -9337,12 +9967,16 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         // Only the cache-control value changes; an unset environment keeps the default path.
         deviceExtensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
         pipelineBinaryFeatures.pNext = &enabledFeatureChain.features;
-        internalCacheControl.pNext = &pipelineBinaryFeatures;
-        internalCacheControl.disableInternalCache = disableInternalPipelineCache ? VK_TRUE : VK_FALSE;
-        deviceCreateNext = &internalCacheControl;
+        deviceCreateNext = &pipelineBinaryFeatures;
+        if (diagnoseInternalPipelineCache) {
+            internalCacheControl.pNext = &pipelineBinaryFeatures;
+            internalCacheControl.disableInternalCache = disableInternalPipelineCache ? VK_TRUE : VK_FALSE;
+            deviceCreateNext = &internalCacheControl;
+        }
+        deviceImpl->pipelineBinaryEnabled = true;
         spdlog::info(
             "Internal pipeline cache diagnostic: mode={}, internalCache={}, cacheControl={}.",
-            internalPipelineCacheMode,
+            diagnoseInternalPipelineCache ? internalPipelineCacheMode : "default",
             pipelineBinaryProperties.pipelineBinaryInternalCache,
             pipelineBinaryProperties.pipelineBinaryInternalCacheControl);
     }
@@ -9357,7 +9991,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR,
     };
     const char* executableStats = std::getenv("METALLIC_VK_PIPELINE_STATISTICS");
-    if (executableStats != nullptr && std::strcmp(executableStats, "1") == 0) {
+    if (const char* directory = std::getenv("METALLIC_VK_PIPELINE_EXECUTABLE_DIRECTORY"); directory != nullptr && directory[0] != '\0') {
+        deviceImpl->pipelineExecutableDirectory = directory;
+    }
+    if (!deviceImpl->pipelineExecutableDirectory.empty() || (executableStats != nullptr && std::strcmp(executableStats, "1") == 0)) {
         if (selectedDeviceExtensions.has(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
             VkPhysicalDeviceFeatures2 probe{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &executableFeatures};
             vkGetPhysicalDeviceFeatures2(deviceImpl->physicalDevice, &probe);
@@ -9720,6 +10357,10 @@ struct VulkanNativeAccess {
     {
         return shader.impl_ ? shader.impl_->module : VK_NULL_HANDLE;
     }
+    static std::span<const uint32_t> nativeShaderSpirv(ShaderModule& shader)
+    {
+        return shader.impl_ ? std::span<const uint32_t>(shader.impl_->deviceSpirv) : std::span<const uint32_t>{};
+    }
 
     static Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,
         uint64_t stateHash, VkPipeline& pipeline)
@@ -9728,14 +10369,12 @@ struct VulkanNativeAccess {
         if (!impl || !impl->device || !impl->pipelineCache || pipeline != VK_NULL_HANDLE) {
             return makeError(Error::InvalidArgument);
         }
-        const auto cacheLockBegin = std::chrono::steady_clock::now();
-        std::lock_guard lock(impl->mutex);
-        const uint64_t cacheLockWaitNs = pipelineElapsedNanoseconds(cacheLockBegin);
         VkPipeline candidate = VK_NULL_HANDLE;
         bool metadataHit = false;
+        PipelineCreationStats creationStats;
         const char* entry = info.stageCount != 0 && info.pStages != nullptr ? info.pStages[0].pName : nullptr;
         const VkResult result = createPipelineWithFeedback(info, impl, stateHash, "external-graphics",
-            "<external>", entry, cacheLockWaitNs, metadataHit, [&](const VkGraphicsPipelineCreateInfo& suppliedInfo) {
+            "<external>", entry, metadataHit, creationStats, [&](const VkGraphicsPipelineCreateInfo& suppliedInfo) {
                 return impl->device->functions.vkCreateGraphicsPipelines(
                     impl->device->device, impl->pipelineCache, 1, &suppliedInfo, nullptr, &candidate);
             });
@@ -9787,6 +10426,7 @@ struct VulkanNativeAccess {
         if (!commands.impl_) { return; }
         auto& state = *commands.impl_;
         state.currentComputePipeline = VK_NULL_HANDLE;
+        state.currentComputeShaderObject = VK_NULL_HANDLE;
         state.currentComputePipelineLayout = VK_NULL_HANDLE;
         state.currentGraphicsPipelineLayout = VK_NULL_HANDLE;
         state.currentComputePipelineUsesBindlessHeap = false;
@@ -9950,6 +10590,11 @@ NativeTexture nativeTexture(Texture& texture)
 VkShaderModule nativeShaderModule(ShaderModule& shader)
 {
     return detail::VulkanNativeAccess::nativeShaderModule(shader);
+}
+
+std::span<const uint32_t> nativeShaderSpirv(ShaderModule& shader)
+{
+    return detail::VulkanNativeAccess::nativeShaderSpirv(shader);
 }
 
 Result<> createCachedGraphicsPipeline(PipelineCache& cache, const VkGraphicsPipelineCreateInfo& info,

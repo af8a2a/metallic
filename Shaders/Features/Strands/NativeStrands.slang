@@ -1,3 +1,5 @@
+module NativeStrands;
+
 import ShaderCore;
 import Material;
 import MaterialProgram;
@@ -13,6 +15,7 @@ import ParameterRoot;
 
 float3 safeNormalize(float3 v, float3 fallback) { return dot(v,v)>1e-16 ? normalize(v) : fallback; }
 import RTXCRMaterialAdapter;
+import RTXCRMaterialParameters;
 
 float3 strandPosition(float3 p, float u, float phase, float amplitude)
 {
@@ -159,7 +162,7 @@ void strandLightingMain(uint3 tid : SV_DispatchThreadID)
         for (uint sample = 0; sample<4; ++sample) {
             float h = lerp(hRange.x,hRange.y,(float(sample)+0.5)*0.25);
             context.crossSectionOffset = h; context.materialCoordinates = float2(u,h*0.5+0.5);
-            let material = evaluateSceneFiberMaterial(p.materials.load(s.identity.z),context,1e-16);
+            let material = evaluateSceneFiberMaterial(sceneFiberParameters(p.materials.load(s.identity.z)),context,1e-16);
             let prepared = material.closure.prepare(wo,TransportMode.Radiance);
             radiance += 0.25*(material.emission + evaluateFiberDirect(prepared,light,float3(p.light.w))*shadow +
                 evaluateFiberDirect(prepared,normalize(float3(-1,1,1)),float3(0.3)));

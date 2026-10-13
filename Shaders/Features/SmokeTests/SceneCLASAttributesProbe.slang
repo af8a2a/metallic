@@ -1,7 +1,23 @@
+#language slang 2026
+module SceneCLASAttributesProbe;
 import Core;
 using Metallic;
 
-#include "../PathTracing/ScenePathTrace.slang"
+import Material;
+import MaterialProgram;
+import OpenPBRMaterialParameters;
+import RTXCRMaterialParameters;
+import Lighting;
+import ScenePathTypes;
+import ScenePathMath;
+import SceneSurface;
+import Atmosphere;
+using Metallic.Material;
+using Metallic.Lighting;
+using Metallic.SceneSurface;
+using Metallic.ScenePath;
+import ScenePathTracing;
+using Metallic.ScenePathTracing;
 
 #define gProbeOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().probeOutput)
 struct ProbePush { float translationX; };

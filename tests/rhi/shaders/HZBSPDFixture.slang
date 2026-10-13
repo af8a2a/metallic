@@ -1,3 +1,5 @@
+module HZBSPDFixture;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

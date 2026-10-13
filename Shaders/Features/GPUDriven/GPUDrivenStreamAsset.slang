@@ -1,310 +1,311 @@
+#language slang 2026
+module GPUDrivenStreamAsset;
+
 import ShaderCore;
 using Metallic;
 
-#include "../VisibilityBuffer/StreamAttributeDecode.slang"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
-#include "WaveWorkDistribution.slang"
+import WaveWorkDistribution;
 import AlphaCoverage;
 #include "../../Interop/MeshletStreamBLAS.h"
-#define VISIBILITY_TESSELLATION_STREAM 1
-#include "../VisibilityBuffer/VisibilityTessellation.slang"
+import VisibilityTessellation;
 
-static const uint kMaxMeshletVertices = 128;
-static const uint kMaxMeshletTriangles = 128;
-static const uint kMeshletTriangleChunkSize = 64u;
-static const uint kMeshletTriangleChunkCount = 2u;
-static const uint kPayloadHeaderBytes = 112u;
-static const uint kPayloadClusterBytes = 96u;
-static const uint kPayloadClusterWords = kPayloadClusterBytes / 4u;
-static const uint kPayloadAttributePosition = 1u << 0u;
-static const uint kPayloadAttributeNormal = 1u << 1u;
-static const uint kPayloadAttributeTexcoord0 = 1u << 2u;
-static const uint kPayloadAttributeTangent = 1u << 4u;
-static const uint kPayloadFormatFloat32x2 = 1u;
-static const uint kPayloadFormatFloat32x4 = 2u;
-static const uint kPayloadFormatFloat32x3 = 4u;
-static const uint kInvalidStreamDeviceOffset = 0xffffffffu;
-static const uint kInvalidClusterIndex = 0xffffffffu;
-static const uint kUnloadClusterIndex = 0xfffffffeu;
-static const uint kStreamStatePendingUpload = 1u;
-static const uint kStreamStateResident = 2u;
-static const uint kStreamStateLockedFallback = 3u;
-static const uint kStreamPageStateMask = 0x00000007u;
-static const uint kStreamPageDeviceOffsetMask = 0xfffffff8u;
-static const uint kNoDebugLODOverride = 0xffffffffu;
-static const uint kActiveGroupResident = 1u << 0u;
-static const uint kActiveGroupLoadRequest = 1u << 1u;
-static const uint kActiveGroupUnloadRequest = 1u << 2u;
-static const uint kTraversalPhaseLoad = 0u;
-static const uint kTraversalPhaseUnload = 1u;
-static const uint kTraversalPhaseClearPriority = 2u;
-static const uint kTraversalPhaseGatherPriority = 3u;
-static const uint kActiveBuildPhaseReset = 0u;
-static const uint kActiveBuildPhaseBuild = 1u;
-static const uint kActiveBuildPhaseFinalize = 2u;
-static const uint kActiveBuildPhaseSeed = 3u;
-static const uint kActiveBuildPhaseRun = 4u;
-static const uint kActiveBuildPhaseFrontier = 5u;
-static const uint kActiveBuildPhasePrefix = 6u;
-static const uint kActiveBuildPhaseEmit = 7u;
-static const uint kActiveBuildPhaseInitializeLODState = 8u;
-static const uint kActiveBuildPhasePrefetch = 9u;
-static const uint kActiveBuildPhaseClear = 10u;
-static const uint kActiveBuildPhaseMask = 11u;
-static const uint kActiveBuildPhaseDemandReset = 12u;
-static const uint kActiveBuildPhaseDemand = 13u;
-static const uint kStreamDemandStatsWords = 32u;
-static const uint kLODTelemetryFrameMask = 0x03ffffffu;
-static const uint kLODObservedDemand = 1u;
-static const uint kLODObservedSelected = 2u;
-static const uint kLODPreviouslySelected = 4u;
-static const uint kLODThresholdCandidate = 8u;
-static const uint kLODCatchupCandidate = 16u;
-static const uint kLODObservationEligible = 32u;
-static const uint kBLASInputPhaseReset = 0u;
-static const uint kBLASInputPhaseCount = 1u;
-static const uint kBLASInputPhaseSetup = 2u;
-static const uint kBLASInputPhaseInsert = 3u;
-static const uint kCLASPageStateActive = 1u;
-static const uint kCLASPageAddressOffsetMask = 0x3fffffffu;
-static const uint kCLASPageStateShift = 30u;
-static const uint kBLASInstanceFallback = 1u << 0u;
-static const uint kBLASInstanceDynamic = 1u << 1u;
-static const uint kBLASInstanceOverflow = 1u << 2u;
-static const uint kTraversalStackCapacity = 128u;
-static const uint kStreamRequestHeaderWords = 16u;
-static const uint kStreamUpdateHeaderWords = 16u;
-static const uint kStreamRequestMaxLoadsWord = 0u;
-static const uint kStreamRequestMaxUnloadsWord = 1u;
-static const uint kStreamRequestLoadCounterWord = 2u;
-static const uint kStreamRequestUnloadCounterWord = 3u;
-static const uint kStreamRequestFrameIndexWord = 4u;
-static const uint kStreamRequestLoadOverflowCounterWord = 5u;
-static const uint kStreamRequestUnloadOverflowCounterWord = 6u;
-static const uint kStreamRequestInvalidPageCounterWord = 7u;
-static const uint kStreamRequestLastLoadOverflowFrameWord = 8u;
-static const uint kStreamRequestLastUnloadOverflowFrameWord = 9u;
-static const uint kStreamRequestLastInvalidPageFrameWord = 10u;
-static const uint kStreamRequestLoadPriorityOffsetWord = 11u;
-static const uint kStreamRequestPriorityTableOffsetWord = 12u;
-static const uint kStreamRequestPrefetchLimitWord = 13u;
-static const uint kStreamRequestPrefetchCounterWord = 14u;
-static const uint kStreamRequestPrefetchDroppedWord = 15u;
-static const uint kStreamPrefetchPageTag = 1u << 31u;
+public static const uint kMaxMeshletVertices = 128;
+public static const uint kMaxMeshletTriangles = 128;
+public static const uint kMeshletTriangleChunkSize = 64u;
+public static const uint kMeshletTriangleChunkCount = 2u;
+public static const uint kPayloadHeaderBytes = 112u;
+public static const uint kPayloadClusterBytes = 96u;
+public static const uint kPayloadClusterWords = kPayloadClusterBytes / 4u;
+public static const uint kPayloadAttributePosition = 1u << 0u;
+public static const uint kPayloadAttributeNormal = 1u << 1u;
+public static const uint kPayloadAttributeTexcoord0 = 1u << 2u;
+public static const uint kPayloadAttributeTangent = 1u << 4u;
+public static const uint kPayloadFormatFloat32x2 = 1u;
+public static const uint kPayloadFormatFloat32x4 = 2u;
+public static const uint kPayloadFormatFloat32x3 = 4u;
+public static const uint kInvalidStreamDeviceOffset = 0xffffffffu;
+public static const uint kInvalidClusterIndex = 0xffffffffu;
+public static const uint kUnloadClusterIndex = 0xfffffffeu;
+public static const uint kStreamStatePendingUpload = 1u;
+public static const uint kStreamStateResident = 2u;
+public static const uint kStreamStateLockedFallback = 3u;
+public static const uint kStreamPageStateMask = 0x00000007u;
+public static const uint kStreamPageDeviceOffsetMask = 0xfffffff8u;
+public static const uint kNoDebugLODOverride = 0xffffffffu;
+public static const uint kActiveGroupResident = 1u << 0u;
+public static const uint kActiveGroupLoadRequest = 1u << 1u;
+public static const uint kActiveGroupUnloadRequest = 1u << 2u;
+public static const uint kTraversalPhaseLoad = 0u;
+public static const uint kTraversalPhaseUnload = 1u;
+public static const uint kTraversalPhaseClearPriority = 2u;
+public static const uint kTraversalPhaseGatherPriority = 3u;
+public static const uint kActiveBuildPhaseReset = 0u;
+public static const uint kActiveBuildPhaseBuild = 1u;
+public static const uint kActiveBuildPhaseFinalize = 2u;
+public static const uint kActiveBuildPhaseSeed = 3u;
+public static const uint kActiveBuildPhaseRun = 4u;
+public static const uint kActiveBuildPhaseFrontier = 5u;
+public static const uint kActiveBuildPhasePrefix = 6u;
+public static const uint kActiveBuildPhaseEmit = 7u;
+public static const uint kActiveBuildPhaseInitializeLODState = 8u;
+public static const uint kActiveBuildPhasePrefetch = 9u;
+public static const uint kActiveBuildPhaseClear = 10u;
+public static const uint kActiveBuildPhaseMask = 11u;
+public static const uint kActiveBuildPhaseDemandReset = 12u;
+public static const uint kActiveBuildPhaseDemand = 13u;
+public static const uint kStreamDemandStatsWords = 32u;
+public static const uint kLODTelemetryFrameMask = 0x03ffffffu;
+public static const uint kLODObservedDemand = 1u;
+public static const uint kLODObservedSelected = 2u;
+public static const uint kLODPreviouslySelected = 4u;
+public static const uint kLODThresholdCandidate = 8u;
+public static const uint kLODCatchupCandidate = 16u;
+public static const uint kLODObservationEligible = 32u;
+public static const uint kBLASInputPhaseReset = 0u;
+public static const uint kBLASInputPhaseCount = 1u;
+public static const uint kBLASInputPhaseSetup = 2u;
+public static const uint kBLASInputPhaseInsert = 3u;
+public static const uint kCLASPageStateActive = 1u;
+public static const uint kCLASPageAddressOffsetMask = 0x3fffffffu;
+public static const uint kCLASPageStateShift = 30u;
+public static const uint kBLASInstanceFallback = 1u << 0u;
+public static const uint kBLASInstanceDynamic = 1u << 1u;
+public static const uint kBLASInstanceOverflow = 1u << 2u;
+public static const uint kTraversalStackCapacity = 128u;
+public static const uint kStreamRequestHeaderWords = 16u;
+public static const uint kStreamUpdateHeaderWords = 16u;
+public static const uint kStreamRequestMaxLoadsWord = 0u;
+public static const uint kStreamRequestMaxUnloadsWord = 1u;
+public static const uint kStreamRequestLoadCounterWord = 2u;
+public static const uint kStreamRequestUnloadCounterWord = 3u;
+public static const uint kStreamRequestFrameIndexWord = 4u;
+public static const uint kStreamRequestLoadOverflowCounterWord = 5u;
+public static const uint kStreamRequestUnloadOverflowCounterWord = 6u;
+public static const uint kStreamRequestInvalidPageCounterWord = 7u;
+public static const uint kStreamRequestLastLoadOverflowFrameWord = 8u;
+public static const uint kStreamRequestLastUnloadOverflowFrameWord = 9u;
+public static const uint kStreamRequestLastInvalidPageFrameWord = 10u;
+public static const uint kStreamRequestLoadPriorityOffsetWord = 11u;
+public static const uint kStreamRequestPriorityTableOffsetWord = 12u;
+public static const uint kStreamRequestPrefetchLimitWord = 13u;
+public static const uint kStreamRequestPrefetchCounterWord = 14u;
+public static const uint kStreamRequestPrefetchDroppedWord = 15u;
+public static const uint kStreamPrefetchPageTag = 1u << 31u;
 
-struct GPUDrivenStreamAssetPush
+public struct GPUDrivenStreamAssetPush
 {
-    uint pageBuffer;
-    uint activeGroupBuffer;
-    uint pageTableBuffer;
-    uint paramsBuffer;
-    uint requestBuffer;
-    uint residentPageBuffer;
-    uint updateBuffer;
-    uint activeHeaderBuffer;
-    uint instanceBuffer;
-    uint primitiveBuffer;
-    uint lodLevelBuffer;
-    uint groupBuffer;
-    uint nodeBuffer;
-    uint drawIndirectBuffer;
-    uint traversalHeaderBuffer;
-    uint traversalWorkBuffer;
-    uint clasAddressBuffer;
-    uint clasPageTableBuffer;
-    uint blasHeaderBuffer;
-    uint instanceBlasBuffer;
-    uint blasBuildInfoBuffer;
-    uint blasClusterReferenceBuffer;
-    uint fallbackBlasAddressBuffer;
-    uint dynamicBlasAddressBuffer;
-    uint tlasInstanceBuffer;
-    uint traversalPhase;
-    uint activeBuildPhase;
-    uint rasterBindingsBuffer;
-    uint hybridQueueBuffer;
-    uint hybridClusterBuffer;
-    uint clasPublicationRevision;
-    float tessellationEdgePixels;
-    uint tessellationMaxFactor;
-    uint tessellationMaxSplitDepth;
+    public uint pageBuffer;
+    public uint activeGroupBuffer;
+    public uint pageTableBuffer;
+    public uint paramsBuffer;
+    public uint requestBuffer;
+    public uint residentPageBuffer;
+    public uint updateBuffer;
+    public uint activeHeaderBuffer;
+    public uint instanceBuffer;
+    public uint primitiveBuffer;
+    public uint lodLevelBuffer;
+    public uint groupBuffer;
+    public uint nodeBuffer;
+    public uint drawIndirectBuffer;
+    public uint traversalHeaderBuffer;
+    public uint traversalWorkBuffer;
+    public uint clasAddressBuffer;
+    public uint clasPageTableBuffer;
+    public uint blasHeaderBuffer;
+    public uint instanceBlasBuffer;
+    public uint blasBuildInfoBuffer;
+    public uint blasClusterReferenceBuffer;
+    public uint fallbackBlasAddressBuffer;
+    public uint dynamicBlasAddressBuffer;
+    public uint tlasInstanceBuffer;
+    public uint traversalPhase;
+    public uint activeBuildPhase;
+    public uint rasterBindingsBuffer;
+    public uint hybridQueueBuffer;
+    public uint hybridClusterBuffer;
+    public uint clasPublicationRevision;
+    public float tessellationEdgePixels;
+    public uint tessellationMaxFactor;
+    public uint tessellationMaxSplitDepth;
 };
 
-struct GPUDrivenStreamAssetRasterBindings
+public struct GPUDrivenStreamAssetRasterBindings
 {
-    uint visibleClusterBuffer;
-    uint instanceVisibilityBuffer;
-    uint hzbBuffer0;
-    uint hzbBuffer1;
-    uint depthImage;
-    uint visibilityImage;
-    uint deferredColorBuffer;
-    uint visibleInstanceIdsBuffer;
-    uint visibleRecordBase;
-    uint visibleRecordCapacity;
-    uint hzbMipCount;
-    uint hzbValid;
-    uint cullingFlags;
-    uint width;
-    uint height;
-    uint visibleInstanceCounterBuffer;
-    uint gpuSceneInstanceBuffer;
-    uint tessellationBuffer;
-    float displacementBound;
-    uint classificationFlags; // bit 0 disables metadata classification for A/B
-    uint materialBuffer;
-    uint materialTextureRemapBuffer;
-    uint materialTextureCount;
-    uint coverageInputs;
+    public uint visibleClusterBuffer;
+    public uint instanceVisibilityBuffer;
+    public uint hzbBuffer0;
+    public uint hzbBuffer1;
+    public uint depthImage;
+    public uint visibilityImage;
+    public uint deferredColorBuffer;
+    public uint visibleInstanceIdsBuffer;
+    public uint visibleRecordBase;
+    public uint visibleRecordCapacity;
+    public uint hzbMipCount;
+    public uint hzbValid;
+    public uint cullingFlags;
+    public uint width;
+    public uint height;
+    public uint visibleInstanceCounterBuffer;
+    public uint gpuSceneInstanceBuffer;
+    public uint tessellationBuffer;
+    public float displacementBound;
+    public uint classificationFlags; // bit 0 disables metadata classification for A/B
+    public uint materialBuffer;
+    public uint materialTextureRemapBuffer;
+    public uint materialTextureCount;
+    public uint coverageInputs;
 };
 
-struct GPUDrivenStreamAssetActiveHeader
+public struct GPUDrivenStreamAssetActiveHeader
 {
-    uint activeGroupCount;
-    uint activeGroupCapacity;
-    uint maxActiveGroupClusters;
-    uint overflowCount;
-    uint frameIndex;
-    uint padding0;
-    uint padding1;
-    uint padding2;
+    public uint activeGroupCount;
+    public uint activeGroupCapacity;
+    public uint maxActiveGroupClusters;
+    public uint overflowCount;
+    public uint frameIndex;
+    public uint padding0;
+    public uint padding1;
+    public uint padding2;
 };
 
-struct GPUDrivenStreamAssetActiveGroup
+public struct GPUDrivenStreamAssetActiveGroup
 {
-    uint pageDeviceOffsetBytes;
-    uint pageIndex;
-    uint clusterCount;
-    uint primitiveIndex;
-    uint lodLevel;
-    uint materialIndex;
-    uint clusterSelectionMask;
-    uint flags;
-    uint instanceIndex;
-    uint gpuSceneInstanceIndex;
-    uint padding1;
-    uint padding2;
-    float4 world0;
-    float4 world1;
-    float4 world2;
-    float4 world3;
+    public uint pageDeviceOffsetBytes;
+    public uint pageIndex;
+    public uint clusterCount;
+    public uint primitiveIndex;
+    public uint lodLevel;
+    public uint materialIndex;
+    public uint clusterSelectionMask;
+    public uint flags;
+    public uint instanceIndex;
+    public uint gpuSceneInstanceIndex;
+    public uint padding1;
+    public uint padding2;
+    public float4 world0;
+    public float4 world1;
+    public float4 world2;
+    public float4 world3;
 };
 
-struct GPUDrivenStreamAssetInstance
+public struct GPUDrivenStreamAssetInstance
 {
-    uint primitiveIndex;
-    uint materialIndex;
-    uint visible;
-    uint gpuSceneInstanceIndex;
-    float4 world0;
-    float4 world1;
-    float4 world2;
-    float4 world3;
-    float4 boundsCenterRadius;
+    public uint primitiveIndex;
+    public uint materialIndex;
+    public uint visible;
+    public uint gpuSceneInstanceIndex;
+    public float4 world0;
+    public float4 world1;
+    public float4 world2;
+    public float4 world3;
+    public float4 boundsCenterRadius;
 };
 
-struct GPUDrivenStreamAssetPrimitive
+public struct GPUDrivenStreamAssetPrimitive
 {
-    uint lodLevelOffset;
-    uint lodLevelCount;
-    uint pageOffset;
-    uint pageCount;
-    uint fallbackPageOffset;
-    uint fallbackPageCount;
-    uint groupOffset;
-    uint groupCount;
-    uint fallbackGroupOffset;
-    uint fallbackGroupCount;
-    uint materialIndex;
-    uint nodeOffset;
-    uint nodeCount;
-    uint lodBvhOffset;
-    uint lodBvhNodeCount;
-    uint lodTileOffset;
+    public uint lodLevelOffset;
+    public uint lodLevelCount;
+    public uint pageOffset;
+    public uint pageCount;
+    public uint fallbackPageOffset;
+    public uint fallbackPageCount;
+    public uint groupOffset;
+    public uint groupCount;
+    public uint fallbackGroupOffset;
+    public uint fallbackGroupCount;
+    public uint materialIndex;
+    public uint nodeOffset;
+    public uint nodeCount;
+    public uint lodBvhOffset;
+    public uint lodBvhNodeCount;
+    public uint lodTileOffset;
 };
 
-struct GPUDrivenStreamAssetLODLevel
+public struct GPUDrivenStreamAssetLODLevel
 {
-    uint pageOffset;
-    uint pageCount;
-    uint lodLevel;
-    uint clusterCount;
-    float minBoundingSphereRadius;
-    float minMaxQuadricError;
-    uint padding0;
-    uint padding1;
+    public uint pageOffset;
+    public uint pageCount;
+    public uint lodLevel;
+    public uint clusterCount;
+    public float minBoundingSphereRadius;
+    public float minMaxQuadricError;
+    public uint padding0;
+    public uint padding1;
 };
 
-struct GPUDrivenStreamAssetGroup
+public struct GPUDrivenStreamAssetGroup
 {
-    uint primitiveIndex;
-    uint pageIndex;
-    uint lodLevel;
-    uint clusterCount;
-    float boundsCenterX;
-    float boundsCenterY;
-    float boundsCenterZ;
-    float boundsRadius;
-    float maxQuadricError;
-    uint clusterRefinedOffset;
-    uint flags;
-    uint parentOffset;
-    uint parentCount;
-    float demandMinX;
-    float demandMinY;
-    float demandMinZ;
-    float demandMaxX;
-    float demandMaxY;
-    float demandMaxZ;
+    public uint primitiveIndex;
+    public uint pageIndex;
+    public uint lodLevel;
+    public uint clusterCount;
+    public float boundsCenterX;
+    public float boundsCenterY;
+    public float boundsCenterZ;
+    public float boundsRadius;
+    public float maxQuadricError;
+    public uint clusterRefinedOffset;
+    public uint flags;
+    public uint parentOffset;
+    public uint parentCount;
+    public float demandMinX;
+    public float demandMinY;
+    public float demandMinZ;
+    public float demandMaxX;
+    public float demandMaxY;
+    public float demandMaxZ;
 };
 
-struct GPUDrivenStreamAssetNode
+public struct GPUDrivenStreamAssetNode
 {
-    uint primitiveIndex;
-    uint childOffset;
-    uint childCount;
-    uint groupIndex;
-    float4 boundsCenterRadius;
-    float maxQuadricError;
-    uint lodLevel;
-    uint padding0;
-    uint padding1;
+    public uint primitiveIndex;
+    public uint childOffset;
+    public uint childCount;
+    public uint groupIndex;
+    public float4 boundsCenterRadius;
+    public float maxQuadricError;
+    public uint lodLevel;
+    public uint padding0;
+    public uint padding1;
 };
 
-struct GPUDrivenStreamAssetDrawIndirect
+public struct GPUDrivenStreamAssetDrawIndirect
 {
-    uint groupCountX;
-    uint groupCountY;
-    uint groupCountZ;
+    public uint groupCountX;
+    public uint groupCountY;
+    public uint groupCountZ;
 };
 
-struct GPUDrivenStreamAssetTraversalHeader
+public struct GPUDrivenStreamAssetTraversalHeader
 {
-    uint readCounter;
-    uint writeCounter;
-    uint taskCounter;
-    uint overflowCount;
-    uint frameIndex;
-    uint padding0;
-    uint padding1;
-    uint padding2;
+    public uint readCounter;
+    public uint writeCounter;
+    public uint taskCounter;
+    public uint overflowCount;
+    public uint frameIndex;
+    public uint padding0;
+    public uint padding1;
+    public uint padding2;
 };
 
-struct GPUDrivenStreamAssetTraversalWorkItem
+public struct GPUDrivenStreamAssetTraversalWorkItem
 {
-    uint instanceIndex;
-    uint nodeIndex;
-    uint readyFrame;
-    uint padding0;
+    public uint instanceIndex;
+    public uint nodeIndex;
+    public uint readyFrame;
+    public uint padding0;
 };
 
-struct GPUDrivenStreamAssetCLASPageEntry
+public struct GPUDrivenStreamAssetCLASPageEntry
 {
-    uint addressOffsetAndState;
-    uint publicationGeneration;
+    public uint addressOffsetAndState;
+    public uint publicationGeneration;
 };
 
 uint clasPageAddressOffset(GPUDrivenStreamAssetCLASPageEntry entry)
@@ -317,77 +318,77 @@ uint clasPageState(GPUDrivenStreamAssetCLASPageEntry entry)
     return entry.addressOffsetAndState >> kCLASPageStateShift;
 }
 
-struct GPUDrivenStreamAssetBLASHeader
+public struct GPUDrivenStreamAssetBLASHeader
 {
-    uint clusterReferenceCount;
-    uint blasBuildCount;
-    uint clusterReferenceCapacity;
-    uint overflowCount;
-    uint frameIndex;
-    uint padding0;
-    uint padding1;
-    uint semanticChangeCount;
-    uint requestedClusterReferences;
-    uint requestedInstances;
-    uint referenceBudgetRejected;
-    uint buildBudgetRejected;
-    uint oversizedInstances;
-    uint missingClasInstances;
-    uint invalidGroups;
-    uint liveClusterReferences;
-    uint dirtyInstances;
-    uint reusedInstances;
-    uint storageRejected;
-    uint arenaUsedBytes;
-    uint arenaRepack;
-    uint arenaBase;
-    uint admittedInstances;
-    uint publicationInvalidated;
+    public uint clusterReferenceCount;
+    public uint blasBuildCount;
+    public uint clusterReferenceCapacity;
+    public uint overflowCount;
+    public uint frameIndex;
+    public uint padding0;
+    public uint padding1;
+    public uint semanticChangeCount;
+    public uint requestedClusterReferences;
+    public uint requestedInstances;
+    public uint referenceBudgetRejected;
+    public uint buildBudgetRejected;
+    public uint oversizedInstances;
+    public uint missingClasInstances;
+    public uint invalidGroups;
+    public uint liveClusterReferences;
+    public uint dirtyInstances;
+    public uint reusedInstances;
+    public uint storageRejected;
+    public uint arenaUsedBytes;
+    public uint arenaRepack;
+    public uint arenaBase;
+    public uint admittedInstances;
+    public uint publicationInvalidated;
 };
 
-struct GPUDrivenStreamAssetInstanceBLAS
+public struct GPUDrivenStreamAssetInstanceBLAS
 {
-    uint clusterReferenceOffset;
-    uint clusterReferenceCapacity;
-    uint selectedClusterCount;
-    uint insertedClusterCount;
-    uint blasBuildIndex;
-    uint flags;
-    uint firstGroup;
-    uint groupCount;
-    uint previousFirstGroup;
-    uint previousGroupCount;
-    uint storageOffset;
-    uint storageCapacity;
-    uint allocationPrefix;
-    uint packedPrefix;
-    uint buildPrefix;
-    uint cachedValid;
+    public uint clusterReferenceOffset;
+    public uint clusterReferenceCapacity;
+    public uint selectedClusterCount;
+    public uint insertedClusterCount;
+    public uint blasBuildIndex;
+    public uint flags;
+    public uint firstGroup;
+    public uint groupCount;
+    public uint previousFirstGroup;
+    public uint previousGroupCount;
+    public uint storageOffset;
+    public uint storageCapacity;
+    public uint allocationPrefix;
+    public uint packedPrefix;
+    public uint buildPrefix;
+    public uint cachedValid;
 };
 
-struct GPUDrivenStreamAssetBLASBuildInfo
+public struct GPUDrivenStreamAssetBLASBuildInfo
 {
-    uint clusterReferencesCount;
-    uint clusterReferencesStride;
-    uint clusterReferencesAddressLow;
-    uint clusterReferencesAddressHigh;
+    public uint clusterReferencesCount;
+    public uint clusterReferencesStride;
+    public uint clusterReferencesAddressLow;
+    public uint clusterReferencesAddressHigh;
 };
 
-struct GPUDrivenStreamAssetTLASInstance
+public struct GPUDrivenStreamAssetTLASInstance
 {
-    float4 transform0;
-    float4 transform1;
-    float4 transform2;
-    uint customIndexMask;
-    uint shaderBindingTableFlags;
-    uint accelerationStructureReferenceLow;
-    uint accelerationStructureReferenceHigh;
+    public float4 transform0;
+    public float4 transform1;
+    public float4 transform2;
+    public uint customIndexMask;
+    public uint shaderBindingTableFlags;
+    public uint accelerationStructureReferenceLow;
+    public uint accelerationStructureReferenceHigh;
 };
 
-struct GPUDrivenStreamAssetPageTableEntry
+public struct GPUDrivenStreamAssetPageTableEntry
 {
-    uint deviceOffsetAndState;
-    uint lastRequestFrame;
+    public uint deviceOffsetAndState;
+    public uint lastRequestFrame;
 };
 
 uint streamPageDeviceOffset(GPUDrivenStreamAssetPageTableEntry entry)
@@ -402,136 +403,136 @@ uint streamPageState(GPUDrivenStreamAssetPageTableEntry entry)
     return entry.deviceOffsetAndState & kStreamPageStateMask;
 }
 
-struct GPUDrivenStreamAssetRequestHeader
+public struct GPUDrivenStreamAssetRequestHeader
 {
-    uint maxLoadRequests;
-    uint maxUnloadRequests;
-    uint loadCounter;
-    uint unloadCounter;
-    uint frameIndex;
-    uint loadOverflowCounter;
-    uint unloadOverflowCounter;
-    uint invalidPageCounter;
-    uint lastLoadOverflowFrame;
-    uint lastUnloadOverflowFrame;
-    uint lastInvalidPageFrame;
-    uint padding0;
-    uint padding1;
-    uint padding2;
-    uint padding3;
-    uint padding4;
+    public uint maxLoadRequests;
+    public uint maxUnloadRequests;
+    public uint loadCounter;
+    public uint unloadCounter;
+    public uint frameIndex;
+    public uint loadOverflowCounter;
+    public uint unloadOverflowCounter;
+    public uint invalidPageCounter;
+    public uint lastLoadOverflowFrame;
+    public uint lastUnloadOverflowFrame;
+    public uint lastInvalidPageFrame;
+    public uint padding0;
+    public uint padding1;
+    public uint padding2;
+    public uint padding3;
+    public uint padding4;
 };
 
-struct GPUDrivenStreamAssetUpdateHeader
+public struct GPUDrivenStreamAssetUpdateHeader
 {
-    uint patchUnloadPageCount;
-    uint patchPageCount;
-    uint frameIndex;
-    uint patchOverflowCounter;
-    uint padding0;
-    uint padding1;
-    uint padding2;
-    uint padding3;
-    uint padding4;
-    uint padding5;
-    uint padding6;
-    uint padding7;
-    uint padding8;
-    uint padding9;
-    uint padding10;
-    uint padding11;
+    public uint patchUnloadPageCount;
+    public uint patchPageCount;
+    public uint frameIndex;
+    public uint patchOverflowCounter;
+    public uint padding0;
+    public uint padding1;
+    public uint padding2;
+    public uint padding3;
+    public uint padding4;
+    public uint padding5;
+    public uint padding6;
+    public uint padding7;
+    public uint padding8;
+    public uint padding9;
+    public uint padding10;
+    public uint padding11;
 };
 
-struct GPUDrivenStreamAssetParams
+public struct GPUDrivenStreamAssetParams
 {
-    float4 eye;
-    float4 center;
-    float4 upProjection;
-    float4 viewport;
-    float4 clipOrtho;
-    float4 clearColor;
-    uint debugColorMode;
-    uint pageBufferBytes;
-    uint drawTaskCount;
-    uint frameIndex;
-    uint maxGpuPageRequests;
-    uint maxGpuPageUnloadRequests;
-    uint activeGroupCount;
-    uint maxActiveGroupClusters;
-    uint sceneInstanceCount;
-    uint scenePrimitiveCount;
-    uint sceneLodLevelCount;
-    uint scenePageCount;
-    uint selectedLodLevel;
-    uint enableGpuLodSelection;
-    uint enableGpuUnloadRequests;
-    uint sceneGroupCount;
-    uint maxPrimitiveGroupCount;
-    uint sceneNodeCount;
-    uint traversalWorkerCount;
-    uint traversalWorkCapacity;
-    uint blasClusterReferenceAddressLow;
-    uint blasClusterReferenceAddressHigh;
-    uint blasClusterReferenceCapacity;
-    uint blasBuildCapacity;
-    float4 previousEye;
-    float4 previousCenter;
-    float4 previousUpProjection;
-    float4 previousViewport;
-    float4 previousClipOrtho;
-    float lodPixelError; // Display-pixel budget converted to internal render pixels by the CPU.
-    uint lodTopologyBuffer;
-    uint lodStateBuffer;
-    uint lodInstanceOffsetsOffset;
-    float4 renderEye;
-    float4 renderCenter;
-    float4 renderUpProjection;
-    float4 renderViewport;
-    float4 renderClipOrtho;
-    float4 prefetchParams;
-    uint demandBuffer;
-    uint demandTaskOffset;
-    uint demandTaskCount;
-    uint splitFrontier;
-    uint demandInstanceOffsetsOffset;
-    uint demandStatsBuffer;
-    uint maxBlasClustersPerBuild;
-    uint blasStorageBytes;
-    uint blasStorageAddressLow;
-    uint blasStorageAddressHigh;
-    uint enableBlasInstanceReuse;
-    uint blasStoragePadding;
-    uint blasSizeClasses[32];
-    float4 prefetchEye;
-    float4 prefetchCenter;
-    float4 prefetchUp;
-    uint enableLodTransitionTelemetry;
-    float previousLodPixelError;
-    uint rayClasPageTableBuffer;
-    uint lodTelemetryPadding;
-    float rtOffscreenErrorScale;
-    float rtLodHysteresis;
-    uint rtLodFlags;
-    uint rtLodPolicyRevision;
+    public float4 eye;
+    public float4 center;
+    public float4 upProjection;
+    public float4 viewport;
+    public float4 clipOrtho;
+    public float4 clearColor;
+    public uint debugColorMode;
+    public uint pageBufferBytes;
+    public uint drawTaskCount;
+    public uint frameIndex;
+    public uint maxGpuPageRequests;
+    public uint maxGpuPageUnloadRequests;
+    public uint activeGroupCount;
+    public uint maxActiveGroupClusters;
+    public uint sceneInstanceCount;
+    public uint scenePrimitiveCount;
+    public uint sceneLodLevelCount;
+    public uint scenePageCount;
+    public uint selectedLodLevel;
+    public uint enableGpuLodSelection;
+    public uint enableGpuUnloadRequests;
+    public uint sceneGroupCount;
+    public uint maxPrimitiveGroupCount;
+    public uint sceneNodeCount;
+    public uint traversalWorkerCount;
+    public uint traversalWorkCapacity;
+    public uint blasClusterReferenceAddressLow;
+    public uint blasClusterReferenceAddressHigh;
+    public uint blasClusterReferenceCapacity;
+    public uint blasBuildCapacity;
+    public float4 previousEye;
+    public float4 previousCenter;
+    public float4 previousUpProjection;
+    public float4 previousViewport;
+    public float4 previousClipOrtho;
+    public float lodPixelError; // Display-pixel budget converted to internal render pixels by the CPU.
+    public uint lodTopologyBuffer;
+    public uint lodStateBuffer;
+    public uint lodInstanceOffsetsOffset;
+    public float4 renderEye;
+    public float4 renderCenter;
+    public float4 renderUpProjection;
+    public float4 renderViewport;
+    public float4 renderClipOrtho;
+    public float4 prefetchParams;
+    public uint demandBuffer;
+    public uint demandTaskOffset;
+    public uint demandTaskCount;
+    public uint splitFrontier;
+    public uint demandInstanceOffsetsOffset;
+    public uint demandStatsBuffer;
+    public uint maxBlasClustersPerBuild;
+    public uint blasStorageBytes;
+    public uint blasStorageAddressLow;
+    public uint blasStorageAddressHigh;
+    public uint enableBlasInstanceReuse;
+    public uint blasStoragePadding;
+    public uint blasSizeClasses[32];
+    public float4 prefetchEye;
+    public float4 prefetchCenter;
+    public float4 prefetchUp;
+    public uint enableLodTransitionTelemetry;
+    public float previousLodPixelError;
+    public uint rayClasPageTableBuffer;
+    public uint lodTelemetryPadding;
+    public float rtOffscreenErrorScale;
+    public float rtLodHysteresis;
+    public uint rtLodFlags;
+    public uint rtLodPolicyRevision;
 };
 
-struct GPUDrivenStreamAssetVertexOutput
+public struct GPUDrivenStreamAssetVertexOutput
 {
-    float4 position : SV_Position;
-    nointerpolation uint doubleSided : TEXCOORD1;
-    float2 texcoord : TEXCOORD2;
-    nointerpolation uint instanceIndex : TEXCOORD3;
+    public float4 position : SV_Position;
+    public nointerpolation uint doubleSided : TEXCOORD1;
+    public float2 texcoord : TEXCOORD2;
+    public nointerpolation uint instanceIndex : TEXCOORD3;
 };
 
 // IDs vary per triangle, so they must not use a shared vertex's flat attribute.
-struct GPUDrivenStreamAssetPrimitiveOutput
+public struct GPUDrivenStreamAssetPrimitiveOutput
 {
-    uint visibilityId : SV_PrimitiveID;
+    public uint visibilityId : SV_PrimitiveID;
 };
 
-struct GPUDrivenStreamAssetFullscreenOutput
+public struct GPUDrivenStreamAssetFullscreenOutput
 {
-    float4 position : SV_Position;
+    public float4 position : SV_Position;
 };
 
 float3 safeNormalize(float3 value, float3 fallback)
@@ -636,13 +637,13 @@ float4 projectPosition(float3 worldPosition, GPUDrivenStreamAssetParams params)
     return clip;
 }
 
-struct GPUDrivenStreamAssetCameraData
+public struct GPUDrivenStreamAssetCameraData
 {
-    float4 eye;
-    float4 center;
-    float4 upProjection;
-    float4 viewport;
-    float4 clipOrtho;
+    public float4 eye;
+    public float4 center;
+    public float4 upProjection;
+    public float4 viewport;
+    public float4 clipOrtho;
 };
 
 GPUDrivenStreamAssetCameraData currentStreamCamera(GPUDrivenStreamAssetParams params)
@@ -2385,7 +2386,7 @@ void buildStreamLodFrontier(
     state[header + 3u] = rootsReady ? 1u : 0u;
 }
 
-groupshared uint2 g_StreamLodPrefix[64];
+public groupshared uint2 g_StreamLodPrefix[64];
 
 // Saturate before addition so even malformed/extreme counts cannot wrap.
 uint2 scanStreamLodCounts(uint2 value, uint lane, uint limit)
@@ -2693,10 +2694,10 @@ void streamDistributedDemandMain(uint3 workgroup : SV_GroupID, uint lane : SV_Gr
     }
 }
 
-groupshared uint g_CooperativeWaveCounts[64];
-groupshared uint g_CooperativeRoots;
-groupshared uint g_CooperativeTelemetryContinuous;
-groupshared uint g_CooperativeMissingRoots;
+public groupshared uint g_CooperativeWaveCounts[64];
+public groupshared uint g_CooperativeRoots;
+public groupshared uint g_CooperativeTelemetryContinuous;
+public groupshared uint g_CooperativeMissingRoots;
 
 // Stable workgroup scan, with no fixed subgroup size assumption.
 uint streamCooperativePrefix(uint value, uint lane, out uint total)
@@ -3365,13 +3366,13 @@ void gpuDrivenStreamAssetBuildActiveMain(uint3 dispatchThreadID : SV_DispatchThr
     }
 }
 
-static const uint kBLASInstanceDirty = 8u;
-static const uint kBLASInstanceSemanticCutDirty = 1u << 4u;
+public static const uint kBLASInstanceDirty = 8u;
+public static const uint kBLASInstanceSemanticCutDirty = 1u << 4u;
 // Persist the representation actually published to the TLAS, including failed
 // admissions. Address relocations and requested cuts do not change this state.
-static const uint kBLASInstancePublishedFallback = 1u << 5u;
-static const uint kBLASInstancePublishedDynamic = 2u << 5u;
-static const uint kBLASInstancePublishedMask = 3u << 5u;
+public static const uint kBLASInstancePublishedFallback = 1u << 5u;
+public static const uint kBLASInstancePublishedDynamic = 2u << 5u;
+public static const uint kBLASInstancePublishedMask = 3u << 5u;
 
 bool streamBlasDynamicReady(GPUDrivenStreamAssetInstanceBLAS blas)
 {
@@ -3392,7 +3393,7 @@ uint2 streamPublishedBlasAddress(GPUDrivenStreamAssetInstanceBLAS blas,
     }
     return fallbackAddress;
 }
-groupshared uint4 g_StreamBlasStoragePrefix[64];
+public groupshared uint4 g_StreamBlasStoragePrefix[64];
 
 uint blasInstanceStorageBytes(uint count, GPUDrivenStreamAssetParams params)
 {
@@ -3860,23 +3861,23 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
     tlasInstances[instanceIndex] = output;
 }
 
-struct StreamRasterCluster
+public struct StreamRasterCluster
 {
-    GPUDrivenStreamAssetParams params;
-    GPUDrivenStreamAssetActiveGroup group;
-    uint pageWord;
-    uint positionOffsetBytes;
-    uint positionStrideWords;
-    uint vertexOffset;
-    uint vertexCount;
-    uint triangleCount;
-    uint triangleBaseByte;
-    uint recordIndex;
-    uint clusterIndex;
-    uint instanceFlags;
-    float4 worldSphere;
-    uint classificationFlags;
-    bool forceHardware;
+    public GPUDrivenStreamAssetParams params;
+    public GPUDrivenStreamAssetActiveGroup group;
+    public uint pageWord;
+    public uint positionOffsetBytes;
+    public uint positionStrideWords;
+    public uint vertexOffset;
+    public uint vertexCount;
+    public uint triangleCount;
+    public uint triangleBaseByte;
+    public uint recordIndex;
+    public uint clusterIndex;
+    public uint instanceFlags;
+    public float4 worldSphere;
+    public uint classificationFlags;
+    public bool forceHardware;
 };
 
 // A projected enclosing sphere bounds every triangle bbox, but a large sphere
@@ -3922,7 +3923,7 @@ bool streamSphereFitsSoftware(StreamRasterCluster c, float2 viewport, float maxP
         all(lower >= -32.0) && all(upper <= viewport + 32.0);
 }
 
-bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
+public bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
     GPUDrivenStreamAssetPush push, out StreamRasterCluster output, out bool retryLate)
 {
     retryLate = false;
@@ -4169,7 +4170,7 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     return true;
 }
 
-float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
+public float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
 {
     StructuredBuffer<uint> pages =
         resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
@@ -4183,14 +4184,14 @@ float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAsse
 }
 
 // Preserve projection arithmetic, but build camera-only terms once per cluster.
-struct StreamRasterProjection
+public struct StreamRasterProjection
 {
-    float3 eye; float3 forward; float3 right; float3 up;
-    float nearZ; float farZ; float aspect; float halfHeight; float yScale;
-    float2 jitter;
-    bool ortho; bool jitterEnabled;
+    public float3 eye; float3 forward; float3 right; float3 up;
+    public float nearZ; float farZ; float aspect; float halfHeight; float yScale;
+    public float2 jitter;
+    public bool ortho; bool jitterEnabled;
 };
-StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams p)
+public StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams p)
 {
     StreamRasterProjection r;
     r.jitterEnabled = p.renderViewport.y > 0.0;
@@ -4210,7 +4211,7 @@ StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams 
     r.ortho=p.upProjection.w>0.5;
     return r;
 }
-float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
+public float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
 {
     StructuredBuffer<uint> pages = resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
     uint word=c.pageWord+c.positionOffsetBytes/4u+(c.vertexOffset+vertex)*c.positionStrideWords;
@@ -4225,9 +4226,9 @@ float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStre
     clip.y=-clip.y;
     return clip;
 }
-groupshared StreamRasterProjection g_StreamRasterProjection;
+public groupshared StreamRasterProjection g_StreamRasterProjection;
 
-uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
+public uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
 {
     StructuredBuffer<uint> pages =
         resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.pageBuffer));
@@ -4291,8 +4292,7 @@ bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush 
         program.inputs = resolveUniform(ResourceHandle<ByteAddressBuffer>(bindings.coverageInputs));
         return program.evaluateCoverage(context, reference).accepted;
     }
-    LegacyCoverageEvaluator legacy;
-    return legacy.evaluateCoverage(context, reference).accepted;
+    return coverageFromOpacity(context, context.baseAlpha).accepted;
 }
 
 // Used by the bounded-queue HW fallback as well as tessellation task shaders.
@@ -4305,12 +4305,12 @@ void publishStreamHardwareRetry(uint record, bool retryLate, GPUDrivenStreamAsse
     }
 }
 
-groupshared StreamRasterCluster g_StreamMeshCluster;
-groupshared uint g_StreamMeshValid;
+public groupshared StreamRasterCluster g_StreamMeshCluster;
+public groupshared uint g_StreamMeshValid;
 
 // Prebinned clusters emit their complete indexed mesh in one workgroup.
 // The legacy unbinned queue path retains its two 64-triangle draw slots.
-groupshared float4 g_StreamMeshClip[kMaxMeshletVertices];
+public groupshared float4 g_StreamMeshClip[kMaxMeshletVertices];
 
 [shader("mesh")]
 [numthreads(64, 1, 1)]
@@ -4370,14 +4370,14 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
     }
 }
 
-groupshared StreamRasterCluster g_StreamRasterCluster;
-groupshared float4 g_StreamRasterClip[128];
+public groupshared StreamRasterCluster g_StreamRasterCluster;
+public groupshared float4 g_StreamRasterClip[128];
 // Raw words avoid interpreting negative snapped coordinates as float NaNs.
-groupshared uint4 g_StreamRasterWords[128];
-groupshared uint g_StreamBinVisible;
-groupshared uint g_StreamBinHardware;
+public groupshared uint4 g_StreamRasterWords[128];
+public groupshared uint g_StreamBinVisible;
+public groupshared uint g_StreamBinHardware;
 
-groupshared uint g_StreamCandidatePrefix[128];
+public groupshared uint g_StreamCandidatePrefix[128];
 
 uint streamPhaseCandidateMask(GPUDrivenStreamAssetActiveGroup group, uint index,
     RWStructuredBuffer<uint> bins, StructuredBuffer<uint> visibility, bool early)
@@ -4588,9 +4588,9 @@ void streamClusterCullP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex
     cullStreamClusterCandidates(group, lane, push, false);
 }
 
-#include "StreamClusterClassify.slang"
+__include "StreamClusterClassify.slang";
 
-void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool prepared, bool incrementalDepth)
+public void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool prepared, bool incrementalDepth)
 {
     StructuredBuffer<uint> bins =
         resolveUniform(ResourceHandle<StructuredBuffer<uint>>(push.hybridClusterBuffer));
@@ -4632,7 +4632,7 @@ void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, 
     }
 }
 
-#include "StreamRasterCooperative.slang"
+__include "StreamRasterCooperative.slang";
 
 float edgeFunction(float2 a, float2 b, float2 point)
 {
@@ -5086,7 +5086,7 @@ uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, ui
     return visibilityId;
 }
 
-#include "../VisibilityBuffer/VisibilityTessellationStream.slang"
+__include "../VisibilityBuffer/VisibilityTessellationStream.slang";
 
 [shader("compute")]
 [numthreads(128,1,1)]

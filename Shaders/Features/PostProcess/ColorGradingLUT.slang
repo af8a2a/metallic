@@ -1,3 +1,5 @@
+module ColorGradingLUT;
+
 import ShaderCore;
 import ColorGrading;
 using Metallic;

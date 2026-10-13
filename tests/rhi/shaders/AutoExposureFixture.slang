@@ -1,3 +1,5 @@
+module AutoExposureFixture;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

@@ -1,3 +1,5 @@
+module EnvironmentCapture;
+
 import Atmosphere;
 using Metallic;
 using Metallic.Atmosphere;

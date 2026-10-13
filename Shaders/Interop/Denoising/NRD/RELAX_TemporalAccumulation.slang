@@ -1,3 +1,5 @@
+module RELAX_TemporalAccumulation;
+
 #include "Bindless.hlsli"
 /*
 Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.

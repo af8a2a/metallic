@@ -1,3 +1,5 @@
+module NativeDescriptorAtomics;
+
 struct Child { uint4 first; uint4 second; };
 struct Record { uint4 prefix; Child children[2]; uint4 suffix; };
 struct Push { uint atomics; uint counters; uint records; uint count; uint base; };

@@ -1,6 +1,9 @@
+#language slang 2026
+module SceneRTXDI;
 import MaterialTextureDecode;
 import AlphaCoverage;
 import Material;
+import OpenPBRMaterialParameters;
 using Metallic.Material;
 
 import Core;
@@ -38,47 +41,7 @@ struct RTXDIInstance
     float padding;
 };
 
-struct RTXDITextureInfo
-{
-    uint textureIndex;
-    uint texCoord;
-    // Required for float4 alignment in StructuredBuffer std430 layout.
-    uint2 alignmentPadding;
-    float4 transform0;
-    float4 transform1;
-};
-
-struct RTXDIMaterial
-{
-    float4 baseColor;
-    float4 emissive;
-    float4 params;
-    float4 textureParams;
-    float4 glassParams;
-    float4 attenuationColor;
-    float4 diffuseTransmission;
-    float4 rtxcrHairBaseColor;
-    float4 rtxcrHairParams0;
-    float4 rtxcrHairParams1;
-    float4 rtxcrHairDiffuseTint;
-    RTXDITextureInfo baseColorTexture;
-    RTXDITextureInfo metallicRoughnessTexture;
-    RTXDITextureInfo normalTexture;
-    RTXDITextureInfo occlusionTexture;
-    RTXDITextureInfo emissiveTexture;
-    RTXDITextureInfo transmissionTexture;
-    RTXDITextureInfo thicknessTexture;
-    RTXDITextureInfo diffuseTransmissionTexture;
-    RTXDITextureInfo diffuseTransmissionColorTexture;
-    float4 specular;
-    RTXDITextureInfo specularTexture;
-    RTXDITextureInfo specularColorTexture;
-};
-
-
-
-
-#define gMaterials resolveBuffer<StructuredBuffer<RTXDIMaterial>>(getResourceParameters<SceneResourceParameters>().materials)
+#define gMaterials resolveBuffer<StructuredBuffer<SceneMaterialData>>(getResourceParameters<SceneResourceParameters>().materials)
 
 #define gMaterialTextures(index) resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)))
 
@@ -178,28 +141,7 @@ uint visualizationMode(SceneRTXDIPush push)
     return (push.behaviorFlags >> kBehaviorVisualizationShift) & kBehaviorVisualizationMask;
 }
 
-struct Ray
-{
-    float3 origin;
-    float3 direction;
-};
-
-struct HitInfo
-{
-    float t;
-    float3 position;
-    float3 normal;
-    float3 geometryNormal;
-    float4 tangent;
-    float3 bitangent;
-    float2 texcoord;
-    uint materialIndex;
-    uint instanceIndex;
-    uint primitiveIndex;
-    uint triangleIndex;
-    float rayConeLodConstant;
-    bool frontFace;
-};
+import ScenePathTypes;
 
 struct Surface
 {
@@ -544,23 +486,32 @@ float2 motionVectorToPrevious(float3 worldPosition, float2 currentSamplePixel, S
     return previousUv - currentUv;
 }
 
-bool hasMaterialTexture(RTXDITextureInfo textureInfo, SceneRTXDIPush push)
+bool hasMaterialTexture(MaterialTextureInfo textureInfo, SceneRTXDIPush push)
 {
     return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
         textureInfo.textureIndex < push.materialTextureCount;
 }
 
-float2 transformMaterialUv(RTXDITextureInfo textureInfo, float2 uv)
+float2 transformMaterialUv(MaterialTextureInfo textureInfo, float2 uv)
 {
     return float2(
         dot(textureInfo.transform0.xy, uv) + textureInfo.transform0.z,
         dot(textureInfo.transform1.xy, uv) + textureInfo.transform1.z);
 }
 
-#include "../PathTracing/StreamTextureSampling.slang"
+import StreamTextureSampling;
+
+RWStructuredBuffer<uint> sceneStreamTextureFeedback()
+{
+#if SHARC_UPDATE
+    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback);
+#else
+    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+#endif
+}
 
 float4 loadMaterialTexture(
-    RTXDITextureInfo textureInfo,
+    MaterialTextureInfo textureInfo,
     float2 uv,
     float4 fallback,
     SceneRTXDIPush push)
@@ -571,8 +522,8 @@ float4 loadMaterialTexture(
     uint width = 1u;
     uint height = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    requestStreamTextureMip0(textureIndex);
-    uint mip = uint(ceil(streamTextureSamplingFloor(textureIndex)));
+    requestStreamTextureMip0(sceneStreamTextureFeedback(), textureIndex);
+    uint mip = uint(ceil(streamTextureSamplingFloor(sceneStreamTextureFeedback(), textureIndex)));
     uint mipCount;
     gMaterialTextures(textureIndex).GetDimensions(mip, width, height, mipCount);
     if (width == 0u || height == 0u) {
@@ -587,7 +538,7 @@ float4 loadMaterialTexture(
 
 bool alphaMaskAcceptsHit(HitInfo hit, SceneRTXDIPush push)
 {
-    RTXDIMaterial material = gMaterials[hit.materialIndex];
+    OpenPBRMaterialParameters material = sceneOpenPBRParameters(gMaterials[hit.materialIndex]);
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
@@ -605,41 +556,12 @@ bool alphaMaskAcceptsHit(HitInfo hit, SceneRTXDIPush push)
     }
     if (needsAlpha) {
         if (hasMaterialTexture(material.baseColorTexture, push)) {
-            requestStreamTextureMip0(material.baseColorTexture.textureIndex);
-            context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv), uint(ceil(streamTextureSamplingFloor(material.baseColorTexture.textureIndex))));
+            requestStreamTextureMip0(sceneStreamTextureFeedback(), material.baseColorTexture.textureIndex);
+            context.baseAlpha *= sampleAlphaCoverage(gMaterialTextures(material.baseColorTexture.textureIndex), transformMaterialUv(material.baseColorTexture, context.uv), uint(ceil(streamTextureSamplingFloor(sceneStreamTextureFeedback(), material.baseColorTexture.textureIndex))));
         }
     }
     if (custom) { return program.evaluateCoverage(context, coverageInstanceRef(hit.materialIndex)).accepted; }
     return coverageFromOpacity(context, context.baseAlpha).accepted;
-}
-
-void computeTriangleTangentSpace(
-    float3 p0,
-    float3 p1,
-    float3 p2,
-    float2 uv0,
-    float2 uv1,
-    float2 uv2,
-    float3 normal,
-    out float3 tangent,
-    out float3 bitangent)
-{
-    float3 edge1 = p1 - p0;
-    float3 edge2 = p2 - p0;
-    float2 deltaUv1 = uv1 - uv0;
-    float2 deltaUv2 = uv2 - uv0;
-    float determinant = deltaUv1.x * deltaUv2.y - deltaUv1.y * deltaUv2.x;
-    if (abs(determinant) <= 0.0000001) {
-        float3 referenceAxis = abs(normal.z) < 0.999
-            ? float3(0.0, 0.0, 1.0)
-            : float3(0.0, 1.0, 0.0);
-        tangent = safeNormalize(cross(referenceAxis, normal), float3(1.0, 0.0, 0.0));
-        bitangent = safeNormalize(cross(normal, tangent), float3(0.0, 1.0, 0.0));
-        return;
-    }
-    float inverseDeterminant = 1.0 / determinant;
-    tangent = (edge1 * deltaUv2.y - edge2 * deltaUv1.y) * inverseDeterminant;
-    bitangent = (edge2 * deltaUv1.x - edge1 * deltaUv2.x) * inverseDeterminant;
 }
 
 float3 transformObjectNormalToWorld(float3 normal, float3x4 worldToObject)
@@ -647,7 +569,8 @@ float3 transformObjectNormalToWorld(float3 normal, float3x4 worldToObject)
     return mul(normal, worldToObject).xyz;
 }
 
-#include "../PathTracing/StreamRayGeometry.slang"
+import StreamRayGeometry;
+using Metallic.StreamGeometry;
 
 bool traceClosest(Ray ray, SceneRTXDIPush push, out HitInfo hit, bool occlusionOnly = false)
 {
@@ -729,7 +652,7 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, SceneRTXDIP
 
 Surface makeSurface(HitInfo hit, Ray ray, SceneRTXDIPush push)
 {
-    RTXDIMaterial material = gMaterials[hit.materialIndex];
+    OpenPBRMaterialParameters material = sceneOpenPBRParameters(gMaterials[hit.materialIndex]);
     float4 baseColorSample = loadMaterialTexture(
         material.baseColorTexture,
         hit.texcoord,

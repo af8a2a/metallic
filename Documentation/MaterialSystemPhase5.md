@@ -11,7 +11,7 @@ Phase 5 将 Surface 直接光累积收敛到一个 Slang generic，实现 CPU �
 - `shadeEvaluatedSurface`：接收已求值结果，供需要先处理 normal debug、unlit 或获取映射后的 hit/RNG 的生产入口使用，避免再次读取材质。
 - `sampleSurfaceWeight`：通过同一个 Prepared 接口取得路径权重和统一事件标志。
 
-`IPreparedSurfaceClosure` 新增 shading normal、默认 projected eval、PDF、weighted sample 和 emission 桥接。普通 BSDF 通过 `f * abs(cos)` 和 `f * abs(cos) / pdf` 默认实现接入；OpenPBR override 使用原生 projected value / weight，保留 Phase 4 的数值语义和背面发光抑制。`IWeightedPreparedSurfaceClosure` 保留为兼容标记。`SurfaceSamplingContext` 显式提供 throughput、波长和外部 IOR；无需额外状态的 Closure 默认忽略它。
+`IPreparedSurfaceClosure` 新增 shading normal、默认 projected eval、PDF、weighted sample 和 emission 桥接。普通 BSDF 通过 `f * abs(cos)` 和 `f * abs(cos) / pdf` 默认实现接入；OpenPBR override 使用原生 projected value / weight，保留 Phase 4 的数值语义和背面发光抑制。旧 `IWeightedPreparedSurfaceClosure` 兼容标记已移除，模型直接实现统一 prepared 接口。`SurfaceSamplingContext` 显式提供 throughput、波长和外部 IOR；无需额外状态的 Closure 默认忽略它。
 
 三条生产路径已移除各自的直接光循环：
 

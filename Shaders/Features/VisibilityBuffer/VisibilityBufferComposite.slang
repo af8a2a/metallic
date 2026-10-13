@@ -1,3 +1,5 @@
+module VisibilityBufferComposite;
+
 import ShaderCore;
 using Metallic;
 

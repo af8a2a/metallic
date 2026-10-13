@@ -4,6 +4,26 @@ import MaterialProgram;
 
 namespace Metallic.Material
 {
+public struct MaterialCoverageParameters
+{
+    public float baseAlpha;
+    public float cutoff;
+    public float alphaMode;
+    public bool hasProgram;
+    public MaterialTextureInfo baseColorTexture;
+};
+
+public MaterialCoverageParameters sceneMaterialCoverageParameters(SceneMaterialData data)
+{
+    MaterialCoverageParameters result;
+    result.baseAlpha = data.baseColor.a;
+    result.cutoff = data.params.z;
+    result.alphaMode = data.textureParams.w;
+    result.hasProgram = data.attenuationColor.w > 0.5;
+    result.baseColorTexture = data.baseColorTexture;
+    return result;
+}
+
 public struct CoverageContext
 {
     public float2 uv;
@@ -39,14 +59,6 @@ public CoverageResult coverageFromOpacity(CoverageContext context, float opacity
         ? result.opacity > 0.0 : result.opacity >= saturate(context.cutoff));
     return result;
 }
-
-public struct LegacyCoverageEvaluator : ICoverageEvaluator
-{
-    public CoverageResult evaluateCoverage(CoverageContext context, MaterialInstanceRef instance)
-    {
-        return coverageFromOpacity(context, context.baseAlpha);
-    }
-};
 
 // Independent Coverage backend. No Surface/Closure evaluation, normals, lighting
 // resources, derivatives or pass-local clocks enter this program.

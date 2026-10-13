@@ -5,6 +5,7 @@
 #include "TestResourceParameters.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #include <algorithm>
 #include <chrono>
@@ -54,9 +55,10 @@ public:
         const ComputePipelineDesc pipelineDesc{.computeShader = {shader->get()}};
         auto pipeline = registry.getComputePipeline(context.device, pipelineDesc);
         auto reused = registry.getComputePipeline(context.device, pipelineDesc);
-        if (!pipeline || !reused || !reused->get()->pipelineCacheHit() ||
-            pipeline->get()->psoHash() != reused->get()->psoHash()) {
-            return RHITestResult::fail("default registry PSO cache was omitted or not reused");
+        if (!pipeline || !reused ||
+            pipeline->get()->psoHash() != reused->get()->psoHash() ||
+            vulkan::nativePipeline(**pipeline).pipeline != vulkan::nativePipeline(**reused).pipeline) {
+            return RHITestResult::fail("default registry native compute PSO was not reused");
         }
         const uint64_t originalHash = pipeline->get()->psoHash();
         const SlangMacroDefine threads{"REGISTRY_THREADS", "2"};
@@ -118,7 +120,8 @@ public:
         }
         for (auto& job : jobs) {
             auto value = job.get();
-            if (!value || !value->get()->pipelineCacheHit() || value->get()->psoHash() != originalHash) {
+            if (!value || value->get()->psoHash() != originalHash ||
+                vulkan::nativePipeline(**value).pipeline != vulkan::nativePipeline(**pipeline).pipeline) {
                 return RHITestResult::fail("parallel registry request failed or aliased code");
             }
         }
@@ -144,8 +147,9 @@ public:
         changedGraphicsDesc = graphicsDesc;
         changedGraphicsDesc.colorFormats[0] = Format::RGBA16Sfloat;
         auto otherFormat = registry.getGraphicsPipeline(context.device, changedGraphicsDesc);
-        if (!graphics || !graphicsCached || !greenGraphics || !otherFormat || !graphicsCached->get()->pipelineCacheHit() ||
+        if (!graphics || !graphicsCached || !greenGraphics || !otherFormat ||
             graphics->get()->psoHash() != graphicsCached->get()->psoHash() ||
+            vulkan::nativePipeline(**graphics).pipeline != vulkan::nativePipeline(**graphicsCached).pipeline ||
             graphics->get()->psoHash() == greenGraphics->get()->psoHash() ||
             graphics->get()->psoHash() == otherFormat->get()->psoHash()) {
             return RHITestResult::fail("default graphics cache aliased shader/state variants or omitted caching");

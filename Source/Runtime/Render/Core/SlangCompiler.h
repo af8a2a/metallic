@@ -12,8 +12,17 @@ inline constexpr const char* kDefaultSlangProfileName = "spirv_1_6";
 
 enum class SlangShaderDebugMode : uint8_t {
     Disabled,
-    CaptureSymbols, // Default O1 optimization with embedded source and NonSemantic debug information (-g2).
-    ShaderDebug, // Full variable debug information without optimization (-g2 -O0).
+    CaptureSymbols, // Embedded source and NonSemantic debug information (-g2); defaults to O1.
+    ShaderDebug, // Full variable debug information (-g2); defaults to O0.
+};
+
+enum class SlangShaderOptimizationLevel : uint8_t {
+    // Uses METALLIC_SLANG_OPTIMIZATION when set; otherwise O1, or O0 for ShaderDebug.
+    Default,
+    O0,
+    O1,
+    O2,
+    O3,
 };
 
 enum class SlangDescriptorHeapMode : uint8_t {
@@ -45,12 +54,40 @@ struct SlangShaderDesc {
     // Native compilation uses this explicit device ABI, or the active device's
     // strides when both are zero. Mapped compilation ignores this field.
     DescriptorHeapShaderStrides descriptorHeapStrides;
+    // Explicit levels override the process environment and the debug-mode default.
+    SlangShaderOptimizationLevel optimizationLevel = SlangShaderOptimizationLevel::Default;
+};
+
+// Per-call wall-clock measurements. Compiler code generation includes Slang IR
+// optimization, SPIR-V emission and any downstream compiler work; the SDK's
+// elapsed-time counters below overlap those phases and must not be added to them.
+// Cache hits leave all compiler phases at zero. Timings are not persisted in the
+// SPIR-V cache, so loading code never reports another invocation's measurements.
+struct ShaderCompileMetrics {
+    uint64_t totalTimeNanoseconds = 0;
+    uint64_t cacheLookupTimeNanoseconds = 0;
+    uint64_t compilerSetupTimeNanoseconds = 0;
+    uint64_t moduleLoadTimeNanoseconds = 0;
+    uint64_t dependencyTrackingTimeNanoseconds = 0;
+    uint64_t entryPointCompositionTimeNanoseconds = 0;
+    uint64_t linkTimeNanoseconds = 0;
+    uint64_t codeGenerationTimeNanoseconds = 0;
+    uint64_t targetFinalizeTimeNanoseconds = 0;
+    uint64_t dependencyValidationTimeNanoseconds = 0;
+    uint64_t cacheWriteTimeNanoseconds = 0;
+    uint64_t compilerReportedTotalTimeNanoseconds = 0;
+    uint64_t compilerReportedDownstreamTimeNanoseconds = 0;
+    bool cacheHit = false;
+    bool compilerExecuted = false;
+    bool compilerReportedTimingAvailable = false;
+    bool detailedCompilerPerfRequested = false;
 };
 
 struct ShaderCompileResult {
     std::vector<uint32_t> spirv;
     std::string diagnostics;
     std::vector<std::string> dependencies;
+    ShaderCompileMetrics metrics;
 };
 
 struct SlangShaderCacheOptions {
@@ -58,11 +95,18 @@ struct SlangShaderCacheOptions {
     const char* cacheDirectory = nullptr;
     bool enableDiskCache = true;
     bool* outCacheHit = nullptr;
+    // Diagnostic output only. A cache hit does not invoke the compiler or
+    // fabricate a per-pass report. Use a cache miss for detailed profiling.
+    bool reportDetailedCompilerPerf = false;
 };
 
 // Process-global compilation policy. Configure it before shader compilation begins.
 void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept;
 SlangShaderDebugMode slangShaderDebugMode() noexcept;
+// Returns the effective O0..O3, or Default for an invalid request/environment.
+// Configure METALLIC_SLANG_OPTIMIZATION before shader compilation begins.
+SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept;
+const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept;
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept;
 
 // The selected Vulkan device publishes its heap ABI before runtime compilation.

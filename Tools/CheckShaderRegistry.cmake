@@ -6,7 +6,10 @@ file(GLOB_RECURSE shader_clients
     "${SOURCE_DIRECTORY}/Tools/*.cpp" "${SOURCE_DIRECTORY}/Tools/*.h")
 foreach(path IN LISTS shader_clients)
     file(RELATIVE_PATH relative "${SOURCE_DIRECTORY}" "${path}")
-    if(relative MATCHES "^Source/Runtime/Render/GAPI/" OR
+    # Manual pipeline timing harness deliberately measures direct RHI creation
+    # with explicit isolated caches; it never acquires production render work.
+    if(relative STREQUAL "Source/Tools/ShaderPipelineBench.cpp" OR
+       relative MATCHES "^Source/Runtime/Render/GAPI/" OR
        relative MATCHES "^Source/Runtime/Render/Core/(SlangCompiler\\.(cpp|h)|ShaderRegistry(Compiler)?\\.cpp|ShaderRegistry\\.h)$")
         continue()
     endif()

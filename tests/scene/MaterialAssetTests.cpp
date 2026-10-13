@@ -104,6 +104,37 @@ TEST_F(MaterialAssets, FiberAssetRoundTripInheritanceAndDomainValidation)
     EXPECT_FALSE(library.resolve(surface, resolved, error));
 }
 
+TEST_F(MaterialAssets, PersistedOpenPBRImplementationMigratesWithoutLosingDefaults)
+{
+    EXPECT_EQ(definition.implementation, "OpenPBRComposite.Surface");
+    auto persisted = Json::parse(serializeMaterialDefinition(definition));
+    persisted["implementation"] = "OpenPBRComposite.Legacy";
+    persisted["defaults"]["parameters"]["roughness"] = 0.37;
+    persisted["defaults"]["parameters"]["baseColor"] = {0.2, 0.4, 0.6};
+    write("PreviousOpenPBR.materialdef", persisted.dump());
+
+    MaterialAssetLibrary library(root);
+    auto asset = instance();
+    asset.definition = "asset://PreviousOpenPBR.materialdef";
+    ResolvedMaterialInstance resolved;
+    ASSERT_TRUE(library.resolve(asset, resolved, error)) << error;
+    EXPECT_EQ(resolved.definition.implementation, "OpenPBRComposite.Surface");
+    scene::RenderMaterial material;
+    ASSERT_TRUE(lowerMaterialInstance(resolved, {}, material, error)) << error;
+    EXPECT_FALSE(material.rtxcrHair);
+    EXPECT_FLOAT_EQ(material.roughnessFactor, 0.37f);
+    EXPECT_FLOAT_EQ(material.baseColorFactor.x, 0.2f);
+    EXPECT_FLOAT_EQ(material.baseColorFactor.y, 0.4f);
+    EXPECT_FLOAT_EQ(material.baseColorFactor.z, 0.6f);
+    const auto saved = Json::parse(serializeMaterialDefinition(resolved.definition));
+    EXPECT_EQ(saved["implementation"], "OpenPBRComposite.Surface");
+    EXPECT_EQ(saved["defaults"]["parameters"]["roughness"], 0.37);
+    auto previousDefinition = resolved.definition;
+    previousDefinition.implementation = "OpenPBRComposite.Legacy";
+    EXPECT_EQ(Json::parse(serializeMaterialDefinition(previousDefinition))["implementation"],
+        "OpenPBRComposite.Surface");
+}
+
 TEST_F(MaterialAssets, FiberSceneEditsPersistReloadAndValidateTransactionally)
 {
     const auto fiber = defaultRTXCRChiangDefinition();

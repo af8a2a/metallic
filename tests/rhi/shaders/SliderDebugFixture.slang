@@ -1,3 +1,5 @@
+module SliderDebugFixture;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

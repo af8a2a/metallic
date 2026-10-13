@@ -1,3 +1,5 @@
+module RayMaterialProbe;
+
 import ShaderCore;
 import ParameterRoot;
 import RayMaterialExecution;
@@ -90,13 +92,13 @@ void executeProbeMain(uint3 tid : SV_DispatchThreadID)
     float3 wi = normalize(float3(-0.3,0.4,1));
     float3 value, direction, weight; float pdf;
     if (programId == 2) {
-        RTXCRChiangMaterialProgram<FiberSource> program;
+        Material<RTXCRChiangMaterialProgram<FiberSource>> program;
         let material = evaluateRayFiber(program,work);
         let prepared = prepareRayFiber(material.closure,work);
         let scatter = prepared.sampleWeighted(u);
         value = prepared.evalProjected(wi); direction = scatter.wiWS; weight = scatter.weight; pdf = scatter.pdf;
     } else {
-        DualSlabMaterialProgram<SurfaceSource> program; program.source.program = programId;
+        Material<DualSlabMaterialProgram<SurfaceSource>> program; program.program.source.program = programId;
         let material = evaluateRaySurface(program,work);
         let prepared = prepareRaySurface(material.closure,work,(SurfaceSamplingContext)0);
         let scatter = prepared.sampleWeighted(u.xyz);

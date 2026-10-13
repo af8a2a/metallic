@@ -1,3 +1,5 @@
+module BuildReGIR;
+
 #include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
 [[vk::push_constant]] ConstantBuffer<BuildReGIRParams> gParams;
 

@@ -1,3 +1,9 @@
+module MaterialBinningProbe;
+
+#ifdef PROBE_STATIC_PROGRAM
+import ProgramBinningShading;
+#endif
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"
@@ -5,14 +11,13 @@ import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
-#include "../../../Shaders/Features/VisibilityBuffer/VisibilityStreamDecode.slang"
 
 #define gVisibility resolveUniform(getResourceParameters<MaterialBinningProbeResources>().visibility)
 #define gRecords resolveBuffer<RWStructuredBuffer<CompactStreamVisibleRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)
 #define gGroups resolveBuffer<RWStructuredBuffer<StreamActiveGroup>>(getResourceParameters<MaterialBinningProbeResources>().groups)
 #define gInstances resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<MaterialBinningProbeResources>().instances)
 #define gMaterials resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<MaterialBinningProbeResources>().materials)
-#define gShadingMaterials resolveBuffer<RWStructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
+#define gShadingMaterials resolveBuffer<RWStructuredBuffer<SceneMaterialData>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
 #if defined(PROBE_TYPED)
 import ParameterRoot;
 struct MaterialProbeParams {
@@ -91,7 +96,7 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
         gMaterials[i] = material;
         // Change executable features while keeping source material IDs stable.
         uint type = 1u + (i + push.bin) % 4u;
-        PathTraceMaterial shading = {};
+        SceneMaterialData shading = {};
         shading.params.x = type == 1u ? 0.0 : (type == 2u ? 1.0 : 0.5);
         shading.glassParams.x = type == 4u ? 1.0 : 0.0;
         shading.metallicRoughnessTexture.textureIndex = 0xffffffffu;
@@ -115,9 +120,7 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
+public void dispatchMaterialReadbackReset(uint3 id)
 {
     ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
@@ -134,9 +137,7 @@ void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[shader("compute")]
-[numthreads(32, 1, 1)]
-void materialIndirectProbeMain(uint3 group : SV_GroupID)
+public void dispatchMaterialIndirectProbe(uint3 group)
 {
     ProbePush push = probePush();
     MaterialBin bin = gBins[push.bin];
@@ -168,4 +169,18 @@ void materialIndirectProbeMain(uint3 group : SV_GroupID)
     // Detect ignored permutation switches as well as the actual subgroup width.
     addResult(result + 2u, 100u);
 #endif
+}
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void materialIndirectProbeMain(uint3 group : SV_GroupID)
+{
+    dispatchMaterialIndirectProbe(group);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
+{
+    dispatchMaterialReadbackReset(id);
 }

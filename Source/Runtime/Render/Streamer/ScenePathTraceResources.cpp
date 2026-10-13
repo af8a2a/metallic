@@ -72,7 +72,7 @@ private:
     SceneResourceLogClock::time_point begin_ = SceneResourceLogClock::now();
 };
 
-using ScenePathTraceGPUMaterial = LegacyMaterialPayload;
+using ScenePathTraceGPUMaterial = SceneMaterialData;
 
 struct ScenePathTraceGPUScene {
     std::vector<ScenePathTraceGPUMaterial> materials;
@@ -858,7 +858,8 @@ ScenePathTraceGPUMaterial makeMaterial(
     gpuMaterial.params[3] = material.doubleSided ? 1.0f : 0.0f;
     gpuMaterial.textureParams[0] = material.normalTextureScale;
     gpuMaterial.textureParams[1] = material.occlusionTextureStrength;
-    gpuMaterial.textureParams[2] = 0.0f;
+    gpuMaterial.textureParams[2] = float(material.rtxcrHair
+        ? MaterialProgramId::RTXCRChiang : MaterialProgramId::OpenPBRComposite);
     gpuMaterial.textureParams[3] = alphaModeCode(material.alphaMode);
     if (material.alphaMode == "BLEND") {
         std::string message =

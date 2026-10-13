@@ -1,3 +1,5 @@
+module UnifiedTopLevelProbe;
+
 import Core;
 using Metallic;
 #include "../TestResourceParameters.h"

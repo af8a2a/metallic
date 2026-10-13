@@ -8,6 +8,27 @@ endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicSPIRVComplexityTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestSPIRVComplexity.py")
+    set_tests_properties(MetallicSPIRVComplexityTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
+    add_test(NAME MetallicComputeShaderFrontendTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestComputeShaderFrontend.py")
+    set_tests_properties(MetallicComputeShaderFrontendTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
+    add_test(NAME MetallicSlangLinkTimeSpecializationTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestSlangLinkTimeSpecialization.py")
+    set_tests_properties(MetallicSlangLinkTimeSpecializationTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
+    add_test(NAME MetallicComputePipelineAnalysisTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestComputePipelineAnalysis.py")
+    set_tests_properties(MetallicComputePipelineAnalysisTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
+    add_test(NAME MetallicComputePipelineExperimentsTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestComputePipelineExperiments.py")
+    set_tests_properties(MetallicComputePipelineExperimentsTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
+    add_test(NAME MetallicComputePipelineExperimentsValidationTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestComputePipelineExperimentsValidation.py")
+    set_tests_properties(MetallicComputePipelineExperimentsValidationTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
+    add_test(NAME MetallicShaderPipelineDriverToolsTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestShaderPipelineDriverTools.py")
+    set_tests_properties(MetallicShaderPipelineDriverToolsTests PROPERTIES LABELS "tools;shader;perf" TIMEOUT 30)
     if(TARGET MetallicShaderPipelineBench)
         add_test(NAME MetallicShaderPipelineBenchTests
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestShaderPipelineBench.py"

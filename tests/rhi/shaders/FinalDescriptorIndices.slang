@@ -1,3 +1,5 @@
+module FinalDescriptorIndices;
+
 // All values are final indices in the currently bound descriptor heap.
 struct Push
 {

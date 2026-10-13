@@ -1,3 +1,5 @@
+module BindlessBuffer;
+
 import ShaderCore;
 using Metallic;
 

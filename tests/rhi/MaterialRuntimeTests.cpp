@@ -23,7 +23,7 @@
 namespace metallic::tests {
 namespace {
 
-constexpr size_t kMaterialWords = sizeof(render::LegacyMaterialPayload) / sizeof(uint32_t);
+constexpr size_t kMaterialWords = sizeof(render::SceneMaterialData) / sizeof(uint32_t);
 constexpr size_t kProbeWords = kMaterialWords + 1;
 
 class MaterialRuntimeTest final : public RHITest
@@ -34,7 +34,7 @@ public:
     RHITestResult run(RHITestContext&) override
     {
         using namespace render;
-        std::vector<LegacyMaterialPayload> input(1000);
+        std::vector<SceneMaterialData> input(1000);
         for (uint32_t index = 0; index < input.size(); ++index) {
             input[index].baseColor[0] = float(index) / 1000.0f;
             input[index].baseColorTexture.textureIndex = index;
@@ -48,17 +48,19 @@ public:
         uint32_t end = 0;
         for (const auto& field : program->schema->parameters) {
             if (field.offset != end || field.id.empty()) {
-                return RHITestResult::fail("Schema does not cover the exact legacy upload layout");
+                return RHITestResult::fail("Schema does not cover the exact scene transport layout");
             }
             end += field.size;
         }
-        if (end != sizeof(LegacyMaterialPayload) || program->schema->abi != kLegacyMaterialABI) {
+        if (end != sizeof(SceneMaterialData) || program->schema->abi != kSceneMaterialABI) {
             return RHITestResult::fail("Material schema size/version mismatch");
         }
         for (uint32_t index = 0; index < input.size(); ++index) {
             if (first->instances()[index].program != program ||
                 first->instances()[index].parameterIndex != index ||
-                first->parameters()[index].baseColor[0] != input[index].baseColor[0]) {
+                first->parameters()[index].baseColor[0] != input[index].baseColor[0] ||
+                first->parameters()[index].textureParams[2] != float(MaterialProgramId::OpenPBRComposite) ||
+                input[index].textureParams[2] != 0.0f) {
                 return RHITestResult::fail("Instance identity or dynamic parameters changed");
             }
         }
@@ -70,6 +72,7 @@ public:
             first->parameters()[0].baseColor[0] != 0.0f ||
             second->instances()[0].program != program ||
             second->instances().back().program->definition->domain != MaterialDomain::Fiber ||
+            second->parameters().back().textureParams[2] != float(MaterialProgramId::RTXCRChiang) ||
             second->instances().back().program->definition->capabilities.visibilityBuffer) {
             return RHITestResult::fail("Generation immutability, stable programs or Fiber capabilities failed");
         }
@@ -152,9 +155,9 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MaterialMigrationTest);
 
-std::array<render::LegacyMaterialPayload, 3> probeMaterials()
+std::array<render::SceneMaterialData, 3> probeMaterials()
 {
-    std::array<render::LegacyMaterialPayload, 3> values;
+    std::array<render::SceneMaterialData, 3> values;
     for (uint32_t index = 0; index < values.size(); ++index) {
         // Every word is distinct; the shader reads each named field into a flat
         // uint stream so this tests Slang offsets and stride against CPU offsets.
@@ -163,8 +166,10 @@ std::array<render::LegacyMaterialPayload, 3> probeMaterials()
             words[word] = 0x3f000000u + index * 256u + word;
         }
         std::memcpy(&values[index], words.data(), sizeof(values[index]));
-        values[index].textureParams[2] = index == 2 ? 0.0f : float(index + 1);
-        values[index].rtxcrHairBaseColor[3] = index == 0 ? 0.0f : 1.0f;
+        values[index].textureParams[2] = index == 0 ? 1.0f : 2.0f;
+        // The shader must use the published identity even when source flags
+        // disagree; authored inference happens only at the CPU boundary.
+        values[index].rtxcrHairBaseColor[3] = index == 1 ? 0.0f : 1.0f;
     }
     return values;
 }
@@ -185,7 +190,7 @@ public:
         using namespace render;
         const auto values = probeMaterials();
         auto result = context.device->createBuffer({.size = sizeof(values),
-            .structureStride = sizeof(LegacyMaterialPayload), .usage = BufferUsageBits::Storage,
+            .structureStride = sizeof(SceneMaterialData), .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::HostUpload})
             .transform([&](auto buffer) { input_ = std::move(buffer); });
         if (!result) { return result; }
@@ -249,12 +254,12 @@ public:
         buffer->unmap();
         const auto expected = probeMaterials();
         for (uint32_t index = 0; index < expected.size(); ++index) {
-            if (std::memcmp(output.data() + index * kProbeWords, &expected[index], sizeof(LegacyMaterialPayload)) != 0 ||
+            if (std::memcmp(output.data() + index * kProbeWords, &expected[index], sizeof(SceneMaterialData)) != 0 ||
                 output[index * kProbeWords + kMaterialWords] != (index == 0 ? 1u : 2u)) {
                 return RHITestResult::fail("CPU/Slang field offsets, stride or program identity mismatch");
             }
         }
-        return RHITestResult::pass("All 720 bytes (including alignment padding), array stride, explicit IDs and legacy hair identity agree on GPU");
+        return RHITestResult::pass("All 720 transport bytes, array stride and explicit IDs agree on GPU despite conflicting source flags");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialRuntimeABITest);
@@ -394,12 +399,12 @@ public:
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
                 .transform([&](auto v) { output = std::move(v); })) { return RHITestResult::fail("Resources failed"); }
         std::string log;
-        std::array<LegacyMaterialPayload, 3> values;
+        std::array<SceneMaterialData, 3> values;
         values[0].baseColor[0] = 0.25f;
         const auto makeBinding = [&](uint64_t revision) -> std::shared_ptr<MaterialBindingGeneration> {
             auto generation = MaterialGeneration::create(values, revision, log);
             std::unique_ptr<Buffer> buffer;
-            if (!generation || !device->createBuffer({.size = sizeof(values), .structureStride = sizeof(LegacyMaterialPayload),
+            if (!generation || !device->createBuffer({.size = sizeof(values), .structureStride = sizeof(SceneMaterialData),
                     .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload})
                     .transform([&](auto v) { buffer = std::move(v); })) { return {}; }
             auto* mapped = buffer->map();
@@ -501,7 +506,7 @@ public:
         auto* mapped = static_cast<const uint32_t*>(output->map());
         bool correct = mapped != nullptr;
         for (size_t index = 0; correct && index < 3; ++index) {
-            correct = std::memcmp(mapped + index * kProbeWords, &originalParameters->parameters()[index], sizeof(LegacyMaterialPayload)) == 0 &&
+            correct = std::memcmp(mapped + index * kProbeWords, &originalParameters->parameters()[index], sizeof(SceneMaterialData)) == 0 &&
                 mapped[index * kProbeWords + kMaterialWords] == 1;
         }
         if (mapped) { output->unmap(); }
@@ -519,7 +524,7 @@ public:
             return RHITestResult::fail("Recovered dispatch failed");
         }
         output->invalidate(); mapped = static_cast<const uint32_t*>(output->map());
-        correct = mapped && std::memcmp(mapped, &published->generation()->parameters()[0], sizeof(LegacyMaterialPayload)) == 0 && mapped[kMaterialWords] == 11;
+        correct = mapped && std::memcmp(mapped, &published->generation()->parameters()[0], sizeof(SceneMaterialData)) == 0 && mapped[kMaterialWords] == 11;
         if (mapped) { output->unmap(); }
         (void)pool->reset(); (void)frame.reset();
         return correct ? RHITestResult::pass("Gated old submission retained code/data/descriptors; failed compile/manifest preserved state; recovery and retirement verified")
