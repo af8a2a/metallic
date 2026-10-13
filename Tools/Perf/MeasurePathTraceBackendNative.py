@@ -261,7 +261,8 @@ def validate_statistics(statistics):
             require(type(value) is int and value >= 0, f"Invalid SPIR-V statistic {name}")
 
 
-def validate_report(report, recipe, identity):
+def validate_report(report, recipe, identity, *, expected_postprocess="dead-branches"):
+    require(expected_postprocess in ("none", "dead-branches"), "Unsupported replay postprocess policy")
     sample = driver.single_sample(report, native=True)
     config = report["configuration"]
     expected = dict(compile_only=False, compute_backend="pipeline", debug_mode="disabled", descriptor_mode="mapped",
@@ -287,15 +288,18 @@ def validate_report(report, recipe, identity):
     require(report["device"]["name"] == recipe["source_device"]["device_name"], "Device name mismatch")
     require(report["build_configuration"] == "Release", "Native timing requires the fixed Release build")
     require(sample.get("shader_source") == "recipe_spirv" and sample.get("pipeline_type") == "compute" and
-            sample.get("effective_slang_optimization") == "O1" and sample.get("effective_spirv_postprocess") == "dead-branches",
+            sample.get("effective_slang_optimization") == "O1" and sample.get("effective_spirv_postprocess") == expected_postprocess,
             "Source replay/policy mismatch")
     require(not sample.get("compilation_phases", {}).get("compiler_executed") and sample.get("compile_wall_ms", 0) == 0 and
             sample.get("shader_cache_hit", False) is False, "Compiler/cache path unexpectedly ran")
     stages = sample["shader_stages"]
     require(len(stages) == 1, "Expected exactly one compute stage")
     shader, stage = recipe["shaders"]["compute"], stages[0]
+    require(shader["spirv_postprocess"] == expected_postprocess, "Recipe replay postprocess policy mismatch")
+    require(expected_postprocess != "none" or shader["spirv_postprocess_tool_version"] == "",
+            "Runtime no-transform replay must not claim a postprocess tool")
     expected_stage = dict(stage="compute", module=shader["module_name"], entry="main", source_entry=shader["source_entry_point"],
-        debug_mode="release", descriptor_mode="mapped", slang_optimization="O1", spirv_postprocess="dead-branches",
+        debug_mode="release", descriptor_mode="mapped", slang_optimization="O1", spirv_postprocess=expected_postprocess,
         spirv_postprocess_tool_version=shader["spirv_postprocess_tool_version"], source_identity_ambiguous=False,
         spirv_bytes=identity["bytes"], spirv_fnv1a64=identity["fnv1a64"], device_spirv_bytes=identity["bytes"],
         device_spirv_fnv1a64=identity["fnv1a64"], device_shader_content_hash=identity["content_hash"])
@@ -456,6 +460,44 @@ def verify_source_manifest(output, inputs, source):
         require(experiment.digest(archived_file(output, inputs, original)) == row["sha256"], "Archived source inventory mismatch")
 
 
+def validate_arm_provenance(output, inputs, arm):
+    """Bind the selected bytes to the declared source arm, not only a hash set."""
+    item = inputs["inputs"][arm]
+    manifest, identity = item["artifact_manifest"], item["identity"]
+    require(manifest["artifact_id"] == arm and manifest["requires_no_fiber"] is (arm == NO_FIBER_ARM),
+            "Artifact eligibility is not the selected source arm")
+    artifact = manifest["artifact"]
+    require(artifact["source_tag"] == f"Artifacts/PathBackend/{arm}/TwoPassCleaned" and
+            all(type(artifact[key]) is type(identity[key]) and artifact[key] == identity[key] for key in ("bytes", "sha256", "fnv1a64")) and
+            Path(artifact["file"]) == Path(item["source"]) and artifact["entry_main"] == "main" and
+            artifact["spirv_postprocess"] == inputs["postprocess"] == "dead-branches" and
+            artifact["tool_version"] == inputs["postprocess_tool_version"], "Artifact identity differs from the selected source arm")
+    preparation = experiment.read(archived_file(output, inputs, str(Path(inputs["preparation"]) / "Preparation.json")))
+    plans = [row for row in preparation["plans"] if row["label"] == arm]
+    require(preparation["status"] == "prepared" and len(plans) == 1 and item["plan"] == plans[0] and
+            item["plan"]["label"] == arm and item["plan"]["provider"] == item["provider"], "Artifact source plan differs from its preparation")
+    if arm == "original-general":
+        require(item["provider"] is None and item["provider_sha256"] is None and item["plan"]["mechanism"] == "original",
+                "Original control unexpectedly selected a provider")
+    else:
+        expected = "PathTraceMaterialBackendLinkNoFiberProvider.slang" if arm == NO_FIBER_ARM else "PathTraceMaterialBackendLinkGeneralProvider.slang"
+        require(isinstance(item["provider"], str) and Path(item["provider"]).name == expected and
+                item["plan"]["mechanism"] == "backend-link", "Linked arm selected the wrong provider")
+        require(experiment.digest(archived_file(output, inputs, item["provider"])) == item["provider_sha256"], "Provider provenance mismatch")
+    compilation = experiment.read(archived_file(output, inputs, str(Path(inputs["compile"]) / "summary.json")))
+    analysis = experiment.read(archived_file(output, inputs, str(Path(inputs["analysis"]) / "summary.json")))
+    analysis_inputs = experiment.read(archived_file(output, inputs, str(Path(inputs["analysis"]) / "Inputs.json")))
+    require(compilation["status"] == "passed" and analysis["status"] == "passed" and analysis["cleanup_passes"] == PASSES,
+            "Archived compiler/cleanup qualification failed")
+    records = [row for row in compilation["runs"] if row["label"] == arm and counter(row["repetition"], 0)]
+    source = analysis_inputs["inputs"][arm]
+    require(len(records) == 1 and records[0] == source["record"] and records[0]["spirv_sha256"] == source["sha256"] ==
+            experiment.digest(archived_file(output, inputs, source["path"])) == analysis["outputs"][arm]["raw"]["sha256"],
+            "Compiler raw bytes are not the cleanup source for the declared arm")
+    require(analysis["outputs"][arm] == item["analysis"] and item["analysis"]["cleaned"]["sha256"] == identity["sha256"] and
+            counter(item["analysis"]["cleaned"]["bytes"], identity["bytes"]), "Cleaned analysis does not describe the selected artifact")
+
+
 def verify_records(output, *, current_inputs=False):
     output = Path(output).resolve(strict=True)
     validate_seal(output)
@@ -497,8 +539,7 @@ def verify_records(output, *, current_inputs=False):
         directory = output / expected_labels[index]
         require(counter(row["pair"], pair) and row["label"] == arm and row["directory"] == directory.name, "Pair order/directory mismatch")
         item = inputs["inputs"][arm]
-        require(item["artifact_manifest"]["artifact_id"] == arm and item["artifact_manifest"]["artifact"]["source_tag"] ==
-                f"Artifacts/PathBackend/{arm}/TwoPassCleaned", "Artifact source identity is not the selected source arm")
+        validate_arm_provenance(output, inputs, arm)
         recipe_path, blob = output / item["recipe"], output / item["staged_spirv"]
         require(recipe_path.resolve().is_relative_to((output / "recipes").resolve()) and blob.resolve().is_relative_to((output / "recipes").resolve()),
                 "Staged replay escaped its evidence directory")
@@ -509,8 +550,6 @@ def verify_records(output, *, current_inputs=False):
         require(blob_identity(archived_file(output, inputs, item["source"])) == item["identity"] and
                 experiment.read(archived_file(output, inputs, str(Path(item["source"]).parent / "Analysis.json"))) == item["analysis"],
                 "Analysis-to-cleaned-artifact provenance mismatch")
-        if item["provider"]:
-            require(experiment.digest(archived_file(output, inputs, item["provider"])) == item["provider_sha256"], "Provider provenance mismatch")
         process = experiment.read(directory / "process.json")
         start, end = validate_process(process, row["execution_id"])
         require(row["execution_id"] not in executions and (previous_end is None or start >= previous_end),

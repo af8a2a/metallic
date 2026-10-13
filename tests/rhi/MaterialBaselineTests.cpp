@@ -436,5 +436,52 @@ TEST(ShaderArtifactFixture, CustomProgramsRejectBothGeneralAndNoFiberArtifacts)
     EXPECT_THROW(ShaderArtifactFixture::inspectMaterials(materials, false), std::runtime_error);
 }
 
+TEST(ShaderArtifactFixture, LegacyCleanupPolicyRetainsItsExistingIdentity)
+{
+    using Json = ShaderArtifactFixture::Json;
+    const Json artifact = {{"spirv_postprocess", "dead-branches"}, {"tool_version", "SPIRV-Tools fixture"}};
+    EXPECT_NO_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact));
+}
+
+TEST(ShaderArtifactFixture, PreparedSSAKeepsRuntimeNoneAndExactExternalPassHistory)
+{
+    using Json = ShaderArtifactFixture::Json;
+    Json artifact = {{"spirv_postprocess", "none"}, {"tool_version", ""}, {"bytes", 20}, {"sha256", std::string(64, 'a')},
+        {"prepared", {{"transform", "external-cleaned"}, {"input_sha256", std::string(64, 'a')}, {"input_bytes", 20},
+            {"passes", Json::array()}, {"ancestry_passes", {"--eliminate-dead-branches", "--simplify-instructions"}},
+            {"tool_version", "SPIRV-Tools fixture"}, {"provenance_manifest", {{"file", "Producer/Manifest.json"}, {"sha256", std::string(64, 'b')}}}}}};
+    EXPECT_NO_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact));
+    artifact["prepared"]["transform"] = "external-ssa";
+    artifact["prepared"]["passes"] = Json::array({"--ssa-rewrite"});
+    artifact["sha256"] = std::string(64, 'c');
+    EXPECT_NO_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact));
+    artifact["spirv_postprocess"] = "dead-branches";
+    artifact["tool_version"] = "SPIRV-Tools fixture";
+    EXPECT_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact), std::runtime_error);
+}
+
+TEST(ShaderArtifactFixture, PreparedPolicyRejectsMissingIdentityExtraPassesAndFalseControl)
+{
+    using Json = ShaderArtifactFixture::Json;
+    const Json original = {{"spirv_postprocess", "none"}, {"tool_version", ""}, {"bytes", 20}, {"sha256", std::string(64, 'a')},
+        {"prepared", {{"transform", "external-cleaned"}, {"input_sha256", std::string(64, 'a')}, {"input_bytes", 20},
+            {"passes", Json::array()}, {"ancestry_passes", {"--eliminate-dead-branches", "--simplify-instructions"}},
+            {"tool_version", "SPIRV-Tools fixture"}, {"provenance_manifest", {{"file", "Producer/Manifest.json"}, {"sha256", std::string(64, 'b')}}}}}};
+    for (const auto& key : {"input_sha256", "input_bytes", "tool_version", "provenance_manifest"}) {
+        Json artifact = original;
+        artifact["prepared"].erase(key);
+        EXPECT_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact), std::exception);
+    }
+    Json artifact = original;
+    artifact["prepared"]["passes"] = Json::array({"--ssa-rewrite", "--compact-ids"});
+    EXPECT_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact), std::runtime_error);
+    artifact = original;
+    artifact["sha256"] = std::string(64, 'c');
+    EXPECT_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact), std::runtime_error);
+    artifact = original;
+    artifact["tool_version"] = "An optimizer was not run by this runtime";
+    EXPECT_THROW(ShaderArtifactFixture::validatePostprocessProvenance(artifact), std::runtime_error);
+}
+
 } // namespace
 } // namespace metallic::tests

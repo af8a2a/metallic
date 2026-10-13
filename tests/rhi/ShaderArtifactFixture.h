@@ -64,9 +64,11 @@ public:
         statistics_ = {{"instructions", stats.instructions}, {"functions", stats.functions}, {"basic_blocks", stats.basicBlocks},
             {"conditional_branches", stats.conditionalBranches}, {"function_calls", stats.functionCalls}, {"id_bound", stats.idBound}};
         const auto entry = artifact.at("entry_main").get<std::string>();
-        require(entry == "main" && !artifact.at("source_tag").get<std::string>().empty() &&
-            artifact.at("spirv_postprocess").get<std::string>() == "dead-branches" && !artifact.at("tool_version").get<std::string>().empty(),
-            "Missing artifact entry/source/postprocess provenance");
+        require(entry == "main" && !artifact.at("source_tag").get<std::string>().empty(), "Missing artifact entry/source provenance");
+        validatePostprocessProvenance(artifact);
+        if (postprocess() == "none") {
+            require(stats.functions == 1 && stats.functionCalls == 0, "SSA artifact must retain one function and zero calls");
+        }
         std::set<uint32_t> capabilities;
         size_t entries = 0;
         for (size_t offset = 5; offset < words_.size();) {
@@ -100,6 +102,15 @@ public:
             provenanceHashes_.push_back({{"file", source.string()}, {"sha256", item.at("sha256")}});
         }
         requiresNoFiber_ = manifest_.at("requires_no_fiber").get<bool>();
+        if (postprocess() == "none") {
+            require(!requiresNoFiber_, "Prepared SSA artifacts must retain the General material feature set");
+            const auto& seal = artifact.at("prepared").at("provenance_manifest");
+            const auto source = resolve(seal.at("file").get<std::string>());
+            require(debug::debugSha256(readFile(source)) == seal.at("sha256").get<std::string>(), "Prepared SSA producer manifest changed");
+            require(std::any_of(provenanceHashes_.begin(), provenanceHashes_.end(), [&](const auto& item) {
+                return item.at("file").template get<std::string>() == source.string() && item.at("sha256") == seal.at("sha256");
+            }), "Prepared SSA producer seal is absent from the artifact provenance");
+        }
     }
 
     bool targets(const render::SlangShaderDesc& desc) const
@@ -121,7 +132,7 @@ public:
         result.identity.descriptorHeapMode = "mapped";
         result.identity.optimizationLevel = "O1";
         result.identity.debugMode = "release";
-        result.identity.spirvPostprocess = "dead-branches";
+        result.identity.spirvPostprocess = postprocess();
         result.identity.spirvPostprocessToolVersion = toolVersion();
         result.identity.inputSpirvHash = std::stoull(fnv1a64_, nullptr, 16);
         return render::Result<render::ShaderArtifactOverrideResult>(std::move(result));
@@ -226,7 +237,7 @@ public:
             const auto bytes = std::span(reinterpret_cast<const uint8_t*>(shader.spirv.data()), shader.spirv.size() * sizeof(uint32_t));
             require(shader.spirv == words_ && debug::debugSha256(bytes) == sha256_ && hashHex(bytes) == fnv1a64_ &&
                 shader.sourceEntryPoint == sourceEntry() && shader.entryPoint == "main" && shader.descriptorHeapMode == "mapped" &&
-                shader.debugMode == "release" && shader.optimizationLevel == "O1" && shader.spirvPostprocess == "dead-branches" &&
+                shader.debugMode == "release" && shader.optimizationLevel == "O1" && shader.spirvPostprocess == postprocess() &&
                 shader.spirvPostprocessToolVersion == toolVersion() && recipe->usesBindlessHeap && !recipe->indirectBindable &&
                 recipe->bindlessUserPushDataSize == 12 && !recipe->disableOptimization &&
                 recipe->computeBackend == render::ComputePipelineBackend::Pipeline,
@@ -252,14 +263,17 @@ public:
     Json evidence() const
     {
         std::lock_guard lock(evidenceMutex_);
-        return {{"artifact_id", manifest_.at("artifact_id")}, {"manifest", manifestPath_.string()}, {"manifest_sha256", manifestSha256_},
+        Json result = {{"artifact_id", manifest_.at("artifact_id")}, {"manifest", manifestPath_.string()}, {"manifest_sha256", manifestSha256_},
             {"artifact", artifactPath_.string()}, {"input_sha256", sha256_}, {"input_fnv1a64", fnv1a64_}, {"input_bytes", words_.size() * 4},
-            {"source_tag", sourceTag()}, {"postprocess", "dead-branches"}, {"postprocess_tool_version", toolVersion()},
+            {"source_tag", sourceTag()}, {"postprocess", postprocess()}, {"postprocess_tool_version", toolVersion()},
             {"statistics", statistics_}, {"provenance_manifests", provenanceHashes_}, {"consumed", consumed_}, {"rejected_target", rejected_},
             {"errors", errors_}, {"metrics_scope", "Precompiled artifact substitution; no compiler/cache timing"}};
+        if (postprocess() == "none") { result["prepared"] = manifest_.at("artifact").at("prepared"); }
+        return result;
     }
 
     std::string sourceTag() const { return manifest_.at("artifact").at("source_tag").get<std::string>(); }
+    std::string postprocess() const { return manifest_.at("artifact").at("spirv_postprocess").get<std::string>(); }
     std::string toolVersion() const { return manifest_.at("artifact").at("tool_version").get<std::string>(); }
     std::string sourceEntry() const { return manifest_.at("reference_request").at("entry").get<std::string>(); }
     uint64_t consumed() const { std::lock_guard lock(evidenceMutex_); return consumed_; }
@@ -267,6 +281,37 @@ public:
     const std::string& inputHash() const { return fnv1a64_; }
     const std::string& inputSha256() const { return sha256_; }
     size_t inputBytes() const { return words_.size() * sizeof(uint32_t); }
+
+    static void validatePostprocessProvenance(const Json& artifact)
+    {
+        const auto policy = artifact.at("spirv_postprocess").get<std::string>();
+        const auto version = artifact.at("tool_version").get<std::string>();
+        if (policy == "dead-branches") {
+            require(!version.empty(), "Legacy cleaned artifact lacks its optimizer provenance");
+            require(!artifact.contains("prepared"), "External SSA preparation cannot be labelled dead-branches");
+            return;
+        }
+        require(policy == "none" && version.empty(), "Prepared artifacts require runtime postprocess none and no runtime optimizer version");
+        const auto& prepared = artifact.at("prepared");
+        const auto transform = prepared.at("transform").get<std::string>();
+        require(transform == "external-cleaned" || transform == "external-ssa", "Unknown external artifact preparation");
+        const Json ancestry = {"--eliminate-dead-branches", "--simplify-instructions"};
+        const Json passes = transform == "external-ssa" ? Json::array({"--ssa-rewrite"}) : Json::array();
+        require(prepared.at("ancestry_passes") == ancestry && prepared.at("passes") == passes,
+            "Prepared artifact is not the exact two-pass ancestor plus the selected SSA-only step");
+        const auto inputBytes = prepared.at("input_bytes").get<size_t>();
+        const auto inputHash = prepared.at("input_sha256").get<std::string>();
+        require(inputBytes >= 20 && inputBytes % sizeof(uint32_t) == 0 && inputBytes <= 64 * 1024 * 1024 && validSha256(inputHash),
+            "Prepared SSA input identity is invalid");
+        require(!prepared.at("tool_version").get<std::string>().empty(), "Prepared artifact lacks its external optimizer version");
+        const auto& seal = prepared.at("provenance_manifest");
+        require(!seal.at("file").get<std::string>().empty() && validSha256(seal.at("sha256").get<std::string>()),
+            "Prepared artifact lacks its sealed producer provenance");
+        if (transform == "external-cleaned") {
+            require(artifact.at("bytes").get<size_t>() == inputBytes && artifact.at("sha256").get<std::string>() == inputHash,
+                "The cleaned control must be exactly its prepared input bytes");
+        }
+    }
 
     static void require(bool condition, const std::string& message)
     {
@@ -287,6 +332,12 @@ public:
     }
 
 private:
+    static bool validSha256(std::string_view value)
+    {
+        return value.size() == 64 && std::all_of(value.begin(), value.end(), [](char digit) {
+            return (digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f');
+        });
+    }
     static std::string normalized(const std::filesystem::path& path)
     {
         return std::filesystem::weakly_canonical(std::filesystem::absolute(path)).generic_string();

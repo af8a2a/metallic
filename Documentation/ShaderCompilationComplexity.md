@@ -361,16 +361,159 @@ The two helpers each contain 9,364 instructions and 1,453 basic blocks, retain
 mean they were deduplicated. This proves preservation of the boundary in the
 large real shader but shows **no total-size reduction** for this candidate.
 Compile timing overlapped the C++ build and is not a performance measurement.
-Driver creation, dispatch and output qualification were not run for the
-candidate. Keep it as a bounded maximum-function-size experiment, below narrow
-resource access in priority; do not claim a cold-creation improvement.
+Driver creation, dispatch and output qualification were not run for that
+historical candidate. The 2026-10-13 material-record narrow-read follow-up has
+now passed fixed-scene correctness, without establishing stable compiler or
+native-creation gains. The current-source next experiment therefore revisits
+the shadow function boundary, with paired uncached source compilation,
+identical two-pass cleanup and separate native creation. It must reproduce the
+current original API bytes rather than reuse this older candidate. No current
+cold-creation improvement is established by the historical result above.
+
+### Current-source shadow boundary follow-up (2026-10-13)
+
+The new pure
+[overlay planner](../Tools/Perf/PathTraceFunctionBoundaryOverlay.py) changes
+only the annotation before `openPbrShadowTransmittance` in its current owned
+implementation. The
+[paired compiler harness](../Tools/Perf/ValidatePathTraceFunctionBoundaries.py)
+retains all General features, resource layouts, macros and RNG/texture order.
+It uses a fresh explicit-postprocess-`none` API reference at request 146,
+Slang 2026.18.2, mapped O1, debug/validation off, SHARC off and
+CUSTOM_MATERIALS=0. There is no module/SPIR-V cache reuse in the six independent
+source compilation processes, ordered AB/BA/AB.
+
+All three Original outputs match the fresh 6,947,064-byte API reference
+byte-for-byte; each arm is deterministic across its three processes. Every raw
+output passes Vulkan 1.4 scalar-layout validation. The
+[compiler result](../build-release/path-function-boundaries-20261013/compile/summary.json)
+and preparation are sealed with source/include/SDK/helper/grammar identities,
+actual process intervals and before/after input checks.
+
+| Raw O1 structure | Original General | Shadow noinline General |
+| --- | ---: | ---: |
+| Bytes | 6,947,064 | 6,953,072 |
+| Instructions | 449,813 | 450,080 |
+| Basic blocks / CFG edges | 60,501 / 77,877 | 60,503 / 77,877 |
+| Functions / calls | 1 / 0 | 3 / 2 |
+| Largest function instructions | 448,375 | 429,406 |
+| Reachable call depth, edges | 0 | 1 |
+
+The two retained helpers each have 9,559 instructions, 1,663 blocks and one
+static caller, with `DontInline`. The largest function shrinks by about 4.23%,
+but total code grows and the helpers are not deduplicated. Function counts here
+include `OpFunction`, parameters and end instructions; they must not be mixed
+with another parser's body-only counts. Static structure does not prove that
+the Driver retains native calls.
+
+Original CLI wall times are `10.160760 / 9.677695 / 9.974684` seconds;
+candidate times are `10.081328 / 9.848359 / 9.794524` seconds. Paired ratios
+are `0.992182 / 1.017635 / 0.981938`, with median **-0.78%** and a direction
+reversal. This does not establish a stable compiler gain. SDK phase counters
+overlap and remain separate from process wall time. Static analysis and
+validation are outside those compile windows.
+
+The compiler evidence remains unchanged while the analyzer is improved: its
+CFG membership check now constructs one set of block IDs instead of repeatedly
+converting the whole graph for every block. This changes tool overhead, not
+shader compilation. The following cleanup/native/GPU stages archive their
+actual tool versions independently; historical verification retains the older
+compiler-stage analyzer. Production shaders and compiler defaults are unchanged.
+
+The [uniform cleanup result](../build-release/path-function-boundaries-20261013/analysis/summary.json)
+applies only `--eliminate-dead-branches` and `--simplify-instructions`, with
+Vulkan 1.4 scalar validation. It retains the candidate's original reachable
+function IDs, `DontInline` controls and actual calls.
+
+| Two-pass-cleaned structure | Original General | Shadow noinline General |
+| --- | ---: | ---: |
+| Bytes | 3,314,908 | 3,320,916 |
+| Instructions | 215,311 | 215,578 |
+| Basic blocks / CFG edges | 28,217 / 36,088 | 28,219 / 36,088 |
+| Functions / calls | 1 / 0 | 3 / 2 |
+| Largest function instructions | 213,863 | 194,910 |
+| Largest function blocks | 28,217 | 24,895 |
+| Function variables / OpLoad | 24,775 / 21,545 | 24,778 / 21,573 |
+
+The largest function now decreases by about **8.86%**, while total bytes
+increase by about **0.18%**. There is no reduction in total CFG edges. The
+additional Function variables/loads are static SPIR-V counts, not evidence of
+native parameter copies, register pressure or spills. Original cleaned SHA-256
+is `ca442308a2b31c7b8d06534ad530c8fab95955ecd37de211d7d64ce382f6c4ba`;
+candidate is `0a5bcb5e5bc8b46a553579773aeaa6ed7fae33229195bce8f7610431c3760580`.
+These exact artifacts are the inputs to the separate Driver comparison.
+
+The [native comparison](../build-release/path-function-boundary-native-20261013/summary.json)
+was scheduled as six independent AB/BA/AB processes. It replays the full
+captured v6 Compute Recipe with 12-byte user push, normal Driver optimization,
+mapped ABI, empty application cache, controllable Driver cache disabled,
+debug/validation off and no executable-capture flags. The original template
+hash is verified before substituting either cleaned artifact. Frontend work,
+initialization, cache export and GPU execution are outside the native window.
+
+Only the first Original call completed: **53,318.697 ms native** and
+**53,318.642 ms Driver**, with valid miss feedback and no object/binary reuse.
+The first Shadow call entered `vkCreateComputePipeline` but did not return
+within the predeclared **600-second process timeout**. Its PID was 42320;
+the retained process record has `timed_out=true`, `native_crash=false`,
+09:05:32.593744Z start and 09:15:35.679055Z end. CPU time continued increasing
+while the call was pending. The process was terminated at timeout, and the
+failed batch's complete flat seal was independently verified.
+
+The 603.064-second process wall time includes setup and timeout cleanup. It is
+**not** a returned native/Driver duration. There is no candidate End record,
+successful target report or final creation metric. The other four scheduled
+calls did not execute, so no paired median, P95 or six-process performance
+conclusion is admitted. A timeout does not distinguish an optimizer bug from a
+very long finite compile. Controllable cache disabling also does not prove all
+compiler state is cold.
+
+The fixed-scene GPU stage was not started because the candidate failed its
+bounded creation experiment. It has no rendering or dispatch qualification.
+The largest SPIR-V function reduction therefore does not justify adopting this
+Shadow noinline change; production remains unchanged. Keep the failed evidence
+and investigate an independent memory-to-SSA cleanup of the original O1
+General artifact next, without combining it with this boundary change.
+
+The pure overlay/compiler tool passes **13 CPU evidence tests**. The analyzer
+passes **15 tests**, including complete CFG golden values and missing targets
+in unreachable blocks. The repository's 333 authored Slang files and both
+generated shader overlays pass module ownership audits. The new analyzer also
+reproduces all six real raw outputs' previously recorded structural metrics in
+the analysis verification. No C++ rebuild is needed for these tool-only changes;
+the existing Release Bench executes the ordinary native replay above.
+
+Reproduce the compiler stages using fresh directories and a fresh explicit
+`none`, mapped O1, debug-disabled compile-only request-146 reference:
+
+```powershell
+python -B Tools/Perf/ValidatePathTraceFunctionBoundaries.py prepare `
+  --report build-release/<fresh-reference>/report.json --request-index 146 `
+  --slang-root External/slang --output-dir build-release/<fresh-boundary>/preparation
+python -B Tools/Perf/ValidatePathTraceFunctionBoundaries.py run `
+  --preparation build-release/<fresh-boundary>/preparation `
+  --spirv-val C:/VulkanSDK/1.4.363.0/Bin/spirv-val.exe `
+  --output-dir build-release/<fresh-boundary>/compile
+python -B Tools/Perf/ValidatePathTraceFunctionBoundaries.py analyze `
+  --input-dir build-release/<fresh-boundary>/compile `
+  --spirv-tools C:/VulkanSDK/1.4.363.0/Bin `
+  --output-dir build-release/<fresh-boundary>/analysis
+```
+
+The ignored Native `Measure.py`/`Support.py`, archived helpers, actual commands,
+full state/bytecode bindings, before/after source checks and optional NVIDIA
+telemetry are retained with the failed batch. The first fresh API report used
+the unspecified/default postprocess setting; it was not admitted. The separate
+`function-boundary-reference2-20261013` report explicitly selects `none` and
+is the actual compiler/Native reference. Neither that rejected configuration
+nor the failed native batch was rewritten or restarted in place.
 
 Run isolated variants in this order; inspect final device SPIR-V before timing:
 
 | Variant | Boundary | Reason / risk |
 | --- | --- | --- |
-| Shadow-only | `OpenPBRRayQueryPathTrace.slang:134`, `openPbrShadowTransmittance` | Shared transparent traversal under direct and environment lighting. Keeps deeply nested ray-query/texture/control flow outside the large path caller. Pass-by-value interior stack may create an ABI/temporary cost. |
-| Fiber-only | `SceneFiberPath.slang:106`, `shadeSceneFiber` | Isolates the entire uncommon material domain while keeping runtime semantics. Check actual ray-query legality/driver call behavior and fiber scenes. |
+| Shadow-only | `Modules/OpenPBRPathTracing/OpenPBRPathTrace.slang`, `openPbrShadowTransmittance` | Shared transparent traversal under direct and environment lighting. Keeps deeply nested ray-query/texture/control flow outside the large path caller. Pass-by-value interior stack and pass parameters may create an ABI/temporary cost. |
+| Fiber-only | `Modules/ScenePathTracing/SceneFiberPath.slang`, `shadeSceneFiber` | Isolates the entire uncommon material domain while keeping runtime semantics. Check actual ray-query legality/driver call behavior and fiber scenes. |
 | Fiber evaluator | `RTXCRFiber.slang:23`, `RTXCRChiangPreparedClosure.evalProjected` | Narrows repeated Chiang evaluator expansion across three light paths; a smaller alternative to the whole integrator boundary. |
 | BSDF eval/PDF | `OpenPBRClosure.slang:30-35`, `evalProjectedComponents` and `pdf` | Reuses costly pure BSDF subgraphs at the integrator facade. Large prepared-state arguments could trade inlining growth for stack/register overhead; capture ISA/local-memory evidence. |
 | BSDF sample | `OpenPBRClosure.slang:60`, `sampleWeightedComponents` | Separates full mixture sampling after visibility. Keep failure-output handling and full mixture PDF unchanged. |
@@ -394,6 +537,34 @@ this SDK. Adding `--ssa-rewrite` at O1 cannot undo exhaustive inlining.
 corroborates preset-plus-extra-pass behavior and includes exhaustive inline in
 the default sequence; it is an upstream reference, not a claim that current
 master equals this installed binary.
+
+Following the current Shadow timeout, the next independent experiment should
+start from the **current O1 two-pass-cleaned Original General** artifact above,
+without changing source optimization or function boundaries. Compare an exact
+copy `C` with `S = C + --ssa-rewrite`. A later separate pair can compare
+`L = C + --eliminate-local-single-block + --eliminate-local-single-store` with
+`LS = L + --ssa-rewrite`; comparing only C with LS cannot isolate SSA's effect.
+Do not initially add scalar replacement, an optimization preset or candidate-only
+DCE. Optimization time, analysis time, native creation and GPU dispatch are
+separate scopes.
+
+The official [SSA pass implementation](https://github.com/KhronosGroup/SPIRV-Tools/blob/main/source/opt/ssa_rewrite_pass.cpp)
+constructs reaching definitions and Phi nodes for eligible Function locals.
+Its [variable eligibility logic](https://github.com/KhronosGroup/SPIRV-Tools/blob/main/source/opt/mem_pass.cpp)
+conservatively excludes unsupported accesses and escaping pointers. A variable
+count alone does not establish how many loads/stores can be promoted; SSA can
+also leave original variables/stores or introduce Undef on paths without a
+definition. These are upstream implementation references; the exact installed
+`ef96ed76` source was not fetched, so pinned-binary outputs remain authoritative.
+
+First validate each stage with the same Vulkan 1.4/scalar configuration and
+check exact entry/resource/push/specialization ABI. Retain one function and zero
+calls, inspect Function-specific loads/stores rather than total OpLoad alone,
+and record Phi, Undef and precision decorations. Qualify the fixed General
+HDR/temporal/seven-guide outputs at the existing tolerances, especially loop
+state, BLEND/transmission and volume branches, before an expensive native pair.
+Smaller memory-form SPIR-V or more Phi nodes do not predict Driver creation or
+register-allocation gains. This C/S experiment has not yet been executed.
 
 The reproducible alternate experiment starts with the already preserved O0
 SPIR-V function graph and runs an explicit external optimizer sequence. Do not

@@ -108,6 +108,30 @@ class SPIRVComplexityTests(unittest.TestCase):
         self.assertEqual(cfg["entry_reachable_cyclomatic_complexity"], 1)
         self.assertEqual(cfg["cyclic_components"], 1)
 
+    def test_cfg_key_validation_preserves_duplicate_edges_cycles_and_declared_entry_order(self):
+        blocks = {30: dict(targets=[10, 10, 20], instructions=3),
+            10: dict(targets=[30], instructions=5), 20: dict(targets=[], instructions=1),
+            100: dict(targets=[100], instructions=7)}
+        original = json.loads(json.dumps(blocks))
+        self.assertEqual(analysis.cfg_metrics(blocks), dict(block_count=4, edge_count=4,
+            reachable_blocks=3, unreachable_blocks=1, entry_reachable_cyclomatic_complexity=2,
+            cyclic_components=2, largest_cyclic_component_blocks=2,
+            largest_cyclic_component_instructions=8, max_predecessors=1,
+            max_successors=2, max_block_instructions=7,
+            top_cycles=[dict(block_count=2, instruction_count=8, first_block_id=10),
+                dict(block_count=1, instruction_count=7, first_block_id=100)],
+            top_blocks=[dict(block_id=100, instruction_count=7, successors=1, predecessors=1),
+                dict(block_id=10, instruction_count=5, successors=1, predecessors=1),
+                dict(block_id=30, instruction_count=3, successors=2, predecessors=1),
+                dict(block_id=20, instruction_count=1, successors=0, predecessors=1)]))
+        self.assertEqual(json.loads(json.dumps(blocks)), original)
+
+    def test_cfg_key_validation_rejects_missing_targets_even_in_unreachable_blocks(self):
+        for blocks in ({10: dict(targets=[99], instructions=1)},
+                {10: dict(targets=[], instructions=1), 20: dict(targets=[99], instructions=1)}):
+            with self.subTest(blocks=blocks), self.assertRaisesRegex(ValueError, "targets a missing block"):
+                analysis.cfg_metrics(blocks)
+
     def test_source_attribution_requires_real_op_line_and_no_line_clears_it(self):
         result = analysis.inspect_bytes(module(entry(), instruction(7, 90, *string_words("Actual.slang")),
             instruction(54, 1, 10, 0, 2), instruction(248, 20), instruction(8, 90, 12, 2),

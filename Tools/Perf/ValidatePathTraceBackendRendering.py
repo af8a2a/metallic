@@ -19,6 +19,7 @@ import time
 
 import RunComputePipelineExperiments as experiment
 import RunShaderPipelineDriver as driver
+import ValidateSlangLinkTimeSpecialization as legacy
 from ValidatePathTraceBackend import reference_sample
 from PathTraceBackendOverlay import ARMS
 
@@ -187,12 +188,45 @@ def pso_hash(recipe, raw):
     return f"{fnv(data):016x}"
 
 
+def validate_artifact_postprocess(manifest):
+    artifact = manifest["artifact"]
+    policy = artifact["spirv_postprocess"]
+    require(policy in ("dead-branches", "none"), "Unsupported artifact runtime postprocess policy")
+    if policy == "dead-branches":
+        require(artifact["tool_version"] and "prepared" not in artifact, "SSA preparation cannot masquerade as dead-branches")
+        return
+    prepared = artifact["prepared"]
+    arm = manifest["artifact_id"]
+    require(artifact["tool_version"] == "" and manifest["requires_no_fiber"] is False and
+        arm in ("original-cleaned-general", "ssa-general"), "External SSA requires runtime none and the General feature set")
+    require(prepared["transform"] == ("external-cleaned" if arm == "original-cleaned-general" else "external-ssa") and
+        prepared["ancestry_passes"] == ["--eliminate-dead-branches", "--simplify-instructions"] and
+        prepared["passes"] == ([] if arm == "original-cleaned-general" else ["--ssa-rewrite"]) and prepared["tool_version"],
+        "Wrong external SSA pass provenance")
+    seal = prepared["provenance_manifest"]
+    source = Path(seal["file"]).resolve(strict=True)
+    require(experiment.digest(source) == seal["sha256"] and any(Path(row["file"]).resolve() == source and
+        row["sha256"] == seal["sha256"] for row in manifest["provenance"]["manifests"]), "External SSA producer seal is not pinned")
+    # The SSA producer uses the established nested-seal inventory convention.
+    legacy.verify_manifest(source.parent)
+    producer = experiment.read(source.parent / "summary.json")
+    require(producer["status"] == "passed" and producer["command"] == "run" and producer["experiment"] == "path-trace-external-ssa-v1" and
+        producer["arms"] == ["original-cleaned-general", "ssa-general"] and producer["runtime_postprocess"] == "none", "Unqualified SSA producer")
+    output = producer["outputs"][arm]
+    require(output["identity"] == {key: artifact[key] for key in output["identity"]} and
+        output["prepared"] == {key: prepared[key] for key in output["prepared"]} and
+        output["counts"]["functions"] == 1 and output["counts"]["function_calls"] == 0, "Artifact differs from the actual SSA producer arm")
+    control = producer["outputs"]["original-cleaned-general"]["identity"]
+    require(prepared["input_sha256"] == control["sha256"] and prepared["input_bytes"] == control["bytes"], "SSA input is not the cleaned control")
+
+
 def verify_runtime(directory, manifest, configuration, *, expected_validation=True):
     report_path = directory / "MaterialBaseline.json"
     report = experiment.read(report_path)
     require(type(expected_validation) is bool and report["validation"] is expected_validation, "Runtime validation configuration mismatch")
     require([case["id"] for case in report["cases"]] == [case["id"] for case in configuration["cases"]], "Missing correctness case")
     artifact = manifest["artifact"]
+    validate_artifact_postprocess(manifest)
     require(report.get("status") == "passed" and "error" not in report, "Artifact test did not qualify")
     evidence = report["shader_artifact"]
     require(evidence["artifact_id"] == manifest["artifact_id"] and evidence["input_sha256"] == artifact["sha256"] and
@@ -201,6 +235,8 @@ def verify_runtime(directory, manifest, configuration, *, expected_validation=Tr
             not evidence["errors"] and evidence["source_tag"] == artifact["source_tag"] and
             evidence["postprocess"] == artifact["spirv_postprocess"] and evidence["postprocess_tool_version"] == artifact["tool_version"],
             "Artifact unused, rejected or changed")
+    if artifact["spirv_postprocess"] == "none":
+        require(evidence["prepared"] == artifact["prepared"], "Runtime omitted or changed external artifact preparation")
     require([row["id"] for row in report["artifact_cases"]] == [case["id"] for case in configuration["cases"]], "Missing artifact case evidence")
     for case, specification, row in zip(report["cases"], configuration["cases"], report["artifact_cases"]):
         experiment.validate_requested_case(case, specification, configuration)
@@ -231,7 +267,7 @@ def verify_runtime(directory, manifest, configuration, *, expected_validation=Tr
         require(identity == {key: artifact[key] for key in identity}, "Device artifact differs from tested SPIR-V")
         require(stage["input_spirv_hash"] == artifact["fnv1a64"] and stage["spirv_bytes"] == artifact["bytes"] and
                 stage["entry_point"] == "main" and stage["source_entry_point"] == manifest["expected_target"]["entry"] and
-                stage["source_identity_ambiguous"] is False and stage["spirv_postprocess"] == "dead-branches" and
+                stage["source_identity_ambiguous"] is False and stage["spirv_postprocess"] == artifact["spirv_postprocess"] and
                 stage["spirv_postprocess_tool_version"] == artifact["tool_version"] and stage["slang_optimization"] == "O1" and
                 stage["debug_mode"] == "release" and stage["descriptor_heap_mode"] == "mapped", "Device artifact provenance/ABI mismatch")
         state = recipe["state"]

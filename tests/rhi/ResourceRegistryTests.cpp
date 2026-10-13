@@ -14,6 +14,7 @@
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedComputeParameters.h"
+#include "Runtime/Render/Material/SceneMaterialData.h"
 #include "Runtime/Render/Environment/CelestialLighting.h"
 #include "Runtime/Render/Environment/AtmosphereKernelParameters.h"
 
@@ -22,6 +23,8 @@
 #include <cstring>
 #include <thread>
 #include <map>
+#include <cstdlib>
+#include <filesystem>
 
 namespace metallic::tests {
 namespace {
@@ -2280,6 +2283,135 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(ResourceParameterFieldTest);
+
+class SceneMaterialReadOverlayTest final : public RHITest {
+public:
+    SceneMaterialReadOverlayTest() { type = RHITestType::Resource; name = "scene_material_read_overlay_layout"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        const char* requested = std::getenv("METALLIC_MATERIAL_READ_OVERLAY");
+        if (requested == nullptr || requested[0] == '\0') {
+            return RHITestResult::skip("Set METALLIC_MATERIAL_READ_OVERLAY to the frozen candidate Shaders directory");
+        }
+        const auto root = std::filesystem::path(requested).lexically_normal();
+        if (!root.is_absolute() || !std::filesystem::is_regular_file(root / "Modules/SceneSurfaceMaterialReads.slang")) {
+            return RHITestResult::fail("The complete frozen material-read overlay is required");
+        }
+        // Undefined missing/truncated records are deliberately not read. The
+        // experiment retains the original complete-record/valid-index contract.
+        static_assert(sizeof(SceneMaterialData) == 720);
+        static_assert(offsetof(SceneMaterialData, textureParams) + 8 == 56);
+        static_assert(offsetof(SceneMaterialData, rtxcrHairBaseColor) == 112);
+        static_assert(offsetof(SceneMaterialData, baseColorTexture) == 176);
+        constexpr uint32_t kWords = 36;
+        constexpr uint64_t kReadABI = 0x4d41545245414401ull;
+        std::array<SceneMaterialData, 2> records;
+        std::array<uint32_t, kWords * 2> expected;
+        for (uint32_t i = 0; i < records.size(); ++i) {
+            auto& data = records[i];
+            data.textureParams[2] = float(i + 1);
+            data.textureParams[3] = float(2 - i);
+            data.baseColor[3] = i == 0 ? 0.125f : 0.875f;
+            data.params[2] = i == 0 ? 0.25f : 0.5f;
+            data.attenuationColor[3] = float(i);
+            float* groups[]{data.rtxcrHairBaseColor, data.rtxcrHairParams0,
+                data.rtxcrHairParams1, data.rtxcrHairDiffuseTint};
+            for (uint32_t group = 0; group < 4; ++group) {
+                for (uint32_t channel = 0; channel < 4; ++channel) {
+                    groups[group][channel] = float(10 + i * 32 + group * 4 + channel);
+                }
+            }
+            auto& texture = data.baseColorTexture;
+            texture.textureIndex = i == 0 ? UINT32_MAX : 1337;
+            texture.texCoord = 2 - i;
+            texture.alignmentPadding[0] = 0x12345678u + i;
+            texture.alignmentPadding[1] = 0x87654321u - i;
+            for (uint32_t channel = 0; channel < 4; ++channel) {
+                texture.transform0[channel] = float(100 + i * 16 + channel);
+                texture.transform1[channel] = float(104 + i * 16 + channel);
+            }
+            auto* words = expected.data() + i * kWords;
+            words[0] = std::bit_cast<uint32_t>(data.textureParams[2]);
+            words[1] = std::bit_cast<uint32_t>(data.textureParams[3]);
+            words[2] = i == 1 ? 1u : 0u;
+            std::memcpy(words + 3, data.rtxcrHairBaseColor, 64);
+            words[19] = std::bit_cast<uint32_t>(data.baseColor[3]);
+            words[20] = std::bit_cast<uint32_t>(data.params[2]);
+            words[21] = words[1];
+            words[22] = i;
+            std::memcpy(words + 23, &texture, sizeof(texture));
+            words[35] = words[0];
+        }
+        bench::TestDevice fixture;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Scene material read overlay layout",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { fixture = std::move(value); }));
+        auto& device = *fixture;
+        auto& queue = *device.getQueue(QueueType::Graphics);
+        std::unique_ptr<Buffer> input, output;
+        REG_REQUIRE(device.createBuffer({.size = sizeof(records), .structureStride = sizeof(SceneMaterialData),
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback,
+            .queueAccess = QueueAccessBits::Graphics}).transform([&](auto value) { input = std::move(value); }));
+        REG_REQUIRE(device.createBuffer({.size = sizeof(expected) * 2, .structureStride = 4,
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback,
+            .queueAccess = QueueAccessBits::Graphics}).transform([&](auto value) { output = std::move(value); }));
+        void* data = input->map();
+        REG_CHECK(data);
+        std::memcpy(data, records.data(), sizeof(records));
+        input->flush(); input->unmap();
+        const std::string source = root.string();
+        const std::string modules = (root / "Modules").string();
+        const std::string interop = (root / "Interop").string();
+        const std::string vendor = (root.parent_path() / "External/RTXCR-Material/shaders/include").string();
+        const char* searches[]{PROJECT_SOURCE_DIR "/tests/rhi/shaders", modules.c_str(), interop.c_str(), vendor.c_str()};
+        constexpr SlangMacroDefine definitions[]{{"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_HAS_RTXCR", "1"}};
+        const char* capabilities[]{"spvRayQueryKHR"};
+        for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
+            ShaderCompileResult shader;
+            REG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "SceneMaterialReadProbe", .entryPointName = "main",
+                .searchPath = source.c_str(), .additionalSearchPaths = searches, .capabilities = capabilities,
+                .macroDefines = definitions, .descriptorHeapMode = mode}, shader.diagnostics)
+                .transform([&](auto value) { shader = std::move(value); }));
+            ComputeKernel kernel;
+            std::string log;
+            REG_REQUIRE(kernel.initialize(device, {.spirv = shader.spirv,
+                .parameters = parameterAbi<NamedComputeParameters>(kReadABI)}, log));
+            Commands recording;
+            REG_REQUIRE(recording.initialize(device, queue));
+            REG_REQUIRE(recording.begin(0));
+            auto registry = ResourceRegistry::forDevice(device);
+            REG_CHECK(registry);
+            ParameterWriter writer(device, **registry, &recording.frame);
+            SceneResourceParameters packet{};
+            packet.materials = writer.buffer(input.get());
+            const auto outputHandle = writer.buffer(output.get());
+            auto encoded = encodeNamedParameters(writer, packet, outputHandle, kReadABI);
+            REG_CHECK(encoded);
+            auto prepared = kernel.prepareDispatch(*encoded, 2);
+            REG_CHECK(prepared);
+            REG_REQUIRE(prepared->record(*recording.commands));
+            QueueSubmissionTracker tracker;
+            REG_REQUIRE(tracker.initialize(device, queue));
+            std::unique_ptr<Semaphore> gate;
+            REG_REQUIRE(device.createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+            Drain drain{queue, *gate};
+            REG_REQUIRE(recording.submit(tracker, *gate));
+            REG_REQUIRE(recording.frame.wait());
+            output->invalidate();
+            const auto* actual = static_cast<const uint32_t*>(output->map());
+            REG_CHECK(actual);
+            const bool equal = std::equal(expected.begin(), expected.end(), actual) &&
+                std::equal(expected.begin(), expected.end(), actual + expected.size());
+            bench::readbackEvidence(context, mode == SlangDescriptorHeapMode::Mapped ?
+                "material-read-mapped.bin" : "material-read-native.bin", std::span<const uint32_t>(actual, expected.size() * 2));
+            output->unmap();
+            REG_CHECK(equal);
+        }
+        return RHITestResult::pass("Mapped/native actual overlay views match full records and CPU fields, stride and texture sentinels");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(SceneMaterialReadOverlayTest);
 
 class TypedNamedKernelTest final : public RHITest {
 public:

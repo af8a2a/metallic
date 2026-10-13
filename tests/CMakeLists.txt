@@ -753,6 +753,15 @@ set_tests_properties(MetallicShaderPrintfTests PROPERTIES LABELS "rhi;shader-pri
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicPathTraceSSAEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceSSA.py")
+    set_tests_properties(MetallicPathTraceSSAEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
+    add_test(NAME MetallicPathTraceFunctionBoundaryEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceFunctionBoundaries.py")
+    set_tests_properties(MetallicPathTraceFunctionBoundaryEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
+    add_test(NAME MetallicPathTraceMaterialReadEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceMaterialReads.py")
+    set_tests_properties(MetallicPathTraceMaterialReadEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
     add_test(NAME MetallicPathTraceBackendNativeEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackendNative.py")
     set_tests_properties(MetallicPathTraceBackendNativeEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)

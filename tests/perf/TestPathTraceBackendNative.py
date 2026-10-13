@@ -134,6 +134,40 @@ class BackendNativeTests(unittest.TestCase):
         self.assertEqual(identity["shader_stage"], report["samples"][0]["shader_stages"][0])
         self.assertEqual(identity["shader_stage"]["device_shader_content_hash"], self.identity["content_hash"])
 
+    def test_external_prepared_bytes_require_explicit_runtime_none_without_relaxing_identity_or_miss_gates(self):
+        self.recipe["shaders"]["compute"].update(spirv_postprocess="none", spirv_postprocess_tool_version="")
+        report = self.report()
+        report["samples"][0]["effective_spirv_postprocess"] = "none"
+        report["samples"][0]["shader_stages"][0]["spirv_postprocess"] = "none"
+        values, identity = native.validate_report(report, self.recipe, self.identity, expected_postprocess="none")
+        self.assertEqual(values["native_create_ms"], 10.0)
+        self.assertEqual(identity["shader_stage"]["spirv_postprocess_tool_version"], "")
+        with self.assertRaises(ValueError):
+            native.validate_report(report, self.recipe, self.identity)
+        mutations = (
+            lambda item: item["samples"][0]["shader_stages"][0].update(spirv_postprocess="dead-branches"),
+            lambda item: item["samples"][0]["shader_stages"][0].update(device_spirv_fnv1a64="wrong"),
+            lambda item: item["samples"][0]["pipeline"].update(native_object_reused=True),
+            lambda item: item["samples"][0]["compilation_phases"].update(compiler_executed=True))
+        for mutation in mutations:
+            changed = copy.deepcopy(report)
+            mutation(changed)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                native.validate_report(changed, self.recipe, self.identity, expected_postprocess="none")
+
+    def test_runtime_postprocess_policy_must_match_recipe_and_reject_unknown_labels(self):
+        report = self.report()
+        for value in ("external-ssa", "slang-dead-branches", "", None):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                native.validate_report(report, self.recipe, self.identity, expected_postprocess=value)
+        report["samples"][0]["effective_spirv_postprocess"] = "none"
+        report["samples"][0]["shader_stages"][0]["spirv_postprocess"] = "none"
+        with self.assertRaisesRegex(ValueError, "Recipe replay postprocess"):
+            native.validate_report(report, self.recipe, self.identity, expected_postprocess="none")
+        self.recipe["shaders"]["compute"]["spirv_postprocess"] = "none"
+        with self.assertRaisesRegex(ValueError, "must not claim a postprocess tool"):
+            native.validate_report(report, self.recipe, self.identity, expected_postprocess="none")
+
     def test_report_rejects_frontend_source_fallback_multiple_calls_and_any_cache_hit(self):
         mutations = (
             lambda report: report.update(status="failed"),
@@ -294,25 +328,57 @@ class BackendNativeTests(unittest.TestCase):
 
     def synthetic_inputs(self, general="original-general"):
         """Stub only preflight; staging, byte identities, run and replay stay real."""
-        selected, files, manifests = {}, [], []
+        selected, files, manifests, plans, records, analysis_inputs, analyses = {}, [], [], [], [], {}, {}
+        preparation_dir, compile_dir, analysis_dir = (self.root / name for name in ("preparation", "compile", "analysis"))
+        for directory in (preparation_dir, compile_dir, analysis_dir):
+            directory.mkdir(exist_ok=True)
+        arm_directories = []
         for arm, generator in ((general, 1), (native.NO_FIBER_ARM, 2)):
             directory = self.root / arm
             directory.mkdir(exist_ok=True)
+            arm_directories.append(directory)
             source = directory / "Cleaned.spv"
             source.write_bytes(code(generator))
             identity = native.blob_identity(source)
-            analysis = dict(cleaned=identity, label=arm)
+            raw_directory = compile_dir / arm
+            raw_directory.mkdir()
+            raw = raw_directory / "Guides.spv"
+            raw.write_bytes(code(generator))
+            raw_digest = native.experiment.digest(raw)
+            record = dict(label=arm, repetition=0, spirv_sha256=raw_digest)
+            records.append(record)
+            analysis_inputs[arm] = dict(path=str(raw), sha256=raw_digest, record=copy.deepcopy(record))
+            analysis = dict(cleaned=identity, raw=dict(sha256=raw_digest), label=arm)
+            analyses[arm] = analysis
             save(directory / "Analysis.json", analysis)
             (directory / "Consumer.slang").write_text(f"module {arm.replace('-', '_')};\n", encoding="utf-8")
+            provider = None
+            if arm != "original-general":
+                name = "PathTraceMaterialBackendLinkNoFiberProvider.slang" if arm == native.NO_FIBER_ARM else "PathTraceMaterialBackendLinkGeneralProvider.slang"
+                provider = directory / name
+                provider.write_text("module FixtureProvider;\n", encoding="utf-8")
+            plan = dict(label=arm, provider=str(provider) if provider else None,
+                mechanism="original" if arm == "original-general" else "backend-link")
+            plans.append(plan)
             files.extend(path for path in directory.iterdir() if path.is_file())
+            files.append(raw)
+            selected[arm] = dict(source=str(source), identity=identity, plan=plan, provider=plan["provider"],
+                provider_sha256=native.experiment.digest(provider) if provider else None, analysis=analysis,
+                artifact_manifest=dict(artifact_id=arm, requires_no_fiber=arm == native.NO_FIBER_ARM,
+                    artifact=dict(file=str(source), source_tag=f"Artifacts/PathBackend/{arm}/TwoPassCleaned",
+                        entry_main="main", spirv_postprocess="dead-branches", tool_version="SPIRV-Tools fixture", **identity)))
+        save(preparation_dir / "Preparation.json", dict(status="prepared", plans=plans))
+        save(compile_dir / "summary.json", dict(status="passed", runs=records))
+        save(analysis_dir / "Inputs.json", dict(inputs=analysis_inputs))
+        save(analysis_dir / "summary.json", dict(status="passed", cleanup_passes=native.PASSES, outputs=analyses))
+        files.extend([preparation_dir / "Preparation.json", compile_dir / "summary.json",
+            analysis_dir / "Inputs.json", analysis_dir / "summary.json"])
+        for directory in [preparation_dir, compile_dir, analysis_dir, *arm_directories]:
             manifest = directory / "Manifest.json"
-            save(manifest, dict(schema_version=1, artifacts=[dict(path=path.name, sha256=native.experiment.digest(path))
-                for path in sorted(directory.iterdir()) if path.is_file()]))
+            save(manifest, dict(schema_version=1, artifacts=[dict(path=path.relative_to(directory).as_posix(),
+                sha256=native.experiment.digest(path)) for path in sorted(directory.rglob("*")) if path.is_file()]))
             manifests.append(dict(file=str(manifest), sha256=native.experiment.digest(manifest)))
             files.append(manifest)
-            selected[arm] = dict(source=str(source), identity=identity, provider=None, provider_sha256=None,
-                analysis=analysis, artifact_manifest=dict(artifact_id=arm,
-                    artifact=dict(source_tag=f"Artifacts/PathBackend/{arm}/TwoPassCleaned")))
         template_path = self.root / "Captured.recipe.json"
         save(template_path, self.recipe)
         executable = self.root / "bench.exe"
@@ -322,6 +388,7 @@ class BackendNativeTests(unittest.TestCase):
             template=str(template_path), template_sha256=native.experiment.digest(template_path),
             template_document=copy.deepcopy(self.recipe), template_original_file=str(self.artifact),
             template_original=copy.deepcopy(self.identity), template_pso_hash_validated=True,
+            preparation=str(preparation_dir), compile=str(compile_dir), analysis=str(analysis_dir),
             source_manifests=manifests, postprocess="dead-branches", postprocess_tool_version="SPIRV-Tools fixture",
             inputs=selected, frozen_files=native.experiment.snapshots(files), executable=str(executable))
 
@@ -406,6 +473,23 @@ class BackendNativeTests(unittest.TestCase):
             self.assertEqual(native.verify(output), summary)
         self.assertEqual(replay.call_args.args[0], [sys.executable, "-B",
             str(output / "Verifier/Tools/Perf/MeasurePathTraceBackendNative.py"), "_verify-frozen", str(output)])
+
+    def test_declared_original_control_cannot_bind_a_linked_artifact_or_provider_plan(self):
+        output, _, _, error = self.run_mocked()
+        self.assertIsNone(error, str(error))
+        original = native.experiment.read(output / "Inputs.json")
+        native.validate_arm_provenance(output, original, "original-general")
+        linked = original["inputs"][native.NO_FIBER_ARM]
+        mutations = (
+            lambda item: item.update(artifact_manifest=copy.deepcopy(linked["artifact_manifest"])),
+            lambda item: item["artifact_manifest"]["artifact"].update(source_tag=linked["artifact_manifest"]["artifact"]["source_tag"]),
+            lambda item: item.update(plan=copy.deepcopy(linked["plan"]), provider=linked["provider"],
+                provider_sha256=linked["provider_sha256"]))
+        for mutation in mutations:
+            changed = copy.deepcopy(original)
+            mutation(changed["inputs"]["original-general"])
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, "(?i)(arm|plan|provider)"):
+                native.validate_arm_provenance(output, changed, "original-general")
 
     def test_native_replay_rejects_resealed_control_denominator_raw_metrics_and_process_overlap(self):
         output, _, original, error = self.run_mocked()

@@ -499,6 +499,19 @@ now qualifies all five coarse-Type outputs in three fixed SHARC-off,
 CUSTOM_MATERIALS=0 scenes, including complete loaded-material No-Fiber checks;
 HDR, temporal frames and guides are numerically identical. Dynamic material
 changes, other permutations and production scene eligibility are not covered.
+The direct original-source control observes 16.31% less native creation time
+by paired median, but its Mixed dispatch result is +13.70% with large
+chronological drift. Smaller SPIR-V and output equivalence therefore do not
+qualify the current narrower Type as a general runtime default. The follow-up
+keeps original-source and linked-General denominators separate.
+
+The subsequent [material-record read comparison](PathTracingResourceNarrowReads.md#material-record-follow-up-2026-10-13)
+preserves the General implementation in raw and typed-member overlays. Both
+pass exact-artifact fixed-scene output checks, but neither establishes a stable
+compiler or native-creation gain. This separates resource transport from Type
+selection. The next compilation-complexity experiment should test explicit
+function boundaries on the current General shader, keeping the same reachable
+features and output contract; linked Types alone do not prevent target inlining.
 
 The current module-based 2026-10-13 repeat still shows the same limitation.
 The [current O1 comparison](../build-release/link-time-current-20261013/current-O1-analysis/Analysis.json)
@@ -509,15 +522,17 @@ baseline is 6,947,064 bytes / 449,813 instructions / 60,501 blocks. These
 observations do not establish an advantage for supplying boolean methods through
 a linked Type.
 
-The next coarse boundary should select the **whole material-domain dispatch
+The original coarse-boundary proposal was to select the **whole material-domain dispatch
 implementation**, with one Type supplying both found-vertex shading and guide
 evaluation. A `GeneralScenePathMaterialBackend` would preserve the current
 Surface/Fiber/Slab dispatch. A `NoFiberOpenPBRBackend`, tested first with custom
 materials disabled, would call only the existing OpenPBR implementation. Its
 methods would contain no `shadeSceneFiber` call or Fiber guide extraction,
 rather than guard those calls with another static boolean. This changes the
-reachable call graph before target inlining. It is a proposed code-elimination
-boundary, not a native compilation boundary or a measured speedup.
+reachable call graph before target inlining. The follow-up above now measures
+this code-elimination boundary and its native/GPU effects. It does not form a
+native compilation boundary or establish a benefit from linking alone. The
+remaining design notes describe the original proposal and deployment contract.
 
 The concrete sites are:
 

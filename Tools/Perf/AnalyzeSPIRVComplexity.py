@@ -127,8 +127,9 @@ def reachable(graph, start):
 
 def cfg_metrics(blocks):
     graph = {identifier: set(block["targets"]) for identifier, block in blocks.items()}
+    graph_keys = set(graph)
     for node, targets in graph.items():
-        if not targets.issubset(graph):
+        if not targets.issubset(graph_keys):
             raise ValueError(f"Branch in block {node} targets a missing block")
     if not graph:
         return dict(block_count=0, edge_count=0, reachable_blocks=0, unreachable_blocks=0,

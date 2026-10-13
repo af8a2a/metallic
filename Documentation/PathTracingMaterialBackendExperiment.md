@@ -4,14 +4,16 @@ Selecting a complete material implementation removes the two selected Fiber
 paths from the current O1 Guides shader, while linking that implementation
 produces almost the same code size as selecting it concretely. The matched
 concrete/link outputs still differ after identical dead-branch cleanup and
-compact-ID normalization. Three paired native-creation measurements of equally
-cleaned linked outputs observe a **24.03% paired-median reduction** for No-Fiber
-versus General. The exact five cleaned artifacts now pass validation-on GPU
-comparison in three fixed scenes: all HDR, temporal and guide values are
-numerically identical. A larger validation-off batch observes small geometry
-dispatch improvements (paired medians -1.96% / -1.64%) and a -20.20% sky-stage
-change, with process drift and scope limits recorded below. This qualification
-is restricted to the stated workloads.
+compact-ID normalization. Three paired native measurements against the
+uniformly cleaned **original source** observe a **16.31% paired-median
+reduction** for No-Fiber. The exact five cleaned artifacts pass validation-on
+GPU comparison in three fixed scenes. A direct original-source GPU batch
+retains byte-identical HDR, temporal and guide outputs, but dispatch changes
+are mixed: Opaque -2.60%, Mixed +13.70% and Sky -20.17%, with substantial Mixed
+variation. This candidate is not qualified as a general runtime improvement.
+Earlier linked-General controls are retained separately below; their timings
+must not be combined with the original-source batches. Qualification remains
+restricted to the stated workloads.
 Production shader sources and defaults remain unchanged.
 
 This follows the [boolean capability experiment](PathTracingLinkTimeSpecialization.md),
@@ -381,6 +383,163 @@ The smaller bytecode helps Driver creation in this experiment, while the
 single compiler samples above do not establish a frontend benefit. Rendering
 qualification and the scene restriction remain required before adoption.
 
+## Original-source native control
+
+The [original-control batch](../build-release/path-backend-native-original-20261013/summary.json)
+compares uniformly cleaned production General directly with linked No-Fiber,
+instead of using the wrapped linked General as the denominator. It uses six
+fresh processes in AB/BA/AB order on the same RTX 5060 / NVIDIA 616.92, with
+normal Compute Pipeline creation, empty application caches, the controllable
+Driver cache disabled, and debug/validation disabled. Both inputs are the
+same previously qualified two-pass artifacts. Target frontend compilation,
+object reuse and native binary import/export are absent; every creation has
+valid feedback and reports a native miss and metadata miss.
+
+| Pair and order | Original General native, s | Linked No-Fiber native, s | No-Fiber reduction |
+| --- | ---: | ---: | ---: |
+| 0: General / No-Fiber | 62.365 | 39.658 | 36.41% |
+| 1: No-Fiber / General | 48.986 | 40.998 | 16.31% |
+| 2: General / No-Fiber | 49.627 | 43.157 | 13.04% |
+
+The median paired No-Fiber/General ratio is **0.836942**, or **16.31% less
+native creation time**. Arm medians are 49.627 s and 40.998 s; their ratio is
+a different statistic and is not the paired result. Driver-duration ratios
+agree to six decimal places, and native minus Driver duration is only
+0.027--0.039 ms per sample. Cache-lock waits are 0.0007--0.0011 ms.
+
+The original arm varies by 13.379 s across processes. These three pairs are
+exploratory observations, not a statistical confidence estimate. Disabling
+the controllable cache does not prove all Driver/compiler state is cold.
+Do not combine this batch with the earlier linked-General batch to infer
+wrapping overhead: their process state and execution times differ.
+
+Relative to original General, the selected No-Fiber artifact removes
+14.20% of bytes, 14.47% of instructions and 16.76% of basic blocks after the
+same cleanup. This reduction includes both implementation selection and the
+wrapper change; matched static/link controls above still isolate the much
+smaller effect of the linking mechanism itself. This batch measures only
+`vkCreateComputePipelines`, excluding frontend cost, initialization and GPU
+execution.
+
+[`MeasurePathTraceBackendNative.py`](../Tools/Perf/MeasurePathTraceBackendNative.py)
+reconstructs the captured v6 Compute PSO ABI and checks final device bytecode,
+recipe state, returned per-call metrics, batch counts and sums, cache controls,
+process identities, nonoverlapping intervals and paired aggregates. It seals
+failed runs without admitting them as samples and archives the actual helper
+sources and source/compile/cleanup provenance for historical verification.
+Its 17 mocked CPU tests passed; they do not substitute for native execution.
+
+## Original-source GPU control
+
+The [direct original-source batch](../build-release/path-backend-dispatch-original-512-20261013/summary.json)
+selects `original-general` as the General arm. Both arms use identical two-pass
+cleanup; it launches two validation-on qualification processes followed by
+six validation-off timing processes in AB/BA/AB order. Settings match the
+earlier 512x512 batch: two samples, depth 12, SHARC off, `CUSTOM_MATERIALS=0`,
+`METALLIC_GLOBAL_VIEW=0`, 16 warmup frames, 32 timing frames and eight later HDR
+captures per scene, with seven guide captures after the camera change. Driver
+internal caching is enabled and each process has a private application cache.
+Neither frontend nor native creation is part of the GPU timestamp intervals.
+
+All eight processes and all 24 scene cases pass. The 384 readback arrays are
+finite and byte-identical to their original-General qualification reference.
+The target recipes prove the exact input artifacts were consumed, while all
+264 ordinary shader-stage identities match the reference; no fallback or
+validation error is admitted. The statistical unit remains one process median
+per arm/pair, with 576 timed frames across the six performance processes.
+
+| Scene | Original dispatch median, ms | No-Fiber dispatch median, ms | Paired dispatch change | Paired Pass change | Paired Graph change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Opaque | 29.412992 | 28.929600 | -2.60% | -2.64% | -2.66% |
+| Mixed | 68.644080 | 76.880288 | +13.70% | +13.70% | +13.66% |
+| Sky | 0.499376 | 0.400096 | -20.17% | -7.23% | -6.69% |
+
+The arm columns are medians of three process medians. Percentage changes use
+the median of three within-pair candidate/control ratios, not the ratio of
+those arm columns. Dispatch ratios are Opaque `0.969976 / 0.973997 / 0.988613`,
+Mixed `1.174111 / 1.136992 / 0.943438`, and Sky
+`0.798308 / 0.839074 / 0.795761`. Positive change means slower.
+
+The Mixed original process medians span 62.612--81.490 ms; No-Fiber spans
+73.514--78.048 ms. Comparing the first 16 with the last 16 timed dispatch
+frames, original block 1 changes by +20.61% for Opaque and -18.92% for Mixed;
+No-Fiber block 0 Mixed changes by +7.99%. These are chronological diagnostics,
+not extra independent repetitions. The pair direction changes, and the
+observed variation is much larger than the Opaque benefit. This is evidence of an
+unresolved runtime cost or measurement-state effect, not proof of its cause.
+Do not adopt the smaller artifact based only on native creation or SPIR-V size.
+Compare resources and executable statistics on these exact artifacts, then
+repeat a controlled Mixed measurement before deciding on a runtime policy.
+
+As a separate tail diagnostic, medians of the three per-process frame P95s
+are Opaque 30.683296 / 30.036544 ms, Mixed 83.371744 / 79.354272 ms, and Sky
+0.503360 / 0.523104 ms (original / No-Fiber). Sky's median improves while this
+tail statistic worsens; Mixed's tail statistic improves while its paired
+median worsens. Neither diagnostic erases the primary paired result or
+provides a confidence estimate from three processes.
+
+Graph/Pass intervals may contain GPU upload commands. The narrower `Path trace
+shading` interval includes its existing resource-stage work; it is not an
+ISA-only duration. Readbacks, presentation and shader/native compilation are
+outside these intervals. Sky's dispatch improvement is about 0.1 ms and must
+not be presented as a 20% whole-frame improvement. The fixed scenes do not
+exercise Fiber, custom programs, metal/coat/sheen/dispersion combinations,
+SHARC, long temporal runs or full-scene memory behavior.
+
+The [original-control preview](../build-release/path-backend-dispatch-original-preview-20261013/OriginalGeneral512.png)
+was inspected. It shows the expected noisy two-sample geometry outputs and
+sky view, with no error material. It converts ACEScg to Rec.709, applies
+Reinhard and sRGB for display; the exact raw readbacks remain authoritative.
+The preview and its input hashes are outside the sealed measurement directory.
+
+The runner's 31 CPU evidence tests passed, including eight tests for explicit
+General-arm selection, original-source binding, role-aware aggregation and
+historical replay. Tests preserve the original default linked-control behavior.
+
+## Exact-artifact Driver resource diagnostic
+
+The [separate executable capture](../build-release/path-backend-executable-original-20261013/summary.json)
+creates each exact original-control artifact once, with the same sealed recipe
+and copied SPIR-V, without frontend compilation or Dispatch. It requests
+`METALLIC_VK_PIPELINE_STATISTICS=1` and sets
+`METALLIC_VK_PIPELINE_EXECUTABLE_DIRECTORY` to a fresh per-arm directory,
+enabling `CAPTURE_STATISTICS` and `CAPTURE_INTERNAL_REPRESENTATIONS`. Those flags
+can change Driver compilation even though the ordinary v6 PSO hash is the same.
+All capture creation times have `timing_eligible=false` and are excluded from
+the ordinary native and GPU comparisons.
+
+Both manifests report successful properties, statistics and representation
+queries, with one CS executable and subgroup size 32. The input and final-device
+SPIR-V, full recipe ABI, Driver/cache identity and native-miss payload checks
+pass. Five before/after input-hash snapshots match and the result is sealed.
+The original capture environment and reports remain intact; only an explicitly
+documented report copy removes the two diagnostic environment fields when
+reusing the ordinary native payload checker. This validates artifact/state/
+cache contracts and does not qualify the captured time as an ordinary sample.
+
+| Driver statistic | Original General | Linked No-Fiber |
+| --- | ---: | ---: |
+| Register Count | 255 | 255 |
+| Binary Size, bytes | 1,757,056 | 1,437,312 |
+| Stack Size | 0 | 0 |
+| Shared Memory Size, bytes | 12,288 | 12,288 |
+| Local Memory Size, raw UINT64 | 68,719,489,584 | 68,719,485,840 |
+
+Driver-reported Binary Size decreases by 319,744 bytes (**18.20%**). Registers,
+stack and shared memory do not decrease. The large Local Memory value is
+retained with its original format/name/description and is not truncated,
+decoded or interpreted as spill. These are static executable statistics;
+they do not establish occupancy, executed instruction counts or the cause
+of Mixed's result.
+
+Both representation queries succeed with **zero representations**, so this
+capture supplies no Driver ISA or executable representation bytes. The ignored
+`Capture.py`, exact commands, explicit capture environment, original logs,
+reports, manifests and input hashes are retained in the evidence directory.
+Use runtime hardware counters and repeated measurements with better state
+control to investigate Mixed before promoting a candidate; do not infer an
+execution speedup from the smaller Binary Size.
+
 ## Reproduce and verify
 
 List the current catalog first; indices can change. Create one fresh mapped O1
@@ -431,6 +590,44 @@ python -B Tools/Perf/ValidatePathTraceBackendRendering.py `
   --absolute-tolerance 2e-5 --relative-tolerance 2e-5
 ```
 
+Reproduce the direct original-source controls using the same sealed artifacts.
+The native runner disables the controllable Driver cache and performs one
+creation per independent process; the dispatch runner enables that cache and
+uses separate correctness and timing processes. Run the batches sequentially,
+keep all `Tools/Perf` helpers frozen during each run and choose fresh output
+directories. Pass `--general-arm original-general` explicitly to the GPU
+runner, whose default still selects linked General.
+
+```powershell
+python -B Tools/Perf/MeasurePathTraceBackendNative.py run `
+  --preparation build-release/path-backend-type-20261013/preparation `
+  --compile build-release/path-backend-type-20261013/compile `
+  --analysis build-release/path-backend-cleanup-analysis-20261013 `
+  --reference build-release/path-backend-type-20261013/preparation/ReferenceReport.json `
+  --template-recipe build-release/slang-cleanup-api-sharc-correctness-20261013/block-00-O1-pipeline-normal/recipes/compute-9ddcf6da408be75c.recipe.json `
+  --executable build-release/Source/MetallicShaderPipelineBench.exe `
+  --general-arm original-general `
+  --output-dir build-release/path-backend-native-original-recheck-20261013
+python -B Tools/Perf/MeasurePathTraceBackendDispatch.py run `
+  --preparation build-release/path-backend-type-20261013/preparation `
+  --compile build-release/path-backend-type-20261013/compile `
+  --analysis build-release/path-backend-cleanup-analysis-20261013 `
+  --reference build-release/path-backend-type-20261013/preparation/ReferenceReport.json `
+  --cases build/compute-create-fixtures/Correctness.json `
+  --executable build-release/tests/MetallicRHITests.exe `
+  --general-arm original-general `
+  --output-dir build-release/path-backend-dispatch-original-recheck-20261013
+python -B Tools/Perf/MeasurePathTraceBackendNative.py verify `
+  build-release/path-backend-native-original-20261013
+python -B Tools/Perf/MeasurePathTraceBackendDispatch.py verify `
+  build-release/path-backend-dispatch-original-512-20261013
+```
+
+Historical verification executes the actual archived helpers and checks the
+sealed inputs and raw outputs. Adding `--current-inputs` also compares the
+current source, binaries and helper inventory, and can appropriately reject
+an older batch after repository changes.
+
 The preparation's five generated-overlay ownership audits passed. The
 27 CPU cases in [`TestPathTraceBackend.py`](../tests/perf/TestPathTraceBackend.py)
 also passed, including the registered `MetallicPathTraceBackendEvidenceTests`
@@ -457,7 +654,10 @@ a new output directory. The failed report is retained separately.
 ## Optimization implication
 
 The coarse implementation boundary and declared material restriction provide
-the measured code reduction. Link-time Type selection itself improves the
+the measured code reduction and original-control native benefit. The Mixed
+runtime result prevents selecting the current No-Fiber implementation as a
+general default; correctness qualification alone is insufficient. Link-time
+Type selection itself improves the
 matched static output by only 19 instructions / 160 bytes after two-pass
 cleanup. It has no established frontend advantage from the single compiler
 samples. Prefer explicit scene capabilities and coarse, independently selected
