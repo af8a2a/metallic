@@ -278,6 +278,47 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept
     return debugMode;
 }
 
+SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept
+{
+    if (desc.optimizationLevel != SlangShaderOptimizationLevel::Default) {
+        return desc.optimizationLevel;
+    }
+    return debugMode == SlangShaderDebugMode::ShaderDebug
+        ? SlangShaderOptimizationLevel::O0 : SlangShaderOptimizationLevel::O1;
+}
+
+const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept
+{
+    switch (level) {
+    case SlangShaderOptimizationLevel::O0: return "O0";
+    case SlangShaderOptimizationLevel::O1: return "O1";
+    case SlangShaderOptimizationLevel::O2: return "O2";
+    case SlangShaderOptimizationLevel::O3: return "O3";
+    default: return "default";
+    }
+}
+
+SlangShaderPostprocessMode slangShaderPostprocessMode(const SlangShaderDesc& desc) noexcept
+{
+    return desc.postprocessMode == SlangShaderPostprocessMode::Default
+        ? SlangShaderPostprocessMode::None : desc.postprocessMode;
+}
+
+const char* slangShaderPostprocessModeName(SlangShaderPostprocessMode mode) noexcept
+{
+    switch (mode) {
+    case SlangShaderPostprocessMode::None: return "none";
+    case SlangShaderPostprocessMode::DeadBranches: return "dead-branches";
+    case SlangShaderPostprocessMode::SlangDeadBranches: return "slang-dead-branches";
+    default: return "default";
+    }
+}
+
+const char* slangShaderPostprocessToolVersion(SlangShaderPostprocessMode) noexcept
+{
+    return "startup-test-validator";
+}
+
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept
 {
     return nativeCompilation || desc.descriptorHeapMode == SlangDescriptorHeapMode::Native ||

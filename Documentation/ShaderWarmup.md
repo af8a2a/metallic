@@ -80,11 +80,88 @@ cmake --build build-release --target MetallicShaderWarmup
 ~~~
 
 CMake's --parallel option controls the build, not shader compiler workers.
-Requests compile with independent Slang sessions. Progress reports completed
+Each worker reuses its thread-local Slang global session (the standard library),
+while every request gets a fresh compilation session. Source edits and macro
+permutations therefore do not reuse imported module IR. SDK elapsed-time counters
+are sampled before and after each request, rather than reporting accumulated
+time from the worker's earlier compilations. Expensive path-tracing and Deferred
+requests start first; listing and progress request indices retain catalog order.
+Progress reports completed
 requests/total, percentage, cache hits, failures, elapsed time, and the completed
 shader name. Completion order may differ from request order. Errors are counted
 per request and remaining requests are still processed before the final summary.
 The progress percentage measures request count, not estimated remaining time.
+Each completion also reports per-request total/setup/module/code-generation
+seconds. The summary sums these overlapping worker intervals; those sums are
+not complete warmup wall time.
+
+### Complete cold-cache measurements
+
+Use the evidence runner to measure the complete compiler process, including
+catalog preparation, native stride queries, cache read-back and teardown:
+
+~~~powershell
+python -B Tools/Perf/MeasureShaderWarmup.py `
+  --executable build-release/Source/MetallicShaderCompiler.exe `
+  --output-dir .cache/shader-warmup-measurement-new --jobs 8 --repeats 3
+~~~
+
+The output directory must be new. Every repetition starts an independent process
+with a new, empty SPIR-V cache; no shader IR disk cache is introduced. The runner
+preserves compiler settings and records the inherited environment, full catalog,
+source/EXE/DLL SHA256 identities, raw logs, phases and Windows process memory
+peaks. It rejects cache hits, incomplete catalogs, compilation/read-back failures
+and changing inputs. OS filesystem caches are not flushed. Listing prepares
+generated material source before freezing inputs; the timed processes still
+perform their own complete catalog preparation.
+
+The default acceptance threshold is strictly below 10 seconds for **every**
+repetition. Valid measurements above the threshold have `status: passed` and
+`goal_reached: false`; the runner returns 1 until the goal is reached. A failed
+measurement also returns 1, with `status: failed` and a diagnostic in the report.
+Shader/pipeline creation and GPU dispatch performance remain separate scopes.
+
+The first 2026-10-13 Release/O1, debug-disabled, eight-worker iteration measured
+107.9 seconds of internal warmup time for 202 requests. Standard-library reuse,
+vertex-request sharing and early heavy-program scheduling measured 93.7 seconds
+for 187 requests. Deferred field reads and shared OpenPBR sparse-training
+requests then measured 81.2 seconds internally (81.478 seconds for the complete
+process), for 186 requests. All three used empty SPIR-V caches and reported zero
+existing hits/failures; these are single exploratory runs, not repeated timing
+distributions or evidence that the 10-second goal has been achieved. Local logs
+are under `.cache/SlangCompileGoal/` and remain outside source control.
+
+After refining the scheduling priorities, three fresh-process measurements of
+the same 186-request catalog took **82.388, 65.226 and 65.990 seconds** (median
+65.990). Every run had zero existing hits/failures and unchanged input SHA256
+identities. Peak working sets were 6.24-6.37 GiB, with 7.08-7.27 GiB peak private
+commit. OS filesystem caches were allowed to remain warm; the range is retained
+rather than dropping the slower run. The initial 107.9-second result is a single
+exploratory internal-timer baseline, not a matched repeated comparison against
+this complete-process distribution. The evidence runner correctly reports
+`status: passed`, `goal_reached: false`; the 10-second target remains open.
+The sealed input identities and raw logs are in
+`.cache/SlangCompileGoal/round3-jobs8/summary.json`.
+
+The request sharing preserves runtime coverage: editor vertex code does not
+consume fragment display macros, and OpenPBR `SHARC_UPDATE=1` Guides dispatches
+the ordinary sparse-training function without writing guides. Only an
+unambiguous single update definition is shared. The original Slang entrypoints
+remain registered. The two former training binaries have identical executable
+instructions after ID normalization, with only an `OpName` difference.
+
+Release validation passed 49 shader/request tests (one unavailable-build-only
+test skipped), 14 startup tests, 11 evidence-runner tests and the module audit.
+The full shader suite was stopped at its large CaptureSymbols/O1 compilation
+after exceeding the usual 300-second suite timeout; that path is not qualified
+by this release-only performance measurement. Five Vulkan-validation GPU checks
+passed: shadow history, async scene handoff, stream transmission, field views/
+bounds and optional-resource sentinels. The raster/ray shading-normal and
+ABeautifulGame FP16 checks failed with both the original and candidate shader
+sources. Their three saved PNGs were byte-identical across the source A/B;
+these pre-existing test failures were not reported as passes. The outputs were
+also visually inspected. Full-scene temporal/memory behavior and an ordinary
+paired GPU performance comparison remain outside this validation scope.
 
 ## Selection and shader debug modes
 

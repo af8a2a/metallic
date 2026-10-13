@@ -92,6 +92,19 @@ struct SceneShaderOptions {
 inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const SceneShaderOptions& options,
     std::span<const SlangMacroDefine> extraDefines = {})
 {
+    if (program == SceneShaderProgram::OpenPBRPathTraceGuides) {
+        const auto update = std::find_if(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+            return std::string_view(define.name) == "SHARC_UPDATE";
+        });
+        const auto updateCount = std::count_if(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+            return std::string_view(define.name) == "SHARC_UPDATE";
+        });
+        // Sparse training bypasses guide evaluation and calls the same path
+        // dispatcher. Preserve duplicate definitions for Slang to interpret.
+        if (updateCount == 1 && std::string_view(update->value) == "1") {
+            program = SceneShaderProgram::OpenPBRPathTrace;
+        }
+    }
     const bool deferred = program == SceneShaderProgram::Deferred || program == SceneShaderProgram::DeferredBinned;
     const auto identity = sceneShaderIdentity(program);
     ShaderRequest request{.module = identity.module, .entry = identity.entry,
@@ -150,6 +163,12 @@ inline ShaderRequest makeEditorDisplayShaderRequest(const char* entry, bool hdr,
     if (std::string_view(entry) == "editorOutputVertex" || std::string_view(entry) == "editorOutputPQFragment") {
         return {.module = "Features/PostProcess/EditorOutput", .entry = entry,
             .descriptorHeapMode = SlangDescriptorHeapMode::Native};
+    }
+    if (std::string_view(entry) == "editorDisplayVertex") {
+        // Display conversion only runs in the fragment entry. Share the vertex
+        // request across all display settings in runtime and startup warmup.
+        return {.module = "Features/PostProcess/EditorDisplay", .entry = entry,
+            .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
     }
     return {.module = "Features/PostProcess/EditorDisplay", .entry = entry,
         .defines = {{"DISPLAY_HDR", hdr ? "1" : "0"},

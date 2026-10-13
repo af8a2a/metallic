@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
@@ -26,7 +27,23 @@ namespace {
 struct CompileOutcome {
     bool cacheHit = false;
     std::string error;
+    ShaderCompileMetrics metrics;
 };
+
+int compilePriority(const metallic::tools::ShaderWarmupRequest& request)
+{
+    // Start expensive programs while every worker is available. Catalog order
+    // remains stable for listing and request identification.
+    if (request.module.starts_with("Features/PathTracing/") &&
+        request.module != "Features/PathTracing/SceneSharcMaintenance" &&
+        request.module != "Features/PathTracing/RayMaterialQueue") {
+        return request.module.find("OpenPBR") != std::string::npos ? 4 : 3;
+    }
+    if (request.module == "Features/VisibilityBuffer/VisibilityBufferDeferred") { return 2; }
+    if (request.module == "Features/Lighting/SceneRealtimeLighting") { return 3; }
+    if (request.module == "Features/ReSTIR/SceneRTXDI") { return 1; }
+    return 0;
+}
 
 CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& request,
     const std::string& cacheDirectory, DescriptorHeapShaderStrides strides)
@@ -53,7 +70,7 @@ CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& reques
             return {false, "cache read-back verification failed"};
         }
     }
-    return {existingCacheHit, {}};
+    return {existingCacheHit, {}, compiled->metrics};
 }
 
 int run(int argc, char** argv)
@@ -185,6 +202,9 @@ int run(int argc, char** argv)
     size_t selected = 0;
     size_t hits = 0;
     size_t failures = 0;
+    uint64_t compilerTimeNanoseconds = 0;
+    uint64_t moduleLoadTimeNanoseconds = 0;
+    uint64_t codeGenerationTimeNanoseconds = 0;
     const auto progress = [&](const char* status) {
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         std::cout << "[" << selected << '/' << totalRequests << " "
@@ -203,6 +223,11 @@ int run(int argc, char** argv)
         }
     } else {
         jobs = std::min(jobs, requests.size());
+        std::vector<size_t> executionOrder(requests.size());
+        std::iota(executionOrder.begin(), executionOrder.end(), size_t{0});
+        std::stable_sort(executionOrder.begin(), executionOrder.end(), [&](size_t left, size_t right) {
+            return compilePriority(requests[left]) > compilePriority(requests[right]);
+        });
         std::cout << "Shader warmup workers: " << jobs << std::endl;
         progress("Starting");
         std::atomic<size_t> nextRequest{0};
@@ -215,10 +240,11 @@ int run(int argc, char** argv)
             for (size_t worker = 0; worker < jobs; ++worker) {
                 workers.emplace_back([&] {
                     for (;;) {
-                        const size_t index = nextRequest.fetch_add(1, std::memory_order_relaxed);
-                        if (index >= requests.size()) {
+                        const size_t next = nextRequest.fetch_add(1, std::memory_order_relaxed);
+                        if (next >= executionOrder.size()) {
                             return;
                         }
+                        const size_t index = executionOrder[next];
                         const auto& request = requests[index];
                         const DescriptorHeapShaderStrides strides = nativeRequests[index] ? nativeStrides : DescriptorHeapShaderStrides{};
                         std::string name = request.module + "." + request.entry;
@@ -242,12 +268,21 @@ int run(int argc, char** argv)
                         std::scoped_lock lock(outputMutex);
                         ++selected;
                         hits += outcome.cacheHit ? 1 : 0;
+                        compilerTimeNanoseconds += outcome.metrics.totalTimeNanoseconds;
+                        moduleLoadTimeNanoseconds += outcome.metrics.moduleLoadTimeNanoseconds;
+                        codeGenerationTimeNanoseconds += outcome.metrics.codeGenerationTimeNanoseconds;
                         if (!outcome.error.empty()) {
                             ++failures;
                             std::cerr << name << ": " << outcome.error << '\n';
                         }
                         const std::string status = std::string(!outcome.error.empty() ? "Failed: " :
                             outcome.cacheHit ? "Cached: " : "Compiled: ") + name;
+                        std::cout << std::setprecision(3) << "  Request " << (index + 1) << " timing: total="
+                                  << double(outcome.metrics.totalTimeNanoseconds) / 1e9
+                                  << "s, setup=" << double(outcome.metrics.compilerSetupTimeNanoseconds) / 1e9
+                                  << "s, module=" << double(outcome.metrics.moduleLoadTimeNanoseconds) / 1e9
+                                  << "s, codegen=" << double(outcome.metrics.codeGenerationTimeNanoseconds) / 1e9
+                                  << "s" << std::endl;
                         progress(status.c_str());
                     }
                 });
@@ -257,6 +292,13 @@ int run(int argc, char** argv)
     std::cout << "Shader warmup: " << selected << " requests, " << hits
               << " existing cache hits, " << failures << " failures"
               << (listOnly ? " (list only)" : "") << '\n';
+    if (!listOnly) {
+        std::cout << std::setprecision(3) << "Shader warmup elapsed: "
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()
+                  << "s; summed request time: " << double(compilerTimeNanoseconds) / 1e9
+                  << "s (module=" << double(moduleLoadTimeNanoseconds) / 1e9
+                  << "s, codegen=" << double(codeGenerationTimeNanoseconds) / 1e9 << "s)\n";
+    }
     return failures == 0 ? 0 : 1;
 }
 

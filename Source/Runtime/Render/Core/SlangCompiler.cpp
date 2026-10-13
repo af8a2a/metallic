@@ -69,6 +69,14 @@ constexpr auto kShaderDependencyScanInterval = std::chrono::milliseconds(50);
 std::atomic<SlangShaderDebugMode> gSlangShaderDebugMode{SlangShaderDebugMode::Disabled};
 std::atomic<uint64_t> gSlangDescriptorHeapShaderStrides{0};
 
+Slang::ComPtr<slang::IGlobalSession>& threadSlangGlobalSession()
+{
+    // Global sessions retain the standard library, not request module IR. Slang
+    // requires separate global sessions for independent compiler threads.
+    thread_local Slang::ComPtr<slang::IGlobalSession> globalSession;
+    return globalSession;
+}
+
 struct ShaderDependencyStamp {
     bool exists = false;
     uintmax_t fileSize = 0;
@@ -1208,10 +1216,14 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         desc.moduleName, desc.entryPointName, static_cast<uint32_t>(debugMode),
         slangShaderOptimizationLevelName(*effectiveOptimization),
         slangShaderPostprocessModeName(*effectivePostprocess));
-    Slang::ComPtr<slang::IGlobalSession> globalSession;
-    if (SLANG_FAILED(slang::createGlobalSession(globalSession.writeRef())) || globalSession == nullptr) {
+    auto& globalSession = threadSlangGlobalSession();
+    if (globalSession == nullptr &&
+        (SLANG_FAILED(slang::createGlobalSession(globalSession.writeRef())) || globalSession == nullptr)) {
+        globalSession.setNull();
         return makeError(Error::Failure);
     }
+    double compilerSecondsBefore = 0, downstreamSecondsBefore = 0;
+    globalSession->getCompilerElapsedTime(&compilerSecondsBefore, &downstreamSecondsBefore);
 
     slang::TargetDesc targetDesc{};
     targetDesc.format = SLANG_SPIRV;
@@ -1476,7 +1488,13 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     metrics.codeGenerationTimeNanoseconds = elapsed(codeGenerationStart);
     double compilerSeconds = 0, downstreamSeconds = 0;
     globalSession->getCompilerElapsedTime(&compilerSeconds, &downstreamSeconds);
-    if (std::isfinite(compilerSeconds) && std::isfinite(downstreamSeconds) &&
+    // The SDK counters belong to the reused global session and are cumulative.
+    // Report only this request, including after an earlier compilation failed.
+    compilerSeconds -= compilerSecondsBefore;
+    downstreamSeconds -= downstreamSecondsBefore;
+    if (std::isfinite(compilerSecondsBefore) && std::isfinite(downstreamSecondsBefore) &&
+        std::isfinite(compilerSeconds) && std::isfinite(downstreamSeconds) &&
+        compilerSecondsBefore >= 0 && downstreamSecondsBefore >= 0 &&
         compilerSeconds >= 0 && downstreamSeconds >= 0 &&
         compilerSeconds < double(UINT64_MAX) / 1e9 && downstreamSeconds < double(UINT64_MAX) / 1e9) {
         metrics.compilerReportedTotalTimeNanoseconds = static_cast<uint64_t>(compilerSeconds * 1e9);

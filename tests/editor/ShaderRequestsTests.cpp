@@ -275,6 +275,101 @@ TEST_F(ShaderRequestCompileTest, DetailedCompilerProfilingPreservesBytecodeAndCa
     EXPECT_FALSE(requestedHit->metrics.compilerExecuted);
 }
 
+TEST_F(ShaderRequestCompileTest, ReusedCompilerKeepsSourceEditsAndMacroPermutationsFresh)
+{
+    const std::filesystem::path root = uniqueShaderCacheDirectory("compiler-reuse");
+    const auto implementation = root / "Modules/Reuse/Value.slang";
+    std::filesystem::create_directories(implementation.parent_path());
+    const auto write = [&](const std::filesystem::path& path, const char* source) {
+        std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+        stream << source;
+        return static_cast<bool>(stream);
+    };
+    ASSERT_TRUE(write(root / "CompilerReuseProbe.slang",
+        "module CompilerReuseProbe;\nimport CompilerReuseValues;\n"
+        "RWStructuredBuffer<uint> outputBuffer;\n"
+        "[shader(\"compute\")] [numthreads(1, 1, 1)]\n"
+        "void main() { outputBuffer[0] = compilerReuseValue(); }\n"));
+    ASSERT_TRUE(write(root / "Modules/CompilerReuseValues.slang",
+        "module CompilerReuseValues;\n__include \"Reuse/Value.slang\";\n"));
+    ASSERT_TRUE(write(implementation,
+        "implementing CompilerReuseValues;\n"
+        "#ifndef REUSE_SCALE\n#define REUSE_SCALE 2u\n#endif\n"
+        "public uint compilerReuseValue() { return REUSE_SCALE * 3u; }\n"));
+    const std::string sourceRoot = root.string();
+    SlangShaderDesc desc{.moduleName = "CompilerReuseProbe", .entryPointName = "main",
+        .searchPath = sourceRoot.c_str()};
+    const SlangShaderCacheOptions options{.enableDiskCache = false};
+    std::string diagnostics;
+    const auto baseline = compileSlangShaderToSpirv(desc, options, diagnostics);
+    ASSERT_TRUE(baseline) << diagnostics;
+
+    // A content-only edit must reach a fresh request session even though the
+    // thread's global compiler and the source file metadata are unchanged.
+    const auto originalTime = std::filesystem::last_write_time(implementation);
+    const auto originalSize = std::filesystem::file_size(implementation);
+    ASSERT_TRUE(write(implementation,
+        "implementing CompilerReuseValues;\n"
+        "#ifndef REUSE_SCALE\n#define REUSE_SCALE 2u\n#endif\n"
+        "public uint compilerReuseValue() { return REUSE_SCALE * 7u; }\n"));
+    ASSERT_EQ(std::filesystem::file_size(implementation), originalSize);
+    std::filesystem::last_write_time(implementation, originalTime);
+    const auto edited = compileSlangShaderToSpirv(desc, options, diagnostics);
+    ASSERT_TRUE(edited) << diagnostics;
+    EXPECT_NE(edited->spirv, baseline->spirv);
+    EXPECT_EQ(edited->dependencies, baseline->dependencies);
+
+    const SlangMacroDefine macro{"REUSE_SCALE", "3u"};
+    desc.macroDefines = {&macro, 1};
+    const auto variant = compileSlangShaderToSpirv(desc, options, diagnostics);
+    ASSERT_TRUE(variant) << diagnostics;
+    EXPECT_NE(variant->spirv, edited->spirv);
+    desc.macroDefines = {};
+    const auto restored = compileSlangShaderToSpirv(desc, options, diagnostics);
+    ASSERT_TRUE(restored) << diagnostics;
+    EXPECT_EQ(restored->spirv, edited->spirv);
+
+    ASSERT_TRUE(write(implementation,
+        "implementing CompilerReuseValues;\npublic uint compilerReuseValue() { return ; }\n"));
+    EXPECT_FALSE(compileSlangShaderToSpirv(desc, options, diagnostics));
+    EXPECT_FALSE(diagnostics.empty());
+    ASSERT_TRUE(write(implementation,
+        "implementing CompilerReuseValues;\npublic uint compilerReuseValue() { return 19u; }\n"));
+    const auto recovered = compileSlangShaderToSpirv(desc, options, diagnostics);
+    ASSERT_TRUE(recovered) << diagnostics;
+    EXPECT_NE(recovered->spirv, edited->spirv);
+}
+
+TEST_F(ShaderRequestCompileTest, ReusedCompilerReportsOnlyCurrentInvocationTiming)
+{
+    const auto request = optimizationProbe();
+    const ShaderRequestView source(request);
+    std::string diagnostics;
+    std::vector<uint32_t> expected;
+    bool timingAvailable = false;
+    for (size_t iteration = 0; iteration < 8; ++iteration) {
+        SCOPED_TRACE(iteration);
+        const auto compiled = compileSlangShaderToSpirv(source.desc(),
+            {.enableDiskCache = false}, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_TRUE(compiled->metrics.compilerExecuted);
+        EXPECT_FALSE(compiled->metrics.cacheHit);
+        if (iteration == 0) { expected = compiled->spirv; }
+        else { EXPECT_EQ(compiled->spirv, expected); }
+        const auto& metrics = compiled->metrics;
+        if (metrics.compilerReportedTimingAvailable) {
+            timingAvailable = true;
+            // SDK compiler time is contained in this call's measured wall time.
+            // Allow 1 ms for differences in the SDK's clock resolution.
+            EXPECT_LE(metrics.compilerReportedTotalTimeNanoseconds,
+                metrics.totalTimeNanoseconds + 1'000'000u);
+            EXPECT_LE(metrics.compilerReportedDownstreamTimeNanoseconds,
+                metrics.totalTimeNanoseconds + 1'000'000u);
+        }
+    }
+    if (!timingAvailable) { GTEST_SKIP() << "Slang SDK elapsed-time counters are unavailable"; }
+}
+
 TEST_F(ShaderRequestCompileTest, OptimizationOverrideDefaultsAndDebugInformationStayIndependent)
 {
     const auto request = optimizationProbe();
@@ -790,6 +885,88 @@ TEST(ShaderRequests, HDR10UsesDynamicResourcesOutsideImGuiABI)
         EXPECT_EQ(output.descriptorHeapMode, SlangDescriptorHeapMode::Native);
         // PQ encodes absolute scRGB nits; UI paper white is already composed.
         EXPECT_EQ(output, makeEditorDisplayShaderRequest(entry, false, true, true, "80.0"));
+    }
+}
+
+TEST(ShaderRequests, EditorDisplayVertexSharesAllFragmentDisplaySettings)
+{
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const auto vertex = makeEditorDisplayShaderRequest("editorDisplayVertex", false, false, false,
+        std::to_string(80.0f));
+    EXPECT_EQ(vertex.module, "Features/PostProcess/EditorDisplay");
+    EXPECT_EQ(vertex.descriptorHeapMode, SlangDescriptorHeapMode::Mapped);
+    EXPECT_TRUE(vertex.defines.empty());
+    EXPECT_EQ(std::count(catalog.begin(), catalog.end(), vertex), 1);
+    size_t fragmentCount = 0;
+    for (bool hdr : {false, true}) {
+        for (bool scRgb : {false, true}) {
+            for (bool sRGB : {false, true}) {
+                for (float white : {80.0f, 203.0f}) {
+                    const auto whiteNits = std::to_string(white);
+                    EXPECT_EQ(makeEditorDisplayShaderRequest("editorDisplayVertex", hdr, scRgb, sRGB, whiteNits), vertex);
+                    const auto fragment = makeEditorDisplayShaderRequest("editorDisplayFragment", hdr, scRgb, sRGB, whiteNits);
+                    EXPECT_EQ(fragment.defines, (std::vector<std::pair<std::string, std::string>>{
+                        {"DISPLAY_HDR", hdr ? "1" : "0"},
+                        {"DISPLAY_SCRGB_IMAGE", scRgb ? "1" : "0"},
+                        {"DISPLAY_SRGB_ATTACHMENT", sRGB ? "1" : "0"},
+                        {"DISPLAY_WHITE_NITS", whiteNits}}));
+                    EXPECT_EQ(std::count(catalog.begin(), catalog.end(), fragment), 1);
+                    ++fragmentCount;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
+        return request.module == "Features/PostProcess/EditorDisplay" && request.entry == "editorDisplayVertex";
+    }), 1);
+    EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
+        return request.module == "Features/PostProcess/EditorDisplay" && request.entry == "editorDisplayFragment";
+    }), fragmentCount);
+}
+
+TEST(ShaderRequests, OpenPBRGuideTrainingSharesThePathTraceRequest)
+{
+    const SlangMacroDefine update{"SHARC_UPDATE", "1"};
+    const auto options = standardSceneOptions();
+    const auto path = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, {&update, 1});
+    const auto guides = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, {&update, 1});
+    EXPECT_EQ(guides, path);
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    EXPECT_EQ(std::count(catalog.begin(), catalog.end(), path), 1);
+    EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options)));
+    const SlangMacroDefine query{"SHARC_QUERY", "1"};
+    EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, {&query, 1})));
+}
+
+TEST(ShaderRequests, OpenPBRGuideTrainingPreservesCustomOptionsAndDefineOrder)
+{
+    const SceneShaderOptions options{.customMaterials = true, .globalView = true, .hasRTXCR = true,
+        .materialInclude = "C:/MaterialPrograms", .rtxcrInclude = "C:/RTXCR"};
+    const SlangMacroDefine defines[]{{"BEFORE_UPDATE", "3"}, {"SHARC_UPDATE", "1"}, {"AFTER_UPDATE", "7"}};
+    const auto path = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, defines);
+    const auto guides = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+    EXPECT_EQ(guides, path);
+    ASSERT_GE(guides.defines.size(), 3u);
+    EXPECT_EQ((std::vector<std::pair<std::string, std::string>>(guides.defines.end() - 3, guides.defines.end())),
+        (std::vector<std::pair<std::string, std::string>>{{"BEFORE_UPDATE", "3"}, {"SHARC_UPDATE", "1"}, {"AFTER_UPDATE", "7"}}));
+}
+
+TEST(ShaderRequests, OpenPBRGuideTrainingOnlySharesAnUnambiguousUpdateDefine)
+{
+    const auto options = standardSceneOptions();
+    const auto ordinary = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options);
+    for (const char* value : {"0", "01", "true"}) {
+        const SlangMacroDefine update{"SHARC_UPDATE", value};
+        auto expected = ordinary;
+        expected.defines.emplace_back(update.name, update.value);
+        EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, {&update, 1}), expected);
+    }
+    for (const auto& values : {std::pair{"1", "0"}, std::pair{"0", "1"}, std::pair{"1", "1"}}) {
+        const SlangMacroDefine updates[]{{"SHARC_UPDATE", values.first}, {"SHARC_UPDATE", values.second}};
+        auto expected = ordinary;
+        expected.defines.emplace_back(updates[0].name, updates[0].value);
+        expected.defines.emplace_back(updates[1].name, updates[1].value);
+        EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, updates), expected);
     }
 }
 
