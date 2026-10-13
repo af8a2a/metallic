@@ -43,6 +43,7 @@ struct Options {
     std::string descriptorMode = "request", debugMode = "disabled";
     std::string mode = "serial", cacheLockScope = "metadata", recipeFile;
     std::string slangOptimization = "default", computeBackend = "pipeline", nativeBinaryCacheDirectory;
+    std::string spirvPostprocess = "default";
     uint32_t iterations = 3;
     uint32_t pipelineReplicas = 1;
     std::optional<uint32_t> pipelineWorkers;
@@ -144,6 +145,7 @@ Options parse(int argc, char** argv)
             else if (arg == "--descriptor-mode") { options.descriptorMode = value; }
             else if (arg == "--debug-mode") { options.debugMode = value; }
             else if (arg == "--slang-optimization") { options.slangOptimization = value; }
+            else if (arg == "--spirv-postprocess") { options.spirvPostprocess = value; }
             else if (arg == "--compute-backend") { options.computeBackend = value; options.explicitComputeBackend = true; }
             else if (arg == "--native-binary-cache-dir") { options.nativeBinaryCacheDirectory = value; }
             else { throw std::invalid_argument("Unknown argument: " + arg); }
@@ -193,6 +195,9 @@ Options parse(int argc, char** argv)
         options.slangOptimization != "O2" && options.slangOptimization != "O3") {
         throw std::invalid_argument("--slang-optimization requires default, O0, O1, O2 or O3");
     }
+    if (options.spirvPostprocess != "default" && options.spirvPostprocess != "none" && options.spirvPostprocess != "dead-branches") {
+        throw std::invalid_argument("--spirv-postprocess requires default, none or dead-branches");
+    }
     if (options.computeBackend != "pipeline" && options.computeBackend != "shader-object" && options.computeBackend != "pipeline-binary") {
         throw std::invalid_argument("--compute-backend requires pipeline, shader-object or pipeline-binary");
     }
@@ -212,6 +217,9 @@ Options parse(int argc, char** argv)
     if (!options.recipeFile.empty()) { options.pipelineWorkers = options.pipelineWorkers.value_or(1); }
     if (!options.recipeFile.empty() && options.slangOptimization != "default") {
         throw std::invalid_argument("Recipe replay uses captured SPIR-V; --slang-optimization requires a catalog request");
+    }
+    if (!options.recipeFile.empty() && options.spirvPostprocess != "default") {
+        throw std::invalid_argument("--recipe-file contains finalized bytecode and cannot change SPIR-V postprocessing");
     }
     return options;
 }
@@ -372,6 +380,9 @@ Json compilationMetricsJson(const ShaderCompileMetrics& metrics)
         {"link_ms", double(metrics.linkTimeNanoseconds) / 1e6},
         {"code_generation_ms", double(metrics.codeGenerationTimeNanoseconds) / 1e6},
         {"target_finalize_ms", double(metrics.targetFinalizeTimeNanoseconds) / 1e6},
+        {"postprocess_ms", double(metrics.postprocessTimeNanoseconds) / 1e6},
+        {"raw_spirv_bytes", metrics.rawSpirvByteSize},
+        {"output_spirv_bytes", metrics.outputSpirvByteSize},
         {"dependency_validation_ms", double(metrics.dependencyValidationTimeNanoseconds) / 1e6},
         {"cache_write_ms", double(metrics.cacheWriteTimeNanoseconds) / 1e6},
         {"compiler_reported_total_ms", double(metrics.compilerReportedTotalTimeNanoseconds) / 1e6},
@@ -618,6 +629,8 @@ int run(const Options& options)
             {"pipeline_cache_file", pipelineCache},
             {"descriptor_mode", options.descriptorMode}, {"debug_mode", options.debugMode},
             {"slang_optimization", options.slangOptimization},
+            {"spirv_postprocess", options.spirvPostprocess},
+            {"spirv_postprocess_tool_version", slangShaderPostprocessToolVersion()},
             {"slang_perf_diagnostics", options.slangPerfDiagnostics},
             {"requested_disable_driver_optimization", options.disableDriverOptimization},
             {"disable_driver_optimization", options.disableDriverOptimization || (recipe && recipe->disableOptimization)},
@@ -627,7 +640,7 @@ int run(const Options& options)
             {"cache_directory", cache.string()}, {"selected_requests", selected}}},
         {"scope", "Serial preparation and optional concurrent PSO creation; no dispatch or frame timing. Empty application caches do not guarantee cold driver/OS caches."}};
     for (const char* name : {"METALLIC_SLANG_DESCRIPTOR_MODE", "METALLIC_WORKING_COLOR_SPACE",
-        "METALLIC_VK_INTERNAL_PIPELINE_CACHE", "METALLIC_VK_LOG_PIPELINE_KEYS", "METALLIC_SLANG_OPTIMIZATION",
+        "METALLIC_VK_INTERNAL_PIPELINE_CACHE", "METALLIC_VK_LOG_PIPELINE_KEYS", "METALLIC_SLANG_OPTIMIZATION", "METALLIC_SPIRV_POSTPROCESS",
         "METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION", "METALLIC_VK_PIPELINE_BINARY",
         "METALLIC_VK_PIPELINE_STATISTICS", "METALLIC_VK_PIPELINE_EXECUTABLE_DIRECTORY"}) {
         const char* value = std::getenv(name);
@@ -831,6 +844,9 @@ int run(const Options& options)
                             {"entry", stage.entryPoint}, {"source_entry", stage.sourceEntryPoint},
                             {"debug_mode", stage.debugMode}, {"descriptor_mode", stage.descriptorHeapMode},
                             {"slang_optimization", stage.optimizationLevel},
+                            {"spirv_postprocess", stage.spirvPostprocess},
+                            {"spirv_postprocess_tool_version", stage.spirvPostprocessToolVersion},
+                            {"source_identity_ambiguous", stage.sourceIdentityAmbiguous},
                             {"spirv_bytes", stage.spirv.size() * sizeof(uint32_t)}, {"spirv_fnv1a64", hashSpirv(stage.spirv)},
                             {"spirv_statistics", spirvStatisticsJson(stage.spirv)}});
                         const auto moduleBegin = Clock::now();
@@ -848,6 +864,7 @@ int run(const Options& options)
                     if (!graphics) {
                         sample["spirv_statistics"] = spirvStatisticsJson(mainShader.spirv);
                         sample["effective_slang_optimization"] = mainShader.optimizationLevel;
+                        sample["effective_spirv_postprocess"] = mainShader.spirvPostprocess;
                         sample["spirv_fnv1a64"] = hashSpirv(mainShader.spirv);
                         sample.update(deviceShaderJson(*item.module));
                     }
@@ -872,6 +889,8 @@ int run(const Options& options)
             const ShaderRequestView view(request);
             auto source = view.desc();
             source.optimizationLevel = optimizationLevel(options.slangOptimization);
+            source.postprocessMode = options.spirvPostprocess == "none" ? SlangShaderPostprocessMode::None :
+                options.spirvPostprocess == "dead-branches" ? SlangShaderPostprocessMode::DeadBranches : SlangShaderPostprocessMode::Default;
             const bool native = slangUsesNativeDescriptorHeap(source);
             if (native && !nativeStrides.resource) {
                 std::string diagnostics;
@@ -883,6 +902,7 @@ int run(const Options& options)
                 {"resource_heap_stride", native ? nativeStrides.resource : 0},
                 {"sampler_heap_stride", native ? nativeStrides.sampler : 0}, {"status", "compiling"}});
             report["samples"].back()["effective_slang_optimization"] = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(source));
+            report["samples"].back()["effective_spirv_postprocess"] = slangShaderPostprocessModeName(slangShaderPostprocessMode(source));
             auto& sample = report["samples"].back();
             sample["pipeline_cache_preparation_wall_ms"] = 0.0;
             const uint32_t initialValidationErrors = validation.errors.load();
@@ -1032,7 +1052,8 @@ int main(int argc, char** argv)
             "  [--pipeline-workers N] (legacy alias for parallel-shared --workers N)\n"
             "  [--shader-cache disabled|reuse] [--pipeline-cache empty|reuse] [--cache-dir path]\n"
             "  [--descriptor-mode request|mapped|native] [--debug-mode disabled|capture|debug]\n"
-            "  [--slang-optimization default|O0|O1|O2|O3] [--disable-driver-optimization]\n"
+            "  [--slang-optimization default|O0|O1|O2|O3] [--spirv-postprocess default|none|dead-branches]\n"
+            "  [--disable-driver-optimization]\n"
             "  [--compute-backend pipeline|shader-object|pipeline-binary] [--native-binary-cache-dir path]\n"
             "Defaults: 3 iterations, disabled shader cache, empty pipeline cache, request descriptor mode, disabled debug.\n"
             "Explicit modes stage one batch per iteration. Recipe replay uses captured PSO state and SPIR-V.\n"

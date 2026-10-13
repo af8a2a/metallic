@@ -20,6 +20,8 @@ target_include_directories(MetallicShaderWarmupCore PUBLIC "${CMAKE_SOURCE_DIR}/
 find_package(Threads REQUIRED)
 target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads
     MetallicMaterialValueCompiler ${CMAKE_DL_LIBS})
+include("${CMAKE_SOURCE_DIR}/cmake/SetupSPIRVTools.cmake")
+metallic_configure_spirv_tools(MetallicShaderWarmupCore)
 # The stride query uses local Vulkan dispatch and only needs volk's headers.
 # Linking its implementation here can reorder volk after the Streamline import
 # library, whose Vulkan function exports collide with volk's global pointers.

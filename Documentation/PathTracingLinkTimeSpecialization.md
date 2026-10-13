@@ -9,6 +9,71 @@ dead-code elimination. This follows the
 [resource narrow-read experiment](PathTracingResourceNarrowReads.md). Production
 shader defaults, scene eligibility and compiler/session policy are unchanged.
 
+## Current owned-module recheck (2026-10-13)
+
+The experiment was rerun against the current module-owned shader layout,
+including `Modules/OpenPBRSurface.slang` and the owned
+`Modules/OpenPBRPathTracing/OpenPBRPathVertex.slang` implementation. The
+repaired overlay preserves public context methods, gates
+`materialDomain(transport)`, and declares the capability interface and all
+extern/export providers in `Metallic.SceneOpenPBR`. Each generated provider
+declares its own module. The preparation snapshots and redirects additional
+shader search roots as well as the project shader tree.
+
+Thirteen current-source O1 arms passed compilation and Vulkan 1.4 scalar-layout
+validation. Direct source compilation and serialized-module linking of the
+original both matched the fresh Bench reference byte-for-byte: 6,947,064 bytes,
+FNV `2d09e5ccab53bd72`, SHA-256
+`645602e7448196a055ccc8a5e7f33a42d22a8d1031a303d9e54e856cb299d270`.
+This is a new baseline; the 2026-10-12 input identities and measurements below
+remain historical evidence.
+
+| Current O1 arm | Bytes | Instructions | Basic blocks | Functions / calls |
+| --- | ---: | ---: | ---: | ---: |
+| Current production | 6,947,064 | 449,813 | 60,501 | 1 / 0 |
+| Static / constant / type, general | 6,947,188 | 449,824 | 60,504 | 1 / 0 |
+| Static / constant / type, no-fiber | 6,947,188 | 449,824 | 60,504 | 1 / 0 |
+| Static / constant / type, opaque-dielectric | 6,947,188 | 449,824 | 60,504 | 1 / 0 |
+
+For each of the three masks, static constants and link-time constants are
+identical raw bytes; concrete policy types and link-time types are also
+identical raw bytes. Constant and type outputs differ in their ID assignments,
+but become byte-identical under `spirv-opt --compact-ids`, which only renumbers
+IDs. All thirteen outputs contain 495 loop merges, zero Phi instructions and
+zero Vulkan specialization-constant instructions. The additional gate
+scaffold contributes eleven instructions and three blocks without eliminating
+the disabled bodies at O1.
+
+An independent instruction/operand comparison of the current compact-ID
+static outputs confirms successful provider resolution and retained control
+flow. General versus no-fiber differs in exactly one instruction: at zero-based
+instruction ordinal 82,491, `OpBranchConditional` changes its condition from
+`%318` (`OpConstantTrue`) to `%353` (`OpConstantFalse`), while its targets
+`%65375` and `%65376` remain identical. General versus opaque-dielectric
+differs in exactly 777 instructions: 699 `OpBranchConditional` condition
+operands and 78 `OpLogicalNot` input operands change from the true constant to
+the false constant. No opcode, instruction word count or branch target changes.
+Thus current O1 link-time constants/types do not remove more code than their
+matched static controls; choosing a narrower feature mask still leaves those
+resolved dead branches in the emitted program.
+
+Evidence: [current frozen preparation](../build-release/link-time-current-20261013/preparation/Preparation.json),
+[current compilation and baseline identity](../build-release/link-time-current-20261013/current-O1/summary.json),
+[validated byte/structure comparisons](../build-release/link-time-current-20261013/current-O1-analysis/Analysis.json)
+and [sealed operand comparison and input identities](../build-release/link-time-current-20261013/operand-analysis/OperandDifferences.json).
+The [read-only parser](../build-release/link-time-current-20261013/operand-analysis/InspectOperands.py)
+can reproduce the operand evidence with `--output-dir` pointing to a fresh
+directory, without altering either sealed input tree.
+These are single structural verification runs, not repeated compiler timing
+samples or rendering qualification. The Driver timings of 68.480, 58.157,
+53.203 and 36.927 seconds reported below use the older emitted inputs and
+must not be presented as current-module measurements. Current O2 elimination,
+compile-plus-create costs and GPU behavior need separate current-input evidence.
+The subsequent [current dead-branch qualification](ShaderDeadBranchCleanup.md)
+records separate uncached-compiler, Driver and GPU measurements, and an additive
+Slang optimizer probe emitting exactly the qualified cleanup bytes. Its Driver
+benefit is attributable to the late cleanup, not the link-time mechanism.
+
 Two effects must be distinguished: specializing a general shader for a smaller
 scene feature set, and supplying those same choices later through the linker.
 Only the second comparison can establish an advantage of link-time

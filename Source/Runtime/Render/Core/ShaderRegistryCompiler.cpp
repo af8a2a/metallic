@@ -71,12 +71,28 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
         identity.sourceEntryPoint = desc.entryPointName ? desc.entryPointName : "";
         identity.descriptorHeapMode = slangUsesNativeDescriptorHeap(desc) ? "native" : "mapped";
         identity.optimizationLevel = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(desc));
+        identity.spirvPostprocess = slangShaderPostprocessModeName(slangShaderPostprocessMode(desc));
+        if (slangShaderPostprocessMode(desc) == SlangShaderPostprocessMode::DeadBranches) {
+            identity.spirvPostprocessToolVersion = slangShaderPostprocessToolVersion();
+        }
         switch (slangShaderDebugMode()) {
         case SlangShaderDebugMode::Disabled: identity.debugMode = "release"; break;
         case SlangShaderDebugMode::ShaderDebug: identity.debugMode = "debug"; break;
         case SlangShaderDebugMode::CaptureSymbols: identity.debugMode = "capture"; break;
         }
-        sourceIdentities_.try_emplace(hash, std::move(identity));
+        auto [source, sourceInserted] = sourceIdentities_.try_emplace(hash, identity);
+        if (!sourceInserted) {
+            const auto& previous = source->second;
+            if (previous.moduleName != identity.moduleName ||
+                previous.sourceEntryPoint != identity.sourceEntryPoint ||
+                previous.descriptorHeapMode != identity.descriptorHeapMode ||
+                previous.optimizationLevel != identity.optimizationLevel ||
+                previous.debugMode != identity.debugMode ||
+                previous.spirvPostprocess != identity.spirvPostprocess ||
+                previous.spirvPostprocessToolVersion != identity.spirvPostprocessToolVersion) {
+                source->second.sourceIdentityAmbiguous = true;
+            }
+        }
     }
     return compiled;
 }

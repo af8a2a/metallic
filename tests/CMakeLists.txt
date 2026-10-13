@@ -45,7 +45,8 @@ add_test(NAME MetallicShaderWarmupStartupTests COMMAND MetallicShaderWarmupStart
 set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;shader" TIMEOUT 30)
 
 
-add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp editor/SPIRVStatisticsTests.cpp)
+add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp editor/SPIRVStatisticsTests.cpp
+    editor/ShaderPostprocessTests.cpp)
 target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source" "${CMAKE_SOURCE_DIR}")
 target_compile_definitions(MetallicShaderRequestsTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

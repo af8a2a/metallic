@@ -10,6 +10,8 @@ dispatch readback comparisons also require numpy.
 For exact SPIR-V CFG/callgraph analysis, opt-in Driver executable statistics,
 ISA availability checks and the measured shadow-only noinline feasibility
 experiment, see [Shader compilation complexity](ShaderCompilationComplexity.md).
+For the optional in-process two-pass SPIR-V cleanup, its cache/metrics contract
+and current rendering qualification, see [Dead-branch cleanup](ShaderDeadBranchCleanup.md).
 
 ## Native compilation
 
@@ -27,7 +29,7 @@ python -B Tools/Perf/RunComputePipelineExperiments.py compile `
   --output-dir build-release/bench-compute-optimization
 ```
 
-Each Slang optimization level first fills a private shader cache. Measured
+Each Slang optimization level and postprocess mode first fills a private shader cache. Measured
 processes must load those exact SPIR-V bytes; Slang compilation is excluded from
 native creation. Different levels may produce different bytecode. The native
 disable-optimization pair must retain the same input and final device SPIR-V,
@@ -165,6 +167,60 @@ The runner sets them before process launch and retains them in evidence. It
 clears inherited `METALLIC_*` controls and rejects injected Vulkan layers for
 ordinary measurements. The production default remains Slang O1 with normal
 pipeline optimization. Creation timing alone does not justify changing it.
+
+## Opt-in SPIR-V cleanup comparison
+
+Use the same current compute request, O1, mapped descriptors and normal Driver
+optimization to compare unchanged output with dead-branch cleanup. Replace `N`
+with the current Guides request selected from `--list`; use a fresh output
+directory. The cleanup is applied in process and requires the optional installed
+SPIRV-Tools-opt library. Requested cleanup fails when that library is unavailable
+or the request uses native descriptor heaps.
+
+```powershell
+python -B Tools/Perf/RunComputePipelineExperiments.py compile `
+  --executable .\build-release\Source\MetallicShaderPipelineBench.exe `
+  --request-index N --optimizations O1 --postprocesses none dead-branches `
+  --descriptor-mode mapped --backends pipeline --driver-optimization normal `
+  --pairs 3 --output-dir build-release/compute-cleanup-native-<fresh>
+```
+
+The runner sets `METALLIC_SPIRV_POSTPROCESS` explicitly for every arm and supplies
+`--spirv-postprocess` to the Benchmark. Its default is `--postprocesses none`.
+Original and transformed bytecode use distinct shader/native identity groups and
+cache fills; backend/Driver flag comparisons retain identical code within each
+Slang-level/postprocess group. Two cleanup conditions alternate AB, BA, AB
+between blocks. Prefill compilation and cleanup are excluded from measured
+native creation, with their per-call metrics retained separately.
+
+For a separate production execution comparison, retain the real graph/settings
+and capture its declared outputs:
+
+```powershell
+python -B Tools/Perf/RunComputePipelineExperiments.py dispatch `
+  --executable .\build-release\tests\MetallicRHITests.exe `
+  --cases build/compute-create-fixtures/Performance.json --case-id OpaquePerf `
+  --optimizations O1 --postprocesses none dead-branches `
+  --backends pipeline --driver-optimization normal `
+  --resolution 512 --warmup-frames 32 --timing-frames 64 --capture-graph-outputs `
+  --pairs 3 --output-dir build-release/compute-cleanup-dispatch-<fresh>
+```
+
+Use `--validation` in a distinct correctness batch. Runtime logs and captured
+recipe stages must confirm the requested cleanup policy and optimizer version;
+missing or conflicting confirmation fails verification. A transformation that
+passes readback tolerance is not necessarily byte-identical in HDR.
+
+The new `compilation_phases.postprocess_ms` includes input/output validation and
+the two cleanup passes after target finalization. `raw_spirv_bytes` records the
+original Slang blob only on compilation; zero on a cache hit means unavailable.
+`output_spirv_bytes` describes the returned code, including on cache hits, which
+have zero compilation/cleanup work. These are source SPIR-V sizes rather than
+Driver ISA. When assessing total uncached compilation, include cleanup along
+with Slang and pipeline loading/creation instead of reporting native time alone.
+The [cleanup report](ShaderDeadBranchCleanup.md) defines the exact measured
+scopes, identities and three-scene correctness limits. Production remains O1
+with `METALLIC_SPIRV_POSTPROCESS=none` (also the unset default).
 
 ## Evidence and validation
 

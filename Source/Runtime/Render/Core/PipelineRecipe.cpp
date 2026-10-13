@@ -113,6 +113,13 @@ void validateShader(const PipelineRecipeShader& shader)
     if (shader.inputSpirvHash && shader.inputSpirvHash != shaderHash(shader)) {
         throw std::runtime_error("recipe SPIR-V content hash mismatch");
     }
+    if (shader.spirvPostprocess != "none" && shader.spirvPostprocess != "dead-branches") {
+        throw std::runtime_error("invalid recipe SPIR-V postprocess policy");
+    }
+    if (shader.spirvPostprocess == "dead-branches" &&
+        (shader.spirvPostprocessToolVersion.empty() || shader.spirvPostprocessToolVersion == "unavailable")) {
+        throw std::runtime_error("recipe SPIR-V cleanup tool version is missing or unavailable");
+    }
 }
 
 void validateRecipe(const PipelineRecipe& recipe)
@@ -175,7 +182,9 @@ Json writeShader(const PipelineRecipeShader& shader, const std::filesystem::path
         {"input_spirv_hash", hash}, {"module_name", shader.moduleName},
         {"source_entry_point", shader.sourceEntryPoint}, {"entry_point", shader.entryPoint},
         {"debug_mode", shader.debugMode}, {"descriptor_heap_mode", shader.descriptorHeapMode},
-        {"slang_optimization", shader.optimizationLevel}};
+        {"slang_optimization", shader.optimizationLevel}, {"source_identity_ambiguous", shader.sourceIdentityAmbiguous},
+        {"spirv_postprocess", shader.spirvPostprocess},
+        {"spirv_postprocess_tool_version", shader.spirvPostprocessToolVersion}};
 }
 
 PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& directory)
@@ -207,6 +216,9 @@ PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& d
     shader.debugMode = json.at("debug_mode").get<std::string>();
     shader.descriptorHeapMode = json.at("descriptor_heap_mode").get<std::string>();
     shader.optimizationLevel = json.value("slang_optimization", std::string{});
+    shader.spirvPostprocess = json.value("spirv_postprocess", std::string{"none"});
+    shader.spirvPostprocessToolVersion = json.value("spirv_postprocess_tool_version", std::string{});
+    shader.sourceIdentityAmbiguous = json.value("source_identity_ambiguous", false);
     if (shader.inputSpirvHash != shaderHash(shader)) { throw std::runtime_error("recipe SPIR-V content hash mismatch"); }
     validateShader(shader);
     return shader;

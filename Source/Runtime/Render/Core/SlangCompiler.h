@@ -33,6 +33,14 @@ enum class SlangDescriptorHeapMode : uint8_t {
     Native,
 };
 
+enum class SlangShaderPostprocessMode : uint8_t {
+    // Uses METALLIC_SPIRV_POSTPROCESS when set; otherwise leaves emitted code unchanged.
+    Default,
+    None,
+    // Opt-in mapped-descriptor experiment: dead branches, then instruction simplification.
+    DeadBranches,
+};
+
 struct SlangMacroDefine {
     const char* name = nullptr;
     const char* value = "1";
@@ -56,6 +64,7 @@ struct SlangShaderDesc {
     DescriptorHeapShaderStrides descriptorHeapStrides;
     // Explicit levels override the process environment and the debug-mode default.
     SlangShaderOptimizationLevel optimizationLevel = SlangShaderOptimizationLevel::Default;
+    SlangShaderPostprocessMode postprocessMode = SlangShaderPostprocessMode::Default;
 };
 
 // Per-call wall-clock measurements. Compiler code generation includes Slang IR
@@ -73,6 +82,10 @@ struct ShaderCompileMetrics {
     uint64_t linkTimeNanoseconds = 0;
     uint64_t codeGenerationTimeNanoseconds = 0;
     uint64_t targetFinalizeTimeNanoseconds = 0;
+    uint64_t postprocessTimeNanoseconds = 0;
+    // Raw compiler bytes are unavailable on cache hits; output bytes describe the returned code.
+    uint64_t rawSpirvByteSize = 0;
+    uint64_t outputSpirvByteSize = 0;
     uint64_t dependencyValidationTimeNanoseconds = 0;
     uint64_t cacheWriteTimeNanoseconds = 0;
     uint64_t compilerReportedTotalTimeNanoseconds = 0;
@@ -107,6 +120,12 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept;
 // Configure METALLIC_SLANG_OPTIMIZATION before shader compilation begins.
 SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept;
 const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept;
+// Returns None or DeadBranches, or Default for an invalid request/environment.
+// Configure METALLIC_SPIRV_POSTPROCESS before shader compilation begins.
+SlangShaderPostprocessMode slangShaderPostprocessMode(const SlangShaderDesc& desc) noexcept;
+const char* slangShaderPostprocessModeName(SlangShaderPostprocessMode mode) noexcept;
+// Included in enabled-mode cache identity; "unavailable" when the optimizer was not built.
+const char* slangShaderPostprocessToolVersion() noexcept;
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept;
 
 // The selected Vulkan device publishes its heap ABI before runtime compilation.
