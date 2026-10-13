@@ -1,8 +1,12 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 
+#include <exception>
 #include <filesystem>
 #include <iomanip>
+#include <limits>
 #include <sstream>
+#include <string_view>
+#include <utility>
 
 namespace metallic::render {
 namespace {
@@ -39,12 +43,171 @@ std::string groupForSource(const char* moduleName)
     return group.str();
 }
 
+bool sameSourceIdentity(const PipelineRecipeShader& left, const PipelineRecipeShader& right)
+{
+    return left.moduleName == right.moduleName &&
+        left.sourceEntryPoint == right.sourceEntryPoint &&
+        left.entryPoint == right.entryPoint &&
+        left.descriptorHeapMode == right.descriptorHeapMode &&
+        left.optimizationLevel == right.optimizationLevel &&
+        left.debugMode == right.debugMode &&
+        left.spirvPostprocess == right.spirvPostprocess &&
+        left.spirvPostprocessToolVersion == right.spirvPostprocessToolVersion;
+}
+
+bool validIdentityString(const std::string& value)
+{
+    return !value.empty() && value.find('\0') == std::string::npos;
+}
+
+Result<> rejectArtifact(std::string& log, const char* reason)
+{
+    log += "[ShaderArtifactOverride] Rejected: ";
+    log += reason;
+    log += '\n';
+    return makeError(Error::InvalidArgument);
+}
+
+Result<> validateArtifact(const SlangShaderDesc& desc, ShaderArtifactOverrideResult& artifact, std::string& log)
+{
+    auto& identity = artifact.identity;
+    const auto& words = artifact.shader.spirv;
+    if (!desc.moduleName || !desc.moduleName[0] || !desc.entryPointName || !desc.entryPointName[0] ||
+        !desc.searchPath || !desc.searchPath[0]) {
+        return rejectArtifact(log, "the target source request is incomplete");
+    }
+    if (desc.descriptorHeapMode != SlangDescriptorHeapMode::Default &&
+        desc.descriptorHeapMode != SlangDescriptorHeapMode::Mapped &&
+        desc.descriptorHeapMode != SlangDescriptorHeapMode::Native) {
+        return rejectArtifact(log, "the target descriptor mode is invalid");
+    }
+    if (slangUsesNativeDescriptorHeap(desc) || identity.descriptorHeapMode != "mapped") {
+        return rejectArtifact(log, "artifact overrides currently require mapped descriptors");
+    }
+    if (!validIdentityString(identity.moduleName) || !validIdentityString(identity.sourceEntryPoint) ||
+        identity.sourceEntryPoint != desc.entryPointName || !validIdentityString(identity.entryPoint) ||
+        (identity.optimizationLevel != "O0" && identity.optimizationLevel != "O1" &&
+            identity.optimizationLevel != "O2" && identity.optimizationLevel != "O3") ||
+        (identity.debugMode != "release" && identity.debugMode != "debug" && identity.debugMode != "capture")) {
+        return rejectArtifact(log, "actual artifact source, entry point or compiler provenance is missing or invalid");
+    }
+    if (identity.spirvPostprocess != "none" && identity.spirvPostprocess != "dead-branches" &&
+        identity.spirvPostprocess != "slang-dead-branches") {
+        return rejectArtifact(log, "the actual artifact postprocess policy is invalid");
+    }
+    if (identity.spirvPostprocessToolVersion.find('\0') != std::string::npos ||
+        (identity.spirvPostprocess != "none" &&
+            (!validIdentityString(identity.spirvPostprocessToolVersion) || identity.spirvPostprocessToolVersion == "unavailable"))) {
+        return rejectArtifact(log, "actual artifact cleanup tool provenance is missing or invalid");
+    }
+    if (words.size() < 5 || words[0] != 0x07230203u ||
+        words[1] < 0x00010000u || words[1] > 0x00010600u || (words[1] & 0xff0000ffu) ||
+        !words[3] || words[4]) {
+        return rejectArtifact(log, "the artifact SPIR-V header is invalid");
+    }
+    size_t entryPointMatches = 0;
+    for (size_t offset = 5; offset < words.size();) {
+        const size_t count = words[offset] >> 16;
+        const uint32_t opcode = words[offset] & 0xffffu;
+        if (!count || count > words.size() - offset) {
+            return rejectArtifact(log, "the artifact SPIR-V instruction bounds are invalid");
+        }
+        if (opcode == 15u) { // OpEntryPoint: model, ID, packed name, interface IDs.
+            if (count < 4) { return rejectArtifact(log, "the artifact SPIR-V entry declaration is invalid"); }
+            std::string entryPoint;
+            bool terminated = false;
+            for (size_t index = offset + 3; index < offset + count && !terminated; ++index) {
+                for (uint32_t byte = 0; byte < 4; ++byte) {
+                    const char character = static_cast<char>((words[index] >> (byte * 8)) & 0xffu);
+                    if (!character) { terminated = true; break; }
+                    entryPoint.push_back(character);
+                }
+            }
+            if (!terminated) { return rejectArtifact(log, "the artifact SPIR-V entry name is unterminated"); }
+            if (entryPoint == identity.entryPoint) { ++entryPointMatches; }
+        }
+        offset += count;
+    }
+    if (entryPointMatches != 1) {
+        return rejectArtifact(log, "the actual artifact entry point is missing or ambiguous in SPIR-V");
+    }
+    const auto hash = hashBytes(14695981039346656037ull, words.data(), words.size() * sizeof(uint32_t));
+    if ((identity.inputSpirvHash && identity.inputSpirvHash != hash) ||
+        (!identity.spirv.empty() && identity.spirv != words)) {
+        return rejectArtifact(log, "artifact recipe identity does not match the returned SPIR-V");
+    }
+    identity.inputSpirvHash = hash;
+    // Recipe capture obtains the live input words from its ShaderModule call;
+    // the process source-identity map need not retain another large blob.
+    std::vector<uint32_t>().swap(identity.spirv);
+    return {};
+}
+
 } // namespace
 
 ShaderRegistry& ShaderRegistry::instance()
 {
     static ShaderRegistry registry;
     return registry;
+}
+
+ShaderArtifactOverrideScope::ShaderArtifactOverrideScope(ShaderRegistry* registry, uint64_t installation) noexcept
+    : registry_(registry), installation_(installation)
+{
+}
+
+ShaderArtifactOverrideScope::~ShaderArtifactOverrideScope()
+{
+    reset();
+}
+
+ShaderArtifactOverrideScope::ShaderArtifactOverrideScope(ShaderArtifactOverrideScope&& other) noexcept
+    : registry_(std::exchange(other.registry_, nullptr)), installation_(std::exchange(other.installation_, 0))
+{
+}
+
+ShaderArtifactOverrideScope& ShaderArtifactOverrideScope::operator=(ShaderArtifactOverrideScope&& other) noexcept
+{
+    if (this != &other) {
+        reset();
+        registry_ = std::exchange(other.registry_, nullptr);
+        installation_ = std::exchange(other.installation_, 0);
+    }
+    return *this;
+}
+
+void ShaderArtifactOverrideScope::reset() noexcept
+{
+    auto* registry = std::exchange(registry_, nullptr);
+    const auto installation = std::exchange(installation_, 0);
+    if (registry) { registry->removeArtifactOverride(installation); }
+}
+
+Result<ShaderArtifactOverrideScope> ShaderRegistry::installArtifactOverrideForTesting(
+    std::shared_ptr<ShaderArtifactOverride> artifactOverride)
+{
+    if (!artifactOverride) { return makeError(Error::InvalidArgument); }
+    std::lock_guard lock(sourceMutex_);
+    if (artifactOverride_) { return makeError(Error::InvalidArgument); }
+    if (nextArtifactOverrideInstallation_ == std::numeric_limits<uint64_t>::max()) {
+        return makeError(Error::Failure);
+    }
+    artifactOverride_ = std::move(artifactOverride);
+    artifactOverrideInstallation_ = ++nextArtifactOverrideInstallation_;
+    return ShaderArtifactOverrideScope(this, artifactOverrideInstallation_);
+}
+
+void ShaderRegistry::removeArtifactOverride(uint64_t installation) noexcept
+{
+    std::shared_ptr<ShaderArtifactOverride> removed;
+    {
+        std::lock_guard lock(sourceMutex_);
+        if (artifactOverrideInstallation_ != installation) { return; }
+        removed = std::move(artifactOverride_);
+        artifactOverrideInstallation_ = 0;
+    }
+    // A loader destructor can release test state that reenters the registry.
+    // Its final shared reference is released after unlocking, like callbacks.
 }
 
 Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& desc, std::string& log)
@@ -55,6 +218,57 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
 Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& desc,
     const SlangShaderCacheOptions& options, std::string& log)
 {
+    std::shared_ptr<ShaderArtifactOverride> artifactOverride;
+    {
+        std::lock_guard lock(sourceMutex_);
+        artifactOverride = artifactOverride_;
+    }
+    if (artifactOverride) {
+        log.clear();
+        std::optional<Result<ShaderArtifactOverrideResult>> resolved;
+        try {
+            resolved = artifactOverride->resolve(desc, log);
+        } catch (const std::exception& error) {
+            if (options.outCacheHit) { *options.outCacheHit = false; }
+            log += std::string("[ShaderArtifactOverride] Resolve failed: ") + error.what() + '\n';
+            return makeError(Error::Failure);
+        } catch (...) {
+            if (options.outCacheHit) { *options.outCacheHit = false; }
+            log += "[ShaderArtifactOverride] Resolve failed with an unknown exception\n";
+            return makeError(Error::Failure);
+        }
+        if (resolved) {
+            if (options.outCacheHit) { *options.outCacheHit = false; }
+            if (!*resolved) {
+                if (log.empty()) { log = "[ShaderArtifactOverride] The artifact source rejected this request\n"; }
+                return makeError(resolved->error());
+            }
+            auto artifact = std::move(**resolved);
+            auto valid = validateArtifact(desc, artifact, log);
+            if (!valid) { return makeError(valid.error()); }
+            auto& shader = artifact.shader;
+            shader.metrics = {};
+            const uint64_t size = shader.spirv.size() * sizeof(uint32_t);
+            shader.metrics.outputSpirvByteSize = size;
+            auto hash = hashBytes(14695981039346656037ull, &size, sizeof(size));
+            hash = hashBytes(hash, shader.spirv.data(), size_t(size));
+            {
+                std::lock_guard lock(sourceMutex_);
+                const std::string group = groupForSource(desc.moduleName);
+                auto [groupEntry, inserted] = sourceGroups_.try_emplace(hash, group);
+                if (!inserted && group < groupEntry->second) { groupEntry->second = group; }
+                const auto previous = sourceIdentities_.find(hash);
+                if (previous != sourceIdentities_.end()) {
+                    artifact.identity.sourceIdentityAmbiguous = artifact.identity.sourceIdentityAmbiguous ||
+                        previous->second.sourceIdentityAmbiguous || !sameSourceIdentity(previous->second, artifact.identity);
+                }
+                // An explicitly supplied artifact is the current capture
+                // candidate. Retain ambiguity if these bytes had other producers.
+                sourceIdentities_.insert_or_assign(hash, std::move(artifact.identity));
+            }
+            return std::move(shader);
+        }
+    }
     auto compiled = compileSlangShaderToSpirv(desc, options, log);
     if (compiled) {
         // Input byte-content identity. Module creation associates the final

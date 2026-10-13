@@ -4,7 +4,9 @@
 #include "Runtime/Render/Core/PipelineRecipe.h"
 #include "Runtime/Render/Core/NativePipelineCache.h"
 
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 
 namespace metallic::render {
@@ -16,6 +18,43 @@ struct ShaderRegistryCacheStats {
 
 class ComputeKernel;
 struct ComputeKernelDesc;
+class ShaderRegistry;
+
+struct ShaderArtifactOverrideResult {
+    ShaderCompileResult shader;
+    // moduleName identifies the actual artifact producer, not the requested
+    // production module. Full request/SHA/validation evidence belongs to the
+    // test loader. Empty spirv is allowed; supplied words must match shader.
+    PipelineRecipeShader identity;
+};
+
+class ShaderArtifactOverride {
+public:
+    virtual ~ShaderArtifactOverride() = default;
+    // nullopt leaves a non-target request on the ordinary compiler path. An
+    // engaged error or exception rejects a target without compiling fallback.
+    // Implementations own immutable bytes and synchronize concurrent resolves.
+    [[nodiscard]] virtual std::optional<Result<ShaderArtifactOverrideResult>> resolve(
+        const SlangShaderDesc& desc, std::string& log) = 0;
+};
+
+class ShaderArtifactOverrideScope {
+public:
+    ShaderArtifactOverrideScope() = default;
+    ~ShaderArtifactOverrideScope();
+    ShaderArtifactOverrideScope(const ShaderArtifactOverrideScope&) = delete;
+    ShaderArtifactOverrideScope& operator=(const ShaderArtifactOverrideScope&) = delete;
+    ShaderArtifactOverrideScope(ShaderArtifactOverrideScope&& other) noexcept;
+    ShaderArtifactOverrideScope& operator=(ShaderArtifactOverrideScope&& other) noexcept;
+    void reset() noexcept;
+    [[nodiscard]] explicit operator bool() const noexcept { return registry_ != nullptr; }
+
+private:
+    friend class ShaderRegistry;
+    ShaderArtifactOverrideScope(ShaderRegistry* registry, uint64_t installation) noexcept;
+    ShaderRegistry* registry_ = nullptr;
+    uint64_t installation_ = 0;
+};
 
 // The process singleton owns source identities only. Native cache state belongs
 // to Device::sharedState and is released before that device's native teardown.
@@ -25,11 +64,17 @@ public:
     ShaderRegistry(const ShaderRegistry&) = delete;
     ShaderRegistry& operator=(const ShaderRegistry&) = delete;
 
-    // Always validates dependencies through Slang's existing disk-cache path;
+    // Ordinary requests validate dependencies through Slang's disk-cache path;
     // unchanged/precompiled code is reused, missing or stale code is compiled.
     [[nodiscard]] Result<ShaderCompileResult> getShader(const SlangShaderDesc& desc, std::string& log);
     [[nodiscard]] Result<ShaderCompileResult> getShader(const SlangShaderDesc& desc,
         const SlangShaderCacheOptions& options, std::string& log);
+    // Opt-in tests only. At most one scope can be installed. Resolve callbacks
+    // run outside the registry lock and remain alive for in-flight requests
+    // after scope removal. Handled requests never read/write Slang's cache or
+    // report compiler execution/cache hits, even when the loader supplied them.
+    [[nodiscard]] Result<ShaderArtifactOverrideScope> installArtifactOverrideForTesting(
+        std::shared_ptr<ShaderArtifactOverride> artifactOverride);
     [[nodiscard]] Result<std::unique_ptr<ShaderModule>> getShaderModule(Device& device, const ShaderModuleDesc& desc);
     // Resolve source, acquire its PSO and publish only a successful generation.
     // layout.spirv is replaced by the requested source's code.
@@ -60,13 +105,18 @@ public:
     [[nodiscard]] Result<> flushPipelineCaches(Device& device);
 
 private:
+    friend class ShaderArtifactOverrideScope;
     ShaderRegistry() = default;
+    void removeArtifactOverride(uint64_t installation) noexcept;
     std::string cacheGroup(uint64_t shaderHash);
     void registerShaderModule(std::span<const uint32_t> spirv, uint64_t deviceShaderHash);
     PipelineRecipeShader recipeShader(std::span<const uint32_t> spirv);
     std::mutex sourceMutex_;
     std::unordered_map<uint64_t, std::string> sourceGroups_;
     std::unordered_map<uint64_t, PipelineRecipeShader> sourceIdentities_;
+    std::shared_ptr<ShaderArtifactOverride> artifactOverride_;
+    uint64_t artifactOverrideInstallation_ = 0;
+    uint64_t nextArtifactOverrideInstallation_ = 0;
 };
 
 } // namespace metallic::render

@@ -378,10 +378,13 @@ measurements depend only on the sealed emitted bytes. The
 records that limit; future preparations snapshot and redirect every additional
 include root as well.
 
-The transformed and specialized shaders have **not** been qualified by
-rendering HDR/guides or timing GPU dispatch. The graph harness currently has
-no independent precompiled-SPIR-V substitution path. Production defaults
-remain unchanged pending that qualification.
+The transformed boolean-policy shaders in this batch have **not** been
+qualified by rendering HDR/guides or timing GPU dispatch. At the time of that
+batch the graph harness had no independent precompiled-SPIR-V substitution
+path. The separate material-backend follow-up below now adds that path and
+qualifies its five coarse-Type artifacts in fixed scenes. That qualification
+does not cover the boolean-policy artifacts here. Production defaults remain
+unchanged.
 
 ### Pinned support probes
 
@@ -485,7 +488,17 @@ focused link-time evidence tests. The final check verified seven evidence
 manifests, all twelve recipe/device matches, and local report links.
 No C++ runtime or production shader changed in this experiment.
 
-## Proposed implementation-selection Type: unmeasured
+## Implementation-selection Type: proposal and measured follow-up
+
+The [material-backend follow-up](PathTracingMaterialBackendExperiment.md)
+implements this coarse boundary in frozen harness overlays and compiles all
+five matched arms. It records actual O1 structure, compiler phases and uniform
+cleanup results and three paired native-creation measurements. Those results
+supersede this section's initial unmeasured status. Exact artifact rendering
+now qualifies all five coarse-Type outputs in three fixed SHARC-off,
+CUSTOM_MATERIALS=0 scenes, including complete loaded-material No-Fiber checks;
+HDR, temporal frames and guides are numerically identical. Dynamic material
+changes, other permutations and production scene eligibility are not covered.
 
 The current module-based 2026-10-13 repeat still shows the same limitation.
 The [current O1 comparison](../build-release/link-time-current-20261013/current-O1-analysis/Analysis.json)
@@ -571,5 +584,5 @@ operations, CFG size, storage-class variables and finalized SPIR-V after the
 same cleanup. Compile/module-reuse cost, cold Driver creation and GPU dispatch
 remain separate scopes. Requalify HDR, seven guide outputs, moving-camera
 captures and material/RNG/feedback behavior. Only a scene-wide eligibility proof
-plus these checks could justify using the narrower backend; none of these
-proposed arms has been compiled or measured yet.
+plus these checks could justify using the narrower backend. The linked follow-up
+records the compiled arms and keeps these remaining deployment gates explicit.

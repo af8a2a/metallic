@@ -46,7 +46,7 @@ set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;
 
 
 add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp editor/SPIRVStatisticsTests.cpp
-    editor/ShaderPostprocessTests.cpp)
+    editor/ShaderPostprocessTests.cpp editor/ShaderArtifactOverrideTests.cpp)
 target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source" "${CMAKE_SOURCE_DIR}")
 target_compile_definitions(MetallicShaderRequestsTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -753,6 +753,18 @@ set_tests_properties(MetallicShaderPrintfTests PROPERTIES LABELS "rhi;shader-pri
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicPathTraceBackendNativeEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackendNative.py")
+    set_tests_properties(MetallicPathTraceBackendNativeEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicPathTraceBackendDispatchEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackendDispatch.py")
+    set_tests_properties(MetallicPathTraceBackendDispatchEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicPathTraceBackendRenderingEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackendRendering.py")
+    set_tests_properties(MetallicPathTraceBackendRenderingEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 30)
+    add_test(NAME MetallicPathTraceBackendEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackend.py")
+    set_tests_properties(MetallicPathTraceBackendEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
     add_test(NAME MetallicShaderPostprocessEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestMeasureShaderPostprocess.py")
     set_tests_properties(MetallicShaderPostprocessEvidenceTests PROPERTIES LABELS "shader;perf;cpu")
