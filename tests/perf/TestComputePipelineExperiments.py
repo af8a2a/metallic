@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "Tools/Perf"))
 import RunComputePipelineExperiments as experiment
 
@@ -64,6 +65,67 @@ class NativeExperimentTests(unittest.TestCase):
         for modes in (["none", "none"], ["dead-branches", "dead-branches"], ["unknown"]):
             with self.subTest(modes=modes), self.assertRaises(ValueError):
                 experiment.arms(["O1"], ["pipeline"], "normal", modes)
+
+    def test_slang_cleanup_is_a_distinct_arm_cache_identity_and_explicit_condition(self):
+        conditions = experiment.arms(["O1"], ["pipeline"], "normal", experiment.POSTPROCESSES)
+        self.assertEqual([arm["name"] for arm in conditions],
+                         ["O1-pipeline-normal", "O1-pipeline-normal-dead-branches",
+                          "O1-pipeline-normal-slang-dead-branches"])
+        self.assertEqual([experiment.shader_condition_key(arm) for arm in conditions],
+                         ["O1", "O1:dead-branches", "O1:slang-dead-branches"])
+        for arm in conditions:
+            environment = experiment.environment_for(arm, {"METALLIC_SPIRV_POSTPROCESS": "inherited"})
+            self.assertEqual(environment["METALLIC_SPIRV_POSTPROCESS"], arm["postprocess"])
+            command = experiment.native_command(["bench"], arm, Path("output"))
+            self.assertEqual(command[command.index("--spirv-postprocess") + 1], arm["postprocess"])
+        with self.assertRaises(ValueError):
+            experiment.arms(["O1"], ["pipeline"], "normal", ["slang-dead-branches", "slang-dead-branches"])
+
+    def test_both_cleanup_modes_require_mapped_descriptors_before_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "bench.exe"
+            executable.write_bytes(b"fixture only")
+            for mode in experiment.POSTPROCESSES[1:]:
+                args = SimpleNamespace(executable=executable, optimizations=["O1"], postprocesses=[mode],
+                    backends=["pipeline"], driver_optimization="normal", descriptor_mode="native")
+                with self.subTest(mode=mode), patch.object(experiment.driver, "run_process") as process:
+                    with self.assertRaisesRegex(ValueError, "mapped"):
+                        experiment.compile_experiment(args, root / mode, {})
+                    process.assert_not_called()
+
+    def test_slang_cleanup_requires_its_own_tool_identity_and_validated_cache_metrics(self):
+        report = native_fixture()
+        sample = report["samples"][0]
+        mode = "slang-dead-branches"
+        arm, = experiment.arms(["O1"], ["pipeline"], "normal", [mode])
+        report["configuration"].update(spirv_postprocess=mode,
+            spirv_postprocess_tool_version="Slang fixture; SPIRV-Tools validator fixture")
+        sample.update(effective_spirv_postprocess=mode, compilation_phases=dict(
+            postprocess_ms=0., raw_spirv_bytes=0, output_spirv_bytes=512, cache_hit=True, compiler_executed=False))
+        identity = experiment.shader_identity(report, sample)
+        experiment.verify_native(report, identity, arm)
+        mutations = (
+            lambda r: r["configuration"].pop("spirv_postprocess_tool_version"),
+            lambda r: r["configuration"].update(spirv_postprocess_tool_version="unavailable"),
+            lambda r: r["configuration"].update(spirv_postprocess_tool_version="different Slang/validator"),
+            lambda r: r["configuration"].update(spirv_postprocess="dead-branches"),
+            lambda r: r["samples"][0].update(effective_spirv_postprocess="dead-branches"),
+            lambda r: r["samples"][0].update(effective_descriptor_mode="native"),
+            lambda r: r["samples"][0]["compilation_phases"].update(postprocess_ms=.01),
+            lambda r: r["samples"][0]["compilation_phases"].update(raw_spirv_bytes=512),
+            lambda r: r["samples"][0]["compilation_phases"].update(compiler_executed=True),
+            lambda r: r["samples"][0]["compilation_phases"].update(cache_hit=False))
+        for mutation in mutations:
+            changed = copy.deepcopy(report)
+            mutation(changed)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                experiment.verify_native(changed, identity, arm)
+        # On misses this count is Slang's optimized blob, not the unoptimized input.
+        sample["shader_cache_hit"] = False
+        sample["compilation_phases"].update(postprocess_ms=.01, raw_spirv_bytes=512,
+            output_spirv_bytes=512, cache_hit=False, compiler_executed=True)
+        experiment.postprocess_policy(report, sample, mode)
 
     def test_postprocess_requires_confirmed_requested_effective_policy_and_tool_version(self):
         report = native_fixture()
@@ -140,19 +202,21 @@ class NativeExperimentTests(unittest.TestCase):
                 report["configuration"].update(compile_only=compiled_only, spirv_postprocess=mode,
                     spirv_postprocess_tool_version="fixture")
                 report["environment"] = environment
-                sample.update(dependencies=[str(source)], spirv_fnv1a64=mode + "-source", spirv_bytes=output_bytes,
+                bytecode = "unchanged" if mode == "none" else "cleaned"
+                sample.update(dependencies=[str(source)], spirv_fnv1a64=bytecode + "-source", spirv_bytes=output_bytes,
                     effective_spirv_postprocess=mode, shader_cache_hit=not compiled_only,
-                    device_spirv_bytes=output_bytes, device_spirv_fnv1a64=mode + "-device",
-                    device_spirv_statistics=sample["spirv_statistics"], device_shader_content_hash=mode + "-content",
+                    device_spirv_bytes=output_bytes, device_spirv_fnv1a64=bytecode + "-device",
+                    device_spirv_statistics=sample["spirv_statistics"], device_shader_content_hash=bytecode + "-content",
                     compilation_phases=dict(postprocess_ms=.2 if compiled_only and mode != "none" else 0.,
-                        raw_spirv_bytes=512 if compiled_only else 0, output_spirv_bytes=output_bytes,
+                        raw_spirv_bytes=(256 if mode == "slang-dead-branches" else 512) if compiled_only else 0,
+                        output_spirv_bytes=output_bytes,
                         cache_hit=not compiled_only, compiler_executed=compiled_only))
                 if compiled_only:
                     sample["pipeline_status"] = "compile_only"
                 experiment.save(destination / "report.json", report)
                 return dict(exit_code=0, timed_out=False), report
 
-            args = SimpleNamespace(executable=executable, optimizations=["O1"], postprocesses=["none", "dead-branches"],
+            args = SimpleNamespace(executable=executable, optimizations=["O1"], postprocesses=list(experiment.POSTPROCESSES),
                 backends=["pipeline"], driver_optimization="normal", native_binary_cache=False,
                 descriptor_mode="mapped", validation=False, pairs=2, request_index=146, timeout=10)
             output = root / "evidence"
@@ -161,14 +225,20 @@ class NativeExperimentTests(unittest.TestCase):
             with patch.object(experiment, "input_identity", return_value=experiment.snapshots([source, executable])), \
                  patch.object(experiment.driver, "run_process", side_effect=process):
                 experiment.compile_experiment(args, output, summary)
-            self.assertEqual(calls[:2], [("none", True), ("dead-branches", True)])
-            self.assertEqual(len(calls), 6)
-            self.assertEqual(set(summary["shaders"]), {"O1", "O1:dead-branches"})
-            self.assertEqual(set(summary["device_shaders"]), {"O1", "O1:dead-branches"})
+            self.assertEqual(calls[:3], [("none", True), ("dead-branches", True), ("slang-dead-branches", True)])
+            self.assertEqual(len(calls), 9)
+            self.assertEqual(set(summary["shaders"]), {"O1", "O1:dead-branches", "O1:slang-dead-branches"})
+            self.assertEqual(set(summary["device_shaders"]), {"O1", "O1:dead-branches", "O1:slang-dead-branches"})
             self.assertNotEqual(summary["shaders"]["O1"]["spirv_fnv1a64"],
                                 summary["shaders"]["O1:dead-branches"]["spirv_fnv1a64"])
+            self.assertEqual(summary["shaders"]["O1:dead-branches"]["spirv_fnv1a64"],
+                             summary["shaders"]["O1:slang-dead-branches"]["spirv_fnv1a64"])
+            self.assertNotEqual(summary["shaders"]["O1:dead-branches"],
+                                summary["shaders"]["O1:slang-dead-branches"])
             self.assertTrue((output / "prefill-O1").is_dir())
             self.assertTrue((output / "prefill-O1-dead-branches").is_dir())
+            self.assertTrue((output / "prefill-O1-slang-dead-branches").is_dir())
+            self.assertTrue(any("already-optimized blob" in note for note in summary["caveats"]))
             experiment.save(output / "summary.json", summary)
             experiment.seal(output)
             experiment.verify(output)
@@ -459,50 +529,53 @@ class ProductionExperimentTests(unittest.TestCase):
             experiment.recipe_evidence(directory, arm)
 
     def test_recipe_cleanup_requires_matching_policy_and_tool_identity(self):
-        directory = self.root / "recipes"
-        directory.mkdir()
-        (directory / "input.spv").write_bytes(struct.pack("<5I", 0x07230203, 0x10600, 0, 1, 0))
-        stage = dict(spirv_file="input.spv", spirv_bytes=20, module_name="Guides", source_entry_point="main",
-            slang_optimization="O1", debug_mode="release", input_spirv_hash="0123456789abcdef",
-            descriptor_heap_mode="mapped", spirv_postprocess="dead-branches", spirv_postprocess_tool_version="fixture")
-        recipe = dict(schema="metallic_pipeline_recipe", source_device=dict(name="fixture GPU"),
-            pipeline_type="compute", state=dict(compute_backend=0, disable_optimization=False), shaders=dict(compute=stage))
-        manifest = directory / "fixture.recipe.json"
-        experiment.save(manifest, recipe)
-        arm, = experiment.arms(["O1"], ["pipeline"], "normal", ["dead-branches"])
-        evidence = experiment.recipe_evidence(directory, arm)
-        self.assertEqual(evidence["shaders"][0]["postprocess"], "dead-branches")
-        self.assertEqual(evidence["shaders"][0]["postprocess_tool_version"], "fixture")
-        for mutation in (lambda s: s.pop("spirv_postprocess"), lambda s: s.update(spirv_postprocess="none"),
-                         lambda s: s.pop("spirv_postprocess_tool_version"),
-                         lambda s: s.update(spirv_postprocess_tool_version="unavailable"),
-                         lambda s: s.update(source_identity_ambiguous=True),
-                         lambda s: s.update(source_identity_ambiguous="false")):
-            changed = copy.deepcopy(recipe)
-            mutation(changed["shaders"]["compute"])
-            experiment.save(manifest, changed)
-            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+        for mode in experiment.POSTPROCESSES[1:]:
+            directory = self.root / ("recipes-" + mode)
+            directory.mkdir()
+            (directory / "input.spv").write_bytes(struct.pack("<5I", 0x07230203, 0x10600, 0, 1, 0))
+            stage = dict(spirv_file="input.spv", spirv_bytes=20, module_name="Guides", source_entry_point="main",
+                slang_optimization="O1", debug_mode="release", input_spirv_hash="0123456789abcdef",
+                descriptor_heap_mode="mapped", spirv_postprocess=mode, spirv_postprocess_tool_version="fixture")
+            recipe = dict(schema="metallic_pipeline_recipe", source_device=dict(name="fixture GPU"),
+                pipeline_type="compute", state=dict(compute_backend=0, disable_optimization=False), shaders=dict(compute=stage))
+            manifest = directory / "fixture.recipe.json"
+            experiment.save(manifest, recipe)
+            arm, = experiment.arms(["O1"], ["pipeline"], "normal", [mode])
+            evidence = experiment.recipe_evidence(directory, arm)
+            self.assertEqual(evidence["shaders"][0]["postprocess"], mode)
+            self.assertEqual(evidence["shaders"][0]["postprocess_tool_version"], "fixture")
+            for mutation in (lambda s: s.pop("spirv_postprocess"), lambda s: s.update(spirv_postprocess="none"),
+                             lambda s: s.pop("spirv_postprocess_tool_version"),
+                             lambda s: s.update(spirv_postprocess_tool_version="unavailable"),
+                             lambda s: s.update(descriptor_heap_mode="native"),
+                             lambda s: s.update(source_identity_ambiguous=True),
+                             lambda s: s.update(source_identity_ambiguous="false")):
+                changed = copy.deepcopy(recipe)
+                mutation(changed["shaders"]["compute"])
+                experiment.save(manifest, changed)
+                with self.subTest(mode=mode, mutation=mutation), self.assertRaises(ValueError):
+                    experiment.recipe_evidence(directory, arm)
+            experiment.save(manifest, recipe)
+            duplicate = copy.deepcopy(recipe)
+            duplicate["shaders"]["compute"]["spirv_postprocess_tool_version"] = "other tool"
+            experiment.save(directory / "other.recipe.json", duplicate)
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "identical SPIR-V"):
                 experiment.recipe_evidence(directory, arm)
-        experiment.save(manifest, recipe)
-        duplicate = copy.deepcopy(recipe)
-        duplicate["shaders"]["compute"]["spirv_postprocess_tool_version"] = "other tool"
-        experiment.save(directory / "other.recipe.json", duplicate)
-        with self.assertRaisesRegex(ValueError, "identical SPIR-V"):
-            experiment.recipe_evidence(directory, arm)
 
     def test_runtime_cleanup_cannot_be_inferred_from_same_output_or_partial_log_confirmation(self):
         log = self.root / "stdout.log"
-        arm, = experiment.arms(["O1"], ["pipeline"], "normal", ["dead-branches"])
-        prefix = "[Slang] Begin compile Guides.main (optimization=O1, postprocess=dead-branches)\n"
         suffix = "[ComputeCreatePolicy] backend=0 disableOptimization=false pso=0123456789abcdef\n"
-        log.write_text(prefix + suffix)
-        self.assertEqual(experiment.compiler_log_evidence(log, arm)["effective_spirv_postprocess"], "dead-branches")
-        for body in (prefix.replace(", postprocess=dead-branches", ""),
-                     prefix.replace("dead-branches", "none"),
-                     prefix + "[ShaderCache] Loaded Other.main from 'b.spv' (optimization=O1)\n"):
-            log.write_text(body + suffix)
-            with self.subTest(body=body), self.assertRaisesRegex(ValueError, "postprocess"):
-                experiment.compiler_log_evidence(log, arm)
+        for mode in experiment.POSTPROCESSES[1:]:
+            arm, = experiment.arms(["O1"], ["pipeline"], "normal", [mode])
+            prefix = f"[Slang] Begin compile Guides.main (optimization=O1, postprocess={mode})\n"
+            log.write_text(prefix + suffix)
+            self.assertEqual(experiment.compiler_log_evidence(log, arm)["effective_spirv_postprocess"], mode)
+            for body in (prefix.replace(", postprocess=" + mode, ""),
+                         prefix.replace(mode, "none"),
+                         prefix + "[ShaderCache] Loaded Other.main from 'b.spv' (optimization=O1)\n"):
+                log.write_text(body + suffix)
+                with self.subTest(mode=mode, body=body), self.assertRaisesRegex(ValueError, "postprocess"):
+                    experiment.compiler_log_evidence(log, arm)
 
     def test_readback_nonfinite_truncated_and_unknown_format_rejected(self):
         for raw in (struct.pack("<4f", float("nan"), 2, 3, 1), b"\0\0\0\0"):

@@ -116,6 +116,7 @@ public:
         };
         if (!rejectInvalidExport("unknown", "", "unknown-postprocess.recipe.json") ||
             !rejectInvalidExport("dead-branches", "", "missing-cleanup-tool.recipe.json") ||
+            !rejectInvalidExport("slang-dead-branches", "", "missing-slang-cleanup-tool.recipe.json") ||
             !rejectInvalidExport("dead-branches", "unavailable", "unavailable-cleanup-tool.recipe.json")) {
             return RHITestResult::fail("recipe export accepted an invalid postprocess policy or optimizer version");
         }
@@ -156,6 +157,19 @@ public:
             importedExperiment->computeBackend != ComputePipelineBackend::PipelineBinary ||
             detail::computePipelineStateHash(importedExperiment->computeDesc(replayCompute->get())) != experimental.expectedPsoHash) {
             return RHITestResult::fail("recipe import lost driver optimization or compute backend identity");
+        }
+        auto slangExperiment = experimental;
+        slangExperiment.computeShader.spirvPostprocess = "slang-dead-branches";
+        const auto slangPath = directory / "slang-experimental.recipe.json";
+        if (!writePipelineRecipe(slangExperiment, slangPath, log)) {
+            return RHITestResult::fail("could not serialize Slang downstream cleanup identity: " + log);
+        }
+        auto importedSlang = readPipelineRecipe(slangPath, log);
+        if (!importedSlang || importedSlang->computeShader.spirvPostprocess != "slang-dead-branches" ||
+            importedSlang->computeShader.spirvPostprocessToolVersion != "roundtrip-test-version" ||
+            importedSlang->computeShader.spirv != experimental.computeShader.spirv ||
+            importedSlang->expectedPsoHash != experimental.expectedPsoHash) {
+            return RHITestResult::fail("recipe roundtrip lost Slang downstream cleanup provenance or changed bytecode/state");
         }
         auto missingCleanupVersion = nlohmann::json::parse(std::ifstream(experimentalPath));
         missingCleanupVersion["shaders"]["compute"].erase("spirv_postprocess_tool_version");

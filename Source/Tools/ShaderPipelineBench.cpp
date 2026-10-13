@@ -195,8 +195,9 @@ Options parse(int argc, char** argv)
         options.slangOptimization != "O2" && options.slangOptimization != "O3") {
         throw std::invalid_argument("--slang-optimization requires default, O0, O1, O2 or O3");
     }
-    if (options.spirvPostprocess != "default" && options.spirvPostprocess != "none" && options.spirvPostprocess != "dead-branches") {
-        throw std::invalid_argument("--spirv-postprocess requires default, none or dead-branches");
+    if (options.spirvPostprocess != "default" && options.spirvPostprocess != "none" &&
+        options.spirvPostprocess != "dead-branches" && options.spirvPostprocess != "slang-dead-branches") {
+        throw std::invalid_argument("--spirv-postprocess requires default, none, dead-branches or slang-dead-branches");
     }
     if (options.computeBackend != "pipeline" && options.computeBackend != "shader-object" && options.computeBackend != "pipeline-binary") {
         throw std::invalid_argument("--compute-backend requires pipeline, shader-object or pipeline-binary");
@@ -231,6 +232,14 @@ SlangShaderOptimizationLevel optimizationLevel(const std::string& name)
     if (name == "O2") { return SlangShaderOptimizationLevel::O2; }
     if (name == "O3") { return SlangShaderOptimizationLevel::O3; }
     return SlangShaderOptimizationLevel::Default;
+}
+
+SlangShaderPostprocessMode postprocessMode(const std::string& name)
+{
+    if (name == "none") { return SlangShaderPostprocessMode::None; }
+    if (name == "dead-branches") { return SlangShaderPostprocessMode::DeadBranches; }
+    if (name == "slang-dead-branches") { return SlangShaderPostprocessMode::SlangDeadBranches; }
+    return SlangShaderPostprocessMode::Default;
 }
 
 const char* computeBackendName(ComputePipelineBackend backend)
@@ -576,6 +585,8 @@ int run(const Options& options)
     const auto backend = recipe && recipe->type == PipelineRecipeType::Compute && !options.explicitComputeBackend ? recipe->computeBackend :
         options.computeBackend == "shader-object" ? ComputePipelineBackend::ShaderObject :
         options.computeBackend == "pipeline-binary" ? ComputePipelineBackend::PipelineBinary : ComputePipelineBackend::Pipeline;
+    const auto effectivePostprocess = slangShaderPostprocessMode(
+        SlangShaderDesc{.postprocessMode = postprocessMode(options.spirvPostprocess)});
     if (backend == ComputePipelineBackend::Pipeline && !options.nativeBinaryCacheDirectory.empty()) {
         throw std::invalid_argument("--native-binary-cache-dir requires shader-object or pipeline-binary backend");
     }
@@ -630,7 +641,7 @@ int run(const Options& options)
             {"descriptor_mode", options.descriptorMode}, {"debug_mode", options.debugMode},
             {"slang_optimization", options.slangOptimization},
             {"spirv_postprocess", options.spirvPostprocess},
-            {"spirv_postprocess_tool_version", slangShaderPostprocessToolVersion()},
+            {"spirv_postprocess_tool_version", slangShaderPostprocessToolVersion(effectivePostprocess)},
             {"slang_perf_diagnostics", options.slangPerfDiagnostics},
             {"requested_disable_driver_optimization", options.disableDriverOptimization},
             {"disable_driver_optimization", options.disableDriverOptimization || (recipe && recipe->disableOptimization)},
@@ -889,8 +900,7 @@ int run(const Options& options)
             const ShaderRequestView view(request);
             auto source = view.desc();
             source.optimizationLevel = optimizationLevel(options.slangOptimization);
-            source.postprocessMode = options.spirvPostprocess == "none" ? SlangShaderPostprocessMode::None :
-                options.spirvPostprocess == "dead-branches" ? SlangShaderPostprocessMode::DeadBranches : SlangShaderPostprocessMode::Default;
+            source.postprocessMode = postprocessMode(options.spirvPostprocess);
             const bool native = slangUsesNativeDescriptorHeap(source);
             if (native && !nativeStrides.resource) {
                 std::string diagnostics;
@@ -1052,7 +1062,8 @@ int main(int argc, char** argv)
             "  [--pipeline-workers N] (legacy alias for parallel-shared --workers N)\n"
             "  [--shader-cache disabled|reuse] [--pipeline-cache empty|reuse] [--cache-dir path]\n"
             "  [--descriptor-mode request|mapped|native] [--debug-mode disabled|capture|debug]\n"
-            "  [--slang-optimization default|O0|O1|O2|O3] [--spirv-postprocess default|none|dead-branches]\n"
+            "  [--slang-optimization default|O0|O1|O2|O3]\n"
+            "  [--spirv-postprocess default|none|dead-branches|slang-dead-branches]\n"
             "  [--disable-driver-optimization]\n"
             "  [--compute-backend pipeline|shader-object|pipeline-binary] [--native-binary-cache-dir path]\n"
             "Defaults: 3 iterations, disabled shader cache, empty pipeline cache, request descriptor mode, disabled debug.\n"

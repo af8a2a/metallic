@@ -39,6 +39,8 @@ enum class SlangShaderPostprocessMode : uint8_t {
     None,
     // Opt-in mapped-descriptor experiment: dead branches, then instruction simplification.
     DeadBranches,
+    // Append the two passes to Slang's downstream optimizer; validate only the final output locally.
+    SlangDeadBranches,
 };
 
 struct SlangMacroDefine {
@@ -82,8 +84,10 @@ struct ShaderCompileMetrics {
     uint64_t linkTimeNanoseconds = 0;
     uint64_t codeGenerationTimeNanoseconds = 0;
     uint64_t targetFinalizeTimeNanoseconds = 0;
+    // SlangDeadBranches includes only final validation; its transforms remain in code generation.
     uint64_t postprocessTimeNanoseconds = 0;
     // Raw compiler bytes are unavailable on cache hits; output bytes describe the returned code.
+    // The returned Slang blob already includes any selected downstream transforms.
     uint64_t rawSpirvByteSize = 0;
     uint64_t outputSpirvByteSize = 0;
     uint64_t dependencyValidationTimeNanoseconds = 0;
@@ -120,12 +124,14 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept;
 // Configure METALLIC_SLANG_OPTIMIZATION before shader compilation begins.
 SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept;
 const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept;
-// Returns None or DeadBranches, or Default for an invalid request/environment.
+// Returns the effective mode, or Default for an invalid request/environment.
 // Configure METALLIC_SPIRV_POSTPROCESS before shader compilation begins.
 SlangShaderPostprocessMode slangShaderPostprocessMode(const SlangShaderDesc& desc) noexcept;
 const char* slangShaderPostprocessModeName(SlangShaderPostprocessMode mode) noexcept;
-// Included in enabled-mode cache identity; "unavailable" when the optimizer was not built.
-const char* slangShaderPostprocessToolVersion() noexcept;
+// Included in enabled-mode cache identity; "unavailable" when the validator was not built.
+// SlangDeadBranches identifies Slang separately from the linked final validator.
+const char* slangShaderPostprocessToolVersion(
+    SlangShaderPostprocessMode mode = SlangShaderPostprocessMode::DeadBranches) noexcept;
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept;
 
 // The selected Vulkan device publishes its heap ABI before runtime compilation.

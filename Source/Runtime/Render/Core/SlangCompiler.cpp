@@ -528,13 +528,16 @@ std::optional<SlangShaderPostprocessMode> resolvePostprocessMode(const SlangShad
             mode = SlangShaderPostprocessMode::None;
         } else if (value == "dead-branches") {
             mode = SlangShaderPostprocessMode::DeadBranches;
+        } else if (value == "slang-dead-branches") {
+            mode = SlangShaderPostprocessMode::SlangDeadBranches;
         } else {
             return std::nullopt;
         }
     }
     switch (mode) {
     case SlangShaderPostprocessMode::None:
-    case SlangShaderPostprocessMode::DeadBranches: return mode;
+    case SlangShaderPostprocessMode::DeadBranches:
+    case SlangShaderPostprocessMode::SlangDeadBranches: return mode;
     default: return std::nullopt;
     }
 }
@@ -577,6 +580,32 @@ bool cleanDeadSpirvBranches(std::vector<uint32_t>& code, std::string& diagnostic
 #else
     (void)code;
     diagnostics += "SPIR-V dead-branch cleanup requires a build with SPIRV-Tools-opt.\n";
+    return false;
+#endif
+}
+
+bool validateSlangCleanedSpirv(const std::vector<uint32_t>& code, std::string& diagnostics)
+{
+#if METALLIC_HAS_SPIRV_TOOLS
+    spvtools::ValidatorOptions validatorOptions;
+    validatorOptions.SetScalarBlockLayout(true);
+    spvtools::SpirvTools validator(SPV_ENV_VULKAN_1_4);
+    validator.SetMessageConsumer([&diagnostics](spv_message_level_t, const char*,
+        const spv_position_t& position, const char* message) {
+        diagnostics += "Slang downstream SPIR-V cleanup validation at position ";
+        diagnostics += std::to_string(position.index);
+        diagnostics += ": ";
+        diagnostics += message != nullptr ? message : "unknown validator diagnostic";
+        diagnostics += '\n';
+    });
+    if (!validator.Validate(code.data(), code.size(), validatorOptions)) {
+        diagnostics += "Slang downstream SPIR-V cleanup produced invalid Vulkan code.\n";
+        return false;
+    }
+    return true;
+#else
+    (void)code;
+    diagnostics += "Slang downstream SPIR-V cleanup requires a build with the SPIRV-Tools validator.\n";
     return false;
 #endif
 }
@@ -632,6 +661,11 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
         hash = hashText(hash, "spirv-dead-branches-then-simplify-vulkan1.4-scalar");
         hash = hashValue(hash, uint32_t(1));
         hash = hashText(hash, slangShaderPostprocessToolVersion());
+    } else if (postprocessMode == SlangShaderPostprocessMode::SlangDeadBranches) {
+        hash = hashText(hash, "slang-downstream-spirv-opt-dead-branches-then-simplify-vulkan1.4-scalar");
+        hash = hashValue(hash, uint32_t(1));
+        hash = hashText(hash, spGetBuildTagString());
+        hash = hashText(hash, slangShaderPostprocessToolVersion(postprocessMode));
     }
     return hash;
 }
@@ -996,15 +1030,24 @@ const char* slangShaderPostprocessModeName(SlangShaderPostprocessMode mode) noex
     case SlangShaderPostprocessMode::Default: return "default";
     case SlangShaderPostprocessMode::None: return "none";
     case SlangShaderPostprocessMode::DeadBranches: return "dead-branches";
+    case SlangShaderPostprocessMode::SlangDeadBranches: return "slang-dead-branches";
     default: return "invalid";
     }
 }
 
-const char* slangShaderPostprocessToolVersion() noexcept
+const char* slangShaderPostprocessToolVersion(SlangShaderPostprocessMode mode) noexcept
 {
 #if METALLIC_HAS_SPIRV_TOOLS
+    if (mode == SlangShaderPostprocessMode::SlangDeadBranches) {
+        // The linked SPIRV-Tools version identifies our final validator, not
+        // Slang's bundled downstream optimizer. Slang owns that implementation.
+        static const std::string version = std::string("Slang " SLANG_VERSION_NUMERIC
+            " downstream spirv-opt + ") + spvSoftwareVersionDetailsString() + " validator";
+        return version.c_str();
+    }
     return spvSoftwareVersionDetailsString();
 #else
+    (void)mode;
     return "unavailable";
 #endif
 }
@@ -1113,17 +1156,20 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     const auto effectivePostprocess = resolvePostprocessMode(desc);
     if (!effectivePostprocess) {
         log = "Invalid SPIR-V postprocess mode; METALLIC_SPIRV_POSTPROCESS and explicit requests "
-            "must select default, none or dead-branches.\n";
+            "must select default, none, dead-branches or slang-dead-branches.\n";
         return makeError(Error::InvalidArgument);
     }
-    if (*effectivePostprocess == SlangShaderPostprocessMode::DeadBranches) {
+    if (*effectivePostprocess == SlangShaderPostprocessMode::DeadBranches ||
+        *effectivePostprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
         if (native) {
             log = "SPIR-V dead-branch cleanup currently supports only mapped descriptors; "
                 "native descriptor-heap optimization is unsupported.\n";
             return makeError(Error::InvalidArgument);
         }
 #if !METALLIC_HAS_SPIRV_TOOLS
-        log = "SPIR-V dead-branch cleanup requires a build with SPIRV-Tools-opt.\n";
+        log = *effectivePostprocess == SlangShaderPostprocessMode::SlangDeadBranches
+            ? "Slang downstream SPIR-V cleanup requires a build with the SPIRV-Tools validator.\n"
+            : "SPIR-V dead-branch cleanup requires a build with SPIRV-Tools-opt.\n";
         return makeError(Error::InvalidArgument);
 #endif
     }
@@ -1234,6 +1280,18 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
             .intValue0 = static_cast<int32_t>(optimizationLevel),
         },
     });
+    if (*effectivePostprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
+        // DownstreamArgs encodes one argument per line. Keep both passes in one
+        // entry so the pinned SDK forwards the complete list in order.
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::DownstreamArgs,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::String,
+                .stringValue0 = "spirv-opt",
+                .stringValue1 = "--eliminate-dead-branches\n--simplify-instructions",
+            },
+        });
+    }
     if (native) {
         // TO-REMOVE(VVL payload-size): retain literal ArrayStride until VVL correctly
         // sizes task/mesh payloads with unrelated opaque-size spec expressions.
@@ -1450,6 +1508,13 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
             return makeError(Error::Failure);
         }
         metrics.postprocessTimeNanoseconds = elapsed(postprocessStart);
+    } else if (*effectivePostprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
+        const auto validationStart = Clock::now();
+        if (!validateSlangCleanedSpirv(outResult.spirv, log)) {
+            outResult.spirv.clear();
+            return makeError(Error::Failure);
+        }
+        metrics.postprocessTimeNanoseconds = elapsed(validationStart);
     }
     metrics.outputSpirvByteSize = outResult.spirv.size() * sizeof(uint32_t);
     const auto dependencyValidationStart = Clock::now();

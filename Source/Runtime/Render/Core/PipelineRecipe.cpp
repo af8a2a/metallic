@@ -113,10 +113,11 @@ void validateShader(const PipelineRecipeShader& shader)
     if (shader.inputSpirvHash && shader.inputSpirvHash != shaderHash(shader)) {
         throw std::runtime_error("recipe SPIR-V content hash mismatch");
     }
-    if (shader.spirvPostprocess != "none" && shader.spirvPostprocess != "dead-branches") {
+    if (shader.spirvPostprocess != "none" && shader.spirvPostprocess != "dead-branches" &&
+        shader.spirvPostprocess != "slang-dead-branches") {
         throw std::runtime_error("invalid recipe SPIR-V postprocess policy");
     }
-    if (shader.spirvPostprocess == "dead-branches" &&
+    if ((shader.spirvPostprocess == "dead-branches" || shader.spirvPostprocess == "slang-dead-branches") &&
         (shader.spirvPostprocessToolVersion.empty() || shader.spirvPostprocessToolVersion == "unavailable")) {
         throw std::runtime_error("recipe SPIR-V cleanup tool version is missing or unavailable");
     }

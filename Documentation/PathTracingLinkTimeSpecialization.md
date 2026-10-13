@@ -484,3 +484,92 @@ and SPIR-V analysis tests: **3/3 CTest suites passed**, including **20/20**
 focused link-time evidence tests. The final check verified seven evidence
 manifests, all twelve recipe/device matches, and local report links.
 No C++ runtime or production shader changed in this experiment.
+
+## Proposed implementation-selection Type: unmeasured
+
+The current module-based 2026-10-13 repeat still shows the same limitation.
+The [current O1 comparison](../build-release/link-time-current-20261013/current-O1-analysis/Analysis.json)
+reports 6,947,188 bytes, 449,824 instructions and 60,504 blocks for every
+general/no-fiber/opaque policy-field arm. Matched static/link-time constants and
+matched concrete/link-time Types are byte-identical. The current production
+baseline is 6,947,064 bytes / 449,813 instructions / 60,501 blocks. These
+observations do not establish an advantage for supplying boolean methods through
+a linked Type.
+
+The next coarse boundary should select the **whole material-domain dispatch
+implementation**, with one Type supplying both found-vertex shading and guide
+evaluation. A `GeneralScenePathMaterialBackend` would preserve the current
+Surface/Fiber/Slab dispatch. A `NoFiberOpenPBRBackend`, tested first with custom
+materials disabled, would call only the existing OpenPBR implementation. Its
+methods would contain no `shadeSceneFiber` call or Fiber guide extraction,
+rather than guard those calls with another static boolean. This changes the
+reachable call graph before target inlining. It is a proposed code-elimination
+boundary, not a native compilation boundary or a measured speedup.
+
+The concrete sites are:
+
+- [`OpenPBRPathVertex.slang`](../Shaders/Modules/OpenPBRPathTracing/OpenPBRPathVertex.slang),
+  `shadeOpenPBRPathVertex`, from its `loadSceneMaterial`/material-domain tail
+  (line 434). Extract that complete tail, including the existing alpha retry,
+  domain-specific shading and termination bookkeeping. Keep common miss,
+  volume-attenuation and ray-cone work unchanged. The general implementation
+  retains the current order: Fiber handling precedes BLEND coverage and Surface
+  family selection. The narrow implementation retains coverage and the call to
+  `shadeOpenPBRSurfacePathVertex`, including its transmitting OpenPBR behavior.
+- [`OpenPBRSurface.slang`](../Shaders/Modules/OpenPBRSurface.slang),
+  `evaluateSceneSurfaceGuides` (line 602), is a second independent domain dispatch.
+  The same selected Type must supply this method too; changing only vertex
+  shading would leave the guide side reachable. The narrow method should retain
+  the current concrete OpenPBR material evaluation and its returned summary,
+  evaluated hit and seed. It must not reuse the path's prepared closure.
+- [`SceneSurface.slang`](../Shaders/Modules/SceneSurface.slang),
+  `loadSceneMaterial`/`loadSceneOpenPBRMaterial` (lines 213/218), still creates the
+  720-byte upload record before extracting model data. A separate resource
+  experiment can read a compact classification or coverage view at these domain
+  boundaries, then load only the selected model's fields. Keep the CPU upload
+  stride and descriptors unchanged. Field offsets must follow
+  [`SceneMaterialData.h`](../Source/Runtime/Render/Material/SceneMaterialData.h)
+  and its std430 texture padding; do not reinterpret the noncontiguous OpenPBR
+  fields as a packed model record. Preserve complete-record bounds and missing
+  resource behavior, and verify the mapped readback before comparing timings.
+
+Place the public backend contract alongside the existing path state types in
+the `OpenPBRPathTracing` owner; provider modules can import that owner and export
+the selected implementation Type. Keep every new module/implementation owned,
+use explicit imports and keep the registered entrypoint names stable. Start in
+frozen harness overlays: the production compiler still needs explicit provider
+composition and provider-aware cache/hot-reload identity before deployment.
+The existing `ISceneSlabModel` associated-Closure selection in
+`OpenPBRSurface.slang` (line 430) is an actual implementation-selection precedent;
+it does not choose a model by storing an existential interface at runtime.
+
+No-Fiber eligibility must cover all materials reachable by primary, secondary
+and shadow rays, including streamed assets and custom programs. Disabling the
+RTXCR SDK flag or observing an opaque primary hit is insufficient. Begin with
+the fixed Opaque/Mixed/Sky fixtures and custom-materials-off configuration;
+retain metallic, transmission, volume, MASK/BLEND and existing debug behavior.
+When a streamed material, edit or program requires Fiber/Slab, acquire a broader
+compatible pipeline before publishing that material to an affected dispatch.
+Keep bindings, feedback writes, texture-load/RNG order, authored TBN mapping and
+ray offsets unchanged. Guide evaluation keeps its independent seed and
+face-forward policy, including camera-motion and specular-endpoint handling.
+
+Use these matched arms with the same O1, mapped ABI, postprocess policy and
+normal Driver optimization:
+
+| Arm | Purpose |
+| --- | --- |
+| Existing general shader | Current behavior and cost baseline |
+| Concrete general backend Type | Isolate extraction/interface scaffold |
+| Link-time general backend Type | Compare linking against the identical implementation |
+| Concrete no-Fiber OpenPBR backend Type | Measure the narrower reachable implementation |
+| Link-time no-Fiber OpenPBR backend Type | Compare linking against the identical narrow implementation |
+
+Run the resource-view change as a subsequent separate pair so its effect is not
+attributed to Type selection. Count reachable functions/calls, retained Fiber
+operations, CFG size, storage-class variables and finalized SPIR-V after the
+same cleanup. Compile/module-reuse cost, cold Driver creation and GPU dispatch
+remain separate scopes. Requalify HDR, seven guide outputs, moving-camera
+captures and material/RNG/feedback behavior. Only a scene-wide eligibility proof
+plus these checks could justify using the narrower backend; none of these
+proposed arms has been compiled or measured yet.

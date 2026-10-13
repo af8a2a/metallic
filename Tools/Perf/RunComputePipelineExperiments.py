@@ -25,7 +25,7 @@ import RunShaderPipelineDriver as driver
 ROOT = Path(__file__).resolve().parents[2]
 OPTIMIZATIONS = ("default", "O0", "O1", "O2", "O3")
 BACKENDS = ("pipeline", "shader-object", "pipeline-binary")
-POSTPROCESSES = ("none", "dead-branches")
+POSTPROCESSES = ("none", "dead-branches", "slang-dead-branches")
 LOCK_NAMES = ("shader-experiment.lock", "openpbr-benchmark.lock", "material-phase0.lock",
               "compute-pipeline-experiment.lock")
 
@@ -141,8 +141,10 @@ def postprocess_policy(report, sample, expected=None):
        (expected is not None and (requested != expected or effective != expected)):
         raise ValueError("Requested/effective SPIR-V postprocess policy changed or was not confirmed")
     version = configuration.get("spirv_postprocess_tool_version")
-    if effective == "dead-branches" and (not isinstance(version, str) or not version or version == "unavailable"):
+    if effective != "none" and (not isinstance(version, str) or not version or version == "unavailable"):
         raise ValueError("SPIR-V cleanup tool version was not confirmed")
+    if effective != "none" and sample.get("effective_descriptor_mode") != "mapped":
+        raise ValueError("SPIR-V dead-branch cleanup supports mapped descriptors only")
     phases = sample.get("compilation_phases", {})
     if not isinstance(phases, dict):
         raise ValueError("Invalid SPIR-V compilation phase metrics")
@@ -292,7 +294,7 @@ def compile_experiment(args, output, summary):
     executable = args.executable.resolve(strict=True)
     postprocesses = getattr(args, "postprocesses", ["none"])
     conditions = arms(args.optimizations, args.backends, args.driver_optimization, postprocesses)
-    if args.descriptor_mode == "native" and "dead-branches" in postprocesses:
+    if args.descriptor_mode == "native" and any(mode != "none" for mode in postprocesses):
         raise ValueError("SPIR-V dead-branch cleanup supports mapped descriptors only")
     application_pipeline_cache = getattr(args, "application_pipeline_cache", False)
     if args.native_binary_cache and "pipeline" in args.backends and not application_pipeline_cache:
@@ -313,6 +315,9 @@ def compile_experiment(args, output, summary):
                    caveats=["Disabled driver cache does not guarantee all compiler/OS state is cold.",
                             "native_cache_hit is application VkPipelineCache feedback, not an internal driver-cache hit.",
                             "Creation speed alone does not establish GPU execution speed or numerical correctness."])
+    if "slang-dead-branches" in postprocesses:
+        summary["caveats"].append("For slang-dead-branches, raw_spirv_bytes describes Slang's already-optimized blob. "
+                                  "Appended optimizer passes are inside code_generation_ms; postprocess_ms measures final validation only.")
     if args.validation:
         common.append("--validation")
     if getattr(args, "slang_perf_diagnostics", False):
@@ -677,8 +682,10 @@ def recipe_evidence(directory, arm):
             version = stage.get("spirv_postprocess_tool_version")
             if postprocess != arm.get("postprocess", "none") or postprocess not in POSTPROCESSES:
                 raise ValueError("Runtime recipe SPIR-V postprocess policy changed or was not confirmed")
-            if postprocess == "dead-branches" and (not isinstance(version, str) or not version or version == "unavailable"):
+            if postprocess != "none" and (not isinstance(version, str) or not version or version == "unavailable"):
                 raise ValueError("Runtime recipe SPIR-V cleanup tool version was not confirmed")
+            if postprocess != "none" and stage["descriptor_heap_mode"] != "mapped":
+                raise ValueError("Runtime recipe SPIR-V cleanup requires mapped descriptors")
             identity = dict(module=stage["module_name"], entry=stage["source_entry_point"],
                             spirv_bytes=len(raw), spirv_sha256=hashlib.sha256(raw).hexdigest(),
                             input_spirv_fnv1a64=stage["input_spirv_hash"],

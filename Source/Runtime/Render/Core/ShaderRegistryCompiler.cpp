@@ -71,9 +71,10 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
         identity.sourceEntryPoint = desc.entryPointName ? desc.entryPointName : "";
         identity.descriptorHeapMode = slangUsesNativeDescriptorHeap(desc) ? "native" : "mapped";
         identity.optimizationLevel = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(desc));
-        identity.spirvPostprocess = slangShaderPostprocessModeName(slangShaderPostprocessMode(desc));
-        if (slangShaderPostprocessMode(desc) == SlangShaderPostprocessMode::DeadBranches) {
-            identity.spirvPostprocessToolVersion = slangShaderPostprocessToolVersion();
+        const auto postprocess = slangShaderPostprocessMode(desc);
+        identity.spirvPostprocess = slangShaderPostprocessModeName(postprocess);
+        if (postprocess == SlangShaderPostprocessMode::DeadBranches || postprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
+            identity.spirvPostprocessToolVersion = slangShaderPostprocessToolVersion(postprocess);
         }
         switch (slangShaderDebugMode()) {
         case SlangShaderDebugMode::Disabled: identity.debugMode = "release"; break;

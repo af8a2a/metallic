@@ -753,6 +753,9 @@ set_tests_properties(MetallicShaderPrintfTests PROPERTIES LABELS "rhi;shader-pri
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicShaderPostprocessEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestMeasureShaderPostprocess.py")
+    set_tests_properties(MetallicShaderPostprocessEvidenceTests PROPERTIES LABELS "shader;perf;cpu")
     add_test(NAME MetallicShaderModuleOwnershipTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/TestShaderModules.py")
     set_tests_properties(MetallicShaderModuleOwnershipTests PROPERTIES LABELS "shader;architecture" TIMEOUT 30)
