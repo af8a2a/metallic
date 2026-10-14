@@ -24,7 +24,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE_SUFFIXES = {".slang", ".h", ".hpp", ".hlsli", ".hlsl", ".cpp", ".json"}
+SOURCE_SUFFIXES = {".slang", ".h", ".hpp", ".hlsli", ".hlsl", ".cpp", ".inc", ".json"}
 NUMBER = r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
 SUMMARY = re.compile(r"^Shader warmup: (\d+) requests, (\d+) existing cache hits, (\d+) failures(.*)$", re.M)
 TIMING = re.compile(rf"^\s*Request (\d+) timing: total=({NUMBER})s, setup=({NUMBER})s, module=({NUMBER})s, codegen=({NUMBER})s\s*$", re.M)
@@ -210,7 +210,22 @@ def parse_warmup(text, catalog, jobs):
     require(int(failures) == 0, "Warmup reported compilation/read-back failures")
     workers = re.findall(r"^Shader warmup workers: (\d+)\s*$", text, re.M)
     require(len(workers) == 1 and int(workers[0]) == min(jobs, len(catalog)), "Unexpected warmup worker count")
-    processing = re.findall(r"^\s*Processing (\d+)/(\d+): (\S+)(?: \[resource-stride=\d+, sampler-stride=\d+\])?\s*$", text, re.M)
+    batch = None
+    if "Warmup source batch:" in text:
+        require("fresh sessions without persistent cache reuse" not in text, "Warmup used an unqualified source snapshot fallback")
+        footer = re.findall(rf"^Warmup source batch: (\d+) groups; static estimate schedule; snapshot=({NUMBER})s; boundary=({NUMBER})s; cache publication/readback=({NUMBER})s; live_fs_atomic=false\s*$", text, re.M)
+        require(len(footer) == 1 and 0 < int(footer[0][0]) <= len(catalog), "Missing or invalid completed source batch")
+        batch = dict(session_groups=int(footer[0][0]), schedule="static estimate", **dict(zip(
+            ("snapshot_capture_seconds", "boundary_validation_seconds", "cache_publication_readback_seconds"), map(float, footer[0][1:]))))
+        phases = re.findall(rf"^Warmup V3 publication phases: proof encode=({NUMBER})s; atomic write=({NUMBER})s; file read/decode=({NUMBER})s; full source validation=({NUMBER})s\s*$", text, re.M)
+        require(len(phases) == 1, "Missing or duplicated actual cache publication phases")
+        values = list(map(float, phases[0]))
+        require(all(math.isfinite(value) and value >= 0 for value in [*values, *map(float, footer[0][1:])]), "Invalid source batch timing")
+        require(sum(values) <= batch["cache_publication_readback_seconds"] + 0.051 * 5, "Cache publication phases exceed their interval")
+        batch["publication_phases_seconds"] = dict(zip(("proof_encode", "atomic_write", "file_read_decode", "full_source_validation"), values))
+        processing = re.findall(r"^\[(\d+)/(\d+) \d+%\] Compiled: (\S+) \| cached: 0 \| failed: 0 \| elapsed: [0-9.]+s\s*$", text, re.M)
+    else:
+        processing = re.findall(r"^\s*Processing (\d+)/(\d+): (\S+)(?: \[resource-stride=\d+, sampler-stride=\d+\])?\s*$", text, re.M)
     require(sorted(int(row[0]) for row in processing) == list(range(1, len(catalog) + 1)) and
             all(int(total) == len(catalog) and request == catalog[int(index) - 1]["request"]
                 for index, total, request in processing), "Measured requests differ from the full catalog")
@@ -227,10 +242,13 @@ def parse_warmup(text, catalog, jobs):
     sums = {key: math.fsum(row[key] for row in rows) for key in ("total", "setup", "module", "codegen")}
     for key in ("total", "module", "codegen"):
         require(abs(sums[key] - reported[key]) <= 0.051 * (len(catalog) + 1), "Summed phase timing differs from request timings")
-    return dict(requests=int(count), existing_cache_hits=0, failures=0, workers=int(workers[0]),
+    result = dict(requests=int(count), existing_cache_hits=0, failures=0, workers=int(workers[0]),
                 request_phases_seconds=sorted(rows, key=lambda row: row["index"]),
                 summed_phases_seconds=sums, reported_summary_seconds=reported,
                 phase_scope="Rounded console seconds summed across overlapping workers; not end-to-end wall time")
+    if batch is not None:
+        result["batch"] = batch
+    return result
 
 
 def aggregate(runs, threshold):
@@ -261,7 +279,7 @@ def run(args):
     try:
         # Listing prepares custom-material modules. Freeze the source inventory only
         # after preparation, so generated material includes are ordinary measured inputs.
-        listing = run_process([str(executable), "--list"], environment, output / "catalog", args.timeout)
+        listing = run_process([str(executable), "--list", "--debug-mode", "disabled"], environment, output / "catalog", args.timeout)
         summary["catalog_process"] = listing
         successful_process(listing)
         require(digest(executable) == executable_sha256, "Executable changed during catalog preparation")
@@ -275,7 +293,7 @@ def run(args):
             check_identity(identity, executable, exclude=output)
             cache = fresh_cache(output / f"cache-{repeat:02}")
             ensure_empty_cache(cache)
-            command = [str(executable), "--cache-dir", str(cache), "--jobs", str(args.jobs)]
+            command = [str(executable), "--cache-dir", str(cache), "--jobs", str(args.jobs), "--debug-mode", "disabled"]
             process = run_process(command, environment, output / f"run-{repeat:02}", args.timeout)
             record = dict(repeat=repeat, cache_directory=str(cache), process=process)
             summary["runs"].append(record)

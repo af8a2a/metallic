@@ -1,4 +1,4 @@
-#include "Runtime/Render/Core/ShaderRegistry.h"
+#include "ShaderRegistry.h"
 
 #include <exception>
 #include <filesystem>
@@ -270,46 +270,61 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
         }
     }
     auto compiled = compileSlangShaderToSpirv(desc, options, log);
-    if (compiled) {
-        // Input byte-content identity. Module creation associates the final
-        // device code after Vulkan feature finalization with the same group.
-        const uint64_t size = compiled->spirv.size() * sizeof(uint32_t);
-        auto hash = hashBytes(14695981039346656037ull, &size, sizeof(size));
-        hash = hashBytes(hash, compiled->spirv.data(), size_t(size));
-        std::lock_guard lock(sourceMutex_);
-        const std::string group = groupForSource(desc.moduleName);
-        auto [it, inserted] = sourceGroups_.try_emplace(hash, group);
-        if (!inserted && group < it->second) { it->second = group; }
-        PipelineRecipeShader identity;
-        identity.moduleName = desc.moduleName ? desc.moduleName : "";
-        identity.sourceEntryPoint = desc.entryPointName ? desc.entryPointName : "";
-        identity.descriptorHeapMode = slangUsesNativeDescriptorHeap(desc) ? "native" : "mapped";
-        identity.optimizationLevel = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(desc));
-        const auto postprocess = slangShaderPostprocessMode(desc);
-        identity.spirvPostprocess = slangShaderPostprocessModeName(postprocess);
-        if (postprocess == SlangShaderPostprocessMode::DeadBranches || postprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
-            identity.spirvPostprocessToolVersion = slangShaderPostprocessToolVersion(postprocess);
-        }
-        switch (slangShaderDebugMode()) {
-        case SlangShaderDebugMode::Disabled: identity.debugMode = "release"; break;
-        case SlangShaderDebugMode::ShaderDebug: identity.debugMode = "debug"; break;
-        case SlangShaderDebugMode::CaptureSymbols: identity.debugMode = "capture"; break;
-        }
-        auto [source, sourceInserted] = sourceIdentities_.try_emplace(hash, identity);
-        if (!sourceInserted) {
-            const auto& previous = source->second;
-            if (previous.moduleName != identity.moduleName ||
-                previous.sourceEntryPoint != identity.sourceEntryPoint ||
-                previous.descriptorHeapMode != identity.descriptorHeapMode ||
-                previous.optimizationLevel != identity.optimizationLevel ||
-                previous.debugMode != identity.debugMode ||
-                previous.spirvPostprocess != identity.spirvPostprocess ||
-                previous.spirvPostprocessToolVersion != identity.spirvPostprocessToolVersion) {
-                source->second.sourceIdentityAmbiguous = true;
-            }
+    if (compiled) { registerCompiledShader(desc, *compiled); }
+    return compiled;
+}
+
+void ShaderRegistry::registerCompiledShader(const SlangShaderDesc& desc, const ShaderCompileResult& compiled)
+{
+    // Input byte-content identity. Module creation associates the final
+    // device code after Vulkan feature finalization with the same group.
+    const uint64_t size = compiled.spirv.size() * sizeof(uint32_t);
+    auto hash = hashBytes(14695981039346656037ull, &size, sizeof(size));
+    hash = hashBytes(hash, compiled.spirv.data(), size_t(size));
+    std::lock_guard lock(sourceMutex_);
+    const std::string group = groupForSource(desc.moduleName);
+    auto [it, inserted] = sourceGroups_.try_emplace(hash, group);
+    if (!inserted && group < it->second) { it->second = group; }
+    PipelineRecipeShader identity;
+    identity.moduleName = desc.moduleName ? desc.moduleName : "";
+    identity.sourceEntryPoint = desc.entryPointName ? desc.entryPointName : "";
+    identity.descriptorHeapMode = slangUsesNativeDescriptorHeap(desc) ? "native" : "mapped";
+    identity.optimizationLevel = slangShaderOptimizationLevelName(slangShaderOptimizationLevel(desc));
+    const auto postprocess = slangShaderPostprocessMode(desc);
+    identity.spirvPostprocess = slangShaderPostprocessModeName(postprocess);
+    if (postprocess == SlangShaderPostprocessMode::DeadBranches || postprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
+        identity.spirvPostprocessToolVersion = slangShaderPostprocessToolVersion(postprocess);
+    }
+    switch (slangShaderDebugMode()) {
+    case SlangShaderDebugMode::Disabled: identity.debugMode = "release"; break;
+    case SlangShaderDebugMode::ShaderDebug: identity.debugMode = "debug"; break;
+    case SlangShaderDebugMode::CaptureSymbols: identity.debugMode = "capture"; break;
+    }
+    auto [source, sourceInserted] = sourceIdentities_.try_emplace(hash, identity);
+    if (!sourceInserted) {
+        const auto& previous = source->second;
+        if (previous.moduleName != identity.moduleName ||
+            previous.sourceEntryPoint != identity.sourceEntryPoint ||
+            previous.descriptorHeapMode != identity.descriptorHeapMode ||
+            previous.optimizationLevel != identity.optimizationLevel ||
+            previous.debugMode != identity.debugMode ||
+            previous.spirvPostprocess != identity.spirvPostprocess ||
+            previous.spirvPostprocessToolVersion != identity.spirvPostprocessToolVersion) {
+            source->second.sourceIdentityAmbiguous = true;
         }
     }
-    return compiled;
+}
+
+Result<SlangWarmupBatchResult> ShaderRegistry::getWarmupShaders(std::span<const SlangShaderDesc> requests,
+    const SlangWarmupBatchOptions& options, std::string& log)
+{
+    auto result = compileSlangShaderWarmupBatch(requests, options, log);
+    if (!result) { return makeError(result.error()); }
+    if (!result->completedAllRequests || result->shaders.size() != requests.size()) {
+        log += "Incomplete source-qualified warmup result\n"; return makeError(Error::Failure);
+    }
+    for (size_t index = 0; index < requests.size(); ++index) { registerCompiledShader(requests[index], result->shaders[index]); }
+    return result;
 }
 
 std::string ShaderRegistry::cacheGroup(uint64_t shaderHash)

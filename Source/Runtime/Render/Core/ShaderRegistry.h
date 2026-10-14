@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/Core/SlangCompiler.h"
+#include "SlangCompiler.h"
 #include "Runtime/Render/Core/PipelineRecipe.h"
 #include "Runtime/Render/Core/NativePipelineCache.h"
 
@@ -69,6 +69,8 @@ public:
     [[nodiscard]] Result<ShaderCompileResult> getShader(const SlangShaderDesc& desc, std::string& log);
     [[nodiscard]] Result<ShaderCompileResult> getShader(const SlangShaderDesc& desc,
         const SlangShaderCacheOptions& options, std::string& log);
+    [[nodiscard]] Result<SlangWarmupBatchResult> getWarmupShaders(std::span<const SlangShaderDesc> requests,
+        const SlangWarmupBatchOptions& options, std::string& log);
     // Opt-in tests only. At most one scope can be installed. Resolve callbacks
     // run outside the registry lock and remain alive for in-flight requests
     // after scope removal. Handled requests never read/write Slang's cache or
@@ -105,9 +107,12 @@ public:
     [[nodiscard]] Result<> flushPipelineCaches(Device& device);
 
 private:
+    friend struct ShaderRegistryIdentityTestAccess;
     friend class ShaderArtifactOverrideScope;
     ShaderRegistry() = default;
     void removeArtifactOverride(uint64_t installation) noexcept;
+    // Normal compiler/warmup result registration; never the testing override path.
+    void registerCompiledShader(const SlangShaderDesc& desc, const ShaderCompileResult& compiled);
     std::string cacheGroup(uint64_t shaderHash);
     void registerShaderModule(std::span<const uint32_t> spirv, uint64_t deviceShaderHash);
     PipelineRecipeShader recipeShader(std::span<const uint32_t> spirv);

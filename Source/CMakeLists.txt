@@ -183,7 +183,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::streamline
     metallic::dlss_nr
     nlohmann_json
-    MetallicShaderWarmupCore
+    MetallicShaderCompilerShared
     slang::slang
     spdlog::spdlog
 )

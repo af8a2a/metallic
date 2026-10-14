@@ -77,6 +77,14 @@ struct SlangShaderDesc {
 struct ShaderCompileMetrics {
     uint64_t totalTimeNanoseconds = 0;
     uint64_t cacheLookupTimeNanoseconds = 0;
+    // Source acquire includes capture on a new epoch; capture is its subset.
+    // Complete ordinary-call boundaries retain full source and producer bytes.
+    uint64_t sourceEpochAcquireTimeNanoseconds = 0;
+    uint64_t sourceEpochCaptureTimeNanoseconds = 0;
+    uint64_t producerAcquireTimeNanoseconds = 0;
+    uint64_t producerValidationTimeNanoseconds = 0;
+    uint64_t sourceValidationTimeNanoseconds = 0;
+    uint64_t sourceNotificationValidationTimeNanoseconds = 0;
     uint64_t compilerSetupTimeNanoseconds = 0;
     uint64_t moduleLoadTimeNanoseconds = 0;
     uint64_t dependencyTrackingTimeNanoseconds = 0;
@@ -95,6 +103,7 @@ struct ShaderCompileMetrics {
     uint64_t compilerReportedTotalTimeNanoseconds = 0;
     uint64_t compilerReportedDownstreamTimeNanoseconds = 0;
     bool cacheHit = false;
+    bool sourceEpochReused = false;
     bool compilerExecuted = false;
     bool compilerReportedTimingAvailable = false;
     bool detailedCompilerPerfRequested = false;
@@ -116,6 +125,37 @@ struct SlangShaderCacheOptions {
     // fabricate a per-pass report. Use a cache miss for detailed profiling.
     bool reportDetailedCompilerPerf = false;
 };
+
+struct SlangWarmupBatchOptions {
+    // Per-request outCacheHit is unsupported; the result reports all hits.
+    SlangShaderCacheOptions cache;
+    size_t jobs = 8;
+    bool shareSessions = true;
+};
+
+struct SlangWarmupBatchResult {
+    std::vector<ShaderCompileResult> shaders;
+    size_t sessionGroups = 0;
+    size_t compilerExecutions = 0;
+    size_t existingCacheHits = 0;
+    uint64_t totalTimeNanoseconds = 0;
+    uint64_t snapshotCaptureTimeNanoseconds = 0;
+    uint64_t boundaryValidationTimeNanoseconds = 0;
+    uint64_t cachePublicationTimeNanoseconds = 0;
+    uint64_t cacheProofEncodeTimeNanoseconds = 0;
+    uint64_t cacheAtomicWriteTimeNanoseconds = 0;
+    uint64_t cacheFileReadDecodeTimeNanoseconds = 0;
+    uint64_t cacheFullSourceValidationTimeNanoseconds = 0;
+    bool completedAllRequests = false;
+    bool completeSourceEpochValidated = false;
+    bool liveFSLinearizationProven = false;
+};
+
+// Explicit startup batch. Ordinary misses still create fresh Slang sessions.
+// Every request composes, links and finalizes independently. Source bytes and
+// resolver namespaces are validated before the complete batch is published.
+[[nodiscard]] Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(
+    std::span<const SlangShaderDesc> requests, const SlangWarmupBatchOptions& options, std::string& log);
 
 // Process-global compilation policy. Configure it before shader compilation begins.
 void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept;

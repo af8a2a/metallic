@@ -21,10 +21,13 @@ metadata rather than relying on a permanent index.
 
 ```powershell
 $bench = '.\build-release\Source\MetallicShaderPipelineBench.exe'
-& $bench --list --filter OpenPBRRayQueryPathTraceGuides
-# Current catalog: 146 = Guides with SHARC off; 149 = Update; 152 = Query.
+$guidesRequests = @(& $bench --list --filter OpenPBRRayQueryPathTraceGuides |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { -not ($_.defines | Where-Object { $_[0] -in 'SHARC_UPDATE', 'SHARC_QUERY' }) })
+if ($guidesRequests.Count -ne 1) { throw 'Select one SHARC-off Guides request from the current catalog.' }
+$guidesRequestIndex = $guidesRequests[0].index
 python -B Tools/Perf/RunComputePipelineExperiments.py compile `
-  --executable $bench --request-index 146 `
+  --executable $bench --request-index $guidesRequestIndex `
   --optimizations O1 O0 O2 --backends pipeline `
   --driver-optimization both --pairs 3 `
   --output-dir build-release/bench-compute-optimization
@@ -69,7 +72,7 @@ identities. A fallback to source is an experiment failure, with logs preserved.
 
 ```powershell
 python -B Tools/Perf/RunComputePipelineExperiments.py compile `
-  --executable $bench --request-index 146 --optimizations O1 `
+  --executable $bench --request-index $guidesRequestIndex --optimizations O1 `
   --backends shader-object pipeline-binary --driver-optimization normal `
   --native-binary-cache --pairs 3 `
   --output-dir build-release/bench-compute-native-binary
@@ -88,7 +91,7 @@ must remain unchanged. Native object reuse and source fallback fail the run.
 
 ```powershell
 python -B Tools/Perf/RunComputePipelineExperiments.py compile `
-  --executable $bench --request-index 146 --optimizations O1 `
+  --executable $bench --request-index $guidesRequestIndex --optimizations O1 `
   --backends pipeline shader-object pipeline-binary --driver-optimization normal `
   --application-pipeline-cache --native-binary-cache --pairs 3 `
   --output-dir build-release/bench-compute-load-paths

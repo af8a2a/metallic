@@ -15,6 +15,8 @@
 namespace {
 
 std::atomic<size_t> compileCalls{0};
+std::atomic<size_t> batchCalls{0};
+std::atomic<size_t> batchJobs{0};
 std::atomic<bool> failCompilation{false};
 std::atomic<bool> throwCompilation{false};
 std::atomic<bool> wrongDebugMode{false};
@@ -49,6 +51,8 @@ protected:
         }
         setWorkerEnvironment(nullptr);
         compileCalls = 0;
+        batchCalls = 0;
+        batchJobs = 0;
         failCompilation = false;
         throwCompilation = false;
         wrongDebugMode = false;
@@ -96,6 +100,8 @@ TEST_F(ShaderWarmupStartupTest, StartupHonorsWorkerEnvironment)
     testing::internal::CaptureStdout();
     EXPECT_NE(output.find("Shader warmup workers: 12\n"), std::string::npos);
     EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
+    EXPECT_EQ(batchCalls.load(), 1u);
+    EXPECT_EQ(batchJobs.load(), 12u);
 }
 
 TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeCompilation)
@@ -106,6 +112,7 @@ TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeComp
     }
     EXPECT_EQ(compileCalls.load(), 0u);
     EXPECT_EQ(adapterQueries.load(), 0u);
+    EXPECT_EQ(batchCalls.load(), 0u);
 }
 
 TEST_F(ShaderWarmupStartupTest, ExplicitJobsOverridesInvalidWorkerEnvironment)
@@ -364,7 +371,47 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     if (options.outCacheHit != nullptr) {
         *options.outCacheHit = true;
     }
-    return ShaderCompileResult{};
+    ShaderCompileResult result;
+    // This fixture tests startup dispatch/registration, not shader behavior.
+    result.spirv = {0x07230203, 0x00010600, 0, 1, 0};
+#ifdef _WIN32
+    result.metrics.cacheHit = true;
+#else
+    result.metrics.compilerExecuted = true;
+#endif
+    return result;
+}
+
+Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(
+    std::span<const SlangShaderDesc> requests, const SlangWarmupBatchOptions& options, std::string& diagnostics)
+{
+    ++batchCalls;
+    batchJobs = options.jobs;
+    SlangWarmupBatchResult batch;
+    bool failed = false;
+    for (const auto& request : requests) {
+        try {
+            auto shader = compileSlangShaderToSpirv(request, options.cache, diagnostics);
+            if (!shader) {
+                failed = true;
+                continue;
+            }
+            batch.existingCacheHits += shader->metrics.cacheHit ? 1 : 0;
+            batch.shaders.push_back(std::move(*shader));
+        } catch (const std::exception& error) {
+            diagnostics = error.what();
+            failed = true;
+        }
+    }
+    if (failed || batch.shaders.size() != requests.size()) {
+        return makeError(Error::Failure);
+    }
+    batch.sessionGroups = 1;
+    batch.completedAllRequests = true;
+#ifdef _WIN32
+    batch.completeSourceEpochValidated = true;
+#endif
+    return batch;
 }
 
 } // namespace metallic::render

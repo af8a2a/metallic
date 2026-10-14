@@ -25,6 +25,17 @@ WARMUP = """Shader warmup workers: 2
 Shader warmup: 2 requests, 0 existing cache hits, 0 failures
 Shader warmup elapsed: 0.6s; summed request time: 0.6s (module=0.2s, codegen=0.4s)
 """
+BATCH_WARMUP = """Shader warmup workers: 2
+[0/2 0%] Starting validated immutable source batch | cached: 0 | failed: 0 | elapsed: 0.0s
+  Request 1 timing: total=0.2s, setup=0.0s, module=0.1s, codegen=0.1s
+[1/2 50%] Compiled: Features/First.firstMain | cached: 0 | failed: 0 | elapsed: 0.6s
+  Request 2 timing: total=0.4s, setup=0.0s, module=0.1s, codegen=0.3s
+[2/2 100%] Compiled: Features/Second.secondMain | cached: 0 | failed: 0 | elapsed: 0.6s
+Warmup source batch: 1 groups; static estimate schedule; snapshot=0.01s; boundary=0.01s; cache publication/readback=0.1s; live_fs_atomic=false
+Warmup V3 publication phases: proof encode=0.02s; atomic write=0.02s; file read/decode=0.04s; full source validation=0.02s
+Shader warmup: 2 requests, 0 existing cache hits, 0 failures
+Shader warmup elapsed: 0.6s; summed request time: 0.6s (module=0.2s, codegen=0.4s)
+"""
 
 
 class ShaderWarmupEvidenceTests(unittest.TestCase):
@@ -70,6 +81,20 @@ class ShaderWarmupEvidenceTests(unittest.TestCase):
         self.assertEqual(result["median_seconds"], 9.0)
         runs[-1]["process"]["process_wall_seconds"] = 9.9
         self.assertTrue(measure.aggregate(runs, 10.0)["goal_reached"])
+
+    def test_batch_log_requires_every_request_and_actual_publication(self):
+        catalog = measure.parse_catalog(CATALOG)
+        result = measure.parse_warmup(BATCH_WARMUP, catalog, 8)
+        self.assertEqual(result["batch"]["session_groups"], 1)
+        self.assertAlmostEqual(result["batch"]["publication_phases_seconds"]["file_read_decode"], 0.04)
+        for invalid in (BATCH_WARMUP.replace("Features/Second.secondMain", "Features/Other.otherMain"),
+                        BATCH_WARMUP.replace("[2/2 100%] Compiled:", "[1/2 50%] Compiled:"),
+                        BATCH_WARMUP.replace("1 groups", "0 groups"),
+                        BATCH_WARMUP.replace("file read/decode=0.04s", "file read/decode=9.04s"),
+                        BATCH_WARMUP.replace("full source validation=0.02s", "full source validation=nans"),
+                        BATCH_WARMUP + "Shader warmup used fresh sessions without persistent cache reuse\n"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                measure.parse_warmup(invalid, catalog, 8)
 
     def test_input_content_and_source_inventory_changes_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

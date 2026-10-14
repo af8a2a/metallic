@@ -223,70 +223,52 @@ int run(int argc, char** argv)
         }
     } else {
         jobs = std::min(jobs, requests.size());
-        std::vector<size_t> executionOrder(requests.size());
-        std::iota(executionOrder.begin(), executionOrder.end(), size_t{0});
-        std::stable_sort(executionOrder.begin(), executionOrder.end(), [&](size_t left, size_t right) {
-            return compilePriority(requests[left]) > compilePriority(requests[right]);
-        });
+        std::vector<std::unique_ptr<ShaderRequestView>> views;
+        std::vector<SlangShaderDesc> descriptors;
+        views.reserve(requests.size()); descriptors.reserve(requests.size());
+        for (size_t index = 0; index < requests.size(); ++index) {
+            views.push_back(std::make_unique<ShaderRequestView>(requests[index]));
+            auto desc = views.back()->desc();
+            desc.descriptorHeapStrides = nativeRequests[index] ? nativeStrides : DescriptorHeapShaderStrides{};
+            descriptors.push_back(desc);
+        }
         std::cout << "Shader warmup workers: " << jobs << std::endl;
-        progress("Starting");
-        std::atomic<size_t> nextRequest{0};
-        std::mutex outputMutex;
-        {
-            // jthread also joins already-started workers if thread creation fails.
-            // All shared state outlives the workers; counters and output share a lock.
-            std::vector<std::jthread> workers;
-            workers.reserve(jobs);
-            for (size_t worker = 0; worker < jobs; ++worker) {
-                workers.emplace_back([&] {
-                    for (;;) {
-                        const size_t next = nextRequest.fetch_add(1, std::memory_order_relaxed);
-                        if (next >= executionOrder.size()) {
-                            return;
-                        }
-                        const size_t index = executionOrder[next];
-                        const auto& request = requests[index];
-                        const DescriptorHeapShaderStrides strides = nativeRequests[index] ? nativeStrides : DescriptorHeapShaderStrides{};
-                        std::string name = request.module + "." + request.entry;
-                        if (strides.resource != 0) {
-                            name += " [resource-stride=" + std::to_string(strides.resource) +
-                                ", sampler-stride=" + std::to_string(strides.sampler) + "]";
-                        }
-                        {
-                            std::scoped_lock lock(outputMutex);
-                            std::cout << "  Processing " << (index + 1) << '/' << totalRequests
-                                      << ": " << name << std::endl;
-                        }
-                        CompileOutcome outcome;
-                        try {
-                            outcome = compileRequest(request, cacheDirectory, strides);
-                        } catch (const std::exception& error) {
-                            outcome.error = error.what();
-                        } catch (...) {
-                            outcome.error = "unknown compilation exception";
-                        }
-                        std::scoped_lock lock(outputMutex);
-                        ++selected;
-                        hits += outcome.cacheHit ? 1 : 0;
-                        compilerTimeNanoseconds += outcome.metrics.totalTimeNanoseconds;
-                        moduleLoadTimeNanoseconds += outcome.metrics.moduleLoadTimeNanoseconds;
-                        codeGenerationTimeNanoseconds += outcome.metrics.codeGenerationTimeNanoseconds;
-                        if (!outcome.error.empty()) {
-                            ++failures;
-                            std::cerr << name << ": " << outcome.error << '\n';
-                        }
-                        const std::string status = std::string(!outcome.error.empty() ? "Failed: " :
-                            outcome.cacheHit ? "Cached: " : "Compiled: ") + name;
-                        std::cout << std::setprecision(3) << "  Request " << (index + 1) << " timing: total="
-                                  << double(outcome.metrics.totalTimeNanoseconds) / 1e9
-                                  << "s, setup=" << double(outcome.metrics.compilerSetupTimeNanoseconds) / 1e9
-                                  << "s, module=" << double(outcome.metrics.moduleLoadTimeNanoseconds) / 1e9
-                                  << "s, codegen=" << double(outcome.metrics.codeGenerationTimeNanoseconds) / 1e9
-                                  << "s" << std::endl;
-                        progress(status.c_str());
-                    }
-                });
+        progress("Starting validated immutable source batch");
+        std::string diagnostics;
+        const SlangWarmupBatchOptions batchOptions{
+            .cache = {.cacheDirectory = cacheDirectory.empty() ? nullptr : cacheDirectory.c_str()},
+            .jobs = jobs, .shareSessions = true};
+        auto batch = ShaderRegistry::instance().getWarmupShaders(descriptors, batchOptions, diagnostics);
+        if (!batch || !batch->completedAllRequests || batch->shaders.size() != totalRequests) {
+            ++failures; std::cerr << "Complete shader warmup batch rejected: " << diagnostics << '\n';
+        } else {
+            for (size_t index = 0; index < totalRequests; ++index) {
+                const auto& metrics = batch->shaders[index].metrics;
+                ++selected; hits += metrics.cacheHit ? 1 : 0;
+                compilerTimeNanoseconds += metrics.totalTimeNanoseconds;
+                moduleLoadTimeNanoseconds += metrics.moduleLoadTimeNanoseconds;
+                codeGenerationTimeNanoseconds += metrics.codeGenerationTimeNanoseconds;
+                const auto name = requests[index].module + "." + requests[index].entry;
+                std::cout << std::setprecision(3) << "  Request " << (index + 1) << " timing: total="
+                          << double(metrics.totalTimeNanoseconds) / 1e9 << "s, setup="
+                          << double(metrics.compilerSetupTimeNanoseconds) / 1e9 << "s, module="
+                          << double(metrics.moduleLoadTimeNanoseconds) / 1e9 << "s, codegen="
+                          << double(metrics.codeGenerationTimeNanoseconds) / 1e9 << "s" << std::endl;
+                const auto status = std::string(metrics.cacheHit ? "Cached: " : "Compiled: ") + name;
+                progress(status.c_str());
             }
+            if (!batch->completeSourceEpochValidated) {
+                std::cout << "Shader warmup used fresh sessions without persistent cache reuse\n";
+            }
+            std::cout << "Warmup source batch: " << batch->sessionGroups << " groups; static estimate schedule; snapshot="
+                      << double(batch->snapshotCaptureTimeNanoseconds) / 1e9 << "s; boundary="
+                      << double(batch->boundaryValidationTimeNanoseconds) / 1e9 << "s; cache publication/readback="
+                      << double(batch->cachePublicationTimeNanoseconds) / 1e9 << "s; live_fs_atomic=false\n";
+            std::cout << "Warmup V3 publication phases: proof encode="
+                      << double(batch->cacheProofEncodeTimeNanoseconds) / 1e9 << "s; atomic write="
+                      << double(batch->cacheAtomicWriteTimeNanoseconds) / 1e9 << "s; file read/decode="
+                      << double(batch->cacheFileReadDecodeTimeNanoseconds) / 1e9 << "s; full source validation="
+                      << double(batch->cacheFullSourceValidationTimeNanoseconds) / 1e9 << "s\n";
         }
     }
     std::cout << "Shader warmup: " << selected << " requests, " << hits

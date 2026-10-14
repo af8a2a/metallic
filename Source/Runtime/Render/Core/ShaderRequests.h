@@ -129,7 +129,24 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
         {"METALLIC_REALTIME_DEFERRED", flag(deferred)},
     };
     request.defines.emplace_back("METALLIC_DEFERRED_UPSCALER_GUIDES", flag(deferred && options.upscalerGuides));
-    if (deferred) { request.defines.emplace_back("METALLIC_DEFERRED_FP16", flag(options.deferredFloat16)); }
+    if (deferred) {
+        bool deferredFloat16 = options.deferredFloat16;
+        if (program == SceneShaderProgram::DeferredBinned) {
+            const auto classCount = std::count_if(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+                return std::string_view(define.name) == "MATERIAL_CLASS";
+            });
+            const bool backgroundOnly = std::any_of(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+                return std::string_view(define.name) == "MATERIAL_CLASS" && std::string_view(define.value) == "0";
+            });
+            const bool explicitPrecision = std::any_of(extraDefines.begin(), extraDefines.end(), [](const auto& define) {
+                return std::string_view(define.name) == "METALLIC_DEFERRED_FP16";
+            });
+            // Class zero only shades the environment and never evaluates the
+            // deferred FP16 lighting path. Preserve ambiguous/explicit overrides.
+            if (classCount == 1 && backgroundOnly && !explicitPrecision) { deferredFloat16 = false; }
+        }
+        request.defines.emplace_back("METALLIC_DEFERRED_FP16", flag(deferredFloat16));
+    }
     for (const auto& define : extraDefines) { request.defines.emplace_back(define.name, define.value); }
     if (options.customMaterials) { request.searchPaths.push_back(options.materialInclude); }
     if (!deferred && options.hasRTXCR) { request.searchPaths.push_back(options.rtxcrInclude); }
@@ -170,11 +187,24 @@ inline ShaderRequest makeEditorDisplayShaderRequest(const char* entry, bool hdr,
         return {.module = "Features/PostProcess/EditorDisplay", .entry = entry,
             .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
     }
+    std::string canonicalWhiteNits = whiteNits;
+    if (std::string_view(entry) == "editorDisplayFragment") {
+        // At exactly 80 nits, HDR conversion of an sRGB image is the same
+        // identity conversion as SDR output to an sRGB attachment.
+        if (hdr && !scRgbImage && whiteNits == "80.000000") {
+            hdr = false;
+            sRGBAttachment = true;
+        } else if (hdr) {
+            sRGBAttachment = false;
+        }
+        // Paper white only scales SDR scRGB previews and HDR sRGB images.
+        if (hdr == scRgbImage) { canonicalWhiteNits = "203.000000"; }
+    }
     return {.module = "Features/PostProcess/EditorDisplay", .entry = entry,
         .defines = {{"DISPLAY_HDR", hdr ? "1" : "0"},
             {"DISPLAY_SCRGB_IMAGE", scRgbImage ? "1" : "0"},
             {"DISPLAY_SRGB_ATTACHMENT", sRGBAttachment ? "1" : "0"},
-            {"DISPLAY_WHITE_NITS", whiteNits}},
+            {"DISPLAY_WHITE_NITS", canonicalWhiteNits}},
         .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
 }
 

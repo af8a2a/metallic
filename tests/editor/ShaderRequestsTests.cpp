@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/BuiltinShaderRequests.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Tools/MaterialShaderWarmupRequests.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Scene/scene.h"
@@ -656,7 +657,7 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
         EXPECT_EQ(std::count(catalog.begin(), catalog.end(), catalog[i]), 1);
         if (catalog[i].module == "Features/VisibilityBuffer/VisibilityBufferDeferred") { ++deferredCount; }
     }
-    EXPECT_EQ(deferredCount, 48u);
+    EXPECT_EQ(deferredCount, 44u);
     {
         auto options = standardSceneOptions();
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
@@ -897,7 +898,7 @@ TEST(ShaderRequests, EditorDisplayVertexSharesAllFragmentDisplaySettings)
     EXPECT_EQ(vertex.descriptorHeapMode, SlangDescriptorHeapMode::Mapped);
     EXPECT_TRUE(vertex.defines.empty());
     EXPECT_EQ(std::count(catalog.begin(), catalog.end(), vertex), 1);
-    size_t fragmentCount = 0;
+    std::vector<ShaderRequest> fragments;
     for (bool hdr : {false, true}) {
         for (bool scRgb : {false, true}) {
             for (bool sRGB : {false, true}) {
@@ -905,13 +906,16 @@ TEST(ShaderRequests, EditorDisplayVertexSharesAllFragmentDisplaySettings)
                     const auto whiteNits = std::to_string(white);
                     EXPECT_EQ(makeEditorDisplayShaderRequest("editorDisplayVertex", hdr, scRgb, sRGB, whiteNits), vertex);
                     const auto fragment = makeEditorDisplayShaderRequest("editorDisplayFragment", hdr, scRgb, sRGB, whiteNits);
+                    const bool identityHdr = hdr && !scRgb && whiteNits == "80.000000";
+                    const bool canonicalHdr = hdr && !identityHdr;
+                    const bool canonicalAttachment = identityHdr || (!hdr && sRGB);
                     EXPECT_EQ(fragment.defines, (std::vector<std::pair<std::string, std::string>>{
-                        {"DISPLAY_HDR", hdr ? "1" : "0"},
+                        {"DISPLAY_HDR", canonicalHdr ? "1" : "0"},
                         {"DISPLAY_SCRGB_IMAGE", scRgb ? "1" : "0"},
-                        {"DISPLAY_SRGB_ATTACHMENT", sRGB ? "1" : "0"},
-                        {"DISPLAY_WHITE_NITS", whiteNits}}));
+                        {"DISPLAY_SRGB_ATTACHMENT", canonicalAttachment ? "1" : "0"},
+                        {"DISPLAY_WHITE_NITS", canonicalHdr == scRgb ? "203.000000" : whiteNits}}));
                     EXPECT_EQ(std::count(catalog.begin(), catalog.end(), fragment), 1);
-                    ++fragmentCount;
+                    if (!contains(fragments, fragment)) { fragments.push_back(fragment); }
                 }
             }
         }
@@ -919,9 +923,170 @@ TEST(ShaderRequests, EditorDisplayVertexSharesAllFragmentDisplaySettings)
     EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
         return request.module == "Features/PostProcess/EditorDisplay" && request.entry == "editorDisplayVertex";
     }), 1);
+    EXPECT_EQ(fragments.size(), 8u);
     EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
         return request.module == "Features/PostProcess/EditorDisplay" && request.entry == "editorDisplayFragment";
-    }), fragmentCount);
+    }), fragments.size());
+}
+
+TEST(ShaderRequests, EditorDisplayFragmentOnlyCanonicalizesKnownInactiveSettings)
+{
+    const auto sRGBOutput = makeEditorDisplayShaderRequest("editorDisplayFragment", false, false, true, "203.000000");
+    EXPECT_EQ(makeEditorDisplayShaderRequest("editorDisplayFragment", true, false, false, "80.000000"), sRGBOutput);
+    for (const char* white : {"80.0", "80", "8e1", "(40.0 * 2.0)"}) {
+        const auto hdr = makeEditorDisplayShaderRequest("editorDisplayFragment", true, false, true, white);
+        EXPECT_NE(hdr, sRGBOutput);
+        EXPECT_EQ(hdr.defines, (std::vector<std::pair<std::string, std::string>>{
+            {"DISPLAY_HDR", "1"}, {"DISPLAY_SCRGB_IMAGE", "0"},
+            {"DISPLAY_SRGB_ATTACHMENT", "0"}, {"DISPLAY_WHITE_NITS", white}}));
+    }
+    const auto unknown = makeEditorDisplayShaderRequest("futureDisplayEntry", true, true, true, "80.000000");
+    EXPECT_EQ(unknown.defines, (std::vector<std::pair<std::string, std::string>>{
+        {"DISPLAY_HDR", "1"}, {"DISPLAY_SCRGB_IMAGE", "1"},
+        {"DISPLAY_SRGB_ATTACHMENT", "1"}, {"DISPLAY_WHITE_NITS", "80.000000"}}));
+    EXPECT_NE(makeEditorDisplayShaderRequest("editorDisplayFragment", false, true, false, "80.000000"),
+        makeEditorDisplayShaderRequest("editorDisplayFragment", false, true, false, "203.000000"));
+}
+
+TEST(ShaderRequests, DeferredBackgroundOnlySharesUnambiguousUnusedPrecision)
+{
+    const SceneShaderOptions half{.customMaterials = true, .globalView = true, .hasRTXCR = true,
+        .deferredFloat16 = true, .upscalerGuides = true, .materialInclude = "C:/MaterialPrograms",
+        .rtxcrInclude = "C:/RTXCR"};
+    auto full = half;
+    full.deferredFloat16 = false;
+    const SlangMacroDefine background[]{{"BEFORE_CLASS", "3"}, {"MATERIAL_CLASS", "0"}, {"AFTER_CLASS", "7"}};
+    const auto canonical = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, half, background);
+    EXPECT_EQ(canonical, makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, full, background));
+    EXPECT_EQ(canonical.searchPaths, (std::vector<std::string>{half.materialInclude}));
+    EXPECT_EQ((std::vector<std::pair<std::string, std::string>>(canonical.defines.end() - 4, canonical.defines.end())),
+        (std::vector<std::pair<std::string, std::string>>{{"METALLIC_DEFERRED_FP16", "0"},
+            {"BEFORE_CLASS", "3"}, {"MATERIAL_CLASS", "0"}, {"AFTER_CLASS", "7"}}));
+    EXPECT_NE(makeSceneShaderRequest(SceneShaderProgram::Deferred, half, background),
+        makeSceneShaderRequest(SceneShaderProgram::Deferred, full, background));
+    EXPECT_NE(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, half),
+        makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, full));
+    for (const char* value : {"00", "0u", "1", "2", "3", "4", "-1"}) {
+        const SlangMacroDefine materialClass{"MATERIAL_CLASS", value};
+        EXPECT_NE(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, half, {&materialClass, 1}),
+            makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, full, {&materialClass, 1}));
+    }
+    for (const auto& values : {std::pair{"0", "0"}, std::pair{"0", "1"}, std::pair{"1", "0"}}) {
+        const SlangMacroDefine classes[]{{"MATERIAL_CLASS", values.first}, {"MATERIAL_CLASS", values.second}};
+        EXPECT_NE(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, half, classes),
+            makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, full, classes));
+    }
+    for (const char* precision : {"0", "1"}) {
+        const SlangMacroDefine overrides[]{{"MATERIAL_CLASS", "0"}, {"METALLIC_DEFERRED_FP16", precision}};
+        const auto request = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, half, overrides);
+        EXPECT_NE(request, makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, full, overrides));
+        EXPECT_EQ((std::vector<std::pair<std::string, std::string>>(request.defines.end() - 3, request.defines.end())),
+            (std::vector<std::pair<std::string, std::string>>{{"METALLIC_DEFERRED_FP16", "1"},
+                {"MATERIAL_CLASS", "0"}, {"METALLIC_DEFERRED_FP16", precision}}));
+    }
+}
+
+TEST_F(ShaderRequestCompileTest, EditorDisplayCanonicalizationPreservesAllFinalBytecodeAndRuntimeCacheHits)
+{
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const std::string directory = uniqueShaderCacheDirectory("display-canonicalization");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    std::vector<ShaderRequest> compiledRequests;
+    std::vector<std::vector<uint32_t>> uniqueBytecode;
+    for (bool hdr : {false, true}) {
+        for (bool scRgb : {false, true}) {
+            for (bool sRGB : {false, true}) {
+                for (float white : {80.0f, 203.0f}) {
+                    SCOPED_TRACE(hdr);
+                    SCOPED_TRACE(scRgb);
+                    SCOPED_TRACE(sRGB);
+                    SCOPED_TRACE(white);
+                    const auto whiteNits = std::to_string(white);
+                    const ShaderRequest original{.module = "Features/PostProcess/EditorDisplay", .entry = "editorDisplayFragment",
+                        .defines = {{"DISPLAY_HDR", hdr ? "1" : "0"}, {"DISPLAY_SCRGB_IMAGE", scRgb ? "1" : "0"},
+                            {"DISPLAY_SRGB_ATTACHMENT", sRGB ? "1" : "0"}, {"DISPLAY_WHITE_NITS", whiteNits}},
+                        .descriptorHeapMode = SlangDescriptorHeapMode::Mapped, .optimizationLevel = SlangShaderOptimizationLevel::O1};
+                    const ShaderRequestView originalSource(original);
+                    const auto reference = compileSlangShaderToSpirv(originalSource.desc(), {.enableDiskCache = false}, diagnostics);
+                    ASSERT_TRUE(reference) << diagnostics;
+                    const auto runtime = makeEditorDisplayShaderRequest("editorDisplayFragment", hdr, scRgb, sRGB, whiteNits);
+                    const auto warmup = std::find(catalog.begin(), catalog.end(), runtime);
+                    ASSERT_NE(warmup, catalog.end());
+                    const ShaderRequestView warmupSource(*warmup);
+                    const auto compiled = ShaderRegistry::instance().getShader(warmupSource.desc(), cache, diagnostics);
+                    ASSERT_TRUE(compiled) << diagnostics;
+                    EXPECT_EQ(hit, contains(compiledRequests, runtime));
+                    EXPECT_EQ(compiled->spirv, reference->spirv);
+                    if (!contains(compiledRequests, runtime)) { compiledRequests.push_back(runtime); }
+                    if (std::find(uniqueBytecode.begin(), uniqueBytecode.end(), reference->spirv) == uniqueBytecode.end()) {
+                        uniqueBytecode.push_back(reference->spirv);
+                    }
+                    const ShaderRequestView runtimeSource(runtime);
+                    const auto reused = ShaderRegistry::instance().getShader(runtimeSource.desc(), cache, diagnostics);
+                    ASSERT_TRUE(reused) << diagnostics;
+                    EXPECT_TRUE(hit);
+                    EXPECT_EQ(reused->spirv, reference->spirv);
+                    EXPECT_FALSE(reused->metrics.compilerExecuted);
+                }
+            }
+        }
+    }
+    EXPECT_EQ(compiledRequests.size(), 8u);
+    EXPECT_EQ(uniqueBytecode.size(), 8u);
+}
+
+TEST_F(ShaderRequestCompileTest, DeferredBackgroundCanonicalizationPreservesAllFinalBytecodeAndRuntimeCacheHits)
+{
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const std::string directory = uniqueShaderCacheDirectory("deferred-background-canonicalization");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    std::vector<ShaderRequest> compiledRequests;
+    const SlangMacroDefine materialClass{"MATERIAL_CLASS", "0"};
+    for (bool guides : {false, true}) {
+        for (bool view : {false, true}) {
+            for (bool half : {false, true}) {
+                SCOPED_TRACE(guides);
+                SCOPED_TRACE(view);
+                SCOPED_TRACE(half);
+                const SceneShaderOptions options{.globalView = view, .deferredFloat16 = half, .upscalerGuides = guides};
+                const auto runtime = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&materialClass, 1});
+                auto original = runtime;
+                original.descriptorHeapMode = SlangDescriptorHeapMode::Mapped;
+                original.optimizationLevel = SlangShaderOptimizationLevel::O1;
+                const auto precision = std::find_if(original.defines.begin(), original.defines.end(), [](const auto& define) {
+                    return define.first == "METALLIC_DEFERRED_FP16";
+                });
+                ASSERT_NE(precision, original.defines.end());
+                precision->second = half ? "1" : "0";
+                const ShaderRequestView originalSource(original);
+                const auto reference = compileSlangShaderToSpirv(originalSource.desc(), {.enableDiskCache = false}, diagnostics);
+                ASSERT_TRUE(reference) << diagnostics;
+                const auto warmup = std::find(catalog.begin(), catalog.end(), runtime);
+                ASSERT_NE(warmup, catalog.end());
+                auto canonical = *warmup;
+                canonical.descriptorHeapMode = SlangDescriptorHeapMode::Mapped;
+                const ShaderRequestView warmupSource(canonical);
+                const auto compiled = ShaderRegistry::instance().getShader(warmupSource.desc(), cache, diagnostics);
+                ASSERT_TRUE(compiled) << diagnostics;
+                EXPECT_EQ(hit, contains(compiledRequests, runtime));
+                EXPECT_EQ(compiled->spirv, reference->spirv);
+                if (!contains(compiledRequests, runtime)) { compiledRequests.push_back(runtime); }
+                auto mappedRuntime = runtime;
+                mappedRuntime.descriptorHeapMode = SlangDescriptorHeapMode::Mapped;
+                const ShaderRequestView runtimeSource(mappedRuntime);
+                const auto reused = ShaderRegistry::instance().getShader(runtimeSource.desc(), cache, diagnostics);
+                ASSERT_TRUE(reused) << diagnostics;
+                EXPECT_TRUE(hit);
+                EXPECT_EQ(reused->spirv, reference->spirv);
+                EXPECT_FALSE(reused->metrics.compilerExecuted);
+            }
+        }
+    }
+    EXPECT_EQ(compiledRequests.size(), 4u);
 }
 
 TEST(ShaderRequests, OpenPBRGuideTrainingSharesThePathTraceRequest)

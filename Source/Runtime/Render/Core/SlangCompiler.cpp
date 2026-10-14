@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ColorSpace.h"
+#include "ShaderCompilerBuildIdentity.h"
 #include "Runtime/Render/GAPI/ShaderTarget.h"
 
 #include <slang-com-ptr.h>
@@ -50,7 +51,14 @@
 #define PROJECT_SOURCE_DIR "."
 #endif
 
+#include "SlangSessionConfig.h"
+#include "SlangSnapshotFileSystem.h"
+#include "SlangWarmupCacheTransaction.h"
+#include "SlangWarmupSchedule.h"
+#include "SlangCompiler.h"
+
 namespace metallic::render {
+using namespace slang_snapshot;
 namespace {
 
 // Versioned independently from Slang so malformed or stale cache files fail closed.
@@ -999,6 +1007,9 @@ void appendDiagnostics(slang::IBlob* diagnostics, std::string& outDiagnostics)
 }
 
 } // namespace
+#include "SlangSessionConfigImpl.inc"
+#include "SlangCompileContext.inc"
+
 
 void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept
 {
@@ -1099,7 +1110,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(const SlangShaderDesc& des
     return compileSlangShaderToSpirv(desc, SlangShaderCacheOptions{}, log);
 }
 
-Result<ShaderCompileResult> compileSlangShaderToSpirv(
+Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
     const SlangShaderDesc& desc,
     const SlangShaderCacheOptions& cacheOptions,
     std::string& log)
@@ -1118,77 +1129,50 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         *cacheOptions.outCacheHit = false;
     }
 
-    if (desc.moduleName == nullptr || desc.entryPointName == nullptr || desc.searchPath == nullptr ||
-        (desc.additionalSearchPaths.size() > UINT32_MAX || desc.capabilities.size() > UINT32_MAX ||
-         desc.macroDefines.size() > UINT32_MAX)) {
-        return makeError(Error::InvalidArgument);
-    }
-    for (uint32_t index = 0; index < desc.additionalSearchPaths.size(); ++index) {
-        if (desc.additionalSearchPaths[index] == nullptr ||
-            desc.additionalSearchPaths[index][0] == '\0') {
-            return makeError(Error::InvalidArgument);
-        }
-    }
-
-    for (const auto& macro : desc.macroDefines) {
-        if (macro.name != nullptr && std::string_view(macro.name) == "METALLIC_WORKING_SPACE_ACESCG") {
-            log = "Working color space is process-wide; per-shader override is forbidden";
-            return makeError(Error::InvalidArgument);
-        }
-    }
-    const bool native = nativeDescriptorHeapEnabled(desc);
-    SlangShaderDesc resolvedDesc = desc;
-    resolvedDesc.descriptorHeapMode = native ? SlangDescriptorHeapMode::Native : SlangDescriptorHeapMode::Mapped;
-    resolvedDesc.descriptorHeapStrides = {};
-    if (native) {
-        auto strides = desc.descriptorHeapStrides;
-        if (!strides.resource && !strides.sampler) {
-            strides = slangDescriptorHeapShaderStrides();
-        }
-        if (strides.resource < 8 || !strides.sampler ||
-            strides.resource > INT32_MAX || strides.sampler > INT32_MAX) {
-            log = "Native descriptor-heap compilation requires explicit resource/sampler strides "
-                "or an initialized Vulkan device. Both strides must fit a positive Slang int32 option.\n";
-            return makeError(Error::InvalidArgument);
-        }
-        resolvedDesc.descriptorHeapStrides = strides;
-    }
-    const SlangShaderDebugMode debugMode = slangShaderDebugMode();
-    const auto effectiveOptimization = resolveOptimizationLevel(desc, debugMode);
-    if (!effectiveOptimization) {
-        log = "Invalid Slang optimization level; METALLIC_SLANG_OPTIMIZATION and explicit requests "
-            "must select default, O0, O1, O2 or O3.\n";
-        return makeError(Error::InvalidArgument);
-    }
-    const SlangOptimizationLevel optimizationLevel = compilerOptimizationLevel(*effectiveOptimization);
-    const auto effectivePostprocess = resolvePostprocessMode(desc);
-    if (!effectivePostprocess) {
-        log = "Invalid SPIR-V postprocess mode; METALLIC_SPIRV_POSTPROCESS and explicit requests "
-            "must select default, none, dead-branches or slang-dead-branches.\n";
-        return makeError(Error::InvalidArgument);
-    }
-    if (*effectivePostprocess == SlangShaderPostprocessMode::DeadBranches ||
-        *effectivePostprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
-        if (native) {
-            log = "SPIR-V dead-branch cleanup currently supports only mapped descriptors; "
-                "native descriptor-heap optimization is unsupported.\n";
-            return makeError(Error::InvalidArgument);
-        }
-#if !METALLIC_HAS_SPIRV_TOOLS
-        log = *effectivePostprocess == SlangShaderPostprocessMode::SlangDeadBranches
-            ? "Slang downstream SPIR-V cleanup requires a build with the SPIRV-Tools validator.\n"
-            : "SPIR-V dead-branch cleanup requires a build with SPIRV-Tools-opt.\n";
-        return makeError(Error::InvalidArgument);
-#endif
-    }
+    auto preparedResult = prepareSlangRequest(desc, log);
+    if (!preparedResult) { return makeError(preparedResult.error()); }
+    auto prepared = std::move(*preparedResult);
+    const bool native = prepared->native;
+    const auto& resolvedDesc = prepared->resolvedDesc;
+    const auto debugMode = prepared->debugMode;
+    const auto effectiveOptimization = prepared->effectiveOptimization;
+    const auto optimizationLevel = prepared->optimizationLevel;
+    const auto effectivePostprocess = prepared->effectivePostprocess;
     const auto& target = vulkanSpirvTarget();
-    const uint64_t requestHash = shaderRequestHash(
-        resolvedDesc, debugMode, optimizationLevel, target, *effectivePostprocess);
+    const auto requestHash = prepared->requestHash;
+    SlangSourceEpochPool::Lease ordinaryLease;
+    std::unique_ptr<SnapshotCompileContext> ordinaryContext;
+    auto* snapshotContext = gWarmupSnapshotCompileContext;
+    if (!snapshotContext && !gBypassOrdinarySnapshot) {
+        try {
+            const auto producerStarted = Clock::now();
+            const auto seal = compilerProducerSeal();
+            metrics.producerAcquireTimeNanoseconds = elapsed(producerStarted);
+            auto planningConfig = OwnedSlangSessionConfig::create(nullptr, prepared->owned.descriptor,
+                prepared->sessionPolicy(cacheOptions), nullptr, log);
+            if (seal && planningConfig) {
+                ordinaryLease = SlangSourceEpochPool::acquire(planningConfig->normalizedSearchPaths(), seal, log);
+                metrics.sourceEpochAcquireTimeNanoseconds = ordinaryLease.acquireTimeNanoseconds;
+                metrics.sourceEpochCaptureTimeNanoseconds = ordinaryLease.captureTimeNanoseconds;
+                metrics.sourceEpochReused = ordinaryLease.reused;
+                if (ordinaryLease.epoch) {
+                    ordinaryContext = std::make_unique<SnapshotCompileContext>(*ordinaryLease.epoch->snapshot, seal, false);
+                    ordinaryContext->invocationMetrics = &metrics;
+                    snapshotContext = ordinaryContext.get();
+                }
+            }
+        } catch (const std::exception& error) {
+            // Unqualified graphs keep ordinary fresh compilation available;
+            // they cannot read or write the namespace-qualified positive cache.
+            log += std::string("[ShaderCacheV3] Bypass reuse: ") + error.what() + '\n';
+        }
+    }
+    if (snapshotContext && !snapshotContext->guard(log, false)) { return makeError(Error::Failure); }
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
     std::vector<ShaderDependencySnapshot> cachedDependencies;
     const auto cacheLookupStart = Clock::now();
     const bool cacheHit = cacheOptions.enableDiskCache &&
-        loadCachedShader(cachePath, requestHash, outResult.spirv, cachedDependencies);
+        snapshotContext && loadSnapshotCachedShader(*snapshotContext, cachePath, requestHash, outResult.spirv, cachedDependencies, log);
     metrics.cacheLookupTimeNanoseconds = cacheOptions.enableDiskCache ? elapsed(cacheLookupStart) : 0;
     metrics.cacheHit = cacheHit;
     if (cacheHit) {
@@ -1205,6 +1189,13 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
             desc.entryPointName,
             cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization),
             slangShaderPostprocessModeName(*effectivePostprocess));
+        outResult.diagnostics = log;
+        metrics.totalTimeNanoseconds = elapsed(requestStart);
+        if (snapshotContext && !completeSnapshotInvocation(*snapshotContext, cacheOptions,
+                requestHash, cachePath, outResult, log)) {
+            if (cacheOptions.outCacheHit) { *cacheOptions.outCacheHit = false; }
+            return makeError(Error::Failure);
+        }
         outResult.diagnostics = log;
         metrics.totalTimeNanoseconds = elapsed(requestStart);
         return outResult;
@@ -1225,181 +1216,28 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     double compilerSecondsBefore = 0, downstreamSecondsBefore = 0;
     globalSession->getCompilerElapsedTime(&compilerSecondsBefore, &downstreamSecondsBefore);
 
-    slang::TargetDesc targetDesc{};
-    targetDesc.format = SLANG_SPIRV;
-    const char* profileName = desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName;
-    targetDesc.profile = globalSession->findProfile(profileName);
-    if (targetDesc.profile == SLANG_PROFILE_UNKNOWN) {
-        log = "Unknown Slang target profile: ";
-        log += profileName;
-        log += '\n';
-        return makeError(Error::InvalidArgument);
-    }
-
-    std::vector<std::filesystem::path> normalizedSearchPaths;
-    normalizedSearchPaths.reserve(5u + desc.additionalSearchPaths.size());
-    normalizedSearchPaths.push_back(normalizedAbsolutePath(desc.searchPath));
-    for (uint32_t index = 0; index < desc.additionalSearchPaths.size(); ++index) {
-        normalizedSearchPaths.push_back(
-            normalizedAbsolutePath(desc.additionalSearchPaths[index]));
-    }
-    // Program roots and SDK paths retain precedence. Subsystem modules have
-    // stable names, also when the entry point lives under tests or an SDK root.
-    const auto addModuleRoot = [&](const std::filesystem::path& root) {
-        for (const char* directory : {"Modules", "Interop"}) {
-            const auto path = normalizedAbsolutePath(root / directory);
-            if (std::find(normalizedSearchPaths.begin(), normalizedSearchPaths.end(), path) ==
-                normalizedSearchPaths.end()) {
-                normalizedSearchPaths.push_back(path);
-            }
-        }
-    };
-    addModuleRoot(desc.searchPath);
-    addModuleRoot(PROJECT_SOURCE_DIR "/Shaders");
-    std::vector<std::string> searchPathStorage;
-    searchPathStorage.reserve(normalizedSearchPaths.size());
-    for (const std::filesystem::path& searchPath : normalizedSearchPaths) {
-        searchPathStorage.push_back(searchPath.string());
-    }
-    std::vector<const char*> searchPaths;
-    searchPaths.reserve(searchPathStorage.size());
-    for (const std::string& searchPath : searchPathStorage) {
-        searchPaths.push_back(searchPath.c_str());
-    }
-    std::vector<slang::CompilerOptionEntry> compilerOptions;
-    compilerOptions.reserve(desc.capabilities.size() + desc.macroDefines.size() + 8u);
-    compilerOptions.push_back(slang::CompilerOptionEntry{
-        .name = slang::CompilerOptionName::EmitSpirvDirectly,
-        .value = slang::CompilerOptionValue{
-            .kind = slang::CompilerOptionValueKind::Int,
-            .intValue0 = 1,
-        },
-    });
-    if (cacheOptions.reportDetailedCompilerPerf) {
-        // Reporting options do not alter generated code or its cache identity.
-        for (const auto option : {slang::CompilerOptionName::ReportDetailedPerfBenchmark,
-                slang::CompilerOptionName::ReportDownstreamTime}) {
-            compilerOptions.push_back(slang::CompilerOptionEntry{
-                .name = option,
-                .value = {.kind = slang::CompilerOptionValueKind::Int, .intValue0 = 1},
-            });
-        }
-    }
-    compilerOptions.push_back(slang::CompilerOptionEntry{
-        .name = slang::CompilerOptionName::Optimization,
-        .value = slang::CompilerOptionValue{
-            .kind = slang::CompilerOptionValueKind::Int,
-            .intValue0 = static_cast<int32_t>(optimizationLevel),
-        },
-    });
-    if (*effectivePostprocess == SlangShaderPostprocessMode::SlangDeadBranches) {
-        // DownstreamArgs encodes one argument per line. Keep both passes in one
-        // entry so the pinned SDK forwards the complete list in order.
-        compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::DownstreamArgs,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::String,
-                .stringValue0 = "spirv-opt",
-                .stringValue1 = "--eliminate-dead-branches\n--simplify-instructions",
-            },
-        });
-    }
-    if (native) {
-        // TO-REMOVE(VVL payload-size): retain literal ArrayStride until VVL correctly
-        // sizes task/mesh payloads with unrelated opaque-size spec expressions.
-        // Revert to SPIRVUnifiedDescriptorHeapStride only after the raw native
-        // task/mesh regression passes; then remove device ABI cache inputs and
-        // warmup property query together. See Documentation/NativeDescriptorHeapStrideWorkaround.md.
-        for (const auto& [option, stride] : {
-                std::pair{slang::CompilerOptionName::SPIRVResourceHeapStride, resolvedDesc.descriptorHeapStrides.resource},
-                std::pair{slang::CompilerOptionName::SPIRVSamplerHeapStride, resolvedDesc.descriptorHeapStrides.sampler}}) {
-            compilerOptions.push_back(slang::CompilerOptionEntry{
-                .name = option,
-                .value = slang::CompilerOptionValue{
-                    .kind = slang::CompilerOptionValueKind::Int,
-                    .intValue0 = static_cast<int32_t>(stride),
-                },
-            });
-        }
-        compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::Capability,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::String,
-                .stringValue0 = "spvDescriptorHeapEXT",
-            },
-        });
-    }
-    if (debugMode != SlangShaderDebugMode::Disabled) {
-        compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::DebugInformation,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::Int,
-                // Nsight's high-level source and flame graph need embedded source
-                // and NonSemantic function/call-site records. Minimal (-g1) only
-                // emits legacy paths/lines and cannot provide that correlation.
-                .intValue0 = static_cast<int32_t>(SLANG_DEBUG_INFO_LEVEL_STANDARD),
-            },
-        });
-    }
-    for (uint32_t capabilityIndex = 0;
-         !desc.capabilities.empty() && capabilityIndex < desc.capabilities.size();
-         ++capabilityIndex) {
-        const char* capability = desc.capabilities[capabilityIndex];
-        if (capability == nullptr || capability[0] == '\0') {
-            continue;
-        }
-        compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::Capability,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::String,
-                .stringValue0 = capability,
-            },
-        });
-    }
-    for (uint32_t macroIndex = 0;
-         !desc.macroDefines.empty() && macroIndex < desc.macroDefines.size();
-         ++macroIndex) {
-        const SlangMacroDefine& macro = desc.macroDefines[macroIndex];
-        if (macro.name == nullptr || macro.name[0] == '\0') {
-            continue;
-        }
-        compilerOptions.push_back(slang::CompilerOptionEntry{
-            .name = slang::CompilerOptionName::MacroDefine,
-            .value = slang::CompilerOptionValue{
-                .kind = slang::CompilerOptionValueKind::String,
-                .stringValue0 = macro.name,
-                .stringValue1 = macro.value != nullptr ? macro.value : "1",
-            },
-        });
-    }
-
-    compilerOptions.push_back(slang::CompilerOptionEntry{
-        .name = slang::CompilerOptionName::MacroDefine,
-        .value = {.kind = slang::CompilerOptionValueKind::String,
-            .stringValue0 = "METALLIC_WORKING_SPACE_ACESCG",
-            .stringValue1 = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg ? "1" : "0"},
-    });
-
-    // Sessions cache imported modules. Keep a fresh session per request so a
-    // source edit or SDK macro permutation cannot reuse stale module IR.
-    slang::SessionDesc sessionDesc{};
-    sessionDesc.targets = &targetDesc;
-    sessionDesc.targetCount = 1;
-    sessionDesc.searchPaths = searchPaths.data();
-    sessionDesc.searchPathCount = static_cast<SlangInt>(searchPaths.size());
-    sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
-    sessionDesc.compilerOptionEntries = compilerOptions.empty() ? nullptr : compilerOptions.data();
-    sessionDesc.compilerOptionEntryCount = compilerOptions.size();
+    auto sessionConfig = OwnedSlangSessionConfig::create(globalSession, desc,
+        ResolvedSlangSessionPolicy{debugMode, optimizationLevel, *effectivePostprocess,
+            native, resolvedDesc.descriptorHeapStrides, cacheOptions.reportDetailedCompilerPerf},
+        snapshotContext ? static_cast<ISlangFileSystem*>(&snapshotContext->snapshot) : nullptr, log);
+    if (!sessionConfig) { return makeError(Error::InvalidArgument); }
+    const auto& normalizedSearchPaths = sessionConfig->normalizedSearchPaths();
+    const auto& sessionDesc = sessionConfig->desc();
 
     Slang::ComPtr<slang::ISession> session;
-    if (SLANG_FAILED(globalSession->createSession(sessionDesc, session.writeRef())) || session == nullptr) {
+    if (snapshotContext && snapshotContext->shareSession) {
+        if (!snapshotContext->acquireSession(globalSession, sessionConfig, session, log)) { return makeError(Error::Failure); }
+    } else if (SLANG_FAILED(globalSession->createSession(sessionDesc, session.writeRef())) || session == nullptr) {
         return makeError(Error::Failure);
     }
     metrics.compilerSetupTimeNanoseconds = elapsed(compileStart);
 
     Slang::ComPtr<slang::IBlob> diagnostics;
     const auto moduleLoadStart = Clock::now();
-    Slang::ComPtr<slang::IModule> module(session->loadModule(desc.moduleName, diagnostics.writeRef()));
+    Slang::ComPtr<slang::IModule> module;
+    if (snapshotContext && snapshotContext->shareSession) {
+        module = snapshotContext->loadModule(*session, desc.moduleName, diagnostics.writeRef());
+    } else { module = session->loadModule(desc.moduleName, diagnostics.writeRef()); }
     metrics.moduleLoadTimeNanoseconds = elapsed(moduleLoadStart);
     appendDiagnostics(diagnostics, log);
     if (module == nullptr) {
@@ -1432,11 +1270,13 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         return makeError(Error::Failure);
     }
     const auto dependencyTrackingStart = Clock::now();
-    const std::vector<std::filesystem::path> dependencies = collectShaderDependencies(
-        *module,
-        normalizedSearchPaths);
     std::vector<ShaderDependencySnapshot> dependencySnapshots;
-    if (!snapshotShaderDependencies(dependencies, dependencySnapshots)) {
+    const auto capturedDependencies = [&] {
+        if (snapshotContext) { return snapshotModuleDependencies(*snapshotContext, *module, dependencySnapshots, log); }
+        const auto dependencies = collectShaderDependencies(*module, normalizedSearchPaths);
+        return snapshotShaderDependencies(dependencies, dependencySnapshots);
+    }();
+    if (!capturedDependencies) {
         log += "Could not snapshot every Slang source dependency.\n";
         return makeError(Error::Failure);
     }
@@ -1536,7 +1376,8 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     }
     metrics.outputSpirvByteSize = outResult.spirv.size() * sizeof(uint32_t);
     const auto dependencyValidationStart = Clock::now();
-    if (!shaderDependencySnapshotsMatch(dependencySnapshots)) {
+    if (!(snapshotContext ? snapshotContext->guard(log, ordinaryContext != nullptr) :
+            shaderDependencySnapshotsMatch(dependencySnapshots))) {
         outResult.spirv.clear();
         log +=
             "A Slang source dependency changed during compilation; retry after the save completes.\n";
@@ -1544,16 +1385,16 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     }
     publishShaderDependencies(dependencySnapshots, outResult);
     metrics.dependencyValidationTimeNanoseconds = elapsed(dependencyValidationStart);
-    if (cacheOptions.enableDiskCache) {
+    if (cacheOptions.enableDiskCache && snapshotContext) {
         const auto cacheWriteStart = Clock::now();
-        if (!saveCachedShader(cachePath, requestHash, dependencySnapshots, outResult.spirv)) {
-            spdlog::debug(
-                "[ShaderCache] Could not persist {}.{} to '{}'",
-                desc.moduleName,
-                desc.entryPointName,
-                cachePath.string());
+        if (!completeSnapshotInvocation(*snapshotContext, cacheOptions, requestHash, cachePath, outResult, log)) {
+            return makeError(Error::Failure);
         }
-        metrics.cacheWriteTimeNanoseconds = elapsed(cacheWriteStart);
+        metrics.cacheWriteTimeNanoseconds = snapshotContext->deferPublication ? 0 : elapsed(cacheWriteStart);
+    }
+    if (!cacheOptions.enableDiskCache && snapshotContext &&
+        !completeSnapshotInvocation(*snapshotContext, cacheOptions, requestHash, cachePath, outResult, log)) {
+        return makeError(Error::Failure);
     }
     spdlog::info("[Slang] End compile {}.{} in {:.2f} ms ({} bytes, rawBytes={}, postprocess={}, postprocessMs={:.3f})",
         desc.moduleName, desc.entryPointName,
@@ -1565,5 +1406,29 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     metrics.totalTimeNanoseconds = elapsed(requestStart);
     return outResult;
 }
+
+Result<ShaderCompileResult> compileSlangShaderToSpirv(const SlangShaderDesc& desc,
+    const SlangShaderCacheOptions& options, std::string& log)
+{
+    const auto start = std::chrono::steady_clock::now();
+    gOrdinarySnapshotUnqualified = false;
+    auto result = compileSlangShaderToSpirvSnapshotAttempt(desc, options, log);
+    if (!result && !gWarmupSnapshotCompileContext && gOrdinarySnapshotUnqualified) {
+        struct FreshScope {
+            FreshScope() { gBypassOrdinarySnapshot = true; }
+            ~FreshScope() { gBypassOrdinarySnapshot = false; }
+        } scope;
+        // Unsupported lookup graphs preserve ordinary compiler behavior using
+        // a new fresh ISession, with no namespace-unqualified cache reads/writes.
+        result = compileSlangShaderToSpirvSnapshotAttempt(desc, options, log);
+    }
+    if (result) {
+        result->metrics.totalTimeNanoseconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count());
+    }
+    return result;
+}
+
+#include "SlangWarmupBatch.inc"
 
 } // namespace metallic::render
