@@ -14,6 +14,7 @@
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/NativeShaderWarmup.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
@@ -2083,6 +2084,9 @@ struct DeviceImpl {
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderUntypedPointersEnabled = false;
+    bool shaderFloat16Enabled = false;
+    bool shaderInt16Enabled = false;
+    bool shaderInt64Enabled = false;
     bool pipelineExecutableStatistics = false;
     std::string pipelineExecutableDirectory;
     bool logPipelineKeys = false;
@@ -6543,6 +6547,13 @@ void Device::logMemoryBudget(const char* phase) const
     }
 }
 
+DescriptorHeapShaderStrides Device::descriptorHeapShaderStrides() const
+{
+    if (!impl_ || !impl_->bindlessDescriptorHeapEnabled) { return {}; }
+    return {static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()),
+        static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize())};
+}
+
 const DeviceCapabilities& Device::capabilities() const
 {
     static const DeviceCapabilities emptyCapabilities;
@@ -9513,7 +9524,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         return makeError(Error::InvalidArgument);
     }
 
-    std::lock_guard initializationLock(volkInitializationMutex());
+    std::unique_lock initializationLock(volkInitializationMutex());
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
     deviceImpl->logPipelineKeys = logPipelineKeys;
     if (desc.enableAftermath) {
@@ -10198,6 +10209,9 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     selectedFeatures.publish(deviceImpl->capabilities, deviceImpl->vulkanCapabilities);
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
+    deviceImpl->shaderFloat16Enabled = selectedFeatures.shaderFloat16;
+    deviceImpl->shaderInt16Enabled = selectedFeatures.shaderInt16;
+    deviceImpl->shaderInt64Enabled = selectedFeatures.shaderInt64;
     deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline;
     deviceImpl->capabilities.subPixelPrecisionBits = selectedProperties.limits.subPixelPrecisionBits;
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
@@ -10327,7 +10341,14 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         spdlog::info("[Vulkan] VK_NV_cooperative_vector enabled");
     }
 
-    return std::unique_ptr<Device>(new Device(std::move(deviceImpl)));
+    auto device = std::unique_ptr<Device>(new Device(std::move(deviceImpl)));
+    // Native warmup must use the actual rendering device, after its descriptor
+    // ABI/features are known. Do not hold loader initialization across shader
+    // compilation or driver pipeline creation.
+    initializationLock.unlock();
+    auto warmed = warmupNativeShadersForStartup(*device);
+    if (!warmed) { return makeError(warmed.error()); }
+    return device;
 }
 
 namespace detail {
@@ -10365,6 +10386,11 @@ struct VulkanNativeAccess {
             .apiVersion = kVulkanAPIVersion,
             .descriptorHeapEnabled = device.impl_->bindlessDescriptorHeapEnabled,
             .shaderUntypedPointersEnabled = device.impl_->shaderUntypedPointersEnabled,
+            .shaderFloat16Enabled = device.impl_->shaderFloat16Enabled,
+            // shaderFloat64 is not enabled by the current feature catalog.
+            .shaderFloat64Enabled = false,
+            .shaderInt16Enabled = device.impl_->shaderInt16Enabled,
+            .shaderInt64Enabled = device.impl_->shaderInt64Enabled,
             .validationEnabled = device.impl_->validationEnabled,
             .synchronizationValidationEnabled = device.impl_->synchronizationValidationEnabled,
             .validationMessengerActive = device.impl_->debugMessenger != VK_NULL_HANDLE,

@@ -1,0 +1,333 @@
+#include "RHITest.h"
+#include "harness/Fixtures.h"
+#include "Runtime/Render/Core/NativeShaderWarmup.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/Core/ShaderRequests.h"
+#include "Runtime/Render/GAPI/PipelineStateHash.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+
+#include <array>
+#include <atomic>
+#include <limits>
+#include <optional>
+#include <string_view>
+
+namespace metallic::tests {
+namespace {
+
+using namespace render;
+
+// Observe the actual Vulkan boundary, including calls satisfied by a driver
+// binary cache. Registry statistics alone cannot prove that it was bypassed.
+class WarmupNativeCalls {
+public:
+    explicit WarmupNativeCalls(Device& device)
+        : functions_(*const_cast<VolkDeviceTable*>(vulkan::nativeDevice(device).functions)),
+          compute_(functions_.vkCreateComputePipelines), graphics_(functions_.vkCreateGraphicsPipelines)
+    {
+        active_ = this;
+        functions_.vkCreateComputePipelines = createCompute;
+        functions_.vkCreateGraphicsPipelines = createGraphics;
+    }
+
+    ~WarmupNativeCalls()
+    {
+        functions_.vkCreateComputePipelines = compute_;
+        functions_.vkCreateGraphicsPipelines = graphics_;
+        active_ = nullptr;
+    }
+
+    std::atomic<uint32_t> computeCalls{0};
+    std::atomic<uint32_t> graphicsCalls{0};
+    bool failCompute = false;
+
+private:
+    static VKAPI_ATTR VkResult VKAPI_CALL createCompute(VkDevice device, VkPipelineCache cache,
+        uint32_t count, const VkComputePipelineCreateInfo* infos,
+        const VkAllocationCallbacks* allocator, VkPipeline* pipelines)
+    {
+        auto& self = *active_;
+        self.computeCalls.fetch_add(count);
+        if (self.failCompute) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
+        return self.compute_(device, cache, count, infos, allocator, pipelines);
+    }
+
+    static VKAPI_ATTR VkResult VKAPI_CALL createGraphics(VkDevice device, VkPipelineCache cache,
+        uint32_t count, const VkGraphicsPipelineCreateInfo* infos,
+        const VkAllocationCallbacks* allocator, VkPipeline* pipelines)
+    {
+        auto& self = *active_;
+        self.graphicsCalls.fetch_add(count);
+        return self.graphics_(device, cache, count, infos, allocator, pipelines);
+    }
+
+    inline static WarmupNativeCalls* active_ = nullptr;
+    VolkDeviceTable& functions_;
+    PFN_vkCreateComputePipelines compute_;
+    PFN_vkCreateGraphicsPipelines graphics_;
+};
+
+ShaderRequest bufferRequest(const char* entry)
+{
+    return {.module = builtin_pass::kRenderGraphBufferShaderModuleName, .entry = entry,
+        .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
+}
+
+Result<bench::TestDevice> warmupTestDevice(RHITestContext& context)
+{
+    auto device = bench::createTestDevice(context, {.applicationName = "Native shader warmup test",
+        .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, true);
+    if (device && !(*device)->capabilities().bindlessDescriptorHeap) { return makeError(Error::Unsupported); }
+    return device;
+}
+
+bool reusedWithoutNativeWork(const ComputePipeline& pipeline)
+{
+    const auto stats = pipeline.creationStats();
+    return stats.nativeObjectReused && stats.nativeCreateTimeNanoseconds == 0 &&
+        stats.driverDurationNanoseconds == 0 && !stats.feedbackValid;
+}
+
+class NativeShaderWarmupReuseTest final : public RHITest {
+public:
+    NativeShaderWarmupReuseTest()
+    {
+        type = RHITestType::Resource;
+        name = "native_shader_warmup_runtime_reuse_and_push_abi";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto device = warmupTestDevice(context);
+        if (!device) { return device.error() == Error::Unsupported
+            ? RHITestResult::skip("bindless native warmup unavailable")
+            : RHITestResult::fail("could not create native warmup test device"); }
+        auto& registry = ShaderRegistry::instance();
+        // Set this before warming: no incidental LRU owner may keep the result
+        // alive after the warmup's temporary module/pipeline wrappers disappear.
+        if (!registry.setNativePipelineCacheCapacity(**device, 0)) {
+            return RHITestResult::fail("could not disable native LRU retention");
+        }
+        WarmupNativeCalls calls(**device);
+        const std::array requests{
+            bufferRequest(builtin_pass::kRenderGraphBufferWriteEntryPoint),
+            bufferRequest(builtin_pass::kRenderGraphBufferCopyEntryPoint)};
+        std::string log;
+        auto warmed = warmupNativeShaders(**device, requests, log);
+        if (!warmed || warmed->nativeCreateCount != 2 || warmed->retainedPipelineCount != 2 ||
+            warmed->nativeObjectReuseCount != 0 || calls.computeCalls != 2) {
+            return RHITestResult::fail("warmup did not create and retain both real buffer PSOs: " + log);
+        }
+        auto repeated = warmupNativeShaders(**device, requests, log);
+        if (!repeated || repeated->nativeCreateCount != 0 || repeated->nativeObjectReuseCount != 2 ||
+            repeated->retainedPipelineCount != 2 || calls.computeCalls != 2) {
+            return RHITestResult::fail("repeated warmup recompiled a retained native PSO: " + log);
+        }
+        for (const auto& request : requests) {
+            const ShaderRequestView view(request);
+            auto code = registry.getShader(view.desc(), log);
+            if (!code) { return RHITestResult::fail("runtime buffer source acquisition failed: " + log); }
+            auto module = registry.getShaderModule(**device, {.spirv = code->spirv});
+            if (!module) { return RHITestResult::fail("runtime buffer module acquisition failed"); }
+            const ComputePipelineDesc desc{.computeShader = {module->get(), "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(builtin_pass::RenderGraphBufferUserPush)};
+            const uint32_t before = calls.computeCalls;
+            auto runtime = registry.getComputePipeline(**device, desc);
+            if (!runtime || !reusedWithoutNativeWork(**runtime) || calls.computeCalls != before) {
+                return RHITestResult::fail("runtime buffer ABI did not reuse the warmed PSO");
+            }
+            auto changedPush = desc;
+            changedPush.bindlessUserPushDataSize += sizeof(uint32_t);
+            auto distinct = registry.getComputePipeline(**device, changedPush);
+            if (!distinct || (*distinct)->creationStats().nativeObjectReused || calls.computeCalls != before + 1 ||
+                (*distinct)->psoHash() == (*runtime)->psoHash() ||
+                vulkan::nativePipeline(**distinct).pipeline == vulkan::nativePipeline(**runtime).pipeline) {
+                return RHITestResult::fail("changed push ABI aliased the warmed native PSO");
+            }
+            const ShaderSpecializationConstant missing{std::numeric_limits<uint32_t>::max(),
+                ShaderSpecializationType::Int32, 1};
+            auto malformed = desc;
+            malformed.computeShader.specializationConstants = {&missing, 1};
+            if (registry.getComputePipeline(**device, malformed) || calls.computeCalls != before + 1) {
+                return RHITestResult::fail("warm native reuse bypassed specialization declaration validation");
+            }
+        }
+        if (calls.graphicsCalls != 0) { return RHITestResult::fail("compute warmup created a graphics pipeline"); }
+        return RHITestResult::pass("real buffer warmup survives capacity zero; runtime reuses native objects without Vulkan calls; changed push and invalid specialization cannot alias");
+    }
+};
+
+class RejectedWarmupSource final : public ShaderArtifactOverride {
+public:
+    std::optional<Result<ShaderArtifactOverrideResult>> resolve(const SlangShaderDesc&, std::string& log) override
+    {
+        log = "intentional native warmup source acquisition failure";
+        return Result<ShaderArtifactOverrideResult>(makeError(Error::Failure));
+    }
+};
+
+class NativeShaderWarmupFailureTest final : public RHITest {
+public:
+    NativeShaderWarmupFailureTest()
+    {
+        type = RHITestType::Resource;
+        name = "native_shader_warmup_skips_and_failures";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto device = warmupTestDevice(context);
+        if (!device) { return device.error() == Error::Unsupported
+            ? RHITestResult::skip("bindless native warmup unavailable")
+            : RHITestResult::fail("could not create native warmup failure test device"); }
+        auto& registry = ShaderRegistry::instance();
+        WarmupNativeCalls calls(**device);
+        const std::array skipped{
+            ShaderRequest{.module = "Features/Samples/Triangle", .entry = "triangleVertexMain",
+                .descriptorHeapMode = SlangDescriptorHeapMode::Mapped},
+            ShaderRequest{.module = "ShaderSpecializationProbe", .entry = "specializationProbeMain",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}};
+        std::string log;
+        auto skips = warmupNativeShaders(**device, skipped, log);
+        if (!skips || skips->skippedGraphicsCount != 1 || skips->skippedUnownedABICount != 1 ||
+            skips->nativeCreateCount != 0 || skips->retainedPipelineCount != 0 ||
+            calls.computeCalls != 0 || calls.graphicsCalls != 0) {
+            return RHITestResult::fail("graphics/unknown ABI requests were not explicitly skipped: " + log);
+        }
+        const std::array requests{bufferRequest(builtin_pass::kRenderGraphBufferWriteEntryPoint)};
+        {
+            auto overrideScope = registry.installArtifactOverrideForTesting(std::make_shared<RejectedWarmupSource>());
+            if (!overrideScope) { return RHITestResult::fail("could not install source rejection fixture"); }
+            auto failed = warmupNativeShaders(**device, requests, log);
+            if (failed || log.find("intentional native warmup source acquisition failure") == std::string::npos ||
+                calls.computeCalls != 0) {
+                return RHITestResult::fail("source acquisition failure was reported as successful warmup");
+            }
+        }
+        calls.failCompute = true;
+        log.clear();
+        auto failed = warmupNativeShaders(**device, requests, log);
+        if (failed || failed.error() != Error::OutOfMemory || log.empty() || calls.computeCalls != 1) {
+            return RHITestResult::fail("native creation failure was reported as successful warmup");
+        }
+        calls.failCompute = false;
+        auto retry = warmupNativeShaders(**device, requests, log);
+        if (!retry || retry->nativeCreateCount != 1 || retry->retainedPipelineCount != 1 || calls.computeCalls != 2) {
+            return RHITestResult::fail("failed warmup poisoned a subsequent native retry: " + log);
+        }
+        return RHITestResult::pass("graphics/unknown ABI skips are explicit; source and Vulkan failures reject success, and native failure can be retried");
+    }
+};
+
+class SpecializationWarmupArtifact final : public ShaderArtifactOverride {
+public:
+    explicit SpecializationWarmupArtifact(ShaderCompileResult code) : code_(std::move(code)) {}
+
+    std::optional<Result<ShaderArtifactOverrideResult>> resolve(const SlangShaderDesc& desc, std::string&) override
+    {
+        if (!desc.moduleName || std::string_view(desc.moduleName) != "Features/Debug/GPUProbe") { return std::nullopt; }
+        // Reuse the existing scalar specialization fixture through the testing
+        // override. The separate buffer test exercises genuine production code.
+        ShaderArtifactOverrideResult result;
+        result.shader = code_;
+        result.identity.moduleName = "Tests/NativeWarmup/ShaderSpecializationProbe";
+        result.identity.sourceEntryPoint = desc.entryPointName;
+        result.identity.entryPoint = "main";
+        result.identity.descriptorHeapMode = "mapped";
+        result.identity.optimizationLevel = "O1";
+        result.identity.debugMode = "release";
+        result.identity.spirvPostprocess = "none";
+        return Result<ShaderArtifactOverrideResult>(std::move(result));
+    }
+
+private:
+    ShaderCompileResult code_;
+};
+
+class NativeShaderWarmupSpecializationTest final : public RHITest {
+public:
+    NativeShaderWarmupSpecializationTest()
+    {
+        type = RHITestType::Resource;
+        name = "native_shader_warmup_specialization_identity";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto& registry = ShaderRegistry::instance();
+        std::string log;
+        auto code = registry.getShader({.moduleName = "ShaderSpecializationProbe",
+            .entryPointName = "specializationProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+            .descriptorHeapMode = SlangDescriptorHeapMode::Mapped,
+            .optimizationLevel = SlangShaderOptimizationLevel::O1,
+            .postprocessMode = SlangShaderPostprocessMode::None}, log);
+        if (!code) { return RHITestResult::fail("existing specialization fixture compilation failed: " + log); }
+        // Observe and validate the actual scalar declaration, as in the existing
+        // specialization RHI tests; Slang auto IDs are not a stable source API.
+        std::optional<uint32_t> intId;
+        for (size_t offset = 5; offset < code->spirv.size();) {
+            const uint32_t count = code->spirv[offset] >> 16, opcode = code->spirv[offset] & 0xffffu;
+            if (!count || count > code->spirv.size() - offset) {
+                return RHITestResult::fail("malformed specialization fixture SPIR-V");
+            }
+            if (opcode == 71 && count == 4 && code->spirv[offset + 2] == 1) {
+                const ShaderSpecializationConstant declaration{code->spirv[offset + 3], ShaderSpecializationType::Int32, 0};
+                if (detail::validateShaderSpecializationModule(code->spirv, {&declaration, 1}, log)) {
+                    if (intId) { return RHITestResult::fail("ambiguous specialization fixture Int32 declaration"); }
+                    intId = declaration.id;
+                }
+            }
+            offset += count;
+        }
+        if (!intId) { return RHITestResult::fail("specialization fixture lost its Int32 declaration"); }
+        auto device = warmupTestDevice(context);
+        if (!device) { return device.error() == Error::Unsupported
+            ? RHITestResult::skip("bindless native warmup unavailable")
+            : RHITestResult::fail("could not create specialization warmup test device"); }
+        WarmupNativeCalls calls(**device);
+        auto overrideScope = registry.installArtifactOverrideForTesting(std::make_shared<SpecializationWarmupArtifact>(*code));
+        if (!overrideScope) { return RHITestResult::fail("could not install specialization fixture override"); }
+        const std::array requests{ShaderRequest{.module = "Features/Debug/GPUProbe", .entry = "probe",
+            .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}};
+        auto warmed = warmupNativeShaders(**device, requests, log);
+        if (!warmed || warmed->nativeCreateCount != 1 || calls.computeCalls != 1) {
+            return RHITestResult::fail("specialization fixture warmup failed: " + log);
+        }
+        auto module = registry.getShaderModule(**device, {.spirv = code->spirv});
+        if (!module) { return RHITestResult::fail("could not acquire specialization fixture module"); }
+        ComputePipelineDesc desc{.computeShader = {module->get(), "main"}, .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(GPUBufferSpan)};
+        auto original = registry.getComputePipeline(**device, desc);
+        if (!original || !reusedWithoutNativeWork(**original) || calls.computeCalls != 1) {
+            return RHITestResult::fail("runtime default specialization did not reuse warmup");
+        }
+        ShaderSpecializationConstant value{*intId, ShaderSpecializationType::Int32, 1};
+        desc.computeShader.specializationConstants = {&value, 1};
+        auto first = registry.getComputePipeline(**device, desc);
+        value.bits = 2;
+        auto second = registry.getComputePipeline(**device, desc);
+        if (!first || !second || calls.computeCalls != 3 ||
+            (*first)->creationStats().nativeObjectReused || (*second)->creationStats().nativeObjectReused ||
+            (*first)->psoHash() == (*original)->psoHash() || (*second)->psoHash() == (*first)->psoHash() ||
+            vulkan::nativePipeline(**first).pipeline == vulkan::nativePipeline(**second).pipeline) {
+            return RHITestResult::fail("valid specialization values aliased a warmed native PSO");
+        }
+        value.bits = 1;
+        auto repeated = registry.getComputePipeline(**device, desc);
+        if (!repeated || !reusedWithoutNativeWork(**repeated) || calls.computeCalls != 3 ||
+            vulkan::nativePipeline(**repeated).pipeline != vulkan::nativePipeline(**first).pipeline) {
+            return RHITestResult::fail("matching specialization tuple did not reuse its native object");
+        }
+        return RHITestResult::pass("default warmup reuse, distinct actual scalar specialization values, and same-value runtime reuse verified at the Vulkan call boundary");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupReuseTest);
+METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupFailureTest);
+METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSpecializationTest);
+
+} // namespace
+} // namespace metallic::tests

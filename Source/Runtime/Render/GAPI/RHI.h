@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/ShaderSpecialization.h"
+#include "Runtime/Render/GAPI/ShaderTarget.h"
 
 #include "RHIHandle.h"
 
@@ -1879,6 +1880,9 @@ class Device {
     )
 
     const DeviceCapabilities& capabilities() const;
+    // Exact enabled-device ABI for native descriptor-heap shader compilation.
+    // Zero strides when the descriptor heap is not enabled.
+    DescriptorHeapShaderStrides descriptorHeapShaderStrides() const;
     const void* identity() const;
     // Owner-defined per-device state. Factory runs once under a lock and must
     // not recursively request shared state. Released before native teardown;

@@ -19,9 +19,12 @@ physical devices for descriptor strides, without creating a logical device or
 submitting work. Supplying both strides explicitly also permits offline native
 compilation.
 
-The editor, LookDev, all rendering samples, and MetallicShaderPrintfProbe now
-warm the complete catalog synchronously before initializing rendering. Warmup
-failure aborts startup with a nonzero exit code. To explicitly skip it:
+The editor, LookDev, all rendering samples, and MetallicShaderPrintfProbe warm
+the complete SPIR-V catalog synchronously before initializing rendering. After
+that succeeds, creation of the actual rendering device automatically precreates
+the supported compute Native PSOs before returning the device to its caller.
+Warmup failure aborts startup with a nonzero exit code. To explicitly skip both
+startup phases:
 
 ~~~powershell
 .\build-release\Source\Metallic.exe --skip-shader-warmup
@@ -52,7 +55,76 @@ source changes, and launches using --skip-shader-warmup.
 Repeated invocations validate source bytes, search namespaces and compiler
 identity before reusing current entries. Compilation, source changes during the
 batch, or persistence/read-back failures reject the complete warmup and produce
-a nonzero exit code. This warms SPIR-V, not driver PSO caches.
+a nonzero exit code. The standalone tool remains an offline SPIR-V compiler;
+application startup adds the device phase described below.
+
+## Native pipeline startup phase
+
+This follows the separation used by
+[Unreal PSO precaching](https://dev.epicgames.com/documentation/unreal-engine/pso-precaching-for-unreal-engine):
+shader code and a complete pipeline description are different cache entries.
+Compute permutations can be enumerated at startup; graphics PSOs require their
+own render-state collectors. The current implementation waits synchronously
+for the compute phase before making the rendering device available. It moves
+driver work into startup; it does not claim to reduce total compilation work.
+
+The device phase uses the real device, its enabled features and exact native
+descriptor strides. It resolves validated shader-cache entries through
+`ShaderRegistry`, constructs complete compute descriptions, and acquires each
+PSO through the same registry path used by rendering. Layout size, indirect
+binding policy and specialization tuples match runtime. In particular, source
+deduplication does not discard the separate OpenPBR cache/guide, Standard path,
+and Deferred precision/material-class PSOs.
+
+The device retains execution owners from successful warmup until teardown.
+This prevents the normal 128-object LRU from evicting a warmup object before
+its first runtime acquisition, at the cost of keeping those native objects in
+memory. The normal persistent pipeline-cache writer also receives the newly
+created PSOs. A later exact request can reuse the live native object without
+calling `vkCreateComputePipelines`; a binary-cache metadata hit alone would not
+prove that. Driver/optimization overrides still apply through the registry.
+Live-object reuse assumes the normal pipeline backend and automatic cache
+selection. Diagnostic shader-object/pipeline-binary modes with an explicit
+native-binary cache directory deliberately bypass the registry object cache;
+prewarming those modes does not provide the same zero-creation guarantee.
+
+Graphics shader stages are reported separately and are not given guessed PSO
+state. Render target/depth formats, stage combinations and external ImGui ABIs
+remain owned by their rendering paths. Unsupported compute device features and
+unowned request layouts are also reported separately, rather than counted as
+precreated PSOs. New/unlisted shaders and future runtime policy changes retain
+the ordinary on-demand path.
+
+`--skip-shader-warmup` bypasses both startup phases. Standalone compiler/list/help
+and ordinary test launches do not enable automatic native warmup. Explicit
+native warmup tests can supply a small request set without running the full
+startup catalog. Changing the device, shaders or complete pipeline state never
+reuses an incompatible native object.
+
+Focused validation lives in `NativeShaderWarmupRequestsTests.cpp` (catalog ABI
+and closed specialization coverage), `ShaderWarmupStartupTests.cpp` (startup
+gating), and `NativeShaderWarmupTests.cpp` (actual Vulkan creation calls).
+The RHI tests disable ordinary LRU retention before warmup, then require repeated
+warmup and exact runtime acquisition to make zero additional native creation
+calls. Changed push layouts and specialization values must remain distinct;
+source/native failures must propagate and permit a later retry.
+
+On 2026-10-16, a Release `pathtracing-sample` editor smoke run on RTX 5060 /
+driver 616.92 completed the source catalog with 132 cache hits. The device
+phase created and retained 109 compute PSOs, reused one duplicate request, and
+skipped 35 graphics stages; unsupported and unknown-ABI counts were both zero.
+It completed before `createDevice` returned. The subsequent graph compilation
+and presented first frame issued zero compute pipeline creation calls.
+A subsequent fresh-process control used the same sample/settings with
+`--skip-shader-warmup`, retained the persistent caches, and presented its first
+frame successfully; it issued 23 compute pipeline creation calls. Both runs
+exited successfully without logged errors. The focused request suite passed
+56 tests and the Vulkan validation run passed four native-cache/warmup tests.
+This was a correctness run with existing persistent caches, not a cold-cache
+benchmark: maximum native creation was 67.261 s, summed native creation was
+697.797 s, and the complete native phase took 727.279 s. CPU shader tests
+overlapped its early portion. These timings describe work moved into startup,
+not an end-to-end speedup or a controlled before/after timing comparison.
 
 ## Parallel compilation and progress
 

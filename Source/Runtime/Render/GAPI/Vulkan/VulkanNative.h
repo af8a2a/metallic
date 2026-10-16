@@ -18,6 +18,10 @@ struct NativeDevice {
     uint32_t apiVersion = 0;
     bool descriptorHeapEnabled = false;
     bool shaderUntypedPointersEnabled = false;
+    bool shaderFloat16Enabled = false;
+    bool shaderFloat64Enabled = false;
+    bool shaderInt16Enabled = false;
+    bool shaderInt64Enabled = false;
     bool validationEnabled = false;
     bool synchronizationValidationEnabled = false;
     bool validationMessengerActive = false;

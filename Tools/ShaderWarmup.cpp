@@ -24,6 +24,8 @@ using namespace metallic::render;
 
 namespace {
 
+std::atomic<bool> startupWarmupEnabled{false};
+
 struct CompileOutcome {
     bool cacheHit = false;
     std::string error;
@@ -298,6 +300,7 @@ int metallic::render::runShaderWarmup(int argc, char** argv)
 
 int metallic::render::warmupShadersForStartup(bool skip)
 {
+    startupWarmupEnabled.store(false, std::memory_order_release);
     if (skip) {
         return 0;
     }
@@ -309,5 +312,11 @@ int metallic::render::warmupShadersForStartup(bool skip)
         std::cerr << "[Startup] Shader warmup failed; application startup cancelled. "
                      "Use --skip-shader-warmup to compile on demand.\n";
     }
+    startupWarmupEnabled.store(result == 0, std::memory_order_release);
     return result;
+}
+
+bool metallic::render::startupShaderWarmupEnabled() noexcept
+{
+    return startupWarmupEnabled.load(std::memory_order_acquire);
 }

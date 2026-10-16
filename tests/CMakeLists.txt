@@ -46,7 +46,8 @@ set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;
 
 
 add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp editor/SPIRVStatisticsTests.cpp
-    editor/ShaderPostprocessTests.cpp editor/ShaderArtifactOverrideTests.cpp editor/ShaderWarmupBatchTests.cpp)
+    editor/ShaderPostprocessTests.cpp editor/ShaderArtifactOverrideTests.cpp editor/ShaderWarmupBatchTests.cpp
+    editor/NativeShaderWarmupRequestsTests.cpp)
 target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source" "${CMAKE_SOURCE_DIR}")
 target_compile_definitions(MetallicShaderRequestsTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -429,6 +430,7 @@ add_executable(MetallicRHITests
     rhi/ShaderRegistryTests.cpp
     rhi/ShaderSpecializationTests.cpp
     rhi/ShaderRegistryNativePipelineTests.cpp
+    rhi/NativeShaderWarmupTests.cpp
     rhi/PipelineRecipeTests.cpp
     rhi/PipelineCacheSaveTests.cpp
     rhi/PipelineCacheFeedbackTests.cpp

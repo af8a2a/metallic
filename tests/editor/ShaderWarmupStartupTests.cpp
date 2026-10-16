@@ -102,6 +102,7 @@ TEST_F(ShaderWarmupStartupTest, StartupHonorsWorkerEnvironment)
     EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
     EXPECT_EQ(batchCalls.load(), 1u);
     EXPECT_EQ(batchJobs.load(), 12u);
+    EXPECT_TRUE(metallic::render::startupShaderWarmupEnabled());
 }
 
 TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeCompilation)
@@ -113,6 +114,7 @@ TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeComp
     EXPECT_EQ(compileCalls.load(), 0u);
     EXPECT_EQ(adapterQueries.load(), 0u);
     EXPECT_EQ(batchCalls.load(), 0u);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
 }
 
 TEST_F(ShaderWarmupStartupTest, ExplicitJobsOverridesInvalidWorkerEnvironment)
@@ -172,6 +174,7 @@ TEST_F(ShaderWarmupStartupTest, OnlyExplicitSkipOptionBypassesCompilation)
     EXPECT_TRUE(options.consume("--skip-shader-warmup"));
     failCompilation = true;
     EXPECT_EQ(metallic::render::warmupShadersForStartup(options.skip), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
     EXPECT_EQ(compileCalls.load(), 0u);
     EXPECT_EQ(adapterQueries.load(), 0u);
 }
@@ -181,6 +184,28 @@ TEST_F(ShaderWarmupStartupTest, CompilationFailurePreventsStartup)
     failCompilation = true;
     EXPECT_NE(metallic::render::warmupShadersForStartup(false), 0);
     EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+}
+
+TEST_F(ShaderWarmupStartupTest, SkipAndFailureClearPreviouslyEnabledDevicePhase)
+{
+    ASSERT_EQ(metallic::render::warmupShadersForStartup(false), 0);
+    ASSERT_TRUE(metallic::render::startupShaderWarmupEnabled());
+    EXPECT_EQ(metallic::render::warmupShadersForStartup(true), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+    ASSERT_EQ(metallic::render::warmupShadersForStartup(false), 0);
+    failCompilation = true;
+    EXPECT_NE(metallic::render::warmupShadersForStartup(false), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+}
+
+TEST_F(ShaderWarmupStartupTest, StandaloneCompilerDoesNotEnableDevicePhase)
+{
+    ASSERT_EQ(metallic::render::warmupShadersForStartup(true), 0);
+    char program[] = "MetallicShaderCompiler";
+    char* arguments[] = {program};
+    EXPECT_EQ(metallic::render::runShaderWarmup(1, arguments), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
 }
 
 TEST_F(ShaderWarmupStartupTest, WorkerExceptionPreventsStartupAndRestoresLogging)
