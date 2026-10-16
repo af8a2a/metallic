@@ -10,7 +10,7 @@ namespace metallic::render::detail {
 
 struct NativePipelineCache::State {
     struct KeyHash {
-        size_t operator()(NativePipelineKey key) const
+        size_t operator()(const NativePipelineKey& key) const
         {
             return std::hash<uint64_t>{}(key.psoHash) ^ (static_cast<size_t>(key.type) << 1);
         }
@@ -50,7 +50,7 @@ struct NativePipelineCache::State {
         }
     }
 
-    void touchLocked(NativePipelineKey key, Ready& entry, const Owner& owner, Residents& retired)
+    void touchLocked(const NativePipelineKey& key, Ready& entry, const Owner& owner, Residents& retired)
     {
         if (entry.retained) {
             residents.splice(residents.begin(), residents, entry.resident);
@@ -78,6 +78,11 @@ NativePipelineCache::~NativePipelineCache() = default;
 Result<NativePipelineAcquisition> NativePipelineCache::acquire(NativePipelineKey key,
     const std::function<Result<std::shared_ptr<void>>()>& create)
 {
+    try {
+        key.specializationConstants = canonicalShaderSpecializationConstants(key.specializationConstants);
+    } catch (const std::invalid_argument&) {
+        return makeError(Error::InvalidArgument);
+    }
     if (!create) { return makeError(Error::InvalidArgument); }
     State::Residents retired;
     State::Owner owner;

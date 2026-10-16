@@ -76,11 +76,11 @@ public float3 openPBRReflectionCoefficient<TContext : IOpenPBRContext>(
         if (TContext.enableTranslucency())
             standard_refl_coeff += refl_trans_coeff.scale_for_reflection_for_transparent_part *
                                    openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_transparent_part, idoth,
-                                                     TContext.enableDispersion());
+                                                     TContext.kEnableDispersion);
 
         standard_refl_coeff +=
             refl_trans_coeff.scale_for_reflection_for_opaque_part *
-            openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_opaque_part, idoth, TContext.enableDispersion());
+            openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_opaque_part, idoth, TContext.kEnableDispersion);
 
         if (TContext.enableMetallic())
             standard_refl_coeff += refl_trans_coeff.metal_amount *
@@ -92,7 +92,7 @@ public float3 openPBRReflectionCoefficient<TContext : IOpenPBRContext>(
     if (thin_film_presence > 0.0f) {
         OpenPBRThinFilmResults thin_film_results = openPBRThinFilmAndBaseReflectance(
             idoth, refl_trans_coeff.thin_film_exterior_ior, refl_trans_coeff.thin_film_ior,
-            refl_trans_coeff.thin_film_interior_ior, TContext.enableDispersion(), refl_trans_coeff.f0_for_metal,
+            refl_trans_coeff.thin_film_interior_ior, TContext.kEnableDispersion, refl_trans_coeff.f0_for_metal,
             refl_trans_coeff.f82_tint_for_metal,
             (TContext.enableTranslucency() &&
              any(((refl_trans_coeff.scale_for_reflection_for_transparent_part) > (float3(0.0f))))) ||
@@ -136,14 +136,14 @@ public float3 openPBRTransmissionCoefficient<TContext : IOpenPBRContext>(
             standard_trans_coeff +=
                 refl_trans_coeff.transmission *
                 (float3(1.0f) - openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_transparent_part, idoth,
-                                                  TContext.enableDispersion()));
+                                                  TContext.kEnableDispersion));
     }
 
     // Calculate the thin-film transmission coefficient.
     if (thin_film_presence > 0.0f) {
         OpenPBRThinFilmResults thin_film_results = openPBRThinFilmAndBaseReflectance(
             idoth, refl_trans_coeff.thin_film_exterior_ior, refl_trans_coeff.thin_film_ior,
-            refl_trans_coeff.thin_film_interior_ior, TContext.enableDispersion(), refl_trans_coeff.f0_for_metal,
+            refl_trans_coeff.thin_film_interior_ior, TContext.kEnableDispersion, refl_trans_coeff.f0_for_metal,
             refl_trans_coeff.f82_tint_for_metal,
             TContext.enableTranslucency() &&
                 any(((refl_trans_coeff.scale_for_reflection_for_transparent_part) > (float3(0.0f)))), // dielectric part
@@ -177,7 +177,7 @@ public OpenPBRAllCoefficients openPBRAllCoefficients<TContext : IOpenPBRContext>
     if (thin_film_presence < 1.0f) {
         if (TContext.enableTranslucency()) {
             const float3 fresnel_for_transparent_part = openPBRFresnelRgb(
-                refl_trans_coeff.eta_t_over_eta_i_for_transparent_part, idoth, TContext.enableDispersion());
+                refl_trans_coeff.eta_t_over_eta_i_for_transparent_part, idoth, TContext.kEnableDispersion);
             standard_refl_coeff +=
                 refl_trans_coeff.scale_for_reflection_for_transparent_part * fresnel_for_transparent_part;
             standard_trans_coeff += refl_trans_coeff.transmission * (float3(1.0f) - fresnel_for_transparent_part);
@@ -185,7 +185,7 @@ public OpenPBRAllCoefficients openPBRAllCoefficients<TContext : IOpenPBRContext>
 
         standard_refl_coeff +=
             refl_trans_coeff.scale_for_reflection_for_opaque_part *
-            openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_opaque_part, idoth, TContext.enableDispersion());
+            openPBRFresnelRgb(refl_trans_coeff.eta_t_over_eta_i_for_opaque_part, idoth, TContext.kEnableDispersion);
 
         if (TContext.enableMetallic())
             standard_refl_coeff += refl_trans_coeff.metal_amount *
@@ -197,7 +197,7 @@ public OpenPBRAllCoefficients openPBRAllCoefficients<TContext : IOpenPBRContext>
     if (thin_film_presence > 0.0f) {
         OpenPBRThinFilmResults thin_film_results = openPBRThinFilmAndBaseReflectance(
             idoth, refl_trans_coeff.thin_film_exterior_ior, refl_trans_coeff.thin_film_ior,
-            refl_trans_coeff.thin_film_interior_ior, TContext.enableDispersion(), refl_trans_coeff.f0_for_metal,
+            refl_trans_coeff.thin_film_interior_ior, TContext.kEnableDispersion, refl_trans_coeff.f0_for_metal,
             refl_trans_coeff.f82_tint_for_metal,
             (TContext.enableTranslucency() &&
              any(((refl_trans_coeff.scale_for_reflection_for_transparent_part) > (float3(0.0f))))) ||

@@ -28,6 +28,14 @@ namespace Metallic.VisibilityLighting
 {
 
 
+#ifndef METALLIC_DEFERRED_RUNTIME_PRECISION
+#define METALLIC_DEFERRED_RUNTIME_PRECISION 0
+#endif
+#if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+public typedef float DeferredWeight;
+public typedef float3 DeferredColor;
+public typedef float DeferredInput;
+#else
 #ifndef METALLIC_DEFERRED_FP16
 #define METALLIC_DEFERRED_FP16 1
 #endif
@@ -40,6 +48,17 @@ public typedef Metallic.WorkingColor::BoundedEnergyInput DeferredInput;
 public typedef float DeferredWeight;
 public typedef float3 DeferredColor;
 public typedef float DeferredInput;
+#endif
+#endif
+
+#if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
+{
+    if (useFP16Precision) {
+        return unpackHalf2x16ToFloat(packHalf2x16(float2(x, 0.0f))).x;
+    }
+    return x;
+}
 #endif
 
 #define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentIrradianceSHOffset))
@@ -167,8 +186,15 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
         float3 f0 = lerp(summary.dielectricReflectance, summary.baseColor, conductorFraction);
         DeferredColor specularWeight = DeferredColor(saturate(approxSpecularIntegralGGX(f0,
             max(roughness * roughness, 0.0001), saturate(dot(normal, viewDirection)))));
+#if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+        bool useFP16Precision = (push.deferredSettings & kScenePathTraceUseFP16Precision) != 0u;
+        DeferredWeight diffuseWeight = deferredPrecisionRoundTrip(DeferredWeight(saturate(summary.diffuseWeight)), useFP16Precision) *
+            (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
+        diffuseWeight = deferredPrecisionRoundTrip(diffuseWeight, useFP16Precision);
+#else
         DeferredWeight diffuseWeight = DeferredWeight(saturate(summary.diffuseWeight)) *
             (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
+#endif
         DeferredColor diffuseColor = DeferredColor(summary.baseColor) * diffuseWeight *
             (DeferredColor(1.0) - specularWeight);
         DeferredColor transmissionColor = DeferredColor(summary.transmissionColor) * surfaceTransmission *

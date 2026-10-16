@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Render/GAPI/ShaderSpecialization.h"
+
 #include "RHIHandle.h"
 
 #include <functional>
@@ -1190,6 +1192,8 @@ struct PipelineCacheStats {
 struct ShaderStageDesc {
     class ShaderModule* module = nullptr;
     const char* entryPoint = "main";
+    // Borrowed synchronously during creation; caches/recipes own canonical copies.
+    std::span<const ShaderSpecializationConstant> specializationConstants;
 };
 
 struct GraphicsPipelineDesc {

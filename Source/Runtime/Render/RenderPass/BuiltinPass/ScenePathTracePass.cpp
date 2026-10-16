@@ -796,14 +796,13 @@ public:
             for (const auto binding : kLightGridMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
-            if (globalView) { baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer}); }
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
-            if (boolProperty(properties(), "exportUpscalerGuides", false)) {
-                baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage});
-                baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage});
-            }
+            // One shader/encoder layout serves both output policies.
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .kind = ComputeResourceBindingKind::SampledImage});
@@ -890,7 +889,8 @@ public:
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
-                    .resourceParameterSize = sizeof(SceneResourceParameters)},
+                    .resourceParameterSize = sizeof(SceneResourceParameters),
+                    .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines)},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
@@ -1065,6 +1065,7 @@ public:
         }
 
         compiledShaderKey_ = shaderKey;
+        compiledGlobalView_ = globalView;
         compiledSingleSampleGuides_ = singleSampleGuides;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
@@ -1354,6 +1355,9 @@ public:
             push.eye[3] = 0.0f;
             push.center[3] = 0.0f;
             push.deferredSettings = 0;
+            if (visibilityDeferred_ && boolProperty(context.properties(), "halfPrecision", true)) {
+                push.deferredSettings |= kScenePathTraceUseFP16Precision;
+            }
             visibilityView = visibility.view();
             visibilityDepthView = visibilityDepth.view();
         }
@@ -1495,8 +1499,13 @@ public:
         MaterialBinningResult materialBins;
         ScreenSpaceShadowResult shadow;
         if (visibilityDeferred_) {
-            if (context.viewConstantsBuffer() != nullptr) {
+            if (compiledGlobalView_) {
+                if (context.viewConstants() == nullptr || context.viewConstantsBuffer() == nullptr ||
+                    context.viewConstantsBuffer()->desc().size < sizeof(ViewConstants)) {
+                    return makeError(Error::InvalidArgument);
+                }
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .buffer = context.viewConstantsBuffer()});
+                push.deferredSettings |= kScenePathTraceUseGlobalView;
             }
             const std::array<Buffer*, 5> gridBuffers{deferredGrid->parameters, deferredGrid->lights,
                 deferredGrid->candidates, deferredGrid->cells, deferredGrid->lightIndices};
@@ -1540,8 +1549,15 @@ public:
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .buffer = shadow.parameters});
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
-                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .textureView = context.outputTexture("motionVectors").view()});
-                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .textureView = context.outputTexture("deviceDepth").view()});
+                const auto motion = context.outputTexture("motionVectors");
+                const auto depth = context.outputTexture("deviceDepth");
+                if (!motion.valid() || !depth.valid() || motion.view() == nullptr || depth.view() == nullptr ||
+                    motion.texture()->desc().format != Format::RG16Sfloat || depth.texture()->desc().format != Format::R32Sfloat) {
+                    return makeError(Error::InvalidArgument);
+                }
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .textureView = motion.view()});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .textureView = depth.view()});
+                push.deferredSettings |= kScenePathTraceExportUpscalerGuides;
             }
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .textureViews = {&visibilityView, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .textureViews = {&visibilityDepthView, 1}});
@@ -2625,6 +2641,7 @@ private:
     bool compiledSingleSampleGuides_ = false;
     bool compiledHalfPrecision_ = true;
     bool compiledExportUpscalerGuides_ = false;
+    bool compiledGlobalView_ = false;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;
     std::shared_ptr<const ComputeSampledImageSnapshot> previousTextureSnapshot_;

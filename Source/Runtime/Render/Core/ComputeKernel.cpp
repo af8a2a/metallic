@@ -41,7 +41,7 @@ Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc
     }).transform([&](auto rhiValue) { impl->shader = std::move(rhiValue); });
     if (result) {
         result = ShaderRegistry::instance().getComputePipeline(device, {
-            .computeShader = {impl->shader.get(), "main"},
+            .computeShader = {impl->shader.get(), "main", desc.specializationConstants},
             .usesBindlessHeap = true,
             .bindlessUserPushDataSize = desc.parameters.transport == ParameterTransport::InlinePush
                 ? desc.parameters.size : uint32_t(sizeof(GPUBufferSpan)),

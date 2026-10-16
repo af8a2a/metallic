@@ -64,6 +64,7 @@ struct ResourceComputeKernelDesc {
     PipelineCache* pipelineCache = nullptr;
     // Required direct CPU/Slang resource struct. There is no implicit slot layout.
     uint32_t resourceParameterSize = 0;
+    std::span<const ShaderSpecializationConstant> specializationConstants;
 };
 
 struct CPUProfileRecorder;

@@ -242,22 +242,113 @@ TEST(ShaderWarmupBatch, IssuedTokensAcceptedHitUnionAndActualFilePublicationGate
         EXPECT_TRUE(advanced);
         EXPECT_FALSE(snapshot.validate(reason)); // Restored bytes still invalidate the old epoch.
     }
-    for (const std::string mode : {"short", "trailing", "damaged", "source-edit"}) {
+    for (const std::string mode : {"normal", "writer-failure", "short", "trailing", "damaged", "corrupt-proof", "source-edit"}) {
+        fs::create_directories(cache / mode);
         SlangSnapshotFileSystem snapshot(graph, 3); deliver(snapshot, b);
         SlangWarmupCacheTransaction<SlangSnapshotFileSystem> transaction(snapshot, producer, cache / mode);
-        std::string log; ASSERT_TRUE(transaction.stage({1, 0xb, kMinimalCode}, log));
-        size_t registered = 0;
-        EXPECT_FALSE(transaction.publish(1, [&](const auto& path, std::span<const uint8_t> bytes) {
+        std::string log; ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode}, log));
+        ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode}, log));
+        const auto proof = snapshot.sourceProof(producer);
+        size_t writes = 0, registered = 0;
+        const bool published = transaction.publish(2, [&](const auto& path, std::span<const uint8_t> bytes) {
+            ++writes;
+            EXPECT_EQ(registered, 0u);
+            if (writes == 2 && mode == "writer-failure") { return false; }
             slang_shader_cache::Bytes altered(bytes.begin(), bytes.end());
-            if (mode == "short") { altered.pop_back(); }
-            else if (mode == "trailing") { altered.push_back(0); }
-            else if (mode == "damaged") { altered.back() ^= 1; }
+            if (writes == 2) {
+                if (mode == "short") { altered.pop_back(); }
+                else if (mode == "trailing") { altered.push_back(0); }
+                else if (mode == "damaged" || mode == "corrupt-proof") {
+                    if (mode == "damaged") { altered.back() ^= 1; }
+                    else { altered[slang_shader_cache::kHeaderSize + 4] ^= 1; }
+                    const auto checksum = slang_shader_cache::checksum(
+                        std::span<const uint8_t>(altered).subspan(slang_shader_cache::kHeaderSize));
+                    for (size_t byte = 0; byte < 8; ++byte) { altered[40 + byte] = static_cast<uint8_t>(checksum >> (8 * byte)); }
+                }
+            }
             writeFile(path, altered);
-            if (mode == "source-edit") { writeText(b, "module B; public uint changed = 1;\n"); }
+            if (writes == 2 && mode == "source-edit") {
+                const auto timestamp = fs::last_write_time(b);
+                writeText(b, "module B; public uint changed = 1;\n");
+                fs::last_write_time(b, timestamp);
+            }
             return true;
-        }, [&](size_t) { ++registered; }, log));
-        EXPECT_EQ(registered, 0u); EXPECT_FALSE(transaction.published());
+        }, [&](size_t) { EXPECT_EQ(writes, 2u); ++registered; }, log);
+        EXPECT_EQ(published, mode == "normal") << mode << ": " << log;
+        EXPECT_EQ(writes, 2u);
+        EXPECT_EQ(registered, published ? 2u : 0u);
+        EXPECT_EQ(transaction.published(), published);
+        if (published) {
+            EXPECT_EQ(read(cache / mode / "000000000000000a.spv"), slang_shader_cache::encode(0xa, proof, kMinimalCode));
+            EXPECT_EQ(read(cache / mode / "000000000000000b.spv"), slang_shader_cache::encode(0xb, proof, kMinimalCode));
+        }
     }
+#endif
+}
+
+TEST(ShaderWarmupBatch, GenericSnapshotsKeepPerFileProofQualification)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows snapshot proof fixture";
+#else
+    WarmupDirectory directory;
+    const auto source = directory.path / "source";
+    const auto input = source / "Batch.slang";
+    writeText(input, "module Batch;\n");
+    const Json graph{{"mappings", Json::array({{{"logical", pathText(source)}, {"physical", pathText(source)}}})}};
+    constexpr uint64_t producer = 0x7103;
+    ShaderNamespaceProof proof;
+    {
+        SlangSnapshotFileSystem actual(graph, 1);
+        deliver(actual, input);
+        proof = actual.sourceProof(producer);
+    }
+    // This compatible snapshot deliberately has no notification API. Its proof
+    // qualification must still run for each actual persisted envelope.
+    struct GenericSnapshot {
+        ShaderNamespaceProof proof;
+        size_t validations = 0, qualifications = 0;
+        size_t failAtQualification = 0;
+        bool validate(std::string&) { ++validations; return true; }
+        ShaderNamespaceProof sourceProof(uint64_t) { return proof; }
+        bool qualifyCachedProof(const ShaderNamespaceProof& cached, uint64_t,
+            ShaderNamespaceProof& current, std::string&)
+        {
+            ++qualifications; current = proof;
+            if (qualifications == failAtQualification) { return false; }
+            return namespaceProofMatches(cached, current);
+        }
+    } snapshot{proof};
+    SlangWarmupCacheTransaction<GenericSnapshot> transaction(snapshot, producer, directory.path / "cache");
+    std::string log;
+    ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode}, log));
+    ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode}, log));
+    size_t writes = 0, registered = 0;
+    ASSERT_TRUE(transaction.publish(2, [&](const auto& path, std::span<const uint8_t> bytes) {
+        ++writes; EXPECT_EQ(registered, 0u); writeFile(path, bytes); return true;
+    }, [&](size_t) {
+        EXPECT_EQ(writes, 2u); EXPECT_EQ(snapshot.validations, 3u); ++registered;
+    }, log)) << log;
+    EXPECT_EQ(registered, 2u);
+    EXPECT_EQ(snapshot.qualifications, 3u);
+    EXPECT_EQ(snapshot.validations, 3u);
+
+    // Initial proof and the first persisted envelope qualify; rejection of the
+    // second persisted envelope must prevent every normal registration.
+    GenericSnapshot rejected{proof};
+    rejected.failAtQualification = 3;
+    SlangWarmupCacheTransaction<GenericSnapshot> failed(rejected, producer, directory.path / "generic-last-rejected");
+    ASSERT_TRUE(failed.stage({1, 0xa, kMinimalCode}, log));
+    ASSERT_TRUE(failed.stage({2, 0xb, kMinimalCode}, log));
+    size_t failedWrites = 0, failedRegistrations = 0;
+    EXPECT_FALSE(failed.publish(2, [&](const auto& path, std::span<const uint8_t> bytes) {
+        ++failedWrites; EXPECT_EQ(failedRegistrations, 0u); writeFile(path, bytes); return true;
+    }, [&](size_t) { ++failedRegistrations; }, log));
+    EXPECT_EQ(failedWrites, 2u);
+    EXPECT_EQ(rejected.qualifications, 3u);
+    EXPECT_EQ(rejected.validations, 2u);
+    EXPECT_EQ(failedRegistrations, 0u);
+    EXPECT_FALSE(failed.published());
 #endif
 }
 

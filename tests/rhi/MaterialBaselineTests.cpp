@@ -1,5 +1,7 @@
 #include "RHITest.h"
 #include "ShaderArtifactFixture.h"
+#include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/Environment/AtmosphereResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -58,6 +60,53 @@ private:
 #endif
     }
     std::string previous_;
+};
+
+class PhysicalCloudFinalReceipt final : public render::IRenderDebugObserver
+{
+public:
+    render::GPUAtmosphereParameters parameters{};
+    std::array<std::byte, 320> bytes{};
+    bool captured = false, valid = true, completed = false;
+    uint32_t executions = 0;
+    std::string publication;
+    void compiled(debug::DebugValue) override
+    {
+    }
+    void beginExecution(render::Device&, debug::DebugEvidenceStamp, render::RenderSubsystemHost*) override
+    {
+        ++executions;
+    }
+    void endExecution(bool success) override
+    {
+        completed = success;
+    }
+    void boundary(render::CommandBuffer&, std::string_view, uint32_t, std::string_view,
+        std::span<const render::DebugResourceBinding> resources, const debug::DebugValue&) override
+    {
+        for (const auto& binding : resources) {
+            if (binding.metadata.value("environmentSource", std::string{}) != "PhysicalAtmosphere" ||
+                !binding.id.ends_with(".parameters")) { continue; }
+            const auto prefix = binding.id.substr(0, binding.id.size() - std::string_view("parameters").size());
+            const bool shadow = std::any_of(resources.begin(), resources.end(), [&](const auto& other) {
+                return other.id == prefix + "cloudShadow" && other.texture != nullptr &&
+                    other.metadata.value("environmentSource", std::string{}) == "PhysicalAtmosphere";
+            });
+            if (!shadow || !binding.buffer || binding.offset != 0 || binding.buffer->desc().size != bytes.size() ||
+                binding.buffer->desc().memoryLocation != render::MemoryLocation::HostUpload) { valid = false; continue; }
+            const void* mapped = binding.buffer->map();
+            if (!mapped) { valid = false; continue; }
+            std::array<std::byte, 320> next;
+            std::memcpy(next.data(), mapped, next.size());
+            binding.buffer->unmap();
+            if (captured && bytes != next) { valid = false; }
+            bytes = next; std::memcpy(&parameters, bytes.data(), bytes.size());
+            const auto& p = parameters;
+            valid &= p.settings[1] > 0.5f && p.cloudLayer[2] > 0.0f && p.cloudLayer[3] > 0.0f &&
+                p.cloudOptics[0] > 0.0f && p.cloudOptics[3] > 0.5f;
+            captured = true; publication = prefix;
+        }
+    }
 };
 
 class MaterialBaselineTest : public RHITest
@@ -223,9 +272,10 @@ public:
                 Json viewCamera;
                 const bool useView = spec.value("useRenderView", false);
                 if (useView) {
-                    auto* node = graph.findNode("PathTrace");
+                    const auto cameraNode = spec.value("renderViewCameraNode", std::string("PathTrace"));
+                    auto* node = graph.findNode(cameraNode);
                     if (!node || !node->properties.contains("camera")) {
-                        return fail("Differential RenderView requires an explicit PathTrace camera");
+                        return fail("Differential RenderView requires an explicit camera: " + cameraNode);
                     }
                     viewCamera = node->properties.at("camera");
                     view.setRenderResolution(spec.at("width"), spec.at("height"));
@@ -261,6 +311,7 @@ public:
                     result["captures"].push_back({{"output", outputName}, {"frame", frame}, {"file", filename},
                         {"bytes", bytes.size()}, {"format", static_cast<uint32_t>(preview.readbackFormat())}});
                 };
+                auto cloudReceipt = spec.value("physicalCloudReceipt", false) ? std::make_unique<PhysicalCloudFinalReceipt>() : nullptr;
                 for (uint32_t frame = 0; frame < caseFrames; ++frame) {
                     if (spec.contains("cameraFrames")) {
                         for (const auto& change : spec.at("cameraFrames")) {
@@ -279,9 +330,21 @@ public:
                     const bool differentialCapture = std::find(captureFrames.begin(), captureFrames.end(), frame) != captureFrames.end();
                     const bool capture = frame + 1 == caseFrames || differentialCapture;
                     preview.setRawReadbackEnabled(capture);
-                    if (!preview.render(graph, width, height, spec.at("output").get<std::string>(), capture)) {
-                        return fail(id + ": " + preview.lastLog());
-                    }
+                    const bool proofFrame = cloudReceipt && frame + 1 == caseFrames;
+                    const auto rendered = [&]() {
+                        if (proofFrame) { preview.setDebugObserver(cloudReceipt.get()); }
+                        struct Reset
+                        {
+                            RenderGraphPreviewRenderer& preview;
+                            bool active;
+                            ~Reset()
+                            {
+                                if (active) { preview.setDebugObserver(nullptr); }
+                            }
+                        } reset{preview, proofFrame};
+                        return preview.render(graph, width, height, spec.at("output").get<std::string>(), capture);
+                    }();
+                    if (!rendered) { return fail(id + ": " + preview.lastLog()); }
                     if (artifact && (artifactFailureLog(preview.lastLog()) || artifact->rejected() != caseRejectedBefore)) {
                         return fail(id + ": rejected artifact request or error-material fallback: " + preview.lastLog());
                     }
@@ -328,6 +391,33 @@ public:
                         timing["nodes"].push_back(std::move(entry));
                     }
                     result[frame < warmup ? "warmup" : "frames"].push_back(std::move(timing));
+                }
+                if (cloudReceipt) {
+                    const auto* vbuffer = graph.findNode("VBuffer");
+                    if (!vbuffer || !cloudReceipt->captured || !cloudReceipt->valid || !cloudReceipt->completed || cloudReceipt->executions != 1) {
+                        return fail("Missing/invalid final physical cloud publication receipt");
+                    }
+                    const auto& camera = vbuffer->properties.at("camera");
+                    const auto eye = camera.at("eye").get<std::array<float, 3>>();
+                    if (camera.value("projection", std::string{}) != "orthographic" || camera.value("orthoHeight", 0.0f) != 3.0f ||
+                        eye != std::array<float,3>{0,2200,4} || camera.at("center") != Json::array({0,2200,0}) ||
+                        camera.at("up") != Json::array({0,1,0}) || width != 128 || height != 128 ||
+                        !std::equal(eye.begin(), eye.end(), cloudReceipt->parameters.observerWorldTop.begin())) { return fail("Orthographic actual-origin receipt mismatch"); }
+                    const auto& p = cloudReceipt->parameters;
+                    const double altitude = std::hypot(double(p.observerPlanetBottom[0]), double(p.observerPlanetBottom[1]), double(p.observerPlanetBottom[2])) - p.observerPlanetBottom[3];
+                    if (p.observerPlanetBottom[3] != 6360.0f || p.observerWorldTop[3] != 6460.0f ||
+                        p.cloudLayer != std::array<float,4>{1.5f,4.0f,1.0f,1.0f} || !(altitude > 2.19 && altitude < 2.21)) { return fail("Camera must be inside active spherical cloud layer"); }
+                    const auto file = id + "-physical-parameters.bin";
+                    std::ofstream receipt(context.outputDirectory / file, std::ios::binary);
+                    receipt.write(reinterpret_cast<const char*>(cloudReceipt->bytes.data()), cloudReceipt->bytes.size());
+                    if (!receipt) { return fail("Cannot write physical publication receipt"); }
+                    result["physicalCloudReceipt"] = {{"frame", caseFrames - 1}, {"observedTimedFrames", 0}, {"parameterFile", file},
+                        {"bytes", 320}, {"memoryLocation", "HostUpload"}, {"environmentSource", "PhysicalAtmosphere"}, {"role", "PhysicalAtmosphere.parameters"},
+                        {"publication", cloudReceipt->publication}, {"cloudLayer", cloudReceipt->parameters.cloudLayer},
+                        {"cloudOptics", p.cloudOptics}, {"observerWorldTop", p.observerWorldTop}, {"observerPlanetBottom", p.observerPlanetBottom},
+                        {"observerAltitudeKm", altitude}, {"resolvedCamera", camera}, {"cornerSampleOrigin", {-1.48828125,2201.48828125,4.0}},
+                        {"originBounds", {{"minimum", {-1.48828125,2198.51171875,4.0}}, {"maximum", {1.48828125,2201.48828125,4.0}}}},
+                        {"actualOriginCondition", true}, {"projectionProofScope", "resolved graph + actual observer packet + unchanged ScenePathMath; not GPU branch counter"}};
                 }
                 const auto format = preview.readbackFormat();
                 const bool half = format == Format::RGBA16Sfloat;

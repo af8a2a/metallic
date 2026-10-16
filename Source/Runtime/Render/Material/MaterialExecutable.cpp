@@ -65,6 +65,12 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     // unchanged-source path). Source edits cannot hit a stale executable here.
     auto candidate = std::make_shared<MaterialExecutableArtifact>();
     candidate->parameterABI = options.parameterABI;
+    try {
+        candidate->specializationConstants = detail::canonicalShaderSpecializationConstants(layout.specializationConstants);
+    } catch (const std::invalid_argument& failure) {
+        log += failure.what();
+        return makeError(Error::InvalidArgument);
+    }
     auto compiled = ShaderRegistry::instance().getShader(source, log);
     if (!compiled) { return makeError(compiled.error()); }
     candidate->shader = std::move(*compiled);
@@ -91,6 +97,12 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
         specialization.add(binding.descriptorCount); specialization.add(binding.dataStride);
         specialization.add(binding.dataAlignment);
     }
+    if (!candidate->specializationConstants.empty()) {
+        specialization.add(uint64_t{0x5350454331ull});
+        const auto bytes = detail::shaderSpecializationBytes(candidate->specializationConstants);
+        specialization.add(bytes.size());
+        for (const auto byte : bytes) { specialization.add(byte); }
+    }
     capabilities.add(layout.requiresRayQuery);
     capabilities.add(uint64_t(source.descriptorHeapMode));
     for (const auto* capability : source.capabilities) { capabilities.add(capability ? capability : ""); }
@@ -112,6 +124,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
         const auto cached = entry.artifact.lock();
         // Check full code/layout as well, so a hash collision cannot alias code.
         if (!cached || cached->shader.spirv != candidate->shader.spirv || cached->resources != candidate->resources ||
+            cached->specializationConstants != candidate->specializationConstants ||
             cached->constantsSize != candidate->constantsSize ||
             cached->resourceParameterSize != candidate->resourceParameterSize || cached->requiresRayQuery != candidate->requiresRayQuery) {
             continue;
@@ -124,6 +137,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     auto description = layout;
     description.spirv = candidate->shader.spirv;
     description.bindings = candidate->resources;
+    description.specializationConstants = candidate->specializationConstants;
     auto result = initializeResourceKernel(device, description, candidate->executable, candidate->encoder, log);
     if (!result) { return result; }
     candidate->generation = nextProgramGeneration++;

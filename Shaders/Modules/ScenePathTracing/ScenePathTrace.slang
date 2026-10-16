@@ -20,9 +20,50 @@ using Metallic.SceneSurface;
 using Metallic.ScenePath;
 import SHARC;
 using Metallic.SHARC;
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+import SceneStandardGuides;
+using Metallic.SceneStandardGuides;
+#endif
 
 namespace Metallic.ScenePathTracing
 {
+#if defined(METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION) && METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION != 0 && METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION != 1
+#error METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION must be 0 or 1.
+#endif
+#if METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
+#if !defined(SHARC_QUERY) || SHARC_QUERY != 1 || (defined(SHARC_UPDATE) && SHARC_UPDATE != 0)
+#error Standard cache-query specialization requires globally configured QUERY1 and UPDATE0.
+#endif
+#if defined(METALLIC_PT_SINGLE_SAMPLE) || defined(MATERIAL_CLASS) || defined(MATERIAL_PROGRAM_ID) || defined(METALLIC_DEFERRED_FP16) || defined(METALLIC_DEFERRED_RUNTIME_PRECISION) || defined(METALLIC_DEFERRED_CLASS_SPECIALIZATION)
+#error Standard cache-query specialization excludes SINGLE and manual material/deferred shapes.
+#endif
+#if !defined(METALLIC_CUSTOM_MATERIALS) || METALLIC_CUSTOM_MATERIALS != 0 || !defined(METALLIC_GLOBAL_VIEW) || METALLIC_GLOBAL_VIEW != 0 || !defined(METALLIC_HAS_RTXCR) || METALLIC_HAS_RTXCR != 1
+#error Standard cache-query specialization requires the builtin local-view RTXCR family.
+#endif
+#if !defined(METALLIC_DEFERRED_LIGHT_GRID) || METALLIC_DEFERRED_LIGHT_GRID != 0 || !defined(METALLIC_REALTIME_DEFERRED) || METALLIC_REALTIME_DEFERRED != 0 || !defined(METALLIC_DEFERRED_UPSCALER_GUIDES) || METALLIC_DEFERRED_UPSCALER_GUIDES != 0
+#error Standard cache-query specialization excludes Deferred source families.
+#endif
+#if !defined(METALLIC_WORKING_SPACE_ACESCG) || METALLIC_WORKING_SPACE_ACESCG != 1
+#error Standard cache-query specialization is restricted to ACEScg.
+#endif
+// Native policy requires a separately observed actual ID/type before use.
+[SpecializationConstant]
+public const bool kStandardPathCacheQueryEnabled = false;
+#endif
+#if defined(METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION) && METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION != 0 && METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION != 1
+#error METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION must be 0 or 1.
+#endif
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+#if !defined(METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION) || METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION != 1 || !defined(SHARC_QUERY) || SHARC_QUERY != 1 || (defined(SHARC_UPDATE) && SHARC_UPDATE != 0)
+#error Standard guide specialization requires the independent standard cache marker1, QUERY1 and UPDATE0.
+#endif
+#if METALLIC_PT_CACHE_QUERY_SPECIALIZATION || METALLIC_PT_GUIDE_SPECIALIZATION || METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
+#error Standard guide specialization excludes OpenPBR and Single specialization markers.
+#endif
+// Guide output only; actual auto-ID and native purpose mapping remain unqualified.
+[SpecializationConstant]
+public const bool kStandardPathGuideEnabled = false;
+#endif
 
 
 // ---------------------------------------------------------------------------
@@ -352,6 +393,9 @@ public float3 pathTrace(
         // mirroring the reference treatment of skipped delta vertices.
         // ------------------------------------------------------------------
 #if (SHARC_UPDATE || SHARC_QUERY)
+#if METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
+        if (kStandardPathCacheQueryEnabled) {
+#endif
         SHARCHitData sharcHitData;
         sharcHitData.positionWorld = hit.position;
         sharcHitData.normalWorld = hit.geometryNormal;
@@ -374,6 +418,9 @@ public float3 pathTrace(
                 radiance += sharcRadiance * throughput;
                 break; // Terminate the path once we've looked up into the cache
             }
+        }
+#endif
+#if METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
         }
 #endif
 #endif
@@ -500,9 +547,15 @@ public float3 pathTrace(
         ray.origin = offsetRay(hit.position, dot(ray.direction, hit.geometryNormal) > 0.0 ? hit.geometryNormal : -hit.geometryNormal);
 
 #if (SHARC_UPDATE || SHARC_QUERY)
+#if METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
+        if (kStandardPathCacheQueryEnabled) {
+#endif
         // Track the effective cone spread of the path so far for the glossy
         // footprint test performed on the next hit.
         cache.materialRoughnessPrev += sampledSpecularLobe ? roughness : 1.0;
+#if METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
+        }
+#endif
 #endif
 #if (SHARC_UPDATE || SHARC_QUERY) && SHARC_UPDATE
         // Hand the segment throughput to the cache; each segment is
@@ -532,6 +585,45 @@ public float3 pathTrace(
 
 public PathTraceCacheContext makeCacheContext()
 {
+#if METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
+    // Select numeric leaves only; mandatory materials supplies inactive valid handles.
+    let inactiveMaterials = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
+    float3 cacheCameraPosition = float3(0.0, 0.0, 0.0);
+    float cacheLogarithmBase = 0.0;
+    float cacheSceneScale = 0.0;
+    float cacheLevelBias = 0.0;
+    uint cacheCapacity = 0u;
+    float cacheRadianceScale = 0.0;
+    ResourceHandle<ByteAddressBuffer> cacheHashEntries = inactiveMaterials;
+    ResourceHandle<ByteAddressBuffer> cacheAccumulation = inactiveMaterials;
+    ResourceHandle<ByteAddressBuffer> cacheResolved = inactiveMaterials;
+    if (kStandardPathCacheQueryEnabled) {
+        ScenePathTraceCacheParams params = scenePathCacheParams()[0];
+        let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+        cacheCameraPosition = params.sharcCameraPosition.xyz;
+        cacheLogarithmBase = kSHARCGridLogarithmBase;
+        cacheSceneScale = max(params.sharcSceneScale, 0.0001);
+        cacheLevelBias = kSHARCGridLevelBias;
+        cacheCapacity = params.sharcEntriesNum;
+        cacheHashEntries = resources.sharcHashEntries;
+        cacheAccumulation = resources.sharcAccumulation;
+        cacheResolved = resources.sharcResolved;
+        cacheRadianceScale = 1.0e3;
+    }
+    // Opaque typed views are resolved after the branch; no opaque merge is authored.
+    PathTraceCacheContext cache;
+    cache.sharc.hashGridParameters.cameraPosition = cacheCameraPosition;
+    cache.sharc.hashGridParameters.logarithmBase = cacheLogarithmBase;
+    cache.sharc.hashGridParameters.sceneScale = cacheSceneScale;
+    cache.sharc.hashGridParameters.levelBias = cacheLevelBias;
+    cache.sharc.hashGridData.capacity = cacheCapacity;
+    cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(cacheHashEntries);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(cacheAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(cacheResolved);
+    cache.sharc.radianceScale = cacheRadianceScale;
+    cache.materialRoughnessPrev = 1.0;
+    return cache;
+#else
     PathTraceCacheContext cache;
     ScenePathTraceCacheParams params = scenePathCacheParams()[0];
 #if (SHARC_UPDATE || SHARC_QUERY)
@@ -560,8 +652,57 @@ public PathTraceCacheContext makeCacheContext()
 #endif
     cache.materialRoughnessPrev = 1.0;
     return cache;
+#endif
 }
 
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+#define gDlssRrAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideAlbedo)
+
+#define gDlssRrSpecularAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularAlbedo)
+
+#define gDlssRrNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().guideNormalRoughness)
+
+#define gDlssRrMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().guideMotion)
+
+#define gDlssRrLinearDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideLinearDepth)
+
+#define gDlssRrSpecularHitDistance resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularHitDistance)
+
+#define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
+
+void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
+{
+    gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
+    gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
+    gDlssRrNormalRoughness[pixel] = float4(Metallic.ScenePath::safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
+    gDlssRrMotionVectors[pixel] = data.motionVector;
+    gDlssRrLinearDepth[pixel] = max(data.linearDepth, 0.0);
+    gDlssRrSpecularHitDistance[pixel] = max(data.specularHitDistance, 0.0);
+    gDlssDepth[pixel] = cameraHardwareDepth(data.linearDepth, push);
+}
+
+DLSSRRGuideData evaluateStandardDlssRrGuides(
+    Ray ray,
+    RayCone rayCone,
+    float2 samplePixel,
+    ScenePathTracePush push,
+    inout uint seed)
+{
+    DLSSRRGuideData data = makeDefaultDlssRrGuideData(push);
+
+    HitInfo hit;
+    if (!traceClosest(ray, push, hit)) {
+        data.motionVector = skyMotionVectorToPrevious(
+            ray.direction,
+            samplePixel,
+            push);
+        return data;
+    }
+
+    return evaluateStandardDlssRrGuidesAtHit(ray, rayCone, samplePixel, push, seed, hit);
+}
+
+#endif
 public void dispatchScenePathTrace(uint3 dispatchThreadId)
 {
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
@@ -599,6 +740,10 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
     float2 samplePixel = float2(pixel);
 #endif
 
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+    DLSSRRGuideData guides = makeDefaultDlssRrGuideData(push);
+    float firstSampleSpecularHitDistance = 0.0;
+#endif
     PathTraceCacheContext cache = makeCacheContext();
 
     float3 color = float3(0.0, 0.0, 0.0);
@@ -606,9 +751,21 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
 #if SHARC_UPDATE
         float2 jitter = float2(0.0, 0.0);
 #else
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+        float2 jitter = float2(0.0, 0.0);
+        if (kStandardPathGuideEnabled) {
+            jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
+        }
+        if (!kStandardPathGuideEnabled) {
+            jitter = push.temporalJitter != 0u
+            ? float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY)
+            : (samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed)));
+        }
+#else
         float2 jitter = push.temporalJitter != 0u
             ? float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY)
             : (samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed)));
+#endif
 #endif
 #if !SHARC_UPDATE
         samplePixel = float2(outputPixel) + jitter;
@@ -621,6 +778,20 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
         float ignoredSpecularHitDistance;
         Metallic.Atmosphere::AtmosphereSegment primaryAerial;
         color += pathTrace(ray, rayCone, push, cache, seed, ignoredSpecularHitDistance, primaryAerial);
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+        if (kStandardPathGuideEnabled) {
+        if (sampleIndex == 0u) {
+            firstSampleSpecularHitDistance = ignoredSpecularHitDistance;
+            guides = evaluateStandardDlssRrGuides(
+                ray,
+                rayCone,
+                float2(pixel) + float2(0.5, 0.5),
+                push,
+                seed);
+            guides.specularHitDistance = firstSampleSpecularHitDistance;
+        }
+        }
+#endif
     }
 #if SHARC_UPDATE
     // Cache update passes produce no image output.
@@ -628,6 +799,19 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
 #endif
     color /= float(samples);
 
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+    if (kStandardPathGuideEnabled) {
+    color = max(color, float3(0.0, 0.0, 0.0));
+
+    if (push.enableAccumulation != 0u) {
+        color = accumulateStreamPathTrace(pixel, color, push);
+    }
+
+    sceneOutput()[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
+    writeDlssRrGuides(pixel, guides, push);
+    }
+    if (!kStandardPathGuideEnabled) {
+#endif
     if (push.outputLinear == 0u) {
         color = Metallic.WorkingColor::toLinearRec709(color);
         color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
@@ -641,5 +825,8 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
     }
 
     sceneOutput()[pixel] = float4(color, 1.0);
+#if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
+    }
+#endif
 }
 } // namespace Metallic.ScenePathTracing

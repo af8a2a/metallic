@@ -11,6 +11,7 @@ enum class PipelineRecipeType : uint8_t { Compute, Graphics };
 
 struct PipelineRecipeShader {
     std::vector<uint32_t> spirv;
+    std::vector<ShaderSpecializationConstant> specializationConstants;
     std::string moduleName;
     std::string sourceEntryPoint;
     std::string debugMode;

@@ -8,6 +8,8 @@ namespace Metallic.OpenPBR
 // normalized, clamped LUT contract; providers must preserve table orientation.
 public interface IOpenPBRContext
 {
+    public static const bool kEnableSheenAndCoat;
+    public static const bool kEnableDispersion;
     public static bool enableSheenAndCoat();
     public static bool enableDispersion();
     public static bool enableTranslucency();

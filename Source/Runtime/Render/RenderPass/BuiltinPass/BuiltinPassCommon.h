@@ -740,6 +740,15 @@ struct SceneMaterialVisualizationPush {
 
 static_assert(sizeof(SceneMaterialVisualizationPush) == 100);
 
+// Deferred only: preserve the bin, transmission-sample and depth bits.
+inline constexpr uint32_t kScenePathTraceExportUpscalerGuides = 1u << 26u;
+static_assert((kScenePathTraceExportUpscalerGuides & 0x03ffffffu) == 0u);
+inline constexpr uint32_t kScenePathTraceUseGlobalView = 1u << 27u;
+static_assert((kScenePathTraceUseGlobalView & (0x03ffffffu | kScenePathTraceExportUpscalerGuides)) == 0u);
+inline constexpr uint32_t kScenePathTraceUseFP16Precision = 1u << 28u;
+static_assert((kScenePathTraceUseFP16Precision &
+    (0x03ffffffu | kScenePathTraceExportUpscalerGuides | kScenePathTraceUseGlobalView)) == 0u);
+
 struct ScenePathTracePush {
     float eye[4] = {};
     float center[4] = {};
@@ -775,7 +784,8 @@ struct ScenePathTracePush {
     uint32_t sampleFrame = 0;
     uint32_t temporalJitter = 0;
     // Keep the shared push ABI within the descriptor heap's 256-byte limit.
-    // Bits 0:15 material bin, 16:20 transmission samples, 21:25 ray depth.
+    // Bits 0:15 material bin, 16:20 transmission samples, 21:25 ray depth,
+    // Bit 26 Deferred upscaler guides, bit 27 global view, bit 28 FP16 precision; bits 29:31 remain unassigned.
     uint32_t deferredSettings = (2u << 16u) | (8u << 21u);
 };
 

@@ -87,6 +87,11 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
     hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
     hash = hashValue(hash, hashBool(desc.indirectBindable));
     hash = hashValue(hash, desc.bindlessUserPushDataSize);
+    if (!desc.computeShader.specializationConstants.empty()) {
+        const auto bytes = shaderSpecializationBytes(desc.computeShader.specializationConstants);
+        hash = hashValue(hash, uint32_t{0x53504331u});
+        hash = hashBytes(hash, bytes.data(), bytes.size());
+    }
     // Preserve the existing default-pipeline cache identity (zero custom mappings).
     hash = hashValue(hash, uint32_t{0});
     if (desc.disableOptimization || desc.backend != ComputePipelineBackend::Pipeline) {

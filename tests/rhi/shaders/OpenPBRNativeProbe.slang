@@ -46,8 +46,10 @@ float4 lut(int id, float3 uvw, int3 size)
 #else
 import OpenPBR;
 using Metallic.OpenPBR;
-struct NativeProbeContext : IOpenPBRContext
+public struct NativeProbeContext : IOpenPBRContext
 {
+    public static const bool kEnableSheenAndCoat = true;
+    public static const bool kEnableDispersion = true;
     static bool enableSheenAndCoat() { return true; }
     static bool enableDispersion() { return true; }
     static bool enableTranslucency() { return true; }

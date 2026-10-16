@@ -57,6 +57,12 @@ public float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 // Tests can supply a concrete context without importing this program's resources.
 public struct SceneOpenPBRContext : IOpenPBRContext
 {
+#if METALLIC_CUSTOM_MATERIALS
+    public static const bool kEnableSheenAndCoat = true;
+#else
+    public static const bool kEnableSheenAndCoat = false;
+#endif
+    public static const bool kEnableDispersion = false;
     public static bool enableSheenAndCoat()
     {
 #if METALLIC_CUSTOM_MATERIALS

@@ -81,7 +81,7 @@ int run(int argc, char** argv)
     DescriptorHeapShaderStrides explicitStrides;
     bool resourceStrideSpecified = false;
     bool samplerStrideSpecified = false;
-    size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
+    size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 12u);
     bool jobsSpecified = false;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -89,7 +89,7 @@ int run(int argc, char** argv)
             std::cout << "MetallicShaderCompiler [--list] [--filter substring] [--cache-dir path]\n"
                          "                       [--debug-mode disabled|capture|debug] [--jobs N]\n"
                          "                       [--resource-heap-stride N --sampler-heap-stride N]\n"
-                         "Default workers: min(CPU threads, 8); --jobs 1 compiles serially.\n"
+                         "Default workers: min(CPU threads, 12); --jobs 1 compiles serially.\n"
                          "METALLIC_SHADER_WARMUP_JOBS overrides the default, including application startup.\n"
                          "--jobs takes precedence over the environment variable.\n"
                          "Native shaders query a supported adapter unless both byte strides are supplied.\n"

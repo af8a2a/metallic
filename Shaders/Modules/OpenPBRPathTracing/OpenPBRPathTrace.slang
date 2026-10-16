@@ -351,7 +351,48 @@ public float3 pathTraceOpenPBRWithPrimaryQuery(
     bool primarySurface = false;
     bool primaryQueryConsumed = false;
 #if (SHARC_UPDATE || SHARC_QUERY)
+#if METALLIC_PT_CACHE_QUERY_SPECIALIZATION
+    // Select only numeric values and engine handle indices across the policy branch.
+    // Materials is mandatory for every accepted production dispatch, including misses.
+    let inactiveMaterials = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
+    float3 cacheCameraPosition = float3(0.0, 0.0, 0.0);
+    float cacheLogarithmBase = 0.0;
+    float cacheSceneScale = 0.0;
+    float cacheLevelBias = 0.0;
+    uint cacheCapacity = 0u;
+    float cacheRadianceScale = 0.0;
+    ResourceHandle<ByteAddressBuffer> cacheHashEntries = inactiveMaterials;
+    ResourceHandle<ByteAddressBuffer> cacheAccumulation = inactiveMaterials;
+    ResourceHandle<ByteAddressBuffer> cacheResolved = inactiveMaterials;
+    if (kOpenPBRCacheQueryEnabled) {
+        // Keep these expressions and their order in sync with makeCacheContext().
+        ScenePathTraceCacheParams params = scenePathCacheParams()[0];
+        let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+        cacheCameraPosition = params.sharcCameraPosition.xyz;
+        cacheLogarithmBase = kSHARCGridLogarithmBase;
+        cacheSceneScale = max(params.sharcSceneScale, 0.0001);
+        cacheLevelBias = kSHARCGridLevelBias;
+        cacheCapacity = params.sharcEntriesNum;
+        cacheHashEntries = resources.sharcHashEntries;
+        cacheAccumulation = resources.sharcAccumulation;
+        cacheResolved = resources.sharcResolved;
+        cacheRadianceScale = 1.0e3;
+    }
+    // Resolve after the merge; no opaque descriptor value crosses the branch.
+    SHARCParameters selectedSharc;
+    selectedSharc.hashGridParameters.cameraPosition = cacheCameraPosition;
+    selectedSharc.hashGridParameters.logarithmBase = cacheLogarithmBase;
+    selectedSharc.hashGridParameters.sceneScale = cacheSceneScale;
+    selectedSharc.hashGridParameters.levelBias = cacheLevelBias;
+    selectedSharc.hashGridData.capacity = cacheCapacity;
+    selectedSharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(cacheHashEntries);
+    selectedSharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(cacheAccumulation);
+    selectedSharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(cacheResolved);
+    selectedSharc.radianceScale = cacheRadianceScale;
+    OpenPBRCacheContext cache = { selectedSharc };
+#else
     OpenPBRCacheContext cache = makeOpenPbrCacheContext();
+#endif
 #endif
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {
@@ -421,10 +462,114 @@ public float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push
         specularHitDistance, false, unusedHit);
 }
 
+#if METALLIC_PT_GUIDE_SPECIALIZATION
+#if !SHARC_UPDATE
+// One trace core serves both dispatch-uniform policies. The public guide entry
+// remains a compatibility caller; the shared entry reads the guide specialization.
+public void dispatchOpenPbrRayQueryPathTracePolicy(
+    uint3 dispatchThreadId, ScenePathTracePush push, bool exportGuides)
+{
+    uint2 pixel = dispatchThreadId.xy;
+    if (pixel.x >= push.width || pixel.y >= push.height) {
+        return;
+    }
+
+    bool debugViewEnabled = push.debugView != kOpenPBRDebugViewFinal;
+    uint samples;
+    uint seed;
+    float3 color;
+    Ray guideRay;
+    RayCone guideRayCone;
+    float firstSampleSpecularHitDistance;
+    OpenPBRPrimaryQuery primaryQuery;
+    if (exportGuides) {
+        samples = clamp(push.samples, 1u, 16u);
+        seed = hash(
+            pixel.x +
+            pixel.y * max(push.width, 1u) +
+            (push.sampleFrame + 1u) * 0x9e3779b9u);
+        float2 jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
+        float2 samplePixel = float2(pixel) + jitter;
+        guideRay.origin = rayOriginFromPixel(samplePixel, push);
+        guideRay.direction = rayDirectionFromPixel(samplePixel, push);
+        guideRayCone = primaryRayConeFromPixel(samplePixel, push);
+        color = float3(0.0);
+        firstSampleSpecularHitDistance = 0.0;
+        primaryQuery = (OpenPBRPrimaryQuery)0;
+    } else {
+        samples = debugViewEnabled ? 1u : clamp(push.samples, 1u, 16u);
+        // Keep diagnostic environment/shadow samples stable between frames.
+        uint sampleFrame = debugViewEnabled ? 0u : push.sampleFrame;
+        seed = hash(
+            pixel.x +
+            pixel.y * max(push.width, 1u) +
+            (sampleFrame + 1u) * 0x9e3779b9u);
+        color = float3(0.0, 0.0, 0.0);
+    }
+    for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
+        Ray ray;
+        RayCone rayCone;
+        uint2 guidePixel = uint2(0xffffffffu);
+        if (exportGuides) {
+            ray = guideRay;
+            rayCone = guideRayCone;
+            guidePixel = pixel;
+        } else {
+            float2 jitter = push.temporalJitter != 0u
+                ? float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY)
+                : (samples == 1u ? float2(0.5, 0.5) : float2(rand(seed), rand(seed)));
+            float2 samplePixel = float2(pixel) + jitter;
+
+            ray.origin = rayOriginFromPixel(samplePixel, push);
+            ray.direction = rayDirectionFromPixel(samplePixel, push);
+            rayCone = primaryRayConeFromPixel(samplePixel, push);
+            // Match pathTraceOpenPBR -> pathTraceOpenPBRWithPrimaryHit(false):
+            // each ordinary sample owns a fresh zero hit/query.
+            HitInfo unusedHit = {};
+            primaryQuery.hit = unusedHit;
+            primaryQuery.queried = false;
+            primaryQuery.found = false;
+        }
+        float sampleSpecularHitDistance;
+        color += pathTraceOpenPBRWithPrimaryQuery(ray, rayCone, push, seed,
+            sampleSpecularHitDistance, primaryQuery, guidePixel);
+        if (exportGuides && sampleIndex == 0u) {
+            firstSampleSpecularHitDistance = sampleSpecularHitDistance;
+        }
+    }
+    color /= float(samples);
+    if (exportGuides) {
+        writeOpenPbrPathColor(pixel, color, push);
+        let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+        resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(firstSampleSpecularHitDistance, 0.0);
+    } else {
+        if (debugViewEnabled) {
+            color = openPbrDisplayDebugColor(push, color);
+        } else if (push.outputLinear == 0u) {
+            color = Metallic.WorkingColor::toLinearRec709(color);
+            color *= lightingExposure(sceneLights());
+            color = color / (color + float3(1.0, 1.0, 1.0));
+            color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
+            color = saturate(color);
+        }
+
+        if (push.enableAccumulation != 0u && !debugViewEnabled) {
+            color = accumulateStreamPathTrace(pixel, color, push);
+        }
+
+        sceneOutput()[pixel] = float4(color, 1.0);
+    }
+}
+#endif
+
+#endif
 public void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
 {
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
     uint2 pixel = dispatchThreadId.xy;
+#if METALLIC_PT_GUIDE_SPECIALIZATION
+    dispatchOpenPbrRayQueryPathTracePolicy(dispatchThreadId, push, kOpenPBRGuideExportEnabled);
+#else
 #if SHARC_UPDATE
     ScenePathTraceCacheParams cacheParams = scenePathCacheParams()[0];
     uint stride = max(cacheParams.sharcUpdateStride, 1u);
@@ -481,6 +626,7 @@ public void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
     }
 
     sceneOutput()[pixel] = float4(color, 1.0);
+#endif
 #endif
 }
 

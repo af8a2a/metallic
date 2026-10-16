@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SlangShaderCache.h"
+#include "SlangWarmupPreparedReadback.h"
 #include <filesystem>
 #include <chrono>
 #include <fstream>
@@ -65,13 +66,33 @@ public:
         const auto qualify = [&](const ShaderNamespaceProof& cached, ShaderNamespaceProof& current) {
             return snapshot_.qualifyCachedProof(cached, producerIdentity_, current, log);
         };
+        // Only this immutable batch proof is prepared. Ordinary cache lookup
+        // keeps its complete untrusted-proof decoder and qualification path.
+        const auto qualifyCurrentProof = [&] {
+            ShaderNamespaceProof current;
+            try { return qualify(proof, current) && namespaceProofMatches(proof, current); }
+            catch (...) { return false; }
+        };
+        if (!qualifyCurrentProof()) { log = "Pending V3 warmup proof qualification failed"; return discard(log); }
+        const slang_shader_cache::PreparedBatchProof prepared(proof);
+        if (!prepared.valid()) { log = "Pending V3 warmup proof preparation failed"; return discard(log); }
+        const auto validateReadbackSource = [&] {
+            if constexpr (requires(Snapshot& snapshot, std::string& reason) { snapshot.validateNotifications(reason); }) {
+                // Keep per-file live edit detection without rebuilding the
+                // same roots/read proof for every persisted envelope.
+                try { return snapshot_.validateNotifications(log); }
+                catch (...) { return false; }
+            } else {
+                // Generic snapshots retain their existing qualification gate.
+                return qualifyCurrentProof();
+            }
+        };
         std::vector<slang_shader_cache::Bytes> encoded;
         for (const auto& item : items_) {
-            auto bytes = slang_shader_cache::encode(item.requestHash, proof, item.finalizedSpirv);
-            // Encoding validates header/proof shape. The one acceptance gate
-            // is the actual persisted file's complete decoder below: current
-            // source proof, checksum, SPIR-V and exact expected bytes all stay
-            // mandatory. No completed result/registry registration precedes it.
+            auto bytes = prepared.encodeItem(item.requestHash, item.finalizedSpirv);
+            // The persisted envelope still requires a live source check,
+            // checksum, exact known proof, expected SPIR-V and exact bytes.
+            // No result or registry registration precedes complete acceptance.
             if (bytes.empty()) { log = "Pending V3 warmup encode failed"; return discard(log); }
             encoded.push_back(std::move(bytes));
         }
@@ -100,9 +121,8 @@ public:
                 stream.peek() != std::char_traits<char>::eof()) {
                 log = "Actual V3 warmup file short read or trailing bytes"; return discard(log);
             }
-            slang_shader_cache::CachedPayload decoded;
-            if (stream.bad() || !slang_shader_cache::decode(real, item.requestHash, qualify, decoded) ||
-                decoded.spirv != item.finalizedSpirv || real != encoded[index]) {
+            if (stream.bad() || !validateReadbackSource() ||
+                !prepared.readback(real, item.requestHash, item.finalizedSpirv) || real != encoded[index]) {
                 log = "Actual V3 warmup file readback failed"; return discard(log);
             }
             timings_.fileReadDecodeNanoseconds += elapsed(readStart);

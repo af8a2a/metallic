@@ -56,7 +56,48 @@ public float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone
     bool primarySurface = false;
     bool primaryQueryConsumed = false;
 #if (SHARC_UPDATE || SHARC_QUERY)
+#if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
+    // Select only numeric values and engine handle indices across the policy branch.
+    // Materials is mandatory for every accepted production dispatch, including misses.
+    let inactiveMaterials = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
+    float3 cacheCameraPosition = float3(0.0, 0.0, 0.0);
+    float cacheLogarithmBase = 0.0;
+    float cacheSceneScale = 0.0;
+    float cacheLevelBias = 0.0;
+    uint cacheCapacity = 0u;
+    float cacheRadianceScale = 0.0;
+    ResourceHandle<ByteAddressBuffer> cacheHashEntries = inactiveMaterials;
+    ResourceHandle<ByteAddressBuffer> cacheAccumulation = inactiveMaterials;
+    ResourceHandle<ByteAddressBuffer> cacheResolved = inactiveMaterials;
+    if (kOpenPBRSingleCacheQueryEnabled) {
+        // Keep these expressions and their order in sync with makeCacheContext().
+        ScenePathTraceCacheParams params = scenePathCacheParams()[0];
+        let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+        cacheCameraPosition = params.sharcCameraPosition.xyz;
+        cacheLogarithmBase = kSHARCGridLogarithmBase;
+        cacheSceneScale = max(params.sharcSceneScale, 0.0001);
+        cacheLevelBias = kSHARCGridLevelBias;
+        cacheCapacity = params.sharcEntriesNum;
+        cacheHashEntries = resources.sharcHashEntries;
+        cacheAccumulation = resources.sharcAccumulation;
+        cacheResolved = resources.sharcResolved;
+        cacheRadianceScale = 1.0e3;
+    }
+    // Resolve after the merge; no opaque descriptor value crosses the branch.
+    SHARCParameters selectedSharc;
+    selectedSharc.hashGridParameters.cameraPosition = cacheCameraPosition;
+    selectedSharc.hashGridParameters.logarithmBase = cacheLogarithmBase;
+    selectedSharc.hashGridParameters.sceneScale = cacheSceneScale;
+    selectedSharc.hashGridParameters.levelBias = cacheLevelBias;
+    selectedSharc.hashGridData.capacity = cacheCapacity;
+    selectedSharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(cacheHashEntries);
+    selectedSharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(cacheAccumulation);
+    selectedSharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(cacheResolved);
+    selectedSharc.radianceScale = cacheRadianceScale;
+    OpenPBRCacheContext cache = { selectedSharc };
+#else
     OpenPBRCacheContext cache = makeOpenPbrCacheContext();
+#endif
 #endif
 
     for (uint depth = 0u; depth < maxDepth; ++depth) {

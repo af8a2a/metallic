@@ -14,6 +14,7 @@ struct ComputeKernelDesc {
     const char* debugName = nullptr;
     // Null automatically selects ShaderRegistry's persistent cache.
     PipelineCache* pipelineCache = nullptr;
+    std::span<const ShaderSpecializationConstant> specializationConstants;
 };
 
 class ComputeKernel;

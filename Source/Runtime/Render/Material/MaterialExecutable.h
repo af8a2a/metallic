@@ -21,6 +21,7 @@ struct MaterialExecutableArtifact
     uint64_t parameterABI = kSceneMaterialABI;
     uint32_t constantsSize = 0;
     std::vector<ComputeResourceBindingDesc> resources;
+    std::vector<ShaderSpecializationConstant> specializationConstants;
     ShaderCompileResult shader;
     // Immutable once published through shared_ptr<const ...>. This handle and
     // every pass share a single underlying kernel, never one per instance.

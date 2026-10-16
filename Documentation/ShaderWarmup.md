@@ -57,7 +57,7 @@ a nonzero exit code. This warms SPIR-V, not driver PSO caches.
 ## Parallel compilation and progress
 
 Warmup uses a worker pool. The default is the available CPU thread count capped
-at 8 to limit simultaneous Slang compiler memory use. The environment variable
+at 12 to limit simultaneous Slang compiler memory use. The environment variable
 `METALLIC_SHADER_WARMUP_JOBS` overrides this default for both application startup
 and the standalone compiler. `--jobs N` takes precedence over the environment
 variable; `--jobs 1` restores serial compilation. Values must be positive integers;
@@ -499,6 +499,330 @@ constructs and6694 stores. This is an order-biased first-use count, not all uses
 or pass-time attribution, and motivates a separately guarded construct analysis.
 See `.cache/SlangCompileGoal/ScalarProjectionCopyChainExperiment/Closure-01/`.
 
+A separately guarded constructor-tracing Revision02 followed Struct/Array
+embedding paths through validated constructors, copies and extracts, committing
+only complete safe component sets. Whole/debug/Phi/unknown uses and queue/path
+budgets retain all components. Its fresh 282-step pinned backend build preserved
+compile-command multiplicity, flags, exports and the 907 production inputs;
+all 31 direct shapes passed (26 valid, five rejected before the SDK).
+Same-P-core default-O1 raw replays for 126 and 140 both failed the original
+byte oracle, with the replay driver's explicit mismatch diagnostic rather than
+a crash. Fixed-tool compact-ID comparisons and external validation subsequently
+proved full byte equality for both inputs, so only ID numbering differed.
+One pair's complete child CPU fell from 18.453 to 14.422 seconds for 126 but
+rose from 2.469 to 2.875 seconds for 140. These are CPU times, not startup walls;
+the mixed single-pair result does not establish a stable gain. The 40,900
+trimmed-load and 50,405 elided-member counters for 126 describe intermediate
+usage sets, not final instruction reductions. All input seals remained unchanged,
+all children exited and parent affinity was restored. No production adoption or
+complete-startup qualification is claimed. Evidence is under
+`.cache/SlangCompileGoal/CtorProjectionTraceExperiment/Closure-01/`.
+
+The same revision subsequently completed three fresh AB/BA/AB raw-replay pairs
+for each input, with the same actual ABI, default fourteen backend passes and
+one-core affinity. Complete child CPU ratios for 126 were 0.787731, 0.776181
+and 0.757157 (median 22.38% lower). For 140 they were 0.915033, 1.005917 and
+0.931429 (median 6.86% lower, with one regression). Wall-ratio medians were
+0.748152 and 1.027786 respectively; CPU and elapsed wall are separate scopes.
+All six candidate executions retained the original hard byte-oracle failure.
+The independent checks required actual SDK success with the precise mismatch
+diagnostic, external validation and complete fixed-tool compacted byte equality.
+They passed for every pair, establishing only ID-numbering differences.
+All recorded children exited, input seals stayed unchanged and parent affinity
+was restored. This raw-replay evidence does not qualify current-source shader
+compilation, GPU behavior, production adoption or complete startup. Evidence is
+`.cache/SlangCompileGoal/CtorProjectionTraceExperiment/PairedCpu-01/Summary.json`.
+
+Current-source qualification then compiled the actual 126 and 140 requests with
+the unchanged frontend, Core/provider, 808-file reference graph and real native
+catalog query. Both original outputs reproduced their production oracle exactly.
+Both candidate outputs passed mandatory SDK finalization/validation, standalone
+validation and whole-byte equality after the same fixed ID compaction. Captured
+raw inputs were identical across arms; complete nullable ABI values and input
+span contents matched, comparing cross-process addresses only by nullness.
+Each source output also matched the already admitted same-DLL/raw replay.
+Source per-pass timing markers were unavailable through this capture transport;
+default-pass evidence is the sealed build/policy, actual O1 ABI and bound replay,
+not an observed source pass trace. The original tools' reference/index-only
+rejections and the missing-marker observation failure remain preserved. The
+successful independent admission reuses the completed 126 outputs and fresh
+140 compilations without rewriting those failed attempts. It still establishes
+no complete-startup gain or production adoption. Evidence is
+`.cache/SlangCompileGoal/CtorProjectionSourceQualificationExperiment/Qualification-04/`.
+
+The direct staged production CLI then completed its first complete 174-request
+cold pair with the original and constructor-tracing backends. Walls were
+64.478 and 64.602 seconds (+0.19%); whole-process CPU was 382.953 and 373.750
+seconds (-2.40%). Both arms retained eight workers, disabled debug/O1, actual
+native 32/32 strides, empty output caches, zero hits/failures and no IR input
+cache. Original outputs matched all 174 oracle payloads. Candidate raw bytes
+matched 32; all 174 candidate/reference payloads matched as complete bytes after
+the same fixed ID compaction. All 348 raw validators, 348 compact operations
+and 348 compact validators succeeded outside the timed CLI intervals. Source,
+build, tool and runtime seals passed and all children exited. This qualifies
+the complete output scope but shows no first-pair startup gain. Evidence is
+`.cache/SlangCompileGoal/CtorProjectionFullSourceExperiment/Pair-01/`.
+
+Subsequent BA/AB performance pairs use the same admitted runtimes and settings,
+new empty caches and actual complete CLI processes. Every new cache payload
+must match its same-arm N1 raw output in full bytes before reusing that exact
+payload's prior external validation and compaction evidence. These repeats
+report zero fresh external validator/compaction executions and explicitly
+identify the reused checks. No validation is reused for changed bytes. Evidence
+is under `.cache/SlangCompileGoal/CtorProjectionFullSourceRepeatExperiment/`.
+Both repeats completed successfully: the BA pair took 70.488 versus 70.110
+seconds, and the final AB pair 81.658 versus 65.099 seconds. Every new raw
+payload matched its same-arm validated N1 bytes, with source/build/runtime
+seals unchanged and all children exited. Across all three pairs, the median
+candidate/reference wall ratio was 0.994640 (0.54% lower), ranging from
+0.797218 to 1.001925; the direction was mixed. Whole-process CPU ratios were
+0.975968, 0.961641 and 0.928834 (median 3.84% lower). All samples were retained.
+The unpaired wall medians were 70.488 and 65.099 seconds; they are not the
+paired speedup estimate. These results do not qualify a stable startup gain,
+and the backend remains unadopted. Every candidate startup exceeded ten seconds.
+The independent summary is
+`.cache/SlangCompileGoal/CtorProjectionFullSourcePairAudit/Pairs-01.json`.
+
+A separate successor stopped constructor tracing once every valid origin member
+had already been observed, conservatively retaining all members. Its fresh
+282-step backend build preserved the default O1 passes, flags, exports and
+production inputs. All 31 direct fixtures passed, including the six partial
+trimming cases, five invalid inputs, copies and budget fallbacks. Only the
+full-member fixture took the new diagnostic path. These fixtures use explicit
+O0 plus scalar replacement; they do not qualify full source O1 compilation.
+
+Actual default-O1 raw replays for 126 and 140 passed external validation and
+complete fixed-tool compacted equality with the original. A fresh same-core
+parent arm also produced exactly the same complete raw output bytes as this
+successor. Its single-order incremental CPU observations were nevertheless
+5.20% and 7.28% higher than the parent. These whole-child CPU observations do
+not establish a causal pass regression or stable performance result; they give
+no reason to expand this successor to full startup. No source/GPU/full174
+adoption is claimed. Evidence is under
+`.cache/SlangCompileGoal/CtorProjectionSaturationGuardExperiment/RawN1-01/` and
+`ParentArm-01/`.
+The recorded trace states fell only from 105,785 to 105,782 for 126 and remained
+4,293 for 140; trimming and elided-member counts were unchanged. The successor
+was closed without a full-startup run. Its terminal seals are in
+`.cache/SlangCompileGoal/CtorProjectionSaturationGuardExperiment/Closure-01/`.
+
+An independent stock-backend experiment reused operand constants within one
+default-rule fold attempt, after an unsuccessful constant fold and before its
+algebraic fold. Literal operands, custom rule sets, nonidentity public calls and
+early failures retain the original lookup path. The two-file/header change used
+a fresh complete backend build with unchanged O1 passes, compile flags and SDK
+exports. Both actual production raw inputs reproduced the original payloads
+byte-for-byte, including IDs, and passed actual ABI/pass tracing, external
+validation and final input seals. One pair's whole-child CPU ratios were
+1.021891 for 126 and 0.952128 for 140; walls were 1.144508 and 1.012242. This
+mixed N1 result does not qualify a stable gain or justify full-startup expansion.
+The initial private `const bool` also removed the class's original implicit move
+assignment, making this candidate inadmissible despite the SDK build passing.
+The sealed candidate and measurement remain unchanged. A separate ordinary-bool
+repair built successfully and passed 27 actual cases in 17 groups against the
+stock backend. Complete module words, numeric bits, custom-rule/mapping behavior,
+overflow handling and the public move contract matched. The probe evaluator was
+corrected to recognize the stock backend's `OpConstantNull`; the earlier failed
+attempts were retained. These are direct semantics checks, without a new raw
+timing, full-startup or GPU qualification for the repair. Evidence is under
+`.cache/SlangCompileGoal/FoldOperandReuseExperiment/RawN1-01/` and
+`.cache/SlangCompileGoal/FoldOperandReuseRevision02/DirectProbe-03Qualification/`.
+
+An independent wrapper experiment inserted simplification and interface-preserving
+ADCE before exhaustive inline, retaining all fourteen original O1 passes in
+their original order. A fresh complete backend build matched the stock 390
+compile recipes and exports. Actual raw requests 126 and 140 executed the
+expected sixteen passes with unchanged input ABI, and their outputs passed
+external SPIR-V validation. One AB pair increased whole-child CPU from 15.891
+to 19.969 seconds for 126 (+25.66%) and from 2.516 to 2.922 for 140 (+16.15%);
+wall ratios were 1.781185 and 1.548394. Request 126 lost one final instruction;
+140 retained the same instruction count. Both complete outputs differed even
+after ID compaction, so semantic equivalence is not claimed. The original byte
+gate failures remain recorded. All twenty children exited, input seals matched
+and the runner restored its affinity. This candidate was rejected without
+full-startup or GPU expansion. Evidence is under
+`.cache/SlangCompileGoal/PreInlineCleanupExperiment/RawScreen-01/`.
+
+A separate wrapper candidate inserted local single-block load/store elimination
+followed by simplification before inline, retaining the original fourteen O1
+passes without extra early ADCE. The fresh backend again matched the 390 stock
+compile recipes and exports. Both selected raw inputs had zero load/store
+MemoryAccess masks and no Volatile decorations; this restricted admission does
+not qualify arbitrary memory-access semantics. One actual AB pair reduced
+request 126 whole-child CPU from 16.422 to 14.703 seconds (-10.47%), but increased
+140 from 2.469 to 2.859 (+15.82%); wall ratios were 0.699983 and 1.079180.
+Request 126 lost 31 final instructions, while 140 retained its count. Exact
+fourteen/sixteen-pass traces and fresh output validation passed, but both
+compacted outputs differed from stock. All sixteen children exited and final
+seals matched. This mixed screen does not establish a stable gain, semantic
+equivalence, GPU performance or complete startup qualification; it was not
+adopted. Evidence is under
+`.cache/SlangCompileGoal/PreInlineLocalMemoryExperiment/RawScreenDecision-01/`.
+
+A third independent wrapper inserted SSA rewrite then simplification before
+inline, retaining all fourteen stock O1 passes. Its fresh 390-recipe build and
+restricted raw-input admission passed. The first actual AB pair reduced
+whole-child CPU from 17.031 to 14.297 seconds for request 126 (-16.06%) and
+from 3.094 to 2.531 for 140 (-18.18%). Final instruction counts changed from
+415,205 to 390,570 and from 175,493 to 160,883. Exact pass traces and external
+output/compacted-output validation passed; both compacted outputs still differed
+from stock. All sixteen children exited with unchanged seals and restored
+affinity. These are promising single-pair backend measurements, without
+semantic, GPU or complete-startup qualification. Two additional BA/AB pairs
+failed to confirm that initial gain: request 126's three CPU ratios were
+0.839450, 1.077003 and 0.982841 (median -1.72%); request 140's were 0.818182,
+1.040541 and 1.124183 (median +4.05%). The respective wall-ratio medians were
+0.993845 and 0.970019. All eight repeat payloads exactly matched their own
+arm's previously validated complete output; their validation was reused with
+zero fresh validator processes. All children exited and final input seals
+matched. This inconsistent result was not expanded to full startup or adopted.
+A previous installed-library SSA-only prefix on
+General Guides had a three-pair API-wall median ratio of 1.060103; that negative
+history remains recorded. It used a separate parse/serialize prefix and the
+complete original SDK suffix, whereas this candidate uses pinned SSA plus
+simplification within one backend manager. Evidence is under
+`.cache/SlangCompileGoal/PreInlineSSARevision02/RawScreenDecision-01/`,
+`.cache/SlangCompileGoal/PreInlineSSARevision02/RawRepeat-01/` and
+`.cache/SlangCompileGoal/PreInlineSSAExperiment/GuidesPaired/`.
+
+A separate backend experiment retained Slang's O1 setting and omitted only the
+SPIRV-Tools exhaustive-inline pass. This explicitly changes the backend policy
+to thirteen passes. One wrapper translation unit was rebuilt with the original
+compile/link recipe against sealed stock archives; the optimizer libraries were
+reused. Raw request 126 whole-child CPU fell from 14.984 to 0.563 seconds, and
+140 from 2.938 to 0.203. Final modules retained 582/441 functions and 1,800/1,196
+calls instead of one function and no calls. Full-module validation passed;
+different optimized outputs are not semantic-equivalence evidence.
+
+The retained PrivateToLocal pass is unsafe to generalize to Private globals in
+multiply called helpers. Before extending the experiment, a fresh original
+capture covered the current complete 174-request workload and all 907 production
+inputs. Every raw module was Private-free, Logical/GLSL450 and had zero load/store
+MemoryAccess masks. All 174 actual callbacks preserved the original nullable
+O1 ABI, and all published payloads matched the original oracle. Two duplicate
+output groups retained their mapping ambiguity. This is workload admission,
+without a general-purpose policy or production adoption.
+
+An independent direct-CLI AB pair then measured **69.186 seconds reference and
+19.795 seconds candidate**, including planning, native32/32 discovery, all 174
+cold compilations, V3 publication/readback and teardown. Both used eight workers,
+unchanged production CLI/frontend bytes, zero hits/failures and fresh caches.
+All 348 external final-module validations passed after the measured processes
+exited. Ten candidate payloads matched stock; 164 differed. A separate
+fourteen-worker candidate run took **18.660 seconds**, with all 174 payloads
+exactly matching the validated candidate bytes (zero fresh validators, 174
+reused validations). It has no same-setting reference comparison. Neither run
+met ten seconds. The remaining eight-worker VisibilityBufferDeferred requests
+accounted for 46.475 summed module-load seconds and 35.575 summed codegen
+seconds; these overlap across workers and are not process-wall savings.
+
+Two small external-input Vulkan probes passed complete bit-exact CPU-oracle
+and cross-arm output checks. Their single-round 64-dispatch GPU medians were
+0.165808 versus 0.166400 ms and 10.482544 versus 10.033216 ms. Pipeline creation
+was measured separately, with uncontrolled driver disk-cache state. These
+microprobes do not qualify production scene correctness or GPU performance;
+later whole-scene checks rejected global adoption as recorded below. Evidence is under
+`.cache/SlangCompileGoal/BackendDeferredInlineExperiment/RawScreenDecision-01/`,
+`BackendDeferredInlineCurrentSourceCapture01/Run-01/`,
+`BackendDeferredInlineFullSource01/Pair-01/`, `Jobs14-01/`, `TimingAnalysis-01/`,
+and `BackendDeferredInlineGPUProbe01/Pair-02Review/` beneath the same goal directory.
+
+The subsequent whole-runtime check used the unchanged native RHI executable,
+fresh shader and pipeline caches, O1, normal driver optimization and all three
+default material scenes. Two stock controls produced byte-identical HDR images
+for OpenPBRPathTrace, OpenPBRDeferred and RTXCRChiang. With the thirteen-pass
+backend, both OpenPBR images remained byte-identical, but RTXCRChiang failed the
+unchanged absolute-plus-relative `2e-5` bound: maximum absolute error was
+0.07189524, RMSE 0.000277436, and 1,644 pixels exceeded the bound. All processes
+exited, original caches were restored and input seals matched. This rejects
+global adoption; validation-on GPU timestamps are diagnostic and do not qualify
+runtime performance. Evidence is in
+`.cache/SlangCompileGoal/BackendDeferredInlineWholeRuntimeGPU01/`, including
+`CandidateComparison.json` and `DiagnosticDetails01.json`.
+
+A separate, unadopted source-template experiment compiled eight fresh generic
+material families in-process and froze their class constants into 32 ordinary
+SPIR-V outputs before cache publication. It retained the original 174 public
+requests and macros, performed 150 actual frontend compilations, used no
+preexisting template cache, and passed 174 actual V3 readbacks plus 174 fresh
+external module validations. The 142 outputs outside the template scope were
+byte-identical to their respective backend's original outputs. Under overlapping
+GPU correctness work, the thirteen-pass backend took 14.293 seconds, while the
+stock fourteen-pass backend took 68.939 seconds. These diagnostic runs do not
+qualify GPU correctness, runtime performance or a stable startup improvement;
+the stock-backend template route was not expanded. Evidence is under
+`.cache/SlangCompileGoal/FrozenMaterialWarmupSource01/Full174Functional-01/` and
+`Full174Original14Functional-01/`.
+
+The class-4 GPU template probe did not establish correctness. Its two original
+controls were byte-identical, while the candidate comparison failed. The flat
+control was affected by an unqualified asynchronous HDR environment switch;
+the binned capture also contained unexplained zero-alpha pixels. The fixed
+tolerance was retained, the route was not adopted, and GPU timing qualification
+was not attempted. These fixture and candidate uncertainties are preserved in
+`DeferredMaterialSpecConstantGPU14001/Run-03/` under the same goal directory.
+
+A cache-only candidate separately retained the production source compiler and
+all fourteen original O1 backend passes. It qualified the common batch proof
+once while keeping three complete source checks, per-file notification checks,
+atomic writes and exact persisted readbacks. All 174 cold outputs were
+byte-identical to the stock backend, and 174 fresh external validations passed.
+The observed whole CLI took 47.243 seconds during concurrent GPU correctness
+work; it is a functional diagnostic, not a controlled speedup or a ten-second
+result. Evidence is in
+`.cache/SlangCompileGoal/WarmupPreparedProofProductionPort01/Full174Functional-01/`.
+
+The cache-only change was then enabled in production. The compatible Release
+build of both the CLI and renderer passed, and four focused warmup tests passed
+without skips, including real cold/all-hit/mixed compilation and failed final
+proof qualification after two actual writes. A new 908-input production epoch
+was sealed rather than inheriting the earlier 907-input admission. The actual
+production CLI completed all 174 cold requests in **39.942 seconds** with fourteen
+workers and then all 174 real cache hits in **4.006 seconds**. Both runs read
+back all 174 V3 files and matched the same already validated stock14 payloads;
+the 174 exact-byte validation results were reused. Original frontend/backend
+bytes and shared compiler identity matched before and after. This single run
+does not isolate a stable end-to-end speedup. The rebuilt renderer's actual
+startup smoke also passed: its default eight-worker cold warmup logged
+**57.460 seconds**, and the complete smoke process took 72.041 seconds. These
+scopes are distinct, and none meets the ten-second cold-warmup goal. Production
+evidence is in `Production-01/` and `ProductionSmoke-01/` under the same directory.
+
+A private per-definition user-bucket backend retained all fourteen passes and
+passed six focused behavior tests. Its current 908-input, complete174 cold run
+read back every V3 file and matched every production SPIR-V payload byte for
+byte, reusing 174 exact-payload validator results. It took 42.251 seconds and
+324.078 CPU seconds; the separate production observation was 39.942 seconds and
+344.984 CPU seconds. These are unpaired observations, so no speedup is
+established and the SDK change has not been adopted. Evidence is in
+`.cache/SlangCompileGoal/PerDefUseBucketExperiment01/Full174Functional-01/`.
+
+A bounded sampler then collected 1,770 instruction-pointer snapshots of the
+heaviest raw backend request using only its own child process. The mapped
+fourteen-pass backend retained identical machine code and validated output.
+Global user-tree equal-range lookup, ID lookup and tree insertion accounted
+for 11.13%, 8.53% and 6.50% of the snapshots respectively. These are diagnostic
+sample shares, not exact function CPU times or a startup measurement. All child
+processes exited. Evidence is in
+`.cache/SlangCompileGoal/OwnedRaw126RipSampling01/Result-01.md`.
+
+An API probe confirmed that distinct supplied-source root variants can share
+one imported module in a session when each root has its own virtual path.
+Using one canonical physical path failed on the second variant. Both virtual
+roots emitted validated SPIR-V with the expected integer results. An isolated
+implementation retained the original request identity and recorded explicit
+generated-source derivations. Its capacity-four grouping measured **18.232
+seconds** for all174 requests, jobs14, O1/debug-off and a fresh process/cache,
+including native32/32, publication/readback and teardown. All174 final payloads
+were byte-identical to the earlier backend13 candidate and passed174 fresh
+validators. This single observation remains above ten seconds and does not
+establish a stable scheduling gain or production adoption. No generated source
+is claimed to equal its physical input. Evidence is under
+`.cache/SlangCompileGoal/RootLocalPermutationSource02/Full174-01/`.
+An independent in-memory cache-codec experiment also retained exact bytes for
+all 174 existing envelopes while preparing their common proof once. This is
+neither source-proof qualification nor a measured full-warmup improvement.
+
 The complete catalog also has21 exact root/configuration groups with multiple
 distinct entrypoints. Slang supports compiling these together through
 [`getTargetCode`](https://shader-slang.org/docs/compilation-api/), but the measured
@@ -691,9 +1015,90 @@ payloads. This refresh establishes current-source identity, not an additional
 stable performance gain. The supplemental GPU run uses 1,024 static training
 frames and roughness 1.0; it requires actual specular and combined Query coverage
 and two original runs within the existing absolute/relative `2e-5` raw-pixel
-limits before running the candidate. GPU qualification is still pending.
-Evidence is under `.cache/SlangCompileGoal/SharcFieldCurrent808Admission/` and
+limits before running the candidate. Both original repeats and the candidate
+passed all three actual diffuse/mixed/metal tests without skips. Each arm
+consumed the target shader eight times per scene without rejection. The 15,900
+color-frame and 105 guide comparisons were all byte-identical for both the
+original repeat control and original/candidate pair, with maximum absolute
+error zero. This qualifies the supplemental single-training-invocation scope;
+the separate current-source standard four-scene capture has built and both
+original arms passed all four actual tests. Their strict Off/NoQuery/guide
+comparison had no required failures; 112 Query captures exceeded the fixed
+`2e-5` limits between original repeats, so this standard scope does not establish
+raw Query determinism. The candidate also passed all four actual tests and
+had zero required comparison failures; 83 Query captures exceeded the same
+limits versus the original, so standard raw Query equivalence remains
+unqualified. The controlled supplemental Query comparison remains byte-exact.
+The complete cold startup measurement is recorded below. Evidence is under
+`.cache/SlangCompileGoal/SharcFieldCurrent808Admission/` and
 `.cache/SlangCompileGoal/SourceSharcCoverageCurrentRevision03/`.
+
+The five-file transform affects the two production `SHARC_UPDATE=1` requests:
+125 (`ScenePathTrace.scenePathTraceMain`) and 126
+(`OpenPBRRayQueryPathTrace.openPbrRayQueryPathTraceMain`). Request 125 now passed
+an independent current-source pair with the original SDK finalizer and external
+validation. Its original `cec5110f` payload changed to `4a311e0d`; final
+instructions rose from 123,465 to 124,245, while bytes fell from 1,908,896 to
+1,906,816 and ID bound fell from 648,219 to 212,770. This one identity pair took
+19.408 versus 6.938 complete-process seconds; it is not a stable performance
+claim or complete-startup result. Request 125 received separate GPU admission;
+the OpenPBR results do not admit its changed payload. The first controlled original GPU run passed diffuse
+and mixed fixtures but failed its inherited OpenPBR-only metal
+`DiffuseOnly error == 0` assertion. Standard `ScenePathTrace` never reads the
+lobe-mask parameter, so Query, DiffuseOnly and SpecularOnly controls were
+identical; their metal relative RMSE was 0.1108323. This is a test-contract
+failure in the original arm, not candidate behavior. No repeat or candidate arm
+started. The run actually used material metallic factors 0/0/1 and roughness 1;
+a separate revision uses true 0/0.5/1 material coverage and accurate
+ignored-mask semantics, preserving complete strict raw comparisons and the
+existing RadianceCache checks. Its first original run passed all three actual
+tests with target consumption eight times per material and no rejection.
+Query relative RMSE was 0.0989915, 0.0501396 and 0.1108323 for diffuse, mixed
+and metal respectively; no isolated-lobe coverage is claimed. Its second
+original run also passed, and all 15,900 five-mode color captures were
+byte-identical between original repeats, with maximum error zero. The
+candidate then passed all three actual tests, consumed the qualified `4a311e0d`
+shader eight times per material without rejection, and matched all 15,900 raw
+captures byte-for-byte. This qualifies the controlled single-trainer material
+scope. All three original/repeat/candidate runs of the existing RadianceCache
+standard test also passed, consuming the actual qualified shader without
+rejection. Its additional 256 fresh linear preview frames were byte-identical
+for both comparisons, including Query, with maximum error zero. These preview
+frames are separate from the original test's tonemapped PNG captures; the
+original accuracy/invalidation/cache-miss gates also passed. Its actual
+production descriptor mode is mapped with
+zero native strides. The full catalog's two native requests are editor entries
+37 and 38, which continue to query actual 32/32-byte strides.
+
+The exact five-file transform was then measured with the real production tool
+over three complete cold-cache pairs, ordered AB/BA/AB. Reference walls were
+57.906, 50.273 and 54.318 seconds; candidate walls were 96.426, 55.531 and
+45.478 seconds. All six processes compiled all 174 requests at O1 with eight
+workers, zero hits/failures, fresh SPIR-V output caches and no IR input cache.
+Every reference payload matched the original oracle; candidates matched the
+original oracle for 172 requests and the independently admitted payloads for
+125 and 126. All 1,044 actual cache outputs/readbacks and external validation
+results passed. The process wall includes planning, the actual native query,
+source capture, compilation, publication/readback and teardown. The extra
+external validators ran outside that timed process; OS file caches were not
+flushed.
+
+The reference median was 54.318 seconds and candidate median 55.531 seconds.
+The median paired candidate/reference ratio was 1.104589 (10.46% slower),
+with ratios ranging from 0.837253 to 1.665199. All samples are retained;
+the mixed direction does not qualify a stable startup gain. The transform
+was rejected and all five live shader files restored to their exact reference
+bytes. The subsequent 333-file module audit passed. The complete cold startup
+goal remains above ten seconds.
+
+The measured comparison script initially rejected the fixed candidate-only
+admission metadata. A separate audit reproduced that failure and accepted only
+the exact admission path and SHA, retaining the other source/build/SDK/adapter,
+payload, cache and validation gates. It changed no sealed measurement or live
+source. Evidence is under
+`.cache/SlangCompileGoal/SharcFieldFullCatalogPortProof/Pair01-A/` through
+`Pair03-B/`, with the independent summary at
+`.cache/SlangCompileGoal/SharcFieldFullCatalogPairAudit/Pairs-01.json`.
 
 A separate ignored frontend experiment shared one session/root module for the
 25 default mapped GPUDrivenStreamAsset entries, while independently composing,

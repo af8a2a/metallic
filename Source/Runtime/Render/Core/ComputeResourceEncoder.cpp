@@ -359,7 +359,8 @@ Result<> initializeResourceKernel(Device& device, const ResourceComputeKernelDes
     ComputeKernel nextKernel;
     result = nextKernel.initialize(device, {.spirv = desc.spirv,
         .parameters = nextEncoder.parameterABI(),
-        .debugName = desc.debugName, .pipelineCache = desc.pipelineCache}, log);
+        .debugName = desc.debugName, .pipelineCache = desc.pipelineCache,
+        .specializationConstants = desc.specializationConstants}, log);
     if (!result) { return result; }
     kernel = std::move(nextKernel);
     encoder = std::move(nextEncoder);

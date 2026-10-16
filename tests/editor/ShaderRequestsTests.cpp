@@ -1,4 +1,7 @@
 #include "Runtime/Render/Core/BuiltinShaderRequests.h"
+#include "Runtime/Render/Core/NamedResourceParameters.h"
+#include "Runtime/Render/Core/ShaderResourceABI.h"
+#include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Tools/MaterialShaderWarmupRequests.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
@@ -28,6 +31,51 @@ SceneShaderOptions standardSceneOptions()
 bool contains(const std::vector<ShaderRequest>& catalog, const ShaderRequest& request)
 {
     return std::find(catalog.begin(), catalog.end(), request) != catalog.end();
+}
+
+// Independent old OpenPBR request construction for static fallback expectations.
+ShaderRequest legacyOpenPBRFactoryRequest(SceneShaderProgram program, const SceneShaderOptions& options,
+    std::span<const SlangMacroDefine> defines = {})
+{
+    const auto updates = std::count_if(defines.begin(), defines.end(), [](const auto& define) {
+        return std::string_view(define.name) == "SHARC_UPDATE";
+    });
+    if (program == SceneShaderProgram::OpenPBRPathTraceGuides && updates == 1 &&
+        std::any_of(defines.begin(), defines.end(), [](const auto& define) {
+            return std::string_view(define.name) == "SHARC_UPDATE" && std::string_view(define.value) == "1";
+        })) { program = SceneShaderProgram::OpenPBRPathTrace; }
+    const auto identity = sceneShaderIdentity(program);
+    const auto flag = [](bool value) { return value ? "1" : "0"; };
+    ShaderRequest result{.module = identity.module, .entry = identity.entry,
+        .capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure",
+            "spvRayTracingClusterAccelerationStructureNV", "spvGroupNonUniformBallot"},
+        .defines = {{"METALLIC_CUSTOM_MATERIALS", flag(options.customMaterials)},
+            {"METALLIC_GLOBAL_VIEW", flag(options.globalView)}, {"METALLIC_HAS_RTXCR", flag(options.hasRTXCR)},
+            {"METALLIC_DEFERRED_LIGHT_GRID", "0"}, {"METALLIC_REALTIME_DEFERRED", "0"},
+            {"METALLIC_DEFERRED_UPSCALER_GUIDES", "0"}}};
+    for (const auto& define : defines) { result.defines.emplace_back(define.name, define.value); }
+    if (options.customMaterials) { result.searchPaths.push_back(options.materialInclude); }
+    if (options.hasRTXCR) { result.searchPaths.push_back(options.rtxcrInclude); }
+    return result;
+}
+
+// Independent original standard request for full ordered fallback comparisons.
+ShaderRequest legacyStandardPathFactoryRequest(SceneShaderProgram program, const SceneShaderOptions& options,
+    std::span<const SlangMacroDefine> defines = {})
+{
+    const auto identity = sceneShaderIdentity(program);
+    const auto flag = [](bool value) { return value ? "1" : "0"; };
+    ShaderRequest result{.module = identity.module, .entry = identity.entry,
+        .capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure",
+            "spvRayTracingClusterAccelerationStructureNV", "spvGroupNonUniformBallot"},
+        .defines = {{"METALLIC_CUSTOM_MATERIALS", flag(options.customMaterials)},
+            {"METALLIC_GLOBAL_VIEW", flag(options.globalView)}, {"METALLIC_HAS_RTXCR", flag(options.hasRTXCR)},
+            {"METALLIC_DEFERRED_LIGHT_GRID", "0"}, {"METALLIC_REALTIME_DEFERRED", "0"},
+            {"METALLIC_DEFERRED_UPSCALER_GUIDES", "0"}}};
+    for (const auto& define : defines) { result.defines.emplace_back(define.name, define.value); }
+    if (options.customMaterials) { result.searchPaths.push_back(options.materialInclude); }
+    if (options.hasRTXCR) { result.searchPaths.push_back(options.rtxcrInclude); }
+    return result;
 }
 
 ShaderRequest nativeHeapStrideProbe(DescriptorHeapShaderStrides strides = {})
@@ -657,7 +705,7 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
         EXPECT_EQ(std::count(catalog.begin(), catalog.end(), catalog[i]), 1);
         if (catalog[i].module == "Features/VisibilityBuffer/VisibilityBufferDeferred") { ++deferredCount; }
     }
-    EXPECT_EQ(deferredCount, 44u);
+    EXPECT_EQ(deferredCount, sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg ? 3u : 11u);
     {
         auto options = standardSceneOptions();
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
@@ -1086,7 +1134,153 @@ TEST_F(ShaderRequestCompileTest, DeferredBackgroundCanonicalizationPreservesAllF
             }
         }
     }
-    EXPECT_EQ(compiledRequests.size(), 4u);
+    EXPECT_EQ(compiledRequests.size(), 1u);
+}
+
+TEST(ShaderRequests, SingleSampleGuideWarmupRetainsBothRuntimePolicies)
+{
+    for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
+        const auto catalog = builtinShaderWarmupRequests(include);
+        const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
+        const SlangMacroDefine base[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+        const SlangMacroDefine query[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+        ASSERT_EQ(catalog.size(), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
+            ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
+        const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+        const size_t singleRequests = shared ? 1u : 2u;
+        const size_t prefixSize = catalog.size() - singleRequests - 2u;
+        EXPECT_EQ(catalog[prefixSize - 1], makeShadowShaderRequest());
+        EXPECT_EQ(catalog[prefixSize], makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, base));
+        EXPECT_EQ(catalog[prefixSize + (shared ? 0u : 1u)], makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, query));
+        for (size_t i = 0; i < catalog.size(); ++i) {
+            const auto singles = std::count_if(catalog[i].defines.begin(), catalog[i].defines.end(), [](const auto& define) {
+                return define.first == "METALLIC_PT_SINGLE_SAMPLE";
+            });
+            EXPECT_EQ(singles, i >= prefixSize && i < prefixSize + singleRequests ? 1 : 0);
+            if (singles != 0) {
+                EXPECT_EQ(std::find(catalog[i].defines.begin(), catalog[i].defines.end(),
+                    std::pair<std::string, std::string>{"SHARC_UPDATE", "1"}), catalog[i].defines.end());
+            }
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), catalog[i]), 1);
+        }
+    }
+}
+
+TEST(ShaderRequests, SingleSampleGuideWarmupMatchesRuntimeOrderedDescriptors)
+{
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const auto options = standardSceneOptions();
+    for (bool query : {false, true}) {
+        // Mirror ScenePathTracePass's existing extraDefines-then-SINGLE suffix.
+        std::vector<SlangMacroDefine> defines;
+        if (query) { defines.push_back({"SHARC_QUERY", "1"}); }
+        const auto multi = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+        defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
+        const auto runtime = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+        const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+        EXPECT_EQ(catalog[catalog.size() - (shared || query ? 3 : 4)], runtime);
+        EXPECT_NE(runtime, multi);
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), multi), 1);
+        std::vector<std::pair<std::string, std::string>> expected{
+            {"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_GLOBAL_VIEW", "0"},
+            {"METALLIC_HAS_RTXCR", options.hasRTXCR ? "1" : "0"},
+            {"METALLIC_DEFERRED_LIGHT_GRID", "0"}, {"METALLIC_REALTIME_DEFERRED", "0"},
+            {"METALLIC_DEFERRED_UPSCALER_GUIDES", "0"}};
+        if (shared || query) { expected.emplace_back("SHARC_QUERY", "1"); }
+        expected.emplace_back("METALLIC_PT_SINGLE_SAMPLE", "1");
+        if (shared) { expected.emplace_back("METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION", "1"); }
+        EXPECT_EQ(runtime.defines, expected);
+        EXPECT_EQ(runtime.capabilities, (std::vector<std::string>{"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure",
+            "spvRayTracingClusterAccelerationStructureNV", "spvGroupNonUniformBallot"}));
+        EXPECT_EQ(runtime.searchPaths, options.hasRTXCR ? std::vector<std::string>{options.rtxcrInclude} : std::vector<std::string>{});
+        EXPECT_EQ(runtime.profile, kDefaultSlangProfileName);
+        EXPECT_EQ(runtime.descriptorHeapMode, SlangDescriptorHeapMode::Default);
+        EXPECT_EQ(runtime.descriptorHeapStrides, (DescriptorHeapShaderStrides{}));
+    }
+}
+
+TEST_F(ShaderRequestCompileTest, SingleSampleGuideWarmupHitsRuntimeCache)
+{
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const auto directory = uniqueShaderCacheDirectory("single-sample-guide-warmup");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    for (bool query : {false, true}) {
+        SCOPED_TRACE(query);
+        std::vector<SlangMacroDefine> defines;
+        if (query) { defines.push_back({"SHARC_QUERY", "1"}); }
+        defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
+        const auto runtime = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, standardSceneOptions(), defines);
+        const auto warmup = std::find(catalog.begin(), catalog.end(), runtime);
+        ASSERT_NE(warmup, catalog.end());
+        const ShaderRequestView warmupSource(*warmup), runtimeSource(runtime);
+        std::string diagnostics;
+        const auto compiled = compileSlangShaderToSpirv(warmupSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_EQ(hit, query && singleGuideCacheQuerySpecializationValue(
+            SceneShaderProgram::OpenPBRPathTraceGuides, standardSceneOptions(), defines) >= 0);
+        const auto reused = compileSlangShaderToSpirv(runtimeSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_FALSE(reused->metrics.compilerExecuted);
+        EXPECT_EQ(reused->spirv, compiled->spirv);
+    }
+}
+
+TEST(ShaderRequests, HZBSPDWarmupAppendsRuntimeOrderedDescriptors)
+{
+    for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
+        const auto catalog = builtinShaderWarmupRequests(include);
+        ASSERT_EQ(catalog.size(), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
+            ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
+        for (uint32_t wave = 0; wave < 2; ++wave) {
+            const ShaderRequest runtime{.module = kHZBSPDModule, .entry = kHZBSPDEntryPoint,
+                .defines = {{kHZBSPDWaveOpsDefine, wave ? "1" : "0"}}};
+            const auto& warmup = catalog[catalog.size() - 2 + wave];
+            EXPECT_EQ(warmup, runtime);
+            EXPECT_TRUE(warmup.capabilities.empty());
+            EXPECT_TRUE(warmup.searchPaths.empty());
+            EXPECT_EQ(warmup.searchPath, PROJECT_SOURCE_DIR "/Shaders");
+            EXPECT_EQ(warmup.profile, kDefaultSlangProfileName);
+            EXPECT_EQ(warmup.descriptorHeapMode, SlangDescriptorHeapMode::Default);
+            EXPECT_EQ(warmup.descriptorHeapStrides, (DescriptorHeapShaderStrides{}));
+            EXPECT_EQ(warmup.optimizationLevel, SlangShaderOptimizationLevel::Default);
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), runtime), 1);
+        }
+        EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
+            return request.module == kHZBSPDModule;
+        }), 2);
+    }
+}
+
+TEST_F(ShaderRequestCompileTest, HZBSPDWarmupHitsRuntimeCache)
+{
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const auto directory = uniqueShaderCacheDirectory("hzb-spd-warmup");
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = directory.c_str(), .outCacheHit = &hit};
+    for (const char* value : {"0", "1"}) {
+        SCOPED_TRACE(value);
+        // VisibilityBufferPass::createShader uses no mesh capabilities for SPD.
+        const SlangMacroDefine macro{kHZBSPDWaveOpsDefine, value};
+        const SlangShaderDesc runtime{.moduleName = kHZBSPDModule, .entryPointName = kHZBSPDEntryPoint,
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = {&macro, 1}};
+        const ShaderRequest expected{.module = kHZBSPDModule, .entry = kHZBSPDEntryPoint,
+            .defines = {{kHZBSPDWaveOpsDefine, value}}};
+        const auto warmup = std::find(catalog.begin(), catalog.end(), expected);
+        ASSERT_NE(warmup, catalog.end());
+        const ShaderRequestView source(*warmup);
+        std::string diagnostics;
+        const auto compiled = compileSlangShaderToSpirv(source.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_FALSE(hit);
+        EXPECT_TRUE(compiled->metrics.compilerExecuted);
+        const auto reused = compileSlangShaderToSpirv(runtime, cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_FALSE(reused->metrics.compilerExecuted);
+        EXPECT_EQ(reused->spirv, compiled->spirv);
+    }
 }
 
 TEST(ShaderRequests, OpenPBRGuideTrainingSharesThePathTraceRequest)
@@ -1119,7 +1313,7 @@ TEST(ShaderRequests, OpenPBRGuideTrainingPreservesCustomOptionsAndDefineOrder)
 TEST(ShaderRequests, OpenPBRGuideTrainingOnlySharesAnUnambiguousUpdateDefine)
 {
     const auto options = standardSceneOptions();
-    const auto ordinary = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options);
+    const auto ordinary = legacyOpenPBRFactoryRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options);
     for (const char* value : {"0", "01", "true"}) {
         const SlangMacroDefine update{"SHARC_UPDATE", value};
         auto expected = ordinary;
@@ -1136,3 +1330,902 @@ TEST(ShaderRequests, OpenPBRGuideTrainingOnlySharesAnUnambiguousUpdateDefine)
 }
 
 } // namespace
+
+TEST(ShaderRequests, DeferredRuntimeGuidesShareCompleteDescriptors)
+{
+    for (bool custom : {false, true}) {
+        for (bool view : {false, true}) {
+            for (bool half : {false, true}) {
+                for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+                    const SceneShaderOptions off{.customMaterials = custom, .globalView = view,
+                        .deferredFloat16 = half, .upscalerGuides = false,
+                        .materialInclude = custom ? "C:/GuidesContractMaterials" : ""};
+                    auto on = off;
+                    on.upscalerGuides = true;
+                    for (int materialClass = 0; materialClass < 5; ++materialClass) {
+                        const auto value = std::to_string(materialClass);
+                        const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+                        const auto a = makeSceneShaderRequest(program, off, {&define, 1});
+                        const auto c = makeSceneShaderRequest(program, on, {&define, 1});
+                        EXPECT_EQ(a, c);
+                        EXPECT_EQ(std::count_if(c.defines.begin(), c.defines.end(), [](const auto& item) {
+                            return item.first == "METALLIC_DEFERRED_UPSCALER_GUIDES";
+                        }), 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(ShaderRequests, DeferredRuntimeGuidesKeepCatalogAndOtherProgramAxes)
+{
+    for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
+        const auto catalog = builtinShaderWarmupRequests(include);
+        EXPECT_EQ(catalog.size(), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
+            ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
+        EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
+            return request.module == "Features/VisibilityBuffer/VisibilityBufferDeferred";
+        }), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg ? 3 : 11);
+        for (const auto& request : catalog) {
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), request), 1);
+        }
+    }
+    SceneShaderOptions off;
+    auto on = off;
+    on.upscalerGuides = true;
+    for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
+            SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides,
+            SceneShaderProgram::RealtimeLighting, SceneShaderProgram::SharcClear,
+            SceneShaderProgram::SharcResolve, SceneShaderProgram::OpenPBRSharcResolve}) {
+        EXPECT_EQ(makeSceneShaderRequest(program, off), makeSceneShaderRequest(program, on));
+    }
+    const auto base = makeSceneShaderRequest(SceneShaderProgram::Deferred, off);
+    auto changed = off;
+    changed.globalView = true;
+    EXPECT_EQ(base, makeSceneShaderRequest(SceneShaderProgram::Deferred, changed));
+    changed = off;
+    changed.deferredFloat16 = false;
+    EXPECT_EQ(base == makeSceneShaderRequest(SceneShaderProgram::Deferred, changed),
+        sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg);
+    const SlangMacroDefine dielectric{"MATERIAL_CLASS", "1"};
+    const SlangMacroDefine metallic{"MATERIAL_CLASS", "2"};
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, off, {&dielectric, 1}) ==
+        makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, off, {&metallic, 1}),
+        sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg);
+}
+
+TEST(ShaderRequests, DeferredRuntimeGuidesKeepPushAndPacketLayout)
+{
+    using metallic::render::builtin_pass::ScenePathTracePush;
+    using metallic::render::builtin_pass::kScenePathTraceExportUpscalerGuides;
+    static_assert(sizeof(ScenePathTracePush) == 252);
+    static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 384);
+    static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
+    static_assert((kScenePathTraceExportUpscalerGuides & ((1u << 26u) - 1u)) == 0);
+    const auto binPush = kScenePathTraceExportUpscalerGuides | 4u;
+    EXPECT_EQ(binPush & 0xffffu, 4u);
+    EXPECT_EQ(binPush & kScenePathTraceExportUpscalerGuides, kScenePathTraceExportUpscalerGuides);
+}
+
+
+TEST(ShaderRequests, DeferredRuntimeGlobalViewAndGuidePoliciesShareCompleteDescriptors)
+{
+    for (bool custom : {false, true}) {
+        for (bool half : {false, true}) {
+            for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+                const SceneShaderOptions base{.customMaterials = custom, .deferredFloat16 = half,
+                    .materialInclude = custom ? "C:/GlobalViewContractMaterials" : ""};
+                for (int materialClass = 0; materialClass < 5; ++materialClass) {
+                    const auto value = std::to_string(materialClass);
+                    const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+                    const auto expected = makeSceneShaderRequest(program, base, {&define, 1});
+                    for (bool view : {false, true}) {
+                        for (bool guides : {false, true}) {
+                            auto options = base;
+                            options.globalView = view;
+                            options.upscalerGuides = guides;
+                            const auto actual = makeSceneShaderRequest(program, options, {&define, 1});
+                            EXPECT_EQ(actual, expected);
+                            EXPECT_EQ(std::count_if(actual.defines.begin(), actual.defines.end(), [](const auto& item) {
+                                return item.first == "METALLIC_GLOBAL_VIEW" || item.first == "METALLIC_DEFERRED_UPSCALER_GUIDES";
+                            }), 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(ShaderRequests, DeferredRuntimeGlobalViewKeepsOtherAxesAndDefineOrder)
+{
+    const SceneShaderOptions base;
+    auto changed = base;
+    changed.globalView = true;
+    for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
+            SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides,
+            SceneShaderProgram::RealtimeLighting}) {
+        EXPECT_NE(makeSceneShaderRequest(program, base), makeSceneShaderRequest(program, changed));
+    }
+    const auto deferred = makeSceneShaderRequest(SceneShaderProgram::Deferred, base);
+    changed = base;
+    changed.customMaterials = true;
+    changed.materialInclude = "C:/GlobalViewContractMaterials";
+    EXPECT_NE(deferred, makeSceneShaderRequest(SceneShaderProgram::Deferred, changed));
+    changed = base;
+    changed.deferredFloat16 = !base.deferredFloat16;
+    EXPECT_EQ(deferred == makeSceneShaderRequest(SceneShaderProgram::Deferred, changed),
+        sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg);
+    const SlangMacroDefine dielectric{"MATERIAL_CLASS", "1"};
+    const SlangMacroDefine metallic{"MATERIAL_CLASS", "2"};
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, base, {&dielectric, 1}) ==
+        makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, base, {&metallic, 1}),
+        sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg);
+    const SlangMacroDefine extra[]{{"BEFORE_CLASS", "3"}, {"MATERIAL_CLASS", "2"}, {"AFTER_CLASS", "7"}};
+    const auto ordered = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, base, extra);
+    const std::vector<std::pair<std::string, std::string>> expected{
+        {"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_HAS_RTXCR", "0"},
+        {"METALLIC_DEFERRED_LIGHT_GRID", "1"}, {"METALLIC_REALTIME_DEFERRED", "1"},
+        {"METALLIC_DEFERRED_FP16", base.deferredFloat16 ? "1" : "0"},
+        {"BEFORE_CLASS", "3"}, {"MATERIAL_CLASS", "2"}, {"AFTER_CLASS", "7"}};
+    EXPECT_EQ(ordered.defines, expected);
+}
+
+TEST(ShaderRequests, DeferredRuntimeGlobalViewKeepsPushPacketRootAndIndependentFlags)
+{
+    using metallic::render::builtin_pass::ScenePathTracePush;
+    using metallic::render::builtin_pass::kScenePathTraceExportUpscalerGuides;
+    using metallic::render::builtin_pass::kScenePathTraceUseGlobalView;
+    static_assert(sizeof(ScenePathTracePush) == 252);
+    static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 384);
+    static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);
+    static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
+    static_assert(kScenePathTraceUseGlobalView == (1u << 27u));
+    static_assert((kScenePathTraceUseGlobalView & kScenePathTraceExportUpscalerGuides) == 0u);
+    static_assert(((kScenePathTraceUseGlobalView | kScenePathTraceExportUpscalerGuides) & 0x03ffffffu) == 0u);
+    for (uint32_t flags : {0u, kScenePathTraceExportUpscalerGuides, kScenePathTraceUseGlobalView,
+            kScenePathTraceExportUpscalerGuides | kScenePathTraceUseGlobalView}) {
+        const auto binPush = (flags & 0xffff0000u) | 4u;
+        EXPECT_EQ(binPush & 0xffffu, 4u);
+        EXPECT_EQ(binPush & 0xffff0000u, flags);
+    }
+}
+
+TEST(ShaderRequests, DeferredRuntimePrecisionUsesOnlyCoveredBuiltinShapes)
+{
+    const bool runtimePrecision = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+    const auto check = [&](SceneShaderProgram program, std::span<const SlangMacroDefine> defines) {
+        const SceneShaderOptions base{.deferredFloat16 = false};
+        const auto reference = makeSceneShaderRequest(program, base, defines);
+        for (bool half : {false, true}) {
+            for (bool view : {false, true}) {
+                for (bool guides : {false, true}) {
+                    auto options = base;
+                    options.deferredFloat16 = half;
+                    options.globalView = view;
+                    options.upscalerGuides = guides;
+                    const auto actual = makeSceneShaderRequest(program, options, defines);
+                    EXPECT_EQ(actual == reference, runtimePrecision || !half);
+                    std::vector<std::pair<std::string, std::string>> expected{
+                        {"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_HAS_RTXCR", "0"},
+                        {"METALLIC_DEFERRED_LIGHT_GRID", "1"}, {"METALLIC_REALTIME_DEFERRED", "1"},
+                        {runtimePrecision ? "METALLIC_DEFERRED_RUNTIME_PRECISION" : "METALLIC_DEFERRED_FP16",
+                            runtimePrecision || half ? "1" : "0"}};
+                    if (runtimePrecision && program == SceneShaderProgram::DeferredBinned) {
+                        expected.emplace_back("METALLIC_DEFERRED_CLASS_SPECIALIZATION", "1");
+                    } else {
+                        for (const auto& define : defines) { expected.emplace_back(define.name, define.value); }
+                    }
+                    EXPECT_EQ(actual.defines, expected);
+                    EXPECT_EQ(actual.capabilities, (std::vector<std::string>{"spvGroupNonUniformBallot"}));
+                    EXPECT_TRUE(actual.searchPaths.empty());
+                }
+            }
+        }
+    };
+    check(SceneShaderProgram::Deferred, {});
+    for (const char* value : {"1", "2", "3", "4"}) {
+        const SlangMacroDefine define{"MATERIAL_CLASS", value};
+        check(SceneShaderProgram::DeferredBinned, {&define, 1});
+    }
+}
+
+TEST(ShaderRequests, DeferredPrecisionOtherShapesPreserveOldStaticDefines)
+{
+    const std::vector<std::vector<std::pair<std::string, std::string>>> lists{
+        {}, {{"MATERIAL_CLASS", "0"}}, {{"MATERIAL_CLASS", "1"}},
+        {{"MATERIAL_CLASS", "2"}}, {{"MATERIAL_CLASS", "3"}}, {{"MATERIAL_CLASS", "4"}},
+        {{"MATERIAL_CLASS", "METALLIC_DEFERRED_FP16"}},
+        {{"BEFORE", "METALLIC_DEFERRED_FP16"}},
+        {{"MATERIAL_CLASS", "(1)"}}, {{"MATERIAL_CLASS", "00"}}, {{"MATERIAL_CLASS", "0u"}},
+        {{"MATERIAL_CLASS", "5"}}, {{"MATERIAL_CLASS", "-1"}},
+        {{"BEFORE", "3"}, {"MATERIAL_CLASS", "1"}, {"AFTER", "7"}},
+        {{"MATERIAL_CLASS", "1"}, {"MATERIAL_CLASS", "1"}},
+        {{"MATERIAL_CLASS", "1"}, {"MATERIAL_CLASS", "0"}}};
+    for (bool custom : {false, true}) {
+        for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+            for (bool half : {false, true}) {
+                const SceneShaderOptions options{.customMaterials = custom, .globalView = true,
+                    .deferredFloat16 = half, .upscalerGuides = true,
+                    .materialInclude = custom ? "C:/PrecisionDependentCustomSource" : ""};
+                for (const auto& list : lists) {
+                    const bool literalClass = list.size() == 1 && list[0].first == "MATERIAL_CLASS" &&
+                        (list[0].second == "1" || list[0].second == "2" || list[0].second == "3" || list[0].second == "4");
+                    if (!custom && ((program == SceneShaderProgram::Deferred && list.empty()) ||
+                        (program == SceneShaderProgram::DeferredBinned && literalClass))) { continue; }
+                    std::vector<SlangMacroDefine> defines;
+                    for (const auto& [name, value] : list) { defines.push_back({name.c_str(), value.c_str()}); }
+                    auto expected = makeSceneShaderRequest(program, options);
+                    const auto classCount = std::count_if(list.begin(), list.end(), [](const auto& item) {
+                        return item.first == "MATERIAL_CLASS";
+                    });
+                    const bool backgroundOnly = std::find(list.begin(), list.end(),
+                        std::pair<std::string, std::string>{"MATERIAL_CLASS", "0"}) != list.end();
+                    const bool staticHalf = half && !(program == SceneShaderProgram::DeferredBinned && classCount == 1 && backgroundOnly);
+                    expected.defines = {{"METALLIC_CUSTOM_MATERIALS", custom ? "1" : "0"}, {"METALLIC_HAS_RTXCR", "0"},
+                        {"METALLIC_DEFERRED_LIGHT_GRID", "1"}, {"METALLIC_REALTIME_DEFERRED", "1"},
+                        {"METALLIC_DEFERRED_FP16", staticHalf ? "1" : "0"}};
+                    expected.defines.insert(expected.defines.end(), list.begin(), list.end());
+                    EXPECT_EQ(makeSceneShaderRequest(program, options, defines), expected);
+                }
+            }
+        }
+    }
+}
+
+
+TEST(ShaderRequests, DeferredExplicitStaticPrecisionPreservesCompleteOrderedOverrides)
+{
+    const std::vector<std::vector<std::pair<std::string, std::string>>> lists{
+        {{"METALLIC_DEFERRED_FP16", "0"}},
+        {{"METALLIC_DEFERRED_FP16", "1"}},
+        {{"BEFORE", "3"}, {"MATERIAL_CLASS", "0"}, {"METALLIC_DEFERRED_FP16", "0"}, {"AFTER", "7"}},
+        {{"METALLIC_DEFERRED_FP16", "0"}, {"MATERIAL_CLASS", "0"}, {"METALLIC_DEFERRED_FP16", "0"}},
+        {{"METALLIC_DEFERRED_FP16", "1"}, {"MATERIAL_CLASS", "0"}, {"METALLIC_DEFERRED_FP16", "1"}},
+        {{"METALLIC_DEFERRED_FP16", "0"}, {"MATERIAL_CLASS", "0"}, {"METALLIC_DEFERRED_FP16", "1"}},
+        {{"METALLIC_DEFERRED_FP16", "1"}, {"MATERIAL_CLASS", "0"}, {"METALLIC_DEFERRED_FP16", "0"}},
+        {{"BEFORE", "3"}, {"METALLIC_DEFERRED_FP16", "custom-token"}, {"AFTER", "7"}}};
+    for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+        for (bool half : {false, true}) {
+            const SceneShaderOptions options{.customMaterials = false, .globalView = true, .hasRTXCR = true,
+                .deferredFloat16 = half, .upscalerGuides = true,
+                .materialInclude = "C:/PrecisionContractMaterials", .rtxcrInclude = "C:/RTXCR"};
+            for (const auto& list : lists) {
+                std::vector<SlangMacroDefine> defines;
+                for (const auto& [name, value] : list) { defines.push_back({name.c_str(), value.c_str()}); }
+                const auto actual = makeSceneShaderRequest(program, options, defines);
+                auto expected = makeSceneShaderRequest(program, options);
+                expected.defines = {{"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_HAS_RTXCR", "0"},
+                    {"METALLIC_DEFERRED_LIGHT_GRID", "1"}, {"METALLIC_REALTIME_DEFERRED", "1"},
+                    {"METALLIC_DEFERRED_FP16", half ? "1" : "0"}};
+                expected.defines.insert(expected.defines.end(), list.begin(), list.end());
+                EXPECT_EQ(actual, expected);
+            }
+        }
+    }
+}
+
+TEST(ShaderRequests, DeferredRuntimePrecisionMacroIsFactoryOwned)
+{
+    const std::vector<std::vector<std::pair<std::string, std::string>>> lists{
+        {{"METALLIC_DEFERRED_RUNTIME_PRECISION", "0"}},
+        {{"METALLIC_DEFERRED_RUNTIME_PRECISION", "1"}},
+        {{"METALLIC_DEFERRED_RUNTIME_PRECISION", ""}},
+        {{"METALLIC_DEFERRED_FP16", "0"}, {"METALLIC_DEFERRED_RUNTIME_PRECISION", "1"}},
+        {{"METALLIC_DEFERRED_RUNTIME_PRECISION", "0"}, {"METALLIC_DEFERRED_RUNTIME_PRECISION", "1"}}};
+    const SceneShaderOptions options;
+    for (const auto& list : lists) {
+        std::vector<SlangMacroDefine> defines;
+        for (const auto& [name, value] : list) { defines.push_back({name.c_str(), value.c_str()}); }
+        for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+            EXPECT_THROW(makeSceneShaderRequest(program, options, defines), std::invalid_argument);
+        }
+        for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::RealtimeLighting}) {
+            auto expected = makeSceneShaderRequest(program, options);
+            expected.defines.insert(expected.defines.end(), list.begin(), list.end());
+            EXPECT_EQ(makeSceneShaderRequest(program, options, defines), expected);
+        }
+    }
+}
+
+TEST(ShaderRequests, DeferredRuntimePrecisionKeepsPushPacketRootAndAllHighFlags)
+{
+    using metallic::render::builtin_pass::ScenePathTracePush;
+    using metallic::render::builtin_pass::kScenePathTraceExportUpscalerGuides;
+    using metallic::render::builtin_pass::kScenePathTraceUseGlobalView;
+    using metallic::render::builtin_pass::kScenePathTraceUseFP16Precision;
+    static_assert(sizeof(ScenePathTracePush) == 252);
+    static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
+    static_assert(sizeof(metallic::render::SceneResourceParameters) == 384);
+    static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);
+    static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
+    static_assert(kScenePathTraceUseGlobalView == (1u << 27u));
+    static_assert(kScenePathTraceUseFP16Precision == (1u << 28u));
+    static_assert((kScenePathTraceUseFP16Precision &
+        (0x03ffffffu | kScenePathTraceExportUpscalerGuides | kScenePathTraceUseGlobalView)) == 0u);
+    for (uint32_t policies = 0; policies < 8; ++policies) {
+        const uint32_t flags = ((policies & 1u) ? kScenePathTraceExportUpscalerGuides : 0u) |
+            ((policies & 2u) ? kScenePathTraceUseGlobalView : 0u) |
+            ((policies & 4u) ? kScenePathTraceUseFP16Precision : 0u);
+        for (uint32_t samples : {0u, 1u, 2u, 31u}) {
+            for (uint32_t depth : {0u, 1u, 8u, 31u}) {
+                const auto pushFlags = flags | (samples << 16u) | (depth << 21u);
+                for (uint32_t bin : {0u, 4u, 65535u}) {
+                    const auto binPush = (pushFlags & 0xffff0000u) | bin;
+                    EXPECT_EQ(binPush & 0xffffu, bin);
+                    EXPECT_EQ(binPush & 0xffff0000u, pushFlags);
+                    EXPECT_EQ((binPush >> 16u) & 31u, samples);
+                    EXPECT_EQ((binPush >> 21u) & 31u, depth);
+                    EXPECT_EQ(binPush & kScenePathTraceUseFP16Precision, flags & kScenePathTraceUseFP16Precision);
+                }
+            }
+        }
+    }
+}
+
+
+
+TEST(ShaderRequests, DeferredClassSpecializationSharesSourceAndKeepsDistinctNativePolicies)
+{
+    const bool enabled = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+    const uint32_t expectedMetalness[] = {0u, 1u, 0xffffffffu, 0xffffffffu};
+    const uint32_t expectedOpaque[] = {1u, 1u, 1u, 0u};
+    std::vector<ShaderRequest> sources;
+    std::vector<std::vector<ShaderSpecializationConstant>> policies;
+    for (uint32_t materialClass = 1; materialClass <= 4; ++materialClass) {
+        const auto value = std::to_string(materialClass);
+        const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+        const SceneShaderOptions base;
+        sources.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, base, {&define, 1}));
+        const auto policy = sceneShaderSpecializationConstants(SceneShaderProgram::DeferredBinned, base, {&define, 1});
+        policies.emplace_back(policy.begin(), policy.end());
+        if (enabled) {
+            ASSERT_EQ(policy.size(), 2u);
+            EXPECT_EQ(policy[0].id, 0u);
+            EXPECT_EQ(policy[0].type, ShaderSpecializationType::Int32);
+            EXPECT_EQ(policy[0].bits, expectedMetalness[materialClass - 1]);
+            EXPECT_EQ(policy[1].id, 1u);
+            EXPECT_EQ(policy[1].type, ShaderSpecializationType::Bool32);
+            EXPECT_EQ(policy[1].bits, expectedOpaque[materialClass - 1]);
+        } else {
+            EXPECT_TRUE(policy.empty());
+        }
+        for (bool half : {false, true}) {
+            for (bool view : {false, true}) {
+                for (bool guides : {false, true}) {
+                    auto options = base;
+                    options.deferredFloat16 = half;
+                    options.globalView = view;
+                    options.upscalerGuides = guides;
+                    const auto other = sceneShaderSpecializationConstants(SceneShaderProgram::DeferredBinned, options, {&define, 1});
+                    EXPECT_EQ(std::vector<ShaderSpecializationConstant>(other.begin(), other.end()), policies.back());
+                    if (enabled) {
+                        EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1}), sources.back());
+                        EXPECT_EQ(other.data(), policy.data());
+                    }
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < sources.size(); ++i) {
+        for (size_t j = i + 1; j < sources.size(); ++j) {
+            EXPECT_EQ(sources[i] == sources[j], enabled);
+            if (enabled) { EXPECT_NE(policies[i], policies[j]); }
+        }
+    }
+}
+
+TEST(ShaderRequests, DeferredClassSpecializationPreservesUncoveredSourceShapes)
+{
+    const std::vector<std::vector<std::pair<std::string, std::string>>> lists{
+        {}, {{"MATERIAL_CLASS", "0"}}, {{"MATERIAL_CLASS", "5"}}, {{"MATERIAL_CLASS", "-1"}},
+        {{"MATERIAL_CLASS", "(1)"}}, {{"MATERIAL_CLASS", "01"}}, {{"MATERIAL_CLASS", "1u"}},
+        {{"MATERIAL_CLASS", "1"}, {"MATERIAL_CLASS", "1"}},
+        {{"MATERIAL_CLASS", "4"}, {"MATERIAL_PROGRAM_ID", "37"}},
+        {{"BEFORE", "2"}, {"MATERIAL_CLASS", "1"}, {"AFTER", "3"}},
+        {{"MATERIAL_CLASS", "1"}, {"METALLIC_DEFERRED_FP16", "0"}}};
+    for (const auto& list : lists) {
+        std::vector<SlangMacroDefine> defines;
+        for (const auto& [key, value] : list) { defines.push_back({key.c_str(), value.c_str()}); }
+        for (auto program : {SceneShaderProgram::DeferredBinned, SceneShaderProgram::Deferred,
+                SceneShaderProgram::PathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+            for (bool custom : {false, true}) {
+                const SceneShaderOptions options{.customMaterials = custom, .materialInclude = custom ? "C:/CustomMaterials" : ""};
+                EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
+                const auto request = makeSceneShaderRequest(program, options, defines);
+                EXPECT_EQ(std::count_if(request.defines.begin(), request.defines.end(), [](const auto& d) {
+                    return d.first == "METALLIC_DEFERRED_CLASS_SPECIALIZATION";
+                }), 0);
+            }
+        }
+    }
+    const SlangMacroDefine literal{"MATERIAL_CLASS", "1"};
+    const SceneShaderOptions custom{.customMaterials = true, .materialInclude = "C:/CustomMaterials"};
+    EXPECT_TRUE(sceneShaderSpecializationConstants(SceneShaderProgram::DeferredBinned, custom, {&literal, 1}).empty());
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, custom, {&literal, 1}).defines.back(),
+        (std::pair<std::string, std::string>{"MATERIAL_CLASS", "1"}));
+}
+
+TEST(ShaderRequests, DeferredClassSpecializationMarkerIsFactoryOwned)
+{
+    for (const char* value : {"0", "1", "", "2"}) {
+        const SlangMacroDefine marker{"METALLIC_DEFERRED_CLASS_SPECIALIZATION", value};
+        for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+            EXPECT_THROW(makeSceneShaderRequest(program, {}, {&marker, 1}), std::invalid_argument);
+        }
+    }
+}
+
+
+TEST(ShaderRequests, OpenPBRCacheQuerySharesOnlySourceAndKeepsDistinctNativePolicies)
+{
+    const bool enabled = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+    const SceneShaderOptions options{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"};
+    const SlangMacroDefine query{"SHARC_QUERY", "1"};
+    for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+        const auto off = makeSceneShaderRequest(program, options);
+        const auto on = makeSceneShaderRequest(program, options, {&query, 1});
+        EXPECT_EQ(off == on, enabled);
+        auto expected = legacyOpenPBRFactoryRequest(enabled ? SceneShaderProgram::OpenPBRPathTrace : program,
+            options, {&query, 1});
+        if (enabled) {
+            expected.defines.emplace_back("METALLIC_PT_CACHE_QUERY_SPECIALIZATION", "1");
+            expected.defines.emplace_back("METALLIC_PT_GUIDE_SPECIALIZATION", "1");
+        }
+        EXPECT_EQ(on, expected);
+        const auto offPolicy = sceneShaderSpecializationConstants(program, options);
+        const auto onPolicy = sceneShaderSpecializationConstants(program, options, {&query, 1});
+        if (!enabled) {
+            EXPECT_EQ(off, legacyOpenPBRFactoryRequest(program, options));
+            EXPECT_TRUE(offPolicy.empty()); EXPECT_TRUE(onPolicy.empty());
+            continue;
+        }
+        ASSERT_EQ(offPolicy.size(), 2u); ASSERT_EQ(onPolicy.size(), 2u);
+        EXPECT_EQ(offPolicy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 0}));
+        EXPECT_EQ(onPolicy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 1}));
+        const uint32_t guide = program == SceneShaderProgram::OpenPBRPathTraceGuides ? 1u : 0u;
+        EXPECT_EQ(offPolicy[1], (ShaderSpecializationConstant{1, ShaderSpecializationType::Bool32, guide}));
+        EXPECT_EQ(onPolicy[1], (ShaderSpecializationConstant{1, ShaderSpecializationType::Bool32, guide}));
+        EXPECT_NE(offPolicy.data(), onPolicy.data());
+        EXPECT_EQ(offPolicy.data(), sceneShaderSpecializationConstants(program, options).data());
+        auto ignored = options; ignored.deferredFloat16 = false; ignored.upscalerGuides = true;
+        EXPECT_EQ(makeSceneShaderRequest(program, ignored), off);
+        const auto repeated = sceneShaderSpecializationConstants(program, ignored, {&query, 1});
+        EXPECT_EQ(std::vector<ShaderSpecializationConstant>(repeated.begin(), repeated.end()),
+            std::vector<ShaderSpecializationConstant>(onPolicy.begin(), onPolicy.end()));
+    }
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options) ==
+        makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options), enabled);
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, {&query, 1}) ==
+        makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, {&query, 1}), enabled);
+}
+
+TEST(ShaderRequests, OpenPBRCacheQueryPreservesCompleteStaticFallbackDescriptors)
+{
+    const std::vector<std::vector<std::pair<std::string, std::string>>> lists{
+        {}, {{"SHARC_QUERY", "1"}}, {{"SHARC_QUERY", "0"}}, {{"SHARC_QUERY", "01"}},
+        {{"SHARC_QUERY", "true"}}, {{"SHARC_QUERY", "(1)"}}, {{"SHARC_QUERY", "1u"}},
+        {{"SHARC_UPDATE", "1"}}, {{"SHARC_UPDATE", "0"}},
+        {{"SHARC_QUERY", "1"}, {"SHARC_UPDATE", "1"}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "0"}}, {{"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "1"}, {"SHARC_QUERY", "1"}},
+        {{"SHARC_QUERY", "1"}, {"SHARC_QUERY", "0"}},
+        {{"BEFORE", "3"}, {"SHARC_QUERY", "1"}, {"AFTER", "7"}},
+        {{"MATERIAL_CLASS", "1"}}, {{"SHARC_QUERY", "1"}, {"OTHER", "2"}}};
+    for (bool custom : {false, true}) {
+        for (bool global : {false, true}) {
+            for (bool rtxcr : {false, true}) {
+                const SceneShaderOptions options{.customMaterials = custom, .globalView = global, .hasRTXCR = rtxcr,
+                    .materialInclude = "C:/Custom", .rtxcrInclude = "C:/RTXCR"};
+                for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                    for (const auto& list : lists) {
+                        const bool eligible = !custom && !global && rtxcr &&
+                            sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg &&
+                            (list.empty() || (list.size() == 1 && list[0].first == "SHARC_QUERY" && list[0].second == "1"));
+                        if (eligible) { continue; }
+                        std::vector<SlangMacroDefine> defines;
+                        for (const auto& [name, value] : list) { defines.push_back({name.c_str(), value.c_str()}); }
+                        EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, defines), -1);
+                        const int32_t singlePolicy = singleGuideCacheQuerySpecializationValue(program, options, defines);
+                        if (singlePolicy >= 0) {
+                            const auto native = sceneShaderSpecializationConstants(program, options, defines);
+                            ASSERT_EQ(native.size(), 1u);
+                            EXPECT_EQ(native[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32,
+                                static_cast<uint32_t>(singlePolicy)}));
+                        } else {
+                            EXPECT_EQ(makeSceneShaderRequest(program, options, defines),
+                                legacyOpenPBRFactoryRequest(program, options, defines));
+                            EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
+            SceneShaderProgram::RealtimeLighting, SceneShaderProgram::SharcClear}) {
+        const SceneShaderOptions options{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"};
+        EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, {}), -1);
+        if (program != SceneShaderProgram::PathTrace) {
+            const auto native = sceneShaderSpecializationConstants(program, options);
+            if (program == SceneShaderProgram::PathTraceGuides && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg) {
+                ASSERT_EQ(native.size(), 2u);
+                EXPECT_EQ(native[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 0}));
+                EXPECT_EQ(native[1], (ShaderSpecializationConstant{1, ShaderSpecializationType::Bool32, 1}));
+            } else {
+                EXPECT_TRUE(native.empty());
+            }
+        }
+    }
+}
+
+TEST(ShaderRequests, OpenPBRCacheQueryMarkerIsFactoryOwned)
+{
+    for (const char* name : {"METALLIC_PT_CACHE_QUERY_SPECIALIZATION", "METALLIC_PT_GUIDE_SPECIALIZATION"}) {
+        for (const char* value : {"0", "1", "", "2"}) {
+            const SlangMacroDefine marker{name, value};
+            for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                EXPECT_THROW(makeSceneShaderRequest(program, {}, {&marker, 1}), std::invalid_argument);
+                const SceneShaderOptions options{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"};
+                EXPECT_THROW(makeSceneShaderRequest(program, options, {&marker, 1}), std::invalid_argument);
+            }
+        }
+    }
+}
+
+TEST(ShaderRequests, OpenPBRCacheQueryCatalogRetainsAllRuntimePolicies)
+{
+    for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
+        const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
+        const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+        const auto catalog = builtinShaderWarmupRequests(include);
+        EXPECT_EQ(catalog.size(), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
+            ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
+        EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options) ==
+            makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options), shared);
+        for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+            const SlangMacroDefine query{"SHARC_QUERY", "1"}, update{"SHARC_UPDATE", "1"};
+            const auto off = makeSceneShaderRequest(program, options);
+            const auto on = makeSceneShaderRequest(program, options, {&query, 1});
+            EXPECT_EQ(off == on, shared);
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), off), 1);
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), on), 1);
+            EXPECT_EQ(makeSceneShaderRequest(program, options, {&update, 1}),
+                legacyOpenPBRFactoryRequest(program, options, {&update, 1}));
+            for (const auto& defines : {std::vector<SlangMacroDefine>{{"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+                    std::vector<SlangMacroDefine>{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}}}) {
+                const auto single = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+                EXPECT_EQ(openPBRCacheQuerySpecializationValue(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines), -1);
+                EXPECT_EQ(std::count(catalog.begin(), catalog.end(), single), 1);
+                const auto native = sceneShaderSpecializationConstants(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+                if (shared) {
+                    ASSERT_EQ(native.size(), 1u);
+                    EXPECT_EQ(native[0].type, ShaderSpecializationType::Bool32);
+                } else {
+                    EXPECT_EQ(single, legacyOpenPBRFactoryRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines));
+                    EXPECT_TRUE(native.empty());
+                }
+            }
+        }
+    }
+}
+
+
+TEST(ShaderRequests, StandardPathCacheQuerySharesOnlySourceAndKeepsDistinctNativePolicies)
+{
+    const auto program = SceneShaderProgram::PathTrace;
+    const bool enabled = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+    const SceneShaderOptions options{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"};
+    const SlangMacroDefine query{"SHARC_QUERY", "1"};
+    const auto off = makeSceneShaderRequest(program, options);
+    const auto on = makeSceneShaderRequest(program, options, {&query, 1});
+    auto expected = legacyStandardPathFactoryRequest(program, options, {&query, 1});
+    if (enabled) {
+        expected.defines.emplace_back("METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION", "1");
+        expected.defines.emplace_back("METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION", "1");
+    }
+    EXPECT_EQ(on, expected);
+    EXPECT_EQ(off, legacyStandardPathFactoryRequest(program, options));
+    EXPECT_EQ(off.defines.size(), 6u);
+    EXPECT_NE(off, on);
+    EXPECT_EQ(standardPathCacheQuerySpecializationValue(program, options, {}), -1);
+    EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, {}), -1);
+    EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, {&query, 1}), -1);
+    const auto guides = makeSceneShaderRequest(SceneShaderProgram::PathTraceGuides, options);
+    EXPECT_EQ(guides == on, enabled);
+    EXPECT_NE(guides, off);
+    const auto guidePolicy = sceneShaderSpecializationConstants(SceneShaderProgram::PathTraceGuides, options);
+    const auto offPolicy = sceneShaderSpecializationConstants(program, options);
+    const auto onPolicy = sceneShaderSpecializationConstants(program, options, {&query, 1});
+    EXPECT_TRUE(offPolicy.empty());
+    if (!enabled) {
+        EXPECT_TRUE(onPolicy.empty()); EXPECT_TRUE(guidePolicy.empty());
+        EXPECT_EQ(guides, legacyStandardPathFactoryRequest(SceneShaderProgram::PathTraceGuides, options));
+        return;
+    }
+    ASSERT_EQ(onPolicy.size(), 2u); ASSERT_EQ(guidePolicy.size(), 2u);
+    EXPECT_EQ(onPolicy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 1}));
+    EXPECT_EQ(onPolicy[1], (ShaderSpecializationConstant{1, ShaderSpecializationType::Bool32, 0}));
+    EXPECT_EQ(guidePolicy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 0}));
+    EXPECT_EQ(guidePolicy[1], (ShaderSpecializationConstant{1, ShaderSpecializationType::Bool32, 1}));
+    EXPECT_NE(guidePolicy.data(), onPolicy.data());
+    EXPECT_EQ(guidePolicy.data(), sceneShaderSpecializationConstants(SceneShaderProgram::PathTraceGuides, options).data());
+    EXPECT_EQ(onPolicy.data(), sceneShaderSpecializationConstants(program, options, {&query, 1}).data());
+    auto ignored = options; ignored.deferredFloat16 = false; ignored.upscalerGuides = true;
+    EXPECT_EQ(makeSceneShaderRequest(program, ignored), off);
+    EXPECT_TRUE(sceneShaderSpecializationConstants(program, ignored).empty());
+    const auto repeated = sceneShaderSpecializationConstants(program, ignored, {&query, 1});
+    EXPECT_EQ(std::vector<ShaderSpecializationConstant>(repeated.begin(), repeated.end()),
+        std::vector<ShaderSpecializationConstant>(onPolicy.begin(), onPolicy.end()));
+}
+
+TEST(ShaderRequests, StandardPathCacheQueryPreservesCompleteStaticFallbackDescriptors)
+{
+    const std::vector<std::vector<std::pair<std::string, std::string>>> lists{
+        {}, {{"SHARC_QUERY", "1"}}, {{"SHARC_QUERY", "0"}}, {{"SHARC_QUERY", "01"}},
+        {{"SHARC_QUERY", "true"}}, {{"SHARC_QUERY", "(1)"}}, {{"SHARC_QUERY", "1u"}}, {{"SHARC_QUERY", ""}},
+        {{"SHARC_UPDATE", "1"}}, {{"SHARC_UPDATE", "0"}},
+        {{"SHARC_QUERY", "1"}, {"SHARC_UPDATE", "0"}}, {{"SHARC_QUERY", "1"}, {"SHARC_UPDATE", "1"}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "0"}}, {{"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "0"}},
+        {{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "1"}, {"SHARC_QUERY", "1"}}, {{"SHARC_QUERY", "1"}, {"SHARC_QUERY", "0"}},
+        {{"BEFORE", "3"}, {"SHARC_QUERY", "1"}, {"AFTER", "7"}},
+        {{"MATERIAL_CLASS", "0"}}, {{"MATERIAL_CLASS", "4"}}, {{"MATERIAL_PROGRAM_ID", "1"}},
+        {{"METALLIC_GLOBAL_VIEW", "0"}}, {{"METALLIC_DEFERRED_RUNTIME_PRECISION", "1"}},
+        {{"SHARC_QUERY", "1"}, {"OTHER", "2"}}};
+    for (bool custom : {false, true}) {
+        for (bool global : {false, true}) {
+            for (bool rtxcr : {false, true}) {
+                const SceneShaderOptions options{.customMaterials = custom, .globalView = global, .hasRTXCR = rtxcr,
+                    .materialInclude = "C:/Custom", .rtxcrInclude = "C:/RTXCR"};
+                for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides}) {
+                    for (const auto& list : lists) {
+                        const bool eligible = !custom && !global && rtxcr &&
+                            sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg &&
+                            ((program == SceneShaderProgram::PathTraceGuides && list.empty()) ||
+                                (program == SceneShaderProgram::PathTrace && list.size() == 1 &&
+                                    list[0].first == "SHARC_QUERY" && list[0].second == "1"));
+                        if (eligible) { continue; }
+                        std::vector<SlangMacroDefine> defines;
+                        for (const auto& [name, value] : list) { defines.push_back({name.c_str(), value.c_str()}); }
+                        EXPECT_EQ(standardPathCacheQuerySpecializationValue(program, options, defines), -1);
+                        EXPECT_EQ(makeSceneShaderRequest(program, options, defines),
+                            legacyStandardPathFactoryRequest(program, options, defines));
+                        EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
+                    }
+                }
+            }
+        }
+    }
+    for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides,
+            SceneShaderProgram::RealtimeLighting, SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned,
+            SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve, SceneShaderProgram::OpenPBRSharcResolve}) {
+        EXPECT_EQ(standardPathCacheQuerySpecializationValue(program, {.hasRTXCR = true}, {}), -1);
+    }
+}
+
+TEST(ShaderRequests, StandardPathCacheQueryMarkerIsFactoryOwned)
+{
+    const auto program = SceneShaderProgram::PathTrace;
+    for (const char* value : {"0", "1", "", "2", "-1"}) {
+        const SlangMacroDefine marker{"METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION", value};
+        for (const auto& options : {SceneShaderOptions{}, SceneShaderOptions{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"},
+                SceneShaderOptions{.customMaterials = true, .hasRTXCR = true}, SceneShaderOptions{.globalView = true, .hasRTXCR = true}}) {
+            EXPECT_THROW(makeSceneShaderRequest(program, options, {&marker, 1}), std::invalid_argument);
+            const SlangMacroDefine mixed[] = {{"SHARC_QUERY", "1"}, marker};
+            EXPECT_THROW(makeSceneShaderRequest(program, options, mixed), std::invalid_argument);
+            const SlangMacroDefine duplicate[] = {marker, marker};
+            EXPECT_THROW(makeSceneShaderRequest(program, options, duplicate), std::invalid_argument);
+            EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, {&marker, 1}).empty());
+            EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, duplicate).empty());
+        }
+        // Preserve the parent factory's literal manual defines for other programs.
+        // Such cross-program injection is not a supported specialization policy.
+        const SceneShaderOptions options{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"};
+        EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::PathTraceGuides, options, {&marker, 1}),
+            legacyStandardPathFactoryRequest(SceneShaderProgram::PathTraceGuides, options, {&marker, 1}));
+        for (auto other : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+            EXPECT_EQ(makeSceneShaderRequest(other, options, {&marker, 1}), legacyOpenPBRFactoryRequest(other, options, {&marker, 1}));
+            EXPECT_TRUE(sceneShaderSpecializationConstants(other, options, {&marker, 1}).empty());
+        }
+    }
+
+    for (auto standardProgram : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides}) {
+        for (const char* value : {"0", "1", "", "2", "-1"}) {
+            const SlangMacroDefine marker{"METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION", value};
+            for (const auto& options : {SceneShaderOptions{}, SceneShaderOptions{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"},
+                    SceneShaderOptions{.customMaterials = true, .hasRTXCR = true}, SceneShaderOptions{.globalView = true, .hasRTXCR = true}}) {
+                EXPECT_THROW(makeSceneShaderRequest(standardProgram, options, {&marker, 1}), std::invalid_argument);
+                const SlangMacroDefine mixed[] = {{"SHARC_QUERY", "1"}, marker};
+                const SlangMacroDefine duplicate[] = {marker, marker};
+                EXPECT_THROW(makeSceneShaderRequest(standardProgram, options, mixed), std::invalid_argument);
+                EXPECT_THROW(makeSceneShaderRequest(standardProgram, options, duplicate), std::invalid_argument);
+                EXPECT_EQ(standardPathCacheQuerySpecializationValue(standardProgram, options, mixed), -1);
+                EXPECT_TRUE(sceneShaderSpecializationConstants(standardProgram, options, {&marker, 1}).empty());
+                EXPECT_TRUE(sceneShaderSpecializationConstants(standardProgram, options, duplicate).empty());
+            }
+            const SceneShaderOptions options{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"};
+            for (auto other : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                EXPECT_EQ(makeSceneShaderRequest(other, options, {&marker, 1}), legacyOpenPBRFactoryRequest(other, options, {&marker, 1}));
+                EXPECT_TRUE(sceneShaderSpecializationConstants(other, options, {&marker, 1}).empty());
+            }
+        }
+    }
+}
+
+TEST(ShaderRequests, StandardPathCacheQueryCatalogRetainsBothRuntimePolicies)
+{
+    const auto program = SceneShaderProgram::PathTrace;
+    for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
+        const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
+        const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+        const auto catalog = builtinShaderWarmupRequests(include);
+        EXPECT_EQ(catalog.size(), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
+            ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
+        const SlangMacroDefine query{"SHARC_QUERY", "1"}, update{"SHARC_UPDATE", "1"};
+        const auto off = makeSceneShaderRequest(program, options);
+        const auto on = makeSceneShaderRequest(program, options, {&query, 1});
+        EXPECT_NE(off, on);
+        EXPECT_EQ(off, legacyStandardPathFactoryRequest(program, options));
+        EXPECT_TRUE(sceneShaderSpecializationConstants(program, options).empty());
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), off), 1);
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), on), 1);
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), makeSceneShaderRequest(program, options, {&update, 1})), 1);
+        EXPECT_EQ(makeSceneShaderRequest(program, options, {&update, 1}), legacyStandardPathFactoryRequest(program, options, {&update, 1}));
+        EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, {&update, 1}).empty());
+        const auto guides = makeSceneShaderRequest(SceneShaderProgram::PathTraceGuides, options);
+        EXPECT_EQ(guides == on, shared);
+        EXPECT_NE(guides, off);
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), guides), 1);
+        const auto guidePolicy = sceneShaderSpecializationConstants(SceneShaderProgram::PathTraceGuides, options);
+        if (shared) {
+            ASSERT_EQ(guidePolicy.size(), 2u);
+            EXPECT_EQ(guidePolicy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 0}));
+            EXPECT_EQ(guidePolicy[1], (ShaderSpecializationConstant{1, ShaderSpecializationType::Bool32, 1}));
+        } else {
+            EXPECT_EQ(guides, legacyStandardPathFactoryRequest(SceneShaderProgram::PathTraceGuides, options));
+            EXPECT_TRUE(guidePolicy.empty());
+        }
+        const auto guideQuery = makeSceneShaderRequest(SceneShaderProgram::PathTraceGuides, options, {&query, 1});
+        EXPECT_EQ(guideQuery, legacyStandardPathFactoryRequest(SceneShaderProgram::PathTraceGuides, options, {&query, 1}));
+        EXPECT_EQ(standardPathCacheQuerySpecializationValue(SceneShaderProgram::PathTraceGuides, options, {&query, 1}), -1);
+        EXPECT_TRUE(sceneShaderSpecializationConstants(SceneShaderProgram::PathTraceGuides, options, {&query, 1}).empty());
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), guideQuery), 0);
+    }
+}
+
+TEST(ShaderRequests, SingleGuideCacheQuerySharesSourceWithIndependentBool0Policies)
+{
+    const auto program = SceneShaderProgram::OpenPBRPathTraceGuides;
+    const SceneShaderOptions options{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"};
+    const bool enabled = sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+    const SlangMacroDefine offDefines[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    const SlangMacroDefine onDefines[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    const auto off = makeSceneShaderRequest(program, options, offDefines);
+    const auto on = makeSceneShaderRequest(program, options, onDefines);
+    auto expected = legacyOpenPBRFactoryRequest(program, options, onDefines);
+    if (enabled) { expected.defines.emplace_back("METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION", "1"); }
+    EXPECT_EQ(on, expected);
+    EXPECT_EQ(off == on, enabled);
+    EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, offDefines), -1);
+    EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, onDefines), -1);
+    EXPECT_EQ(standardPathCacheQuerySpecializationValue(program, options, offDefines), -1);
+    const auto offPolicy = sceneShaderSpecializationConstants(program, options, offDefines);
+    const auto onPolicy = sceneShaderSpecializationConstants(program, options, onDefines);
+    if (!enabled) {
+        EXPECT_EQ(off, legacyOpenPBRFactoryRequest(program, options, offDefines));
+        EXPECT_TRUE(offPolicy.empty()); EXPECT_TRUE(onPolicy.empty());
+        return;
+    }
+    EXPECT_EQ(singleGuideCacheQuerySpecializationValue(program, options, offDefines), 0);
+    EXPECT_EQ(singleGuideCacheQuerySpecializationValue(program, options, onDefines), 1);
+    ASSERT_EQ(offPolicy.size(), 1u); ASSERT_EQ(onPolicy.size(), 1u);
+    EXPECT_EQ(offPolicy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 0}));
+    EXPECT_EQ(onPolicy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 1}));
+    EXPECT_NE(offPolicy.data(), onPolicy.data());
+    EXPECT_EQ(offPolicy.data(), sceneShaderSpecializationConstants(program, options, offDefines).data());
+    auto ignored = options; ignored.deferredFloat16 = false; ignored.upscalerGuides = true;
+    EXPECT_EQ(makeSceneShaderRequest(program, ignored, offDefines), off);
+    EXPECT_EQ(sceneShaderSpecializationConstants(program, ignored, onDefines)[0], onPolicy[0]);
+    const ShaderRequestView offView(off), onView(on);
+    EXPECT_EQ(std::string_view(offView.desc().moduleName), std::string_view(onView.desc().moduleName));
+    EXPECT_EQ(std::string_view(offView.desc().entryPointName), std::string_view(onView.desc().entryPointName));
+}
+
+TEST(ShaderRequests, SingleGuideCacheQueryRejectsEveryOtherOrderedShape)
+{
+    const std::vector<std::vector<std::pair<std::string, std::string>>> lists{
+        {{"METALLIC_PT_SINGLE_SAMPLE", "1"}}, {{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "0"}}, {{"METALLIC_PT_SINGLE_SAMPLE", "01"}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "1u"}}, {{"METALLIC_PT_SINGLE_SAMPLE", "true"}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "(1)"}}, {{"METALLIC_PT_SINGLE_SAMPLE", ""}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "1"}, {"SHARC_QUERY", "1"}},
+        {{"SHARC_QUERY", "0"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "01"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "(1)"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "0"}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_QUERY", "1"}, {"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_UPDATE", "0"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"SHARC_UPDATE", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"MATERIAL_CLASS", "4"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"MATERIAL_PROGRAM_ID", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}},
+        {{"METALLIC_PT_SINGLE_SAMPLE", "1"}, {"OTHER", "2"}}};
+    for (bool custom : {false, true}) {
+        for (bool global : {false, true}) {
+            for (bool rtxcr : {false, true}) {
+                const SceneShaderOptions options{.customMaterials = custom, .globalView = global, .hasRTXCR = rtxcr,
+                    .materialInclude = "C:/Custom", .rtxcrInclude = "C:/RTXCR"};
+                for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+                    for (const auto& list : lists) {
+                        std::vector<SlangMacroDefine> defines;
+                        for (const auto& [name, value] : list) { defines.push_back({name.c_str(), value.c_str()}); }
+                        const bool eligible = program == SceneShaderProgram::OpenPBRPathTraceGuides && !custom && !global && rtxcr &&
+                            sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg &&
+                            (list == lists[0] || list == lists[1]);
+                        EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, defines), -1);
+                        if (eligible) { continue; }
+                        EXPECT_EQ(singleGuideCacheQuerySpecializationValue(program, options, defines), -1);
+                        EXPECT_EQ(makeSceneShaderRequest(program, options, defines),
+                            legacyOpenPBRFactoryRequest(program, options, defines));
+                        EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
+                    }
+                }
+            }
+        }
+    }
+    for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
+            SceneShaderProgram::RealtimeLighting, SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned,
+            SceneShaderProgram::SharcClear, SceneShaderProgram::SharcResolve, SceneShaderProgram::OpenPBRSharcResolve}) {
+        const SlangMacroDefine single{"METALLIC_PT_SINGLE_SAMPLE", "1"};
+        EXPECT_EQ(singleGuideCacheQuerySpecializationValue(program, {.hasRTXCR = true}, {&single, 1}), -1);
+    }
+}
+
+TEST(ShaderRequests, SingleGuideCacheQueryMarkerIsFactoryOwned)
+{
+    for (const char* value : {"0", "1", "", "2", "-1"}) {
+        const SlangMacroDefine marker{"METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION", value};
+        for (auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+            for (const auto& options : {SceneShaderOptions{}, SceneShaderOptions{.hasRTXCR = true, .rtxcrInclude = "C:/RTXCR"},
+                    SceneShaderOptions{.customMaterials = true, .hasRTXCR = true}, SceneShaderOptions{.globalView = true, .hasRTXCR = true}}) {
+                EXPECT_THROW(makeSceneShaderRequest(program, options, {&marker, 1}), std::invalid_argument);
+                const SlangMacroDefine mixed[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}, marker};
+                const SlangMacroDefine duplicate[]{marker, marker};
+                EXPECT_THROW(makeSceneShaderRequest(program, options, mixed), std::invalid_argument);
+                EXPECT_THROW(makeSceneShaderRequest(program, options, duplicate), std::invalid_argument);
+                EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, mixed).empty());
+                EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, duplicate).empty());
+            }
+        }
+    }
+}
+
+TEST(ShaderRequests, SingleGuideCacheQueryCatalogRetainsBothRuntimePolicies)
+{
+    const auto program = SceneShaderProgram::OpenPBRPathTraceGuides;
+    for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
+        const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
+        const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+        const auto catalog = builtinShaderWarmupRequests(include);
+        EXPECT_EQ(catalog.size(), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
+            ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
+        const SlangMacroDefine offDefines[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+        const SlangMacroDefine onDefines[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+        const auto off = makeSceneShaderRequest(program, options, offDefines);
+        const auto on = makeSceneShaderRequest(program, options, onDefines);
+        EXPECT_EQ(off == on, shared);
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), off), 1);
+        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), on), 1);
+        for (const auto& shape : {std::span<const SlangMacroDefine>(offDefines), std::span<const SlangMacroDefine>(onDefines)}) {
+            EXPECT_EQ(openPBRCacheQuerySpecializationValue(program, options, shape), -1);
+            const auto policy = sceneShaderSpecializationConstants(program, options, shape);
+            EXPECT_EQ(policy.size(), shared ? 1u : 0u);
+        }
+    }
+}

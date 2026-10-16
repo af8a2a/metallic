@@ -145,43 +145,46 @@ public bool selectPunctualLight(PunctualSamplingResources resources, float3 posi
     index = 0u;
     inverseSourcePdf = 0.0;
     if (punctualLightCount(resources.lights) == 0u) { return false; }
-    uint recordCount, stride;
-    resources.regir.GetDimensions(recordCount, stride);
-    if (recordCount < kPunctualReGIRHeaderRecordCount) {
-        return selectPunctualLightGlobal(resources, seed, index, inverseSourcePdf);
-    }
-    uint4 grid = resources.regir[0];
-    float4 centerSize = asfloat(resources.regir[1]);
-    uint4 metadata = resources.regir[2];
-    float jitter = asfloat(metadata.z);
-    if (metadata.x != kPunctualReGIRMagic || any(grid.xyz == uint3(0u)) || grid.w == 0u ||
-        metadata.y == 0u || metadata.y > recordCount - kPunctualReGIRHeaderRecordCount ||
-        !all(isfinite(centerSize)) || !(centerSize.w > 0.0) || !isfinite(jitter) || jitter < 0.0) {
-        return selectPunctualLightGlobal(resources, seed, index, inverseSourcePdf);
-    }
-    float3 random = float3(punctualSamplingRandom(seed), punctualSamplingRandom(seed),
-        punctualSamplingRandom(seed));
-    float3 samplePosition = position + (random - 0.5) * (jitter * centerSize.w * 2.0);
-    float3 origin = centerSize.xyz - float3(grid.xyz) * (centerSize.w * 0.5);
-    float3 cellCoordinates = floor((samplePosition - origin) / centerSize.w);
-    if (!all(isfinite(cellCoordinates)) || any(cellCoordinates < 0.0) ||
-        any(cellCoordinates >= float3(grid.xyz))) {
-        return selectPunctualLightGlobal(resources, seed, index, inverseSourcePdf);
-    }
-    uint3 cell = uint3(cellCoordinates);
-    uint cellIndex = cell.x + (cell.y + cell.z * grid.y) * grid.x;
-    uint slotBase = cellIndex * grid.w;
-    if (slotBase >= metadata.y || grid.w > metadata.y - slotBase) {
-        return selectPunctualLightGlobal(resources, seed, index, inverseSourcePdf);
-    }
-    uint slot = slotBase + min(uint(punctualSamplingRandom(seed) * float(grid.w)), grid.w - 1u);
-    uint4 data = resources.regir[kPunctualReGIRHeaderRecordCount + slot];
-    float inversePdf = asfloat(data.y);
-    // An empty RIS slot is a zero-weight sample, not permission to draw a second
-    // sample from another distribution. Such a fallback changes the estimator.
-    if (data.x >= punctualLightCount(resources.lights) || !(inversePdf > 0.0) || !isfinite(inversePdf)) { return false; }
-    index = data.x;
-    inverseSourcePdf = inversePdf;
-    return true;
+    do {
+        uint recordCount, stride;
+        resources.regir.GetDimensions(recordCount, stride);
+        if (recordCount < kPunctualReGIRHeaderRecordCount) {
+            break;
+        }
+        uint4 grid = resources.regir[0];
+        float4 centerSize = asfloat(resources.regir[1]);
+        uint4 metadata = resources.regir[2];
+        float jitter = asfloat(metadata.z);
+        if (metadata.x != kPunctualReGIRMagic || any(grid.xyz == uint3(0u)) || grid.w == 0u ||
+            metadata.y == 0u || metadata.y > recordCount - kPunctualReGIRHeaderRecordCount ||
+            !all(isfinite(centerSize)) || !(centerSize.w > 0.0) || !isfinite(jitter) || jitter < 0.0) {
+            break;
+        }
+        float3 random = float3(punctualSamplingRandom(seed), punctualSamplingRandom(seed),
+            punctualSamplingRandom(seed));
+        float3 samplePosition = position + (random - 0.5) * (jitter * centerSize.w * 2.0);
+        float3 origin = centerSize.xyz - float3(grid.xyz) * (centerSize.w * 0.5);
+        float3 cellCoordinates = floor((samplePosition - origin) / centerSize.w);
+        if (!all(isfinite(cellCoordinates)) || any(cellCoordinates < 0.0) ||
+            any(cellCoordinates >= float3(grid.xyz))) {
+            break;
+        }
+        uint3 cell = uint3(cellCoordinates);
+        uint cellIndex = cell.x + (cell.y + cell.z * grid.y) * grid.x;
+        uint slotBase = cellIndex * grid.w;
+        if (slotBase >= metadata.y || grid.w > metadata.y - slotBase) {
+            break;
+        }
+        uint slot = slotBase + min(uint(punctualSamplingRandom(seed) * float(grid.w)), grid.w - 1u);
+        uint4 data = resources.regir[kPunctualReGIRHeaderRecordCount + slot];
+        float inversePdf = asfloat(data.y);
+        // An empty RIS slot is a zero-weight sample, not permission to draw a second
+        // sample from another distribution. Such a fallback changes the estimator.
+        if (data.x >= punctualLightCount(resources.lights) || !(inversePdf > 0.0) || !isfinite(inversePdf)) { return false; }
+        index = data.x;
+        inverseSourcePdf = inversePdf;
+        return true;
+    } while (false);
+    return selectPunctualLightGlobal(resources, seed, index, inverseSourcePdf);
 }
 } // namespace Metallic.Lighting

@@ -14,6 +14,10 @@ LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 外部 SDK 源码不在扫描范围；运行时生成的 MaterialValueDispatch 则单独检查生成器的归属声明。
 配置了 Python 的测试构建同时注册 `MetallicShaderModuleOwnershipAudit` 和检查器回归测试。
 
+编译复杂度与源码实验记录见 [Shader compilation complexity](../Documentation/ShaderCompilationComplexity.md)。
+比较实际请求和最终 SPIR-V 规模，并分别验证完整冷缓存 warmup、渲染输出及 GPU 运行时间；
+源码行数、import 数或更小的产物本身不能证明性能改善。
+
 | 目录 | 职责 |
 | --- | --- |
 | `Modules/ShaderCore.slang`、`Modules/Core/` | ResourceHandle、BufferSpan、旧资源兼容接口、相机、顶点解码、SH、显示颜色；不声明 push constant |
