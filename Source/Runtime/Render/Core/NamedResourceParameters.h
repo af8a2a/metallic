@@ -290,6 +290,30 @@ DR_SCENE_OFFSET(kSceneEnvironmentOffset, environment, 356);
 DR_SCENE_OFFSET(kSceneOutputOffset, output, 200);
 #undef DR_SCENE_OFFSET
 
+// Experimental primary-guide split extends the packet without changing the
+// scene ABI used by existing pipelines.
+DR_PUBLIC struct ScenePrimarySplitResourceParameters
+{
+    DR_PUBLIC SceneResourceParameters scene;
+    DR_PUBLIC DR_BUFFER primaryHits;
+#ifdef __cplusplus
+    uint32_t reserved = 0;
+#else
+    public uint reserved;
+#endif
+};
+#ifdef __cplusplus
+inline constexpr uint32_t kOpenPBRPrimaryHitStride = 100;
+inline constexpr uint32_t kScenePrimaryHitsOffset = 384;
+static_assert(offsetof(ScenePrimarySplitResourceParameters, scene) == 0);
+static_assert(offsetof(ScenePrimarySplitResourceParameters, primaryHits) == kScenePrimaryHitsOffset);
+static_assert(offsetof(ScenePrimarySplitResourceParameters, reserved) == 388);
+static_assert(sizeof(ScenePrimarySplitResourceParameters) == 392);
+#else
+public static const uint kOpenPBRPrimaryHitStride = 100;
+public static const uint kScenePrimaryHitsOffset = 384;
+#endif
+
 DR_PUBLIC struct OutputImageResourceParameters
 {
     DR_PUBLIC DR_STORAGE(2D<float4>) output;

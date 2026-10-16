@@ -1253,6 +1253,48 @@ TEST(ShaderRequests, HZBSPDWarmupAppendsRuntimeOrderedDescriptors)
     }
 }
 
+TEST(ShaderRequests, PrimaryGuideSplitIsOptInAndKeepsSingleSourcePolicy)
+{
+    const SlangMacroDefine single[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    const auto options = standardSceneOptions();
+    const auto fused = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, single);
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const auto primary = makeOpenPBRPrimarySplitShaderRequest(options, single, true);
+    auto continuation = makeOpenPBRPrimarySplitShaderRequest(options, single, false);
+    EXPECT_EQ(primary.module, "Features/PathTracing/OpenPBRPrimaryGuides");
+    EXPECT_EQ(primary.entry, "openPbrPrimaryGuidesMain");
+    EXPECT_EQ(continuation.module, "Features/PathTracing/OpenPBRPathContinuation");
+    EXPECT_EQ(continuation.entry, "openPbrPathContinuationMain");
+    EXPECT_FALSE(contains(catalog, primary));
+    EXPECT_FALSE(contains(catalog, continuation));
+    EXPECT_TRUE(contains(catalog, fused));
+    EXPECT_EQ(primary.defines, fused.defines);
+    ASSERT_FALSE(continuation.defines.empty());
+    EXPECT_EQ(continuation.defines.back(), (std::pair<std::string, std::string>{"METALLIC_PT_SPLIT_PRIMARY", "1"}));
+    continuation.defines.pop_back();
+    EXPECT_EQ(continuation.defines, fused.defines);
+    EXPECT_EQ(primary.searchPaths, fused.searchPaths);
+    EXPECT_EQ(continuation.capabilities, fused.capabilities);
+    EXPECT_EQ(sizeof(SceneResourceParameters), 384u);
+    EXPECT_EQ(offsetof(ScenePrimarySplitResourceParameters, primaryHits), 384u);
+    EXPECT_EQ(sizeof(ScenePrimarySplitResourceParameters), 392u);
+    EXPECT_EQ(kOpenPBRPrimaryHitStride, 100u);
+}
+
+TEST(ShaderRequests, PrimaryGuideSplitRejectsUnqualifiedCacheAndSampleRequests)
+{
+    const auto options = standardSceneOptions();
+    const SlangMacroDefine query[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    const SlangMacroDefine update[]{{"SHARC_UPDATE", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    const SlangMacroDefine multi[]{{"METALLIC_PT_SINGLE_SAMPLE", "0"}};
+    for (bool primary : {true, false}) {
+        EXPECT_THROW(makeOpenPBRPrimarySplitShaderRequest(options, {}, primary), std::invalid_argument);
+        EXPECT_THROW(makeOpenPBRPrimarySplitShaderRequest(options, query, primary), std::invalid_argument);
+        EXPECT_THROW(makeOpenPBRPrimarySplitShaderRequest(options, update, primary), std::invalid_argument);
+        EXPECT_THROW(makeOpenPBRPrimarySplitShaderRequest(options, multi, primary), std::invalid_argument);
+    }
+}
+
 TEST_F(ShaderRequestCompileTest, HZBSPDWarmupHitsRuntimeCache)
 {
     const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);

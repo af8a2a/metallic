@@ -342,6 +342,22 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
     return request;
 }
 
+// Opt-in kernel split. Keep the original Single source policy and specialization
+// ownership; only the entry point and the continuation's primary-hit source differ.
+inline ShaderRequest makeOpenPBRPrimarySplitShaderRequest(const SceneShaderOptions& options,
+    std::span<const SlangMacroDefine> extraDefines, bool primaryStage)
+{
+    if (extraDefines.size() != 1 || std::string_view(extraDefines[0].name) != "METALLIC_PT_SINGLE_SAMPLE" ||
+        std::string_view(extraDefines[0].value) != "1") {
+        throw std::invalid_argument("Primary guides split requires single-sample guides with cache off");
+    }
+    auto request = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, extraDefines);
+    request.module = primaryStage ? "Features/PathTracing/OpenPBRPrimaryGuides" : "Features/PathTracing/OpenPBRPathContinuation";
+    request.entry = primaryStage ? "openPbrPrimaryGuidesMain" : "openPbrPathContinuationMain";
+    if (!primaryStage) { request.defines.emplace_back("METALLIC_PT_SPLIT_PRIMARY", "1"); }
+    return request;
+}
+
 enum class SceneRayQueryProgram { RTXDI, MaterialVisualization };
 
 inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program)

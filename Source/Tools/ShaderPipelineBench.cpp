@@ -599,7 +599,15 @@ int run(const Options& options)
     if (backend != ComputePipelineBackend::Pipeline && options.mode != "serial") {
         throw std::invalid_argument("Experimental compute backends require --mode serial; VkPipelineCache concurrency modes use the pipeline backend");
     }
-    const auto catalog = metallic::tools::shaderWarmupRequests();
+    auto catalog = metallic::tools::shaderWarmupRequests();
+    // Manual experiment catalog only: normal application warmup does not pay
+    // for the opt-in split's additional modules.
+    const std::string splitRtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR;
+    const SceneShaderOptions splitOptions{.hasRTXCR = !splitRtxcrInclude.empty(), .rtxcrInclude = splitRtxcrInclude};
+    const SlangMacroDefine splitDefines[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    for (bool primaryStage : {true, false}) {
+        catalog.push_back(makeOpenPBRPrimarySplitShaderRequest(splitOptions, splitDefines, primaryStage));
+    }
     std::vector<size_t> selected;
     for (size_t i = 0; i < catalog.size(); ++i) {
         if (options.requestIndex && i != *options.requestIndex) { continue; }

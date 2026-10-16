@@ -41,6 +41,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicPathTraceQueryEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestPathTraceQueries.py")
     set_tests_properties(MetallicPathTraceQueryEvidenceTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
+    add_test(NAME MetallicPrimaryGuidesSplitTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestPrimaryGuidesSplit.py")
+    set_tests_properties(MetallicPrimaryGuidesSplitTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)
     add_test(NAME MetallicClosureSchedulingTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/TestClosureScheduling.py")
     set_tests_properties(MetallicClosureSchedulingTests PROPERTIES LABELS "tools;perf" TIMEOUT 30)

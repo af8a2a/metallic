@@ -25,6 +25,9 @@ import SceneSurfaceMaterial;
 import SurfaceLighting;
 import ScenePathTracing;
 import SHARC;
+#if METALLIC_PT_SPLIT_PRIMARY
+import OpenPBRPrimaryHit;
+#endif
 #if METALLIC_CUSTOM_MATERIALS
 import SlabClosure;
 #endif
@@ -105,7 +108,13 @@ public float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone
         bool found;
         if (!primaryQueryConsumed) {
             primaryQueryConsumed = true;
+#if METALLIC_PT_SPLIT_PRIMARY
+            // A known miss is consumed too. BLEND may return to depth zero,
+            // but subsequent queries must follow the updated continuation ray.
+            found = Metallic.OpenPBRPrimaryHit::loadOpenPbrPrimaryHit(pixel, push, hit);
+#else
             found = queryOpenPbrPrimaryStage(pixel, ray, rayCone, push, hit);
+#endif
         } else {
             found = traceClosest(ray, push, hit);
         }
