@@ -1522,6 +1522,24 @@ TEST(ShaderRequests, DeferredRuntimePrecisionUsesOnlyCoveredBuiltinShapes)
                     EXPECT_EQ(actual.defines, expected);
                     EXPECT_EQ(actual.capabilities, (std::vector<std::string>{"spvGroupNonUniformBallot"}));
                     EXPECT_TRUE(actual.searchPaths.empty());
+                    EXPECT_EQ(deferredPrecisionSpecializationValue(program, options, defines),
+                        runtimePrecision ? (half ? 1 : 0) : -1);
+                    const auto policy = sceneShaderSpecializationConstants(program, options, defines);
+                    if (!runtimePrecision) {
+                        EXPECT_TRUE(policy.empty());
+                    } else {
+                        const bool flat = program == SceneShaderProgram::Deferred;
+                        ASSERT_EQ(policy.size(), flat ? 1u : 3u);
+                        EXPECT_EQ(policy[flat ? 0u : 2u], (ShaderSpecializationConstant{
+                            flat ? 0u : 2u, ShaderSpecializationType::Bool32, half ? 1u : 0u}));
+                        EXPECT_EQ(policy.data(), sceneShaderSpecializationConstants(program, options, defines).data());
+                        auto opposite = options;
+                        opposite.deferredFloat16 = !half;
+                        const auto other = sceneShaderSpecializationConstants(program, opposite, defines);
+                        EXPECT_NE(policy.data(), other.data());
+                        EXPECT_NE(std::vector<ShaderSpecializationConstant>(policy.begin(), policy.end()),
+                            std::vector<ShaderSpecializationConstant>(other.begin(), other.end()));
+                    }
                 }
             }
         }
@@ -1570,6 +1588,8 @@ TEST(ShaderRequests, DeferredPrecisionOtherShapesPreserveOldStaticDefines)
                         {"METALLIC_DEFERRED_FP16", staticHalf ? "1" : "0"}};
                     expected.defines.insert(expected.defines.end(), list.begin(), list.end());
                     EXPECT_EQ(makeSceneShaderRequest(program, options, defines), expected);
+                    EXPECT_EQ(deferredPrecisionSpecializationValue(program, options, defines), -1);
+                    EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
                 }
             }
         }
@@ -1603,6 +1623,8 @@ TEST(ShaderRequests, DeferredExplicitStaticPrecisionPreservesCompleteOrderedOver
                     {"METALLIC_DEFERRED_FP16", half ? "1" : "0"}};
                 expected.defines.insert(expected.defines.end(), list.begin(), list.end());
                 EXPECT_EQ(actual, expected);
+                EXPECT_EQ(deferredPrecisionSpecializationValue(program, options, defines), -1);
+                EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
             }
         }
     }
@@ -1621,6 +1643,8 @@ TEST(ShaderRequests, DeferredRuntimePrecisionMacroIsFactoryOwned)
         std::vector<SlangMacroDefine> defines;
         for (const auto& [name, value] : list) { defines.push_back({name.c_str(), value.c_str()}); }
         for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+            EXPECT_EQ(deferredPrecisionSpecializationValue(program, options, defines), -1);
+            EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
             EXPECT_THROW(makeSceneShaderRequest(program, options, defines), std::invalid_argument);
         }
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::RealtimeLighting}) {
@@ -1675,6 +1699,7 @@ TEST(ShaderRequests, DeferredClassSpecializationSharesSourceAndKeepsDistinctNati
     const uint32_t expectedOpaque[] = {1u, 1u, 1u, 0u};
     std::vector<ShaderRequest> sources;
     std::vector<std::vector<ShaderSpecializationConstant>> policies;
+    std::vector<std::vector<ShaderSpecializationConstant>> precisionPolicies;
     for (uint32_t materialClass = 1; materialClass <= 4; ++materialClass) {
         const auto value = std::to_string(materialClass);
         const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
@@ -1683,13 +1708,14 @@ TEST(ShaderRequests, DeferredClassSpecializationSharesSourceAndKeepsDistinctNati
         const auto policy = sceneShaderSpecializationConstants(SceneShaderProgram::DeferredBinned, base, {&define, 1});
         policies.emplace_back(policy.begin(), policy.end());
         if (enabled) {
-            ASSERT_EQ(policy.size(), 2u);
+            ASSERT_EQ(policy.size(), 3u);
             EXPECT_EQ(policy[0].id, 0u);
             EXPECT_EQ(policy[0].type, ShaderSpecializationType::Int32);
             EXPECT_EQ(policy[0].bits, expectedMetalness[materialClass - 1]);
             EXPECT_EQ(policy[1].id, 1u);
             EXPECT_EQ(policy[1].type, ShaderSpecializationType::Bool32);
             EXPECT_EQ(policy[1].bits, expectedOpaque[materialClass - 1]);
+            EXPECT_EQ(policy[2], (ShaderSpecializationConstant{2, ShaderSpecializationType::Bool32, 1}));
         } else {
             EXPECT_TRUE(policy.empty());
         }
@@ -1701,10 +1727,15 @@ TEST(ShaderRequests, DeferredClassSpecializationSharesSourceAndKeepsDistinctNati
                     options.globalView = view;
                     options.upscalerGuides = guides;
                     const auto other = sceneShaderSpecializationConstants(SceneShaderProgram::DeferredBinned, options, {&define, 1});
-                    EXPECT_EQ(std::vector<ShaderSpecializationConstant>(other.begin(), other.end()), policies.back());
+                    auto expected = policies.back();
+                    if (enabled) { expected[2].bits = half ? 1u : 0u; }
+                    EXPECT_EQ(std::vector<ShaderSpecializationConstant>(other.begin(), other.end()), expected);
                     if (enabled) {
                         EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1}), sources.back());
-                        EXPECT_EQ(other.data(), policy.data());
+                        EXPECT_EQ(other.data(), sceneShaderSpecializationConstants(
+                            SceneShaderProgram::DeferredBinned, options, {&define, 1}).data());
+                        EXPECT_EQ(other.data() == policy.data(), half);
+                        if (!view && !guides) { precisionPolicies.emplace_back(other.begin(), other.end()); }
                     }
                 }
             }
@@ -1714,6 +1745,14 @@ TEST(ShaderRequests, DeferredClassSpecializationSharesSourceAndKeepsDistinctNati
         for (size_t j = i + 1; j < sources.size(); ++j) {
             EXPECT_EQ(sources[i] == sources[j], enabled);
             if (enabled) { EXPECT_NE(policies[i], policies[j]); }
+        }
+    }
+    if (enabled) {
+        ASSERT_EQ(precisionPolicies.size(), 8u);
+        for (size_t i = 0; i < precisionPolicies.size(); ++i) {
+            for (size_t j = i + 1; j < precisionPolicies.size(); ++j) {
+                EXPECT_NE(precisionPolicies[i], precisionPolicies[j]);
+            }
         }
     }
 }
@@ -1734,7 +1773,14 @@ TEST(ShaderRequests, DeferredClassSpecializationPreservesUncoveredSourceShapes)
                 SceneShaderProgram::PathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
             for (bool custom : {false, true}) {
                 const SceneShaderOptions options{.customMaterials = custom, .materialInclude = custom ? "C:/CustomMaterials" : ""};
-                EXPECT_TRUE(sceneShaderSpecializationConstants(program, options, defines).empty());
+                const auto policy = sceneShaderSpecializationConstants(program, options, defines);
+                if (program == SceneShaderProgram::Deferred && !custom && list.empty() &&
+                    sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg) {
+                    ASSERT_EQ(policy.size(), 1u);
+                    EXPECT_EQ(policy[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 1}));
+                } else {
+                    EXPECT_TRUE(policy.empty());
+                }
                 const auto request = makeSceneShaderRequest(program, options, defines);
                 EXPECT_EQ(std::count_if(request.defines.begin(), request.defines.end(), [](const auto& d) {
                     return d.first == "METALLIC_DEFERRED_CLASS_SPECIALIZATION";
@@ -1754,6 +1800,8 @@ TEST(ShaderRequests, DeferredClassSpecializationMarkerIsFactoryOwned)
     for (const char* value : {"0", "1", "", "2"}) {
         const SlangMacroDefine marker{"METALLIC_DEFERRED_CLASS_SPECIALIZATION", value};
         for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+            EXPECT_EQ(deferredPrecisionSpecializationValue(program, {}, {&marker, 1}), -1);
+            EXPECT_TRUE(sceneShaderSpecializationConstants(program, {}, {&marker, 1}).empty());
             EXPECT_THROW(makeSceneShaderRequest(program, {}, {&marker, 1}), std::invalid_argument);
         }
     }

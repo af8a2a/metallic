@@ -141,6 +141,18 @@ inline uint32_t deferredSpecializedMaterialClass(SceneShaderProgram program, con
         ? static_cast<uint32_t>(value[0] - '0') : 0;
 }
 
+// -1 keeps the original static request; 0/1 select the closed native precision policy.
+inline int32_t deferredPrecisionSpecializationValue(SceneShaderProgram program, const SceneShaderOptions& options,
+    std::span<const SlangMacroDefine> extraDefines)
+{
+    if (options.customMaterials || sceneWorkingColorSpace() != SceneWorkingColorSpace::ACEScg) { return -1; }
+    if ((program == SceneShaderProgram::Deferred && extraDefines.empty()) ||
+        deferredSpecializedMaterialClass(program, options, extraDefines) != 0u) {
+        return options.deferredFloat16 ? 1 : 0;
+    }
+    return -1;
+}
+
 // The source request deliberately excludes pipeline values. Each native program
 // owns the policy tuple separately; the arrays outlive borrowed creation spans.
 // IDs match the closed original-SDK auto-ID source gate; native creation validates them.
@@ -149,7 +161,7 @@ inline std::span<const ShaderSpecializationConstant> sceneShaderSpecializationCo
     std::span<const SlangMacroDefine> extraDefines = {})
 {
     // Bound to the exact four-way source module: cache Bool0, guide Bool1.
-    // Other modules, including Deferred's Int32/Bool32 pair, keep their own IDs.
+    // Other modules, including Deferred's precision/class tuples, keep their own IDs.
     static constexpr ShaderSpecializationConstant cachePolicies[4][2] = {
         {{0, ShaderSpecializationType::Bool32, 0}, {1, ShaderSpecializationType::Bool32, 0}},
         {{0, ShaderSpecializationType::Bool32, 0}, {1, ShaderSpecializationType::Bool32, 1}},
@@ -179,14 +191,27 @@ inline std::span<const ShaderSpecializationConstant> sceneShaderSpecializationCo
         const uint32_t policy = program == SceneShaderProgram::PathTraceGuides ? 2u : uint32_t(standardCacheQuery);
         return std::span<const ShaderSpecializationConstant>(standardCacheGuidePolicies[policy]);
     }
-    static constexpr ShaderSpecializationConstant policies[4][2] = {
-        {{0, ShaderSpecializationType::Int32, 0}, {1, ShaderSpecializationType::Bool32, 1}},
-        {{0, ShaderSpecializationType::Int32, 1}, {1, ShaderSpecializationType::Bool32, 1}},
-        {{0, ShaderSpecializationType::Int32, 0xffffffffu}, {1, ShaderSpecializationType::Bool32, 1}},
-        {{0, ShaderSpecializationType::Int32, 0xffffffffu}, {1, ShaderSpecializationType::Bool32, 0}},
+    const int32_t precision = deferredPrecisionSpecializationValue(program, options, extraDefines);
+    if (precision < 0) { return {}; }
+    // Observed flat source: precision Bool0. Always supply the selected value.
+    static constexpr ShaderSpecializationConstant precisionPolicies[2] = {
+        {0, ShaderSpecializationType::Bool32, 0}, {0, ShaderSpecializationType::Bool32, 1},
+    };
+    if (program == SceneShaderProgram::Deferred) { return {&precisionPolicies[precision], 1}; }
+    // Observed binned source: fixed metalness Int0, opaque Bool1, precision Bool2.
+    // Each of the eight complete tuples owns storage for the borrowed span.
+    static constexpr ShaderSpecializationConstant policies[8][3] = {
+        {{0, ShaderSpecializationType::Int32, 0}, {1, ShaderSpecializationType::Bool32, 1}, {2, ShaderSpecializationType::Bool32, 0}},
+        {{0, ShaderSpecializationType::Int32, 0}, {1, ShaderSpecializationType::Bool32, 1}, {2, ShaderSpecializationType::Bool32, 1}},
+        {{0, ShaderSpecializationType::Int32, 1}, {1, ShaderSpecializationType::Bool32, 1}, {2, ShaderSpecializationType::Bool32, 0}},
+        {{0, ShaderSpecializationType::Int32, 1}, {1, ShaderSpecializationType::Bool32, 1}, {2, ShaderSpecializationType::Bool32, 1}},
+        {{0, ShaderSpecializationType::Int32, 0xffffffffu}, {1, ShaderSpecializationType::Bool32, 1}, {2, ShaderSpecializationType::Bool32, 0}},
+        {{0, ShaderSpecializationType::Int32, 0xffffffffu}, {1, ShaderSpecializationType::Bool32, 1}, {2, ShaderSpecializationType::Bool32, 1}},
+        {{0, ShaderSpecializationType::Int32, 0xffffffffu}, {1, ShaderSpecializationType::Bool32, 0}, {2, ShaderSpecializationType::Bool32, 0}},
+        {{0, ShaderSpecializationType::Int32, 0xffffffffu}, {1, ShaderSpecializationType::Bool32, 0}, {2, ShaderSpecializationType::Bool32, 1}},
     };
     const uint32_t materialClass = deferredSpecializedMaterialClass(program, options, extraDefines);
-    return materialClass ? std::span<const ShaderSpecializationConstant>(policies[materialClass - 1])
+    return materialClass ? std::span<const ShaderSpecializationConstant>(policies[(materialClass - 1) * 2u + uint32_t(precision)])
         : std::span<const ShaderSpecializationConstant>{};
 }
 
@@ -274,13 +299,7 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
         }
         // Only the closed builtin shapes are independent of the old precision macro.
         // Arbitrary values/custom sources may reference METALLIC_DEFERRED_FP16.
-        const bool builtinRuntimePrecision = !options.customMaterials &&
-            ((program == SceneShaderProgram::Deferred && extraDefines.empty()) ||
-                (program == SceneShaderProgram::DeferredBinned && extraDefines.size() == 1 &&
-                    std::string_view(extraDefines[0].name) == "MATERIAL_CLASS" &&
-                    (std::string_view(extraDefines[0].value) == "1" || std::string_view(extraDefines[0].value) == "2" ||
-                        std::string_view(extraDefines[0].value) == "3" || std::string_view(extraDefines[0].value) == "4")));
-        if (builtinRuntimePrecision && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg) {
+        if (deferredPrecisionSpecializationValue(program, options, extraDefines) >= 0) {
             request.defines.emplace_back("METALLIC_DEFERRED_RUNTIME_PRECISION", "1");
         } else {
             bool deferredFloat16 = options.deferredFloat16;

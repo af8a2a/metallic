@@ -74,11 +74,21 @@ Inspector 也不再显示它们。仓库内图资产已迁移。外部旧图应�
 - `OpenPBRSurface.slang`：共享 OpenPBR LUT 适配、材质求值与调试视图。
   两个表面文件不包含 ray-query 积分器；参考路径显式包含自己的追踪实现。
 
-`halfPrecision` 默认 true。使用 native FP16 保存和计算有界的金属度、透射权重、
-IBL 镜面能量权重、漫反射与透射颜色系数。位置、深度、重心坐标、UV/LOD、TBN、
-IOR、折射、GGX 分母和直接光 BSDF 保留 FP32；HDR 采样、乘光源和累加也保留 FP32。
+`halfPrecision` 默认 true，选择有界材质权重的半精度策略；关闭时使用相同算法的
+FP32 权重，供精度回归对照。位置、深度、重心坐标、UV/LOD、TBN、IOR、折射、
+GGX 分母和直接光 BSDF 保留 FP32；HDR 采样、乘光源和累加也保留 FP32。
 因此高亮不会因为中间 HDR radiance 被压到 FP16 而溢出。
-关闭 `halfPrecision` 使用相同算法的 FP32 权重，供精度回归对照。
+
+内置 ACEScg 的 flat 和四个非背景 binned 类共享精度源码，保留现有 float 运算及
+pack/unpack 舍入，由 native Bool specialization 显式选择 `halfPrecision`。
+flat 使用精度 Bool ID0；binned 保留金属度 Int32 ID0、不透明 Bool ID1，并增加
+精度 Bool ID2。CPU 分别提供两个 flat 值和八组完整的 class/precision tuple，
+使两种精度共享源码请求而拥有不同的 native pipeline 身份。自定义材质、Rec709、
+背景类和显式精度覆盖继续使用各自的静态请求契约。
+这项重构已通过同源码六目标构建和 122 项 CPU 测试。完整冷缓存 CLI 保留
+132 个源码请求和 178 项逻辑策略，O1、默认 12 workers 下端到端实测 12.964 秒
+（warmup 内部 12.610 秒），尚未达到 10 秒目标；GPU 输出/性能仍待验收。
+下方历史 FP16 算术与性能记录不作为这版共享模块的验收结果。
 
 ## 分箱、资源与场景契约
 

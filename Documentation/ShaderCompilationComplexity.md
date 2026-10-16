@@ -1,5 +1,17 @@
 # Shader compilation complexity (2026-10-16)
 
+The latest worktree follow-up synchronizes Deferred precision selection as a
+native Bool specialization, together with its request factory and CPU tests.
+The three files are byte-identical to the isolated source used by the successful
+six-target native build and 122 focused CPU cases. The actual complete list
+retains 132 compiled requests and all 178 logical policies. One complete
+fresh-cache CLI observation takes 12.964 seconds at O1 with default12 workers,
+zero cache hits or failures, and 132 passing fresh whole-module validators.
+This exceeds the ten-second goal. GPU output/performance acceptance remains
+pending; the thirteen-case original-baseline/candidate/baseline comparison is
+in progress. The 12.363-second complete observation below belongs to the
+preceding `8d9e1fa4` source, not this new precision change.
+
 The current source investigation removes repeated whole-scene packet expansion
 from hot geometry and texture accessors, reusing their existing field reads.
 Earlier permutation candidates share OpenPBR Off/Query and guide-policy
@@ -19,10 +31,13 @@ with zero cache hits or failures. All 132 fresh whole-module validators pass;
 130 full payloads equal the earlier fused132 outputs, and the two UPDATE
 outputs equal their respective closed environment-field source candidates.
 This observation exceeds the time goal. Background work remains running and
-the OS file cache is not flushed. No current-worktree GPU comparison or stable
-under-ten-second result is claimed; performance acceptance remains held on the
-regressions below. No commit has been created. Failed experiments, private GPU
-fixture overlays and captures are excluded.
+the OS file cache is not flushed. The narrow counterfactual GPU comparisons
+below do not qualify the complete worktree stack or stable under-ten-second
+performance; acceptance remains held on the
+regressions below. The preceding synchronized refactor is recorded in commit
+`8d9e1fa4` (`refactor shader`); the precision follow-up is a working-tree change.
+Failed experiments, private GPU fixture overlays and
+captures are excluded.
 The latest private combination completes its fixed three fresh-cache CLI
 observations in 9.342, 9.436 and 9.062 seconds for all 132 requests and 178
 logical policies. The cold-time gate passes, but the completed twelve-case
@@ -61,6 +76,118 @@ byte for byte in each of the three pairs, and the contact sheet was inspected.
 This observation does not support static class recovery as a fix for the main
 GPU regression. The class-static135 counterfactual is excluded from the worktree
 sync; the shared class policies remain part of the unaccepted fused132 stack.
+The separate precision counterfactual restores static FP0/FP1 while retaining
+material-class sharing. Its private editor and five affected targets build, and
+the same 122 focused CPU cases pass. The actual complete list contains 134
+requests and retains all 178 logical policies. One fresh shader-cache CLI
+observation takes 15.119 seconds end to end (14.688 seconds inside warmup),
+with 87.594 seconds of aggregate process CPU, O1, disabled debug and default12
+workers. There are zero cache hits or failures. All 134 fresh whole-module
+validators pass; all 130 retained complete descriptors and SPIR-V payloads
+match the current canonical parent, and the four new static-precision modules
+are validated separately. This observation exceeds the time goal and is not a
+paired cold-time comparison. Background work remains running and the OS file
+cache is not flushed.
+Its direct-source four-case A/C/A GPU comparison is now closed. Each process
+retains all 512 timed frames per case. The Deferred node medians are:
+
+| Precision counterfactual scope | A0 ms | C0 ms | A1 ms | C0 versus A0 | C0 versus A1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Binned local-half | 0.901856 | 0.813376 | 0.899584 | -9.811% | -9.583% |
+| Binned global-float | 0.865280 | 0.817104 | 0.870992 | -5.568% | -6.187% |
+| Flat local-half | 0.393504 | 0.379616 | 0.394592 | -3.529% | -3.795% |
+
+The corresponding local/global shading sections fall by 10.70-10.96 and
+6.21-6.92 percent; material classification stays within 0.08 percent of both
+controls. Flat-half is affected by this change and is not an unchanged control.
+The fourth case checks visibility of all four material IDs and is not a shading
+performance measurement. All fourteen complete HDR/guide/visibility captures
+match byte for byte in every A/A and A/C pair; the contact sheet was inspected.
+All 160 owned processes, including 154 fresh whole-module validators, close,
+and each phase restores its original shader-cache state. Same-name section
+records are summed within each frame; inclusive sections can overlap and are
+not added to node times. These correlated frames from one candidate process
+support runtime precision as one contributor to the regression. They do not
+establish recovery of the complete earlier stack or full-scene GPU acceptance.
+The 15.119-second static-precision counterfactual remains private and is excluded
+from the synchronized source.
+The next source-complexity investigation follows the mutable OpenPBR material
+through the generic evaluation wrappers. After evaluation, path transport reads
+only three floats from material fields totaling 656 logical scalar bytes. A
+private four-module prototype carries only those three floats (12 logical scalar
+bytes) and preserves the parameter-load, texture, random-number and IOR-clamp
+order. Its actual builtin UPDATE125 O1 A/C/C/A source screen is now closed:
+process CPU is 5.047/5.000/5.141/4.891 seconds, with means 4.969/5.070 seconds
+(candidate/reference 1.02044). Instructions change from 170656 to 170544;
+this does not show a useful compilation-cost reduction. Both complete controls
+reproduce the actual current payload, and both candidates agree byte for byte.
+Four fresh whole-module validations and the staged module audit pass, preserving
+complete interfaces, capabilities and empty specialization lists. All nine
+directly owned process records close; inputs and the four-owner source boundary
+remain exact. The candidate is held without further requests, native/GPU or
+full-warmup expansion, and is not included in the synchronized refactor.
+One further source candidate changes only UPDATE `sceneMaterials()` to the
+existing typed field getter for its four-byte handle. It preserves the complete
+packet guards, CPU-checked offset, resolver and 720-byte material-record load.
+Its UPDATE125 O1 A/C/C/A CPU observations are 6.656/5.766/5.578/6.172 seconds;
+means are 6.414/5.672 seconds, an 11.57 percent reduction with 7.28 percent
+baseline drift. A reverse C/A/A/C repeat observes 6.250/5.875/5.750/5.375 seconds:
+both arm means are 5.8125 seconds. The initial benefit is not reproduced.
+All four complete controls match the actual current payload, and all four
+candidates share the same complete payload. Instructions change from 170656 to
+170518, with one function and no calls. Eight fresh whole-module validations
+and two staged ownership audits pass, retaining complete interfaces,
+capabilities and empty specialization lists; all eighteen directly owned
+process records close. This single-return candidate is also held, with no
+native/GPU/full-warmup expansion or adoption. Neither source screen changes the
+12.363-second complete-warmup observation above.
+An independent precision-policy probe retains the current float/pack-unpack
+math and replaces only its push-bit selector with a default-false native Bool
+specialization constant. The actual current flat126 and binned128 descriptors
+each compile at O1 with the original SDK; both fresh whole-module validators
+and the staged ownership audit pass. Complete parent resource interfaces,
+literal local sizes and capabilities remain exact, with no Float16, Int16 or
+variable-pointer capability or native 16-bit scalar type. Actual declarations
+show precision Bool ID0 for flat; binned retains fixed-metalness Int32 ID0 and
+opaque-primary Bool ID1 and adds precision Bool ID2. Both emitted modules retain
+the two pack/unpack pairs. These are observed IDs, not inferred ordering.
+Independent IdRef, local store/load and entry-CFG review confirms their roles:
+the false precision edge cannot reach either pack island, while the true edge
+can reach both; opaque-primary controls its separate transmission-zeroing path.
+This offline reachability check does not establish native driver folding.
+All five directly owned source-probe process records close. The synchronized
+request factory supplies every eligible precision value explicitly, sharing
+the original eligibility predicate with native policy selection. It owns two
+flat values and eight complete binned three-value tuples in static storage;
+static/custom/background fallbacks retain their existing contracts. The 46
+existing request-test names are retained with updated native policy assertions.
+The editor, RHI tests, request tests, startup tests, native-cache tests and
+shader compiler build successfully from an isolated current-source snapshot.
+All 122 focused CPU cases pass: 46 request cases in each of ACEScg and Rec709,
+14 startup, 13 native-cache and three specialization cases, with no skips.
+The three RHI cases initialize devices but perform no scene dispatch. All nine
+owned native-build/test Jobs close and the source/SDK/dependency closure checks
+pass before synchronization. The shader, factory and test bytes copied into
+the worktree exactly match that tested snapshot. These checks do not qualify
+actual Deferred pipeline delivery, driver folding or GPU output/performance.
+The subsequent actual complete list retains 132 compiled requests and all 178
+logical policies. The complete fresh shader-cache CLI takes 12.963756 seconds
+end to end (12.610 seconds inside warmup), with 79.250 seconds of aggregate
+process CPU, O1, disabled debug and default12 workers. There are zero cache
+hits or failures; all 132 fresh whole-module validators pass. The 130 unchanged
+complete SPIR-V payloads match the parent, and the two precision payloads match
+their closed source probes. All 133 owned process records close and the
+compute lock is released. Background work remains running and the OS file
+cache is not flushed. This single observation exceeds the time goal and is
+not a paired compilation-speed comparison. GPU validation must cover both precision
+values for flat and binned Deferred, including all eight class/precision tuples,
+and compare against fresh controls from the original pre-fusion baseline.
+A separate private Fiber prototype targets repeated direct-light BSDF expansion:
+it places celestial, punctual and environment evaluation in a stage loop with
+one authored evaluation site, preserving the existing sampling and shadow order.
+Its UPDATE125 A/C/C/A source screen is prepared but has not run. Retained
+evaluator sharing, compilation savings and Fiber rendering/GPU behavior remain
+unverified; this prototype is excluded from the synchronized production source.
 An isolated two-return source screen now changes only UPDATE environment-map
 and environment-PDF access to their existing typed field getters. Standard
 UPDATE A/C/C/A compiler CPU times are 3.438/3.078/3.078/3.328 seconds: mean CPU

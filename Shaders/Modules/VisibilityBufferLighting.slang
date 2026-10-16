@@ -52,6 +52,9 @@ public typedef float DeferredInput;
 #endif
 
 #if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+[SpecializationConstant]
+public const bool kDeferredUseFP16Precision = false;
+
 float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
 {
     if (useFP16Precision) {
@@ -187,7 +190,7 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
         DeferredColor specularWeight = DeferredColor(saturate(approxSpecularIntegralGGX(f0,
             max(roughness * roughness, 0.0001), saturate(dot(normal, viewDirection)))));
 #if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
-        bool useFP16Precision = (push.deferredSettings & kScenePathTraceUseFP16Precision) != 0u;
+        bool useFP16Precision = kDeferredUseFP16Precision;
         DeferredWeight diffuseWeight = deferredPrecisionRoundTrip(DeferredWeight(saturate(summary.diffuseWeight)), useFP16Precision) *
             (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
         diffuseWeight = deferredPrecisionRoundTrip(diffuseWeight, useFP16Precision);
