@@ -11,6 +11,7 @@ enum class PipelineRecipeType : uint8_t { Compute, Graphics };
 
 struct PipelineRecipeShader {
     std::vector<uint32_t> spirv;
+    std::vector<ShaderSpecializationConstant> specializationConstants;
     std::string moduleName;
     std::string sourceEntryPoint;
     std::string debugMode;
@@ -18,6 +19,11 @@ struct PipelineRecipeShader {
     std::string entryPoint = "main";
     uint64_t inputSpirvHash = 0;
     std::string optimizationLevel;
+    std::string spirvPostprocess = "none";
+    std::string spirvPostprocessToolVersion;
+    // Identical bytecode can have several source producers. Concrete metadata
+    // remains one candidate and must not be treated as unique provenance.
+    bool sourceIdentityAmbiguous = false;
 };
 
 // Exported device configuration allows replay to preserve feature-dependent

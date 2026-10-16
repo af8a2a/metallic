@@ -162,6 +162,9 @@ public void writeOpenPbrPathColor(uint2 pixel, float3 color, ScenePathTracePush 
 
 public void dispatchOpenPbrRayQueryPathTraceGuides(uint3 dispatchThreadId)
 {
+#if METALLIC_PT_GUIDE_SPECIALIZATION
+    dispatchOpenPbrRayQueryPathTracePolicy(dispatchThreadId, getConstants<ScenePathTracePush>(), kOpenPBRGuideExportEnabled);
+#else
 #if SHARC_UPDATE
     // Sparse cache training never touches the full-resolution RR inputs.
     dispatchOpenPbrRayQueryPathTrace(dispatchThreadId);
@@ -214,6 +217,7 @@ public void dispatchOpenPbrRayQueryPathTraceGuides(uint3 dispatchThreadId)
         let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
         resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(firstSampleSpecularHitDistance, 0.0);
     }
+#endif
 #endif
 #endif
 }

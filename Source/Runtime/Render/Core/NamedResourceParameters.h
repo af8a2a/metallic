@@ -242,29 +242,77 @@ DR_SCENE_OFFSET(kSceneSceneOffset, scene, 0);
 DR_SCENE_OFFSET(kSceneAccumulationCurrentOffset, accumulationCurrent, 8);
 DR_SCENE_OFFSET(kSceneAccumulationPreviousOffset, accumulationPrevious, 12);
 DR_SCENE_OFFSET(kSceneCacheParamsOffset, cacheParams, 20);
+DR_SCENE_OFFSET(kSceneEnvironmentIrradianceSHOffset, environmentIrradianceSH, 28);
 DR_SCENE_OFFSET(kSceneEnvironmentMapOffset, environmentMap, 32);
 DR_SCENE_OFFSET(kSceneEnvironmentPdfOffset, environmentPdf, 36);
 DR_SCENE_OFFSET(kSceneGuidesOffset, guideAlbedo, 40);
+DR_SCENE_OFFSET(kSceneLightGridCandidatesOffset, lightGridCandidates, 68);
+DR_SCENE_OFFSET(kSceneLightGridCellsOffset, lightGridCells, 72);
+DR_SCENE_OFFSET(kSceneLightGridIndicesOffset, lightGridIndices, 76);
+DR_SCENE_OFFSET(kSceneLightGridLightsOffset, lightGridLights, 80);
+DR_SCENE_OFFSET(kSceneLightGridParamsOffset, lightGridParams, 84);
 DR_SCENE_OFFSET(kSceneLightsOffset, lights, 88);
 DR_SCENE_OFFSET(kSceneLightsPdfOffset, lightsPdf, 92);
+DR_SCENE_OFFSET(kSceneMaterialBinsOffset, materialBins, 96);
 DR_SCENE_OFFSET(kSceneMaterialSamplerOffset, materialSampler, 108);
 DR_SCENE_OFFSET(kSceneMaterialTexturesOffset, materialTextures, 112);
+DR_SCENE_OFFSET(kSceneMaterialTilesOffset, materialTiles, 124);
 DR_SCENE_OFFSET(kSceneMaterialValuesOffset, materialValues, 136);
 DR_SCENE_OFFSET(kSceneMaterialsOffset, materials, 140);
 DR_SCENE_OFFSET(kSceneOpenPBRLUTsOffset, openPBRLut2D, 172);
+DR_SCENE_OFFSET(kScenePreviousEnvironmentIrradianceSHOffset, previousEnvironmentIrradianceSH, 216);
 DR_SCENE_OFFSET(kSceneRayStreamChangesOffset, rayStreamChanges, 220);
+DR_SCENE_OFFSET(kSceneRasterDomainOffset, rasterDomain, 228);
+DR_SCENE_OFFSET(kSceneRasterFrameInfoOffset, rasterFrameInfo, 232);
+DR_SCENE_OFFSET(kSceneRasterInstancesOffset, rasterInstances, 236);
+DR_SCENE_OFFSET(kSceneRasterMaterialsOffset, rasterMaterials, 240);
 DR_SCENE_OFFSET(kSceneRayStreamOffset, rayStreamHeader, 244);
 DR_SCENE_OFFSET(kSceneRayStreamHeaderOffset, rayStreamHeader, 244);
 DR_SCENE_OFFSET(kSceneRayStreamInstancesOffset, rayStreamInstances, 248);
 DR_SCENE_OFFSET(kSceneRayStreamPageTableOffset, rayStreamPageTable, 252);
 DR_SCENE_OFFSET(kSceneRayStreamPagesOffset, rayStreamPages, 256);
 DR_SCENE_OFFSET(kSceneReGIRGridOffset, regirGrid, 260);
+DR_SCENE_OFFSET(kSceneShadowParametersOffset, shadowParameters, 288);
+DR_SCENE_OFFSET(kSceneShadowVisibilityOffset, shadowVisibility, 296);
 DR_SCENE_OFFSET(kSceneSharcOffset, sharcAccumulation, 300);
+DR_SCENE_OFFSET(kSceneStreamGroupsOffset, streamGroups, 312);
 DR_SCENE_OFFSET(kSceneStreamPageCountOffset, streamPageCount, 316);
+DR_SCENE_OFFSET(kSceneStreamPageTableOffset, streamPageTable, 320);
+DR_SCENE_OFFSET(kSceneStreamPagesOffset, streamPages, 324);
+DR_SCENE_OFFSET(kSceneStreamRecordsOffset, streamRecords, 328);
 DR_SCENE_OFFSET(kSceneTextureFeedbackOffset, textureFeedback, 332);
+DR_SCENE_OFFSET(kSceneUpscalerDepthOffset, upscalerDepth, 336);
+DR_SCENE_OFFSET(kSceneUpscalerMotionOffset, upscalerMotion, 340);
+DR_SCENE_OFFSET(kSceneViewOffset, view, 344);
+DR_SCENE_OFFSET(kSceneVisibilityOffset, visibility, 348);
+DR_SCENE_OFFSET(kSceneVisibilityDepthOffset, visibilityDepth, 352);
 DR_SCENE_OFFSET(kSceneEnvironmentOffset, environment, 356);
 DR_SCENE_OFFSET(kSceneOutputOffset, output, 200);
 #undef DR_SCENE_OFFSET
+
+// Experimental primary-guide split extends the packet without changing the
+// scene ABI used by existing pipelines.
+DR_PUBLIC struct ScenePrimarySplitResourceParameters
+{
+    DR_PUBLIC SceneResourceParameters scene;
+    DR_PUBLIC DR_BUFFER primaryHits;
+#ifdef __cplusplus
+    uint32_t reserved = 0;
+#else
+    public uint reserved;
+#endif
+};
+#ifdef __cplusplus
+inline constexpr uint32_t kOpenPBRPrimaryHitStride = 100;
+inline constexpr uint32_t kScenePrimaryHitsOffset = 384;
+static_assert(offsetof(ScenePrimarySplitResourceParameters, scene) == 0);
+static_assert(offsetof(ScenePrimarySplitResourceParameters, primaryHits) == kScenePrimaryHitsOffset);
+static_assert(offsetof(ScenePrimarySplitResourceParameters, reserved) == 388);
+static_assert(sizeof(ScenePrimarySplitResourceParameters) == 392);
+#else
+public static const uint kOpenPBRPrimaryHitStride = 100;
+public static const uint kScenePrimaryHitsOffset = 384;
+#endif
 
 DR_PUBLIC struct OutputImageResourceParameters
 {

@@ -10,6 +10,9 @@ dispatch readback comparisons also require numpy.
 For exact SPIR-V CFG/callgraph analysis, opt-in Driver executable statistics,
 ISA availability checks and the measured shadow-only noinline feasibility
 experiment, see [Shader compilation complexity](ShaderCompilationComplexity.md).
+For the optional two-pass SPIR-V cleanup, including Slang's integrated
+downstream path, its cache/metrics contract and current rendering qualification,
+see [Dead-branch cleanup](ShaderDeadBranchCleanup.md).
 
 ## Native compilation
 
@@ -18,16 +21,19 @@ metadata rather than relying on a permanent index.
 
 ```powershell
 $bench = '.\build-release\Source\MetallicShaderPipelineBench.exe'
-& $bench --list --filter OpenPBRRayQueryPathTraceGuides
-# Current catalog: 146 = Guides with SHARC off; 149 = Update; 152 = Query.
+$guidesRequests = @(& $bench --list --filter OpenPBRRayQueryPathTraceGuides |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { -not ($_.defines | Where-Object { $_[0] -in 'SHARC_UPDATE', 'SHARC_QUERY' }) })
+if ($guidesRequests.Count -ne 1) { throw 'Select one SHARC-off Guides request from the current catalog.' }
+$guidesRequestIndex = $guidesRequests[0].index
 python -B Tools/Perf/RunComputePipelineExperiments.py compile `
-  --executable $bench --request-index 146 `
+  --executable $bench --request-index $guidesRequestIndex `
   --optimizations O1 O0 O2 --backends pipeline `
   --driver-optimization both --pairs 3 `
   --output-dir build-release/bench-compute-optimization
 ```
 
-Each Slang optimization level first fills a private shader cache. Measured
+Each Slang optimization level and postprocess mode first fills a private shader cache. Measured
 processes must load those exact SPIR-V bytes; Slang compilation is excluded from
 native creation. Different levels may produce different bytecode. The native
 disable-optimization pair must retain the same input and final device SPIR-V,
@@ -66,7 +72,7 @@ identities. A fallback to source is an experiment failure, with logs preserved.
 
 ```powershell
 python -B Tools/Perf/RunComputePipelineExperiments.py compile `
-  --executable $bench --request-index 146 --optimizations O1 `
+  --executable $bench --request-index $guidesRequestIndex --optimizations O1 `
   --backends shader-object pipeline-binary --driver-optimization normal `
   --native-binary-cache --pairs 3 `
   --output-dir build-release/bench-compute-native-binary
@@ -85,7 +91,7 @@ must remain unchanged. Native object reuse and source fallback fail the run.
 
 ```powershell
 python -B Tools/Perf/RunComputePipelineExperiments.py compile `
-  --executable $bench --request-index 146 --optimizations O1 `
+  --executable $bench --request-index $guidesRequestIndex --optimizations O1 `
   --backends pipeline shader-object pipeline-binary --driver-optimization normal `
   --application-pipeline-cache --native-binary-cache --pairs 3 `
   --output-dir build-release/bench-compute-load-paths
@@ -158,13 +164,143 @@ exploratory; use a current Release test build, the original 512 x 512 workload,
 optimization. Run validation as a separate correctness experiment, using
 `--validation`, so its cost does not enter ordinary timings.
 
-The runtime controls are `METALLIC_SLANG_OPTIMIZATION`,
+The runtime controls are `METALLIC_SLANG_OPTIMIZATION`, `METALLIC_SPIRV_POSTPROCESS`,
 `METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION`, `METALLIC_VK_COMPUTE_BACKEND`,
 `METALLIC_VK_NATIVE_BINARY_CACHE_DIR` and `METALLIC_VK_PIPELINE_BINARY`.
 The runner sets them before process launch and retains them in evidence. It
 clears inherited `METALLIC_*` controls and rejects injected Vulkan layers for
 ordinary measurements. The production default remains Slang O1 with normal
 pipeline optimization. Creation timing alone does not justify changing it.
+
+## Opt-in SPIR-V cleanup comparison
+
+Use the same current compute request, O1, mapped descriptors and normal Driver
+optimization to compare `none`, `dead-branches` and `slang-dead-branches`.
+Replace `N` with the current Guides request selected from `--list`; use a fresh
+output directory. Both cleanup modes are opt-in and require the optional
+installed SPIRV-Tools dependency. Requested cleanup fails before cache lookup
+when it is unavailable or the request uses native descriptor heaps.
+
+`dead-branches` runs an additional in-process optimizer after target finalization,
+with input/output validation. `slang-dead-branches` appends the same two pass
+flags to Slang's existing optimizer invocation through `DownstreamArgs`, then
+performs target finalization and final Vulkan 1.4 scalar-layout validation.
+The selected O0/O1/O2/O3 level is preserved; no external optimizer process or
+second local optimizer is launched. The new runtime path is qualified against
+the pinned Slang 2026.18.2 SDK, not arbitrary alternate `SLANG_ROOT` installs.
+
+### Fresh shader-cache frontend costs
+
+`MeasureShaderPostprocess.py` isolates source compilation from device/Pipeline
+creation. It fixes requested/effective O1, mapped descriptors and disabled
+shader debug/validation. Every independent process compiles one request using
+`--shader-cache reuse` into a new private cache directory. A hit or skipped
+compiler execution fails the experiment. This measures a fresh cache miss,
+including cache writing; it does not disable caching or establish fully cold
+OS/compiler state.
+
+```powershell
+python -B Tools/Perf/MeasureShaderPostprocess.py run `
+  --executable .\build-release\Source\MetallicShaderPipelineBench.exe `
+  --request-indices N --postprocesses none dead-branches slang-dead-branches `
+  --pairs 3 --output-dir build-release/compute-cleanup-frontend-<fresh>
+python -B Tools/Perf/MeasureShaderPostprocess.py verify `
+  build-release/compute-cleanup-frontend-<fresh>
+```
+
+The frontend runner rotates three-arm blocks so every mode occupies each
+position across three blocks; two arms alternate AB/BA. It archives the actual
+schedule, process commands/logs, compiler phases, settings and exact `Output.spv`
+bytes extracted from validated cache containers. Independent-process medians
+are computed per request/mode; repeated output byte differences fail verification.
+
+Schema v2 performs one excluded `none` compilation per request to discover
+the compiler's actual source dependencies. It freezes their current hashes
+before that request's measured samples, including vendor/import and interop
+headers. It also freezes renderer/shader sources, the executable/DLLs and
+imported tool helpers. Before/after checks reject input changes, and a newly
+reported unfrozen dependency fails the run. Verification independently checks
+discovery coverage, fresh misses, settings, schedule, raw metrics and cache/output
+byte identity. Discovery timings are retained in `excluded_runs` and excluded
+from aggregates. Existing sealed schema-v1 evidence remains readable and retains
+the copied runner that actually collected it.
+
+The [current frontend results](ShaderDeadBranchCleanup.md#slang-downstream-api-measurements)
+contain three processes per mode for Guides request 146 and one exploratory
+process per mode for SceneRTXDI/SHARC requests 137/149/152. Guides, SceneRTXDI and
+SHARC Query have matching external/Slang cleanup SHA-256 values; SHARC Update
+149 has equal output sizes but different SHA-256 even after compacting IDs,
+requiring affected SHARC GPU qualification. These compile-only results establish
+no whole-call cold startup benefit. Native timings below deliberately exclude
+frontend work.
+
+The separate [same-process cold comparison](ShaderDeadBranchCleanup.md#fresh-source-plus-native-creation-in-one-process)
+includes source compilation and native creation for current Guides, with three
+pairs and disabled controllable Driver caching. Its observed 7.72% paired-median
+reduction applies to that single Bench request. The subsequent
+[SHARC rendering batch](ShaderDeadBranchCleanup.md#sharc-rendering-qualification-for-both-cleanup-paths)
+qualifies HDR/guides in the fixed MixedSharc scene, including Update request 149;
+it enables validation and ordinary Driver caching and makes no performance claim.
+
+### Native and production GPU comparisons
+
+```powershell
+python -B Tools/Perf/RunComputePipelineExperiments.py compile `
+  --executable .\build-release\Source\MetallicShaderPipelineBench.exe `
+  --request-index N --optimizations O1 --postprocesses none dead-branches slang-dead-branches `
+  --descriptor-mode mapped --backends pipeline --driver-optimization normal `
+  --pairs 3 --output-dir build-release/compute-cleanup-native-<fresh>
+```
+
+The runner sets `METALLIC_SPIRV_POSTPROCESS` explicitly for every arm and supplies
+`--spirv-postprocess` to the Benchmark. Its default is `--postprocesses none`.
+Original, separate-cleanup and Slang-cleanup bytecode use distinct shader/native
+identity groups and cache fills, even when their bytes agree. `none` and the
+existing separate-cleanup cache key remain unchanged; the new mode adds its own
+revisioned policy, runtime Slang build tag and mode-specific tool version.
+Backend/Driver flag comparisons retain identical code within each
+Slang-level/postprocess group. Two cleanup conditions alternate AB, BA, AB
+between blocks. Prefill compilation and cleanup are excluded from measured
+native creation, with their per-call metrics retained separately.
+
+For a separate production execution comparison, retain the real graph/settings
+and capture its declared outputs:
+
+```powershell
+python -B Tools/Perf/RunComputePipelineExperiments.py dispatch `
+  --executable .\build-release\tests\MetallicRHITests.exe `
+  --cases build/compute-create-fixtures/Performance.json --case-id OpaquePerf `
+  --optimizations O1 --postprocesses none dead-branches `
+  --backends pipeline --driver-optimization normal `
+  --resolution 512 --warmup-frames 32 --timing-frames 64 --capture-graph-outputs `
+  --pairs 3 --output-dir build-release/compute-cleanup-dispatch-<fresh>
+```
+
+Use `--validation` in a distinct correctness batch. Runtime logs and captured
+recipe stages must confirm the requested cleanup policy and corresponding tool
+version. Missing or conflicting confirmation fails verification. A transformation that
+passes readback tolerance is not necessarily byte-identical in HDR.
+Recipe replay consumes finalized captured bytes and forbids an explicit new
+`--spirv-postprocess` override. Both cleanup policies require a confirmed tool
+version, and ambiguous source identity is rejected for performance comparison.
+
+For `dead-branches`, `compilation_phases.postprocess_ms` includes input/output
+validation and the two cleanup passes after target finalization. For
+`slang-dead-branches`, it measures final validation only; its appended passes
+are inside `code_generation_ms`. `raw_spirv_bytes` describes the returned Slang
+blob before Metallic target finalization, so the new mode already includes its
+transforms in that count. Zero on a cache hit means unavailable.
+`output_spirv_bytes` describes the returned code, including on cache hits, which
+have zero compilation/cleanup work. These are source SPIR-V sizes rather than
+Driver ISA. `slangShaderPostprocessToolVersion(mode)` retains the old no-argument
+behavior; the new mode identifies Slang's version plus the linked final validator
+version, without claiming that validator version describes Slang's optimizer.
+When assessing total uncached compilation, measure source compilation and
+pipeline loading/creation in the same declared call scope. Adding independent
+frontend/native medians is not an end-to-end startup measurement.
+The [cleanup report](ShaderDeadBranchCleanup.md) defines the exact measured
+scopes, identities and three-scene correctness limits. Production remains O1
+with `METALLIC_SPIRV_POSTPROCESS=none` (also the unset default).
 
 ## Evidence and validation
 

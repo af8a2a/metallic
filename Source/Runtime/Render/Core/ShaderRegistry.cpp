@@ -76,6 +76,7 @@ bool recipeStage(const DeviceShaders& state, const ShaderStageDesc& stage, Pipel
     if (found == state.recipeShaders.end()) { return false; }
     shader = found->second;
     shader.entryPoint = stage.entryPoint ? stage.entryPoint : "main";
+    shader.specializationConstants = detail::canonicalShaderSpecializationConstants(stage.specializationConstants);
     return true;
 }
 
@@ -220,6 +221,13 @@ Result<> ShaderRegistry::getComputeKernel(Device& device, const SlangShaderDesc&
 Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Device& device, const ComputePipelineDesc& requestedDesc)
 {
     auto desc = requestedDesc;
+    std::vector<ShaderSpecializationConstant> specialization;
+    try {
+        specialization = detail::canonicalShaderSpecializationConstants(desc.computeShader.specializationConstants);
+    } catch (const std::invalid_argument&) {
+        return makeError(Error::InvalidArgument);
+    }
+    desc.computeShader.specializationConstants = specialization;
     const char* optimization = std::getenv("METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION");
     if (optimization && optimization[0] && std::strcmp(optimization, "1") != 0 && std::strcmp(optimization, "0") != 0) {
         return makeError(Error::InvalidArgument);
@@ -247,7 +255,7 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Devi
     }
     auto state = deviceShaders(device);
     if (!state) { return makeError(state.error()); }
-    const auto key = detail::NativePipelineKey{detail::NativePipelineType::Compute, detail::computePipelineStateHash(desc)};
+    const auto key = detail::NativePipelineKey{detail::NativePipelineType::Compute, detail::computePipelineStateHash(desc), specialization};
     auto acquired = (*state)->nativePipelines.acquire(key, [&]() -> Result<std::shared_ptr<void>> {
         if (desc.backend != ComputePipelineBackend::Pipeline) {
             auto pipeline = device.createComputePipeline(desc);

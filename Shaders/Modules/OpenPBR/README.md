@@ -19,6 +19,12 @@ Implement `IOpenPBRContext` with statically resolved feature functions and
 semantics. Static feature choices must agree between preparation and evaluation.
 There are no resource bindings or push constants in this module.
 
+Contexts must declare the public associated constants `kEnableSheenAndCoat`
+and `kEnableDispersion`. Keep their values consistent with the retained
+`enableSheenAndCoat()` and `enableDispersion()` methods. The four legacy feature
+methods remain required. Repository contexts already implement this contract;
+external handwritten contexts must add the two constants before recompiling.
+
 ```slang
 let inputs = openPBRMakeDefaultResolvedInputs();
 // Supply authored geometry bases and resolved parameters before preparation.

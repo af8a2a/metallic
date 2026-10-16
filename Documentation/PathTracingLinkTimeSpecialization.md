@@ -9,6 +9,71 @@ dead-code elimination. This follows the
 [resource narrow-read experiment](PathTracingResourceNarrowReads.md). Production
 shader defaults, scene eligibility and compiler/session policy are unchanged.
 
+## Current owned-module recheck (2026-10-13)
+
+The experiment was rerun against the current module-owned shader layout,
+including `Modules/OpenPBRSurface.slang` and the owned
+`Modules/OpenPBRPathTracing/OpenPBRPathVertex.slang` implementation. The
+repaired overlay preserves public context methods, gates
+`materialDomain(transport)`, and declares the capability interface and all
+extern/export providers in `Metallic.SceneOpenPBR`. Each generated provider
+declares its own module. The preparation snapshots and redirects additional
+shader search roots as well as the project shader tree.
+
+Thirteen current-source O1 arms passed compilation and Vulkan 1.4 scalar-layout
+validation. Direct source compilation and serialized-module linking of the
+original both matched the fresh Bench reference byte-for-byte: 6,947,064 bytes,
+FNV `2d09e5ccab53bd72`, SHA-256
+`645602e7448196a055ccc8a5e7f33a42d22a8d1031a303d9e54e856cb299d270`.
+This is a new baseline; the 2026-10-12 input identities and measurements below
+remain historical evidence.
+
+| Current O1 arm | Bytes | Instructions | Basic blocks | Functions / calls |
+| --- | ---: | ---: | ---: | ---: |
+| Current production | 6,947,064 | 449,813 | 60,501 | 1 / 0 |
+| Static / constant / type, general | 6,947,188 | 449,824 | 60,504 | 1 / 0 |
+| Static / constant / type, no-fiber | 6,947,188 | 449,824 | 60,504 | 1 / 0 |
+| Static / constant / type, opaque-dielectric | 6,947,188 | 449,824 | 60,504 | 1 / 0 |
+
+For each of the three masks, static constants and link-time constants are
+identical raw bytes; concrete policy types and link-time types are also
+identical raw bytes. Constant and type outputs differ in their ID assignments,
+but become byte-identical under `spirv-opt --compact-ids`, which only renumbers
+IDs. All thirteen outputs contain 495 loop merges, zero Phi instructions and
+zero Vulkan specialization-constant instructions. The additional gate
+scaffold contributes eleven instructions and three blocks without eliminating
+the disabled bodies at O1.
+
+An independent instruction/operand comparison of the current compact-ID
+static outputs confirms successful provider resolution and retained control
+flow. General versus no-fiber differs in exactly one instruction: at zero-based
+instruction ordinal 82,491, `OpBranchConditional` changes its condition from
+`%318` (`OpConstantTrue`) to `%353` (`OpConstantFalse`), while its targets
+`%65375` and `%65376` remain identical. General versus opaque-dielectric
+differs in exactly 777 instructions: 699 `OpBranchConditional` condition
+operands and 78 `OpLogicalNot` input operands change from the true constant to
+the false constant. No opcode, instruction word count or branch target changes.
+Thus current O1 link-time constants/types do not remove more code than their
+matched static controls; choosing a narrower feature mask still leaves those
+resolved dead branches in the emitted program.
+
+Evidence: [current frozen preparation](../build-release/link-time-current-20261013/preparation/Preparation.json),
+[current compilation and baseline identity](../build-release/link-time-current-20261013/current-O1/summary.json),
+[validated byte/structure comparisons](../build-release/link-time-current-20261013/current-O1-analysis/Analysis.json)
+and [sealed operand comparison and input identities](../build-release/link-time-current-20261013/operand-analysis/OperandDifferences.json).
+The [read-only parser](../build-release/link-time-current-20261013/operand-analysis/InspectOperands.py)
+can reproduce the operand evidence with `--output-dir` pointing to a fresh
+directory, without altering either sealed input tree.
+These are single structural verification runs, not repeated compiler timing
+samples or rendering qualification. The Driver timings of 68.480, 58.157,
+53.203 and 36.927 seconds reported below use the older emitted inputs and
+must not be presented as current-module measurements. Current O2 elimination,
+compile-plus-create costs and GPU behavior need separate current-input evidence.
+The subsequent [current dead-branch qualification](ShaderDeadBranchCleanup.md)
+records separate uncached-compiler, Driver and GPU measurements, and an additive
+Slang optimizer probe emitting exactly the qualified cleanup bytes. Its Driver
+benefit is attributable to the late cleanup, not the link-time mechanism.
+
 Two effects must be distinguished: specializing a general shader for a smaller
 scene feature set, and supplying those same choices later through the linker.
 Only the second comparison can establish an advantage of link-time
@@ -313,10 +378,13 @@ measurements depend only on the sealed emitted bytes. The
 records that limit; future preparations snapshot and redirect every additional
 include root as well.
 
-The transformed and specialized shaders have **not** been qualified by
-rendering HDR/guides or timing GPU dispatch. The graph harness currently has
-no independent precompiled-SPIR-V substitution path. Production defaults
-remain unchanged pending that qualification.
+The transformed boolean-policy shaders in this batch have **not** been
+qualified by rendering HDR/guides or timing GPU dispatch. At the time of that
+batch the graph harness had no independent precompiled-SPIR-V substitution
+path. The separate material-backend follow-up below now adds that path and
+qualifies its five coarse-Type artifacts in fixed scenes. That qualification
+does not cover the boolean-policy artifacts here. Production defaults remain
+unchanged.
 
 ### Pinned support probes
 
@@ -419,3 +487,117 @@ and SPIR-V analysis tests: **3/3 CTest suites passed**, including **20/20**
 focused link-time evidence tests. The final check verified seven evidence
 manifests, all twelve recipe/device matches, and local report links.
 No C++ runtime or production shader changed in this experiment.
+
+## Implementation-selection Type: proposal and measured follow-up
+
+The [material-backend follow-up](PathTracingMaterialBackendExperiment.md)
+implements this coarse boundary in frozen harness overlays and compiles all
+five matched arms. It records actual O1 structure, compiler phases and uniform
+cleanup results and three paired native-creation measurements. Those results
+supersede this section's initial unmeasured status. Exact artifact rendering
+now qualifies all five coarse-Type outputs in three fixed SHARC-off,
+CUSTOM_MATERIALS=0 scenes, including complete loaded-material No-Fiber checks;
+HDR, temporal frames and guides are numerically identical. Dynamic material
+changes, other permutations and production scene eligibility are not covered.
+The direct original-source control observes 16.31% less native creation time
+by paired median, but its Mixed dispatch result is +13.70% with large
+chronological drift. Smaller SPIR-V and output equivalence therefore do not
+qualify the current narrower Type as a general runtime default. The follow-up
+keeps original-source and linked-General denominators separate.
+
+The subsequent [material-record read comparison](PathTracingResourceNarrowReads.md#material-record-follow-up-2026-10-13)
+preserves the General implementation in raw and typed-member overlays. Both
+pass exact-artifact fixed-scene output checks, but neither establishes a stable
+compiler or native-creation gain. This separates resource transport from Type
+selection. The next compilation-complexity experiment should test explicit
+function boundaries on the current General shader, keeping the same reachable
+features and output contract; linked Types alone do not prevent target inlining.
+
+The current module-based 2026-10-13 repeat still shows the same limitation.
+The [current O1 comparison](../build-release/link-time-current-20261013/current-O1-analysis/Analysis.json)
+reports 6,947,188 bytes, 449,824 instructions and 60,504 blocks for every
+general/no-fiber/opaque policy-field arm. Matched static/link-time constants and
+matched concrete/link-time Types are byte-identical. The current production
+baseline is 6,947,064 bytes / 449,813 instructions / 60,501 blocks. These
+observations do not establish an advantage for supplying boolean methods through
+a linked Type.
+
+The original coarse-boundary proposal was to select the **whole material-domain dispatch
+implementation**, with one Type supplying both found-vertex shading and guide
+evaluation. A `GeneralScenePathMaterialBackend` would preserve the current
+Surface/Fiber/Slab dispatch. A `NoFiberOpenPBRBackend`, tested first with custom
+materials disabled, would call only the existing OpenPBR implementation. Its
+methods would contain no `shadeSceneFiber` call or Fiber guide extraction,
+rather than guard those calls with another static boolean. This changes the
+reachable call graph before target inlining. The follow-up above now measures
+this code-elimination boundary and its native/GPU effects. It does not form a
+native compilation boundary or establish a benefit from linking alone. The
+remaining design notes describe the original proposal and deployment contract.
+
+The concrete sites are:
+
+- [`OpenPBRPathVertex.slang`](../Shaders/Modules/OpenPBRPathTracing/OpenPBRPathVertex.slang),
+  `shadeOpenPBRPathVertex`, from its `loadSceneMaterial`/material-domain tail
+  (line 434). Extract that complete tail, including the existing alpha retry,
+  domain-specific shading and termination bookkeeping. Keep common miss,
+  volume-attenuation and ray-cone work unchanged. The general implementation
+  retains the current order: Fiber handling precedes BLEND coverage and Surface
+  family selection. The narrow implementation retains coverage and the call to
+  `shadeOpenPBRSurfacePathVertex`, including its transmitting OpenPBR behavior.
+- [`OpenPBRSurface.slang`](../Shaders/Modules/OpenPBRSurface.slang),
+  `evaluateSceneSurfaceGuides` (line 602), is a second independent domain dispatch.
+  The same selected Type must supply this method too; changing only vertex
+  shading would leave the guide side reachable. The narrow method should retain
+  the current concrete OpenPBR material evaluation and its returned summary,
+  evaluated hit and seed. It must not reuse the path's prepared closure.
+- [`SceneSurface.slang`](../Shaders/Modules/SceneSurface.slang),
+  `loadSceneMaterial`/`loadSceneOpenPBRMaterial` (lines 213/218), still creates the
+  720-byte upload record before extracting model data. A separate resource
+  experiment can read a compact classification or coverage view at these domain
+  boundaries, then load only the selected model's fields. Keep the CPU upload
+  stride and descriptors unchanged. Field offsets must follow
+  [`SceneMaterialData.h`](../Source/Runtime/Render/Material/SceneMaterialData.h)
+  and its std430 texture padding; do not reinterpret the noncontiguous OpenPBR
+  fields as a packed model record. Preserve complete-record bounds and missing
+  resource behavior, and verify the mapped readback before comparing timings.
+
+Place the public backend contract alongside the existing path state types in
+the `OpenPBRPathTracing` owner; provider modules can import that owner and export
+the selected implementation Type. Keep every new module/implementation owned,
+use explicit imports and keep the registered entrypoint names stable. Start in
+frozen harness overlays: the production compiler still needs explicit provider
+composition and provider-aware cache/hot-reload identity before deployment.
+The existing `ISceneSlabModel` associated-Closure selection in
+`OpenPBRSurface.slang` (line 430) is an actual implementation-selection precedent;
+it does not choose a model by storing an existential interface at runtime.
+
+No-Fiber eligibility must cover all materials reachable by primary, secondary
+and shadow rays, including streamed assets and custom programs. Disabling the
+RTXCR SDK flag or observing an opaque primary hit is insufficient. Begin with
+the fixed Opaque/Mixed/Sky fixtures and custom-materials-off configuration;
+retain metallic, transmission, volume, MASK/BLEND and existing debug behavior.
+When a streamed material, edit or program requires Fiber/Slab, acquire a broader
+compatible pipeline before publishing that material to an affected dispatch.
+Keep bindings, feedback writes, texture-load/RNG order, authored TBN mapping and
+ray offsets unchanged. Guide evaluation keeps its independent seed and
+face-forward policy, including camera-motion and specular-endpoint handling.
+
+Use these matched arms with the same O1, mapped ABI, postprocess policy and
+normal Driver optimization:
+
+| Arm | Purpose |
+| --- | --- |
+| Existing general shader | Current behavior and cost baseline |
+| Concrete general backend Type | Isolate extraction/interface scaffold |
+| Link-time general backend Type | Compare linking against the identical implementation |
+| Concrete no-Fiber OpenPBR backend Type | Measure the narrower reachable implementation |
+| Link-time no-Fiber OpenPBR backend Type | Compare linking against the identical narrow implementation |
+
+Run the resource-view change as a subsequent separate pair so its effect is not
+attributed to Type selection. Count reachable functions/calls, retained Fiber
+operations, CFG size, storage-class variables and finalized SPIR-V after the
+same cleanup. Compile/module-reuse cost, cold Driver creation and GPU dispatch
+remain separate scopes. Requalify HDR, seven guide outputs, moving-camera
+captures and material/RNG/feedback behavior. Only a scene-wide eligibility proof
+plus these checks could justify using the narrower backend. The linked follow-up
+records the compiled arms and keeps these remaining deployment gates explicit.

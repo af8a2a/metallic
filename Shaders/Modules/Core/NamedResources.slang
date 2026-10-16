@@ -5,6 +5,7 @@ namespace Metallic
 {
 #include "../../../Source/Runtime/Render/Core/NamedResourceParameters.h"
 
+[ForceInline]
 public T getResourceParameters<T>()
 {
     let span = getComputeResources().resources;

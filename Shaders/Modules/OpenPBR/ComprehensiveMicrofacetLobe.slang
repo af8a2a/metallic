@@ -91,7 +91,7 @@ public OpenPBRDiffuseSpecular openPBRCalculateLobeValue<TContext : IOpenPBRConte
         return openPBRMakeDiffuseSpecularFromSpecular(G * D_other_terms_F);
     } else if (TContext.enableTranslucency() && idotn * odotn < 0.0f) // transmission
     {
-        if (TContext.enableDispersion()) {
+        if (TContext.kEnableDispersion) {
             float3 D_other_terms_F;
             [unroll]
             for (int channel = 0; channel < OpenPBRNumRGBChannels; ++channel) {
@@ -180,7 +180,7 @@ public float openPBRCalculateLobePdf<TContext : IOpenPBRContext>(
         return G_masking * F_prob_D_other_terms;
     } else if (TContext.enableTranslucency() && idotn * odotn < 0.0f) // transmission
     {
-        if (TContext.enableDispersion()) {
+        if (TContext.kEnableDispersion) {
             float3 F_prob_D_other_terms;
             [unroll]
             for (int channel = 0; channel < OpenPBRNumRGBChannels; ++channel) {
@@ -304,7 +304,7 @@ public bool openPBRSampleLobe<TContext : IOpenPBRContext>(TContext context,
         return true;
     } else // transmission
     {
-        if (TContext.enableDispersion()) {
+        if (TContext.kEnableDispersion) {
             const float remapped_rand_z = (rand.z - P_refl) / P_trans;
             int selected_color_channel;
             const float3 color_channel_probabilities = openPBRChannelProbabilities(lobe);

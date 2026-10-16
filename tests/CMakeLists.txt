@@ -45,13 +45,15 @@ add_test(NAME MetallicShaderWarmupStartupTests COMMAND MetallicShaderWarmupStart
 set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;shader" TIMEOUT 30)
 
 
-add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp editor/SPIRVStatisticsTests.cpp)
+add_executable(MetallicShaderRequestsTests editor/ShaderRequestsTests.cpp editor/SPIRVStatisticsTests.cpp
+    editor/ShaderPostprocessTests.cpp editor/ShaderArtifactOverrideTests.cpp editor/ShaderWarmupBatchTests.cpp
+    editor/NativeShaderWarmupRequestsTests.cpp)
 target_include_directories(MetallicShaderRequestsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source" "${CMAKE_SOURCE_DIR}")
 target_compile_definitions(MetallicShaderRequestsTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
-target_link_libraries(MetallicShaderRequestsTests PRIVATE MetallicShaderWarmupCore GTest::gtest_main)
+target_link_libraries(MetallicShaderRequestsTests PRIVATE MetallicShaderCompilerShared GTest::gtest_main)
 if(MSVC)
     target_compile_options(MetallicShaderRequestsTests PRIVATE /EHsc /utf-8)
 endif()
@@ -426,7 +428,9 @@ add_executable(MetallicRHITests
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
     rhi/ShaderRegistryTests.cpp
+    rhi/ShaderSpecializationTests.cpp
     rhi/ShaderRegistryNativePipelineTests.cpp
+    rhi/NativeShaderWarmupTests.cpp
     rhi/PipelineRecipeTests.cpp
     rhi/PipelineCacheSaveTests.cpp
     rhi/PipelineCacheFeedbackTests.cpp
@@ -752,6 +756,30 @@ set_tests_properties(MetallicShaderPrintfTests PROPERTIES LABELS "rhi;shader-pri
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MetallicPathTraceSSAEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceSSA.py")
+    set_tests_properties(MetallicPathTraceSSAEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
+    add_test(NAME MetallicPathTraceFunctionBoundaryEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceFunctionBoundaries.py")
+    set_tests_properties(MetallicPathTraceFunctionBoundaryEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
+    add_test(NAME MetallicPathTraceMaterialReadEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceMaterialReads.py")
+    set_tests_properties(MetallicPathTraceMaterialReadEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
+    add_test(NAME MetallicPathTraceBackendNativeEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackendNative.py")
+    set_tests_properties(MetallicPathTraceBackendNativeEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicPathTraceBackendDispatchEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackendDispatch.py")
+    set_tests_properties(MetallicPathTraceBackendDispatchEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicPathTraceBackendRenderingEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackendRendering.py")
+    set_tests_properties(MetallicPathTraceBackendRenderingEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 30)
+    add_test(NAME MetallicPathTraceBackendEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceBackend.py")
+    set_tests_properties(MetallicPathTraceBackendEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicShaderPostprocessEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestMeasureShaderPostprocess.py")
+    set_tests_properties(MetallicShaderPostprocessEvidenceTests PROPERTIES LABELS "shader;perf;cpu")
     add_test(NAME MetallicShaderModuleOwnershipTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tools/TestShaderModules.py")
     set_tests_properties(MetallicShaderModuleOwnershipTests PROPERTIES LABELS "shader;architecture" TIMEOUT 30)

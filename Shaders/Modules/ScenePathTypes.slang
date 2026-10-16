@@ -7,6 +7,46 @@ namespace Metallic
 {
 using Metallic.Material;
 
+// Matches the CPU packed push flag; no resource/push layout change.
+public static const uint kScenePathTraceExportUpscalerGuides = 1u << 26u;
+public static const uint kScenePathTraceUseGlobalView = 1u << 27u;
+public static const uint kScenePathTraceUseFP16Precision = 1u << 28u;
+#if defined(METALLIC_PT_CACHE_QUERY_SPECIALIZATION) && METALLIC_PT_CACHE_QUERY_SPECIALIZATION != 0 && METALLIC_PT_CACHE_QUERY_SPECIALIZATION != 1
+#error METALLIC_PT_CACHE_QUERY_SPECIALIZATION must be 0 or 1.
+#endif
+#if METALLIC_PT_CACHE_QUERY_SPECIALIZATION
+#if !defined(SHARC_QUERY) || SHARC_QUERY != 1 || (defined(SHARC_UPDATE) && SHARC_UPDATE != 0)
+#error Cache-query specialization requires globally configured QUERY1 and UPDATE0.
+#endif
+#if defined(METALLIC_PT_SINGLE_SAMPLE) || defined(MATERIAL_CLASS) || defined(MATERIAL_PROGRAM_ID) || defined(METALLIC_DEFERRED_FP16) || defined(METALLIC_DEFERRED_RUNTIME_PRECISION) || defined(METALLIC_DEFERRED_CLASS_SPECIALIZATION)
+#error Cache-query specialization excludes SINGLE and manual material/deferred shapes.
+#endif
+#if !defined(METALLIC_CUSTOM_MATERIALS) || METALLIC_CUSTOM_MATERIALS != 0 || !defined(METALLIC_GLOBAL_VIEW) || METALLIC_GLOBAL_VIEW != 0 || !defined(METALLIC_HAS_RTXCR) || METALLIC_HAS_RTXCR != 1
+#error Cache-query specialization requires the builtin local-view RTXCR family.
+#endif
+#if !defined(METALLIC_DEFERRED_LIGHT_GRID) || METALLIC_DEFERRED_LIGHT_GRID != 0 || !defined(METALLIC_REALTIME_DEFERRED) || METALLIC_REALTIME_DEFERRED != 0 || !defined(METALLIC_DEFERRED_UPSCALER_GUIDES) || METALLIC_DEFERRED_UPSCALER_GUIDES != 0
+#error Cache-query specialization excludes Deferred source families.
+#endif
+#if !defined(METALLIC_WORKING_SPACE_ACESCG) || METALLIC_WORKING_SPACE_ACESCG != 1
+#error Cache-query specialization is restricted to ACEScg.
+#endif
+// Native policy must be supplied explicitly after actual ID/type qualification.
+[SpecializationConstant]
+public const bool kOpenPBRCacheQueryEnabled = false;
+#endif
+
+#if METALLIC_PT_GUIDE_SPECIALIZATION
+#if METALLIC_PT_GUIDE_SPECIALIZATION != 1
+#error Guide specialization must be 0 or 1.
+#endif
+#if !defined(METALLIC_PT_CACHE_QUERY_SPECIALIZATION) || METALLIC_PT_CACHE_QUERY_SPECIALIZATION != 1
+#error Guide specialization requires the accepted cache-query specialization family.
+#endif
+// The parent cache marker enforces QUERY1/UPDATE0, builtin local RTXCR/ACEScg,
+// and excludes SINGLE and known manual/deferred shapes. Native IDs remain unobserved.
+[SpecializationConstant]
+public const bool kOpenPBRGuideExportEnabled = false;
+#endif
 public struct ScenePathTracePush
 {
     public float4 eye;
@@ -41,7 +81,7 @@ public struct ScenePathTracePush
     public float jitterOffsetY;
     public uint sampleFrame;
     public uint temporalJitter;
-    public uint deferredSettings; // material shading class
+    public uint deferredSettings; // bin0:15, samples16:20, depth21:25, upscaler guides26, global view27, FP16 precision28
 };
 
 public struct Ray

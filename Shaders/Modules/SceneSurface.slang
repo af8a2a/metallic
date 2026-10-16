@@ -116,7 +116,7 @@ public RWTexture2D<float4> sceneHistoryPrevious()
 #if SHARC_UPDATE
 public Texture2D<float4> sceneMaterialTexture(uint index)
 {
-    return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<SceneResourceParameters>().materialTextures.load(index)));
+    return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameterField<SceneResourceParameters, BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)));
 }
 public SamplerState sceneMaterialSampler()
 {
@@ -124,7 +124,7 @@ public SamplerState sceneMaterialSampler()
 }
 public RWStructuredBuffer<uint> sceneTextureFeedback()
 {
-    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().textureFeedback);
+    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
 }
 public ByteAddressBuffer sceneMaterialValues()
 {
@@ -132,11 +132,11 @@ public ByteAddressBuffer sceneMaterialValues()
 }
 public Texture2D<float4> sceneEnvironmentMap()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().environmentMap);
+    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset));
 }
 public Texture2D<float> sceneEnvironmentImportancePdf()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().environmentPdf);
+    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
 }
 #else
 public Texture2D<float4> sceneMaterialTexture(uint index)
@@ -603,6 +603,32 @@ public RayMaterialWork sceneRayMaterialWork(HitInfo hit, RayCone cone, float3 di
     return work;
 }
 
+// Public API composition for the fixed material STF policy. No vendor changes.
+// Load addressing follows Rtxtf/STFSamplerStateImpl.hlsli:1825-1832;
+// NVIDIA's original 2025 copyright/license notice remains in that pinned owner.
+// The same public sample-position API executes the original stochastic math.
+internal float4 loadMaterialSTFTextureFromSamplePosition(
+    inout STF_SamplerState samplerState,
+    Texture2D<float4> texture,
+    float2 uv,
+    float mipLevel)
+{
+    uint width;
+    uint height;
+    uint numberOfLevels;
+    texture.GetDimensions(0, width, height, numberOfLevels);
+
+    float3 samplePos = samplerState.Texture2DGetSamplePosLevel(width, height, numberOfLevels, uv, mipLevel);
+    uint lod = uint(samplePos.z);
+    width = width >> lod;
+    height = height >> lod;
+
+    bool isBorder = false;
+    const float2 pixelIndex = uint2(width, height) * STF_ApplyAddressingMode2D(
+        samplePos.xy, uint2(width, height), samplerState.GetAddressingModes().xy, isBorder);
+    return texture.Load(uint3((uint)pixelIndex.x, (uint)pixelIndex.y, lod));
+}
+
 internal STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed)
 {
     STF_SamplerState samplerState = STF_SamplerState::Create(rand4(seed));
@@ -700,7 +726,7 @@ public float4 loadMaterialTexture(
     }
 #endif
     STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
-    return decodeMaterialTextureSample(samplerState.Texture2DLoadLevel(
+    return decodeMaterialTextureSample(loadMaterialSTFTextureFromSamplePosition(samplerState,
         sceneMaterialTexture(textureIndex),
         transformMaterialUv(textureInfo, uv),
         max(mipLevel, mipFloor)), textureInfo.transform0.w);

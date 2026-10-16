@@ -17,19 +17,11 @@ struct StreamRayInstance
     float4 world0, world1, world2, world3;
     float4 bounds;
 };
-#if SHARC_UPDATE
-#define gRayStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamPages)
-#define gRayStreamPageTable resolveBuffer<StructuredBuffer<uint2>>(getResourceParameters<SceneResourceParameters>().rayStreamPageTable)
-#define gRayStreamInstances resolveBuffer<StructuredBuffer<StreamRayInstance>>(getResourceParameters<SceneResourceParameters>().rayStreamInstances)
-#define gRayStreamHeader resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamHeader)
-#define gRayStreamPageCount resolveBuffer<ByteAddressBuffer>(getResourceParameters<SceneResourceParameters>().streamPageCount)
-#else
 #define gRayStreamPages resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamPagesOffset))
 #define gRayStreamPageTable resolveBuffer<StructuredBuffer<uint2>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamPageTableOffset))
 #define gRayStreamInstances resolveBuffer<StructuredBuffer<StreamRayInstance>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamInstancesOffset))
 #define gRayStreamHeader resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamHeaderOffset))
 #define gRayStreamPageCount resolveBuffer<ByteAddressBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneStreamPageCountOffset))
-#endif
 
 // Keep resource resolution lazy and preserve the original bounds-check/load order.
 public bool streamRayMaterialIndex(uint instanceIndex, out uint materialIndex)

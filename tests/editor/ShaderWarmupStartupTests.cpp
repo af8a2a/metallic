@@ -15,6 +15,8 @@
 namespace {
 
 std::atomic<size_t> compileCalls{0};
+std::atomic<size_t> batchCalls{0};
+std::atomic<size_t> batchJobs{0};
 std::atomic<bool> failCompilation{false};
 std::atomic<bool> throwCompilation{false};
 std::atomic<bool> wrongDebugMode{false};
@@ -49,6 +51,8 @@ protected:
         }
         setWorkerEnvironment(nullptr);
         compileCalls = 0;
+        batchCalls = 0;
+        batchJobs = 0;
         failCompilation = false;
         throwCompilation = false;
         wrongDebugMode = false;
@@ -96,6 +100,9 @@ TEST_F(ShaderWarmupStartupTest, StartupHonorsWorkerEnvironment)
     testing::internal::CaptureStdout();
     EXPECT_NE(output.find("Shader warmup workers: 12\n"), std::string::npos);
     EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
+    EXPECT_EQ(batchCalls.load(), 1u);
+    EXPECT_EQ(batchJobs.load(), 12u);
+    EXPECT_TRUE(metallic::render::startupShaderWarmupEnabled());
 }
 
 TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeCompilation)
@@ -106,6 +113,8 @@ TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeComp
     }
     EXPECT_EQ(compileCalls.load(), 0u);
     EXPECT_EQ(adapterQueries.load(), 0u);
+    EXPECT_EQ(batchCalls.load(), 0u);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
 }
 
 TEST_F(ShaderWarmupStartupTest, ExplicitJobsOverridesInvalidWorkerEnvironment)
@@ -165,6 +174,7 @@ TEST_F(ShaderWarmupStartupTest, OnlyExplicitSkipOptionBypassesCompilation)
     EXPECT_TRUE(options.consume("--skip-shader-warmup"));
     failCompilation = true;
     EXPECT_EQ(metallic::render::warmupShadersForStartup(options.skip), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
     EXPECT_EQ(compileCalls.load(), 0u);
     EXPECT_EQ(adapterQueries.load(), 0u);
 }
@@ -174,6 +184,28 @@ TEST_F(ShaderWarmupStartupTest, CompilationFailurePreventsStartup)
     failCompilation = true;
     EXPECT_NE(metallic::render::warmupShadersForStartup(false), 0);
     EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+}
+
+TEST_F(ShaderWarmupStartupTest, SkipAndFailureClearPreviouslyEnabledDevicePhase)
+{
+    ASSERT_EQ(metallic::render::warmupShadersForStartup(false), 0);
+    ASSERT_TRUE(metallic::render::startupShaderWarmupEnabled());
+    EXPECT_EQ(metallic::render::warmupShadersForStartup(true), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+    ASSERT_EQ(metallic::render::warmupShadersForStartup(false), 0);
+    failCompilation = true;
+    EXPECT_NE(metallic::render::warmupShadersForStartup(false), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+}
+
+TEST_F(ShaderWarmupStartupTest, StandaloneCompilerDoesNotEnableDevicePhase)
+{
+    ASSERT_EQ(metallic::render::warmupShadersForStartup(true), 0);
+    char program[] = "MetallicShaderCompiler";
+    char* arguments[] = {program};
+    EXPECT_EQ(metallic::render::runShaderWarmup(1, arguments), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
 }
 
 TEST_F(ShaderWarmupStartupTest, WorkerExceptionPreventsStartupAndRestoresLogging)
@@ -278,6 +310,47 @@ SlangShaderDebugMode slangShaderDebugMode() noexcept
     return debugMode;
 }
 
+SlangShaderOptimizationLevel slangShaderOptimizationLevel(const SlangShaderDesc& desc) noexcept
+{
+    if (desc.optimizationLevel != SlangShaderOptimizationLevel::Default) {
+        return desc.optimizationLevel;
+    }
+    return debugMode == SlangShaderDebugMode::ShaderDebug
+        ? SlangShaderOptimizationLevel::O0 : SlangShaderOptimizationLevel::O1;
+}
+
+const char* slangShaderOptimizationLevelName(SlangShaderOptimizationLevel level) noexcept
+{
+    switch (level) {
+    case SlangShaderOptimizationLevel::O0: return "O0";
+    case SlangShaderOptimizationLevel::O1: return "O1";
+    case SlangShaderOptimizationLevel::O2: return "O2";
+    case SlangShaderOptimizationLevel::O3: return "O3";
+    default: return "default";
+    }
+}
+
+SlangShaderPostprocessMode slangShaderPostprocessMode(const SlangShaderDesc& desc) noexcept
+{
+    return desc.postprocessMode == SlangShaderPostprocessMode::Default
+        ? SlangShaderPostprocessMode::None : desc.postprocessMode;
+}
+
+const char* slangShaderPostprocessModeName(SlangShaderPostprocessMode mode) noexcept
+{
+    switch (mode) {
+    case SlangShaderPostprocessMode::None: return "none";
+    case SlangShaderPostprocessMode::DeadBranches: return "dead-branches";
+    case SlangShaderPostprocessMode::SlangDeadBranches: return "slang-dead-branches";
+    default: return "default";
+    }
+}
+
+const char* slangShaderPostprocessToolVersion(SlangShaderPostprocessMode) noexcept
+{
+    return "startup-test-validator";
+}
+
 bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept
 {
     return nativeCompilation || desc.descriptorHeapMode == SlangDescriptorHeapMode::Native ||
@@ -323,7 +396,47 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     if (options.outCacheHit != nullptr) {
         *options.outCacheHit = true;
     }
-    return ShaderCompileResult{};
+    ShaderCompileResult result;
+    // This fixture tests startup dispatch/registration, not shader behavior.
+    result.spirv = {0x07230203, 0x00010600, 0, 1, 0};
+#ifdef _WIN32
+    result.metrics.cacheHit = true;
+#else
+    result.metrics.compilerExecuted = true;
+#endif
+    return result;
+}
+
+Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(
+    std::span<const SlangShaderDesc> requests, const SlangWarmupBatchOptions& options, std::string& diagnostics)
+{
+    ++batchCalls;
+    batchJobs = options.jobs;
+    SlangWarmupBatchResult batch;
+    bool failed = false;
+    for (const auto& request : requests) {
+        try {
+            auto shader = compileSlangShaderToSpirv(request, options.cache, diagnostics);
+            if (!shader) {
+                failed = true;
+                continue;
+            }
+            batch.existingCacheHits += shader->metrics.cacheHit ? 1 : 0;
+            batch.shaders.push_back(std::move(*shader));
+        } catch (const std::exception& error) {
+            diagnostics = error.what();
+            failed = true;
+        }
+    }
+    if (failed || batch.shaders.size() != requests.size()) {
+        return makeError(Error::Failure);
+    }
+    batch.sessionGroups = 1;
+    batch.completedAllRequests = true;
+#ifdef _WIN32
+    batch.completeSourceEpochValidated = true;
+#endif
+    return batch;
 }
 
 } // namespace metallic::render

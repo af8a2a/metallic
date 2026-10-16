@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -32,6 +33,42 @@ FEATURES = {
     "opaque-dielectric": dict(translucency=False, metallic=False, fiber=False),
 }
 CAPABILITIES = ("SheenAndCoat", "Dispersion", "Translucency", "Metallic", "Fiber")
+SURFACE_SOURCE = Path("Modules/OpenPBRSurface.slang")
+VERTEX_SOURCE = Path("Modules/OpenPBRPathTracing/OpenPBRPathVertex.slang")
+FEATURE_METHODS = """    public static bool enableSheenAndCoat()
+    {
+#if METALLIC_CUSTOM_MATERIALS
+        return true;
+#else
+        return false;
+#endif
+    }
+    public static bool enableDispersion() { return false; }
+    public static bool enableTranslucency() { return true; }
+    public static bool enableMetallic() { return true; }"""
+FIBER_BRANCH = "    if (materialDomain(transport) == kMaterialDomainFiber) {"
+COVERAGE_BRANCH = "    if (transport.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {"
+
+
+def validate_shader_layout(shader_root):
+    """Fail on moved/changed gates before snapshotting an invalid experiment."""
+    for relative, owner, namespace, anchors in (
+            (SURFACE_SOURCE, "module OpenPBRSurface;", "namespace Metallic.SceneOpenPBR",
+             ("public struct SceneOpenPBRContext : IOpenPBRContext", FEATURE_METHODS,
+              "// The closure module receives")),
+            (VERTEX_SOURCE, "implementing OpenPBRPathTracing;", "namespace Metallic.OpenPBRPathTracing",
+             (FIBER_BRANCH, COVERAGE_BRANCH))):
+        path = shader_root / relative
+        if not path.is_file():
+            raise ValueError(f"Preparation source layout changed: expected owned shader {path}")
+        source = path.read_text(encoding="utf-8")
+        owners = re.findall(r"^\s*(?:module|implementing)\s+[\w.]+\s*;", source, re.M)
+        namespaces = re.findall(r"^\s*" + re.escape(namespace) + r"\s*\{", source, re.M)
+        if len(owners) != 1 or owners[0].strip() != owner or len(namespaces) != 1:
+            raise ValueError(f"Preparation source layout changed: ownership or namespace mismatch in {path}")
+        for anchor in anchors:
+            if source.count(anchor) != 1:
+                raise ValueError(f"Preparation source layout changed: expected one feature gate in {path}: {anchor}")
 
 
 def write_json(path, value):
@@ -89,6 +126,8 @@ def rewrite_command_inputs(command, overlay, source_roots):
 
 
 def prepare(args):
+    shader_root = ROOT / "Shaders"
+    validate_shader_layout(shader_root)
     output = fresh_directory(args.output_dir)
     report_path = args.report.resolve()
     report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -110,7 +149,6 @@ def prepare(args):
     base_command = profile.diagnostic_command(compiler, report, sample, output / "unused.spv")
     overlay_root = output / "overlays"
     source_files = []
-    shader_root = ROOT / "Shaders"
     additional_roots = [Path(name).resolve() for name in sample["request"]["additional_search_paths"]]
     if any(not root.is_relative_to(ROOT) for root in additional_roots):
         raise ValueError("Additional shader search roots must be snapshotable repository paths")
@@ -141,10 +179,11 @@ def prepare(args):
             auxiliary.append(item)
     source_files.extend(dict(path=str(relative), sha256=profile.sha(path))
                         for path, relative in auxiliary)
-    interface = "#language slang 2026\nmodule LinkTimeOpenPBRCapabilities;\n\n"
+    interface = ("#language slang 2026\nmodule LinkTimeOpenPBRCapabilities;\n\n"
+                 "namespace Metallic.SceneOpenPBR\n{\n")
     interface += "public interface ISceneOpenPBRCapabilities\n{\n"
     interface += "".join(f"    public static bool enable{name}();\n" for name in CAPABILITIES)
-    interface += "};\n"
+    interface += "};\n} // namespace Metallic.SceneOpenPBR\n"
     plans = []
     for mechanism in MECHANISMS:
         overlay = overlay_root / mechanism
@@ -156,30 +195,19 @@ def prepare(args):
             destination = overlay / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
-        surface_path = overlay / "Shaders/Features/PathTracing/OpenPBRSurface.slang"
-        vertex_path = overlay / "Shaders/Features/PathTracing/OpenPBRPathVertex.slang"
+        surface_path = overlay / "Shaders" / SURFACE_SOURCE
+        vertex_path = overlay / "Shaders" / VERTEX_SOURCE
         if mechanism == "preprocessor":
             vertex = vertex_path.read_text(encoding="utf-8")
             vertex = replace_once(vertex,
-                "    if (materialDomain(material) == kMaterialDomainFiber) {",
-                "#if METALLIC_EXPERIMENT_ENABLE_FIBER\n    if (materialDomain(material) == kMaterialDomainFiber) {")
+                FIBER_BRANCH,
+                "#if METALLIC_EXPERIMENT_ENABLE_FIBER\n" + FIBER_BRANCH)
             vertex = replace_once(vertex,
-                "    if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {",
-                "#endif\n    if (material.textureParams.w > 1.5 && push.debugView == kOpenPBRDebugViewFinal) {")
+                COVERAGE_BRANCH,
+                "#endif\n" + COVERAGE_BRANCH)
             vertex_path.write_text(vertex, encoding="utf-8")
         elif mechanism != "original":
             surface = surface_path.read_text(encoding="utf-8")
-            before = """    static bool enableSheenAndCoat()
-    {
-#if METALLIC_CUSTOM_MATERIALS
-        return true;
-#else
-        return false;
-#endif
-    }
-    static bool enableDispersion() { return false; }
-    static bool enableTranslucency() { return true; }
-    static bool enableMetallic() { return true; }"""
             if mechanism == "static":
                 expressions = dict(SheenAndCoat="false", Dispersion="false")
                 expressions.update({name: "METALLIC_EXPERIMENT_ENABLE_" + name.upper()
@@ -190,11 +218,11 @@ def prepare(args):
                 surface = replace_once(surface, "// The closure module receives", declarations + "\n\n// The closure module receives")
                 expressions = {name: f"kSceneEnable{name}" for name in CAPABILITIES}
             else:
-                declarations = ("import LinkTimeOpenPBRCapabilities;\n"
-                                "extern struct SceneOpenPBRCapabilities : ISceneOpenPBRCapabilities;\n")
+                surface = replace_once(surface, "module OpenPBRSurface;",
+                    "module OpenPBRSurface;\nimport LinkTimeOpenPBRCapabilities;")
+                declarations = "extern struct SceneOpenPBRCapabilities : ISceneOpenPBRCapabilities;\n"
                 if mechanism == "type-static":
-                    declarations = "import LinkTimeOpenPBRCapabilities;\n"
-                    declarations += "public struct SelectedOpenPBRCapabilities : ISceneOpenPBRCapabilities\n{\n"
+                    declarations = "public struct SelectedOpenPBRCapabilities : ISceneOpenPBRCapabilities\n{\n"
                     for name in CAPABILITIES:
                         value = "false" if name in CAPABILITIES[:2] else "METALLIC_EXPERIMENT_ENABLE_" + name.upper()
                         declarations += f"    public static bool enable{name}() {{ return {value}; }}\n"
@@ -202,13 +230,13 @@ def prepare(args):
                 surface = replace_once(surface, "// The closure module receives", declarations + "\n// The closure module receives")
                 expressions = {name: f"SceneOpenPBRCapabilities.enable{name}()" for name in CAPABILITIES}
                 (overlay / "Shaders/Modules/LinkTimeOpenPBRCapabilities.slang").write_text(interface, encoding="utf-8")
-            after = "\n".join(f"    static bool enable{name}() {{ return {expressions[name]}; }}"
+            after = "\n".join(f"    public static bool enable{name}() {{ return {expressions[name]}; }}"
                               for name in CAPABILITIES)
-            surface_path.write_text(replace_once(surface, before, after), encoding="utf-8")
+            surface_path.write_text(replace_once(surface, FEATURE_METHODS, after), encoding="utf-8")
             vertex = vertex_path.read_text(encoding="utf-8")
             vertex_path.write_text(replace_once(vertex,
-                "if (materialDomain(material) == kMaterialDomainFiber) {",
-                "if (SceneOpenPBRContext.enableFiber() && materialDomain(material) == kMaterialDomainFiber) {"), encoding="utf-8")
+                FIBER_BRANCH,
+                "    if (SceneOpenPBRContext.enableFiber() && materialDomain(transport) == kMaterialDomainFiber) {"), encoding="utf-8")
         feature_names = ("general",) if mechanism == "original" else (("general", "no-fiber") if mechanism == "preprocessor" else FEATURES)
         for feature_name in feature_names:
             values = feature_values(feature_name)
@@ -217,15 +245,20 @@ def prepare(args):
             if mechanism in ("constant", "type"):
                 provider = output / "providers" / (label + ".slang")
                 provider.parent.mkdir(parents=True, exist_ok=True)
+                owner = "LinkTimeOpenPBR" + "".join(part.title() for part in label.split("-")) + "Provider"
+                content = f"#language slang 2026\nmodule {owner};\n\n"
+                if mechanism == "type":
+                    content += "import LinkTimeOpenPBRCapabilities;\n\n"
+                content += "namespace Metallic.SceneOpenPBR\n{\n"
                 if mechanism == "constant":
-                    content = "\n".join(f"export static const bool kSceneEnable{name} = {str(value).lower()};"
+                    content += "\n".join(f"export static const bool kSceneEnable{name} = {str(value).lower()};"
                                         for name, value in values.items()) + "\n"
                 else:
-                    content = "#language slang 2026\nimport LinkTimeOpenPBRCapabilities;\n\n"
                     content += "public struct SelectedOpenPBRCapabilities : ISceneOpenPBRCapabilities\n{\n"
                     content += "".join(f"    public static bool enable{name}() {{ return {str(value).lower()}; }}\n"
                                        for name, value in values.items())
                     content += "};\nexport struct SceneOpenPBRCapabilities : ISceneOpenPBRCapabilities = SelectedOpenPBRCapabilities;\n"
+                content += "} // namespace Metallic.SceneOpenPBR\n"
                 provider.write_text(content, encoding="utf-8")
             command = rewrite_command_inputs(base_command, overlay, input_roots)
             if mechanism in ("preprocessor", "static", "type-static"):

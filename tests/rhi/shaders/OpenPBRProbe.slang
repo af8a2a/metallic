@@ -46,6 +46,8 @@ public float4 probeLut(ProbeParams probe, int id, float3 uvw, int3 size)
 }
 public struct ProbeOpenPBRContext : IOpenPBRContext
 {
+    public static const bool kEnableSheenAndCoat = false;
+    public static const bool kEnableDispersion = false;
     public ProbeParams probe;
     public static bool enableSheenAndCoat() { return false; }
     public static bool enableDispersion() { return false; }
@@ -59,6 +61,8 @@ public struct ProbeOpenPBRContext : IOpenPBRContext
 // and subsequent evaluation must use the supplied LUT context, not a default.
 public struct StatefulOpenPBRContext : IOpenPBRContext
 {
+    public static const bool kEnableSheenAndCoat = true;
+    public static const bool kEnableDispersion = false;
     public ProbeOpenPBRContext base;
     public float scale;
     public static bool enableSheenAndCoat() { return true; }

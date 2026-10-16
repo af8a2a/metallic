@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import struct
 import sys
 import tempfile
@@ -41,7 +42,7 @@ class SlangLinkTimeSpecializationTests(unittest.TestCase):
         (self.preparation / "Reference.spv").write_bytes(CODE)
         overlay = self.preparation / "overlays/original/Shaders/Guide.slang"
         overlay.parent.mkdir(parents=True)
-        overlay.write_text("// frozen shader\n", encoding="utf-8")
+        overlay.write_text("module Guide;\n// frozen shader\n", encoding="utf-8")
         self.plans = [
             dict(label="original-general", mechanism="original",
                  feature_mask=experiment.feature_values("general"), provider=None,
@@ -111,10 +112,10 @@ class SlangLinkTimeSpecializationTests(unittest.TestCase):
     def test_sealed_preparation_detects_changed_shader_or_compiler(self):
         self.assertEqual(experiment.verify_preparation(self.preparation)["status"], "prepared")
         shader = self.preparation / "overlays/original/Shaders/Guide.slang"
-        shader.write_text("// different shader\n", encoding="utf-8")
+        shader.write_text("module Guide;\n// different shader\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "checksum|manifest|Manifest"):
             experiment.verify_preparation(self.preparation)
-        shader.write_text("// frozen shader\n", encoding="utf-8")
+        shader.write_text("module Guide;\n// frozen shader\n", encoding="utf-8")
         self.compiler.write_bytes(b"different compiler")
         with self.assertRaisesRegex(ValueError, "compiler"):
             experiment.verify_preparation(self.preparation)
@@ -243,10 +244,110 @@ class SlangLinkTimeSpecializationTests(unittest.TestCase):
         rewritten = experiment.rewrite_command_inputs(command, self.root / "overlay", [ROOT / "Shaders"])
         self.assertEqual(rewritten[2:], command[2:])
 
+    def test_prepare_uses_current_owned_sources_and_namespaced_providers_without_compiling(self):
+        """Exercise actual prepare against repository source, not dummy gate text."""
+        sdk = self.root / "sdk"
+        compiler = sdk / "bin/slangc.exe"
+        compiler.parent.mkdir(parents=True)
+        compiler.write_bytes(b"unexecuted compiler fixture")
+        report = self.root / "current-report.json"
+        sample = dict(status="passed", effective_slang_optimization="O1",
+            effective_descriptor_mode="mapped", dependencies=[],
+            request=dict(index=777, module="Features/PathTracing/OpenPBRRayQueryPathTraceGuides",
+                entry="openPbrRayQueryPathTraceGuidesMain", profile="spirv_1_6", capabilities=[],
+                search_path=str(ROOT / "Shaders"), additional_search_paths=[],
+                defines=[["METALLIC_CUSTOM_MATERIALS", "0"]]))
+        save(report, dict(samples=[sample], configuration=dict(debug_mode="disabled"), environment={}))
+        output = self.root / "current-source-preparation"
+        args = argparse.Namespace(output_dir=output, report=report, request_index=777, slang_root=sdk)
+        with patch.object(experiment.profile, "bench_bytes", return_value=(self.root / "cache.spv", CODE)), \
+                patch.object(experiment, "compiler_manifest", return_value=[]), \
+                patch.object(experiment.subprocess, "run") as process, redirect_stdout(io.StringIO()):
+            experiment.prepare(args)
+        process.assert_not_called()
+        preparation = experiment.verify_preparation(output)
+        self.assertEqual(len(preparation["plans"]), 23)
+        surface_before = (ROOT / "Shaders" / experiment.SURFACE_SOURCE).read_text(encoding="utf-8")
+        vertex_before = (ROOT / "Shaders" / experiment.VERTEX_SOURCE).read_text(encoding="utf-8")
+        declared_providers = set()
+        for mechanism in experiment.MECHANISMS:
+            overlay = output / "overlays" / mechanism / "Shaders"
+            surface = (overlay / experiment.SURFACE_SOURCE).read_text(encoding="utf-8")
+            vertex = (overlay / experiment.VERTEX_SOURCE).read_text(encoding="utf-8")
+            self.assertIn("module OpenPBRSurface;", surface)
+            self.assertIn("implementing OpenPBRPathTracing;", vertex)
+            if mechanism == "original":
+                self.assertEqual(surface, surface_before)
+                self.assertEqual(vertex, vertex_before)
+            elif mechanism == "preprocessor":
+                self.assertEqual(surface, surface_before)
+                self.assertIn("#if METALLIC_EXPERIMENT_ENABLE_FIBER\n" + experiment.FIBER_BRANCH, vertex)
+                self.assertIn("#endif\n" + experiment.COVERAGE_BRANCH, vertex)
+            else:
+                self.assertIn("SceneOpenPBRContext.enableFiber() && materialDomain(transport)", vertex)
+                for name in experiment.CAPABILITIES:
+                    self.assertIn(f"public static bool enable{name}()", surface)
+            if mechanism in ("type", "type-static"):
+                interface = (overlay / "Modules/LinkTimeOpenPBRCapabilities.slang").read_text(encoding="utf-8")
+                self.assertIn("module LinkTimeOpenPBRCapabilities;", interface)
+                self.assertIn("namespace Metallic.SceneOpenPBR", interface)
+                self.assertEqual(len(re.findall(r"^\s*(?:module|implementing)\s+[\w.]+\s*;", interface, re.M)), 1)
+                # Imports remain at module scope; declarations share the consumer namespace.
+                self.assertLess(surface.index("import LinkTimeOpenPBRCapabilities;"),
+                                surface.index("namespace Metallic.SceneOpenPBR"))
+        for plan in preparation["plans"]:
+            if not plan["provider"]:
+                continue
+            provider = Path(plan["provider"]).read_text(encoding="utf-8")
+            owners = re.findall(r"^\s*module\s+([\w.]+)\s*;", provider, re.M)
+            self.assertEqual(len(owners), 1)
+            self.assertNotIn(owners[0], declared_providers)
+            declared_providers.add(owners[0])
+            self.assertIn("namespace Metallic.SceneOpenPBR", provider)
+            surface = (output / "overlays" / plan["mechanism"] / "Shaders" /
+                       experiment.SURFACE_SOURCE).read_text(encoding="utf-8")
+            if plan["mechanism"] == "constant":
+                for name, value in plan["feature_mask"].items():
+                    self.assertIn(f"extern static const bool kSceneEnable{name};", surface)
+                    self.assertIn(f"export static const bool kSceneEnable{name} = {str(value).lower()};", provider)
+            else:
+                self.assertIn("extern struct SceneOpenPBRCapabilities : ISceneOpenPBRCapabilities;", surface)
+                self.assertIn("export struct SceneOpenPBRCapabilities : ISceneOpenPBRCapabilities", provider)
+                self.assertIn("import LinkTimeOpenPBRCapabilities;", provider)
+        self.assertEqual(len(declared_providers), 10)
+
+    def test_prepare_rejects_missing_or_changed_owned_feature_gates_before_output(self):
+        source_root = self.root / "moved-repository/Shaders"
+        for relative in (experiment.SURFACE_SOURCE, experiment.VERTEX_SOURCE):
+            path = source_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text((ROOT / "Shaders" / relative).read_text(encoding="utf-8"), encoding="utf-8")
+        experiment.validate_shader_layout(source_root)
+        surface = source_root / experiment.SURFACE_SOURCE
+        current_surface = surface.read_text(encoding="utf-8")
+        changes = (
+            current_surface.replace("module OpenPBRSurface;", "module WrongOwner;"),
+            current_surface.replace("namespace Metallic.SceneOpenPBR", "namespace Metallic.WrongNamespace"),
+            current_surface.replace("public static bool enableMetallic()", "static bool enableMetallic()"))
+        for changed in changes:
+            with self.subTest(changed=changed[:80]):
+                surface.write_text(changed, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Preparation source layout changed"):
+                    experiment.validate_shader_layout(source_root)
+        surface.write_text(current_surface, encoding="utf-8")
+        surface.unlink()
+        output = self.root / "must-not-exist"
+        args = argparse.Namespace(output_dir=output)
+        with patch.object(experiment, "ROOT", source_root.parent), patch.object(experiment.subprocess, "run") as process:
+            with self.assertRaisesRegex(ValueError, "expected owned shader"):
+                experiment.prepare(args)
+        self.assertFalse(output.exists())
+        process.assert_not_called()
+
     def initial_ir_run(self):
         provider = self.preparation / "providers/opaque.slang"
         provider.parent.mkdir()
-        provider.write_text("// fixed provider\n", encoding="utf-8")
+        provider.write_text("module FixedProvider;\n// fixed provider\n", encoding="utf-8")
         plan = copy.deepcopy(self.plans[1])
         plan.update(label="constant-opaque-dielectric", mechanism="constant", provider=str(provider))
         self.plans.append(plan)

@@ -25,6 +25,7 @@ import RunShaderPipelineDriver as driver
 ROOT = Path(__file__).resolve().parents[2]
 OPTIMIZATIONS = ("default", "O0", "O1", "O2", "O3")
 BACKENDS = ("pipeline", "shader-object", "pipeline-binary")
+POSTPROCESSES = ("none", "dead-branches", "slang-dead-branches")
 LOCK_NAMES = ("shader-experiment.lock", "openpbr-benchmark.lock", "material-phase0.lock",
               "compute-pipeline-experiment.lock")
 
@@ -76,17 +77,22 @@ def clean_environment():
     return environment
 
 
-def arms(optimizations, backends, optimization_policy):
+def arms(optimizations, backends, optimization_policy, postprocesses=("none",)):
     flags = (False, True) if optimization_policy == "both" else (optimization_policy == "disabled",)
     result = []
     for optimization in optimizations:
-        for backend in backends:
-            for disabled in flags:
-                if backend == "shader-object" and disabled:
-                    continue  # Shader objects have no disable-pipeline-optimization flag.
-                result.append(dict(optimization=optimization, backend=backend,
-                                   disable_driver_optimization=disabled,
-                                   name=f"{optimization}-{backend}-{'disabled' if disabled else 'normal'}"))
+        for postprocess in postprocesses:
+            if postprocess not in POSTPROCESSES:
+                raise ValueError("Unknown SPIR-V postprocess condition")
+            for backend in backends:
+                for disabled in flags:
+                    if backend == "shader-object" and disabled:
+                        continue  # Shader objects have no disable-pipeline-optimization flag.
+                    name = f"{optimization}-{backend}-{'disabled' if disabled else 'normal'}"
+                    if postprocess != "none":
+                        name += "-" + postprocess
+                    result.append(dict(optimization=optimization, postprocess=postprocess, backend=backend,
+                                       disable_driver_optimization=disabled, name=name))
     if not result:
         raise ValueError("No valid conditions; shader-object cannot disable pipeline optimization")
     if len({arm["name"] for arm in result}) != len(result):
@@ -94,9 +100,20 @@ def arms(optimizations, backends, optimization_policy):
     return result
 
 
+def shader_condition_key(arm):
+    # Existing evidence uses just O1/O2 as the map key. Keep that identity for
+    # unchanged code, while isolating transformed bytecode and native artifacts.
+    postprocess = arm.get("postprocess", "none")
+    return arm["optimization"] if postprocess == "none" else f"{arm['optimization']}:{postprocess}"
+
+
 def balanced_order(conditions, block):
     # Rotate starting arms and reverse alternate blocks. Preserve the schedule in
     # evidence; small repeat counts do not eliminate all clock/process-order drift.
+    # With two arms, rotation followed by reversal cancels. Alternate the new
+    # cleanup A/B directly; old evidence retains its original recorded schedule.
+    if len(conditions) == 2 and any(arm.get("postprocess", "none") != "none" for arm in conditions):
+        return list(reversed(conditions)) if block % 2 else list(conditions)
     shift = block % len(conditions)
     ordered = conditions[shift:] + conditions[:shift]
     return list(reversed(ordered)) if block % 2 else ordered
@@ -105,6 +122,7 @@ def balanced_order(conditions, block):
 def environment_for(arm, base, binary_directory=None, *, internal_cache="disabled"):
     environment = dict(base)
     environment.update(METALLIC_SLANG_OPTIMIZATION=arm["optimization"],
+                       METALLIC_SPIRV_POSTPROCESS=arm.get("postprocess", "none"),
                        METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION="1" if arm["disable_driver_optimization"] else "0",
                        METALLIC_VK_COMPUTE_BACKEND=arm["backend"],
                        METALLIC_VK_INTERNAL_PIPELINE_CACHE=internal_cache)
@@ -113,6 +131,52 @@ def environment_for(arm, base, binary_directory=None, *, internal_cache="disable
     if binary_directory is not None:
         environment["METALLIC_VK_NATIVE_BINARY_CACHE_DIR"] = str(binary_directory)
     return environment
+
+
+def postprocess_policy(report, sample, expected=None):
+    configuration = report["configuration"]
+    requested = configuration.get("spirv_postprocess", "none")
+    effective = sample.get("effective_spirv_postprocess", "none")
+    if requested not in POSTPROCESSES or effective not in POSTPROCESSES or requested != effective or \
+       (expected is not None and (requested != expected or effective != expected)):
+        raise ValueError("Requested/effective SPIR-V postprocess policy changed or was not confirmed")
+    version = configuration.get("spirv_postprocess_tool_version")
+    if effective != "none" and (not isinstance(version, str) or not version or version == "unavailable"):
+        raise ValueError("SPIR-V cleanup tool version was not confirmed")
+    if effective != "none" and sample.get("effective_descriptor_mode") != "mapped":
+        raise ValueError("SPIR-V dead-branch cleanup supports mapped descriptors only")
+    phases = sample.get("compilation_phases", {})
+    if not isinstance(phases, dict):
+        raise ValueError("Invalid SPIR-V compilation phase metrics")
+    if "postprocess_ms" in phases:
+        duration = phases["postprocess_ms"]
+        if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
+            raise ValueError("Invalid SPIR-V postprocess time")
+        cached = sample.get("shader_cache_hit", False)
+        if (cached or effective == "none") and duration != 0:
+            raise ValueError("Cached or unchanged SPIR-V must not rerun postprocessing")
+        if "cache_hit" in phases and phases["cache_hit"] != cached:
+            raise ValueError("SPIR-V compilation metrics disagree about the cache hit")
+        if "compiler_executed" in phases and phases["compiler_executed"] == cached:
+            raise ValueError("SPIR-V compiler execution metrics disagree about the cache hit")
+    if "raw_spirv_bytes" in phases:
+        raw_size = phases["raw_spirv_bytes"]
+        if not isinstance(raw_size, int) or raw_size < 0 or raw_size % 4 or \
+           (sample.get("shader_cache_hit", False) and raw_size != 0) or \
+           (not sample.get("shader_cache_hit", False) and raw_size < 20):
+            raise ValueError("Invalid raw compiler byte count or cache-hit provenance")
+    if "output_spirv_bytes" in phases and phases["output_spirv_bytes"] != sample["spirv_bytes"]:
+        raise ValueError("Postprocessed output byte count differs from captured SPIR-V")
+    return dict(spirv_postprocess=requested, effective_spirv_postprocess=effective,
+                spirv_postprocess_tool_version=version)
+
+
+def normalize_shader_identity(identity):
+    result = copy.deepcopy(identity)
+    result.setdefault("spirv_postprocess", "none")
+    result.setdefault("effective_spirv_postprocess", "none")
+    result.setdefault("spirv_postprocess_tool_version", None)
+    return result
 
 
 def shader_identity(report, sample):
@@ -124,6 +188,7 @@ def shader_identity(report, sample):
     identity["slang_optimization"] = report["configuration"]["slang_optimization"]
     identity["effective_slang_optimization"] = sample["effective_slang_optimization"]
     identity["spirv_statistics"] = sample["spirv_statistics"]
+    identity.update(postprocess_policy(report, sample))
     return copy.deepcopy(identity)
 
 
@@ -134,7 +199,8 @@ def device_shader_identity(sample):
 
 def verify_native(report, expected_shader, arm, *, imported=False, application_cache=False, device=None):
     sample = driver.single_sample(report, native=True)
-    if shader_identity(report, sample) != expected_shader:
+    postprocess_policy(report, sample, arm.get("postprocess", "none"))
+    if shader_identity(report, sample) != normalize_shader_identity(expected_shader):
         raise ValueError("SPIR-V or compiler configuration changed after prefill")
     if not sample.get("shader_cache_hit"):
         raise ValueError("Measured process did not load prefilled SPIR-V")
@@ -226,7 +292,10 @@ def binary_snapshot(directory):
 
 def compile_experiment(args, output, summary):
     executable = args.executable.resolve(strict=True)
-    conditions = arms(args.optimizations, args.backends, args.driver_optimization)
+    postprocesses = getattr(args, "postprocesses", ["none"])
+    conditions = arms(args.optimizations, args.backends, args.driver_optimization, postprocesses)
+    if args.descriptor_mode == "native" and any(mode != "none" for mode in postprocesses):
+        raise ValueError("SPIR-V dead-branch cleanup supports mapped descriptors only")
     application_pipeline_cache = getattr(args, "application_pipeline_cache", False)
     if args.native_binary_cache and "pipeline" in args.backends and not application_pipeline_cache:
         raise ValueError("Native binary import requires shader-object or pipeline-binary; select --backends explicitly")
@@ -246,26 +315,38 @@ def compile_experiment(args, output, summary):
                    caveats=["Disabled driver cache does not guarantee all compiler/OS state is cold.",
                             "native_cache_hit is application VkPipelineCache feedback, not an internal driver-cache hit.",
                             "Creation speed alone does not establish GPU execution speed or numerical correctness."])
+    if "slang-dead-branches" in postprocesses:
+        summary["caveats"].append("For slang-dead-branches, raw_spirv_bytes describes Slang's already-optimized blob. "
+                                  "Appended optimizer passes are inside code_generation_ms; postprocess_ms measures final validation only.")
     if args.validation:
         common.append("--validation")
     if getattr(args, "slang_perf_diagnostics", False):
         common.append("--slang-perf-diagnostics")
     shaders = {}
-    for optimization in args.optimizations:
+    prefill_conditions = {}
+    for arm in conditions:
+        prefill_conditions.setdefault(shader_condition_key(arm), arm)
+    for prefill_arm in prefill_conditions.values():
         check_snapshots(inputs)
-        destination = output / f"prefill-{optimization}"
-        command = common + ["--slang-optimization", optimization, "--compile-only", "--output-dir", str(destination)]
+        key = shader_condition_key(prefill_arm)
+        optimization = prefill_arm["optimization"]
+        postprocess = prefill_arm["postprocess"]
+        suffix = "" if postprocess == "none" else "-" + postprocess
+        destination = output / f"prefill-{optimization}{suffix}"
+        command = common + ["--slang-optimization", optimization, "--spirv-postprocess", postprocess,
+                            "--compile-only", "--output-dir", str(destination)]
         # Prefill uses the same descriptor ABI/debug policy and no native creation.
-        prefill_arm = dict(conditions[0], optimization=optimization)
         process, report = driver.run_process(command, environment_for(prefill_arm, base), destination, args.timeout)
         sample = driver.single_sample(report, native=False)
         if sample.get("execution_model") != 5:
             raise ValueError("Select a compute request from the current --list catalog")
-        shaders[optimization] = shader_identity(report, sample)
+        postprocess_policy(report, sample, postprocess)
+        shaders[key] = shader_identity(report, sample)
         check_snapshots(inputs)
         inputs.update(snapshots(sample["dependencies"]))
         save(output / "Inputs.json", inputs)
         summary["excluded_runs"].append(dict(condition="SPIR-V prefill", optimization=optimization,
+                                               postprocess=postprocess,
                                                process=process, report=str(destination / "report.json"),
                                                compile_wall_ms=sample.get("compile_wall_ms"),
                                                compilation_phases=sample.get("compilation_phases")))
@@ -287,11 +368,11 @@ def compile_experiment(args, output, summary):
             destination = output / f"{'application-cache' if application else 'binary'}-prime-{arm['name']}"
             command = native_command(common, arm, destination, directory, cache_file)
             process, report = driver.run_process(command, environment_for(arm, base, directory), destination, args.timeout)
-            sample = verify_native(report, shaders[arm["optimization"]], arm, application_cache=application, device=device)
+            sample = verify_native(report, shaders[shader_condition_key(arm)], arm, application_cache=application, device=device)
             device = report["device"]
             costs = creation_costs(report, sample)
             identity = device_shader_identity(sample)
-            previous = device_shaders.setdefault(arm["optimization"], identity)
+            previous = device_shaders.setdefault(shader_condition_key(arm), identity)
             if previous != identity:
                 raise ValueError("Final device SPIR-V changed between native backend/optimization-flag arms")
             if not application and not sample["pipeline"].get("native_binary_persisted"):
@@ -328,10 +409,10 @@ def compile_experiment(args, output, summary):
                 print(label, flush=True)
                 process, report = driver.run_process(native_command(common, arm, destination, directory, cache_file),
                     environment_for(arm, base, directory), destination, args.timeout)
-                sample = verify_native(report, shaders[arm["optimization"]], arm, imported=imported, application_cache=application, device=device)
+                sample = verify_native(report, shaders[shader_condition_key(arm)], arm, imported=imported, application_cache=application, device=device)
                 costs = creation_costs(report, sample)
                 identity = device_shader_identity(sample)
-                previous = device_shaders.setdefault(arm["optimization"], identity)
+                previous = device_shaders.setdefault(shader_condition_key(arm), identity)
                 if previous != identity:
                     raise ValueError("Final device SPIR-V changed between native backend/optimization-flag arms")
                 device = report["device"]
@@ -358,6 +439,7 @@ def compile_experiment(args, output, summary):
 
 def native_command(common, arm, destination, binary_directory=None, application_pipeline_cache=None):
     command = common + ["--slang-optimization", arm["optimization"], "--compute-backend", arm["backend"],
+                        "--spirv-postprocess", arm.get("postprocess", "none"),
                         "--output-dir", str(destination)]
     if arm["disable_driver_optimization"]:
         command.append("--disable-driver-optimization")
@@ -542,6 +624,10 @@ def compiler_log_evidence(path, arm):
     levels = re.findall(r"(?:\[Slang\].*Begin compile|\[ShaderCache\].*Loaded).*optimization=(O[0-3])", log)
     if not levels or set(levels) != {effective}:
         raise ValueError("Runtime log did not confirm the requested effective Slang optimization")
+    postprocess = arm.get("postprocess", "none")
+    policies = re.findall(r"(?:\[Slang\].*Begin compile|\[ShaderCache\].*Loaded).*optimization=O[0-3](?:, postprocess=([a-z-]+))?", log)
+    if len(policies) != len(levels) or {mode or "none" for mode in policies} != {postprocess}:
+        raise ValueError("Runtime log did not confirm the requested SPIR-V postprocess policy")
     if re.search(r"(?:VUID-|Validation Error)", log):
         raise ValueError("Runtime log contains Vulkan validation errors")
     policies = re.findall(r"\[ComputeCreatePolicy\] backend=([012]) disableOptimization=(true|false) pso=([0-9a-fA-F]{16})", log)
@@ -550,7 +636,8 @@ def compiler_log_evidence(path, arm):
     confirmed = [pso for backend, disabled, pso in policies if (backend, disabled) == (expected_backend, expected_disabled)]
     if not confirmed:
         raise ValueError("Runtime log did not confirm the requested native compute creation policy")
-    return dict(effective_slang_optimization=effective, confirmed_shader_count=len(levels),
+    return dict(effective_slang_optimization=effective, effective_spirv_postprocess=postprocess,
+                confirmed_shader_count=len(levels),
                 native_compute_pso_hashes=confirmed,
                 other_compute_creation_policies=[dict(backend=backend, disable_optimization=disabled, pso_hash=pso)
                     for backend, disabled, pso in policies if (backend, disabled) != (expected_backend, expected_disabled)])
@@ -589,11 +676,24 @@ def recipe_evidence(directory, arm):
                 raise ValueError("Invalid runtime recipe SPIR-V")
             if stage.get("slang_optimization") != effective or stage["debug_mode"] != "release":
                 raise ValueError("Runtime recipe front-end policy changed")
+            if stage.get("source_identity_ambiguous", False) is not False:
+                raise ValueError("Runtime recipe compiler provenance is ambiguous")
+            postprocess = stage.get("spirv_postprocess", "none")
+            version = stage.get("spirv_postprocess_tool_version")
+            if postprocess != arm.get("postprocess", "none") or postprocess not in POSTPROCESSES:
+                raise ValueError("Runtime recipe SPIR-V postprocess policy changed or was not confirmed")
+            if postprocess != "none" and (not isinstance(version, str) or not version or version == "unavailable"):
+                raise ValueError("Runtime recipe SPIR-V cleanup tool version was not confirmed")
+            if postprocess != "none" and stage["descriptor_heap_mode"] != "mapped":
+                raise ValueError("Runtime recipe SPIR-V cleanup requires mapped descriptors")
             identity = dict(module=stage["module_name"], entry=stage["source_entry_point"],
                             spirv_bytes=len(raw), spirv_sha256=hashlib.sha256(raw).hexdigest(),
                             input_spirv_fnv1a64=stage["input_spirv_hash"],
-                            descriptor_mode=stage["descriptor_heap_mode"], optimization=effective)
-            shaders[(identity["module"], identity["entry"], identity["spirv_sha256"])] = identity
+                            descriptor_mode=stage["descriptor_heap_mode"], optimization=effective,
+                            postprocess=postprocess, postprocess_tool_version=version)
+            previous = shaders.setdefault((identity["module"], identity["entry"], identity["spirv_sha256"]), identity)
+            if previous != identity:
+                raise ValueError("Runtime recipe shader policy differs for identical SPIR-V")
     if not selected_compute or not devices or not shaders:
         raise ValueError("Runtime did not export real compute PSO/input evidence for the requested backend")
     return dict(devices=devices, shaders=sorted(shaders.values(), key=lambda s: (s["module"], s["entry"], s["spirv_sha256"])),
@@ -602,7 +702,7 @@ def recipe_evidence(directory, arm):
 
 def dispatch_experiment(args, output, summary):
     executable = args.executable.resolve(strict=True)
-    conditions = arms(args.optimizations, args.backends, args.driver_optimization)
+    conditions = arms(args.optimizations, args.backends, args.driver_optimization, getattr(args, "postprocesses", ["none"]))
     validate_dispatch_binary_backends(args.backends, args.native_binary_cache)
     cases_path, configuration, extra = workload_configuration(args, output)
     inputs = input_identity(executable, extra, production=True)
@@ -664,7 +764,7 @@ def dispatch_experiment(args, output, summary):
                 device_identities = recipes["devices"]
             elif recipes["devices"] != device_identities:
                 raise ValueError("Runtime device/driver/debug/validation configuration changed")
-            previous = shader_identities.setdefault(arm["optimization"], recipes["shaders"])
+            previous = shader_identities.setdefault(shader_condition_key(arm), recipes["shaders"])
             if previous != recipes["shaders"]:
                 raise ValueError("Runtime input SPIR-V changed between backend/driver-optimization arms")
             if baseline_path is None:
@@ -726,8 +826,18 @@ def verify(output):
             tolerance = summary["tolerance"]
             if compare_readbacks(baseline, path, summary["workload"], tolerance["absolute"], tolerance["relative"]) != run["correctness"]:
                 raise ValueError("Correctness summary changed")
-            if "recipes" in run and recipe_evidence(path.parent / "recipes", run["arm"]) != run["recipes"]:
-                raise ValueError("Runtime PSO/SPIR-V evidence summary changed")
+            if "recipes" in run:
+                recorded = copy.deepcopy(run["recipes"])
+                for shader in recorded["shaders"]:
+                    shader.setdefault("postprocess", "none")
+                    shader.setdefault("postprocess_tool_version", None)
+                if recipe_evidence(path.parent / "recipes", run["arm"]) != recorded:
+                    raise ValueError("Runtime PSO/SPIR-V evidence summary changed")
+            if "compiler" in run:
+                recorded = copy.deepcopy(run["compiler"])
+                recorded.setdefault("effective_spirv_postprocess", "none")
+                if compiler_log_evidence(path.parent / "stdout.log", run["arm"]) != recorded:
+                    raise ValueError("Runtime compiler policy evidence summary changed")
     else:
         for run in runs:
             report = read(run["report"])
@@ -736,7 +846,7 @@ def verify(output):
                     "application-pipeline-cache" if run["arm"]["backend"] == "pipeline" else "native-binary"
                 if run.get("cache_kind") != expected_kind:
                     raise ValueError("Import artifact kind differs from its backend")
-            sample = verify_native(report, summary["shaders"][run["arm"]["optimization"]], run["arm"],
+            sample = verify_native(report, summary["shaders"][shader_condition_key(run["arm"])], run["arm"],
                                    imported=run["imported"], application_cache=run.get("cache_kind") == "application-pipeline-cache",
                                    device=summary["device"])
             if sample["pipeline"] != run["pipeline"]:
@@ -750,7 +860,7 @@ def verify(output):
                 for field in ("compile_wall_ms", "shader_module_wall_ms", "compilation_phases"):
                     if run.get(field) != sample.get(field):
                         raise ValueError("Shader preparation timing summary changed")
-            if device_shader_identity(sample) != summary["device_shaders"][run["arm"]["optimization"]]:
+            if device_shader_identity(sample) != summary["device_shaders"][shader_condition_key(run["arm"])]:
                 raise ValueError("Device SPIR-V identity summary changed")
     return summary
 
@@ -764,6 +874,7 @@ def main():
         run.add_argument("--output-dir", type=Path, required=True)
         run.add_argument("--optimizations", choices=OPTIMIZATIONS, nargs="+", default=["O0", "O1", "O2"])
         run.add_argument("--backends", choices=BACKENDS, nargs="+", default=["pipeline"])
+        run.add_argument("--postprocesses", choices=POSTPROCESSES, nargs="+", default=["none"])
         run.add_argument("--driver-optimization", choices=("normal", "disabled", "both"), default="both")
         run.add_argument("--pairs", type=int, default=3)
         run.add_argument("--timeout", type=float, default=600)

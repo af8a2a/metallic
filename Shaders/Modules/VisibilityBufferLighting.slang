@@ -28,6 +28,14 @@ namespace Metallic.VisibilityLighting
 {
 
 
+#ifndef METALLIC_DEFERRED_RUNTIME_PRECISION
+#define METALLIC_DEFERRED_RUNTIME_PRECISION 0
+#endif
+#if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+public typedef float DeferredWeight;
+public typedef float3 DeferredColor;
+public typedef float DeferredInput;
+#else
 #ifndef METALLIC_DEFERRED_FP16
 #define METALLIC_DEFERRED_FP16 1
 #endif
@@ -41,20 +49,34 @@ public typedef float DeferredWeight;
 public typedef float3 DeferredColor;
 public typedef float DeferredInput;
 #endif
+#endif
 
-#define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().environmentIrradianceSH)
+#if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+[SpecializationConstant]
+public const bool kDeferredUseFP16Precision = false;
+
+float deferredPrecisionRoundTrip(float x, bool useFP16Precision)
+{
+    if (useFP16Precision) {
+        return unpackHalf2x16ToFloat(packHalf2x16(float2(x, 0.0f))).x;
+    }
+    return x;
+}
+#endif
+
+#define gEnvironmentIrradianceSH resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneEnvironmentIrradianceSHOffset))
 
 
-#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getResourceParameters<SceneResourceParameters>().lightGridParams)
-#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lightGridLights)
-#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().lightGridCandidates)
-#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getResourceParameters<SceneResourceParameters>().lightGridCells)
-#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().lightGridIndices)
+#define gDeferredGridParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridParamsOffset))
+#define gDeferredGridLights resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridLightsOffset))
+#define gDeferredGridCandidates resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCandidatesOffset))
+#define gDeferredGridCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridCellsOffset))
+#define gDeferredGridIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightGridIndicesOffset))
 
 
-#define gRealtimeShadow resolveUniform(getResourceParameters<SceneResourceParameters>().shadowVisibility)
-#define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameters<SceneResourceParameters>().shadowParameters)
-#define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<SceneResourceParameters>().previousEnvironmentIrradianceSH)
+#define gRealtimeShadow resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneShadowVisibilityOffset))
+#define gRealtimeShadowParameters resolveBuffer<StructuredBuffer<ShadowParameters>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneShadowParametersOffset))
+#define gEnvironmentSpecular resolveBuffer<StructuredBuffer<float4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kScenePreviousEnvironmentIrradianceSHOffset))
 
 public float3 realtimeEnvironmentSpecular(float3 direction, float roughness, ScenePathTracePush push)
 {
@@ -96,7 +118,7 @@ public struct VisibilitySurfaceLights : ISurfaceLightProvider
         if (index < kCelestialLightCount) {
             result.source = celestialSourceIdentity(index);
             light = sampleCelestialLightAtPosition(resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights), index, position);
+                getResourceParameterField<SceneResourceParameters, EnvironmentResourceParameters>(kSceneEnvironmentOffset).celestialLights), index, position);
         } else {
             index -= kCelestialLightCount;
             result.source = index < lookup.count
@@ -167,8 +189,15 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
         float3 f0 = lerp(summary.dielectricReflectance, summary.baseColor, conductorFraction);
         DeferredColor specularWeight = DeferredColor(saturate(approxSpecularIntegralGGX(f0,
             max(roughness * roughness, 0.0001), saturate(dot(normal, viewDirection)))));
+#if METALLIC_DEFERRED_RUNTIME_PRECISION && METALLIC_WORKING_SPACE_ACESCG
+        bool useFP16Precision = kDeferredUseFP16Precision;
+        DeferredWeight diffuseWeight = deferredPrecisionRoundTrip(DeferredWeight(saturate(summary.diffuseWeight)), useFP16Precision) *
+            (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
+        diffuseWeight = deferredPrecisionRoundTrip(diffuseWeight, useFP16Precision);
+#else
         DeferredWeight diffuseWeight = DeferredWeight(saturate(summary.diffuseWeight)) *
             (DeferredWeight(1.0) - conductorFraction) * (DeferredWeight(1.0) - surfaceTransmission);
+#endif
         DeferredColor diffuseColor = DeferredColor(summary.baseColor) * diffuseWeight *
             (DeferredColor(1.0) - specularWeight);
         DeferredColor transmissionColor = DeferredColor(summary.transmissionColor) * surfaceTransmission *

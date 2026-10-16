@@ -14,6 +14,7 @@
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Hash.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/NativeShaderWarmup.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
@@ -2083,6 +2084,9 @@ struct DeviceImpl {
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderUntypedPointersEnabled = false;
+    bool shaderFloat16Enabled = false;
+    bool shaderInt16Enabled = false;
+    bool shaderInt64Enabled = false;
     bool pipelineExecutableStatistics = false;
     std::string pipelineExecutableDirectory;
     bool logPipelineKeys = false;
@@ -6543,6 +6547,13 @@ void Device::logMemoryBudget(const char* phase) const
     }
 }
 
+DescriptorHeapShaderStrides Device::descriptorHeapShaderStrides() const
+{
+    if (!impl_ || !impl_->bindlessDescriptorHeapEnabled) { return {}; }
+    return {static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()),
+        static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize())};
+}
+
 const DeviceCapabilities& Device::capabilities() const
 {
     static const DeviceCapabilities emptyCapabilities;
@@ -8196,6 +8207,11 @@ Result<std::unique_ptr<PipelineImpl>> createPipelineOwner(detail::DeviceImpl& de
 
 Result<> Device::validateGraphicsPipelineDesc(const GraphicsPipelineDesc& desc) const
 {
+    // This bounded API currently exposes specialization for compute only.
+    // Existing graphics calls remain empty; never silently ignore new values.
+    for (const auto* stage : {&desc.vertexShader, &desc.taskShader, &desc.meshShader, &desc.fragmentShader}) {
+        if (!stage->specializationConstants.empty()) { return makeError(Error::InvalidArgument); }
+    }
     const bool usesTaskShader = desc.taskShader.module != nullptr;
     const bool usesMeshShader = desc.meshShader.module != nullptr;
     const bool usesVertexShader = desc.vertexShader.module != nullptr;
@@ -8501,6 +8517,25 @@ Result<> Device::validateComputePipelineDesc(const ComputePipelineDesc& desc) co
         !validShaderStage(desc.computeShader)) {
         return makeError(Error::InvalidArgument);
     }
+    std::string specializationError;
+    if (!detail::validateShaderSpecializationModule(desc.computeShader.module->impl_->deviceSpirv,
+        desc.computeShader.specializationConstants, specializationError)) {
+        return makeError(Error::InvalidArgument);
+    }
+    // Preflight the same bounded full-value envelope used by both binary
+    // backends; no compatibility-key truncation or hash-only value admission.
+    if (desc.backend != ComputePipelineBackend::Pipeline && !desc.computeShader.specializationConstants.empty()) {
+        try {
+            constexpr size_t maximumDriverKeySize =
+#if defined(VK_KHR_pipeline_binary)
+                std::max<size_t>(2 * VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR, VK_UUID_SIZE + sizeof(uint32_t));
+#else
+                VK_UUID_SIZE + sizeof(uint32_t);
+#endif
+            const std::vector<uint8_t> maximumDriverKey(maximumDriverKeySize);
+            (void)detail::specializationCompatibilityKey(maximumDriverKey, desc.computeShader.specializationConstants);
+        } catch (const std::invalid_argument&) { return makeError(Error::InvalidArgument); }
+    }
     if (desc.backend > ComputePipelineBackend::PipelineBinary ||
         (desc.backend != ComputePipelineBackend::Pipeline && desc.pipelineCache != nullptr) ||
         (desc.backend == ComputePipelineBackend::ShaderObject && desc.disableOptimization)) {
@@ -8707,6 +8742,30 @@ void captureComputeExecutable(detail::DeviceImpl& device, VkPipeline pipeline, u
     }
 }
 
+struct VulkanSpecialization {
+    static_assert(sizeof(VkBool32) == sizeof(uint32_t));
+    std::vector<VkSpecializationMapEntry> entries;
+    std::vector<uint32_t> words;
+    VkSpecializationInfo info{};
+
+    explicit VulkanSpecialization(std::span<const ShaderSpecializationConstant> values)
+    {
+        const auto canonical = detail::canonicalShaderSpecializationConstants(values);
+        entries.reserve(canonical.size());
+        words.reserve(canonical.size());
+        for (const auto& value : canonical) {
+            entries.push_back({value.id, static_cast<uint32_t>(words.size() * sizeof(uint32_t)), sizeof(uint32_t)});
+            words.push_back(value.bits);
+        }
+        info.mapEntryCount = static_cast<uint32_t>(entries.size());
+        info.pMapEntries = entries.data();
+        info.dataSize = words.size() * sizeof(uint32_t);
+        info.pData = words.data();
+    }
+
+    const VkSpecializationInfo* get() const { return entries.empty() ? nullptr : &info; }
+};
+
 Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
     const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner);
 VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePipelineDesc& desc,
@@ -8726,11 +8785,13 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
     const uint64_t psoHash = detail::computePipelineStateHash(desc);
 
     const char* computeEntryPoint = desc.computeShader.entryPoint;
+    const VulkanSpecialization specialization(desc.computeShader.specializationConstants);
     VkPipelineShaderStageCreateInfo stage{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
         .module = desc.computeShader.module->impl_->module,
         .pName = computeEntryPoint,
+        .pSpecializationInfo = specialization.get(),
     };
 
     std::vector<VkDescriptorSetAndBindingMappingEXT> bindlessMappings;
@@ -8975,6 +9036,7 @@ Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipe
         .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
         .mappingCount = static_cast<uint32_t>(mappings.size()), .pMappings = mappings.data(),
     };
+    const VulkanSpecialization specialization(desc.computeShader.specializationConstants);
     VkShaderCreateInfoEXT info{
         .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
         .pNext = desc.usesBindlessHeap && shader.hasDescriptorBindings ? &mappingInfo : nullptr,
@@ -8983,12 +9045,17 @@ Result<> createComputeShaderObject(detail::DeviceImpl& device, const ComputePipe
         .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
         .codeSize = shader.deviceSpirv.size() * sizeof(uint32_t),
         .pCode = shader.deviceSpirv.data(), .pName = desc.computeShader.entryPoint,
+        .pSpecializationInfo = specialization.get(),
     };
     detail::NativeBinaryCacheData identity{.programHash = owner.psoHash, .kind = 1};
     const auto& properties = device.physicalProperties.shaderObject;
     identity.compatibilityKey.assign(std::begin(properties.shaderBinaryUUID), std::end(properties.shaderBinaryUUID));
     const auto* version = reinterpret_cast<const uint8_t*>(&properties.shaderBinaryVersion);
     identity.compatibilityKey.insert(identity.compatibilityKey.end(), version, version + sizeof(properties.shaderBinaryVersion));
+    if (!desc.computeShader.specializationConstants.empty()) {
+        identity.compatibilityKey = detail::specializationCompatibilityKey(identity.compatibilityKey,
+            desc.computeShader.specializationConstants);
+    }
     const auto path = nativeBinaryPath(desc, identity);
     std::unique_lock<std::mutex> cacheLock;
     if (!path.empty()) {
@@ -9107,6 +9174,10 @@ VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePi
     // Driver keys cover the complete effective creation state, including
     // optional statistics flags and descriptor mapping ABI.
     identity.compatibilityKey.insert(identity.compatibilityKey.end(), pipelineKey.key, pipelineKey.key + pipelineKey.keySize);
+    if (!desc.computeShader.specializationConstants.empty()) {
+        identity.compatibilityKey = detail::specializationCompatibilityKey(identity.compatibilityKey,
+            desc.computeShader.specializationConstants);
+    }
     const auto path = nativeBinaryPath(desc, identity);
     std::unique_lock<std::mutex> cacheLock;
     if (!path.empty()) {
@@ -9236,6 +9307,9 @@ VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePi
 Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShaderObjectProgram(
     const GraphicsShaderObjectProgramDesc& desc)
 {
+    if (!desc.vertexShader.specializationConstants.empty() || !desc.fragmentShader.specializationConstants.empty()) {
+        return makeError(Error::InvalidArgument);
+    }
     if (!validShaderStage(desc.vertexShader) || !validShaderStage(desc.fragmentShader)) {
         return makeError(Error::InvalidArgument);
     }
@@ -9450,7 +9524,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         return makeError(Error::InvalidArgument);
     }
 
-    std::lock_guard initializationLock(volkInitializationMutex());
+    std::unique_lock initializationLock(volkInitializationMutex());
     auto deviceImpl = std::make_unique<detail::DeviceImpl>();
     deviceImpl->logPipelineKeys = logPipelineKeys;
     if (desc.enableAftermath) {
@@ -10135,6 +10209,9 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     selectedFeatures.publish(deviceImpl->capabilities, deviceImpl->vulkanCapabilities);
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
+    deviceImpl->shaderFloat16Enabled = selectedFeatures.shaderFloat16;
+    deviceImpl->shaderInt16Enabled = selectedFeatures.shaderInt16;
+    deviceImpl->shaderInt64Enabled = selectedFeatures.shaderInt64;
     deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline;
     deviceImpl->capabilities.subPixelPrecisionBits = selectedProperties.limits.subPixelPrecisionBits;
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
@@ -10264,7 +10341,14 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         spdlog::info("[Vulkan] VK_NV_cooperative_vector enabled");
     }
 
-    return std::unique_ptr<Device>(new Device(std::move(deviceImpl)));
+    auto device = std::unique_ptr<Device>(new Device(std::move(deviceImpl)));
+    // Native warmup must use the actual rendering device, after its descriptor
+    // ABI/features are known. Do not hold loader initialization across shader
+    // compilation or driver pipeline creation.
+    initializationLock.unlock();
+    auto warmed = warmupNativeShadersForStartup(*device);
+    if (!warmed) { return makeError(warmed.error()); }
+    return device;
 }
 
 namespace detail {
@@ -10302,6 +10386,11 @@ struct VulkanNativeAccess {
             .apiVersion = kVulkanAPIVersion,
             .descriptorHeapEnabled = device.impl_->bindlessDescriptorHeapEnabled,
             .shaderUntypedPointersEnabled = device.impl_->shaderUntypedPointersEnabled,
+            .shaderFloat16Enabled = device.impl_->shaderFloat16Enabled,
+            // shaderFloat64 is not enabled by the current feature catalog.
+            .shaderFloat64Enabled = false,
+            .shaderInt16Enabled = device.impl_->shaderInt16Enabled,
+            .shaderInt64Enabled = device.impl_->shaderInt64Enabled,
             .validationEnabled = device.impl_->validationEnabled,
             .synchronizationValidationEnabled = device.impl_->synchronizationValidationEnabled,
             .validationMessengerActive = device.impl_->debugMessenger != VK_NULL_HANDLE,

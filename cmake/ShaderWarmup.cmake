@@ -20,6 +20,8 @@ target_include_directories(MetallicShaderWarmupCore PUBLIC "${CMAKE_SOURCE_DIR}/
 find_package(Threads REQUIRED)
 target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads
     MetallicMaterialValueCompiler ${CMAKE_DL_LIBS})
+include("${CMAKE_SOURCE_DIR}/cmake/SetupSPIRVTools.cmake")
+metallic_configure_spirv_tools(MetallicShaderWarmupCore)
 # The stride query uses local Vulkan dispatch and only needs volk's headers.
 # Linking its implementation here can reorder volk after the Streamline import
 # library, whose Vulkan function exports collide with volk's global pointers.
@@ -38,9 +40,11 @@ if(MSVC)
 endif()
 # Applications call the shared implementation at startup. Building an
 # application does not execute the separate manual warmup target.
+include("${CMAKE_SOURCE_DIR}/cmake/ShaderCompilerBuildIdentity.cmake")
+metallic_prepare_shader_compiler_identity()
 add_executable(MetallicShaderCompiler EXCLUDE_FROM_ALL
     "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmupMain.cpp")
-target_link_libraries(MetallicShaderCompiler PRIVATE MetallicShaderWarmupCore)
+target_link_libraries(MetallicShaderCompiler PRIVATE MetallicShaderCompilerShared)
 metallic_copy_spdlog_runtime(MetallicShaderCompiler)
 if(WIN32)
     file(GLOB _metallic_warmup_slang_dlls "${METALLIC_SLANG_ROOT}/bin/*.dll")

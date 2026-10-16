@@ -40,8 +40,10 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
         resolveUniform(SamplerHandle(GPU_DRIVEN_OPENPBR_LUT_SAMPLER)), uvw);
 }
 
-struct PreviewOpenPBRContext : IOpenPBRContext
+public struct PreviewOpenPBRContext : IOpenPBRContext
 {
+    public static const bool kEnableSheenAndCoat = false;
+    public static const bool kEnableDispersion = false;
     static bool enableSheenAndCoat() { return false; }
     static bool enableDispersion() { return false; }
     static bool enableTranslucency() { return true; }

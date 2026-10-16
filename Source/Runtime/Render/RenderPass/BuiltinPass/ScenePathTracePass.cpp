@@ -25,6 +25,7 @@
 #include "Runtime/Render/Material/OpenPBRLutData.h"
 
 #include <chrono>
+#include <limits>
 
 #ifndef METALLIC_HAS_RTXCR
 #define METALLIC_HAS_RTXCR 0
@@ -590,6 +591,10 @@ public:
     }
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (!validatePrimaryGuideSplit(properties(), log)) { return makeError(Error::Unsupported); }
+        if (boolProperty(properties(), "splitPrimaryGuides", false) != compiledSplitPrimaryGuides_) {
+            return compile(context, log);
+        }
         uint32_t requestedCache = realtime_ ? kScenePathTraceCacheModeOff : cacheModeFromProperties(properties());
         if (exportDenoiserGuides(properties()) && !useOpenPBRBsdf(properties())) {
             requestedCache = kScenePathTraceCacheModeOff;
@@ -613,6 +618,8 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (!validatePrimaryGuideSplit(properties(), log)) { return makeError(Error::Unsupported); }
+        const bool splitPrimaryGuides = boolProperty(properties(), "splitPrimaryGuides", false);
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "ScenePathTracePass requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
@@ -686,6 +693,7 @@ public:
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|singleSampleGuides=" + (singleSampleGuides ? "1" : "0") +
+            "|splitPrimaryGuides=" + (splitPrimaryGuides ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
@@ -716,6 +724,7 @@ public:
                     (manifest.programId < closurePrograms_.size() && closurePrograms_[manifest.programId].valid());
             });
         const bool baseReady = closureProgramsReady && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+            (!splitPrimaryGuides || primaryGuidesProgram_.valid()) &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
                 [](const ComputeKernel& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
@@ -796,14 +805,13 @@ public:
             for (const auto binding : kLightGridMembers) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
-            if (globalView) { baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer}); }
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .kind = ComputeResourceBindingKind::StorageBuffer, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, previousEnvironmentIrradianceSH), .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowVisibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .kind = ComputeResourceBindingKind::StorageBuffer});
-            if (boolProperty(properties(), "exportUpscalerGuides", false)) {
-                baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage});
-                baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage});
-            }
+            // One shader/encoder layout serves both output policies.
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .kind = ComputeResourceBindingKind::StorageImage, .optional = true});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .kind = ComputeResourceBindingKind::SampledImage});
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, rasterDomain), .kind = ComputeResourceBindingKind::SampledImage});
@@ -870,6 +878,10 @@ public:
             });
         }
         baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer});
+        if (splitPrimaryGuides) {
+            baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(ScenePrimarySplitResourceParameters, primaryHits),
+                .kind = ComputeResourceBindingKind::StorageBuffer});
+        }
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
@@ -881,7 +893,9 @@ public:
             if (singleSampleGuides && permutation != PathTracePermutation::SharcUpdate) {
                 defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
             }
-            const auto request = makeSceneShaderRequest(shaderProgram, shaderOptions, defines);
+            const auto request = splitPrimaryGuides
+                ? makeOpenPBRPrimarySplitShaderRequest(shaderOptions, defines, false)
+                : makeSceneShaderRequest(shaderProgram, shaderOptions, defines);
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
@@ -890,12 +904,18 @@ public:
                 source.desc(),
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
-                    .resourceParameterSize = sizeof(SceneResourceParameters)},
+                    .resourceParameterSize = splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) : sizeof(SceneResourceParameters),
+                    .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines)},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
+                if (splitPrimaryGuides) {
+                    clearPrograms();
+                    compiledShaderKey_.clear();
+                    return compiled;
+                }
                 // Reload creates replacement passes. Reject the entire transaction
                 // so a failure can never replace a previously successful graph.
                 if (context.shaderReload || outProgram.valid() || permutation != PathTracePermutation::Base) { return compiled; }
@@ -932,6 +952,27 @@ public:
         }
 
         if (errorProgram_.valid()) { return {}; }
+        if (splitPrimaryGuides && !primaryGuidesProgram_.valid()) {
+            const SlangMacroDefine defines[] = {{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+            const auto request = makeOpenPBRPrimarySplitShaderRequest(shaderOptions, defines, true);
+            const ShaderRequestView source(request);
+            std::shared_ptr<const MaterialExecutableArtifact> artifact;
+            std::string diagnostics;
+            result = compileMaterialExecutable(*context.device, source.desc(),
+                {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = baseBindings,
+                    .debugName = "ScenePathTracePass.PrimaryGuides",
+                    .resourceParameterSize = sizeof(ScenePrimarySplitResourceParameters)},
+                primaryGuidesProgram_, artifact, diagnostics,
+                {.definitionHash = findMaterialProgram(MaterialProgramId::OpenPBRComposite)->key.definitionHash});
+            if (!diagnostics.empty()) { log += diagnostics + '\n'; }
+            if (!result) {
+                clearPrograms();
+                compiledShaderKey_.clear();
+                return result;
+            }
+            materialExecutableKeys_.push_back({&primaryGuidesProgram_, artifact->programKey});
+            materialArtifacts_.push_back(std::move(artifact));
+        }
         if (classified) {
             for (uint32_t type = 0; type < classifiedPrograms_.size(); ++type) {
                 if (classifiedPrograms_[type].valid()) { continue; }
@@ -1065,7 +1106,9 @@ public:
         }
 
         compiledShaderKey_ = shaderKey;
+        compiledGlobalView_ = globalView;
         compiledSingleSampleGuides_ = singleSampleGuides;
+        compiledSplitPrimaryGuides_ = splitPrimaryGuides;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
@@ -1075,6 +1118,15 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        std::string splitLog;
+        if (!validatePrimaryGuideSplit(context.properties(), splitLog)) {
+            spdlog::error("{}", splitLog);
+            return makeError(Error::Unsupported);
+        }
+        if (boolProperty(context.properties(), "splitPrimaryGuides", false) != compiledSplitPrimaryGuides_) {
+            spdlog::error("ScenePathTracePass splitPrimaryGuides changed without recompiling the graph");
+            return makeError(Error::InvalidArgument);
+        }
         if (errorProgram_.valid()) {
             for (const char* name : {"color", "albedo", "specularAlbedo", "normalRoughness",
                     "motionVectors", "deviceDepth", "linearDepth", "specularHitDistance", "depth"}) {
@@ -1354,6 +1406,9 @@ public:
             push.eye[3] = 0.0f;
             push.center[3] = 0.0f;
             push.deferredSettings = 0;
+            if (visibilityDeferred_ && boolProperty(context.properties(), "halfPrecision", true)) {
+                push.deferredSettings |= kScenePathTraceUseFP16Precision;
+            }
             visibilityView = visibility.view();
             visibilityDepthView = visibilityDepth.view();
         }
@@ -1495,8 +1550,13 @@ public:
         MaterialBinningResult materialBins;
         ScreenSpaceShadowResult shadow;
         if (visibilityDeferred_) {
-            if (context.viewConstantsBuffer() != nullptr) {
+            if (compiledGlobalView_) {
+                if (context.viewConstants() == nullptr || context.viewConstantsBuffer() == nullptr ||
+                    context.viewConstantsBuffer()->desc().size < sizeof(ViewConstants)) {
+                    return makeError(Error::InvalidArgument);
+                }
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, view), .buffer = context.viewConstantsBuffer()});
+                push.deferredSettings |= kScenePathTraceUseGlobalView;
             }
             const std::array<Buffer*, 5> gridBuffers{deferredGrid->parameters, deferredGrid->lights,
                 deferredGrid->candidates, deferredGrid->cells, deferredGrid->lightIndices};
@@ -1540,8 +1600,15 @@ public:
                 bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, shadowParameters), .buffer = shadow.parameters});
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
-                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .textureView = context.outputTexture("motionVectors").view()});
-                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .textureView = context.outputTexture("deviceDepth").view()});
+                const auto motion = context.outputTexture("motionVectors");
+                const auto depth = context.outputTexture("deviceDepth");
+                if (!motion.valid() || !depth.valid() || motion.view() == nullptr || depth.view() == nullptr ||
+                    motion.texture()->desc().format != Format::RG16Sfloat || depth.texture()->desc().format != Format::R32Sfloat) {
+                    return makeError(Error::InvalidArgument);
+                }
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerMotion), .textureView = motion.view()});
+                bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, upscalerDepth), .textureView = depth.view()});
+                push.deferredSettings |= kScenePathTraceExportUpscalerGuides;
             }
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibility), .textureViews = {&visibilityView, 1}});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, visibilityDepth), .textureViews = {&visibilityDepthView, 1}});
@@ -1649,6 +1716,62 @@ public:
             if (!result) {
                 return result;
             }
+        } else if (compiledSplitPrimaryGuides_) {
+            // Each recording owns its scratch allocation. Retaining its backing
+            // storage makes resize, overlapping frames and cancelled recordings
+            // independent of this pass object's lifetime.
+            const uint64_t pixels = uint64_t(context.width()) * context.height();
+            if (pixels == 0 || pixels > std::numeric_limits<uint32_t>::max() / kOpenPBRPrimaryHitStride) {
+                return makeError(Error::InvalidArgument);
+            }
+            std::unique_ptr<Buffer> primaryHits;
+            result = device_->createBuffer(BufferDesc{
+                .size = pixels * kOpenPBRPrimaryHitStride,
+                .usage = BufferUsageBits::Storage,
+                .memoryLocation = MemoryLocation::Device,
+            }).transform([&](auto buffer) { primaryHits = std::move(buffer); });
+            if (!result || !primaryHits) { return result ? makeError(Error::Failure) : result; }
+            result = context.commandBuffer().retainResource(primaryHits->retainAllocation());
+            if (!result) { return result; }
+            bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(ScenePrimarySplitResourceParameters, primaryHits),
+                .buffer = primaryHits.get()});
+
+            auto resources = stageResources(context, push);
+            result = importBuffer(resources, "primaryHits", primaryHits.get());
+            if (!result) { return result; }
+            using Access = RenderGraphResourceAccess;
+            const std::array primaryUses{
+                RenderGraphStageUse{"primaryHits", Access::BufferStorageWrite},
+                RenderGraphStageUse{"albedo", Access::TextureStorageWrite},
+                RenderGraphStageUse{"specularAlbedo", Access::TextureStorageWrite},
+                RenderGraphStageUse{"normalRoughness", Access::TextureStorageWrite},
+                RenderGraphStageUse{"motionVectors", Access::TextureStorageWrite},
+                RenderGraphStageUse{"linearDepth", Access::TextureStorageWrite},
+                RenderGraphStageUse{"depth", Access::TextureStorageWrite},
+            };
+            std::erase_if(resources.uses, [](const RenderGraphStageUse& use) {
+                return use.resource == "albedo" || use.resource == "specularAlbedo" ||
+                    use.resource == "normalRoughness" || use.resource == "motionVectors" ||
+                    use.resource == "linearDepth" || use.resource == "depth";
+            });
+            resources.uses.push_back({"primaryHits", Access::BufferShaderRead});
+            auto dispatch = [&](CommandBuffer& commands, ComputeKernel& program) {
+                return dispatchResources(program, encoderFor(program), {
+                    .commandBuffer = &commands, .bindings = bindings,
+                    .pushData = &push, .pushDataSize = sizeof(push),
+                    .groupCountX = (context.width() + 7) / 8,
+                    .groupCountY = (context.height() + 7) / 8,
+                    .groupCountZ = 1, .profiler = profiler,
+                });
+            };
+            const std::array stages{
+                RenderGraphStage{"Primary guides", primaryUses,
+                    [&](CommandBuffer& commands) { return dispatch(commands, primaryGuidesProgram_); }},
+                RenderGraphStage{"Path continuation", resources.uses,
+                    [&](CommandBuffer& commands) { return dispatch(commands, *renderProgram); }},
+            };
+            result = context.executeStages(stages, resources.buffers, resources.textures);
+            if (!result) { return result; }
         } else {
             auto resources = stageResources(context, push);
             if (materialBins.arguments != nullptr) {
@@ -1719,6 +1842,19 @@ public:
     }
 
 private:
+    bool validatePrimaryGuideSplit(const RenderGraphProperties& properties, std::string& log) const
+    {
+        if (!boolProperty(properties, "splitPrimaryGuides", false)) { return true; }
+        if (realtime_ || visibilityDeferred_ || !useOpenPBRBsdf(properties) ||
+            !exportDenoiserGuides(properties) ||
+            uintProperty(properties, "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples) != 1 ||
+            stringProperty(properties, "cacheMode", "sharc") != "off") {
+            log += "splitPrimaryGuides requires OpenPBR path tracing, exportDenoiserGuides=true, samples=1 and cacheMode=off\n";
+            return false;
+        }
+        return true;
+    }
+
     const ComputeResourceEncoder& encoderFor(const ComputeKernel& kernel) const
     {
         for (size_t i = 0; i < materialExecutableKeys_.size(); ++i) {
@@ -1885,6 +2021,7 @@ private:
         for (ComputeKernel& program : programs_) {
             program.clear();
         }
+        primaryGuidesProgram_.clear();
         sharcClearProgram_.clear();
         sharcResolveProgram_.clear();
         materialBinning_.clear();
@@ -2623,8 +2760,10 @@ private:
     bool compiledMaterialBinning_ = true;
     bool compiledProgramBinning_ = true;
     bool compiledSingleSampleGuides_ = false;
+    bool compiledSplitPrimaryGuides_ = false;
     bool compiledHalfPrecision_ = true;
     bool compiledExportUpscalerGuides_ = false;
+    bool compiledGlobalView_ = false;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;
     std::shared_ptr<const ComputeSampledImageSnapshot> previousTextureSnapshot_;
@@ -2648,6 +2787,7 @@ private:
     };
     OpenPBRLutResources openPBRLuts_;
     std::array<ComputeKernel, static_cast<size_t>(PathTracePermutation::Count)> programs_;
+    ComputeKernel primaryGuidesProgram_;
     ComputeKernel sharcClearProgram_;
     ComputeKernel sharcResolveProgram_;
     std::string compiledShaderKey_;

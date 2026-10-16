@@ -18,8 +18,6 @@ import subprocess
 import time
 
 import numpy as np
-import psutil
-from scipy.stats import t
 import MaterialBaseline as mb
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -227,6 +225,7 @@ def verify(root):
             medians[(p['block'],p['arm'],case['id'])]=(statistics.median(pt),statistics.median(graph))
     result=dict(correctness=differences,scope=identity['scope'],comparisons=[])
     if identity['phase']=='performance':
+        from scipy.stats import t
         n=len(identity['orders'])
         for case in expected:
             for a,b in itertools.combinations(sorted(set(''.join(identity['orders']))), 2):
@@ -266,6 +265,7 @@ if __name__=='__main__':
             if (args.output/'Transaction.json').exists() and mb.read(args.output/'Transaction.json')['restored']:
                 LOCK.unlink()
     elif args.command=='recover':
+        import psutil
         owner=mb.read(LOCK)
         if psutil.pid_exists(owner['pid']) or Path(owner['output']).resolve()!=args.output.resolve():
             raise RuntimeError('Active or unrelated experiment owner')

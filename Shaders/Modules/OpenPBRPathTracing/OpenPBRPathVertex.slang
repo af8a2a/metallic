@@ -35,6 +35,32 @@ using Metallic.SHARC;
 
 namespace Metallic.OpenPBRPathTracing
 {
+#if defined(METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION) && METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION != 0 && METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION != 1
+#error METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION must be 0 or 1.
+#endif
+#if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
+#if !defined(METALLIC_PT_SINGLE_SAMPLE) || METALLIC_PT_SINGLE_SAMPLE != 1 || !defined(SHARC_QUERY) || SHARC_QUERY != 1 || (defined(SHARC_UPDATE) && SHARC_UPDATE != 0)
+#error Single cache-query specialization requires globally configured SINGLE1 QUERY1 UPDATE0.
+#endif
+#if METALLIC_PT_CACHE_QUERY_SPECIALIZATION || METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
+#error Single cache-query specialization is independent of the General and standard cache markers.
+#endif
+#if defined(MATERIAL_CLASS) || defined(MATERIAL_PROGRAM_ID) || defined(METALLIC_DEFERRED_FP16) || defined(METALLIC_DEFERRED_RUNTIME_PRECISION) || defined(METALLIC_DEFERRED_CLASS_SPECIALIZATION)
+#error Single cache-query specialization excludes manual material and Deferred shapes.
+#endif
+#if !defined(METALLIC_CUSTOM_MATERIALS) || METALLIC_CUSTOM_MATERIALS != 0 || !defined(METALLIC_GLOBAL_VIEW) || METALLIC_GLOBAL_VIEW != 0 || !defined(METALLIC_HAS_RTXCR) || METALLIC_HAS_RTXCR != 1
+#error Single cache-query specialization requires the builtin local-view RTXCR family.
+#endif
+#if !defined(METALLIC_DEFERRED_LIGHT_GRID) || METALLIC_DEFERRED_LIGHT_GRID != 0 || !defined(METALLIC_REALTIME_DEFERRED) || METALLIC_REALTIME_DEFERRED != 0 || !defined(METALLIC_DEFERRED_UPSCALER_GUIDES) || METALLIC_DEFERRED_UPSCALER_GUIDES != 0
+#error Single cache-query specialization excludes Deferred source families.
+#endif
+#if !defined(METALLIC_WORKING_SPACE_ACESCG) || METALLIC_WORKING_SPACE_ACESCG != 1
+#error Single cache-query specialization is restricted to ACEScg.
+#endif
+// Cache policy only. SINGLE remains the original static global1 on both arms.
+[SpecializationConstant]
+public const bool kOpenPBRSingleCacheQueryEnabled = false;
+#endif
 // Shared vertex transition. Callers own traversal and the compact transport state.
 // Explicit control results preserve termination, alpha retry and debug-return behavior.
 public enum OpenPBRPathControl { Stop, Next, Return };
@@ -77,7 +103,11 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     float3 viewDirection = Metallic.ScenePath::safeNormalize(-ray.direction, hit.normal);
     uint replacedMask = 0u;
 #if (SHARC_UPDATE || SHARC_QUERY)
+#if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
     OpenPBRCacheAddress cacheAddress = (OpenPBRCacheAddress)0;
+#if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
+    if (kOpenPBRSingleCacheQueryEnabled) {
+#endif
 #if SHARC_UPDATE
     // Training registers hits even when depth, delta or footprint rejects reuse.
     bool queryAllowed = false;
@@ -112,6 +142,52 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
         }
 #endif
     }
+#if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
+    }
+#endif
+#else
+    OpenPBRCacheAddress cacheAddress = (OpenPBRCacheAddress)0;
+#if METALLIC_PT_CACHE_QUERY_SPECIALIZATION
+    if (kOpenPBRCacheQueryEnabled) {
+#endif
+#if SHARC_UPDATE
+    // Training registers hits even when depth, delta or footprint rejects reuse.
+    bool queryAllowed = false;
+#else
+    bool queryAllowed = push.debugView == kOpenPBRDebugViewFinal &&
+        openPbrCacheCanQuery(cache, hit, rayCone, depth, previousScatterDelta);
+    if (queryAllowed)
+#endif
+    {
+        cacheAddress = openPbrCacheAddress(cache, hit, materialEval.inputs, material, interiorStack, viewDirection);
+    }
+#if SHARC_UPDATE
+    queryAllowed = push.debugView == kOpenPBRDebugViewFinal && cacheAddress.eligibleMask != 0u &&
+        openPbrCacheCanQuery(cache, hit, rayCone, depth, previousScatterDelta);
+#endif
+    float3 cachedRadiance;
+    if (queryAllowed) {
+        uint queryMask = openPbrCacheQuery(cache, cacheAddress, cachedRadiance);
+#if SHARC_UPDATE
+        // Bootstrap only a complete suffix, after at least one exact bounce.
+        if (cache.count > 0u && depth >= 2u && (queryMask | cacheAddress.absentMask) == 3u) {
+            openPbrCacheAddLighting(cache, cachedRadiance);
+            radiance += throughput * cachedRadiance;
+            return OpenPBRPathControl.Stop;
+        }
+#else
+        replacedMask = queryMask;
+        radiance += throughput * cachedRadiance;
+        if ((replacedMask | cacheAddress.absentMask) == 3u) {
+            // The real first specular endpoint was recorded before lookup.
+            return OpenPBRPathControl.Stop;
+        }
+#endif
+    }
+#if METALLIC_PT_CACHE_QUERY_SPECIALIZATION
+    }
+#endif
+#endif
 #endif
     SurfaceSamplingContext sampling;
     sampling.throughput = throughput;
@@ -146,6 +222,24 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     EnvironmentLightSample lightSample;
     bool directLightingEnabled = !openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting);
     bool sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
+#if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
+    float lightBsdfPdf = 0.0;
+    OpenPBRDiffuseSpecular lightComponents = openPBRMakeZeroDiffuseSpecular();
+    OpenPBRDiffuseSpecular scatterComponents = openPBRMakeZeroDiffuseSpecular();
+    BSDFWeightSample scatter = (BSDFWeightSample)0;
+    // Visibility does not consume the path RNG. Finish all remaining BSDF work
+    // after the environment proposal, so the prepared closure need not survive
+    // its nested transparent-shadow traversal. Keep lighting/termination order.
+    if (sampledEnvironment) {
+        lightBsdfPdf = prepared.pdf(lightSample.direction);
+        lightComponents = openPbrSelectComponents(
+            prepared.evalProjectedComponents(lightSample.direction), replacedMask);
+    }
+    // This diagnostic returns before sampling in the general path as well.
+    if (depth != 0u || push.debugView != kOpenPBRDebugViewShadowTransmittance) {
+        scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
+    }
+#else
 #if SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE
     // Visibility does not consume the path RNG. Finish all remaining BSDF work
     // after the environment proposal, so the prepared closure need not survive
@@ -164,11 +258,14 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
         scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
     }
 #endif
+#endif
     if (sampledEnvironment) {
+#if !METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
 #if !(SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE)
         float lightBsdfPdf = prepared.pdf(lightSample.direction);
         OpenPBRDiffuseSpecular lightComponents = openPbrSelectComponents(
             prepared.evalProjectedComponents(lightSample.direction), replacedMask);
+#endif
 #endif
         float3 lightWeight = openPBRGetSumOfDiffuseSpecular(lightComponents);
         float3 shadowTransmittance = float3(0.0, 0.0, 0.0);
@@ -232,9 +329,11 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
     bool cacheRegistered = openPbrCacheRecordHit(cache, cacheAddress, localComponents, emission);
 #endif
 
+#if !METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
 #if !(SHARC_QUERY && METALLIC_PT_SINGLE_SAMPLE)
     OpenPBRDiffuseSpecular scatterComponents;
     BSDFWeightSample scatter = prepared.sampleWeightedComponents(float3(rand(seed), rand(seed), rand(seed)), scatterComponents);
+#endif
 #endif
     scatterComponents = openPbrSelectComponents(scatterComponents, replacedMask);
     scatter.weight = openPBRGetSumOfDiffuseSpecular(scatterComponents);

@@ -49,6 +49,9 @@ every matching OpenPBR or RTXDI variant:
 
 The OpenPBR filter also selects its Guides module. These can involve long driver
 compilations; a single request index is useful when investigating one change.
+The manual catalog also appends the opt-in
+[primary-guides split experiment](OpenPBRPrimaryGuidesSplit.md); these two requests
+are excluded from normal application warmup.
 `--all` explicitly selects the entire catalog. A measurement requires a selector
 and `--output-dir`; an existing `report.json` is rejected to preserve prior
 evidence. By default each request completes all iterations before the next request starts.

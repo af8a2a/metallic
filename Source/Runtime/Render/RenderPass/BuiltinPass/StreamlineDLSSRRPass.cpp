@@ -1,6 +1,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Core/ColorResizeParameters.h"
+#include "Runtime/Render/Core/StreamlineDLSSParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
 #include "Runtime/Render/Core/NamedComputeParameters.h"
@@ -44,10 +45,6 @@ inline constexpr const char* kStreamlineDLSSDepthFragmentEntryPoint =
     "streamlineDlssDepthFragmentMain";
 inline constexpr const char* kStreamlineDLSSAlphaEntryPoint =
     "streamlineDlssAlphaMain";
-
-struct StreamlineDLSSAlphaUserPush {
-    uint32_t outputImage = 0;
-};
 
 class StreamlineDLSSPass final : public UnsafePass {
 public:

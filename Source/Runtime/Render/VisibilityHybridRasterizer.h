@@ -43,6 +43,7 @@ public:
     Buffer& pixelBuffer() const { return *buffers_[1]; }
     uint32_t width() const { return push_.width; }
     uint32_t height() const { return push_.height; }
+    static constexpr uint32_t pipelineUserPushDataSize() { return sizeof(Push); }
 
 private:
     [[nodiscard]] Result<> prepareClusterCandidates(CommandBuffer& commands);

@@ -99,7 +99,11 @@ internal uint sharcPackFloat16Pair(float2 value)
 
 internal float2 sharcUnpackFloat16Pair(uint value)
 {
+#if SHARC_QUERY && !SHARC_UPDATE && (METALLIC_PT_CACHE_QUERY_SPECIALIZATION || METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION || METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION)
+    return unpackHalf2x16ToFloat(value);
+#else
     return float2(sharcUnpackFloat16(value), sharcUnpackFloat16(value >> 16));
+#endif
 }
 
 public SHARCPackedData sharcZeroPackedData()

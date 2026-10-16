@@ -21,9 +21,9 @@ using detail::NativePipelineKey;
 using detail::NativePipelineType;
 using namespace std::chrono_literals;
 
-constexpr NativePipelineKey kComputeA{NativePipelineType::Compute, 1};
-constexpr NativePipelineKey kComputeB{NativePipelineType::Compute, 2};
-constexpr NativePipelineKey kComputeC{NativePipelineType::Compute, 3};
+const NativePipelineKey kComputeA{NativePipelineType::Compute, 1};
+const NativePipelineKey kComputeB{NativePipelineType::Compute, 2};
+const NativePipelineKey kComputeC{NativePipelineType::Compute, 3};
 
 class CreatorGate {
 public:
@@ -69,6 +69,44 @@ bool waitUntil(Predicate&& predicate)
 Result<std::shared_ptr<void>> createOwner(int value = 1)
 {
     return std::make_shared<int>(value);
+}
+
+TEST(NativePipelineCache, FullSpecializationEqualitySurvivesForcedHashCollision)
+{
+    NativePipelineCache cache;
+    NativePipelineKey first{NativePipelineType::Compute, 42,
+        {{1000, ShaderSpecializationType::Int32, 0}, {1001, ShaderSpecializationType::Bool32, 1}}};
+    auto second = first; second.specializationConstants[0].bits = 1;
+    auto a = cache.acquire(first, [] { return createOwner(1); });
+    auto b = cache.acquire(second, [] { return createOwner(2); });
+    ASSERT_TRUE(a); ASSERT_TRUE(b);
+    EXPECT_NE(a->owner, b->owner);
+    // The cache owns its key; mutating the caller's vector cannot relabel A.
+    first.specializationConstants[0].bits = 9;
+    first = second; first.specializationConstants[0].bits = 0;
+    auto again = cache.acquire(first, [] { return createOwner(99); });
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again->owner, a->owner);
+    EXPECT_TRUE(again->nativeObjectReused);
+}
+
+TEST(NativePipelineCache, SameSpecializationWaitersShareExactlyOneSuccessfulCreation)
+{
+    NativePipelineCache cache;
+    const NativePipelineKey key{NativePipelineType::Compute, 7,
+        {{1000, ShaderSpecializationType::Int32, 0xffffffffu}, {1001, ShaderSpecializationType::Bool32, 0}}};
+    CreatorGate gate;
+    std::atomic_uint calls = 0;
+    auto create = [&] { ++calls; gate.block(); return createOwner(31); };
+    auto first = std::async(std::launch::async, [&] { return cache.acquire(key, create); });
+    const bool entered = gate.waitForEntries(1);
+    auto second = std::async(std::launch::async, [&] { return cache.acquire(key, create); });
+    const bool joined = waitUntil([&] { return cache.stats().singleFlightWaitCount == 1; });
+    gate.release();
+    auto a = first.get(); auto b = second.get();
+    ASSERT_TRUE(a); ASSERT_TRUE(b);
+    EXPECT_TRUE(entered); EXPECT_TRUE(joined);
+    EXPECT_EQ(calls, 1); EXPECT_EQ(a->owner, b->owner);
 }
 
 TEST(NativePipelineCache, SameKeyWaitersShareExactlyOneSuccessfulCreation)

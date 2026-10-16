@@ -14,6 +14,10 @@ LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 外部 SDK 源码不在扫描范围；运行时生成的 MaterialValueDispatch 则单独检查生成器的归属声明。
 配置了 Python 的测试构建同时注册 `MetallicShaderModuleOwnershipAudit` 和检查器回归测试。
 
+编译复杂度与源码实验记录见 [Shader compilation complexity](../Documentation/ShaderCompilationComplexity.md)。
+比较实际请求和最终 SPIR-V 规模，并分别验证完整冷缓存 warmup、渲染输出及 GPU 运行时间；
+源码行数、import 数或更小的产物本身不能证明性能改善。
+
 | 目录 | 职责 |
 | --- | --- |
 | `Modules/ShaderCore.slang`、`Modules/Core/` | ResourceHandle、BufferSpan、旧资源兼容接口、相机、顶点解码、SH、显示颜色；不声明 push constant |
@@ -156,8 +160,11 @@ TextureSample 显式选择 LOD、梯度或 RayCone，不能使用依赖 quad 的
 [SceneSurface](Modules/SceneSurface.slang) 和 [OpenPBRSurface](Modules/OpenPBRSurface.slang)
 提供共享表面求值，[VisibilityBufferLighting](Modules/VisibilityBufferLighting.slang)
 负责 ClusterLightGrid、显式阴影输入和 IBL。
-有界 IBL 权重默认使用 native FP16，几何与 HDR 累加保持 FP32；`halfPrecision: false`
-提供相同算法的 FP32 对照。详见 [VisibilityBufferDeferred](../Documentation/VisibilityBufferDeferred.md)。
+有界 IBL 权重默认选择半精度策略，几何与 HDR 累加保持 FP32；`halfPrecision: false`
+提供相同算法的 FP32 对照。内置 ACEScg 的共享 Deferred 模块使用 float 与 pack/unpack
+保留舍入行为，由 native Bool specialization 选择精度；静态回退仍使用原有精度宏。
+这项精度选择重构的 GPU 与完整冷启动验收尚未完成。详见
+[VisibilityBufferDeferred](../Documentation/VisibilityBufferDeferred.md)。
 
 `Core` 的生产用法是 `getResourceParameters<Params>()` 加显式 resolver：buffer 使用
 `resolveBuffer<StructuredBuffer<T>>(resources.indices)`，图像和 sampler 使用 `resolveUniform`，

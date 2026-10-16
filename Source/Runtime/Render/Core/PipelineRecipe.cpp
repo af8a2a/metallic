@@ -14,7 +14,7 @@ namespace metallic::render {
 namespace {
 
 using Json = nlohmann::json;
-constexpr uint32_t kRecipeVersion = 1;
+constexpr uint32_t kRecipeVersion = 2;
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 constexpr uint64_t kMaxSpirvBytes = 256ull * 1024 * 1024;
 
@@ -110,8 +110,22 @@ void validateShader(const PipelineRecipeShader& shader)
         shader.spirv[0] != kSpirvMagic || shader.entryPoint.empty() || shader.entryPoint.find('\0') != std::string::npos) {
         throw std::runtime_error("invalid recipe shader bytecode or entry point");
     }
+    const auto canonical = detail::canonicalShaderSpecializationConstants(shader.specializationConstants);
+    if (canonical != shader.specializationConstants) { throw std::runtime_error("recipe specialization constants must be canonical"); }
+    std::string specializationError;
+    if (!detail::validateShaderSpecializationModule(shader.spirv, canonical, specializationError)) {
+        throw std::runtime_error(specializationError);
+    }
     if (shader.inputSpirvHash && shader.inputSpirvHash != shaderHash(shader)) {
         throw std::runtime_error("recipe SPIR-V content hash mismatch");
+    }
+    if (shader.spirvPostprocess != "none" && shader.spirvPostprocess != "dead-branches" &&
+        shader.spirvPostprocess != "slang-dead-branches") {
+        throw std::runtime_error("invalid recipe SPIR-V postprocess policy");
+    }
+    if ((shader.spirvPostprocess == "dead-branches" || shader.spirvPostprocess == "slang-dead-branches") &&
+        (shader.spirvPostprocessToolVersion.empty() || shader.spirvPostprocessToolVersion == "unavailable")) {
+        throw std::runtime_error("recipe SPIR-V cleanup tool version is missing or unavailable");
     }
 }
 
@@ -119,6 +133,11 @@ void validateRecipe(const PipelineRecipe& recipe)
 {
     if (recipe.type != PipelineRecipeType::Compute && recipe.type != PipelineRecipeType::Graphics) {
         throw std::runtime_error("unsupported recipe pipeline type");
+    }
+    for (const auto* shader : {&recipe.computeShader, &recipe.vertexShader, &recipe.taskShader, &recipe.meshShader, &recipe.fragmentShader}) {
+        if (shader->spirv.empty() && !shader->specializationConstants.empty()) {
+            throw std::runtime_error("specialization values require a shader stage");
+        }
     }
     if (recipe.colorAttachmentCount > recipe.colorFormats.size()) { throw std::runtime_error("too many color attachments"); }
     if (recipe.computeBackend > ComputePipelineBackend::PipelineBinary ||
@@ -139,6 +158,7 @@ void validateRecipe(const PipelineRecipe& recipe)
             throw std::runtime_error("invalid graphics recipe stage combination");
         }
         for (const auto* shader : {&recipe.vertexShader, &recipe.taskShader, &recipe.meshShader, &recipe.fragmentShader}) {
+            if (!shader->specializationConstants.empty()) { throw std::runtime_error("graphics specialization is outside this compute-only API"); }
             if (!shader->spirv.empty()) { validateShader(*shader); }
         }
         if (recipe.taskRequireFullSubgroups && !recipe.taskRequiredSubgroupSize) {
@@ -147,7 +167,7 @@ void validateRecipe(const PipelineRecipe& recipe)
     }
 }
 
-Json writeShader(const PipelineRecipeShader& shader, const std::filesystem::path& directory)
+Json writeShader(const PipelineRecipeShader& shader, const std::filesystem::path& directory, uint32_t version)
 {
     if (shader.spirv.empty()) { return {{"spirv_file", nullptr}, {"entry_point", shader.entryPoint}}; }
     validateShader(shader);
@@ -171,17 +191,29 @@ Json writeShader(const PipelineRecipeShader& shader, const std::filesystem::path
         output.close();
         if (!output) { throw std::runtime_error("cannot write recipe SPIR-V blob"); }
     }
-    return {{"spirv_file", name}, {"spirv_bytes", shader.spirv.size() * sizeof(uint32_t)},
+    Json json{{"spirv_file", name}, {"spirv_bytes", shader.spirv.size() * sizeof(uint32_t)},
         {"input_spirv_hash", hash}, {"module_name", shader.moduleName},
         {"source_entry_point", shader.sourceEntryPoint}, {"entry_point", shader.entryPoint},
         {"debug_mode", shader.debugMode}, {"descriptor_heap_mode", shader.descriptorHeapMode},
-        {"slang_optimization", shader.optimizationLevel}};
+        {"slang_optimization", shader.optimizationLevel}, {"source_identity_ambiguous", shader.sourceIdentityAmbiguous},
+        {"spirv_postprocess", shader.spirvPostprocess},
+        {"spirv_postprocess_tool_version", shader.spirvPostprocessToolVersion}};
+    if (version >= 2) {
+        json["specialization_constants"] = Json::array();
+        for (const auto& value : shader.specializationConstants) {
+            json["specialization_constants"].push_back({{"id", value.id},
+                {"type", value.type == ShaderSpecializationType::Int32 ? "int32" : "bool32"},
+                {"size", 4}, {"bits", value.bits}});
+        }
+    }
+    return json;
 }
 
-PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& directory)
+PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& directory, uint32_t version)
 {
     PipelineRecipeShader shader;
     if (json.at("spirv_file").is_null()) {
+        if (json.contains("specialization_constants")) { throw std::runtime_error("empty stage cannot carry specialization data"); }
         shader.entryPoint = json.at("entry_point").get<std::string>();
         return shader;
     }
@@ -200,6 +232,21 @@ PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& d
     input.seekg(0);
     input.read(reinterpret_cast<char*>(shader.spirv.data()), static_cast<std::streamsize>(byteSize));
     if (!input) { throw std::runtime_error("cannot read recipe SPIR-V file"); }
+    if (version >= 2) {
+        const auto& values = json.at("specialization_constants");
+        if (!values.is_array() || values.size() > 1024) { throw std::runtime_error("invalid specialization array"); }
+        for (const auto& value : values) {
+            const auto type = value.at("type").get<std::string>();
+            if ((type != "int32" && type != "bool32") || readUint32(value.at("size")) != 4) {
+                throw std::runtime_error("invalid scalar32 specialization type or size");
+            }
+            shader.specializationConstants.push_back({readUint32(value.at("id")),
+                type == "int32" ? ShaderSpecializationType::Int32 : ShaderSpecializationType::Bool32,
+                readUint32(value.at("bits"))});
+        }
+    } else if (json.contains("specialization_constants")) {
+        throw std::runtime_error("legacy recipe cannot carry specialization values");
+    }
     shader.inputSpirvHash = readHash(json.at("input_spirv_hash"));
     shader.moduleName = json.at("module_name").get<std::string>();
     shader.sourceEntryPoint = json.at("source_entry_point").get<std::string>();
@@ -207,6 +254,9 @@ PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& d
     shader.debugMode = json.at("debug_mode").get<std::string>();
     shader.descriptorHeapMode = json.at("descriptor_heap_mode").get<std::string>();
     shader.optimizationLevel = json.value("slang_optimization", std::string{});
+    shader.spirvPostprocess = json.value("spirv_postprocess", std::string{"none"});
+    shader.spirvPostprocessToolVersion = json.value("spirv_postprocess_tool_version", std::string{});
+    shader.sourceIdentityAmbiguous = json.value("source_identity_ambiguous", false);
     if (shader.inputSpirvHash != shaderHash(shader)) { throw std::runtime_error("recipe SPIR-V content hash mismatch"); }
     validateShader(shader);
     return shader;
@@ -216,7 +266,7 @@ PipelineRecipeShader readShader(const Json& json, const std::filesystem::path& d
 
 ComputePipelineDesc PipelineRecipe::computeDesc(ShaderModule* module, PipelineCache* cache) const
 {
-    return {.computeShader = {module, computeShader.entryPoint.c_str()}, .usesBindlessHeap = usesBindlessHeap,
+    return {.computeShader = {module, computeShader.entryPoint.c_str(), computeShader.specializationConstants}, .usesBindlessHeap = usesBindlessHeap,
         .bindlessUserPushDataSize = bindlessUserPushDataSize, .pipelineCache = cache, .indirectBindable = indirectBindable,
         .disableOptimization = disableOptimization, .backend = computeBackend};
 }
@@ -241,13 +291,16 @@ Result<> writePipelineRecipe(const PipelineRecipe& recipe, const std::filesystem
         validateRecipe(recipe);
         const auto directory = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
         std::filesystem::create_directories(directory);
-        Json json{{"schema", "metallic_pipeline_recipe"}, {"version", kRecipeVersion},
+        // Preserve version-1 empty-stage output and old cache identities. A
+        // specialized compute capture uses v2 with a required explicit vector.
+        const uint32_t version = recipe.computeShader.specializationConstants.empty() ? 1 : kRecipeVersion;
+        Json json{{"schema", "metallic_pipeline_recipe"}, {"version", version},
             {"pipeline_type", recipe.type == PipelineRecipeType::Compute ? "compute" : "graphics"},
             {"expected_pso_hash", hexHash(recipe.expectedPsoHash)}, {"cache_group", recipe.cacheGroup},
             {"source_device", deviceJson(recipe.sourceDevice)},
-            {"shaders", {{"compute", writeShader(recipe.computeShader, directory)},
-                {"vertex", writeShader(recipe.vertexShader, directory)}, {"task", writeShader(recipe.taskShader, directory)},
-                {"mesh", writeShader(recipe.meshShader, directory)}, {"fragment", writeShader(recipe.fragmentShader, directory)}}},
+            {"shaders", {{"compute", writeShader(recipe.computeShader, directory, version)},
+                {"vertex", writeShader(recipe.vertexShader, directory, version)}, {"task", writeShader(recipe.taskShader, directory, version)},
+                {"mesh", writeShader(recipe.meshShader, directory, version)}, {"fragment", writeShader(recipe.fragmentShader, directory, version)}}},
             {"state", {{"uses_bindless_heap", recipe.usesBindlessHeap}, {"indirect_bindable", recipe.indirectBindable},
                 {"disable_optimization", recipe.disableOptimization}, {"compute_backend", static_cast<uint32_t>(recipe.computeBackend)},
                 {"bindless_user_push_data_size", recipe.bindlessUserPushDataSize},
@@ -291,7 +344,8 @@ Result<PipelineRecipe> readPipelineRecipe(const std::filesystem::path& path, std
         std::ifstream input(path, std::ios::binary);
         if (!input) { throw std::runtime_error("cannot open recipe manifest"); }
         const auto json = Json::parse(input);
-        if (json.at("schema") != "metallic_pipeline_recipe" || readUint32(json.at("version")) != kRecipeVersion) {
+        const uint32_t version = readUint32(json.at("version"));
+        if (json.at("schema") != "metallic_pipeline_recipe" || (version != 1 && version != kRecipeVersion)) {
             throw std::runtime_error("unsupported pipeline recipe schema/version");
         }
         PipelineRecipe recipe;
@@ -303,11 +357,11 @@ Result<PipelineRecipe> readPipelineRecipe(const std::filesystem::path& path, std
         recipe.sourceDevice = readDevice(json.at("source_device"));
         const auto directory = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
         const auto& shaders = json.at("shaders");
-        recipe.computeShader = readShader(shaders.at("compute"), directory);
-        recipe.vertexShader = readShader(shaders.at("vertex"), directory);
-        recipe.taskShader = readShader(shaders.at("task"), directory);
-        recipe.meshShader = readShader(shaders.at("mesh"), directory);
-        recipe.fragmentShader = readShader(shaders.at("fragment"), directory);
+        recipe.computeShader = readShader(shaders.at("compute"), directory, version);
+        recipe.vertexShader = readShader(shaders.at("vertex"), directory, version);
+        recipe.taskShader = readShader(shaders.at("task"), directory, version);
+        recipe.meshShader = readShader(shaders.at("mesh"), directory, version);
+        recipe.fragmentShader = readShader(shaders.at("fragment"), directory, version);
         const auto& state = json.at("state");
         recipe.usesBindlessHeap = state.at("uses_bindless_heap").get<bool>();
         recipe.indirectBindable = state.at("indirect_bindable").get<bool>();

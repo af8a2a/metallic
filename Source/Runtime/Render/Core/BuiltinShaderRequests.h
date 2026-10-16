@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/ShaderRequests.h"
+#include "Runtime/Render/HZBSPD.h"
 
 #include <initializer_list>
 #include <string>
@@ -132,21 +133,26 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
             requests.push_back(makeSceneShaderRequest(program, options, {&define, 1}));
         }
     }
-    for (bool guides : {false, true}) {
-        for (bool view : {false, true}) {
-            for (bool half : {false, true}) {
-                const SceneShaderOptions deferredOptions{.globalView = view,
-                    .deferredFloat16 = half, .upscalerGuides = guides};
-                requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, deferredOptions));
-                for (int materialClass = 0; materialClass < 5; ++materialClass) {
-                    const std::string value = std::to_string(materialClass);
-                    const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
-                    requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, deferredOptions, {&define, 1}));
-                }
-            }
+    // Each program serves both camera sources and both upscaler-guide output policies.
+    for (bool half : {false, true}) {
+        const SceneShaderOptions deferredOptions{.deferredFloat16 = half};
+        requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, deferredOptions));
+        for (int materialClass = 0; materialClass < 5; ++materialClass) {
+            const std::string value = std::to_string(materialClass);
+            const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+            requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, deferredOptions, {&define, 1}));
         }
     }
     requests.push_back(makeShadowShaderRequest());
+    // The runtime appends SINGLE_SAMPLE after its Base/SHARC_QUERY defines.
+    // Append coverage without changing the existing ordered request prefix.
+    const SlangMacroDefine singleSampleGuides[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    requests.push_back(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, singleSampleGuides));
+    const SlangMacroDefine singleSampleGuideQuery[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    requests.push_back(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, singleSampleGuideQuery));
+    // Match VisibilityBufferPass LDS and optional wave SPD startup requests.
+    add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "0"}});
+    add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "1"}});
     // Deduplicate complete requests, preserving macro/capability/search-path
     // order and the first occurrence. No compiler cache version change is needed.
     std::vector<ShaderRequest> unique;

@@ -58,7 +58,7 @@ public struct OpenPBRPreparedBSDF
 public bool openPBRNeedsRgbWavelengths<TContext : IOpenPBRContext>(TContext context,
                                                             const OpenPBRResolvedInputs resolved_inputs)
 {
-    const bool needs_rgb_wavelengths_for_dispersion = TContext.enableDispersion() &&
+    const bool needs_rgb_wavelengths_for_dispersion = TContext.kEnableDispersion &&
                                                       resolved_inputs.transmission_dispersion_scale > 0.0f &&
                                                       resolved_inputs.base_metalness < 1.0f;
     const float thin_film_thickness_nm = resolved_inputs.thin_film_thickness * 1000.0f;
@@ -562,7 +562,7 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     float3 relative_ior_for_trans_reflection_with_dispersion;
     float3 relative_ior_for_opaque_reflection_with_dispersion;
 
-    if (TContext.enableDispersion() && resolved_inputs.transmission_dispersion_scale > 0.0f &&
+    if (TContext.kEnableDispersion && resolved_inputs.transmission_dispersion_scale > 0.0f &&
         resolved_inputs.base_metalness < 1.0f) // dispersion check (subset of openpbr_needs_rgb_wavelengths)
     {
         dispersion = openPBRSafeDivide(20.0f,
@@ -747,7 +747,7 @@ public void openPBRPrepareLobes<TContext : IOpenPBRContext>(TContext context, co
     // Finish setting up the aggregate lobe based on its constituent lobes.
     openPBRInitializeLobe(context, prepared.fuzz_lobe.coating_lobe.base_lobe, view_direction, path_throughput);
 
-    if (TContext.enableSheenAndCoat()) {
+    if (TContext.kEnableSheenAndCoat) {
         // Add a coating layer if applicable.
         // The coating is assumed to be on the outside of the object; rays passing from the inside to
         // the outside of the object are tinted by the coat, but do not otherwise interact with the coat.
@@ -810,7 +810,7 @@ public float3 openPBRComputeEmission<TContext : IOpenPBRContext>(TContext contex
         return float3(0.0f);
 
     float3 result = resolved_inputs.emission_luminance * resolved_inputs.emission_color;
-    if (TContext.enableSheenAndCoat()) {
+    if (TContext.kEnableSheenAndCoat) {
         // Coat absorption is wavelength-dependent; scale by the vec3 coat transmittance.
         if (resolved_inputs.coat_weight > 0.0f)
             result *= openPBRBaseLayerScaleIncoming(prepared.fuzz_lobe.coating_lobe);
@@ -873,7 +873,7 @@ openPBRPrepareImpl<TContext : IOpenPBRContext>(TContext context, const OpenPBRRe
 public OpenPBRDiffuseSpecular openPBREvalImpl<TContext : IOpenPBRContext>(TContext context, const OpenPBRPreparedBSDF prepared,
                                                                    const float3 light_direction)
 {
-    return TContext.enableSheenAndCoat()
+    return TContext.kEnableSheenAndCoat
                ? openPBRCalculateLobeValue(context, prepared.fuzz_lobe, prepared.view_direction, light_direction)
                : openPBRCalculateLobeValue(context, prepared.fuzz_lobe.coating_lobe.base_lobe, prepared.view_direction,
                                            light_direction);
@@ -894,7 +894,7 @@ public void openPBRSampleImpl<TContext : IOpenPBRContext>(TContext context, cons
                                                    out uint sampled_type)
 {
     const bool valid_sample =
-        TContext.enableSheenAndCoat()
+        TContext.kEnableSheenAndCoat
             ? openPBRSampleLobe(context, prepared.fuzz_lobe, rand, prepared.view_direction, light_direction, weight,
                                 pdf, sampled_type)
             : openPBRSampleLobe(context, prepared.fuzz_lobe.coating_lobe.base_lobe, rand, prepared.view_direction,
@@ -910,7 +910,7 @@ public void openPBRSampleImpl<TContext : IOpenPBRContext>(TContext context, cons
 public float openPBRPdfImpl<TContext : IOpenPBRContext>(TContext context, const OpenPBRPreparedBSDF prepared,
                                                  const float3 light_direction)
 {
-    return TContext.enableSheenAndCoat()
+    return TContext.kEnableSheenAndCoat
                ? openPBRCalculateLobePdf(context, prepared.fuzz_lobe, prepared.view_direction, light_direction)
                : openPBRCalculateLobePdf(context, prepared.fuzz_lobe.coating_lobe.base_lobe, prepared.view_direction,
                                          light_direction);
@@ -1014,7 +1014,7 @@ public float4 openPBRTranslucentShadowWeightAndProb<TContext : IOpenPBRContext>(
 
     // Incorporate coat tint into transmission if applicable.
     // TODO: Should we apply this (and the transmission tint) twice in thin-wall mode?
-    if (TContext.enableSheenAndCoat()) {
+    if (TContext.kEnableSheenAndCoat) {
         if (resolved_inputs.coat_weight > 0.0f && openPBRMin3(resolved_inputs.coat_color) < 1.0f) {
             // Incorporate the coat weight into the coat tint.
             const float3 fractional_coat_color =

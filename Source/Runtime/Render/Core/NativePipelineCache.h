@@ -26,6 +26,7 @@ enum class NativePipelineType : uint8_t { Compute, Graphics };
 struct NativePipelineKey {
     NativePipelineType type;
     uint64_t psoHash;
+    std::vector<ShaderSpecializationConstant> specializationConstants;
     bool operator==(const NativePipelineKey&) const = default;
 };
 
