@@ -178,7 +178,7 @@ public void dispatchOpenPbrRayQueryPathTraceGuides(uint3 dispatchThreadId)
     uint samples = clamp(push.samples, 1u, 16u);
     uint seed = hash(
         pixel.x +
-        pixel.y * max(push.width, 1u) +
+        pixel.y * push.width +
         (push.sampleFrame + 1u) * 0x9e3779b9u);
     // RR samples share the jittered camera ray, but retain independent BSDF,
     // coverage and texture RNG consumption. Share only authored hit data;

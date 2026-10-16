@@ -486,7 +486,7 @@ public void dispatchOpenPbrRayQueryPathTracePolicy(
         samples = clamp(push.samples, 1u, 16u);
         seed = hash(
             pixel.x +
-            pixel.y * max(push.width, 1u) +
+            pixel.y * push.width +
             (push.sampleFrame + 1u) * 0x9e3779b9u);
         float2 jitter = float2(0.5, 0.5) + float2(push.jitterOffsetX, push.jitterOffsetY);
         float2 samplePixel = float2(pixel) + jitter;
@@ -502,7 +502,7 @@ public void dispatchOpenPbrRayQueryPathTracePolicy(
         uint sampleFrame = debugViewEnabled ? 0u : push.sampleFrame;
         seed = hash(
             pixel.x +
-            pixel.y * max(push.width, 1u) +
+            pixel.y * push.width +
             (sampleFrame + 1u) * 0x9e3779b9u);
         color = float3(0.0, 0.0, 0.0);
     }
@@ -574,7 +574,7 @@ public void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
     ScenePathTraceCacheParams cacheParams = scenePathCacheParams()[0];
     uint stride = max(cacheParams.sharcUpdateStride, 1u);
     if (any(pixel >= (uint2(push.width, push.height) + stride - 1u) / stride)) { return; }
-    uint seed = hash(pixel.x + pixel.y * max(push.width, 1u) + (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
+    uint seed = hash(pixel.x + pixel.y * push.width + (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
     float2 samplePixel = (float2(pixel) + float2(rand(seed), rand(seed))) * float(stride);
     if (any(samplePixel >= float2(push.width, push.height))) { return; }
     Ray ray;
@@ -593,7 +593,7 @@ public void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
     uint sampleFrame = debugViewEnabled ? 0u : push.sampleFrame;
     uint seed = hash(
         pixel.x +
-        pixel.y * max(push.width, 1u) +
+        pixel.y * push.width +
         (sampleFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {

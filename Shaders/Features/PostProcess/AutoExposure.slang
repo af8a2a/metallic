@@ -139,7 +139,6 @@ void autoExposureApplyMain(uint3 pixel : SV_DispatchThreadID)
         return;
     }
     float3 color = physicalColor(pixel.xy, push) * gExposure.load(0).x * push.artisticExposure;
-    color = min(color, float3(1e30));
     // Display mapping belongs exclusively to FinalBlit.
     gOutput[pixel.xy] = float4(min(color, float3(65504.0)), 1.0);
 }

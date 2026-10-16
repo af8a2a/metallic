@@ -73,14 +73,13 @@ void finalizeCoefficient(
     uint groupThreadIndex,
     EnvironmentLightingPrecomputePush push)
 {
+    // GPUPrecompute::build dispatches exactly kCoefficientCount workgroups.
     uint coefficientIndex = groupId.x;
     float4 sum = float4(0.0);
-    if (coefficientIndex < kCoefficientCount) {
-        for (uint partialIndex = groupThreadIndex;
-             partialIndex < push.partialCount;
-             partialIndex += kThreadCount) {
-            sum += gPartials[partialIndex * kCoefficientCount + coefficientIndex];
-        }
+    for (uint partialIndex = groupThreadIndex;
+         partialIndex < push.partialCount;
+         partialIndex += kThreadCount) {
+        sum += gPartials[partialIndex * kCoefficientCount + coefficientIndex];
     }
     gShared[groupThreadIndex] = sum;
     GroupMemoryBarrierWithGroupSync();
@@ -91,7 +90,7 @@ void finalizeCoefficient(
         }
         GroupMemoryBarrierWithGroupSync();
     }
-    if (groupThreadIndex == 0u && coefficientIndex < kCoefficientCount) {
+    if (groupThreadIndex == 0u) {
         // Each workgroup owns one coefficient; retain the parallel reduction
         // and pack the same cosine-convolved irradiance ABI consumed by SH.
         gCoefficients.store(coefficientIndex, gShared[0] * SH::cosineConvolutionWeight(coefficientIndex));
@@ -103,7 +102,7 @@ void finalizeCoefficient(
 void prefilterSpecular(uint index, EnvironmentLightingPrecomputePush push)
 {
     uint layerSize = kEnvironmentFilterWidth * kEnvironmentFilterHeight;
-    if (index >= layerSize * kEnvironmentFilterLayers) { return; }
+    // The fixed filter allocation is an exact multiple of kThreadCount.
     uint layer = index / layerSize;
     uint pixel = index % layerSize;
     float3 normal = environmentFilterDirection((float2(pixel % kEnvironmentFilterWidth,

@@ -75,14 +75,13 @@ public bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<Com
     records.GetDimensions(recordCount, recordStride);
     if (index >= recordCount) { return false; }
     record = unpackStreamVisibleRecord(records[index]);
-    if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return false; }
     uint count, stride;
     groups.GetDimensions(count, stride);
+    // Cleared packed records decode to dataIndex == 0xffffffffu.
     if (record.dataIndex >= count) { return false; }
     StreamActiveGroup group = groups[record.dataIndex];
     record.instanceIndex = group.gpuSceneInstanceIndex;
-    pageTable.GetDimensions(count, stride);
-    if (group.pageIndex >= count || record.clusterIndex >= group.clusterCount ||
+    if (record.clusterIndex >= group.clusterCount ||
         record.instanceIndex == 0xffffffffu) { return false; }
     return decodeStreamTriangleAtPage(group.pageIndex, record.clusterIndex, triangle, pages, pageTable, pageWordCount, a, b, c);
 }

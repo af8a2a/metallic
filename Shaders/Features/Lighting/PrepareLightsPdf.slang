@@ -44,7 +44,8 @@ void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
     if (any(pdfPosition >= push.destinationSize)) {
         return;
     }
-    resolveUniform(gParams.destinationMip)[pdfPosition] = linearIndex < min(push.lightCount, min(uint(gParams.lights[0].positionRange.x), gParams.lights.length() - 1u))
+    // buildLocalLights validates space for the metadata record and push.lightCount lights.
+    resolveUniform(gParams.destinationMip)[pdfPosition] = linearIndex < min(push.lightCount, uint(gParams.lights[0].positionRange.x))
         ? punctualLightPower(gParams.lights[linearIndex + 1u])
         : 0.0;
 }
@@ -60,7 +61,7 @@ void prepareEnvironmentPdf(uint2 position, PrepareLightsPdfPush push)
         float3 radiance = gEnvironmentMap.Load(int3(position, 0)).rgb;
         radiance = all(isfinite(radiance)) ? max(radiance, 0.0) : float3(0.0, 0.0, 0.0);
         float theta = (float(position.y) + 0.5) *
-            (kPi / float(max(push.sourceSize.y, 1u)));
+            (kPi / float(push.sourceSize.y));
         weight = luminance(radiance) * max(sin(theta), 0.0);
     }
     resolveUniform(gParams.destinationMip)[position] = weight;
@@ -111,7 +112,6 @@ void prepareLightsPdfMain(
 {
     PrepareLightsPdfPush push = gParams.settings;
     if (push.mode == kPrepareLocalLights) {
-        if (gParams.lights.length() == 0u) { return; }
         prepareLocalLightPdf(dispatchThreadId.xy, push);
     } else if (push.mode == kPrepareEnvironment) {
         prepareEnvironmentPdf(dispatchThreadId.xy, push);

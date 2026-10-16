@@ -103,7 +103,6 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
 void buildReGIRMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    if (gParams.lights.length() == 0u) { return; }
     BuildReGIRPush push = gParams.settings;
     uint lightSlot = dispatchThreadId.x;
     if (lightSlot >= push.lightSlotCount) {
@@ -111,7 +110,8 @@ void buildReGIRMain(
     }
 
     float sceneRadius = max(push.sceneCenterRadius.w, 0.01);
-    float cellSize = sceneRadius * 2.0 / float(max(push.gridSize, 1u));
+    // ReGIRLightSelector::build validates the grid, jitter and light buffer span.
+    float cellSize = sceneRadius * 2.0 / float(push.gridSize);
     if (lightSlot == 0u) {
         gReGIRData.store(0, uint4(push.gridSize, push.gridSize, push.gridSize, push.lightsPerCell));
         gReGIRData.store(1, asuint(float4(push.sceneCenterRadius.xyz, cellSize)));
@@ -130,7 +130,7 @@ void buildReGIRMain(
     cellPosition.z = cellIndex / push.gridSize;
     float3 gridOrigin = push.sceneCenterRadius.xyz - sceneRadius;
     float3 cellCenter = gridOrigin + (float3(cellPosition) + 0.5) * cellSize;
-    float cellRadius = cellSize * sqrt(3.0) * (max(push.samplingJitter, 0.0) + 1.0);
+    float cellRadius = cellSize * sqrt(3.0) * (push.samplingJitter + 1.0);
 
     uint seed = punctualSamplingHash(
         lightSlot +
@@ -139,7 +139,7 @@ void buildReGIRMain(
     uint selectedLight = 0xffffffffu;
     float selectedTarget = 0.0;
     float weightSum = 0.0;
-    uint lightCount = min(push.lightCount, min(uint(gParams.lights[0].positionRange.x), gParams.lights.length() - 1u));
+    uint lightCount = min(push.lightCount, uint(gParams.lights[0].positionRange.x));
     for (uint sampleIndex = 0u; lightCount > 0u && sampleIndex < push.buildSamples; ++sampleIndex) {
         uint candidateLight;
         float sourcePdf;

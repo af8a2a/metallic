@@ -74,9 +74,7 @@ public bool resolveVisibilityRecordIndex(
         return false;
     }
     recordIndex = recordBase + localRecordIndex;
-    return visibilityRecordIndexValid(
-        recordIndex,
-        recordBase + recordCapacity);
+    return true;
 }
 
 public uint packVisibilityId(uint recordIndex, uint triangleIndex)

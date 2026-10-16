@@ -391,7 +391,7 @@ public float environmentImportanceTexelProbability(uint2 position)
     uint height = 0u;
     uint mipCount = 0u;
     sceneEnvironmentImportancePdf().GetDimensions(0u, width, height, mipCount);
-    if (width == 0u || height == 0u || mipCount == 0u || any(position >= uint2(width, height))) {
+    if (mipCount == 0u || any(position >= uint2(width, height))) {
         return 0.0;
     }
     float averageWeight = loadEnvironmentImportanceWeight(uint2(0u), mipCount - 1u);
@@ -421,7 +421,7 @@ public bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out
     uint height = 1u;
     sceneEnvironmentMap().GetDimensions(width, height);
     uint textureTexelCount = width * height;
-    if (width == 0u || height == 0u || textureTexelCount == 0u) {
+    if (textureTexelCount == 0u) {
         return false;
     }
 
@@ -470,7 +470,7 @@ public float environmentPdfSolidAngle(float3 direction, ScenePathTracePush push)
     uint height = 1u;
     sceneEnvironmentMap().GetDimensions(width, height);
     uint textureTexelCount = width * height;
-    if (width == 0u || height == 0u || textureTexelCount == 0u) {
+    if (textureTexelCount == 0u) {
         return 0.0;
     }
 
@@ -557,8 +557,7 @@ public float3 sampleCosineHemisphere(float3 normal, inout uint seed)
 
 public bool hasMaterialTexture(MaterialTextureInfo textureInfo, ScenePathTracePush push)
 {
-    return textureInfo.textureIndex != kInvalidMaterialTextureIndex &&
-        textureInfo.textureIndex < push.materialTextureCount;
+    return textureInfo.textureIndex < push.materialTextureCount;
 }
 
 
@@ -778,7 +777,7 @@ internal float4 sampleMaterialValueTexture(MaterialValueParameters material, uin
     else if (slot == 4u) { info = material.emissiveTexture; }
     else if (slot == 5u) { info = material.specularTexture; }
     float4 fallback = linearColor && slot == 2u ? float4(0.5, 0.5, 1.0, 1.0) : float4(1.0);
-    if (info.textureIndex >= context.textureCount || info.textureIndex == 0xffffffffu) { return fallback; }
+    if (info.textureIndex >= context.textureCount) { return fallback; }
     return sampleMaterialValueTextureResource(sceneMaterialTexture(info.textureIndex), sceneTextureFeedback(),
         info, uv, policy, dxLod, dy, context.normalizedRayLod, linearColor);
 }

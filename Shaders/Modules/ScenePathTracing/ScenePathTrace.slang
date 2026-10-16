@@ -721,7 +721,7 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
     }
     seed = hash(
         pixel.x +
-        pixel.y * max(push.width, 1u) +
+        pixel.y * push.width +
         (cacheParams.frameIndex + 1u) * 0x9e3779b9u);
     float2 updateJitter = float2(rand(seed), rand(seed));
     float2 samplePixel = (float2(pixel) + updateJitter) * float(stride);
@@ -735,7 +735,7 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
     }
     seed = hash(
         pixel.x +
-        pixel.y * max(push.width, 1u) +
+        pixel.y * push.width +
         (push.sampleFrame + 1u) * 0x9e3779b9u);
     float2 samplePixel = float2(pixel);
 #endif

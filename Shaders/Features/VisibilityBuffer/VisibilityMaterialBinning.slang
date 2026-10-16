@@ -49,7 +49,6 @@ uint materialClassForPixel(uint2 pixel)
     record = unpackStreamVisibleRecord(gStreamRecords[recordIndex]);
     if (record.dataIndex >= push.streamGroups.length()) { return kMaterialClassBackground; }
     record.instanceIndex = push.streamGroups[record.dataIndex].gpuSceneInstanceIndex;
-    if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return kMaterialClassBackground; }
     count = push.instances.length();
     if (record.instanceIndex >= count) { return kMaterialClassBackground; }
     uint material = gInstances[record.instanceIndex].identity.y;
@@ -61,8 +60,8 @@ uint materialClassForPixel(uint2 pixel)
     // Match the deferred reconstruction's fallback material exactly.
     sourceMaterial = sourceMaterial < count ? sourceMaterial : 0u;
     if (push.programBinCount != 0u) {
-        uint bin = push.materialProgramBins.load(sourceMaterial);
-        return bin < push.programBinCount ? bin : 0u;
+        // MaterialBinning::record validates every entry before uploading the table.
+        return push.materialProgramBins.load(sourceMaterial);
     }
     return classifyDeferredMaterial(gShadingMaterials[sourceMaterial]);
 }
@@ -112,14 +111,13 @@ void classifyMaterialTile(uint3 group, bool scatter)
     [unroll]
     for (uint type = 0u; type < kMaterialClassCount; ++type) {
         uint mask = WaveActiveBallot(valid && materialClass == type).x;
-        if (WaveIsFirstLane() && mask != 0u && push.bins.contains(type)) {
+        if (WaveIsFirstLane() && mask != 0u) {
             uint slot;
             resolveUniform(gBins.resource).InterlockedAdd(gBins.byteOffset + type * sizeof(MaterialBin) + 4u, 1u, slot);
             tile.laneMask = mask;
             uint offset = gBins[type].offset;
-            if (offset < push.tiles.length() && slot < push.tiles.length() - offset) {
-                gTiles.store(offset + slot, tile);
-            }
+            // Each class owns tileCount slots and emits at most one per spatial tile.
+            gTiles.store(offset + slot, tile);
         }
     }
 }
@@ -159,9 +157,9 @@ void materialBinningArgumentsMain(uint3 id : SV_DispatchThreadID)
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
     uint lane = id.x;
     if (push.bins.contains(lane)) {
-        if (push.arguments.length() < (lane + 1u) * 3u) { return; }
-        uint offset = gBins[lane].offset;
-        uint count = offset < push.tiles.length() ? min(gBins[lane].count, push.tiles.length() - offset) : 0u;
+        // The producer allocates three argument words per bin and enough tile
+        // slots for every emitted task, including sparse program bins.
+        uint count = gBins[lane].count;
         gIndirect.store(lane * 3u, min(count, kMaterialBinMaxGroupsX));
         gIndirect.store(lane * 3u + 1u, count / kMaterialBinMaxGroupsX + uint(count % kMaterialBinMaxGroupsX != 0u));
         gIndirect.store(lane * 3u + 2u, 1u);

@@ -121,9 +121,7 @@ bool clusterLightGridOverlaps(
 void clusterLightGridMain(uint3 groupId : SV_GroupID, uint threadIndex : SV_GroupIndex)
 {
     ClusterLightGridParams params = gClusterParams[0];
-    if (any(groupId >= params.grid.xyz)) {
-        return;
-    }
+    // ClusterLightGrid::record dispatches exactly one workgroup per grid cell.
     uint cellIndex = (groupId.z * params.grid.y + groupId.y) * params.grid.x + groupId.x;
     uint offset = cellIndex * params.viewport.z;
     if (threadIndex == 0u) {
@@ -136,10 +134,10 @@ void clusterLightGridMain(uint3 groupId : SV_GroupID, uint threadIndex : SV_Grou
     ClusterCellBounds bounds;
     bounds.center = gClusterCellCenter;
     bounds.extent = gClusterCellExtent;
+    // Candidates are current source slots from GPUScene::visibleLights.
     for (uint index = threadIndex; index < params.counts.x; index += kClusterLightGridThreadCount) {
         uint sourceIndex = gClusterCandidates[index];
-        if (sourceIndex < params.counts.w &&
-            clusterLightGridOverlaps(params, bounds, gClusterLights[sourceIndex])) {
+        if (clusterLightGridOverlaps(params, bounds, gClusterLights[sourceIndex])) {
             uint entry;
             InterlockedAdd(gClusterIntersectionCount, 1u, entry);
             if (entry < params.viewport.z) {

@@ -132,16 +132,6 @@ void computeGradient(uint2 gradientPixel, RTXDIConfidencePush push)
     gGradientA[gradientPixel] = all(isfinite(gradient)) ? gradient : float4(0.0);
 }
 
-float4 loadFilterSource(int2 position, bool sourceA, RTXDIConfidencePush push)
-{
-    if (any(position < 0) ||
-        position.x >= int(push.gradientWidth) ||
-        position.y >= int(push.gradientHeight)) {
-        return float4(0.0, 0.0, 0.0, 0.0);
-    }
-    return sourceA ? gGradientA[position] : gGradientB[position];
-}
-
 void filterGradient(uint2 gradientPixel, bool sourceA, RTXDIConfidencePush push)
 {
     if (gradientPixel.x >= push.gradientWidth || gradientPixel.y >= push.gradientHeight) {
@@ -161,11 +151,13 @@ void filterGradient(uint2 gradientPixel, bool sourceA, RTXDIConfidencePush push)
                 continue;
             }
             float weight = (xx == 0 ? 1.0 : 0.5) * (yy == 0 ? 1.0 : 0.5);
-            accumulated += loadFilterSource(position, sourceA, push) * weight;
+            float4 value = sourceA ? gGradientA[position] : gGradientB[position];
+            accumulated += value * weight;
             weightSum += weight;
         }
     }
-    accumulated /= max(weightSum, 0.000001);
+    // The in-bounds center tap always contributes weight 1.
+    accumulated /= weightSum;
     if (sourceA) {
         gGradientB[gradientPixel] = accumulated;
     } else {

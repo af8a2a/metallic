@@ -85,7 +85,7 @@ bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
     if (index >= count) { return false; }
     VisibleClusterRecord record = unpackStreamVisibleRecord(records[index]);
     groups.GetDimensions(count, stride);
-    if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage || record.dataIndex >= count) { return false; }
+    if (record.dataIndex >= count) { return false; }
     VisibilityDebugActiveGroup group = groups[record.dataIndex];
     record.instanceIndex = group.gpuSceneInstanceIndex;
     if (record.clusterIndex >= group.clusterCount || record.instanceIndex == 0xffffffffu) { return false; }
