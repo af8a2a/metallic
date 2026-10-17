@@ -104,3 +104,59 @@ Local evidence: `build-release/simple-bsdf-generic-20261017/report-final/report.
 `ir-runtime-match/RuntimeIdentity.md`. Reproduce using
 [the measurement tools](../Tools/Perf/SimpleBSDFGeneric.md). No realtime GPU
 performance claim is made by this PSO experiment.
+
+## GPU pass follow-up on 2026-10-17
+
+The separate [GPU runner](../Tools/Perf/SimpleBSDFGPU.md) compares the wrapper at
+both EXT SER settings. The renderer/shader implementation and Release executable
+are unchanged from the PSO experiment. RTX 5070 Ti / driver 617.42; all three cases
+render at 512x512 with depth 12, cache off and guides enabled. Opaque1 uses 1 spp,
+Mixed4 uses 4 spp, and ABeautifulGame uses 2 spp. Each arm/case has four independent
+processes in Williams order, each with 32 warmup frames and 64 timed frames.
+Validation is disabled for timing and enabled in the separate correctness stage.
+
+The primary scope is the PathTrace pass GPU timestamp range. Times below are
+medians of process medians in milliseconds. Percentage changes are the median
+and range of four **paired** block percentages, not the ratio of arm medians.
+
+| Case | SER | Direct (ms) | SimpleBSDF (ms) | Paired median | Four-pair range |
+| --- | --- | ---: | ---: | ---: | --- |
+| Opaque1 | off | 11.473 | 10.792 | -0.24% | -15.37% to +4.15% |
+| Opaque1 | on | 33.454 | 33.140 | -1.10% | -5.15% to -0.02% |
+| Mixed4 | off | 156.226 | 159.118 | +0.13% | -7.18% to +2.23% |
+| Mixed4 | on | 241.690 | 249.147 | +2.97% | +1.70% to +4.32% |
+| ABeautifulGame | off | 2.295 | 2.303 | +0.46% | -0.19% to +4.08% |
+| ABeautifulGame | on | 6.268 | 6.272 | -0.05% | -1.50% to +0.26% |
+
+The SER-off wrapper comparisons have mixed-sign paired changes and substantial
+dispersion in Opaque1/Mixed4; they do not establish a stable speedup or zero cost.
+With SER on, Mixed4 is slower in all four wrapper pairs, an observed regression
+of approximately 3% in this run. Opaque1 is slightly faster in all four SER-on
+wrapper pairs. These observations have n=4 and unmodified clocks; no confidence
+interval, significance claim, or machine-code explanation is inferred.
+
+Both same-SER wrapper contrasts pass the combined numerical gate in all three
+cases: 176 correctness-stage plus 192 timing-stage readback comparisons pass the
+unchanged HDR tolerance and byte-exact guide requirements. All 192 timing-stage
+wrapper readbacks are byte-identical. The SER-on temporal correctness capture has
+19 HDR readbacks that differ within the existing tolerance, so the complete
+correctness set is not described as byte-identical. Same-arm repeats also pass.
+
+Switching SER itself fails the combined equivalence gate for both implementations
+in all three cases. The observed direct-path SER pass-time increases are +191.46%,
++57.06%, and +172.69% (paired medians for Opaque1, Mixed4, ABeautifulGame); these
+remain **diagnostic measurements, not qualified SER optimizations**. Failed
+cross-SER contrasts do not erase the separately qualified same-SER wrapper
+comparisons. Ordinary timing also reads final HDR at frame 96 and seven guides
+on additional frames 97..103, outside the timed window.
+
+All 72 GPU processes completed without runtime/validation errors or shader
+identity drift. Every captured stage matched its corresponding fresh factory
+reference SPIR-V. The current verifier retains global `numeric_failure` because
+of the cross-SER failures, while reporting each contrast's qualification.
+All five selected evidence/module CTest suites passed. GPU clocks and background
+activity were not controlled; whole-device telemetry is retained without using
+it to remove samples. These pass/dispatch/graph ranges are not editor FPS.
+
+Local evidence and Python charts:
+`build-release/simple-bsdf-gpu-20261017/report-final/report.md`.

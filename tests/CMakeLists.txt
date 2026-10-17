@@ -768,6 +768,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicSimpleBSDFGenericEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestSimpleBSDFGeneric.py")
     set_tests_properties(MetallicSimpleBSDFGenericEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicSimpleBSDFGPUEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestSimpleBSDFGPU.py")
+    set_tests_properties(MetallicSimpleBSDFGPUEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
     add_test(NAME MetallicPathTraceFunctionBoundaryEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceFunctionBoundaries.py")
     set_tests_properties(MetallicPathTraceFunctionBoundaryEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
