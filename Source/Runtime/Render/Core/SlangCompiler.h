@@ -71,6 +71,11 @@ struct SlangShaderDesc {
     SlangShaderPostprocessMode postprocessMode = SlangShaderPostprocessMode::Default;
 };
 
+// Complete effective request identity using the compiler's ordinary policy
+// resolution and exact cache-key fields. Performs no source snapshot or compile.
+// Equal hashes alone are insufficient when deduplicating requests.
+[[nodiscard]] Result<std::vector<uint8_t>> slangShaderRequestIdentity(const SlangShaderDesc& desc, std::string& log);
+
 // Per-call wall-clock measurements. Compiler code generation includes Slang IR
 // optimization, SPIR-V emission and any downstream compiler work; the SDK's
 // elapsed-time counters below overlap those phases and must not be added to them.

@@ -68,7 +68,20 @@ Startup reports live `[Warmup]` phases (source capture, compilation, validation,
 and cache publication), completed request counts, and a heartbeat every two
 seconds while the batch is running. `ready` requests are provisional: startup
 accepts them only after the entire source batch passes validation and cache
-read-back. The final per-request timing summary describes accepted results.
+read-back. Application startup prints phase progress and a final summary; the
+standalone `MetallicShaderCompiler` retains per-request progress and timings for
+diagnostics and performance tooling.
+
+The device-level native warmup obtains its sources through one complete source
+batch using the actual device's descriptor heap strides before creating native
+pipelines. It retains the existing producer, source namespace/content, policy,
+and persisted-cache read-back validation boundaries. This does not retain an
+unvalidated process-wide SPIR-V cache or change ordinary runtime acquisition and
+hot-reload invalidation. Explicit artifact overrides retain their ordinary
+acquisition semantics using one override-owner snapshot for the source batch.
+Warmup requests must declare all dependency roots in their search paths,
+including parent directories used by relative includes. The batch rejects
+dependencies outside its captured roots.
 
 For manual warmup:
 

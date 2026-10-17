@@ -626,63 +626,71 @@ bool validateSlangCleanedSpirv(const std::vector<uint32_t>& code, std::string& d
 #endif
 }
 
-uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode,
+template<typename ValueVisitor, typename TextVisitor>
+void visitShaderRequestIdentity(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode,
     SlangOptimizationLevel optimizationLevel,
     const ShaderTargetPostprocess& target,
-    SlangShaderPostprocessMode postprocessMode)
+    SlangShaderPostprocessMode postprocessMode, ValueVisitor&& value, TextVisitor&& text)
 {
-    uint64_t hash = kFnvOffset;
-    hash = hashValue(hash, kShaderCacheRequestVersion);
-    hash = hashText(hash, target.id);
-    hash = hashValue(hash, target.revision);
-    hash = hashValue(hash, static_cast<uint8_t>(sceneWorkingColorSpace()));
-    hash = hashText(hash, SLANG_VERSION_NUMERIC);
-    hash = hashValue(hash, static_cast<int32_t>(optimizationLevel));
-    hash = hashText(hash, "spirv-direct");
-    hash = hashText(hash, "slang-default-optimization-passes");
-    hash = hashValue(hash, nativeDescriptorHeapEnabled(desc));
-    hash = hashValue(hash, desc.descriptorHeapStrides.resource);
-    hash = hashValue(hash, desc.descriptorHeapStrides.sampler);
-    hash = hashText(hash, desc.moduleName);
-    hash = hashText(hash, desc.entryPointName);
-    hash = hashText(hash, desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName);
-    hash = hashValue(hash, static_cast<uint8_t>(debugMode));
+    value(kShaderCacheRequestVersion);
+    text(target.id);
+    value(target.revision);
+    value(static_cast<uint8_t>(sceneWorkingColorSpace()));
+    text(SLANG_VERSION_NUMERIC);
+    value(static_cast<int32_t>(optimizationLevel));
+    text("spirv-direct");
+    text("slang-default-optimization-passes");
+    value(nativeDescriptorHeapEnabled(desc));
+    value(desc.descriptorHeapStrides.resource);
+    value(desc.descriptorHeapStrides.sampler);
+    text(desc.moduleName);
+    text(desc.entryPointName);
+    text(desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName);
+    value(static_cast<uint8_t>(debugMode));
     const std::string searchPath = normalizedAbsolutePath(desc.searchPath).generic_string();
-    hash = hashText(hash, searchPath.c_str());
-    hash = hashText(hash, PROJECT_SOURCE_DIR "/Shaders/Modules");
-    hash = hashText(hash, PROJECT_SOURCE_DIR "/Shaders/Interop");
-    hash = hashValue(hash, static_cast<uint32_t>(desc.additionalSearchPaths.size()));
+    text(searchPath.c_str());
+    text(PROJECT_SOURCE_DIR "/Shaders/Modules");
+    text(PROJECT_SOURCE_DIR "/Shaders/Interop");
+    value(static_cast<uint32_t>(desc.additionalSearchPaths.size()));
     for (uint32_t index = 0; index < desc.additionalSearchPaths.size(); ++index) {
         const std::string additionalSearchPath = normalizedAbsolutePath(
             desc.additionalSearchPaths[index]).generic_string();
-        hash = hashText(hash, additionalSearchPath.c_str());
+        text(additionalSearchPath.c_str());
     }
-    hash = hashValue(hash, static_cast<uint32_t>(desc.capabilities.size()));
+    value(static_cast<uint32_t>(desc.capabilities.size()));
     for (uint32_t index = 0; index < desc.capabilities.size(); ++index) {
-        hash = hashText(hash, !desc.capabilities.empty() ? desc.capabilities[index] : nullptr);
+        text(!desc.capabilities.empty() ? desc.capabilities[index] : nullptr);
     }
-    hash = hashValue(hash, static_cast<uint32_t>(desc.macroDefines.size()));
+    value(static_cast<uint32_t>(desc.macroDefines.size()));
     for (uint32_t index = 0; index < desc.macroDefines.size(); ++index) {
         const SlangMacroDefine* macro = !desc.macroDefines.empty()
             ? &desc.macroDefines[index]
             : nullptr;
-        hash = hashText(hash, macro != nullptr ? macro->name : nullptr);
-        hash = hashText(
-            hash,
-            macro != nullptr && macro->value != nullptr ? macro->value : "1");
+        text(macro != nullptr ? macro->name : nullptr);
+        text(macro != nullptr && macro->value != nullptr ? macro->value : "1");
     }
     // Preserve existing unprocessed cache identities. The enabled policy owns its
     // pass order, validation environment/layout and linked optimizer version.
     if (postprocessMode == SlangShaderPostprocessMode::DeadBranches) {
-        hash = hashText(hash, "spirv-dead-branches-then-simplify-vulkan1.4-scalar");
-        hash = hashValue(hash, uint32_t(1));
-        hash = hashText(hash, slangShaderPostprocessToolVersion());
+        text("spirv-dead-branches-then-simplify-vulkan1.4-scalar");
+        value(uint32_t(1));
+        text(slangShaderPostprocessToolVersion());
     } else if (postprocessMode == SlangShaderPostprocessMode::SlangDeadBranches) {
-        hash = hashText(hash, "slang-downstream-spirv-opt-dead-branches-then-simplify-vulkan1.4-scalar");
-        hash = hashValue(hash, uint32_t(1));
-        hash = hashText(hash, spGetBuildTagString());
-        hash = hashText(hash, slangShaderPostprocessToolVersion(postprocessMode));
+        text("slang-downstream-spirv-opt-dead-branches-then-simplify-vulkan1.4-scalar");
+        value(uint32_t(1));
+        text(spGetBuildTagString());
+        text(slangShaderPostprocessToolVersion(postprocessMode));
     }
+}
+
+uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode,
+    SlangOptimizationLevel optimizationLevel, const ShaderTargetPostprocess& target,
+    SlangShaderPostprocessMode postprocessMode)
+{
+    uint64_t hash = kFnvOffset;
+    visitShaderRequestIdentity(desc, debugMode, optimizationLevel, target, postprocessMode,
+        [&](const auto& field) { hash = hashValue(hash, field); },
+        [&](const char* field) { hash = hashText(hash, field); });
     return hash;
 }
 
@@ -1009,6 +1017,28 @@ void appendDiagnostics(slang::IBlob* diagnostics, std::string& outDiagnostics)
 } // namespace
 #include "SlangSessionConfigImpl.inc"
 #include "SlangCompileContext.inc"
+
+Result<std::vector<uint8_t>> slangShaderRequestIdentity(const SlangShaderDesc& desc, std::string& log)
+{
+    auto prepared = prepareSlangRequest(desc, log);
+    if (!prepared) { return makeError(prepared.error()); }
+    std::vector<uint8_t> identity;
+    const auto value = [&](const auto& field) {
+        const auto* begin = reinterpret_cast<const uint8_t*>(&field);
+        identity.insert(identity.end(), begin, begin + sizeof(field));
+    };
+    // Serialize exactly the existing request-hash input, including effective
+    // policy and normalized paths. Equality compares complete bytes, not hashes.
+    const auto text = [&](const char* field) {
+        const char* characters = field ? field : "";
+        const uint64_t length = std::strlen(characters);
+        value(length);
+        identity.insert(identity.end(), characters, characters + length);
+    };
+    visitShaderRequestIdentity((*prepared)->resolvedDesc, (*prepared)->debugMode,
+        (*prepared)->optimizationLevel, vulkanSpirvTarget(), *(*prepared)->effectivePostprocess, value, text);
+    return identity;
+}
 
 
 void setSlangShaderDebugMode(SlangShaderDebugMode mode) noexcept

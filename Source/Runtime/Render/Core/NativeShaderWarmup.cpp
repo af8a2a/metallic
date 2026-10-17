@@ -6,8 +6,11 @@
 #include "../../../../Tools/ShaderWarmupRequests.h"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
+#include <cstdlib>
 #include <mutex>
+#include <thread>
 #include <unordered_set>
 #include <spdlog/spdlog.h>
 
@@ -149,32 +152,81 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
     auto& registry = ShaderRegistry::instance();
     const auto nativeDevice = vulkan::nativeDevice(device);
     const bool nativeDescriptorHeapAvailable = nativeDevice.descriptorHeapEnabled && nativeDevice.shaderUntypedPointersEnabled;
-    for (size_t index = 0; index < requests.size(); ++index) {
-        const auto& request = requests[index];
-        const std::string name = request.module + "." + request.entry;
-        spdlog::info("[Native shader warmup] source {}/{} {}", index + 1, requests.size(), name);
+    // Own every string/span until acquisition completes. Native heap requests
+    // must use this device's ABI, even when an offline batch already ran.
+    std::vector<ShaderRequest> deviceRequests;
+    deviceRequests.reserve(requests.size());
+    for (const auto& request : requests) {
         const ShaderRequestView view(request);
-        auto source = view.desc();
-        if (slangUsesNativeDescriptorHeap(source)) {
-            source.descriptorHeapStrides = device.descriptorHeapShaderStrides();
-            if (!nativeDescriptorHeapAvailable || !source.descriptorHeapStrides.resource || !source.descriptorHeapStrides.sampler) {
+        auto owned = request;
+        if (slangUsesNativeDescriptorHeap(view.desc())) {
+            owned.descriptorHeapStrides = device.descriptorHeapShaderStrides();
+            if (!nativeDescriptorHeapAvailable || !owned.descriptorHeapStrides.resource || !owned.descriptorHeapStrides.sampler) {
                 // This device cannot compile the native heap ABI. Do not fall
                 // back to process-global strides belonging to another device.
                 const auto variants = nativeComputeWarmupVariants(request);
                 report.skippedUnsupportedCount += std::max(size_t{1}, variants.size());
-                spdlog::info("[Native shader warmup] skip {}: native descriptor heap, untyped pointers, or descriptor strides are unavailable", name);
+                spdlog::info("[Native shader warmup] skip {}.{}: native descriptor heap, untyped pointers, or descriptor strides are unavailable", request.module, request.entry);
                 continue;
             }
         }
-        std::string diagnostics;
-        auto shader = registry.getShader(source, diagnostics);
-        if (!shader) {
-            log += "Native warmup source failed: " + name + "\n" + diagnostics;
-            return makeError(shader.error());
+        deviceRequests.push_back(std::move(owned));
+    }
+    std::vector<ShaderCompileResult> shaders;
+    if (!deviceRequests.empty()) {
+        size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 12u);
+        if (const char* value = std::getenv("METALLIC_SHADER_WARMUP_JOBS"); value && value[0]) {
+            const std::string_view text(value);
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), jobs);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || jobs == 0) {
+                log += "METALLIC_SHADER_WARMUP_JOBS requires a positive integer\n";
+                return makeError(Error::InvalidArgument);
+            }
         }
-        report.sourceCacheHits += shader->metrics.cacheHit ? 1 : 0;
-        report.sourceCompilerExecutions += shader->metrics.compilerExecuted ? 1 : 0;
-        auto requirements = inspectShader(shader->spirv);
+        jobs = std::min(jobs, deviceRequests.size());
+        const auto acquireBegin = std::chrono::steady_clock::now();
+        spdlog::info("[Native shader warmup] acquiring {} device-qualified sources (workers={})", deviceRequests.size(), jobs);
+        std::string diagnostics;
+        const SlangWarmupBatchOptions options{.jobs = jobs,
+            .onProgress = [](const SlangWarmupBatchProgress& progress) {
+                if (progress.phase && std::string_view(progress.phase) != "request-complete") {
+                    spdlog::info("[Native shader warmup] source batch {}", progress.phase);
+                }
+            }};
+        auto acquired = registry.getWarmupShadersWithOverrides(deviceRequests, options, diagnostics);
+        report.sourceAcquireTimeNanoseconds = elapsedNanoseconds(acquireBegin);
+        if (!acquired) {
+            log += "Native warmup source batch failed:\n" + diagnostics;
+            return makeError(acquired.error());
+        }
+        const auto& batch = acquired->sources;
+        if (!batch.completedAllRequests || batch.shaders.size() != deviceRequests.size()) {
+            log += "Incomplete native warmup source batch\n";
+            return makeError(Error::Failure);
+        }
+        report.sourceBatchUsed = !acquired->artifactOverrideActive;
+        report.sourceEpochValidated = batch.completeSourceEpochValidated;
+        report.sourceSnapshotTimeNanoseconds = batch.snapshotCaptureTimeNanoseconds;
+        report.sourceBoundaryValidationTimeNanoseconds = batch.boundaryValidationTimeNanoseconds;
+        report.sourcePublicationTimeNanoseconds = batch.cachePublicationTimeNanoseconds;
+        report.sourceCacheHits = batch.existingCacheHits;
+        report.sourceCompilerExecutions = batch.compilerExecutions;
+        shaders = std::move(acquired->sources.shaders);
+        spdlog::info("[Native shader warmup] sources ready mode={} hits={} compiles={} epochValidated={} acquireMs={:.3f} snapshotMs={:.3f} validationMs={:.3f} publicationMs={:.3f}",
+            report.sourceBatchUsed ? "batch" : "artifact-override", report.sourceCacheHits, report.sourceCompilerExecutions,
+            report.sourceEpochValidated, double(report.sourceAcquireTimeNanoseconds) / 1e6,
+            double(report.sourceSnapshotTimeNanoseconds) / 1e6, double(report.sourceBoundaryValidationTimeNanoseconds) / 1e6,
+            double(report.sourcePublicationTimeNanoseconds) / 1e6);
+    }
+    // Accept no source result until the complete batch has passed its source,
+    // namespace, compiler and publication checks. Ordinary runtime acquisition
+    // and dependency tracking remain unchanged for subsequent hot reloads.
+    for (size_t index = 0; index < deviceRequests.size(); ++index) {
+        const auto& request = deviceRequests[index];
+        const auto& shader = shaders[index];
+        const std::string name = request.module + "." + request.entry;
+        spdlog::debug("[Native shader warmup] source {}/{} {}", index + 1, deviceRequests.size(), name);
+        auto requirements = inspectShader(shader.spirv);
         if (!requirements) {
             log += "Native warmup requires a valid single-entry SPIR-V module: " + name + "\n";
             return makeError(requirements.error());
@@ -196,7 +248,7 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
             spdlog::info("[Native shader warmup] skip {} ({} variants): {}", name, variants.size(), reason);
             continue;
         }
-        auto module = registry.getShaderModule(device, {.spirv = shader->spirv, .debugName = name.c_str()});
+        auto module = registry.getShaderModule(device, {.spirv = shader.spirv, .debugName = name.c_str()});
         if (!module) {
             log += "Native warmup shader module failed: " + name + ": " + resultToString(module) + "\n";
             return makeError(module.error());
@@ -236,18 +288,18 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
                 })) {
                 state->pipelines.push_back({hash, specialization, (*pipeline)->execution()});
             }
-            spdlog::info("[Native shader warmup] {} {} variant {} createMs={:.3f}",
+            spdlog::debug("[Native shader warmup] {} {} variant {} createMs={:.3f}",
                 stats.nativeObjectReused ? "reused" : "created", name, variantIndex + 1,
                 double(stats.nativeCreateTimeNanoseconds) / 1e6);
         }
     }
     report.retainedPipelineCount = state->pipelines.size();
     report.totalTimeNanoseconds = elapsedNanoseconds(begin);
-    spdlog::info("[Native shader warmup] complete sources={} sourceHits={} sourceCompiles={} compute={} created={} reused={} graphicsSkipped={} unsupportedSkipped={} unknownABISkipped={} retained={} elapsedMs={:.3f} nativeCreateMs={:.3f}",
+    spdlog::info("[Native shader warmup] complete sources={} sourceHits={} sourceCompiles={} compute={} created={} reused={} graphicsSkipped={} unsupportedSkipped={} unknownABISkipped={} retained={} elapsedMs={:.3f} nativeCreateMs={:.3f} sourceAcquireMs={:.3f}",
         report.sourceCount, report.sourceCacheHits, report.sourceCompilerExecutions, report.computeSourceCount,
         report.nativeCreateCount, report.nativeObjectReuseCount, report.skippedGraphicsCount, report.skippedUnsupportedCount,
         report.skippedUnownedABICount, report.retainedPipelineCount, double(report.totalTimeNanoseconds) / 1e6,
-        double(report.nativeCreateTimeNanoseconds) / 1e6);
+        double(report.nativeCreateTimeNanoseconds) / 1e6, double(report.sourceAcquireTimeNanoseconds) / 1e6);
     return report;
 }
 

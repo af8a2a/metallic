@@ -19,6 +19,7 @@ struct ShaderRegistryCacheStats {
 class ComputeKernel;
 struct ComputeKernelDesc;
 class ShaderRegistry;
+struct ShaderRequest;
 
 struct ShaderArtifactOverrideResult {
     ShaderCompileResult shader;
@@ -56,6 +57,11 @@ private:
     uint64_t installation_ = 0;
 };
 
+struct ShaderRegistryWarmupResult {
+    SlangWarmupBatchResult sources;
+    bool artifactOverrideActive = false;
+};
+
 // The process singleton owns source identities only. Native cache state belongs
 // to Device::sharedState and is released before that device's native teardown.
 class ShaderRegistry {
@@ -71,6 +77,13 @@ public:
         const SlangShaderCacheOptions& options, std::string& log);
     [[nodiscard]] Result<SlangWarmupBatchResult> getWarmupShaders(std::span<const SlangShaderDesc> requests,
         const SlangWarmupBatchOptions& options, std::string& log);
+    // Capture one artifact producer for the entire acquisition. Without an
+    // override, use the fully validated source batch. With an override, retain
+    // ordinary per-request validation and never claim a complete source epoch.
+    // Duplicate complete effective identities share batch acquisition; returned
+    // shaders follow input order, while hit/compile counts count unique work.
+    [[nodiscard]] Result<ShaderRegistryWarmupResult> getWarmupShadersWithOverrides(
+        std::span<const ShaderRequest> requests, const SlangWarmupBatchOptions& options, std::string& log);
     // Opt-in tests only. At most one scope can be installed. Resolve callbacks
     // run outside the registry lock and remain alive for in-flight requests
     // after scope removal. Handled requests never read/write Slang's cache or
@@ -111,6 +124,9 @@ private:
     friend struct ShaderRegistryIdentityTestAccess;
     friend class ShaderArtifactOverrideScope;
     ShaderRegistry() = default;
+    [[nodiscard]] Result<ShaderCompileResult> getShaderWithOverride(const SlangShaderDesc& desc,
+        const SlangShaderCacheOptions& options, std::string& log,
+        const std::shared_ptr<ShaderArtifactOverride>& artifactOverride);
     void removeArtifactOverride(uint64_t installation) noexcept;
     // Normal compiler/warmup result registration; never the testing override path.
     void registerCompiledShader(const SlangShaderDesc& desc, const ShaderCompileResult& compiled);

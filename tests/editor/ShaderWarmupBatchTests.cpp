@@ -175,6 +175,24 @@ TEST(ShaderWarmupBatch, RealSlangColdAllHitMixedPrivateHeaderShadowAndOrdinaryCa
     ASSERT_TRUE(changed) << log; EXPECT_FALSE(hit); EXPECT_NE(changed->spirv, cold->shaders[0].spirv);
     EXPECT_FALSE(changed->metrics.sourceEpochReused);
 
+    // Device warmup consumes this batch entry directly. A same-size edit with
+    // a restored timestamp must invalidate it as well as the ordinary path.
+    const SlangWarmupBatchOptions invalidationOptions{.cache = {.cacheDirectory = cachePath.c_str()}, .jobs = 1};
+    writeText(source / "AOnly.h", "#define A_VALUE 47u\n"); fs::last_write_time(source / "AOnly.h", headerTime);
+    auto changedBatch = registry.getWarmupShaders(std::span(&a, 1), invalidationOptions, log);
+    ASSERT_TRUE(changedBatch) << log;
+    ASSERT_TRUE(changedBatch->completedAllRequests && changedBatch->completeSourceEpochValidated);
+    EXPECT_EQ(changedBatch->compilerExecutions, 1u); EXPECT_EQ(changedBatch->existingCacheHits, 0u);
+    ASSERT_EQ(changedBatch->shaders.size(), 1u);
+    EXPECT_NE(changedBatch->shaders[0].spirv, changed->spirv);
+    auto changedBatchHit = registry.getWarmupShaders(std::span(&a, 1), invalidationOptions, log);
+    ASSERT_TRUE(changedBatchHit) << log;
+    EXPECT_EQ(changedBatchHit->compilerExecutions, 0u); EXPECT_EQ(changedBatchHit->existingCacheHits, 1u);
+    EXPECT_EQ(changedBatchHit->shaders[0].spirv, changedBatch->shaders[0].spirv);
+    auto changedOrdinaryHit = registry.getShader(a, ordinaryOptions, log);
+    ASSERT_TRUE(changedOrdinaryHit) << log; EXPECT_TRUE(hit);
+    EXPECT_EQ(changedOrdinaryHit->spirv, changedBatch->shaders[0].spirv);
+
     const auto first = directory.path / "first", second = directory.path / "second";
     fs::create_directories(first); fs::create_directories(second);
     writeText(second / "BatchValues.slang", "module BatchValues; public uint value() { return 17u; }\n");
@@ -187,6 +205,25 @@ TEST(ShaderWarmupBatch, RealSlangColdAllHitMixedPrivateHeaderShadowAndOrdinaryCa
     writeText(first / "BatchValues.slang", "module BatchValues; public uint value() { return 31u; }\n");
     auto shadow = registry.getShader(c, ordinaryOptions, log); ASSERT_TRUE(shadow) << log;
     EXPECT_FALSE(hit); EXPECT_NE(shadow->spirv, oldShadow->spirv);
+    // Removing and then restoring the higher-priority module changes resolver
+    // meaning without changing the request or either module's surviving bytes.
+    ASSERT_TRUE(fs::remove(first / "BatchValues.slang"));
+    auto removedShadowBatch = registry.getWarmupShaders(std::span(&c, 1), invalidationOptions, log);
+    ASSERT_TRUE(removedShadowBatch) << log;
+    ASSERT_TRUE(removedShadowBatch->completedAllRequests && removedShadowBatch->completeSourceEpochValidated);
+    EXPECT_EQ(removedShadowBatch->compilerExecutions, 1u); EXPECT_EQ(removedShadowBatch->existingCacheHits, 0u);
+    ASSERT_EQ(removedShadowBatch->shaders.size(), 1u);
+    EXPECT_EQ(removedShadowBatch->shaders[0].spirv, oldShadow->spirv);
+    writeText(first / "BatchValues.slang", "module BatchValues; public uint value() { return 31u; }\n");
+    auto restoredShadowBatch = registry.getWarmupShaders(std::span(&c, 1), invalidationOptions, log);
+    ASSERT_TRUE(restoredShadowBatch) << log;
+    ASSERT_TRUE(restoredShadowBatch->completedAllRequests && restoredShadowBatch->completeSourceEpochValidated);
+    EXPECT_EQ(restoredShadowBatch->compilerExecutions, 1u); EXPECT_EQ(restoredShadowBatch->existingCacheHits, 0u);
+    ASSERT_EQ(restoredShadowBatch->shaders.size(), 1u);
+    EXPECT_EQ(restoredShadowBatch->shaders[0].spirv, shadow->spirv);
+    auto restoredOrdinaryHit = registry.getShader(c, ordinaryOptions, log);
+    ASSERT_TRUE(restoredOrdinaryHit) << log; EXPECT_TRUE(hit);
+    EXPECT_EQ(restoredOrdinaryHit->spirv, shadow->spirv);
     const auto blocked = directory.path / "cache-is-file"; writeText(blocked, "not a directory");
     const auto blockedPath = blocked.string();
     auto noCache = registry.getShader(c, {.cacheDirectory = blockedPath.c_str()}, log);

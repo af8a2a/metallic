@@ -37,8 +37,8 @@ struct CompileOutcome {
 // Keep this separate from the accepted-result summary and its timing format.
 class WarmupBatchReporter {
 public:
-    explicit WarmupBatchReporter(std::span<const SlangShaderDesc> requests)
-        : requests_(requests), start_(std::chrono::steady_clock::now()), heartbeat_([this] {
+    WarmupBatchReporter(std::span<const SlangShaderDesc> requests, bool verboseRequests)
+        : requests_(requests), verboseRequests_(verboseRequests), start_(std::chrono::steady_clock::now()), heartbeat_([this] {
             std::unique_lock lock(mutex_);
             while (!wake_.wait_for(lock, std::chrono::seconds(2), [this] { return stopped_; })) {
                 printLocked("working");
@@ -63,10 +63,12 @@ public:
         if (std::string_view(event.phase) == "request-complete") {
             ++ready_;
             hits_ += event.cacheHit ? 1 : 0;
-            const auto& request = requests_[event.requestIndex];
-            const auto status = std::string(event.cacheHit ? "cache ready: " : "compile ready: ") +
-                request.moduleName + "." + request.entryPointName;
-            printLocked(status.c_str());
+            if (verboseRequests_) {
+                const auto& request = requests_[event.requestIndex];
+                const auto status = std::string(event.cacheHit ? "cache ready: " : "compile ready: ") +
+                    request.moduleName + "." + request.entryPointName;
+                printLocked(status.c_str());
+            }
         } else {
             phase_ = event.phase;
             printLocked("phase changed");
@@ -83,6 +85,7 @@ private:
     }
 
     std::span<const SlangShaderDesc> requests_;
+    bool verboseRequests_;
     std::chrono::steady_clock::time_point start_;
     std::mutex mutex_;
     std::condition_variable wake_;
@@ -136,7 +139,7 @@ CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& reques
     return {existingCacheHit, {}, compiled->metrics};
 }
 
-int run(int argc, char** argv)
+int run(int argc, char** argv, bool verboseRequests)
 {
     std::string filter;
     std::string cacheDirectory;
@@ -299,7 +302,7 @@ int run(int argc, char** argv)
         progress("Starting validated immutable source batch");
         std::string diagnostics;
         auto batch = [&] {
-            WarmupBatchReporter reporter(descriptors);
+            WarmupBatchReporter reporter(descriptors, verboseRequests);
             const SlangWarmupBatchOptions batchOptions{
                 .cache = {.cacheDirectory = cacheDirectory.empty() ? nullptr : cacheDirectory.c_str()},
                 .jobs = jobs, .shareSessions = true,
@@ -315,19 +318,21 @@ int run(int argc, char** argv)
                 compilerTimeNanoseconds += metrics.totalTimeNanoseconds;
                 moduleLoadTimeNanoseconds += metrics.moduleLoadTimeNanoseconds;
                 codeGenerationTimeNanoseconds += metrics.codeGenerationTimeNanoseconds;
-                const auto name = requests[index].module + "." + requests[index].entry;
-                std::cout << std::setprecision(3) << "  Request " << (index + 1) << " timing: total="
-                          << double(metrics.totalTimeNanoseconds) / 1e9 << "s, setup="
-                          << double(metrics.compilerSetupTimeNanoseconds) / 1e9 << "s, module="
-                          << double(metrics.moduleLoadTimeNanoseconds) / 1e9 << "s, codegen="
-                          << double(metrics.codeGenerationTimeNanoseconds) / 1e9 << "s" << std::endl;
-                const auto status = std::string(metrics.cacheHit ? "Cached: " : "Compiled: ") + name;
-                progress(status.c_str());
+                if (verboseRequests) {
+                    const auto name = requests[index].module + "." + requests[index].entry;
+                    std::cout << std::setprecision(3) << "  Request " << (index + 1) << " timing: total="
+                              << double(metrics.totalTimeNanoseconds) / 1e9 << "s, setup="
+                              << double(metrics.compilerSetupTimeNanoseconds) / 1e9 << "s, module="
+                              << double(metrics.moduleLoadTimeNanoseconds) / 1e9 << "s, codegen="
+                              << double(metrics.codeGenerationTimeNanoseconds) / 1e9 << "s" << std::endl;
+                    const auto status = std::string(metrics.cacheHit ? "Cached: " : "Compiled: ") + name;
+                    progress(status.c_str());
+                }
             }
             if (!batch->completeSourceEpochValidated) {
                 std::cout << "Shader warmup used fresh sessions without persistent cache reuse\n";
             }
-            std::cout << "Warmup source batch: " << batch->sessionGroups << " groups; static estimate schedule; snapshot="
+            std::cout << std::setprecision(3) << "Warmup source batch: " << batch->sessionGroups << " groups; static estimate schedule; snapshot="
                       << double(batch->snapshotCaptureTimeNanoseconds) / 1e9 << "s; boundary="
                       << double(batch->boundaryValidationTimeNanoseconds) / 1e9 << "s; cache publication/readback="
                       << double(batch->cachePublicationTimeNanoseconds) / 1e9 << "s; live_fs_atomic=false\n";
@@ -348,19 +353,26 @@ int run(int argc, char** argv)
                   << "s (module=" << double(moduleLoadTimeNanoseconds) / 1e9
                   << "s, codegen=" << double(codeGenerationTimeNanoseconds) / 1e9 << "s)\n";
     }
+    std::cout.flush();
     return failures == 0 ? 0 : 1;
+}
+
+int runWithOutputPolicy(int argc, char** argv, bool verboseRequests)
+{
+    try {
+        return run(argc, argv, verboseRequests);
+    } catch (const std::exception& error) {
+        std::cerr << "Shader warmup failed: " << error.what() << '\n';
+        return 1;
+    }
 }
 
 } // namespace
 
 int metallic::render::runShaderWarmup(int argc, char** argv)
 {
-    try {
-        return run(argc, argv);
-    } catch (const std::exception& error) {
-        std::cerr << "Shader warmup failed: " << error.what() << '\n';
-        return 1;
-    }
+    // Keep per-request evidence available to the standalone performance runner.
+    return runWithOutputPolicy(argc, argv, true);
 }
 
 int metallic::render::warmupShadersForStartup(bool skip)
@@ -372,7 +384,9 @@ int metallic::render::warmupShadersForStartup(bool skip)
     std::cout << "[Startup] Warming shader cache before application initialization" << std::endl;
     char program[] = "MetallicShaderWarmup";
     char* arguments[] = {program, nullptr};
-    const int result = runShaderWarmup(1, arguments);
+    // Startup reports phases and bounded heartbeats; synchronous per-request
+    // console writes can dominate an otherwise fully cached batch.
+    const int result = runWithOutputPolicy(1, arguments, false);
     if (result != 0) {
         std::cerr << "[Startup] Shader warmup failed; application startup cancelled. "
                      "Use --skip-shader-warmup to compile on demand.\n";

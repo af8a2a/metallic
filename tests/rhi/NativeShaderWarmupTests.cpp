@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <string_view>
@@ -116,14 +117,85 @@ public:
         std::string log;
         auto warmed = warmupNativeShaders(**device, requests, log);
         if (!warmed || warmed->nativeCreateCount != 2 || warmed->retainedPipelineCount != 2 ||
-            warmed->nativeObjectReuseCount != 0 || calls.computeCalls != 2) {
+            warmed->nativeObjectReuseCount != 0 || calls.computeCalls != 2 || !warmed->sourceBatchUsed ||
+            warmed->sourceAcquireTimeNanoseconds == 0) {
             return RHITestResult::fail("warmup did not create and retain both real buffer PSOs: " + log);
         }
         auto repeated = warmupNativeShaders(**device, requests, log);
         if (!repeated || repeated->nativeCreateCount != 0 || repeated->nativeObjectReuseCount != 2 ||
-            repeated->retainedPipelineCount != 2 || calls.computeCalls != 2) {
+            repeated->retainedPipelineCount != 2 || calls.computeCalls != 2 || !repeated->sourceBatchUsed) {
             return RHITestResult::fail("repeated warmup recompiled a retained native PSO: " + log);
         }
+        if (repeated->sourceEpochValidated && (repeated->sourceCacheHits != requests.size() ||
+            repeated->sourceCompilerExecutions != 0)) {
+            return RHITestResult::fail("validated repeated native source batch missed the warmed disk cache: " + log);
+        }
+        const std::array duplicateRequests{requests[0], requests[1], requests[0]};
+        auto duplicates = warmupNativeShaders(**device, duplicateRequests, log);
+        if (!duplicates || duplicates->sourceCount != duplicateRequests.size() || !duplicates->sourceBatchUsed ||
+            duplicates->nativeCreateCount != 0 || duplicates->nativeObjectReuseCount != duplicateRequests.size() ||
+            duplicates->retainedPipelineCount != 2 || calls.computeCalls != 2) {
+            return RHITestResult::fail("duplicate source requests lost their native recipe order or reuse: " + log);
+        }
+        auto definedRequest = requests[0];
+        definedRequest.defines.emplace_back("NATIVE_WARMUP_IDENTITY_TEST", "1");
+        auto mappedStridesAlias = requests[0];
+        mappedStridesAlias.descriptorHeapStrides = {.resource = 32, .sampler = 16};
+        auto pathAlias = requests[0];
+        pathAlias.searchPath.insert(pathAlias.searchPath.find_last_of("/\\") + 1, "./");
+        auto optimizationAlias = requests[0];
+        const ShaderRequestView defaultPolicy(requests[0]);
+        optimizationAlias.optimizationLevel = slangShaderOptimizationLevel(defaultPolicy.desc());
+        auto descriptorAlias = requests[0];
+        descriptorAlias.descriptorHeapMode = SlangDescriptorHeapMode::Default;
+        const ShaderRequestView defaultDescriptor(descriptorAlias);
+        // Under a native-descriptor test environment, Default is not an alias
+        // of the explicitly mapped source, so retain the explicit mapped policy.
+        if (slangUsesNativeDescriptorHeap(defaultDescriptor.desc())) { descriptorAlias = requests[0]; }
+        const std::array identityRequests{requests[0], requests[1], definedRequest, requests[0],
+            mappedStridesAlias, pathAlias, optimizationAlias, descriptorAlias};
+        auto identityBatch = registry.getWarmupShadersWithOverrides(identityRequests, {}, log);
+        if (!identityBatch || identityBatch->artifactOverrideActive ||
+            identityBatch->sources.shaders.size() != identityRequests.size() ||
+            identityBatch->sources.existingCacheHits + identityBatch->sources.compilerExecutions != 3 ||
+            identityBatch->sources.shaders[0].spirv != identityBatch->sources.shaders[3].spirv ||
+            identityBatch->sources.shaders[0].spirv != identityBatch->sources.shaders[4].spirv ||
+            identityBatch->sources.shaders[0].spirv != identityBatch->sources.shaders[5].spirv ||
+            identityBatch->sources.shaders[0].spirv != identityBatch->sources.shaders[6].spirv ||
+            identityBatch->sources.shaders[0].spirv != identityBatch->sources.shaders[7].spirv) {
+            return RHITestResult::fail("source batch lost effective policy aliases, distinct defines, or duplicate mapping: " + log);
+        }
+#ifdef _WIN32
+        {
+            struct OptimizationEnvironment {
+                std::optional<std::string> previous;
+                OptimizationEnvironment()
+                {
+                    if (const char* value = std::getenv("METALLIC_SLANG_OPTIMIZATION")) { previous = value; }
+                    _putenv_s("METALLIC_SLANG_OPTIMIZATION", "O2");
+                }
+                ~OptimizationEnvironment()
+                {
+                    _putenv_s("METALLIC_SLANG_OPTIMIZATION", previous ? previous->c_str() : "");
+                }
+            } environment;
+            auto explicitPolicy = requests[0];
+            explicitPolicy.optimizationLevel = SlangShaderOptimizationLevel::O2;
+            const std::array policyAliases{requests[0], explicitPolicy};
+            bool changedPolicy = false;
+            const SlangWarmupBatchOptions driftOptions{.onProgress = [&](const SlangWarmupBatchProgress& progress) {
+                if (!changedPolicy && progress.phase && std::string_view(progress.phase) == "preparing") {
+                    _putenv_s("METALLIC_SLANG_OPTIMIZATION", "O3");
+                    changedPolicy = true;
+                }
+            }};
+            auto drifted = registry.getWarmupShadersWithOverrides(policyAliases, driftOptions, log);
+            if (drifted || !changedPolicy || log.empty() || calls.computeCalls != 2) {
+                return RHITestResult::fail("policy drift returned an incorrectly deduplicated source alias");
+            }
+            log.clear();
+        }
+#endif
         for (const auto& request : requests) {
             const ShaderRequestView view(request);
             auto code = registry.getShader(view.desc(), log);
@@ -188,6 +260,9 @@ public:
             ShaderRequest{.module = "Features/Samples/Triangle", .entry = "triangleVertexMain",
                 .descriptorHeapMode = SlangDescriptorHeapMode::Mapped},
             ShaderRequest{.module = "ShaderSpecializationProbe", .entry = "specializationProbeMain",
+                // The immutable batch must also capture the parent directory
+                // containing the fixture's ../TestResourceParameters.h include.
+                .searchPaths = {PROJECT_SOURCE_DIR "/tests/rhi"},
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                 .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}};
         std::string log;
@@ -198,6 +273,16 @@ public:
             return RHITestResult::fail("graphics/unknown ABI requests were not explicitly skipped: " + log);
         }
         const std::array requests{bufferRequest(builtin_pass::kRenderGraphBufferWriteEntryPoint)};
+        // Even a valid earlier source must not create a PSO before every source
+        // has been accepted. This catches an accidental per-request fallback.
+        auto invalid = requests.front();
+        invalid.entry = "missingNativeWarmupEntry";
+        const std::array rejectedBatch{requests.front(), invalid};
+        auto rejected = warmupNativeShaders(**device, rejectedBatch, log);
+        if (rejected || log.empty() || calls.computeCalls != 0 || calls.graphicsCalls != 0) {
+            return RHITestResult::fail("partial source batch created native work before source validation completed");
+        }
+        log.clear();
         {
             auto overrideScope = registry.installArtifactOverrideForTesting(std::make_shared<RejectedWarmupSource>());
             if (!overrideScope) { return RHITestResult::fail("could not install source rejection fixture"); }
@@ -229,6 +314,11 @@ public:
     std::optional<Result<ShaderArtifactOverrideResult>> resolve(const SlangShaderDesc& desc, std::string&) override
     {
         if (!desc.moduleName || std::string_view(desc.moduleName) != "Features/Debug/GPUProbe") { return std::nullopt; }
+        ++resolveCalls;
+        if (scopeToRemove) {
+            scopeToRemove->reset();
+            scopeToRemove = nullptr;
+        }
         // Reuse the existing scalar specialization fixture through the testing
         // override. The separate buffer test exercises genuine production code.
         ShaderArtifactOverrideResult result;
@@ -242,6 +332,9 @@ public:
         result.identity.spirvPostprocess = "none";
         return Result<ShaderArtifactOverrideResult>(std::move(result));
     }
+
+    ShaderArtifactOverrideScope* scopeToRemove = nullptr;
+    size_t resolveCalls = 0;
 
 private:
     ShaderCompileResult code_;
@@ -288,12 +381,19 @@ public:
             ? RHITestResult::skip("bindless native warmup unavailable")
             : RHITestResult::fail("could not create specialization warmup test device"); }
         WarmupNativeCalls calls(**device);
-        auto overrideScope = registry.installArtifactOverrideForTesting(std::make_shared<SpecializationWarmupArtifact>(*code));
+        auto artifact = std::make_shared<SpecializationWarmupArtifact>(*code);
+        auto overrideScope = registry.installArtifactOverrideForTesting(artifact);
         if (!overrideScope) { return RHITestResult::fail("could not install specialization fixture override"); }
-        const std::array requests{ShaderRequest{.module = "Features/Debug/GPUProbe", .entry = "probe",
-            .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}};
+        // Removal during the first callback must not split the acquisition
+        // between this artifact and the ordinary production shader.
+        artifact->scopeToRemove = &*overrideScope;
+        const ShaderRequest request{.module = "Features/Debug/GPUProbe", .entry = "probe",
+            .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
+        const std::array requests{request, request};
         auto warmed = warmupNativeShaders(**device, requests, log);
-        if (!warmed || warmed->nativeCreateCount != 1 || calls.computeCalls != 1) {
+        if (!warmed || warmed->nativeCreateCount != 1 || warmed->nativeObjectReuseCount != 1 || calls.computeCalls != 1 ||
+            warmed->sourceBatchUsed || warmed->sourceEpochValidated || warmed->sourceCacheHits != 0 ||
+            warmed->sourceCompilerExecutions != 0 || artifact->resolveCalls != 2 || bool(*overrideScope)) {
             return RHITestResult::fail("specialization fixture warmup failed: " + log);
         }
         auto module = registry.getShaderModule(**device, {.spirv = code->spirv});

@@ -1,4 +1,5 @@
 #include "ShaderRegistry.h"
+#include "ShaderRequests.h"
 
 #include <exception>
 #include <filesystem>
@@ -223,6 +224,13 @@ Result<ShaderCompileResult> ShaderRegistry::getShader(const SlangShaderDesc& des
         std::lock_guard lock(sourceMutex_);
         artifactOverride = artifactOverride_;
     }
+    return getShaderWithOverride(desc, options, log, artifactOverride);
+}
+
+Result<ShaderCompileResult> ShaderRegistry::getShaderWithOverride(const SlangShaderDesc& desc,
+    const SlangShaderCacheOptions& options, std::string& log,
+    const std::shared_ptr<ShaderArtifactOverride>& artifactOverride)
+{
     if (artifactOverride) {
         log.clear();
         std::optional<Result<ShaderArtifactOverrideResult>> resolved;
@@ -324,6 +332,75 @@ Result<SlangWarmupBatchResult> ShaderRegistry::getWarmupShaders(std::span<const 
         log += "Incomplete source-qualified warmup result\n"; return makeError(Error::Failure);
     }
     for (size_t index = 0; index < requests.size(); ++index) { registerCompiledShader(requests[index], result->shaders[index]); }
+    return result;
+}
+
+Result<ShaderRegistryWarmupResult> ShaderRegistry::getWarmupShadersWithOverrides(
+    std::span<const ShaderRequest> requests, const SlangWarmupBatchOptions& options, std::string& log)
+{
+    if (requests.empty() || !options.jobs || options.jobs > 256 || options.cache.outCacheHit) {
+        log = "Invalid registry warmup batch";
+        return makeError(Error::InvalidArgument);
+    }
+    std::shared_ptr<ShaderArtifactOverride> artifactOverride;
+    {
+        std::lock_guard lock(sourceMutex_);
+        artifactOverride = artifactOverride_;
+    }
+    if (!artifactOverride) {
+        // The cache transaction requires unique requests. Preserve the native
+        // caller's order and duplicate recipes while acquiring each complete
+        // effective identity once, including aliases resolved by compiler policy.
+        std::vector<std::vector<uint8_t>> uniqueIdentities;
+        std::vector<std::vector<uint8_t>> inputIdentities;
+        std::vector<size_t> sourceIndices;
+        std::vector<std::unique_ptr<ShaderRequestView>> views;
+        std::vector<SlangShaderDesc> descriptors;
+        for (size_t index = 0; index < requests.size(); ++index) {
+            views.push_back(std::make_unique<ShaderRequestView>(requests[index]));
+            auto identity = slangShaderRequestIdentity(views.back()->desc(), log);
+            if (!identity) { return makeError(identity.error()); }
+            inputIdentities.push_back(*identity);
+            const auto found = std::find(uniqueIdentities.begin(), uniqueIdentities.end(), *identity);
+            sourceIndices.push_back(static_cast<size_t>(found - uniqueIdentities.begin()));
+            if (found != uniqueIdentities.end()) { continue; }
+            uniqueIdentities.push_back(std::move(*identity));
+            descriptors.push_back(views.back()->desc());
+        }
+        auto batch = getWarmupShaders(descriptors, options, log);
+        if (!batch) { return makeError(batch.error()); }
+        // Include every original alias in the acquisition boundary. A process
+        // policy change must not let a representative compiled under a new
+        // policy masquerade as an explicit-policy request that was deduplicated.
+        for (size_t index = 0; index < views.size(); ++index) {
+            auto identity = slangShaderRequestIdentity(views[index]->desc(), log);
+            if (!identity) { return makeError(identity.error()); }
+            if (*identity != inputIdentities[index]) {
+                log += "Effective shader request identity changed during warmup acquisition\n";
+                return makeError(Error::Failure);
+            }
+        }
+        if (descriptors.size() != requests.size()) {
+            auto uniqueShaders = std::move(batch->shaders);
+            batch->shaders.clear();
+            batch->shaders.reserve(requests.size());
+            for (const size_t index : sourceIndices) { batch->shaders.push_back(uniqueShaders[index]); }
+        }
+        return ShaderRegistryWarmupResult{.sources = std::move(*batch)};
+    }
+    // A removed/replaced override cannot split this acquisition between two
+    // producers. Keep its callbacks outside the registry lock, as getShader does.
+    ShaderRegistryWarmupResult result{.artifactOverrideActive = true};
+    result.sources.shaders.reserve(requests.size());
+    for (const auto& request : requests) {
+        const ShaderRequestView view(request);
+        auto shader = getShaderWithOverride(view.desc(), options.cache, log, artifactOverride);
+        if (!shader) { return makeError(shader.error()); }
+        result.sources.existingCacheHits += shader->metrics.cacheHit ? 1 : 0;
+        result.sources.compilerExecutions += shader->metrics.compilerExecuted ? 1 : 0;
+        result.sources.shaders.push_back(std::move(*shader));
+    }
+    result.sources.completedAllRequests = true;
     return result;
 }
 

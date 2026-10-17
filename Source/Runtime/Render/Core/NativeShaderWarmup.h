@@ -19,9 +19,16 @@ struct NativeShaderWarmupReport
     size_t retainedPipelineCount = 0;
     uint64_t totalTimeNanoseconds = 0;
     uint64_t nativeCreateTimeNanoseconds = 0;
+    uint64_t sourceAcquireTimeNanoseconds = 0;
+    uint64_t sourceSnapshotTimeNanoseconds = 0;
+    uint64_t sourceBoundaryValidationTimeNanoseconds = 0;
+    uint64_t sourcePublicationTimeNanoseconds = 0;
+    bool sourceBatchUsed = false;
+    bool sourceEpochValidated = false;
 };
 
-// Uses this rendering Device's shader ABI and ordinary registry acquisition.
+// Uses this rendering Device's shader ABI and a fully validated source batch.
+// Installed artifact overrides retain ordinary acquisition with a stable producer.
 // Successful native objects remain pinned until Device teardown, independently
 // of the bounded native-cache LRU. Unknown source ABIs are explicitly skipped.
 [[nodiscard]] Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <streambuf>
 #include <stdexcept>
 #include <thread>
 
@@ -45,6 +46,45 @@ void setWorkerEnvironment(const char* value)
     }
 #endif
 }
+
+class CountingOutputBuffer : public std::streambuf {
+public:
+    CountingOutputBuffer()
+        : destination_(std::cout.rdbuf(this))
+    {
+    }
+
+    ~CountingOutputBuffer()
+    {
+        std::cout.rdbuf(destination_);
+    }
+
+    size_t flushes() const { return flushes_.load(); }
+
+protected:
+    std::streamsize xsputn(const char* text, std::streamsize count) override
+    {
+        return destination_->sputn(text, count);
+    }
+
+    int_type overflow(int_type character) override
+    {
+        if (traits_type::eq_int_type(character, traits_type::eof())) {
+            return traits_type::not_eof(character);
+        }
+        return destination_->sputc(traits_type::to_char_type(character));
+    }
+
+    int sync() override
+    {
+        ++flushes_;
+        return destination_->pubsync();
+    }
+
+private:
+    std::streambuf* destination_;
+    std::atomic<size_t> flushes_{0};
+};
 
 class ShaderWarmupStartupTest : public testing::Test {
 protected:
@@ -109,6 +149,46 @@ TEST_F(ShaderWarmupStartupTest, StartupHonorsWorkerEnvironment)
     EXPECT_EQ(batchCalls.load(), 1u);
     EXPECT_EQ(batchJobs.load(), 12u);
     EXPECT_TRUE(metallic::render::startupShaderWarmupEnabled());
+}
+
+TEST_F(ShaderWarmupStartupTest, StartupReportsPhasesAndSummaryWithoutPerRequestFlushes)
+{
+    size_t flushes = 0;
+    {
+        CountingOutputBuffer buffer;
+        EXPECT_EQ(metallic::render::warmupShadersForStartup(false), 0);
+        flushes = buffer.flushes();
+    }
+    const auto output = testing::internal::GetCapturedStdout();
+    testing::internal::CaptureStdout();
+    EXPECT_NE(output.find("[Warmup] compiling | ready: 0/"), std::string::npos);
+    EXPECT_NE(output.find("[Warmup] validating | ready: " +
+        std::to_string(metallic::tools::shaderWarmupRequests().size()) + "/"), std::string::npos);
+    EXPECT_NE(output.find("Shader warmup elapsed:"), std::string::npos);
+    EXPECT_NE(output.find("0 failures"), std::string::npos);
+    EXPECT_EQ(output.find("Request 1 timing:"), std::string::npos);
+    EXPECT_EQ(output.find("cache ready:"), std::string::npos);
+    EXPECT_EQ(output.find("compile ready:"), std::string::npos);
+    EXPECT_EQ(output.find("] Cached: "), std::string::npos);
+    EXPECT_EQ(output.find("] Compiled: "), std::string::npos);
+    // A cached startup flushes phases and the final summary, independent of
+    // catalog size. Allow some headroom for the two-second heartbeat on slow CI.
+    EXPECT_LE(flushes, 12u);
+}
+
+TEST_F(ShaderWarmupStartupTest, StandaloneRetainsPerRequestPerformanceEvidence)
+{
+    char program[] = "MetallicShaderCompiler";
+    char* arguments[] = {program};
+    ASSERT_EQ(metallic::render::runShaderWarmup(1, arguments), 0);
+    const auto output = testing::internal::GetCapturedStdout();
+    testing::internal::CaptureStdout();
+    EXPECT_NE(output.find("Request 1 timing:"), std::string::npos);
+    EXPECT_NE(output.find("Request " + std::to_string(metallic::tools::shaderWarmupRequests().size()) + " timing:"),
+        std::string::npos);
+    EXPECT_NE(output.find("[Warmup] compiling | ready: 1/"), std::string::npos);
+    EXPECT_NE(output.find("Warmup V3 publication phases:"), std::string::npos);
+    EXPECT_NE(output.find("Shader warmup elapsed:"), std::string::npos);
 }
 
 TEST_F(ShaderWarmupStartupTest, InvalidWorkerEnvironmentRejectsStartupBeforeCompilation)
@@ -200,8 +280,9 @@ TEST_F(ShaderWarmupStartupTest, ReportsProvisionalProgressEvenWhenFinalValidatio
     EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
     const auto output = testing::internal::GetCapturedStdout();
     testing::internal::CaptureStdout();
-    EXPECT_NE(output.find("[Warmup] compiling | ready: 1/"), std::string::npos);
-    EXPECT_NE(output.find("[Warmup] validating"), std::string::npos);
+    EXPECT_NE(output.find("[Warmup] compiling | ready: 0/"), std::string::npos);
+    EXPECT_NE(output.find("[Warmup] validating | ready: " +
+        std::to_string(metallic::tools::shaderWarmupRequests().size()) + "/"), std::string::npos);
     EXPECT_NE(output.find("awaiting batch acceptance"), std::string::npos);
     EXPECT_EQ(output.find("] Cached: "), std::string::npos);
     EXPECT_EQ(output.find("Request 1 timing:"), std::string::npos);
@@ -214,8 +295,10 @@ TEST_F(ShaderWarmupStartupTest, ReportsHeartbeatWhileBatchHasNoCompletedRequests
     const auto output = testing::internal::GetCapturedStdout();
     testing::internal::CaptureStdout();
     const auto heartbeat = output.find("s | working | awaiting batch acceptance");
-    const auto completion = output.find("ready: 1/");
+    const auto completion = output.find("[Warmup] validating | ready: " +
+        std::to_string(metallic::tools::shaderWarmupRequests().size()) + "/");
     EXPECT_NE(heartbeat, std::string::npos);
+    EXPECT_NE(completion, std::string::npos);
     EXPECT_LT(heartbeat, completion);
 }
 
@@ -387,6 +470,14 @@ bool slangUsesNativeDescriptorHeap(const SlangShaderDesc& desc) noexcept
 {
     return nativeCompilation || desc.descriptorHeapMode == SlangDescriptorHeapMode::Native ||
         (!nativeEntry.empty() && desc.entryPointName != nullptr && nativeEntry == desc.entryPointName);
+}
+
+Result<std::vector<uint8_t>> slangShaderRequestIdentity(const SlangShaderDesc&, std::string& diagnostics)
+{
+    // Startup dispatch uses getWarmupShaders directly. Effective-identity
+    // deduplication is exercised by tests linked against the real compiler.
+    diagnostics = "Unexpected effective request identity call in startup dispatch fixture";
+    return makeError(Error::Unsupported);
 }
 
 bool queryVulkanDescriptorHeapShaderStrides(DescriptorHeapShaderStrides& strides, std::string& diagnostics)

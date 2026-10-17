@@ -223,6 +223,20 @@ bool spirvContainsCaptureDebugInfo(
 {
     std::unordered_map<uint32_t, std::string_view> strings;
     std::unordered_set<uint32_t> sourceIds;
+    const auto matchesSourceName = [&](std::string_view path) {
+        if (path.size() < sourceName.size()) { return false; }
+        const auto suffix = path.substr(path.size() - sourceName.size());
+#ifdef _WIN32
+        // Snapshot-backed Slang paths use canonical Windows case, while the
+        // fixture and entry-point spelling remain authored identifiers.
+        return std::equal(suffix.begin(), suffix.end(), sourceName.begin(), [](char left, char right) {
+            const auto lower = [](char value) { return value >= 'A' && value <= 'Z' ? char(value + ('a' - 'A')) : value; };
+            return lower(left) == lower(right);
+        });
+#else
+        return suffix == sourceName;
+#endif
+    };
     uint32_t debugSet = 0;
     bool hasFunction = false;
     bool hasLine = false;
@@ -248,7 +262,7 @@ bool spirvContainsCaptureDebugInfo(
         // OpExtInst: DebugSource must embed text, not just a filesystem path.
         if (opcode == 12u && wordCount >= 7u && debugSet != 0 &&
             spirv[wordIndex + 3] == debugSet && spirv[wordIndex + 4] == 35u &&
-            strings[spirv[wordIndex + 5]].ends_with(sourceName) &&
+            matchesSourceName(strings[spirv[wordIndex + 5]]) &&
             strings[spirv[wordIndex + 6]].find(entryPointName) != std::string_view::npos) {
             sourceIds.insert(spirv[wordIndex + 2]);
         }
@@ -3669,6 +3683,13 @@ public:
             sourceDirectory / "Features/Cache/ShaderCacheTest.slang";
         const std::filesystem::path dependencyPath =
             sourceDirectory / "Libraries/Math/ShaderCacheValue.slang";
+        // Create the sibling output namespace before source watches are armed;
+        // creating it during compilation correctly invalidates the parent proof.
+        std::filesystem::create_directories(cacheDirectory, fileError);
+        if (fileError) {
+            return RHITestResult::fail(
+                "failed to create shader cache directory: " + fileError.message());
+        }
         std::filesystem::create_directories(sourcePath.parent_path(), fileError);
         if (fileError) {
             return RHITestResult::fail(
@@ -3685,7 +3706,8 @@ public:
             std::filesystem::absolute(dependencyPath).lexically_normal().generic_string();
         const auto writeShader = [&]() {
             std::ofstream stream(sourcePath, std::ios::binary | std::ios::trunc);
-            stream << "#include \"../../Libraries/Math/ShaderCacheValue.slang\"\n"
+            stream << "module ShaderCacheTest;\n"
+                   << "import Libraries.Math.ShaderCacheValue;\n"
                    << "RWStructuredBuffer<uint> outputBuffer;\n"
                    << "[shader(\"compute\")]\n"
                    << "[numthreads(1, 1, 1)]\n"
@@ -3697,7 +3719,8 @@ public:
         };
         const auto writeDependency = [&](uint32_t value) {
             std::ofstream stream(dependencyPath, std::ios::binary | std::ios::trunc);
-            stream << "static const uint kShaderCacheValue = " << value << "u;\n";
+            stream << "module ShaderCacheValue;\n"
+                   << "public static const uint kShaderCacheValue = " << value << "u;\n";
             return static_cast<bool>(stream);
         };
         if (!writeShader() || !writeDependency(1u)) {
@@ -3719,6 +3742,20 @@ public:
 
         render::ShaderCompileResult firstCompile;
         render::Result<> result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, firstCompile.diagnostics).transform([&](auto value) { firstCompile = std::move(value); });
+        // Windows may deliver the fixture's initial file notifications while
+        // its first snapshot is captured. Ordinary compilation correctly falls
+        // back to fresh, non-persistent output in that case. Require a stable
+        // capture before asserting that the next invocation must hit V3.
+        constexpr std::string_view unstableCapture = "[ShaderCacheV3] Bypass reuse: Unstable snapshot capture:";
+        for (size_t retry = 0; result && firstCompile.diagnostics.contains(unstableCapture) && retry < 2; ++retry) {
+            spdlog::info("[ShaderCacheTest] retry initial source capture: {}", firstCompile.diagnostics);
+            firstCompile = {};
+            result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, firstCompile.diagnostics)
+                .transform([&](auto value) { firstCompile = std::move(value); });
+        }
+        if (result && firstCompile.diagnostics.contains(unstableCapture)) {
+            return RHITestResult::fail("fixture source namespace never stabilized: " + firstCompile.diagnostics);
+        }
         if (!result || firstCompile.spirv.empty() || cacheHit) {
             return RHITestResult::fail(
                 std::string("initial shader cache compile returned ") +
@@ -3743,7 +3780,7 @@ public:
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedCompile.diagnostics).transform([&](auto value) { cachedCompile = std::move(value); });
         if (!result || !cacheHit ||
             cachedCompile.spirv != firstCompile.spirv) {
-            return RHITestResult::fail("unchanged shader source did not hit the SPIR-V disk cache");
+            return RHITestResult::fail("unchanged shader source did not hit the SPIR-V disk cache: " + cachedCompile.diagnostics);
         }
         if (cachedCompile.dependencies != firstCompile.dependencies) {
             return RHITestResult::fail(
