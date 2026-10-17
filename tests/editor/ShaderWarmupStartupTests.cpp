@@ -7,10 +7,12 @@
 #include <spdlog/spdlog.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 
 namespace {
 
@@ -26,6 +28,8 @@ std::atomic<bool> wrongNativeStride{false};
 bool failAdapterQuery = false;
 bool noAdapters = false;
 bool nativeCompilation = false;
+bool failBatchValidation = false;
+bool delayBatch = false;
 std::string nativeEntry;
 metallic::render::SlangShaderDebugMode debugMode = metallic::render::SlangShaderDebugMode::CaptureSymbols;
 
@@ -62,6 +66,8 @@ protected:
         failAdapterQuery = false;
         noAdapters = false;
         nativeCompilation = false;
+        failBatchValidation = false;
+        delayBatch = false;
         nativeEntry.clear();
         debugMode = metallic::render::SlangShaderDebugMode::CaptureSymbols;
         oldLogLevel_ = spdlog::get_level();
@@ -185,6 +191,32 @@ TEST_F(ShaderWarmupStartupTest, CompilationFailurePreventsStartup)
     EXPECT_NE(metallic::render::warmupShadersForStartup(false), 0);
     EXPECT_EQ(compileCalls.load(), metallic::tools::shaderWarmupRequests().size());
     EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+}
+
+TEST_F(ShaderWarmupStartupTest, ReportsProvisionalProgressEvenWhenFinalValidationRejectsBatch)
+{
+    failBatchValidation = true;
+    EXPECT_NE(metallic::render::warmupShadersForStartup(false), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+    const auto output = testing::internal::GetCapturedStdout();
+    testing::internal::CaptureStdout();
+    EXPECT_NE(output.find("[Warmup] compiling | ready: 1/"), std::string::npos);
+    EXPECT_NE(output.find("[Warmup] validating"), std::string::npos);
+    EXPECT_NE(output.find("awaiting batch acceptance"), std::string::npos);
+    EXPECT_EQ(output.find("] Cached: "), std::string::npos);
+    EXPECT_EQ(output.find("Request 1 timing:"), std::string::npos);
+}
+
+TEST_F(ShaderWarmupStartupTest, ReportsHeartbeatWhileBatchHasNoCompletedRequests)
+{
+    delayBatch = true;
+    ASSERT_EQ(metallic::render::warmupShadersForStartup(false), 0);
+    const auto output = testing::internal::GetCapturedStdout();
+    testing::internal::CaptureStdout();
+    const auto heartbeat = output.find("s | working | awaiting batch acceptance");
+    const auto completion = output.find("ready: 1/");
+    EXPECT_NE(heartbeat, std::string::npos);
+    EXPECT_LT(heartbeat, completion);
 }
 
 TEST_F(ShaderWarmupStartupTest, SkipAndFailureClearPreviouslyEnabledDevicePhase)
@@ -412,6 +444,8 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(
 {
     ++batchCalls;
     batchJobs = options.jobs;
+    if (options.onProgress) { options.onProgress({"compiling"}); }
+    if (delayBatch) { std::this_thread::sleep_for(std::chrono::milliseconds(2200)); }
     SlangWarmupBatchResult batch;
     bool failed = false;
     for (const auto& request : requests) {
@@ -423,12 +457,16 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(
             }
             batch.existingCacheHits += shader->metrics.cacheHit ? 1 : 0;
             batch.shaders.push_back(std::move(*shader));
+            if (options.onProgress) {
+                options.onProgress({"request-complete", batch.shaders.size() - 1, batch.shaders.back().metrics.cacheHit});
+            }
         } catch (const std::exception& error) {
             diagnostics = error.what();
             failed = true;
         }
     }
-    if (failed || batch.shaders.size() != requests.size()) {
+    if (options.onProgress) { options.onProgress({"validating"}); }
+    if (failed || failBatchValidation || batch.shaders.size() != requests.size()) {
         return makeError(Error::Failure);
     }
     batch.sessionGroups = 1;

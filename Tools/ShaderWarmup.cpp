@@ -10,6 +10,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <exception>
 #include <iomanip>
@@ -30,6 +31,66 @@ struct CompileOutcome {
     bool cacheHit = false;
     std::string error;
     ShaderCompileMetrics metrics;
+};
+
+// Request completion is provisional until the whole source batch is validated.
+// Keep this separate from the accepted-result summary and its timing format.
+class WarmupBatchReporter {
+public:
+    explicit WarmupBatchReporter(std::span<const SlangShaderDesc> requests)
+        : requests_(requests), start_(std::chrono::steady_clock::now()), heartbeat_([this] {
+            std::unique_lock lock(mutex_);
+            while (!wake_.wait_for(lock, std::chrono::seconds(2), [this] { return stopped_; })) {
+                printLocked("working");
+            }
+        })
+    {
+    }
+
+    ~WarmupBatchReporter()
+    {
+        {
+            std::lock_guard lock(mutex_);
+            stopped_ = true;
+        }
+        wake_.notify_all();
+        heartbeat_.join();
+    }
+
+    void update(const SlangWarmupBatchProgress& event)
+    {
+        std::lock_guard lock(mutex_);
+        if (std::string_view(event.phase) == "request-complete") {
+            ++ready_;
+            hits_ += event.cacheHit ? 1 : 0;
+            const auto& request = requests_[event.requestIndex];
+            const auto status = std::string(event.cacheHit ? "cache ready: " : "compile ready: ") +
+                request.moduleName + "." + request.entryPointName;
+            printLocked(status.c_str());
+        } else {
+            phase_ = event.phase;
+            printLocked("phase changed");
+        }
+    }
+
+private:
+    void printLocked(const char* status)
+    {
+        const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
+        std::cout << "[Warmup] " << phase_ << " | ready: " << ready_ << '/' << requests_.size()
+                  << " | cached: " << hits_ << " | elapsed: " << std::fixed << std::setprecision(1)
+                  << seconds << "s | " << status << " | awaiting batch acceptance" << std::endl;
+    }
+
+    std::span<const SlangShaderDesc> requests_;
+    std::chrono::steady_clock::time_point start_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    bool stopped_ = false;
+    size_t ready_ = 0;
+    size_t hits_ = 0;
+    std::string phase_ = "preparing";
+    std::thread heartbeat_;
 };
 
 int compilePriority(const metallic::tools::ShaderWarmupRequest& request)
@@ -237,10 +298,14 @@ int run(int argc, char** argv)
         std::cout << "Shader warmup workers: " << jobs << std::endl;
         progress("Starting validated immutable source batch");
         std::string diagnostics;
-        const SlangWarmupBatchOptions batchOptions{
-            .cache = {.cacheDirectory = cacheDirectory.empty() ? nullptr : cacheDirectory.c_str()},
-            .jobs = jobs, .shareSessions = true};
-        auto batch = ShaderRegistry::instance().getWarmupShaders(descriptors, batchOptions, diagnostics);
+        auto batch = [&] {
+            WarmupBatchReporter reporter(descriptors);
+            const SlangWarmupBatchOptions batchOptions{
+                .cache = {.cacheDirectory = cacheDirectory.empty() ? nullptr : cacheDirectory.c_str()},
+                .jobs = jobs, .shareSessions = true,
+                .onProgress = [&](const SlangWarmupBatchProgress& event) { reporter.update(event); }};
+            return ShaderRegistry::instance().getWarmupShaders(descriptors, batchOptions, diagnostics);
+        }();
         if (!batch || !batch->completedAllRequests || batch->shaders.size() != totalRequests) {
             ++failures; std::cerr << "Complete shader warmup batch rejected: " << diagnostics << '\n';
         } else {

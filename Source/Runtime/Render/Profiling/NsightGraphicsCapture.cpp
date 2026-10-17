@@ -244,6 +244,26 @@ NsightGraphicsCapture::~NsightGraphicsCapture()
     closeTraceHost();
 }
 
+void NsightGraphicsCapture::prepareForGraphicsShutdown()
+{
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (mode_ != NsightCaptureMode::GPUTrace) { return; }
+
+    // Nsight 2026.3.1 retains a D3D12 object until its process-exit callback,
+    // but the NVIDIA Vulkan driver unloads D3D12.dll in vkDestroyDevice.
+    // Keep its vtable mapped through that callback. Only pin an already-loaded
+    // module; a headless Vulkan session need not load D3D12 at all.
+    // See Documentation/NsightGPUTraceStartupInvestigation.md for the repro.
+    HMODULE runtime = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"D3D12.dll", &runtime)) {
+        std::fprintf(stdout, "[Nsight shutdown] Pinned D3D12 runtime until process exit\n");
+        std::fflush(stdout);
+    } else if (const DWORD error = GetLastError(); error != ERROR_MOD_NOT_FOUND) {
+        std::fprintf(stderr, "[Nsight shutdown] Cannot retain D3D12 runtime (Win32 %lu)\n", error);
+    }
+#endif
+}
+
 void NsightGraphicsCapture::closeTraceHost()
 {
 #ifdef _WIN32
@@ -489,7 +509,9 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
         if (result != NGFX_Result_Success) {
             return fail(ngfxError("NGFX_GPUTrace_InitializeActivity_Vulkan", result), &error);
         }
-        if (!startTraceHost(error)) { return false; }
+        // Injection must precede Vulkan, but the host's target-ready timeout
+        // must not include device creation and native pipeline warmup. Attach
+        // in prepareBeforeSubmission immediately before SDK activation.
         state_ = NsightGraphicsCaptureState::Ready;
         lastError_.clear();
         return true;
@@ -526,8 +548,13 @@ bool NsightGraphicsCapture::prepareBeforeSubmission(Queue& queue, std::string& e
 {
     error.clear();
 #if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
-    if (mode_ != NsightCaptureMode::GPUTrace || traceHostProcess_ == nullptr) { return true; }
+    if (mode_ != NsightCaptureMode::GPUTrace) { return true; }
     if (state_ != NsightGraphicsCaptureState::Ready) { error = lastError_; return false; }
+    if (traceHostProcess_ == nullptr) {
+        std::fprintf(stdout, "[Nsight startup] Launching GPU Trace host for prepared device\n");
+        std::fflush(stdout);
+        if (!startTraceHost(error)) { return false; }
+    }
     if (WaitForSingleObject(traceHostProcess_, 0) == WAIT_OBJECT_0) {
         return fail(traceHostFailure(traceHostLog_), &error);
     }

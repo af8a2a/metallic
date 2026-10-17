@@ -74,10 +74,13 @@ public:
     static std::filesystem::path defaultInstallationRoot();
 
     bool initializeBeforeGraphics(const NsightGraphicsCaptureConfig& config, std::string& error);
-    // Activate on the owner thread before the application's first queue submit.
+    // Launch the GPU Trace host after device/pipeline preparation, then activate
+    // on the owner thread before the application's first queue submit.
     // Nsight's blocking activation has no cancellation API; a failed host or a
     // 60-second startup timeout terminates this instrumented process with code 1.
     bool prepareBeforeSubmission(Queue& queue, std::string& error);
+    // Preserve injected runtime dependencies before destroying graphics objects.
+    void prepareForGraphicsShutdown();
     bool requestCapture(const NsightGraphicsCaptureRequest& request, std::string& error);
     bool frameBoundary(Queue& queue, Texture* output, std::string& error);
     // Called after the main viewport Present (not secondary ImGui windows).

@@ -3,6 +3,8 @@
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/ShaderTarget.h"
 
+#include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -126,11 +128,23 @@ struct SlangShaderCacheOptions {
     bool reportDetailedCompilerPerf = false;
 };
 
+struct SlangWarmupBatchProgress {
+    // preparing, capturing, compiling, validating, publishing, finished, or request-complete.
+    const char* phase = nullptr;
+    // Only request-complete identifies a request; its index follows the input order.
+    size_t requestIndex = std::numeric_limits<size_t>::max();
+    bool cacheHit = false;
+};
+
 struct SlangWarmupBatchOptions {
     // Per-request outCacheHit is unsupported; the result reports all hits.
     SlangShaderCacheOptions cache;
     size_t jobs = 8;
     bool shareSessions = true;
+    // May run concurrently on worker threads. Must not throw; exceptions are ignored.
+    // Request completion is provisional: accept results only after the complete batch
+    // returns successfully, including its source validation and cache publication.
+    std::function<void(const SlangWarmupBatchProgress&)> onProgress;
 };
 
 struct SlangWarmupBatchResult {

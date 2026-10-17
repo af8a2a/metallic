@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 #include <chrono>
+#include <mutex>
 
 namespace metallic::render {
 struct ShaderRegistryIdentityTestAccess
@@ -93,23 +94,66 @@ TEST(ShaderWarmupBatch, RealSlangColdAllHitMixedPrivateHeaderShadowAndOrdinaryCa
         .postprocessMode = SlangShaderPostprocessMode::None};
     auto b = a; b.moduleName = "BatchB";
     std::array requests{a, b};
-    const SlangWarmupBatchOptions options{.cache = {.cacheDirectory = cachePath.c_str()}, .jobs = 2};
+    std::mutex progressMutex;
+    std::vector<SlangWarmupBatchProgress> progressEvents;
+    bool throwFromProgress = false;
+    const SlangWarmupBatchOptions options{.cache = {.cacheDirectory = cachePath.c_str()}, .jobs = 2,
+        .onProgress = [&](const SlangWarmupBatchProgress& progress) {
+            {
+                std::lock_guard lock(progressMutex);
+                progressEvents.push_back(progress);
+            }
+            if (throwFromProgress) { throw std::runtime_error("Diagnostic callback failure"); }
+        }};
+    const auto checkProgress = [&](std::array<bool, 2> expectedHits) {
+        std::lock_guard lock(progressMutex);
+        std::vector<std::string> phases;
+        std::array<size_t, 2> completionCounts{};
+        for (const auto& event : progressEvents) {
+            ASSERT_NE(event.phase, nullptr);
+            if (std::string_view(event.phase) == "request-complete") {
+                // Results may arrive in either order, but only during compilation.
+                ASSERT_FALSE(phases.empty());
+                EXPECT_EQ(phases.back(), "compiling");
+                ASSERT_LT(event.requestIndex, expectedHits.size());
+                ++completionCounts[event.requestIndex];
+                EXPECT_EQ(event.cacheHit, expectedHits[event.requestIndex]);
+            } else {
+                EXPECT_EQ(event.requestIndex, std::numeric_limits<size_t>::max());
+                phases.emplace_back(event.phase);
+            }
+        }
+        const std::vector<std::string> expectedPhases{
+            "preparing", "capturing", "compiling", "validating", "publishing", "finished"};
+        EXPECT_EQ(phases, expectedPhases);
+        EXPECT_EQ(completionCounts[0], 1u);
+        EXPECT_EQ(completionCounts[1], 1u);
+        ASSERT_FALSE(progressEvents.empty());
+        EXPECT_STREQ(progressEvents.back().phase, "finished");
+        progressEvents.clear();
+    };
     auto& registry = ShaderRegistry::instance();
     std::string log;
     auto cold = registry.getWarmupShaders(requests, options, log);
     ASSERT_TRUE(cold) << log;
     ASSERT_TRUE(cold->completedAllRequests && cold->completeSourceEpochValidated);
     EXPECT_EQ(cold->compilerExecutions, 2u); EXPECT_EQ(cold->existingCacheHits, 0u); EXPECT_EQ(cold->sessionGroups, 1u);
+    checkProgress({false, false});
     auto allHit = registry.getWarmupShaders(requests, options, log);
     ASSERT_TRUE(allHit) << log;
     EXPECT_EQ(allHit->compilerExecutions, 0u); EXPECT_EQ(allHit->existingCacheHits, 2u);
     EXPECT_EQ(allHit->shaders[0].spirv, cold->shaders[0].spirv); EXPECT_EQ(allHit->shaders[1].spirv, cold->shaders[1].spirv);
+    checkProgress({true, true});
     const SlangMacroDefine define{"B_VALUE", "41u"};
     b.macroDefines = std::span(&define, 1); requests[1] = b;
+    // Exercise concurrent session groups and exceptions on every callback;
+    // diagnostic failures must not change compilation or publication acceptance.
+    throwFromProgress = true;
     auto mixed = registry.getWarmupShaders(requests, options, log);
     ASSERT_TRUE(mixed) << log;
     EXPECT_EQ(mixed->compilerExecutions, 1u); EXPECT_EQ(mixed->existingCacheHits, 1u);
     EXPECT_EQ(mixed->shaders[0].spirv, cold->shaders[0].spirv); EXPECT_NE(mixed->shaders[1].spirv, cold->shaders[1].spirv);
+    checkProgress({true, false});
     bool hit = false;
     const SlangShaderCacheOptions ordinaryOptions{.cacheDirectory = cachePath.c_str(), .outCacheHit = &hit};
     auto ordinary = registry.getShader(a, ordinaryOptions, log);

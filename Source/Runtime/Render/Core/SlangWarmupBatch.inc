@@ -1,10 +1,19 @@
 // Included after the ordinary compiler entry, inside metallic::render.
 // Unsupported notification/producer platforms retain fresh compilation. This
 // path neither retains module IR nor consumes/publishes an unqualified cache.
+void reportSlangWarmupProgress(const SlangWarmupBatchOptions& options,
+    const SlangWarmupBatchProgress& progress) noexcept
+{
+    if (!options.onProgress) { return; }
+    try { options.onProgress(progress); }
+    catch (...) { /* Diagnostic callbacks must not alter compilation or publication. */ }
+}
+
 Result<SlangWarmupBatchResult> compileFreshSlangWarmupBatch(std::span<const SlangShaderDesc> requests,
     const SlangWarmupBatchOptions& options, std::string& log)
 {
     const auto start = std::chrono::steady_clock::now();
+    reportSlangWarmupProgress(options, {.phase = "preparing"});
     std::vector<std::unique_ptr<PreparedSlangRequest>> owned;
     owned.reserve(requests.size());
     for (const auto& request : requests) {
@@ -18,6 +27,7 @@ Result<SlangWarmupBatchResult> compileFreshSlangWarmupBatch(std::span<const Slan
     std::vector<std::string> failures(requests.size());
     std::atomic<size_t> next{0};
     std::atomic<bool> failed{false};
+    reportSlangWarmupProgress(options, {.phase = "compiling"});
     {
         std::vector<std::jthread> workers;
         const auto jobs = std::min(options.jobs, requests.size());
@@ -41,6 +51,8 @@ Result<SlangWarmupBatchResult> compileFreshSlangWarmupBatch(std::span<const Slan
                             failed.store(true, std::memory_order_relaxed);
                         } else {
                             result.shaders[index] = std::move(*shader);
+                            reportSlangWarmupProgress(options, {.phase = "request-complete", .requestIndex = index,
+                                .cacheHit = result.shaders[index].metrics.cacheHit});
                         }
                     } catch (const std::exception& error) {
                         failures[index] = error.what();
@@ -60,6 +72,7 @@ Result<SlangWarmupBatchResult> compileFreshSlangWarmupBatch(std::span<const Slan
     result.completedAllRequests = true;
     result.totalTimeNanoseconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - start).count());
+    reportSlangWarmupProgress(options, {.phase = "finished"});
     return result;
 }
 
@@ -79,6 +92,7 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
     return compileFreshSlangWarmupBatch(requests, options, log);
 #else
     try {
+        reportSlangWarmupProgress(options, {.phase = "preparing"});
         struct PlannedRequest {
             std::unique_ptr<PreparedSlangRequest> prepared;
             std::unique_ptr<OwnedSlangSessionConfig> configuration;
@@ -118,6 +132,7 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
         std::shared_ptr<CompilerProducerSeal> producer;
         const auto captureStart = BatchClock::now();
         std::unique_ptr<SlangSnapshotFileSystem> snapshot;
+        reportSlangWarmupProgress(options, {.phase = "capturing"});
         try {
             producer = compilerProducerSeal();
             snapshot = captureSourceEpoch(paths, log);
@@ -132,6 +147,7 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
         std::vector<std::optional<SlangWarmupCacheTransaction<SlangSnapshotFileSystem>::Item>> pending(requests.size());
         std::vector<std::string> failures(requests.size());
         std::atomic<size_t> nextGroup{0}; std::atomic<bool> failed{false};
+        reportSlangWarmupProgress(options, {.phase = "compiling"});
         {
             std::vector<std::jthread> workers;
             const auto jobs = std::min(options.jobs, groups.size());
@@ -163,6 +179,8 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
                                     failures[index] = std::move(diagnostics); failed.store(true, std::memory_order_relaxed); return;
                                 }
                                 result.shaders[index] = std::move(*shader);
+                                reportSlangWarmupProgress(options, {.phase = "request-complete", .requestIndex = index,
+                                    .cacheHit = result.shaders[index].metrics.cacheHit});
                             } catch (const std::exception& error) {
                                 failures[index] = error.what(); failed.store(true, std::memory_order_relaxed); return;
                             } catch (...) {
@@ -180,6 +198,7 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
             return makeError(Error::Failure);
         }
         const auto validationStart = BatchClock::now();
+        reportSlangWarmupProgress(options, {.phase = "validating"});
         if (!producer->validate(log, true) || !snapshot->validate(log)) { return makeError(Error::Failure); }
         const auto policiesUnchanged = [&] {
             for (size_t index = 0; index < planned.size(); ++index) {
@@ -198,6 +217,7 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
             result.existingCacheHits += result.shaders[index].metrics.cacheHit ? 1 : 0;
         }
         const auto publicationStart = BatchClock::now();
+        reportSlangWarmupProgress(options, {.phase = "publishing"});
         if (options.cache.enableDiskCache) {
             const auto directory = shaderCachePath(options.cache, 0).parent_path();
             if (snapshot->covers(directory)) { log += "Warmup cache/source namespace overlap\n"; return makeError(Error::Failure); }
@@ -217,6 +237,7 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
         result.completeSourceEpochValidated = true;
         result.completedAllRequests = true;
         result.totalTimeNanoseconds = elapsedBatch(start);
+        reportSlangWarmupProgress(options, {.phase = "finished"});
         return result;
     } catch (const std::exception& error) {
         log += std::string("Warmup source-qualified batch rejected: ") + error.what() + '\n';

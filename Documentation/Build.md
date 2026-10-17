@@ -62,7 +62,15 @@ profile when working on those integrations.
 
 Applications warm the shared `.cache/shaders/spirv` cache before initialization.
 Use `--skip-shader-warmup` to compile requests on demand. The manual
-`MetallicShaderWarmup` target stays outside default builds and application dependencies:
+`MetallicShaderWarmup` target stays outside default builds and application dependencies.
+
+Startup reports live `[Warmup]` phases (source capture, compilation, validation,
+and cache publication), completed request counts, and a heartbeat every two
+seconds while the batch is running. `ready` requests are provisional: startup
+accepts them only after the entire source batch passes validation and cache
+read-back. The final per-request timing summary describes accepted results.
+
+For manual warmup:
 
 ```powershell
 cmake --build build-release --target MetallicShaderCompiler
@@ -340,11 +348,20 @@ See NVIDIA's [Live Replay GPU Trace documentation](https://docs.nvidia.com/nsigh
 
 GPU Trace requires an attached host for metric preparation and file writing
 ([NVIDIA SDK guide](https://docs.nvidia.com/nsight-graphics/UserGuide/sdk.html)).
-Metallic starts the installed `ngfx.exe` hidden, uses SDK start/stop boundaries,
+Metallic injects the SDK before Vulkan initialization, then starts the installed
+`ngfx.exe` hidden after device creation and native PSO warmup, immediately before
+the startup activation handshake. This prevents a cold pipeline cache from
+exhausting the host's target-ready timeout. It uses SDK start/stop boundaries
 and keeps the host connected for repeated exports. Host diagnostics are saved
 as `GpuTraceHost-<pid>.log` in the output directory. The host is owned by this
 process and is cleaned up at shutdown. GPU clocks remain unaltered. Neither
 activity's live timings are a production performance baseline.
+
+For Nsight 2026.3.1 GPU Trace sessions, editor shutdown retains an already-loaded
+`D3D12.dll` until process exit: the NVIDIA Vulkan driver otherwise unloads it
+before Nsight's exit callback releases its remaining D3D12 objects. This does
+not load D3D12 when absent or affect ordinary startup. See the
+[startup and exit investigation](NsightGPUTraceStartupInvestigation.md).
 
 GPU Trace explicitly selects single-pass metrics for each supported architecture
 (`Top-Level Triage`, or `Throughput Metrics` on Turing). The generated

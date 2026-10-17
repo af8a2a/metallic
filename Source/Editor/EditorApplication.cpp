@@ -2836,6 +2836,7 @@ bool EditorApplication::initializeImGuiBackends()
 
 void EditorApplication::shutdown()
 {
+    nsightGraphicsCapture_.prepareForGraphicsShutdown();
     const auto stage = [](const char* name) {
         if (std::getenv("METALLIC_FULL_ROAM_OUTPUT")) { spdlog::info("[Benchmark shutdown] {}", name); }
     };

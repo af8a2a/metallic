@@ -181,7 +181,7 @@ matrix, rather than debug logging alone, establishes acceptance.
 These camera changes affect the guides-enabled primary rays, not just guide
 writeout. They can change low HDR bits relative to the old shader. RNG, BSDF, NEE,
 ray origins/cones, ordered transparent shadows and the non-guides camera branch
-remain unchanged; shared OpenPBR shaders are untouched. SER uses an explicit fused
+remain unchanged; shared OpenPBR shaders are untouched. That measured candidate used an explicit fused
 `OpHitObjectTraceReorderExecuteEXT` wrapper because Slang 2026.18.2 lacks that free
 API. Final IR contains two real EXT fused calls when enabled and two `TraceRayKHR`
 calls when disabled. The fused wrapper alone did not fix the numerical failures.
@@ -239,7 +239,9 @@ four-arm/two-arm schedules. Their identical SER-off SPIR-V nevertheless produced
 different timing distributions. Do not pair blocks across periods or attribute
 the complete absolute-time difference to shadow SER. The control covers direct
 BSDF timing in one scene and does not qualify a four-arm production replacement;
-the working-tree shader is restored to the full policy that passed 24+48 processes.
+at the end of that experiment, the working-tree shader was restored to the full
+policy that passed 24+48 processes. The public-API migration below supersedes that
+source snapshot.
 
 The integrator invokes shadow queries inside a loop of up to 16 transparent layers.
 All materials share one hit SBT record, closest-hit writes a small payload, and
@@ -272,8 +274,64 @@ Local evidence under `build-release/ser-correctness-20261017/`:
 - `candidate09b-identity-review.json`, `candidate10-identity-review.md`,
   `PolicySource-restore.json`: IR evidence and exact source restoration.
 
-Use the current maintained `Tools/Perf/SimpleBSDFGPU.py verify <capture>` with the
-restored source to recheck the full matrix. The temporary policy's current-source
-verifier requires its separately preserved overlay; its report records verification
-while that source was active. Do not execute archived evidence scripts blindly or
-weaken the source-identity checks to verify a different installed candidate.
+Use the maintained `Tools/Perf/SimpleBSDFGPU.py verify <capture>` with each
+capture's recorded source to recheck its matrix. Both older policies require their
+preserved source snapshots; their reports record verification while those sources
+were active. Do not execute archived evidence scripts blindly or weaken the
+source-identity checks to verify a different installed candidate.
+
+## Public Slang SER API migration on 2026-10-17
+
+The current experimental traversal uses Slang's public API sequence:
+
+```slang
+HitObject hitObject = HitObject::TraceRay(scene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, 0, 0, 0, desc, payload);
+ReorderThread(hitObject);
+HitObject::Invoke(hitObject, payload);
+```
+
+The handwritten fused SER assembly, wrapper and private `__vulkanRayPayload`
+attribute are removed. Main-path and ordered shadow queries retain the same SER
+switch, payload, flags, ray intervals, SBT arguments and surface decoding. This is
+an API cleanup, not adoption of the earlier main-only-SER policy control.
+
+Seven small `spirv_asm` blocks remain only for the camera/depth precision repair.
+The current Slang 2026.18.2 compiler does not provide a demonstrated equivalent
+local public precision control: 11 public-syntax probes compile and validate but
+emit no NoContraction decorations, including precise locals, return/out forms,
+camera/depth expressions and Fma results. Replacing the repair with those forms
+would lose its rounding constraints. No global floating-point mode, output
+quantization or validation threshold is changed. The exact probes and tool hashes
+are in `build-release/ser-public-api-20261017/precision-probe/Findings.md` and
+`Results.json`.
+
+Validation passed with the unchanged compiler, private runtime and fixtures:
+
+- The shader module audit passes all 355 files. All 32 factory-request shader
+  stages compile and pass `spirv-val` for Vulkan 1.4. The four SER-off raygens and
+  24 shared hit stages remain byte-identical to the repaired fused baseline.
+- Each SER-on raygen contains two public trace/reorder/execute EXT sequences and
+  no fused SER instruction. All eight raygens retain 32 `NoContraction`
+  decorations; no NV SER operation is introduced.
+- All 24 independent GPU correctness processes pass across Opaque1, Mixed4 and
+  ABeautifulGame, covering direct/SimpleBSDF with SER off/on and reversed run
+  order. All four contrasts and same-arm repeat checks pass with the original
+  HDR absolute-plus-relative tolerance (2e-5 each) and seven byte-exact guides.
+  Core and synchronization validation remain enabled.
+- The displayed ABeautifulGame frame-96 HDR comparison was visually inspected:
+  SER off/on have matching composition and no visible difference. This pair has
+  zero failing pixels and maximum absolute RGB error 2.861023e-6. Its display
+  tone mapping is not used for numerical acceptance.
+
+The sealed raw capture is under
+`build-release/ser-correctness-20261017/candidate-11-public-ser-api/correctness/`.
+The maintained verifier result, independent binary IR comparison and reviewed
+image are under `build-release/ser-public-api-20261017/` as `Verification.json`,
+`IRReview.md` and `image-review/HDRComparison.png`. These checks establish the
+declared perspective, guides-enabled workload equivalence; they do not extend
+coverage to orthographic or no-guides rendering, accumulation or extreme FOVs.
+
+The earlier fused-SER performance measurements remain historical measurements of
+that implementation. This public-API migration has not repeated compilation-time,
+PSO-creation-time or ordinary GPU performance A/B measurements; those timings must
+not be relabeled as results for the current split public-API implementation.
