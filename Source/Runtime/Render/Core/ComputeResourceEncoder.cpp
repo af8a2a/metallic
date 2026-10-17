@@ -414,4 +414,71 @@ Result<> dispatchResources(const ComputeKernel& kernel, const ComputeResourceEnc
     return prepared->record(*desc.commandBuffer, betweenDispatches);
 }
 
+Result<> initializeResourceKernel(Device& device, const ResourceRayTracingKernelDesc& desc,
+    RayTracingKernel& kernel, ComputeResourceEncoder& encoder, std::string& log)
+{
+    ComputeResourceEncoder nextEncoder;
+    auto result = nextEncoder.initialize(device, {
+        .pushConstantSize = desc.pushConstantSize,
+        .bindings = desc.bindings,
+        .debugName = desc.debugName,
+        .requiresRayQuery = false,
+        .resourceParameterSize = desc.resourceParameterSize,
+    }, log);
+    if (!result) { return result; }
+    RayTracingKernel nextKernel;
+    result = nextKernel.initialize(device, {
+        .rayGenerationSpirv = desc.rayGenerationSpirv,
+        .missSpirv = desc.missSpirv,
+        .closestHitSpirv = desc.closestHitSpirv,
+        .anyHitSpirv = desc.anyHitSpirv,
+        .parameters = nextEncoder.parameterABI(),
+        .debugName = desc.debugName,
+        .pipelineCache = desc.pipelineCache,
+        .specializationConstants = desc.specializationConstants,
+        .enableInvocationReorder = desc.enableInvocationReorder,
+    }, log);
+    if (!result) { return result; }
+    kernel = std::move(nextKernel);
+    encoder = std::move(nextEncoder);
+    return {};
+}
+
+Result<PreparedRayTracingDispatch> prepareResourceDispatch(
+    const RayTracingKernel& kernel, const ComputeResourceEncoder& encoder,
+    RenderFrameContext* frame, const RayTracingDispatchDesc& desc)
+{
+    if (desc.stats) { *desc.stats = {}; }
+    if (desc.commandBuffer || !kernel.valid() || kernel.parameterABI() != encoder.parameterABI() ||
+        !desc.width || !desc.height || !desc.depth || (frame && !frame->recording())) {
+        return makeError(Error::InvalidArgument);
+    }
+    // ComputeResourceEncoder encodes resource data only. Its group counts stay
+    // at the neutral default; the launch dimensions belong to the RT packet.
+    const ComputeDispatchDesc inputs{
+        .bindings = desc.bindings,
+        .pushData = desc.pushData,
+        .pushDataSize = desc.pushDataSize,
+        .profiler = desc.profiler,
+        .stats = desc.stats,
+    };
+    auto encoded = encoder.encode(frame, inputs);
+    if (!encoded) { return makeError(encoded.error()); }
+    return kernel.prepareDispatch(encoded->front(), desc.width, desc.height, desc.depth);
+}
+
+Result<> dispatchResources(const RayTracingKernel& kernel, const ComputeResourceEncoder& encoder,
+    const RayTracingDispatchDesc& desc)
+{
+    if (!desc.commandBuffer || !desc.commandBuffer->recording()) { return makeError(Error::InvalidArgument); }
+    CPUProfileScope profile(desc.profiler, "Encode ray tracing parameters");
+    auto inputs = desc;
+    inputs.commandBuffer = nullptr;
+    auto prepared = prepareResourceDispatch(kernel, encoder,
+        RenderFrameContext::from(*desc.commandBuffer), inputs);
+    if (!prepared) { return makeError(prepared.error()); }
+    profile.next("Record ray tracing commands");
+    return prepared->record(*desc.commandBuffer);
+}
+
 } // namespace metallic::render

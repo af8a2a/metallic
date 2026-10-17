@@ -143,7 +143,7 @@ MT_VK_FEATURE(computeSubgroupShuffle, true, false,
     , caps.computeSubgroupShuffle = computeSubgroupShuffle;)
 
 MT_VK_FEATURE(rayTracingAccelerationStructure, desc.enableRayTracingAccelerationStructure, true,
-    (request.rayTracingAccelerationStructure || request.rayQuery || request.streamline) && accelerationStructureSupported, 4,
+    (request.rayTracingAccelerationStructure || request.rayQuery || request.rayTracingPipeline || request.streamline) && accelerationStructureSupported, 4,
     accelerationStructureFeatures.accelerationStructure = selection.rayTracingAccelerationStructure;, caps.rayTracingAccelerationStructure = rayTracingAccelerationStructure;)
 
 MT_VK_FEATURE(rayQuery, desc.enableRayQuery, true,
@@ -152,6 +152,23 @@ MT_VK_FEATURE(rayQuery, desc.enableRayQuery, true,
         extensions.rayQuery &&
         probe.rayQueryFeatures.rayQuery == VK_TRUE, 2,
     rayQueryFeatures.rayQuery = selection.rayQuery;, caps.rayQuery = rayQuery;)
+
+MT_VK_FEATURE(rayTracingPipeline, desc.enableRayTracingPipeline, false,
+    (request.rayTracingPipeline || (request.streamline && streamlineSupported)) && accelerationStructureSupported &&
+        extensions.rayTracingPipeline && probe.rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE, 2,
+    rayTracingPipelineFeatures.rayTracingPipeline = selection.rayTracingPipeline;, caps.rayTracingPipeline = rayTracingPipeline;)
+
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+MT_VK_FEATURE(rayTracingInvocationReorder, desc.enableRayTracingInvocationReorder, false,
+    request.rayTracingInvocationReorder && result.rayTracingPipeline &&
+        extensions.rayTracingInvocationReorder && probe.rayTracingInvocationReorderFeatures.rayTracingInvocationReorder == VK_TRUE, 0,
+    rayTracingInvocationReorderFeatures.rayTracingInvocationReorder = selection.rayTracingInvocationReorder;,
+    caps.rayTracingInvocationReorder = rayTracingInvocationReorder;)
+#else
+MT_VK_FEATURE(rayTracingInvocationReorder, desc.enableRayTracingInvocationReorder, false, false, 0, ,
+    caps.rayTracingInvocationReorder = rayTracingInvocationReorder;)
+#endif
+MT_VK_DEPENDENCY(rayTracingInvocationReorder, rayTracingPipeline)
 
 // SDK prerequisite, derived by the backend; ordinary ray queries do not need it.
 MT_VK_FEATURE(pushDescriptor, false, false,
@@ -247,7 +264,12 @@ MT_VK_NODE(VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT, deviceGeneratedCo
 MT_VK_NODE(VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR, deviceAddressCommandsFeatures,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR, extensions.deviceAddressCommands, true)
 MT_VK_NODE(VkPhysicalDeviceRayTracingPipelineFeaturesKHR, rayTracingPipelineFeatures,
-    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, extensions.rayTracingPipeline, selection.streamline)
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR, extensions.rayTracingPipeline, selection.rayTracingPipeline)
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+MT_VK_NODE(VkPhysicalDeviceRayTracingInvocationReorderFeaturesEXT, rayTracingInvocationReorderFeatures,
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_EXT,
+    extensions.rayTracingInvocationReorder, selection.rayTracingInvocationReorder)
+#endif
 #ifdef VK_NV_device_diagnostics_config
 MT_VK_NODE(VkPhysicalDeviceDiagnosticsConfigFeaturesNV, diagnosticsConfigFeatures,
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV, extensions.aftermathDiagnosticsConfig, selection.aftermath)
@@ -270,7 +292,10 @@ MT_VK_EXTENSION(deferredHostOperations, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSIO
 MT_VK_EXTENSION(accelerationStructure, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, selection.rayTracingAccelerationStructure)
 MT_VK_EXTENSION(rayQuery, VK_KHR_RAY_QUERY_EXTENSION_NAME, selection.rayQuery)
 MT_VK_EXTENSION(pushDescriptor, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, selection.pushDescriptor)
-MT_VK_EXTENSION(rayTracingPipeline, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, selection.streamline)
+MT_VK_EXTENSION(rayTracingPipeline, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, selection.rayTracingPipeline)
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+MT_VK_EXTENSION(rayTracingInvocationReorder, VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME, selection.rayTracingInvocationReorder)
+#endif
 MT_VK_EXTENSION(pipelineLibrary, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME, selection.streamline)
 #ifdef VK_NVX_binary_import
 MT_VK_EXTENSION(streamlineBinaryImport, VK_NVX_BINARY_IMPORT_EXTENSION_NAME, selection.streamline)

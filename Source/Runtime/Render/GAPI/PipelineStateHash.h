@@ -10,5 +10,6 @@ uint64_t shaderContentHash(const ShaderModuleDesc& desc);
 // binary-cache ownership and diagnostic names. Native reuse is device-local.
 uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc);
 uint64_t computePipelineStateHash(const ComputePipelineDesc& desc);
+uint64_t rayTracingPipelineStateHash(const RayTracingPipelineDesc& desc);
 
 } // namespace metallic::render::detail

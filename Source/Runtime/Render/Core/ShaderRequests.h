@@ -342,6 +342,91 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
     return request;
 }
 
+enum class OpenPBRRayPipelineStage { RayGeneration, Miss, ClosestHit, AnyHit };
+
+// A separate material model and integrator. Do not inherit the OpenPBR cache,
+// LUT, native specialization constants, or custom-material source policy.
+inline ShaderRequest makeVkGltfRayPipelineShaderRequest(bool guides, bool singleSample, bool reorder,
+    OpenPBRRayPipelineStage stage = OpenPBRRayPipelineStage::RayGeneration)
+{
+    ShaderRequest request;
+    request.module = stage == OpenPBRRayPipelineStage::RayGeneration
+        ? "Features/PathTracing/VkGltfRayPipelinePathTrace" : "Features/PathTracing/VkGltfRayPipelineHit";
+    switch (stage) {
+    case OpenPBRRayPipelineStage::RayGeneration: request.entry = "vkGltfRayPipelinePathTraceMain"; break;
+    case OpenPBRRayPipelineStage::Miss: request.entry = "vkGltfRayPipelineMiss"; break;
+    case OpenPBRRayPipelineStage::ClosestHit: request.entry = "vkGltfRayPipelineClosestHit"; break;
+    case OpenPBRRayPipelineStage::AnyHit: request.entry = "vkGltfRayPipelineAnyHit"; break;
+    default: throw std::invalid_argument("Unknown glTF ray-pipeline shader stage");
+    }
+    const bool rayGeneration = stage == OpenPBRRayPipelineStage::RayGeneration;
+    request.defines = {{"METALLIC_CUSTOM_MATERIALS", "0"}, {"METALLIC_GLOBAL_VIEW", "0"},
+        {"METALLIC_HAS_RTXCR", "0"}, {"METALLIC_VKGLTF_GUIDES", guides && rayGeneration ? "1" : "0"},
+        {"METALLIC_PT_SINGLE_SAMPLE", singleSample && rayGeneration ? "1" : "0"},
+        {"METALLIC_VKGLTF_SER", reorder && rayGeneration ? "1" : "0"}};
+    request.capabilities.emplace_back("spvRayTracingKHR");
+    if (reorder && rayGeneration) { request.capabilities.emplace_back("spvShaderInvocationReorderEXT"); }
+    return request;
+}
+
+// Same glTF material and integrator, through the compile-time BSDF interface.
+// Keep the direct factory and all hit-stage identities unchanged for controlled A/Bs.
+inline ShaderRequest makeSimpleBSDFRayPipelineShaderRequest(bool guides, bool singleSample, bool reorder,
+    OpenPBRRayPipelineStage stage = OpenPBRRayPipelineStage::RayGeneration)
+{
+    auto request = makeVkGltfRayPipelineShaderRequest(guides, singleSample, reorder, stage);
+    if (stage == OpenPBRRayPipelineStage::RayGeneration) {
+        request.defines.emplace_back("METALLIC_SIMPLE_BSDF", "1");
+    }
+    return request;
+}
+
+// Experimental traversal backend; preserve the canonical source policy and its
+// separately owned sceneShaderSpecializationConstants tuple on ray generation.
+// This first path supports cache off only. An empty source policy can still use
+// SHARC_QUERY=1 internally with the original native cache Bool set to false.
+inline ShaderRequest makeOpenPBRRayPipelineShaderRequest(SceneShaderProgram program, const SceneShaderOptions& options,
+    std::span<const SlangMacroDefine> extraDefines = {}, OpenPBRRayPipelineStage stage = OpenPBRRayPipelineStage::RayGeneration)
+{
+    const bool singleGuide = program == SceneShaderProgram::OpenPBRPathTraceGuides && extraDefines.size() == 1 &&
+        std::string_view(extraDefines[0].name) == "METALLIC_PT_SINGLE_SAMPLE" && std::string_view(extraDefines[0].value) == "1";
+    if ((program != SceneShaderProgram::OpenPBRPathTrace && program != SceneShaderProgram::OpenPBRPathTraceGuides) ||
+        (!extraDefines.empty() && !singleGuide)) {
+        throw std::invalid_argument("OpenPBR ray pipeline requires cache off and a supported OpenPBR source policy");
+    }
+    auto request = makeSceneShaderRequest(program, options, extraDefines);
+    switch (stage) {
+    case OpenPBRRayPipelineStage::RayGeneration:
+        // Guide policies can canonicalize to the shared plain source. Choose
+        // the wrapper from that source, not from the requested output policy.
+        if (request.module == "Features/PathTracing/OpenPBRRayQueryPathTrace") {
+            request.module = "Features/PathTracing/OpenPBRRayPipelinePathTrace";
+            request.entry = "openPbrRayPipelinePathTraceMain";
+        } else {
+            request.module = "Features/PathTracing/OpenPBRRayPipelinePathTraceGuides";
+            request.entry = "openPbrRayPipelinePathTraceGuidesMain";
+        }
+        break;
+    case OpenPBRRayPipelineStage::Miss:
+        request.module = "Features/PathTracing/OpenPBRRayPipelineHit";
+        request.entry = "openPbrRayPipelineMiss";
+        break;
+    case OpenPBRRayPipelineStage::ClosestHit:
+        request.module = "Features/PathTracing/OpenPBRRayPipelineHit";
+        request.entry = "openPbrRayPipelineClosestHit";
+        break;
+    case OpenPBRRayPipelineStage::AnyHit:
+        request.module = "Features/PathTracing/OpenPBRRayPipelineHit";
+        request.entry = "openPbrRayPipelineAnyHit";
+        break;
+    default:
+        throw std::invalid_argument("Unknown OpenPBR ray-pipeline shader stage");
+    }
+    request.defines.emplace_back("METALLIC_PT_RAY_PIPELINE", "1");
+    request.capabilities.emplace_back("spvRayTracingKHR");
+    return request;
+}
+
 // Opt-in kernel split. Keep the original Single source policy and specialization
 // ownership; only the entry point and the continuation's primary-hit source differ.
 inline ShaderRequest makeOpenPBRPrimarySplitShaderRequest(const SceneShaderOptions& options,

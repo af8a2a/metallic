@@ -86,6 +86,7 @@ public:
     // cache above its persistent binary cache. Explicit caches bypass object
     // reuse and always enter the RHI; those callers own binary-cache saving.
     [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> getComputePipeline(Device& device, const ComputePipelineDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<RayTracingPipeline>> getRayTracingPipeline(Device& device, const RayTracingPipelineDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> getGraphicsPipeline(Device& device, const GraphicsPipelineDesc& desc);
     // Native interop adapters with external descriptor/vertex ABIs still use
     // automatic cache selection and persistence. The factory records its full

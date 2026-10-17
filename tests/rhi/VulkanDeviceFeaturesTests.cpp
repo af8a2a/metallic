@@ -76,6 +76,100 @@ protected:
     }
 };
 
+TEST_F(DeviceFeatures, RayTracingPipelineIsIndependentAndOptIn)
+{
+    supportAS();
+    extensions.rayTracingPipeline = true;
+    probe.rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
+    EXPECT_FALSE(select().rayTracingPipeline);
+    desc.enableRayTracingPipeline = true;
+    const auto selected = select();
+    EXPECT_TRUE(selected.rayTracingPipeline);
+    EXPECT_TRUE(selected.rayTracingAccelerationStructure);
+    EXPECT_FALSE(selected.streamline);
+    EXPECT_FALSE(selected.rayQuery);
+    EXPECT_FALSE(selected.clusterAccelerationStructure);
+    EXPECT_TRUE(selected.matches(request()));
+    const auto names = extensionNames(selected);
+    EXPECT_TRUE(names.contains(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
+    EXPECT_TRUE(names.contains(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME));
+    EXPECT_FALSE(names.contains(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME));
+    VulkanEnabledFeatureChain chain(selected);
+    EXPECT_EQ(chain.rayTracingPipelineFeatures.rayTracingPipeline, VK_TRUE);
+    EXPECT_TRUE(chainTypes(chain.features.pNext).contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR));
+    DeviceCapabilities caps;
+    VulkanDeviceCapabilities backend;
+    selected.publish(caps, backend);
+    EXPECT_TRUE(caps.rayTracingPipeline);
+}
+
+TEST_F(DeviceFeatures, UnavailableRayTracingPipelineLeavesComputeDeviceEligible)
+{
+    desc.enableRayTracingPipeline = true;
+    EXPECT_FALSE(select().rayTracingPipeline);
+    EXPECT_TRUE(select().matches(request()));
+    supportAS();
+    extensions.rayTracingPipeline = true;
+    EXPECT_FALSE(select().rayTracingPipeline); // Extension without the feature bit.
+    EXPECT_TRUE(select().matches(request()));
+    probe.rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
+    extensions.deferredHostOperations = false;
+    EXPECT_FALSE(select().rayTracingPipeline);
+    EXPECT_TRUE(select().matches(request()));
+}
+
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+TEST_F(DeviceFeatures, InvocationReorderIsEXTOnlyAndOptIn)
+{
+    supportAS();
+    extensions.rayTracingPipeline = true;
+    probe.rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
+    extensions.rayTracingInvocationReorder = true;
+    probe.rayTracingInvocationReorderFeatures.rayTracingInvocationReorder = VK_TRUE;
+    EXPECT_FALSE(select().rayTracingInvocationReorder);
+    desc.enableRayTracingInvocationReorder = true;
+    const auto selected = select();
+    EXPECT_TRUE(selected.rayTracingInvocationReorder);
+    EXPECT_TRUE(selected.rayTracingPipeline);
+    EXPECT_TRUE(selected.rayTracingAccelerationStructure);
+    EXPECT_FALSE(selected.rayQuery);
+    EXPECT_FALSE(selected.streamline);
+    const auto names = extensionNames(selected);
+    EXPECT_TRUE(names.contains(VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME));
+    EXPECT_TRUE(names.contains(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
+    EXPECT_FALSE(names.contains("VK_NV_ray_tracing_invocation_reorder"));
+    VulkanEnabledFeatureChain chain(selected);
+    EXPECT_EQ(chain.rayTracingInvocationReorderFeatures.rayTracingInvocationReorder, VK_TRUE);
+    EXPECT_TRUE(chainTypes(chain.features.pNext).contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_EXT));
+    DeviceCapabilities caps;
+    VulkanDeviceCapabilities backend;
+    selected.publish(caps, backend);
+    EXPECT_TRUE(caps.rayTracingInvocationReorder);
+    EXPECT_FALSE(caps.rayTracingInvocationReorderReorderingHint); // Filled from the property query, not feature support.
+}
+
+TEST_F(DeviceFeatures, InvocationReorderRequiresEXTFeatureAndRayPipeline)
+{
+    supportAS();
+    desc.enableRayTracingInvocationReorder = true;
+    extensions.rayTracingPipeline = true;
+    probe.rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
+    // An NV-only extension must never satisfy the EXT request.
+    extensions = extensionsFrom({"VK_NV_ray_tracing_invocation_reorder",
+        VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, VK_EXT_SHADER_OBJECT_EXTENSION_NAME});
+    EXPECT_FALSE(select().rayTracingInvocationReorder);
+    EXPECT_TRUE(select().matches(request()));
+    extensions.rayTracingInvocationReorder = true;
+    EXPECT_FALSE(select().rayTracingInvocationReorder);
+    probe.rayTracingInvocationReorderFeatures.rayTracingInvocationReorder = VK_TRUE;
+    EXPECT_TRUE(select().rayTracingInvocationReorder);
+    probe.rayTracingPipelineFeatures.rayTracingPipeline = VK_FALSE;
+    EXPECT_FALSE(select().rayTracingInvocationReorder);
+    EXPECT_TRUE(select().matches(request()));
+}
+#endif
+
 TEST_F(DeviceFeatures, OptionalRequestsDoNotDisqualifyFallback)
 {
     desc.enableAftermath = true;

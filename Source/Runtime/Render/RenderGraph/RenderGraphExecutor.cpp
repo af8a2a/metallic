@@ -4532,11 +4532,13 @@ const RenderGraphExecutionStats& RenderGraphPreviewRenderer::executionStats() co
     return impl_->executor.executionStats();
 }
 
-Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath)
+Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath,
+    bool enableSynchronizationValidation)
 {
     Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic RenderGraph Preview",
             .enableValidation = enableValidation,
+            .enableSynchronizationValidation = enableSynchronizationValidation,
             .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true,
             .enableMeshShader = true,
@@ -4548,6 +4550,8 @@ Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enab
             .preferredTaskSubgroupSize = 32,
             .enableRayTracingAccelerationStructure = enableRayQuery,
             .enableRayQuery = enableRayQuery,
+            .enableRayTracingPipeline = enableRayQuery,
+            .enableRayTracingInvocationReorder = enableRayQuery,
             .enableClusterAccelerationStructure = enableRayQuery,
             .enableAsyncCompute = true,
             .enableAftermath = enableAftermath,

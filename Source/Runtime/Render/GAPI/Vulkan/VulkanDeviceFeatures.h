@@ -290,7 +290,6 @@ struct VulkanEnabledFeatureChain : VulkanFeatureStorage {
         vulkan13Features.synchronization2 = VK_TRUE;
         vulkan13Features.dynamicRendering = VK_TRUE;
         deviceAddressCommandsFeatures.deviceAddressCommands = VK_TRUE;
-        rayTracingPipelineFeatures.rayTracingPipeline = selection.streamline;
 #define MT_VK_FEATURE(id, requested, preferred, support, score, enable, publish) enable
 #include "VulkanDeviceFeatureCatalog.inl"
         void** featureTail = &features.pNext;

@@ -19,6 +19,9 @@ using Metallic.Lighting;
 using Metallic.SceneSurface;
 using Metallic.ScenePath;
 import StreamRayGeometry;
+#if METALLIC_PT_RAY_PIPELINE
+import StreamRayHit;
+#endif
 using Metallic.StreamGeometry;
 
 namespace Metallic.ScenePathTracing
@@ -74,6 +77,18 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
     desc.Origin = ray.origin; desc.Direction = ray.direction;
     desc.TMin = nearDistance; desc.TMax = farDistance;
     // Force candidate callbacks even for CLAS built with the opaque default.
+#if METALLIC_PT_RAY_PIPELINE
+    StreamRayHit payload = (StreamRayHit)0;
+    payload.t = -1.0;
+    // One shared triangle hit group and miss record. Keep full closest-hit
+    // traversal even for shadows: transparent media are integrated in order
+    // by the existing caller, never accumulated in unordered any-hit callbacks.
+    TraceRay(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, 0, 0, 0, desc, payload);
+    if (payload.t < 0.0) { return false; }
+    if (occlusionOnly) { return true; }
+    return streamRaySurface(payload.instanceId, payload.clusterId, payload.primitiveId,
+        payload.barycentrics, ray, payload.t, push.bitangentFlip, hit);
+#else
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
     query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
     while (query.Proceed()) {
@@ -88,5 +103,6 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
     if (occlusionOnly) { return true; }
     return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
         query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), push.bitangentFlip, hit);
+#endif
 }
 } // namespace Metallic.ScenePathTracing

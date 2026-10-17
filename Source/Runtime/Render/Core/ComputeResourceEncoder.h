@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/RayTracingKernel.h"
 
 #include <cstdint>
 #include <compare>
@@ -67,6 +68,23 @@ struct ResourceComputeKernelDesc {
     std::span<const ShaderSpecializationConstant> specializationConstants;
 };
 
+// Uses the same named resource fields and encoded parameter ABI as compute.
+// Only the executable stages and pixel dispatch dimensions differ.
+struct ResourceRayTracingKernelDesc {
+    std::span<const uint32_t> rayGenerationSpirv;
+    std::span<const uint32_t> missSpirv;
+    std::span<const uint32_t> closestHitSpirv;
+    std::span<const uint32_t> anyHitSpirv;
+    uint32_t pushConstantSize = 0;
+    std::span<const ComputeResourceBindingDesc> bindings;
+    const char* debugName = nullptr;
+    PipelineCache* pipelineCache = nullptr;
+    uint32_t resourceParameterSize = 0;
+    // Applied to ray generation only.
+    std::span<const ShaderSpecializationConstant> specializationConstants;
+    bool enableInvocationReorder = false;
+};
+
 struct CPUProfileRecorder;
 
 // Publish through shared_ptr<const ...> and never mutate afterwards. The owner
@@ -114,6 +132,19 @@ struct ComputeDispatchDesc {
     ComputeDispatchStats* stats = nullptr;
 };
 
+struct RayTracingDispatchDesc {
+    CommandBuffer* commandBuffer = nullptr;
+    std::span<const ComputeDispatchBinding> bindings;
+    const void* pushData = nullptr;
+    uint32_t pushDataSize = 0;
+    // Pixel dimensions for traceRays; never rounded to a compute group size.
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t depth = 1;
+    CPUProfileRecorder* profiler = nullptr;
+    ComputeDispatchStats* stats = nullptr;
+};
+
 class ComputeResourceEncoder;
 
 struct ComputeIndirectDispatch {
@@ -153,5 +184,15 @@ Result<> initializeResourceKernel(Device& device, const ResourceComputeKernelDes
 Result<> dispatchResources(const ComputeKernel& kernel, const ComputeResourceEncoder& encoder,
     const ComputeDispatchDesc& desc, std::span<const ComputeIndirectDispatch> dispatches = {},
     const BarrierDesc& betweenDispatches = {});
+
+// The encoder and its resource leases are shared with compute; no alternate
+// descriptor registration, resource struct or frame-lifetime path is introduced.
+Result<> initializeResourceKernel(Device& device, const ResourceRayTracingKernelDesc& desc,
+    RayTracingKernel& kernel, ComputeResourceEncoder& encoder, std::string& log);
+[[nodiscard]] Result<PreparedRayTracingDispatch> prepareResourceDispatch(
+    const RayTracingKernel& kernel, const ComputeResourceEncoder& encoder,
+    RenderFrameContext* frame, const RayTracingDispatchDesc& desc);
+Result<> dispatchResources(const RayTracingKernel& kernel, const ComputeResourceEncoder& encoder,
+    const RayTracingDispatchDesc& desc);
 
 } // namespace metallic::render

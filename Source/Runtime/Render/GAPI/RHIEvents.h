@@ -25,7 +25,7 @@ inline void observeRHITrace(const char* event, uint64_t frame, uint32_t value)
 
 // Per-thread recording observer. Owners install/restore this with their capture
 // lifetime; disabled recording does not read process-wide profiling state.
-enum class RHICommandEvent { BeginRendering, EndRendering, Draw, Dispatch, SubmitBegin, SubmitEnd };
+enum class RHICommandEvent { BeginRendering, EndRendering, Draw, Dispatch, SubmitBegin, SubmitEnd, TraceRays };
 struct RHICommandObserver {
     void* context = nullptr;
     void (*notify)(void*, RHICommandEvent, const void*) = nullptr;

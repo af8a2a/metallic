@@ -95,6 +95,7 @@ enum class RenderGraphPassKind : uint8_t {
     Raster,
     Compute,
     Unsafe,
+    RayTracing,
 };
 
 struct RenderGraphInternalAccess {

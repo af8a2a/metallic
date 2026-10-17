@@ -252,6 +252,16 @@ const char* computeBackendName(ComputePipelineBackend backend)
     }
 }
 
+const char* pipelineTypeName(PipelineRecipeType type)
+{
+    switch (type) {
+    case PipelineRecipeType::Compute: return "compute";
+    case PipelineRecipeType::Graphics: return "graphics";
+    case PipelineRecipeType::RayTracing: return "ray_tracing";
+    default: return "unknown";
+    }
+}
+
 Json spirvStatisticsJson(std::span<const uint32_t> code)
 {
     const auto stats = metallic::tools::inspectSPIRV(code);
@@ -416,6 +426,7 @@ struct PreparedPipeline {
     std::string entry;
     const PipelineRecipe* recipe = nullptr;
     std::array<std::unique_ptr<ShaderModule>, 4> graphicsModules;
+    std::array<std::unique_ptr<ShaderModule>, 4> rayTracingModules;
     bool disableOptimization = false;
     ComputePipelineBackend backend = ComputePipelineBackend::Pipeline;
     std::string nativeBinaryCacheDirectory;
@@ -424,10 +435,20 @@ struct PreparedPipeline {
 void createPreparedPipeline(Device& device, PipelineCache* cache, const PreparedPipeline& item, Json& result)
 {
     if (item.recipe) {
-        const auto capturedHash = item.recipe->type == PipelineRecipeType::Compute ?
-            detail::computePipelineStateHash(item.recipe->computeDesc(item.module.get())) :
-            detail::graphicsPipelineStateHash(item.recipe->graphicsDesc(item.graphicsModules[0].get(),
+        uint64_t capturedHash = 0;
+        switch (item.recipe->type) {
+        case PipelineRecipeType::Compute:
+            capturedHash = detail::computePipelineStateHash(item.recipe->computeDesc(item.module.get()));
+            break;
+        case PipelineRecipeType::Graphics:
+            capturedHash = detail::graphicsPipelineStateHash(item.recipe->graphicsDesc(item.graphicsModules[0].get(),
                 item.graphicsModules[1].get(), item.graphicsModules[2].get(), item.graphicsModules[3].get()));
+            break;
+        case PipelineRecipeType::RayTracing:
+            capturedHash = detail::rayTracingPipelineStateHash(item.recipe->rayTracingDesc(item.rayTracingModules[0].get(),
+                item.rayTracingModules[1].get(), item.rayTracingModules[2].get(), item.rayTracingModules[3].get()));
+            break;
+        }
         result["recipe_baseline_pso_hash"] = capturedHash;
         if (capturedHash != item.recipe->expectedPsoHash) {
             throw std::runtime_error("Captured recipe baseline PSO hash differs on this device before experiment overrides");
@@ -435,7 +456,20 @@ void createPreparedPipeline(Device& device, PipelineCache* cache, const Prepared
     }
     const auto begin = Clock::now();
     PipelineCreationStats metrics;
-    if (item.recipe && item.recipe->type == PipelineRecipeType::Graphics) {
+    if (item.recipe && item.recipe->type == PipelineRecipeType::RayTracing) {
+        auto desc = item.recipe->rayTracingDesc(item.rayTracingModules[0].get(),
+            item.rayTracingModules[1].get(), item.rayTracingModules[2].get(), item.rayTracingModules[3].get(), cache);
+        desc.disableOptimization |= item.disableOptimization;
+        result["disable_driver_optimization"] = desc.disableOptimization;
+        result["native_create_scope"] = "vkCreateRayTracingPipelinesKHR only; excludes shader modules, layout, SBT allocation/upload and cache I/O";
+        result["pipeline_wall_scope"] = "Device::createRayTracingPipeline including pipeline layout, native creation and SBT construction";
+        result["ray_tracing_invocation_reorder"] = desc.enableInvocationReorder;
+        auto created = device.createRayTracingPipeline(desc, &metrics);
+        result["pipeline_wall_ms"] = milliseconds(begin);
+        result["pipeline_attempt"] = metricsJson(metrics);
+        auto pipeline = require(std::move(created), "create ray tracing pipeline");
+        result["pipeline"] = pipelineJson(*pipeline);
+    } else if (item.recipe && item.recipe->type == PipelineRecipeType::Graphics) {
         auto desc = item.recipe->graphicsDesc(item.graphicsModules[0].get(),
                 item.graphicsModules[1].get(), item.graphicsModules[2].get(), item.graphicsModules[3].get(), cache);
         desc.disableOptimization |= item.disableOptimization;
@@ -585,6 +619,9 @@ int run(const Options& options)
     const auto backend = recipe && recipe->type == PipelineRecipeType::Compute && !options.explicitComputeBackend ? recipe->computeBackend :
         options.computeBackend == "shader-object" ? ComputePipelineBackend::ShaderObject :
         options.computeBackend == "pipeline-binary" ? ComputePipelineBackend::PipelineBinary : ComputePipelineBackend::Pipeline;
+    if (recipe && recipe->type != PipelineRecipeType::Compute && backend != ComputePipelineBackend::Pipeline) {
+        throw std::invalid_argument("Experimental compute backend requires a compute recipe");
+    }
     const auto effectivePostprocess = slangShaderPostprocessMode(
         SlangShaderDesc{.postprocessMode = postprocessMode(options.spirvPostprocess)});
     if (backend == ComputePipelineBackend::Pipeline && !options.nativeBinaryCacheDirectory.empty()) {
@@ -619,7 +656,7 @@ int run(const Options& options)
     if (options.list) {
         if (recipe) {
             std::cout << Json{{"recipe_file", options.recipeFile}, {"expected_pso_hash", recipe->expectedPsoHash},
-                {"pipeline_type", recipe->type == PipelineRecipeType::Graphics ? "graphics" : "compute"}}.dump() << '\n';
+                {"pipeline_type", pipelineTypeName(recipe->type)}}.dump() << '\n';
             return 0;
         }
         for (size_t i : selected) { std::cout << requestJson(catalog[i], i).dump() << '\n'; }
@@ -774,6 +811,8 @@ int run(const Options& options)
             desc.enableComputeFullSubgroups = caps.computeFullSubgroups;
             desc.enableRayTracingAccelerationStructure = caps.rayTracingAccelerationStructure;
             desc.enableRayQuery = caps.rayQuery;
+            desc.enableRayTracingPipeline = caps.rayTracingPipeline;
+            desc.enableRayTracingInvocationReorder = caps.rayTracingInvocationReorder;
             desc.enableClusterAccelerationStructure = caps.clusterAccelerationStructure;
             desc.enablePartitionedAccelerationStructure = caps.partitionedAccelerationStructure;
             desc.enableDeviceGeneratedCommands = caps.deviceGeneratedCommands;
@@ -791,6 +830,9 @@ int run(const Options& options)
             {"driver_version", properties.core.driverVersion}, {"driver_name", properties.driver.driverName},
             {"driver_info", properties.driver.driverInfo}, {"pipeline_cache_uuid", uuid.str()},
             {"validation_active", vk.validationMessengerActive}};
+        report["device"]["ray_tracing_invocation_reorder"] = device->capabilities().rayTracingInvocationReorder;
+        report["device"]["ray_tracing_invocation_reorder_reordering_hint"] =
+            device->capabilities().rayTracingInvocationReorderReorderingHint;
         if (recipe) {
             const auto& source = recipe->sourceDevice;
             report["recipe_source_device"] = {{"name", source.deviceName}, {"vendor_id", source.vendorId},
@@ -833,10 +875,12 @@ int run(const Options& options)
             }
             if (recipe) {
                 const bool graphics = recipe->type == PipelineRecipeType::Graphics;
-                const auto& mainShader = graphics ? (!recipe->meshShader.spirv.empty() ? recipe->meshShader : recipe->vertexShader) : recipe->computeShader;
+                const bool rayTracing = recipe->type == PipelineRecipeType::RayTracing;
+                const auto& mainShader = rayTracing ? recipe->rayGenerationShader :
+                    graphics ? (!recipe->meshShader.spirv.empty() ? recipe->meshShader : recipe->vertexShader) : recipe->computeShader;
                 report["samples"].push_back({{"request", {{"index", 0}, {"module", mainShader.moduleName},
                     {"entry", mainShader.sourceEntryPoint}, {"recipe_file", options.recipeFile}}},
-                    {"iteration", iteration}, {"pipeline_replica", replicaIndex}, {"pipeline_type", graphics ? "graphics" : "compute"},
+                    {"iteration", iteration}, {"pipeline_replica", replicaIndex}, {"pipeline_type", pipelineTypeName(recipe->type)},
                     {"status", "creating_device"}, {"shader_source", "recipe_spirv"}});
                 const size_t sampleIndex = report["samples"].size() - 1;
                 auto& sample = report["samples"].back();
@@ -847,9 +891,6 @@ int run(const Options& options)
                     ensureReusedCache(&sample);
                     PreparedPipeline item{.sampleIndex = sampleIndex, .recipe = &*recipe};
                     configurePrepared(item);
-                    if (graphics && backend != ComputePipelineBackend::Pipeline) {
-                        throw std::invalid_argument("Experimental compute backend requires a compute recipe");
-                    }
                     sample["status"] = "creating_shader_module";
                     save();
                     const auto begin = Clock::now();
@@ -868,19 +909,36 @@ int run(const Options& options)
                             {"source_identity_ambiguous", stage.sourceIdentityAmbiguous},
                             {"spirv_bytes", stage.spirv.size() * sizeof(uint32_t)}, {"spirv_fnv1a64", hashSpirv(stage.spirv)},
                             {"spirv_statistics", spirvStatisticsJson(stage.spirv)}});
+                        auto& shaderSample = sample["shader_stages"].back();
+                        shaderSample["specialization_constants"] = Json::array();
+                        for (const auto& value : stage.specializationConstants) {
+                            shaderSample["specialization_constants"].push_back({{"id", value.id},
+                                {"type", value.type == ShaderSpecializationType::Int32 ? "int32" : "bool32"},
+                                {"size", 4}, {"bits", value.bits}});
+                        }
                         const auto moduleBegin = Clock::now();
                         auto module = require(device->createShaderModule({.spirv = stage.spirv, .debugName = stage.moduleName.c_str()}), "create recipe shader module");
                         moduleWall += milliseconds(moduleBegin);
                         sample["shader_stages"].back().update(deviceShaderJson(*module));
                         return module;
                     };
-                    if (graphics) {
+                    if (rayTracing) {
+                        item.rayTracingModules[0] = makeModule(recipe->rayGenerationShader, "ray_generation");
+                        item.rayTracingModules[1] = makeModule(recipe->missShader, "miss");
+                        item.rayTracingModules[2] = makeModule(recipe->closestHitShader, "closest_hit");
+                        item.rayTracingModules[3] = makeModule(recipe->anyHitShader, "any_hit");
+                        sample["ray_tracing_state"] = {{"uses_bindless_heap", recipe->usesBindlessHeap},
+                            {"bindless_user_push_data_size", recipe->bindlessUserPushDataSize},
+                            {"max_recursion_depth", recipe->maxRecursionDepth},
+                            {"cluster_acceleration_structure", recipe->clusterAccelerationStructure},
+                            {"disable_optimization", recipe->disableOptimization}};
+                    } else if (graphics) {
                         item.graphicsModules[0] = makeModule(recipe->vertexShader, "vertex");
                         item.graphicsModules[1] = makeModule(recipe->taskShader, "task");
                         item.graphicsModules[2] = makeModule(recipe->meshShader, "mesh");
                         item.graphicsModules[3] = makeModule(recipe->fragmentShader, "fragment");
                     } else { item.module = makeModule(recipe->computeShader, "compute"); }
-                    if (!graphics) {
+                    if (!graphics && !rayTracing) {
                         sample["spirv_statistics"] = spirvStatisticsJson(mainShader.spirv);
                         sample["effective_slang_optimization"] = mainShader.optimizationLevel;
                         sample["effective_spirv_postprocess"] = mainShader.spirvPostprocess;
@@ -1076,7 +1134,7 @@ int main(int argc, char** argv)
             "  [--compute-backend pipeline|shader-object|pipeline-binary] [--native-binary-cache-dir path]\n"
             "Defaults: 3 iterations, disabled shader cache, empty pipeline cache, request descriptor mode, disabled debug.\n"
             "Explicit modes stage one batch per iteration. Recipe replay uses captured PSO state and SPIR-V.\n"
-            "Graphics catalog requests compile only; use --recipe-file for actual graphics PSOs.\n";
+            "Graphics catalog requests compile only; use --recipe-file for actual graphics or ray-tracing PSOs.\n";
         return 0;
     }
     try { return run(parse(argc, argv)); }

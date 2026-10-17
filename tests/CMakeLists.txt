@@ -759,6 +759,15 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicPathTraceSSAEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceSSA.py")
     set_tests_properties(MetallicPathTraceSSAEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)
+    add_test(NAME MetallicPathTraceTraversalEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceTraversal.py")
+    set_tests_properties(MetallicPathTraceTraversalEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicVkGltfSEREvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestVkGltfSER.py")
+    set_tests_properties(MetallicVkGltfSEREvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
+    add_test(NAME MetallicSimpleBSDFGenericEvidenceTests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestSimpleBSDFGeneric.py")
+    set_tests_properties(MetallicSimpleBSDFGenericEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 60)
     add_test(NAME MetallicPathTraceFunctionBoundaryEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/perf/TestPathTraceFunctionBoundaries.py")
     set_tests_properties(MetallicPathTraceFunctionBoundaryEvidenceTests PROPERTIES LABELS "shader;perf;cpu" TIMEOUT 120)

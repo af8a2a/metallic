@@ -24,6 +24,7 @@ TEST(RHIObservers, NestedAndDisabledCapturesRestoreTheirOwner)
         {
             SchedulingCapture second(&inner);
             observeRHICommand(RHICommandEvent::Dispatch, &command);
+            observeRHICommand(RHICommandEvent::TraceRays, &command);
             observeRHICommand(RHICommandEvent::SubmitBegin);
             observeRHICommand(RHICommandEvent::SubmitEnd);
         }
@@ -37,7 +38,9 @@ TEST(RHIObservers, NestedAndDisabledCapturesRestoreTheirOwner)
     EXPECT_EQ(outer.maxScopeDrawCalls, 2u);
     EXPECT_EQ(outer.invalidScopes, 0u);
     EXPECT_EQ(outer.dispatchCalls, 0u);
+    EXPECT_EQ(outer.traceRaysCalls, 0u);
     EXPECT_EQ(inner.dispatchCalls, 1u);
+    EXPECT_EQ(inner.traceRaysCalls, 1u);
     EXPECT_EQ(inner.nativeSubmits, 1u);
 }
 

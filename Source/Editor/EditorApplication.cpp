@@ -2615,6 +2615,8 @@ bool EditorApplication::initializeRhi()
                 .preferredTaskSubgroupSize = 32,
                 .enableRayTracingAccelerationStructure = true,
                 .enableRayQuery = true,
+                .enableRayTracingPipeline = true,
+                .enableRayTracingInvocationReorder = true,
                 .enableClusterAccelerationStructure = true,
                 .enablePartitionedAccelerationStructure = true,
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},

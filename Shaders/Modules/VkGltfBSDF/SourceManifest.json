@@ -1,0 +1,43 @@
+{
+  "nvproCore2Commit": "85bd9e6db9abd9a57e440c9c8c7f678c7fe6301f",
+  "vkGltfRendererCommit": "1010fdcc83ccf874727f1c1706941cfaef595119",
+  "files": [
+    {
+      "source": "constants.h.slang",
+      "sha256": "bdcf7e3a0853c8fc253559494724c9d5078790353feed37940527084c30614d8",
+      "port": "Shaders/Modules/VkGltfBSDF/Constants.slang"
+    },
+    {
+      "source": "functions.h.slang",
+      "sha256": "18def828c41117d044948915951996bf2a754f2d34fbc86a7dc9de9302adf1b5",
+      "port": "Shaders/Modules/VkGltfBSDF/Math.slang"
+    },
+    {
+      "source": "pbr_material_types.h.slang",
+      "sha256": "78f72d7dc79403f0a47911ed31f8849b430e4499c6012a72d59887e638861d25",
+      "port": "Shaders/Modules/VkGltfBSDF/Material.slang"
+    },
+    {
+      "source": "bsdf_types.h.slang",
+      "sha256": "427d92bf6082dc8abf25f94eb94b369cf490441120d5d2f17d9d887570c586e9",
+      "port": "Shaders/Modules/VkGltfBSDF/Types.slang"
+    },
+    {
+      "source": "pbr_ggx_microfacet.h.slang",
+      "sha256": "bb6bc74767419874a5546928147404ae7dabb0f1520d23e13ee82f77dc980205",
+      "port": "Shaders/Modules/VkGltfBSDF/Microfacet.slang"
+    },
+    {
+      "source": "bsdf_functions.h.slang",
+      "sha256": "eea100184bd2cd801649c281d7a12ed178f5bfd3f3b8665c2c1fab1e95a8e978",
+      "port": "Shaders/Modules/VkGltfBSDF/Lobes.slang"
+    }
+  ],
+  "validationDependencies": [
+    {
+      "source": "slang_types.h",
+      "sha256": "4892ba1852d20ee7d0722dd5287be5c4ad5c966ee5684dbb63e89441e43b3414"
+    }
+  ],
+  "upstreamSourceRoot": "nvpro_core2/nvshaders"
+}

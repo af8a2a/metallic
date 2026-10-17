@@ -13,6 +13,11 @@ struct VulkanDeviceProperties {
     VkPhysicalDeviceMaintenance4Properties maintenance4{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
     VkPhysicalDeviceShaderObjectPropertiesEXT shaderObject{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
     VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructure{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipeline{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+    VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT rayTracingInvocationReorder{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_PROPERTIES_EXT};
+#endif
     VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptorHeap{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
     VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT generatedCommands{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};
 #ifdef VK_NV_cluster_acceleration_structure

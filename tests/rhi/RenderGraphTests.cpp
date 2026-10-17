@@ -1464,6 +1464,12 @@ public:
             pathTrace->queueType() != render::QueueType::Compute) {
             return RHITestResult::fail("ScenePathTracePass is not classified as Compute/Compute");
         }
+        pathTrace->setProperties({{"traversalBackend", "rayPipeline"}, {"bsdf", "openpbr"}, {"cacheMode", "off"}});
+        if (pathTrace->kind() != render::RenderGraphPassKind::RayTracing ||
+            pathTrace->queueType() != render::QueueType::Compute) {
+            return RHITestResult::fail("Experimental ScenePathTracePass must use RayTracing access scopes on a compute-capable queue");
+        }
+        pathTrace->setProperties({});
         if (rtxdi->kind() != render::RenderGraphPassKind::Compute ||
             rtxdi->queueType() != render::QueueType::Compute) {
             return RHITestResult::fail("SceneRTXDIPass is not classified as Compute/Compute");

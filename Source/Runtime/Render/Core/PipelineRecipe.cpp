@@ -14,7 +14,7 @@ namespace metallic::render {
 namespace {
 
 using Json = nlohmann::json;
-constexpr uint32_t kRecipeVersion = 2;
+constexpr uint32_t kRecipeVersion = 4;
 constexpr uint32_t kSpirvMagic = 0x07230203u;
 constexpr uint64_t kMaxSpirvBytes = 256ull * 1024 * 1024;
 
@@ -69,6 +69,9 @@ Json deviceJson(const PipelineRecipeDevice& device)
             {"geometry_shader", caps.geometryShader}, {"task_shader_subgroup_ballot", caps.taskShaderSubgroupBallot},
             {"subgroup_size_control", caps.subgroupSizeControl}, {"compute_full_subgroups", caps.computeFullSubgroups},
             {"ray_tracing_acceleration_structure", caps.rayTracingAccelerationStructure}, {"ray_query", caps.rayQuery},
+            {"ray_tracing_pipeline", caps.rayTracingPipeline},
+            {"ray_tracing_invocation_reorder", caps.rayTracingInvocationReorder},
+            {"ray_tracing_invocation_reorder_reordering_hint", caps.rayTracingInvocationReorderReorderingHint},
             {"cluster_acceleration_structure", caps.clusterAccelerationStructure},
             {"partitioned_acceleration_structure", caps.partitionedAccelerationStructure},
             {"device_generated_commands", caps.deviceGeneratedCommands}}}};
@@ -98,6 +101,9 @@ PipelineRecipeDevice readDevice(const Json& json)
     caps.computeFullSubgroups = features.at("compute_full_subgroups").get<bool>();
     caps.rayTracingAccelerationStructure = features.at("ray_tracing_acceleration_structure").get<bool>();
     caps.rayQuery = features.at("ray_query").get<bool>();
+    caps.rayTracingPipeline = features.value("ray_tracing_pipeline", false);
+    caps.rayTracingInvocationReorder = features.value("ray_tracing_invocation_reorder", false);
+    caps.rayTracingInvocationReorderReorderingHint = features.value("ray_tracing_invocation_reorder_reordering_hint", false);
     caps.clusterAccelerationStructure = features.at("cluster_acceleration_structure").get<bool>();
     caps.partitionedAccelerationStructure = features.at("partitioned_acceleration_structure").get<bool>();
     caps.deviceGeneratedCommands = features.at("device_generated_commands").get<bool>();
@@ -131,21 +137,45 @@ void validateShader(const PipelineRecipeShader& shader)
 
 void validateRecipe(const PipelineRecipe& recipe)
 {
-    if (recipe.type != PipelineRecipeType::Compute && recipe.type != PipelineRecipeType::Graphics) {
+    if (recipe.type != PipelineRecipeType::Compute && recipe.type != PipelineRecipeType::Graphics &&
+        recipe.type != PipelineRecipeType::RayTracing) {
         throw std::runtime_error("unsupported recipe pipeline type");
     }
-    for (const auto* shader : {&recipe.computeShader, &recipe.vertexShader, &recipe.taskShader, &recipe.meshShader, &recipe.fragmentShader}) {
+    for (const auto* shader : {&recipe.computeShader, &recipe.vertexShader, &recipe.taskShader, &recipe.meshShader,
+        &recipe.fragmentShader, &recipe.rayGenerationShader, &recipe.missShader, &recipe.closestHitShader, &recipe.anyHitShader}) {
         if (shader->spirv.empty() && !shader->specializationConstants.empty()) {
             throw std::runtime_error("specialization values require a shader stage");
         }
     }
     if (recipe.colorAttachmentCount > recipe.colorFormats.size()) { throw std::runtime_error("too many color attachments"); }
     if (recipe.computeBackend > ComputePipelineBackend::PipelineBinary ||
-        (recipe.type == PipelineRecipeType::Graphics && recipe.computeBackend != ComputePipelineBackend::Pipeline) ||
+        (recipe.type != PipelineRecipeType::Compute && recipe.computeBackend != ComputePipelineBackend::Pipeline) ||
         (recipe.computeBackend == ComputePipelineBackend::ShaderObject && recipe.disableOptimization)) {
         throw std::runtime_error("invalid recipe compute backend or optimization policy");
     }
-    if (recipe.type == PipelineRecipeType::Compute) {
+    const bool hasRayTracingStages = !recipe.rayGenerationShader.spirv.empty() || !recipe.missShader.spirv.empty() ||
+        !recipe.closestHitShader.spirv.empty() || !recipe.anyHitShader.spirv.empty();
+    if (recipe.type != PipelineRecipeType::RayTracing && hasRayTracingStages) {
+        throw std::runtime_error("non-ray-tracing recipe contains ray-tracing stages");
+    }
+    if (recipe.enableInvocationReorder && (recipe.type != PipelineRecipeType::RayTracing ||
+        !recipe.sourceDevice.capabilities.rayTracingInvocationReorder || !recipe.sourceDevice.capabilities.rayTracingPipeline)) {
+        throw std::runtime_error("invocation reorder requires an EXT-enabled ray-tracing source device");
+    }
+    if (recipe.type == PipelineRecipeType::RayTracing) {
+        if (!recipe.computeShader.spirv.empty() || !recipe.vertexShader.spirv.empty() || !recipe.taskShader.spirv.empty() ||
+            !recipe.meshShader.spirv.empty() || !recipe.fragmentShader.spirv.empty() || recipe.indirectBindable ||
+            recipe.maxRecursionDepth == 0) {
+            throw std::runtime_error("invalid ray-tracing recipe stage combination or state");
+        }
+        for (const auto* shader : {&recipe.rayGenerationShader, &recipe.missShader, &recipe.closestHitShader, &recipe.anyHitShader}) {
+            validateShader(*shader);
+        }
+        if (!recipe.missShader.specializationConstants.empty() || !recipe.closestHitShader.specializationConstants.empty() ||
+            !recipe.anyHitShader.specializationConstants.empty()) {
+            throw std::runtime_error("ray-tracing specialization is supported on ray generation only");
+        }
+    } else if (recipe.type == PipelineRecipeType::Compute) {
         validateShader(recipe.computeShader);
         if (!recipe.vertexShader.spirv.empty() || !recipe.taskShader.spirv.empty() ||
             !recipe.meshShader.spirv.empty() || !recipe.fragmentShader.spirv.empty()) {
@@ -284,6 +314,19 @@ GraphicsPipelineDesc PipelineRecipe::graphicsDesc(ShaderModule* vertex, ShaderMo
         .pipelineCache = cache, .indirectBindable = indirectBindable, .disableOptimization = disableOptimization};
 }
 
+RayTracingPipelineDesc PipelineRecipe::rayTracingDesc(ShaderModule* rayGeneration, ShaderModule* miss,
+    ShaderModule* closestHit, ShaderModule* anyHit, PipelineCache* cache) const
+{
+    return {.rayGenerationShader = {rayGeneration, rayGenerationShader.entryPoint.c_str(), rayGenerationShader.specializationConstants},
+        .missShader = {miss, missShader.entryPoint.c_str(), missShader.specializationConstants},
+        .closestHitShader = {closestHit, closestHitShader.entryPoint.c_str(), closestHitShader.specializationConstants},
+        .anyHitShader = {anyHit, anyHitShader.entryPoint.c_str(), anyHitShader.specializationConstants},
+        .usesBindlessHeap = usesBindlessHeap, .bindlessUserPushDataSize = bindlessUserPushDataSize,
+        .pipelineCache = cache, .maxRecursionDepth = maxRecursionDepth,
+        .clusterAccelerationStructure = clusterAccelerationStructure, .enableInvocationReorder = enableInvocationReorder,
+        .disableOptimization = disableOptimization};
+}
+
 Result<> writePipelineRecipe(const PipelineRecipe& recipe, const std::filesystem::path& path, std::string& log)
 {
     std::filesystem::path temporary;
@@ -293,9 +336,11 @@ Result<> writePipelineRecipe(const PipelineRecipe& recipe, const std::filesystem
         std::filesystem::create_directories(directory);
         // Preserve version-1 empty-stage output and old cache identities. A
         // specialized compute capture uses v2 with a required explicit vector.
-        const uint32_t version = recipe.computeShader.specializationConstants.empty() ? 1 : kRecipeVersion;
+        const uint32_t version = recipe.type == PipelineRecipeType::RayTracing ? (recipe.enableInvocationReorder ? kRecipeVersion : 3) :
+            recipe.computeShader.specializationConstants.empty() ? 1 : 2;
         Json json{{"schema", "metallic_pipeline_recipe"}, {"version", version},
-            {"pipeline_type", recipe.type == PipelineRecipeType::Compute ? "compute" : "graphics"},
+            {"pipeline_type", recipe.type == PipelineRecipeType::RayTracing ? "ray_tracing" :
+                recipe.type == PipelineRecipeType::Compute ? "compute" : "graphics"},
             {"expected_pso_hash", hexHash(recipe.expectedPsoHash)}, {"cache_group", recipe.cacheGroup},
             {"source_device", deviceJson(recipe.sourceDevice)},
             {"shaders", {{"compute", writeShader(recipe.computeShader, directory, version)},
@@ -313,6 +358,15 @@ Result<> writePipelineRecipe(const PipelineRecipe& recipe, const std::filesystem
                 {"depth_test_enable", recipe.depthStencil.depthTestEnable}, {"depth_write_enable", recipe.depthStencil.depthWriteEnable},
                 {"depth_compare_op", static_cast<uint32_t>(recipe.depthStencil.depthCompareOp)}}}};
         for (const auto format : recipe.colorFormats) { json["state"]["color_formats"].push_back(static_cast<uint32_t>(format)); }
+        if (recipe.type == PipelineRecipeType::RayTracing) {
+            json["shaders"]["ray_generation"] = writeShader(recipe.rayGenerationShader, directory, version);
+            json["shaders"]["miss"] = writeShader(recipe.missShader, directory, version);
+            json["shaders"]["closest_hit"] = writeShader(recipe.closestHitShader, directory, version);
+            json["shaders"]["any_hit"] = writeShader(recipe.anyHitShader, directory, version);
+            json["state"]["max_recursion_depth"] = recipe.maxRecursionDepth;
+            json["state"]["cluster_acceleration_structure"] = recipe.clusterAccelerationStructure;
+            if (version >= 4) { json["state"]["enable_invocation_reorder"] = recipe.enableInvocationReorder; }
+        }
         static std::atomic<uint64_t> sequence{0};
         temporary = path;
         temporary += ".tmp-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence.fetch_add(1));
@@ -345,13 +399,17 @@ Result<PipelineRecipe> readPipelineRecipe(const std::filesystem::path& path, std
         if (!input) { throw std::runtime_error("cannot open recipe manifest"); }
         const auto json = Json::parse(input);
         const uint32_t version = readUint32(json.at("version"));
-        if (json.at("schema") != "metallic_pipeline_recipe" || (version != 1 && version != kRecipeVersion)) {
+        if (json.at("schema") != "metallic_pipeline_recipe" || (version < 1 || version > kRecipeVersion)) {
             throw std::runtime_error("unsupported pipeline recipe schema/version");
         }
         PipelineRecipe recipe;
         const auto type = json.at("pipeline_type").get<std::string>();
-        if (type != "compute" && type != "graphics") { throw std::runtime_error("unsupported recipe pipeline type"); }
-        recipe.type = type == "compute" ? PipelineRecipeType::Compute : PipelineRecipeType::Graphics;
+        if ((type != "compute" && type != "graphics" && type != "ray_tracing") ||
+            ((type == "ray_tracing") != (version >= 3))) {
+            throw std::runtime_error("unsupported recipe pipeline type/version");
+        }
+        recipe.type = type == "ray_tracing" ? PipelineRecipeType::RayTracing :
+            type == "compute" ? PipelineRecipeType::Compute : PipelineRecipeType::Graphics;
         recipe.expectedPsoHash = readHash(json.at("expected_pso_hash"));
         recipe.cacheGroup = json.at("cache_group").get<std::string>();
         recipe.sourceDevice = readDevice(json.at("source_device"));
@@ -363,6 +421,21 @@ Result<PipelineRecipe> readPipelineRecipe(const std::filesystem::path& path, std
         recipe.meshShader = readShader(shaders.at("mesh"), directory, version);
         recipe.fragmentShader = readShader(shaders.at("fragment"), directory, version);
         const auto& state = json.at("state");
+        if (recipe.type == PipelineRecipeType::RayTracing) {
+            recipe.rayGenerationShader = readShader(shaders.at("ray_generation"), directory, version);
+            recipe.missShader = readShader(shaders.at("miss"), directory, version);
+            recipe.closestHitShader = readShader(shaders.at("closest_hit"), directory, version);
+            recipe.anyHitShader = readShader(shaders.at("any_hit"), directory, version);
+            recipe.maxRecursionDepth = readUint32(state.at("max_recursion_depth"));
+            recipe.clusterAccelerationStructure = state.at("cluster_acceleration_structure").get<bool>();
+            recipe.enableInvocationReorder = version >= 4 ? state.at("enable_invocation_reorder").get<bool>() : false;
+        } else if (shaders.contains("ray_generation") || shaders.contains("miss") ||
+            shaders.contains("closest_hit") || shaders.contains("any_hit")) {
+            throw std::runtime_error("ray-tracing stages require recipe version 3 or later");
+        }
+        if (version < 4 && state.contains("enable_invocation_reorder")) {
+            throw std::runtime_error("invocation reorder state requires recipe version 4");
+        }
         recipe.usesBindlessHeap = state.at("uses_bindless_heap").get<bool>();
         recipe.indirectBindable = state.at("indirect_bindable").get<bool>();
         recipe.disableOptimization = state.value("disable_optimization", false);

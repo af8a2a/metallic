@@ -34,6 +34,7 @@ LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 | `Modules/RTXCRHair.slang`、`Modules/RTXCRHair/` | RTXCR Chiang / Separate Chiang / Far Field 原生 Slang vendored 实现；见 [来源与接口](Modules/RTXCRHair/README.md) |
 | `MaterialClosureClassification`（CPU）、`tests/rhi/shaders/ClosureSchedulingProbe.slang` | Program → Closure Family 逻辑调度及 fused/split GPU A/B；生产保持 fused，见 [Phase 11](../Documentation/MaterialSystemPhase11.md) |
 | [OpenPBRSurface](Modules/OpenPBRSurface.slang)、[OpenPBRClosure](Modules/OpenPBRClosure.slang) | PT / Deferred 共用的 OpenPBR Material Program、Closure、PreparedClosure；见 [Phase 4](../Documentation/MaterialSystemPhase4.md) |
+| `Modules/SimpleBSDF.slang` | vkGltf BSDF 的独立 Material/Closure/PreparedClosure 泛型封装，保留随机 lobe 求值契约；见 [SimpleBSDF 实验](../Documentation/SimpleBSDF.md) |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码、材质分箱与流式几何属性解码 |
 | `Modules/WaveWorkDistribution.slang` | 无资源依赖的 wave 工作分配；`Metallic.GPUDriven` 命名空间 |
 | `Modules/ScenePathTypes.slang`、`Modules/ScenePathMath.slang` | 场景路径追踪布局与纯数学：ray cone、RNG、相机和 motion；数学使用 `Metallic.ScenePath` 命名空间 |

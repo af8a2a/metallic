@@ -179,7 +179,8 @@ public:
     RenderGraphPreviewRenderer(const RenderGraphPreviewRenderer&) = delete;
     RenderGraphPreviewRenderer& operator=(const RenderGraphPreviewRenderer&) = delete;
 
-    Result<> initialize(bool enableValidation = false, bool enableRayQuery = false, bool enableAftermath = true);
+    Result<> initialize(bool enableValidation = false, bool enableRayQuery = false, bool enableAftermath = true,
+        bool enableSynchronizationValidation = false);
     Result<> render(RenderGraph& graph, uint32_t width, uint32_t height);
     // Disabling readback still completes the frame, but leaves pixels() empty.
     Result<> render(

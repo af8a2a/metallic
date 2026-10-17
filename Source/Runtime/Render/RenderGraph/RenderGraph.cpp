@@ -520,6 +520,8 @@ const char* renderGraphPassKindName(RenderGraphPassKind kind)
         return "Raster";
     case RenderGraphPassKind::Compute:
         return "Compute";
+    case RenderGraphPassKind::RayTracing:
+        return "RayTracing";
     case RenderGraphPassKind::Unsafe:
         return "Unsafe";
     }
@@ -536,6 +538,7 @@ QueueType RenderGraphPass::queueType() const
 {
     switch (kind()) {
     case RenderGraphPassKind::Compute:
+    case RenderGraphPassKind::RayTracing:
         return QueueType::Compute;
     case RenderGraphPassKind::Raster:
     case RenderGraphPassKind::Unsafe:

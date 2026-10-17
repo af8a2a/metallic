@@ -405,6 +405,12 @@ public:
         ACCESS_CHECK(read.stages == PipelineStageBits::ComputeShader && read.access == AccessBits::ShaderRead);
         ACCESS_CHECK(write.access == AccessBits::ShaderWrite);
         ACCESS_CHECK(constant.access == AccessBits::UniformRead && containsBits(constant.stages, PipelineStageBits::FragmentShader));
+        const auto traceRead = render::detail::scopeForGraphAccess(
+            RenderGraphResourceAccess::AccelerationStructureShaderRead, RenderGraphPassKind::RayTracing);
+        const auto traceWrite = render::detail::scopeForGraphAccess(
+            RenderGraphResourceAccess::TextureStorageWrite, RenderGraphPassKind::RayTracing);
+        ACCESS_CHECK(traceRead.stages == PipelineStageBits::RayTracingShader && traceRead.access == AccessBits::AccelerationStructureRead);
+        ACCESS_CHECK(traceWrite.stages == PipelineStageBits::RayTracingShader && traceWrite.access == AccessBits::ShaderWrite);
         const auto opaque = render::detail::scopeForGraphAccess(
             RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Unsafe);
         ACCESS_CHECK(opaque.stages == PipelineStageBits::AllCommands);

@@ -19,6 +19,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
 #include "VulkanDeviceFeatures.h"
+#include "VulkanRayTracing.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
 #include "Runtime/Render/GAPI/Vulkan/DescriptorHeapShaderABI.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -58,6 +59,7 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -475,6 +477,9 @@ VkBufferUsageFlags2 toVkBufferUsage(BufferUsageBits usage)
     }
     if (hasFlag(usage, BufferUsageBits::ShaderDeviceAddress)) {
         flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
+    if (hasFlag(usage, BufferUsageBits::ShaderBindingTable)) {
+        flags |= VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR;
     }
     if (hasFlag(usage, BufferUsageBits::AccelerationStructureBuildInput)) {
         flags |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
@@ -1931,6 +1936,19 @@ struct ComputePipelineImpl {
     ~ComputePipelineImpl();
 };
 
+struct RayTracingPipelineImpl {
+    DeviceImpl* device = nullptr;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    bool usesBindlessHeap = false;
+    uint64_t psoHash = 0;
+    bool pipelineCacheHit = false;
+    PipelineCreationStats creationStats;
+    std::unique_ptr<Buffer> shaderBindingTable;
+    VkStridedDeviceAddressRegionKHR rayGenerationRegion{}, missRegion{}, hitRegion{}, callableRegion{};
+    ~RayTracingPipelineImpl();
+};
+
 struct GraphicsShaderObjectProgramImpl {
     DeviceImpl* device = nullptr;
     VkShaderEXT vertexShader = VK_NULL_HANDLE;
@@ -1971,6 +1989,7 @@ struct CommandBufferImpl {
     VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
     VkPipeline currentComputePipeline = VK_NULL_HANDLE;
     VkShaderEXT currentComputeShaderObject = VK_NULL_HANDLE;
+    RayTracingPipelineImpl* currentRayTracingPipeline = nullptr;
     BindlessHeapImpl* currentBindlessHeap = nullptr;
     bool currentGraphicsPipelineUsesBindlessHeap = false;
     bool currentComputePipelineUsesBindlessHeap = false;
@@ -3849,7 +3868,14 @@ Result<> PipelineCache::merge(std::span<PipelineCache* const> sources)
 
 const void* PreparedExecution::deviceIdentity() const
 {
-    return compute_ ? compute_->device : graphics_ ? graphics_->device : shaders_ ? shaders_->device : nullptr;
+    return rayTracing_ ? rayTracing_->device : compute_ ? compute_->device : graphics_ ? graphics_->device : shaders_ ? shaders_->device : nullptr;
+}
+
+PreparedExecution RayTracingPipeline::execution() const
+{
+    PreparedExecution result;
+    result.rayTracing_ = impl_;
+    return result;
 }
 
 PreparedExecution ComputePipeline::execution() const
@@ -3955,6 +3981,38 @@ bool ComputePipeline::pipelineCacheHit() const
 PipelineCreationStats ComputePipeline::creationStats() const
 {
     return impl_ != nullptr ? acquisitionStats_.value_or(impl_->creationStats) : PipelineCreationStats{};
+}
+
+METALLIC_RHI_HANDLE_DEFINITIONS(RayTracingPipeline)
+
+RayTracingPipeline::RayTracingPipeline(std::shared_ptr<detail::RayTracingPipelineImpl> impl)
+    : impl_(std::move(impl))
+{
+}
+
+namespace detail {
+RayTracingPipelineImpl::~RayTracingPipelineImpl()
+{
+    if (device != nullptr) {
+        if (pipeline != VK_NULL_HANDLE) { device->functions.vkDestroyPipeline(device->device, pipeline, nullptr); }
+        if (layout != VK_NULL_HANDLE) { device->functions.vkDestroyPipelineLayout(device->device, layout, nullptr); }
+    }
+}
+} // namespace detail
+
+uint64_t RayTracingPipeline::psoHash() const
+{
+    return impl_ ? impl_->psoHash : 0;
+}
+
+bool RayTracingPipeline::pipelineCacheHit() const
+{
+    return impl_ && impl_->pipelineCacheHit;
+}
+
+PipelineCreationStats RayTracingPipeline::creationStats() const
+{
+    return impl_ ? acquisitionStats_.value_or(impl_->creationStats) : PipelineCreationStats{};
 }
 
 METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsShaderObjectProgram)
@@ -4310,6 +4368,7 @@ Result<> CommandBuffer::begin(std::shared_ptr<CommandSubmissionContext> context)
     impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipeline = VK_NULL_HANDLE;
+    impl_->currentRayTracingPipeline = nullptr;
     impl_->currentComputeShaderObject = VK_NULL_HANDLE;
     impl_->currentBindlessHeap = nullptr;
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
@@ -5186,6 +5245,7 @@ void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer)
     const bool needsDescriptorHeapPush =
         commandBuffer.currentGraphicsPipelineUsesBindlessHeap ||
         commandBuffer.currentComputePipelineUsesBindlessHeap ||
+        (commandBuffer.currentRayTracingPipeline && commandBuffer.currentRayTracingPipeline->usesBindlessHeap) ||
         commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap;
     if (needsDescriptorHeapPush &&
         !payload.empty() &&
@@ -5218,12 +5278,18 @@ Result<> CommandBuffer::bindExecutionImpl(
     uint32_t byteSize,
     bool replaceData)
 {
-    if (!validCommandRecording(impl_.get(), recording_, execution.kind() == ExecutionKind::Compute
+    if (!validCommandRecording(impl_.get(), recording_, execution.kind() != ExecutionKind::Raster
             ? VK_QUEUE_COMPUTE_BIT : VK_QUEUE_GRAPHICS_BIT) ||
         !execution.valid() || execution.deviceIdentity() != deviceIdentity() ||
         (execution.shaders_ && execution.raster_.colorAttachmentCount > 8) ||
         (replaceData && !validPushData(*impl_, data, byteSize))) { return makeError(Error::InvalidArgument); }
-    if (execution.compute_) {
+    if (execution.rayTracing_) {
+        auto result = retainResource(execution.rayTracing_);
+        if (!result) { return result; }
+        const auto& pipeline = *execution.rayTracing_;
+        impl_->device->functions.vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, pipeline.pipeline);
+        impl_->currentRayTracingPipeline = execution.rayTracing_.get();
+    } else if (execution.compute_) {
         auto result = retainResource(execution.compute_);
         if (!result) { return result; }
         const auto& pipeline = *execution.compute_;
@@ -5520,6 +5586,33 @@ Result<> CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uin
     return {};
 }
 
+Result<> CommandBuffer::traceRays(uint32_t width, uint32_t height, uint32_t depth)
+{
+    if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
+        !impl_->device->capabilities.rayTracingPipeline || !impl_->currentRayTracingPipeline ||
+        !impl_->device->functions.vkCmdTraceRaysKHR) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (!width || !height || !depth) { return {}; }
+    const auto& limits = impl_->device->physicalProperties.core.limits;
+    const auto& properties = impl_->device->physicalProperties.rayTracingPipeline;
+    const uint64_t plane = uint64_t(width) * height;
+    if (plane > properties.maxRayDispatchInvocationCount ||
+        depth > properties.maxRayDispatchInvocationCount / plane ||
+        uint64_t(width) > uint64_t(limits.maxComputeWorkGroupCount[0]) * limits.maxComputeWorkGroupSize[0] ||
+        uint64_t(height) > uint64_t(limits.maxComputeWorkGroupCount[1]) * limits.maxComputeWorkGroupSize[1] ||
+        uint64_t(depth) > uint64_t(limits.maxComputeWorkGroupCount[2]) * limits.maxComputeWorkGroupSize[2]) {
+        return makeError(Error::InvalidArgument);
+    }
+    const auto& pipeline = *impl_->currentRayTracingPipeline;
+    if (pipeline.usesBindlessHeap && !impl_->currentBindlessHeap) { return makeError(Error::InvalidArgument); }
+    impl_->device->functions.vkCmdTraceRaysKHR(impl_->commandBuffer,
+        &pipeline.rayGenerationRegion, &pipeline.missRegion, &pipeline.hitRegion, &pipeline.callableRegion,
+        width, height, depth);
+    observeRHICommand(RHICommandEvent::TraceRays, this);
+    return {};
+}
+
 Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
 {
     if (!validCommandRecording(impl_.get(), recording_, VK_QUEUE_COMPUTE_BIT) ||
@@ -5671,10 +5764,11 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0) |
+            (impl_->device->capabilities.rayTracingPipeline ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            ((impl_->device->capabilities.rayQuery || impl_->device->capabilities.rayTracingPipeline) ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -5738,9 +5832,10 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0) |
+            (impl_->device->capabilities.rayTracingPipeline ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            ((impl_->device->capabilities.rayQuery || impl_->device->capabilities.rayTracingPipeline) ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo afterCopyDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -5928,9 +6023,10 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0) |
+            (impl_->device->capabilities.rayTracingPipeline ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR : 0),
         .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            ((impl_->device->capabilities.rayQuery || impl_->device->capabilities.rayTracingPipeline) ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -6168,10 +6264,11 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0) |
+            (impl_->device->capabilities.rayTracingPipeline ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            ((impl_->device->capabilities.rayQuery || impl_->device->capabilities.rayTracingPipeline) ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -6304,9 +6401,10 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0) |
+            (impl_->device->capabilities.rayTracingPipeline ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            ((impl_->device->capabilities.rayQuery || impl_->device->capabilities.rayTracingPipeline) ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -7268,6 +7366,9 @@ Result<VkBufferUsageFlags2> nativeBufferUsage(const detail::DeviceImpl& device, 
     if (hasFlag(bufferUsage, BufferUsageBits::MemoryDecompression) && !device.capabilities.memoryDecompression) {
         return makeError(Error::Unsupported);
     }
+    if (hasFlag(bufferUsage, BufferUsageBits::ShaderBindingTable) && !device.capabilities.rayTracingPipeline) {
+        return makeError(Error::Unsupported);
+    }
     VkBufferUsageFlags2 usage = toVkBufferUsage(bufferUsage);
     if (device.bufferDeviceAddressEnabled &&
         (usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -7302,7 +7403,7 @@ Result<> validateAliasBufferDesc(const detail::DeviceImpl& device, const BufferD
         return makeError(Error::InvalidArgument);
     }
     constexpr auto allUsage = allowedUsage | BufferUsageBits::AccelerationStructureBuildInput |
-        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::MemoryDecompression;
+        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::MemoryDecompression | BufferUsageBits::ShaderBindingTable;
     if ((uint32_t(desc.usage) & ~uint32_t(allUsage)) != 0) { return makeError(Error::InvalidArgument); }
     // Acceleration-structure address graphs and decompression have additional
     // retention contracts. Scratch domains are excluded even for Storage usage.
@@ -7408,7 +7509,7 @@ Result<uint64_t> Device::bufferAllocationSize(const BufferDesc& requestedDesc)
     constexpr auto allowedUsage = BufferUsageBits::Vertex | BufferUsageBits::Index | BufferUsageBits::Constant |
         BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination |
         BufferUsageBits::ShaderDeviceAddress | BufferUsageBits::Indirect | BufferUsageBits::AccelerationStructureBuildInput |
-        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::MemoryDecompression;
+        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::MemoryDecompression | BufferUsageBits::ShaderBindingTable;
     constexpr auto allowedQueues = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy;
     if (!impl_ || !desc.size || desc.usage == BufferUsageBits::None ||
         (uint32_t(desc.usage) & ~uint32_t(allowedUsage)) != 0 ||
@@ -8772,6 +8873,151 @@ VkResult createComputePipelineBinary(detail::DeviceImpl& device, const ComputePi
     const VkComputePipelineCreateInfo& suppliedInfo, VkPipelineCreateFlags2CreateInfo flags,
     const detail::ShaderModuleImpl& shader, detail::ComputePipelineImpl& owner);
 } // namespace
+
+Result<> Device::validateRayTracingPipelineDesc(const RayTracingPipelineDesc& desc) const
+{
+    if (!impl_) { return makeError(Error::InvalidArgument); }
+    const std::array stages{&desc.rayGenerationShader, &desc.missShader, &desc.closestHitShader, &desc.anyHitShader};
+    // SPIR-V execution models RayGenerationKHR, MissKHR, ClosestHitKHR, AnyHitKHR.
+    constexpr std::array<uint32_t, 4> executionModels{5313, 5317, 5316, 5315};
+    for (size_t index = 0; index < stages.size(); ++index) {
+        const auto& stage = *stages[index];
+        if (!validShaderStage(stage) || (index != 0 && !stage.specializationConstants.empty())) {
+            return makeError(Error::InvalidArgument);
+        }
+        const auto& code = stage.module->impl_->deviceSpirv;
+        bool entryFound = false;
+        for (size_t offset = 5; offset < code.size();) {
+            const uint32_t count = code[offset] >> 16;
+            if (!count || count > code.size() - offset) { return makeError(Error::InvalidArgument); }
+            if ((code[offset] & 0xffffu) == 15 && count >= 4 && code[offset + 1] == executionModels[index]) {
+                const char* name = reinterpret_cast<const char*>(code.data() + offset + 3);
+                const auto* end = static_cast<const char*>(std::memchr(name, 0, (count - 3) * sizeof(uint32_t)));
+                entryFound |= end && std::string_view(name, static_cast<size_t>(end - name)) == stage.entryPoint;
+            }
+            offset += count;
+        }
+        std::string error;
+        if (!entryFound || !detail::validateShaderSpecializationModule(code, stage.specializationConstants, error)) {
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    if (!impl_->capabilities.rayTracingPipeline || !impl_->functions.vkCreateRayTracingPipelinesKHR ||
+        !impl_->functions.vkGetRayTracingShaderGroupHandlesKHR || !impl_->functions.vkCmdTraceRaysKHR ||
+        (desc.enableInvocationReorder && !impl_->capabilities.rayTracingInvocationReorder) ||
+        (desc.clusterAccelerationStructure && !impl_->capabilities.clusterAccelerationStructure)) {
+        return makeError(Error::Unsupported);
+    }
+    if (!desc.maxRecursionDepth || desc.maxRecursionDepth > impl_->physicalProperties.rayTracingPipeline.maxRayRecursionDepth ||
+        (desc.bindlessUserPushDataSize & 3u) || (!desc.usesBindlessHeap && desc.bindlessUserPushDataSize)) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.usesBindlessHeap && (!impl_->capabilities.bindlessDescriptorHeap ||
+        desc.bindlessUserPushDataSize > impl_->descriptorHeapWriter.maxPushDataSize())) {
+        return makeError(Error::Unsupported);
+    }
+    if (auto layout = vulkan::fixedRayTracingSBTLayout(impl_->physicalProperties.rayTracingPipeline); !layout) {
+        return makeError(layout.error());
+    }
+    return validatePipelineCache(*impl_, desc.pipelineCache != nullptr, desc.pipelineCache ? desc.pipelineCache->impl_.get() : nullptr);
+}
+
+Result<std::unique_ptr<RayTracingPipeline>> Device::createRayTracingPipeline(
+    const RayTracingPipelineDesc& desc, PipelineCreationStats* creationStats)
+{
+    if (creationStats) { *creationStats = {}; }
+    if (auto valid = validateRayTracingPipelineDesc(desc); !valid) { return makeError(valid.error()); }
+    const auto& properties = impl_->physicalProperties.rayTracingPipeline;
+    const auto sbtLayout = *vulkan::fixedRayTracingSBTLayout(properties);
+    auto owner = createPipelineOwner<detail::RayTracingPipelineImpl>(*impl_, desc.usesBindlessHeap);
+    if (!owner) { return makeError(owner.error()); }
+    auto pipeline = std::move(*owner);
+    pipeline->psoHash = detail::rayTracingPipelineStateHash(desc);
+    const std::array shaderStages{&desc.rayGenerationShader, &desc.missShader, &desc.closestHitShader, &desc.anyHitShader};
+    constexpr std::array<VkShaderStageFlagBits, 4> stageBits{
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, VK_SHADER_STAGE_ANY_HIT_BIT_KHR};
+    std::array<VulkanSpecialization, 4> specialization{
+        VulkanSpecialization(desc.rayGenerationShader.specializationConstants), VulkanSpecialization(desc.missShader.specializationConstants),
+        VulkanSpecialization(desc.closestHitShader.specializationConstants), VulkanSpecialization(desc.anyHitShader.specializationConstants)};
+    const auto mappings = defaultHeapMappings(impl_->descriptorHeapWriter);
+    const VkShaderDescriptorSetAndBindingMappingInfoEXT mappingInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
+        .mappingCount = static_cast<uint32_t>(mappings.size()), .pMappings = mappings.data(),
+    };
+    std::array<VkPipelineShaderStageCreateInfo, 4> stages{};
+    for (size_t index = 0; index < stages.size(); ++index) {
+        const auto& stage = *shaderStages[index];
+        stages[index] = VkPipelineShaderStageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .pNext = desc.usesBindlessHeap && stage.module->impl_->hasDescriptorBindings ? &mappingInfo : nullptr,
+            .stage = stageBits[index], .module = stage.module->impl_->module,
+            .pName = stage.entryPoint, .pSpecializationInfo = specialization[index].get(),
+        };
+    }
+    const std::array groups{
+        VkRayTracingShaderGroupCreateInfoKHR{.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+            .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, .generalShader = 0,
+            .closestHitShader = VK_SHADER_UNUSED_KHR, .anyHitShader = VK_SHADER_UNUSED_KHR, .intersectionShader = VK_SHADER_UNUSED_KHR},
+        VkRayTracingShaderGroupCreateInfoKHR{.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+            .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR, .generalShader = 1,
+            .closestHitShader = VK_SHADER_UNUSED_KHR, .anyHitShader = VK_SHADER_UNUSED_KHR, .intersectionShader = VK_SHADER_UNUSED_KHR},
+        VkRayTracingShaderGroupCreateInfoKHR{.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+            .type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR, .generalShader = VK_SHADER_UNUSED_KHR,
+            .closestHitShader = 2, .anyHitShader = 3, .intersectionShader = VK_SHADER_UNUSED_KHR},
+    };
+    VkPipelineCreateFlags2CreateInfo flags{.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
+        .flags = (desc.usesBindlessHeap ? VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT : 0) |
+            (desc.disableOptimization ? VK_PIPELINE_CREATE_2_DISABLE_OPTIMIZATION_BIT : 0)};
+    VkRayTracingPipelineCreateInfoKHR info{.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+        .pNext = &flags, .stageCount = static_cast<uint32_t>(stages.size()), .pStages = stages.data(),
+        .groupCount = static_cast<uint32_t>(groups.size()), .pGroups = groups.data(),
+        .maxPipelineRayRecursionDepth = desc.maxRecursionDepth, .layout = pipeline->layout};
+#ifdef VK_NV_cluster_acceleration_structure
+    VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV cluster{
+        .sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CLUSTER_ACCELERATION_STRUCTURE_CREATE_INFO_NV,
+        .allowClusterAccelerationStructure = VK_TRUE};
+    if (desc.clusterAccelerationStructure) { flags.pNext = &cluster; }
+#endif
+    auto* cache = desc.pipelineCache ? desc.pipelineCache->impl_.get() : nullptr;
+    const VkResult result = createPipelineWithFeedback(info, cache, pipeline->psoHash, "ray_tracing",
+        desc.rayGenerationShader.module->impl_->diagnosticName, desc.rayGenerationShader.entryPoint,
+        pipeline->pipelineCacheHit, pipeline->creationStats, [&](const VkRayTracingPipelineCreateInfoKHR& nativeInfo) {
+            return impl_->functions.vkCreateRayTracingPipelinesKHR(impl_->device, VK_NULL_HANDLE,
+                cache ? cache->pipelineCache : VK_NULL_HANDLE, 1, &nativeInfo, nullptr, &pipeline->pipeline);
+        });
+    if (creationStats) { *creationStats = pipeline->creationStats; }
+    if (result != VK_SUCCESS) { return makeError(resultFromVk(result).error()); }
+
+    // Native PSO timing ends above. Immutable SBT creation and host upload are
+    // deliberately excluded; ownership is retained with the native pipeline.
+    std::vector<uint8_t> handles(size_t(properties.shaderGroupHandleSize) * groups.size());
+    const VkResult handleResult = impl_->functions.vkGetRayTracingShaderGroupHandlesKHR(
+        impl_->device, pipeline->pipeline, 0, static_cast<uint32_t>(groups.size()), handles.size(), handles.data());
+    if (handleResult != VK_SUCCESS) { return makeError(resultFromVk(handleResult).error()); }
+    auto buffer = createBuffer({.size = sbtLayout.allocationSize,
+        .usage = BufferUsageBits::ShaderBindingTable | BufferUsageBits::ShaderDeviceAddress,
+        .memoryLocation = MemoryLocation::HostUpload, .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute});
+    if (!buffer) { return makeError(buffer.error()); }
+    pipeline->shaderBindingTable = std::move(*buffer);
+    auto& sbt = *pipeline->shaderBindingTable;
+    const auto offset = sbtLayout.offset(sbt.deviceAddress());
+    if (!offset) { return makeError(offset.error()); }
+    auto* mapped = static_cast<uint8_t*>(sbt.map());
+    if (!mapped) { return makeError(Error::OutOfMemory); }
+    std::memset(mapped, 0, static_cast<size_t>(sbtLayout.allocationSize));
+    for (size_t index = 0; index < groups.size(); ++index) {
+        std::memcpy(mapped + *offset + index * sbtLayout.stride,
+            handles.data() + index * properties.shaderGroupHandleSize, properties.shaderGroupHandleSize);
+    }
+    const auto flushResult = vmaFlushAllocation(impl_->allocator, sbt.impl_->allocation, 0, VK_WHOLE_SIZE);
+    sbt.unmap();
+    if (flushResult != VK_SUCCESS) { return makeError(resultFromVk(flushResult).error()); }
+    const uint64_t address = sbt.deviceAddress() + *offset;
+    pipeline->rayGenerationRegion = {address, sbtLayout.stride, sbtLayout.stride};
+    pipeline->missRegion = {address + sbtLayout.stride, sbtLayout.stride, sbtLayout.stride};
+    pipeline->hitRegion = {address + 2 * sbtLayout.stride, sbtLayout.stride, sbtLayout.stride};
+    return std::unique_ptr<RayTracingPipeline>(new RayTracingPipeline(std::move(pipeline)));
+}
 
 Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(
     const ComputePipelineDesc& desc, PipelineCreationStats* creationStats)
@@ -10207,12 +10453,17 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
     selectedFeatures.publish(deviceImpl->capabilities, deviceImpl->vulkanCapabilities);
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+    deviceImpl->capabilities.rayTracingInvocationReorderReorderingHint = selectedFeatures.rayTracingInvocationReorder &&
+        deviceImpl->physicalProperties.rayTracingInvocationReorder.rayTracingInvocationReorderReorderingHint ==
+            VK_RAY_TRACING_INVOCATION_REORDER_MODE_REORDER_EXT;
+#endif
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
     deviceImpl->shaderFloat16Enabled = selectedFeatures.shaderFloat16;
     deviceImpl->shaderInt16Enabled = selectedFeatures.shaderInt16;
     deviceImpl->shaderInt64Enabled = selectedFeatures.shaderInt64;
-    deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline;
+    deviceImpl->rayTracingPipelineEnabled = selectedFeatures.rayTracingPipeline;
     deviceImpl->capabilities.subPixelPrecisionBits = selectedProperties.limits.subPixelPrecisionBits;
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
 
@@ -10515,6 +10766,7 @@ struct VulkanNativeAccess {
         if (!commands.impl_) { return; }
         auto& state = *commands.impl_;
         state.currentComputePipeline = VK_NULL_HANDLE;
+        state.currentRayTracingPipeline = nullptr;
         state.currentComputeShaderObject = VK_NULL_HANDLE;
         state.currentComputePipelineLayout = VK_NULL_HANDLE;
         state.currentGraphicsPipelineLayout = VK_NULL_HANDLE;

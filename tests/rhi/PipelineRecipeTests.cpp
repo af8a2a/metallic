@@ -3,6 +3,7 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 
+#include <gtest/gtest.h>
 #include <json.hpp>
 
 #include <chrono>
@@ -285,6 +286,218 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(PipelineRecipeTest);
+
+// CPU recipe fixtures: these exercise serialization/content validation only.
+// Native RT module validity, device rewriting and PSO creation are separate tests.
+std::vector<uint32_t> rayTracingRecipeModule(uint32_t executionModel)
+{
+    std::vector<uint32_t> words{0x07230203u, 0x00010600u, 0, 7, 0,
+        0x00020011u, 1, 0x00020011u, 4479}; // Shader, RayTracingKHR
+    constexpr char extension[] = "SPV_KHR_ray_tracing";
+    constexpr size_t extensionWords = (sizeof(extension) + 3) / 4;
+    words.push_back(static_cast<uint32_t>((extensionWords + 1) << 16) | 10u);
+    for (size_t index = 0; index < extensionWords; ++index) {
+        uint32_t word = 0;
+        for (size_t byte = 0; byte < 4 && index * 4 + byte < sizeof(extension); ++byte) {
+            word |= uint32_t(static_cast<unsigned char>(extension[index * 4 + byte])) << (byte * 8);
+        }
+        words.push_back(word);
+    }
+    const uint32_t body[]{0x0003000eu, 0, 1,
+        0x0005000fu, executionModel, 1, 0x6e69616du, 0,
+        0x00040047u, 3, 1, 1000,
+        0x00020013u, 4, 0x00030021u, 5, 4,
+        0x00040015u, 2, 32, 1, 0x00040032u, 2, 3, 0,
+        0x00050036u, 4, 1, 0, 5, 0x000200f8u, 6, 0x000100fdu, 0x00010038u};
+    words.insert(words.end(), std::begin(body), std::end(body));
+    return words;
+}
+
+TEST(PipelineRecipe, RayTracingV3RoundtripAndStageValidation)
+{
+    using namespace render;
+    const auto directory = std::filesystem::temp_directory_path() /
+        ("metallic-rt-recipe-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(directory);
+    struct RemoveFixture {
+        std::filesystem::path path;
+        ~RemoveFixture() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+    } cleanup{directory};
+    PipelineRecipe recipe;
+    recipe.type = PipelineRecipeType::RayTracing;
+    recipe.cacheGroup = "ray-tracing-cpu-schema";
+    recipe.usesBindlessHeap = true;
+    recipe.bindlessUserPushDataSize = 12;
+    recipe.maxRecursionDepth = 1;
+    recipe.clusterAccelerationStructure = true;
+    recipe.disableOptimization = true;
+    recipe.sourceDevice.capabilities.rayTracingPipeline = true;
+    recipe.sourceDevice.capabilities.rayTracingAccelerationStructure = true;
+    const std::array stages{&PipelineRecipe::rayGenerationShader, &PipelineRecipe::missShader,
+        &PipelineRecipe::closestHitShader, &PipelineRecipe::anyHitShader};
+    const std::array<const char*, 4> names{"ray_generation", "miss", "closest_hit", "any_hit"};
+    const std::array<uint32_t, 4> models{5313, 5317, 5316, 5315};
+    for (size_t index = 0; index < stages.size(); ++index) {
+        auto& shader = recipe.*stages[index];
+        shader.spirv = rayTracingRecipeModule(models[index]);
+        shader.moduleName = std::string("RecipeRT.") + names[index];
+        shader.sourceEntryPoint = std::string(names[index]) + "Main";
+        shader.debugMode = "disabled";
+        shader.descriptorHeapMode = "mapped";
+        shader.optimizationLevel = "O2";
+    }
+    recipe.rayGenerationShader.specializationConstants = {{1000, ShaderSpecializationType::Int32, 4}};
+    // No device is involved: this sentinel verifies exact manifest roundtrip.
+    // Actual native PSO hashes are checked by --recipe-file before creation.
+    recipe.expectedPsoHash = 0x123456789abcdef0ull;
+    std::string log;
+    const auto path = directory / "ray-tracing.recipe.json";
+    ASSERT_TRUE(writePipelineRecipe(recipe, path, log)) << log;
+    const auto manifest = nlohmann::json::parse(std::ifstream(path));
+    ASSERT_EQ(manifest.at("version"), 3);
+    ASSERT_EQ(manifest.at("pipeline_type"), "ray_tracing");
+    auto loaded = readPipelineRecipe(path, log);
+    ASSERT_TRUE(loaded) << log;
+    EXPECT_EQ(loaded->type, PipelineRecipeType::RayTracing);
+    EXPECT_EQ(loaded->expectedPsoHash, recipe.expectedPsoHash);
+    EXPECT_EQ(loaded->cacheGroup, recipe.cacheGroup);
+    EXPECT_TRUE(loaded->sourceDevice.capabilities.rayTracingPipeline);
+    EXPECT_TRUE(loaded->sourceDevice.capabilities.rayTracingAccelerationStructure);
+    for (size_t index = 0; index < stages.size(); ++index) {
+        const auto& original = recipe.*stages[index];
+        const auto& imported = (*loaded).*stages[index];
+        EXPECT_EQ(imported.spirv, original.spirv);
+        EXPECT_EQ(imported.specializationConstants, original.specializationConstants);
+        EXPECT_EQ(imported.moduleName, original.moduleName);
+        EXPECT_EQ(imported.sourceEntryPoint, original.sourceEntryPoint);
+        EXPECT_EQ(imported.entryPoint, original.entryPoint);
+        EXPECT_EQ(imported.optimizationLevel, original.optimizationLevel);
+        EXPECT_NE(imported.inputSpirvHash, 0u);
+    }
+    const auto desc = loaded->rayTracingDesc(nullptr, nullptr, nullptr, nullptr);
+    EXPECT_TRUE(desc.usesBindlessHeap);
+    EXPECT_EQ(desc.bindlessUserPushDataSize, recipe.bindlessUserPushDataSize);
+    EXPECT_EQ(desc.maxRecursionDepth, recipe.maxRecursionDepth);
+    EXPECT_TRUE(desc.clusterAccelerationStructure);
+    EXPECT_TRUE(desc.disableOptimization);
+    EXPECT_EQ(desc.rayGenerationShader.specializationConstants.size(), 1u);
+    EXPECT_TRUE(desc.missShader.specializationConstants.empty());
+    EXPECT_TRUE(desc.closestHitShader.specializationConstants.empty());
+    EXPECT_TRUE(desc.anyHitShader.specializationConstants.empty());
+    EXPECT_EQ(detail::rayTracingPipelineStateHash(desc),
+        detail::rayTracingPipelineStateHash(recipe.rayTracingDesc(nullptr, nullptr, nullptr, nullptr)));
+
+    auto serRecipe = recipe;
+    serRecipe.enableInvocationReorder = true;
+    serRecipe.sourceDevice.capabilities.rayTracingInvocationReorder = true;
+    serRecipe.sourceDevice.capabilities.rayTracingInvocationReorderReorderingHint = true;
+    const auto serPath = directory / "ray-tracing-ser.recipe.json";
+    ASSERT_TRUE(writePipelineRecipe(serRecipe, serPath, log)) << log;
+    const auto serManifest = nlohmann::json::parse(std::ifstream(serPath));
+    EXPECT_EQ(serManifest.at("version"), 4);
+    EXPECT_TRUE(serManifest.at("state").at("enable_invocation_reorder").get<bool>());
+    auto loadedSER = readPipelineRecipe(serPath, log);
+    ASSERT_TRUE(loadedSER) << log;
+    EXPECT_TRUE(loadedSER->enableInvocationReorder);
+    EXPECT_TRUE(loadedSER->rayTracingDesc(nullptr, nullptr, nullptr, nullptr).enableInvocationReorder);
+    EXPECT_TRUE(loadedSER->sourceDevice.capabilities.rayTracingInvocationReorder);
+    EXPECT_TRUE(loadedSER->sourceDevice.capabilities.rayTracingInvocationReorderReorderingHint);
+    serRecipe.sourceDevice.capabilities.rayTracingInvocationReorder = false;
+    EXPECT_FALSE(writePipelineRecipe(serRecipe, directory / "unsupported-ser.recipe.json", log));
+
+    const auto rejects = [&](nlohmann::json changed) {
+        const auto invalidPath = directory / "invalid.recipe.json";
+        { std::ofstream output(invalidPath); output << changed.dump(2); }
+        return !readPipelineRecipe(invalidPath, log);
+    };
+    for (size_t index = 0; index < names.size(); ++index) {
+        SCOPED_TRACE(names[index]);
+        auto changed = manifest; changed["shaders"].erase(names[index]);
+        EXPECT_TRUE(rejects(changed));
+        changed = manifest;
+        changed["shaders"][names[index]] = {{"spirv_file", nullptr}, {"entry_point", "main"}};
+        EXPECT_TRUE(rejects(changed));
+        changed = manifest; changed["shaders"][names[index]]["input_spirv_hash"] = "0000000000000000";
+        EXPECT_TRUE(rejects(changed));
+        auto invalid = recipe; invalid.*stages[index] = {};
+        EXPECT_FALSE(writePipelineRecipe(invalid, directory / "missing-stage.recipe.json", log));
+    }
+    for (const char* stage : {"compute", "vertex", "task", "mesh", "fragment"}) {
+        auto changed = manifest; changed["shaders"][stage] = changed["shaders"]["ray_generation"];
+        EXPECT_TRUE(rejects(changed)) << stage;
+    }
+    for (const char* stage : {"miss", "closest_hit", "any_hit"}) {
+        auto changed = manifest;
+        changed["shaders"][stage]["specialization_constants"] = changed["shaders"]["ray_generation"]["specialization_constants"];
+        EXPECT_TRUE(rejects(changed)) << stage;
+    }
+    auto changed = manifest; changed["version"] = 2;
+    EXPECT_TRUE(rejects(changed));
+    changed = serManifest; changed["version"] = 3;
+    EXPECT_TRUE(rejects(changed));
+    changed = serManifest; changed["state"].erase("enable_invocation_reorder");
+    EXPECT_TRUE(rejects(changed));
+    changed = serManifest; changed["source_device"]["enabled_features"]["ray_tracing_invocation_reorder"] = false;
+    EXPECT_TRUE(rejects(changed));
+    changed = manifest; changed["pipeline_type"] = "compute";
+    EXPECT_TRUE(rejects(changed));
+    changed = manifest; changed["state"]["max_recursion_depth"] = 0;
+    EXPECT_TRUE(rejects(changed));
+    changed = manifest; changed["state"].erase("cluster_acceleration_structure");
+    EXPECT_TRUE(rejects(changed));
+    changed = manifest; changed["state"]["indirect_bindable"] = true;
+    EXPECT_TRUE(rejects(changed));
+    for (const auto stage : {&PipelineRecipe::computeShader, &PipelineRecipe::vertexShader,
+        &PipelineRecipe::taskShader, &PipelineRecipe::meshShader, &PipelineRecipe::fragmentShader}) {
+        auto invalid = recipe; invalid.*stage = recipe.rayGenerationShader;
+        EXPECT_FALSE(writePipelineRecipe(invalid, directory / "mixed-stage.recipe.json", log));
+    }
+    auto invalid = recipe;
+    invalid.type = PipelineRecipeType::Compute;
+    invalid.computeShader = recipe.rayGenerationShader;
+    EXPECT_FALSE(writePipelineRecipe(invalid, directory / "mixed-compute.recipe.json", log));
+}
+
+TEST(PipelineRecipe, RayTracingHashCoversStagesSpecializationAndNativeState)
+{
+    using namespace render;
+    RayTracingPipelineDesc desc;
+    desc.rayGenerationShader.entryPoint = "rayGeneration";
+    desc.missShader.entryPoint = "miss";
+    desc.closestHitShader.entryPoint = "closestHit";
+    desc.anyHitShader.entryPoint = "anyHit";
+    const std::array values{ShaderSpecializationConstant{1001, ShaderSpecializationType::Bool32, 1},
+        ShaderSpecializationConstant{1000, ShaderSpecializationType::Int32, 4}};
+    desc.rayGenerationShader.specializationConstants = values;
+    const auto baseline = detail::rayTracingPipelineStateHash(desc);
+    auto canonical = detail::canonicalShaderSpecializationConstants(values);
+    auto changed = desc; changed.rayGenerationShader.specializationConstants = canonical;
+    EXPECT_EQ(detail::rayTracingPipelineStateHash(changed), baseline);
+    canonical[0].bits = 8;
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    const std::array stages{&RayTracingPipelineDesc::rayGenerationShader, &RayTracingPipelineDesc::missShader,
+        &RayTracingPipelineDesc::closestHitShader, &RayTracingPipelineDesc::anyHitShader};
+    for (const auto stage : stages) {
+        changed = desc; (changed.*stage).entryPoint = "changed";
+        EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+        changed = desc; (changed.*stage).specializationConstants = canonical;
+        EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    }
+    changed = desc; std::swap(changed.missShader, changed.anyHitShader);
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    changed = desc; changed.usesBindlessHeap = true;
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    changed = desc; changed.bindlessUserPushDataSize = 12;
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    changed = desc; changed.maxRecursionDepth = 2;
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    changed = desc; changed.clusterAccelerationStructure = !desc.clusterAccelerationStructure;
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    changed = desc; changed.disableOptimization = true;
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+    changed = desc; changed.enableInvocationReorder = true;
+    EXPECT_NE(detail::rayTracingPipelineStateHash(changed), baseline);
+}
 
 } // namespace
 } // namespace metallic::tests

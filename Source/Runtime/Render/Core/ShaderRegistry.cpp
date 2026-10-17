@@ -91,7 +91,8 @@ void exportRecipe(Device& device, const Desc& desc, uint64_t psoHash, const std:
     // stages and repeated requests publish each manifest once.
     std::lock_guard lock((*state)->mutex);
     std::ostringstream filename;
-    filename << (std::is_same_v<Desc, ComputePipelineDesc> ? "compute-" : "graphics-")
+    filename << (std::is_same_v<Desc, ComputePipelineDesc> ? "compute-" :
+        std::is_same_v<Desc, RayTracingPipelineDesc> ? "ray-tracing-" : "graphics-")
         << std::hex << std::setw(16) << std::setfill('0') << psoHash << ".recipe.json";
     const auto path = std::filesystem::path(directory) / filename.str();
     if ((*state)->exportedRecipes.contains(path.string())) { return; }
@@ -100,7 +101,7 @@ void exportRecipe(Device& device, const Desc& desc, uint64_t psoHash, const std:
     recipe.cacheGroup = group;
     recipe.sourceDevice = recipeDevice(device);
     recipe.usesBindlessHeap = desc.usesBindlessHeap;
-    recipe.indirectBindable = desc.indirectBindable;
+    if constexpr (!std::is_same_v<Desc, RayTracingPipelineDesc>) { recipe.indirectBindable = desc.indirectBindable; }
     recipe.disableOptimization = desc.disableOptimization;
     bool complete;
     if constexpr (std::is_same_v<Desc, ComputePipelineDesc>) {
@@ -108,6 +109,16 @@ void exportRecipe(Device& device, const Desc& desc, uint64_t psoHash, const std:
         recipe.computeBackend = desc.backend;
         recipe.bindlessUserPushDataSize = desc.bindlessUserPushDataSize;
         complete = recipeStage(**state, desc.computeShader, recipe.computeShader);
+    } else if constexpr (std::is_same_v<Desc, RayTracingPipelineDesc>) {
+        recipe.type = PipelineRecipeType::RayTracing;
+        recipe.bindlessUserPushDataSize = desc.bindlessUserPushDataSize;
+        recipe.maxRecursionDepth = desc.maxRecursionDepth;
+        recipe.clusterAccelerationStructure = desc.clusterAccelerationStructure;
+        recipe.enableInvocationReorder = desc.enableInvocationReorder;
+        complete = recipeStage(**state, desc.rayGenerationShader, recipe.rayGenerationShader) &&
+            recipeStage(**state, desc.missShader, recipe.missShader) &&
+            recipeStage(**state, desc.closestHitShader, recipe.closestHitShader) &&
+            recipeStage(**state, desc.anyHitShader, recipe.anyHitShader);
     } else {
         recipe.type = PipelineRecipeType::Graphics;
         recipe.taskRequiredSubgroupSize = desc.taskRequiredSubgroupSize;
@@ -278,6 +289,52 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Devi
         pipeline->acquisitionStats_ = PipelineCreationStats{
             .singleFlightWaitTimeNanoseconds = acquired->singleFlightWaitTimeNanoseconds,
             .nativeObjectReused = true, .computeBackend = desc.backend};
+    }
+    exportRecipe(device, desc, pipeline->psoHash(), group);
+    return pipeline;
+}
+
+Result<std::unique_ptr<RayTracingPipeline>> ShaderRegistry::getRayTracingPipeline(Device& device, const RayTracingPipelineDesc& requestedDesc)
+{
+    auto desc = requestedDesc;
+    std::vector<ShaderSpecializationConstant> specialization;
+    try {
+        specialization = detail::canonicalShaderSpecializationConstants(desc.rayGenerationShader.specializationConstants);
+    } catch (const std::invalid_argument&) {
+        return makeError(Error::InvalidArgument);
+    }
+    desc.rayGenerationShader.specializationConstants = specialization;
+    const char* optimization = std::getenv("METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION");
+    if (optimization && optimization[0] && std::strcmp(optimization, "1") != 0 && std::strcmp(optimization, "0") != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (optimization && std::strcmp(optimization, "1") == 0) { desc.disableOptimization = true; }
+    if (auto valid = device.validateRayTracingPipelineDesc(desc); !valid) { return makeError(valid.error()); }
+    const std::string group = "ray-tracing-" + cacheGroup(desc.rayGenerationShader.module->contentHash());
+    if (desc.pipelineCache) {
+        auto pipeline = device.createRayTracingPipeline(desc);
+        if (pipeline) { exportRecipe(device, desc, (*pipeline)->psoHash(), group); }
+        return pipeline;
+    }
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    const auto key = detail::NativePipelineKey{detail::NativePipelineType::RayTracing, detail::rayTracingPipelineStateHash(desc), specialization};
+    auto acquired = (*state)->nativePipelines.acquire(key, [&]() -> Result<std::shared_ptr<void>> {
+        auto cache = acquireCache(device, group);
+        if (!cache) { return makeError(cache.error()); }
+        auto managed = desc;
+        managed.pipelineCache = *cache;
+        auto pipeline = device.createRayTracingPipeline(managed);
+        if (!pipeline) { return makeError(pipeline.error()); }
+        persist(device, **cache, group);
+        return std::shared_ptr<void>((*pipeline)->impl_);
+    });
+    if (!acquired) { return makeError(acquired.error()); }
+    auto pipeline = std::unique_ptr<RayTracingPipeline>(new RayTracingPipeline(
+        std::static_pointer_cast<detail::RayTracingPipelineImpl>(acquired->owner)));
+    if (acquired->nativeObjectReused) {
+        pipeline->acquisitionStats_ = PipelineCreationStats{
+            .singleFlightWaitTimeNanoseconds = acquired->singleFlightWaitTimeNanoseconds, .nativeObjectReused = true};
     }
     exportRecipe(device, desc, pipeline->psoHash(), group);
     return pipeline;

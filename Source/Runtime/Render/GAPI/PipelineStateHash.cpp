@@ -102,4 +102,25 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
     return hash;
 }
 
+uint64_t rayTracingPipelineStateHash(const RayTracingPipelineDesc& desc)
+{
+    uint64_t hash = hashValue(kFnvOffset, uint32_t{1}); // Fixed three-group RT ABI.
+    hash = hashValue(hash, uint32_t{0x5250534fu});
+    for (const auto* stage : {&desc.rayGenerationShader, &desc.missShader, &desc.closestHitShader, &desc.anyHitShader}) {
+        hash = hashValue(hash, stage->module ? stage->module->contentHash() : 0ull);
+        hash = hashString(hash, stage->entryPoint);
+        const auto bytes = shaderSpecializationBytes(stage->specializationConstants);
+        hash = hashValue(hash, bytes.size());
+        hash = hashBytes(hash, bytes.data(), bytes.size());
+    }
+    hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
+    hash = hashValue(hash, desc.bindlessUserPushDataSize);
+    hash = hashValue(hash, desc.maxRecursionDepth);
+    hash = hashValue(hash, hashBool(desc.clusterAccelerationStructure));
+    hash = hashValue(hash, hashBool(desc.disableOptimization));
+    // Keep existing non-SER recipe/cache identities stable.
+    if (desc.enableInvocationReorder) { hash = hashValue(hash, uint32_t{0x53455231u}); }
+    return hash;
+}
+
 } // namespace metallic::render::detail

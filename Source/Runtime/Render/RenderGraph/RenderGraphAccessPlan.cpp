@@ -93,6 +93,8 @@ SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassK
 {
     const PipelineStageBits shaderStages = kind == RenderGraphPassKind::Compute
         ? PipelineStageBits::ComputeShader
+        : kind == RenderGraphPassKind::RayTracing
+            ? PipelineStageBits::RayTracingShader
         : kind == RenderGraphPassKind::Raster
             ? PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader
             : PipelineStageBits::AllCommands;

@@ -20,7 +20,7 @@ struct SchedulingMetrics {
     uint64_t firstSubmitNs = 0, firstPassSubmitNs = 0, recordingEndNs = 0;
     uint64_t readyDelayNs = 0, maxReadyDelayNs = 0, nativeSubmits = 0;
     uint64_t renderingScopes = 0, renderingNs = 0, maxRenderingNs = 0;
-    uint64_t drawCalls = 0, dispatchCalls = 0, maxScopeDrawCalls = 0, invalidScopes = 0;
+    uint64_t drawCalls = 0, dispatchCalls = 0, traceRaysCalls = 0, maxScopeDrawCalls = 0, invalidScopes = 0;
 
     void mergeRecording(const SchedulingMetrics& other)
     {
@@ -30,13 +30,14 @@ struct SchedulingMetrics {
         maxRenderingNs = std::max(maxRenderingNs, other.maxRenderingNs);
         drawCalls += other.drawCalls;
         dispatchCalls += other.dispatchCalls;
+        traceRaysCalls += other.traceRaysCalls;
         maxScopeDrawCalls = std::max(maxScopeDrawCalls, other.maxScopeDrawCalls);
         invalidScopes += other.invalidScopes;
     }
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SchedulingMetrics, enabled, executeNs, prepareNs, scenePrepareNs, frameWaitNs, serialExecuteNs, workerExecuteNs,
     waitNs, sealNs, submitNs, nativeSubmitNs, firstSubmitNs, firstPassSubmitNs, recordingEndNs, readyDelayNs,
-    maxReadyDelayNs, nativeSubmits, renderingScopes, renderingNs, maxRenderingNs, drawCalls, dispatchCalls,
+    maxReadyDelayNs, nativeSubmits, renderingScopes, renderingNs, maxRenderingNs, drawCalls, dispatchCalls, traceRaysCalls,
     maxScopeDrawCalls, invalidScopes)
 
 class SchedulingCapture {
@@ -66,6 +67,7 @@ public:
             case RHICommandEvent::EndRendering: capture.endRendering(command); break;
             case RHICommandEvent::Draw: capture.draw(command); break;
             case RHICommandEvent::Dispatch: ++capture.metrics->dispatchCalls; break;
+            case RHICommandEvent::TraceRays: ++capture.metrics->traceRaysCalls; break;
             case RHICommandEvent::SubmitBegin:
                 ++capture.metrics->nativeSubmits;
                 capture.submitBegin_ = capture.elapsed();

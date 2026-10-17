@@ -21,7 +21,7 @@ struct NativePipelineCacheStats {
 
 namespace detail {
 
-enum class NativePipelineType : uint8_t { Compute, Graphics };
+enum class NativePipelineType : uint8_t { Compute, Graphics, RayTracing };
 
 struct NativePipelineKey {
     NativePipelineType type;

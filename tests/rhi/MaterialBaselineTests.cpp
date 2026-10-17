@@ -175,6 +175,11 @@ public:
             const auto fixtures = casePath.parent_path();
             std::ifstream input(casePath);
             const auto cases = Json::parse(input);
+            const bool synchronizationValidation = cases.value("synchronizationValidation", false);
+            if (synchronizationValidation && !context.enableValidation) {
+                return fail("Synchronization validation requires a correctness run with validation enabled");
+            }
+            report["synchronizationValidation"] = synchronizationValidation;
             if (artifact) { ShaderArtifactFixture::require(!cases.at("cases").empty(), "Artifact correctness needs at least one case"); }
             const uint32_t frames = cases.at("frames"), warmup = cases.at("warmupFrames"), count = cases.at("timingFrames");
             if (!count || frames <= uint64_t(warmup) + count) {
@@ -290,7 +295,7 @@ public:
                         artifact->inspectScene(document, Json::parse(serializeRenderGraphToString(graph)));
                     artifact->verifyInputsUnchanged();
                 }
-                if (!preview.initialize(context.enableValidation, true, false)) {
+                if (!preview.initialize(context.enableValidation, true, false, synchronizationValidation)) {
                     return fail("Baseline device initialization failed; no baseline produced");
                 }
                 const uint32_t width = spec.at("width"), height = spec.at("height");

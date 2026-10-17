@@ -7,7 +7,7 @@
 
 namespace metallic::render {
 
-enum class PipelineRecipeType : uint8_t { Compute, Graphics };
+enum class PipelineRecipeType : uint8_t { Compute, Graphics, RayTracing };
 
 struct PipelineRecipeShader {
     std::vector<uint32_t> spirv;
@@ -56,6 +56,13 @@ struct PipelineRecipe {
     PipelineRecipeShader taskShader;
     PipelineRecipeShader meshShader;
     PipelineRecipeShader fragmentShader;
+    PipelineRecipeShader rayGenerationShader;
+    PipelineRecipeShader missShader;
+    PipelineRecipeShader closestHitShader;
+    PipelineRecipeShader anyHitShader;
+    uint32_t maxRecursionDepth = 1;
+    bool clusterAccelerationStructure = true;
+    bool enableInvocationReorder = false;
     uint32_t taskRequiredSubgroupSize = 0;
     bool taskRequireFullSubgroups = false;
     std::array<Format, GraphicsPipelineDesc::kMaxColorAttachments> colorFormats{};
@@ -73,6 +80,8 @@ struct PipelineRecipe {
     ComputePipelineDesc computeDesc(ShaderModule* module, PipelineCache* cache = nullptr) const;
     GraphicsPipelineDesc graphicsDesc(ShaderModule* vertex, ShaderModule* task,
         ShaderModule* mesh, ShaderModule* fragment, PipelineCache* cache = nullptr) const;
+    RayTracingPipelineDesc rayTracingDesc(ShaderModule* rayGeneration, ShaderModule* miss,
+        ShaderModule* closestHit, ShaderModule* anyHit, PipelineCache* cache = nullptr) const;
 };
 
 // A manifest and content-addressed sibling .spv files form one portable recipe.

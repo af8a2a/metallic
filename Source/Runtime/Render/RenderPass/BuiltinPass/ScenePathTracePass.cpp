@@ -6,6 +6,8 @@
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/RayTracingKernel.h"
+#include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -295,7 +297,9 @@ private:
                 {PipelineStageBits::Transfer, AccessBits::TransferWrite}, true},
                 {1, ResourceState::TransferSource, {PipelineStageBits::Transfer, AccessBits::TransferRead}, false}}},
             GraphAccessPass{.uses = {{0, ResourceState::ShaderRead,
-                {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}, false}}}};
+                // Device-shared LUTs can subsequently serve either compute or
+                // ray-generation shading, including after a backend switch.
+                {PipelineStageBits::AllCommands, AccessBits::ShaderRead}, false}}}};
         auto plan = buildGraphAccessPlan(resources, accesses);
         if (!plan) { return makeError(plan.error()); }
         auto result = commandBuffer.retainResource(texture.view->retainTexture());
@@ -365,6 +369,11 @@ public:
 
     explicit ScenePathTracePass(bool realtime = false, bool visibilityDeferred = false)
         : realtime_(realtime), visibilityDeferred_(visibilityDeferred) {}
+
+    RenderGraphPassKind kind() const override
+    {
+        return rayPipelineEnabled(properties()) ? RenderGraphPassKind::RayTracing : RenderGraphPassKind::Compute;
+    }
 
     bool supportsFrameOverlap() const override
     {
@@ -481,6 +490,12 @@ public:
             return settings;
         }
         std::vector<RenderGraphRuntimeSetting> settings{
+            runtimeEnumSetting("bsdf", "Path Tracing BSDF", "standard",
+                {{"Standard", "standard"}, {"OpenPBR", "openpbr"}, {"vk_glTF (Experimental)", "vkGltf"},
+                    {"SimpleBSDF (Generic Experiment)", "simple"}}, true, true),
+            runtimeEnumSetting("traversalBackend", "Path Tracing Backend", "rayQuery",
+                {{"Ray Query", "rayQuery"}, {"Ray Pipeline (Experimental, Cache Off)", "rayPipeline"}}, true, true),
+            runtimeBoolSetting("shaderExecutionReorder", "EXT Shader Execution Reordering (glTF Experiments)", false, true),
             runtimeIntSetting(
                 "maxDepth",
                 "Path Depth Limit (Including Fallback)",
@@ -573,7 +588,10 @@ public:
                 false),
         };
         // Sample count selects the one-ray or general OpenPBR guide program.
-        if (useOpenPBRBsdf(properties()) && exportDenoiserGuides(properties())) {
+        for (auto& setting : settings) {
+            if (setting.key == "shaderExecutionReorder") { setting.rebuildGraph = true; }
+        }
+        if ((useOpenPBRBsdf(properties()) || useGltfExperimentBsdf(properties())) && exportDenoiserGuides(properties())) {
             for (auto& setting : settings) {
                 if (setting.key == "samples") { setting.rebuildGraph = true; }
             }
@@ -591,6 +609,11 @@ public:
     }
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
+        if (rayPipelineEnabled(properties()) != compiledRayPipeline_ ||
+            useVkGltfBsdf(properties()) != compiledVkGltf_ ||
+            useSimpleBSDF(properties()) != compiledSimpleBSDF_ ||
+            boolProperty(properties(), "shaderExecutionReorder", false) != compiledInvocationReorder_) { return compile(context, log); }
         if (!validatePrimaryGuideSplit(properties(), log)) { return makeError(Error::Unsupported); }
         if (boolProperty(properties(), "splitPrimaryGuides", false) != compiledSplitPrimaryGuides_) {
             return compile(context, log);
@@ -601,7 +624,7 @@ public:
         }
         if (requestedCache != cacheMode_) { return compile(context, log); }
         const bool singleSampleGuides = !realtime_ && !visibilityDeferred_ &&
-            useOpenPBRBsdf(properties()) && exportDenoiserGuides(properties()) &&
+            (useOpenPBRBsdf(properties()) || useGltfExperimentBsdf(properties())) && exportDenoiserGuides(properties()) &&
             uintProperty(properties(), "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples) == 1;
         if (singleSampleGuides != compiledSingleSampleGuides_) { return compile(context, log); }
         // Resource-only graph rebuilds reuse compiled passes. Deferred compile-time
@@ -618,6 +641,12 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
+        const bool rayPipeline = rayPipelineEnabled(properties());
+        const bool vkGltf = useVkGltfBsdf(properties());
+        const bool simpleBSDF = useSimpleBSDF(properties());
+        const bool gltfExperiment = vkGltf || simpleBSDF;
+        const bool invocationReorder = boolProperty(properties(), "shaderExecutionReorder", false);
         if (!validatePrimaryGuideSplit(properties(), log)) { return makeError(Error::Unsupported); }
         const bool splitPrimaryGuides = boolProperty(properties(), "splitPrimaryGuides", false);
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
@@ -630,6 +659,14 @@ public:
             return makeError(Error::Unsupported);
         }
         device_ = context.device;
+        if (rayPipeline && !context.device->capabilities().rayTracingPipeline) {
+            log += "Ray-pipeline path tracing requires the rayTracingPipeline capability\n";
+            return makeError(Error::Unsupported);
+        }
+        if (invocationReorder && !context.device->capabilities().rayTracingInvocationReorder) {
+            log += "SER requires enabled VK_EXT_ray_tracing_invocation_reorder\n";
+            return makeError(Error::Unsupported);
+        }
         if (!context.preparedScene || !context.preparedScene->snapshot ||
             !context.preparedScene->snapshot->pathTraceResources) {
             log = "Scene resources were not prepared by StreamerSubsystem";
@@ -653,7 +690,7 @@ public:
         }
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
-        const bool singleSampleGuides = !realtime_ && !visibilityDeferred_ && useOpenPBR && exportGuides &&
+        const bool singleSampleGuides = !realtime_ && !visibilityDeferred_ && (useOpenPBR || gltfExperiment) && exportGuides &&
             uintProperty(properties(), "samples", kDefaultPathTraceSamples, 1, kMaxPathTraceSamples) == 1;
         SceneShaderProgram shaderProgram;
         if (visibilityDeferred_) {
@@ -693,6 +730,10 @@ public:
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|singleSampleGuides=" + (singleSampleGuides ? "1" : "0") +
+            "|rayPipeline=" + (rayPipeline ? "1" : "0") +
+            "|vkGltf=" + (vkGltf ? "1" : "0") +
+            "|simpleBSDF=" + (simpleBSDF ? "1" : "0") +
+            "|invocationReorder=" + (invocationReorder ? "1" : "0") +
             "|splitPrimaryGuides=" + (splitPrimaryGuides ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
@@ -723,7 +764,7 @@ public:
                 return manifest.closureFamily == MaterialClosureFamily::OpenPBRCompositeClosure ||
                     (manifest.programId < closurePrograms_.size() && closurePrograms_[manifest.programId].valid());
             });
-        const bool baseReady = closureProgramsReady && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+        const bool baseReady = closureProgramsReady && (rayPipeline ? rayProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) &&
             (!splitPrimaryGuides || primaryGuidesProgram_.valid()) &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
                 [](const ComputeKernel& program) { return program.valid(); }));
@@ -881,6 +922,44 @@ public:
         if (splitPrimaryGuides) {
             baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(ScenePrimarySplitResourceParameters, primaryHits),
                 .kind = ComputeResourceBindingKind::StorageBuffer});
+        }
+        if (rayPipeline) {
+            std::vector<SlangMacroDefine> defines;
+            if (singleSampleGuides) { defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"}); }
+            std::array<ShaderCompileResult, 4> stages;
+            constexpr std::array stageKinds{OpenPBRRayPipelineStage::RayGeneration, OpenPBRRayPipelineStage::Miss,
+                OpenPBRRayPipelineStage::ClosestHit, OpenPBRRayPipelineStage::AnyHit};
+            for (size_t index = 0; index < stages.size(); ++index) {
+                const auto request = simpleBSDF ? makeSimpleBSDFRayPipelineShaderRequest(exportGuides, singleSampleGuides,
+                    invocationReorder, stageKinds[index]) : vkGltf ? makeVkGltfRayPipelineShaderRequest(exportGuides, singleSampleGuides,
+                    invocationReorder, stageKinds[index]) : makeOpenPBRRayPipelineShaderRequest(shaderProgram, shaderOptions, defines, stageKinds[index]);
+                const ShaderRequestView source(request);
+                std::string diagnostics;
+                auto compiled = ShaderRegistry::instance().getShader(source.desc(), diagnostics);
+                if (!diagnostics.empty()) { log += diagnostics + '\n'; }
+                if (!compiled) { return makeError(compiled.error()); }
+                stages[index] = std::move(*compiled);
+            }
+            result = initializeResourceKernel(*context.device, ResourceRayTracingKernelDesc{
+                .rayGenerationSpirv = stages[0].spirv, .missSpirv = stages[1].spirv,
+                .closestHitSpirv = stages[2].spirv, .anyHitSpirv = stages[3].spirv,
+                .pushConstantSize = sizeof(ScenePathTracePush), .bindings = baseBindings,
+                .debugName = "ScenePathTracePass.ray-pipeline",
+                .resourceParameterSize = sizeof(SceneResourceParameters),
+                .specializationConstants = gltfExperiment ? std::span<const ShaderSpecializationConstant>{}
+                    : sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines),
+                .enableInvocationReorder = invocationReorder},
+                rayProgram_, rayEncoder_, log);
+            if (!result) { return result; }
+            compiledShaderKey_ = shaderKey;
+            compiledGlobalView_ = globalView;
+            compiledSingleSampleGuides_ = singleSampleGuides;
+            compiledSplitPrimaryGuides_ = false;
+            compiledRayPipeline_ = true;
+            compiledVkGltf_ = vkGltf;
+            compiledSimpleBSDF_ = simpleBSDF;
+            compiledInvocationReorder_ = invocationReorder;
+            return {};
         }
         auto compilePermutation =
             [&](PathTracePermutation permutation,
@@ -1109,6 +1188,10 @@ public:
         compiledGlobalView_ = globalView;
         compiledSingleSampleGuides_ = singleSampleGuides;
         compiledSplitPrimaryGuides_ = splitPrimaryGuides;
+        compiledRayPipeline_ = false;
+        compiledVkGltf_ = false;
+        compiledSimpleBSDF_ = false;
+        compiledInvocationReorder_ = false;
         compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
         compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
@@ -1119,6 +1202,14 @@ public:
     Result<> execute(RenderGraphExecutionContext& context) override
     {
         std::string splitLog;
+        if (!validateTraversalBackend(context.properties(), splitLog) ||
+            rayPipelineEnabled(context.properties()) != compiledRayPipeline_ ||
+            useVkGltfBsdf(context.properties()) != compiledVkGltf_ ||
+            useSimpleBSDF(context.properties()) != compiledSimpleBSDF_ ||
+            boolProperty(context.properties(), "shaderExecutionReorder", false) != compiledInvocationReorder_) {
+            spdlog::error("ScenePathTracePass traversal backend changed without a valid graph recompile: {}", splitLog);
+            return makeError(Error::InvalidArgument);
+        }
         if (!validatePrimaryGuideSplit(context.properties(), splitLog)) {
             spdlog::error("{}", splitLog);
             return makeError(Error::Unsupported);
@@ -1294,7 +1385,7 @@ public:
         if (!color.valid() ||
             color.view() == nullptr ||
             renderProgram == nullptr ||
-            !renderProgram->valid() ||
+            !(compiledRayPipeline_ ? rayProgram_.valid() : renderProgram->valid()) ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
@@ -1786,6 +1877,14 @@ public:
             }
             const std::array stages{RenderGraphStage{visibilityDeferred_ ? "Deferred shading" : "Path trace shading", resources.uses,
                 [&](CommandBuffer& commands) -> Result<> {
+                    if (compiledRayPipeline_) {
+                        return dispatchResources(rayProgram_, rayEncoder_, RayTracingDispatchDesc{
+                            .commandBuffer = &commands, .bindings = bindings,
+                            .pushData = &push, .pushDataSize = sizeof(push),
+                            .width = context.width(), .height = context.height(), .depth = 1,
+                            .profiler = profiler,
+                        });
+                    }
                     if (materialBins.arguments != nullptr) {
                         // Mixed tiles carry disjoint masks. Permutations share one immutable
                         // descriptor table, avoiding repeated scene texture writes per class.
@@ -1820,7 +1919,7 @@ public:
                         .groupCountZ = 1,
                         .profiler = profiler,
                     });
-                }}};
+                }, compiledRayPipeline_ ? RenderGraphPassKind::RayTracing : RenderGraphPassKind::Compute}};
             result = context.executeStages(stages, resources.buffers, resources.textures);
             if (!result) { return result; }
         }
@@ -2006,6 +2105,34 @@ private:
         return kScenePathTraceCacheModeOff;
     }
 
+    bool rayPipelineEnabled(const RenderGraphProperties& properties) const
+    {
+        return !realtime_ && !visibilityDeferred_ && stringProperty(properties, "traversalBackend", "rayQuery") == "rayPipeline";
+    }
+
+    bool validateTraversalBackend(const RenderGraphProperties& properties, std::string& log) const
+    {
+        const std::string backend = stringProperty(properties, "traversalBackend", "rayQuery");
+        const bool gltfExperiment = useGltfExperimentBsdf(properties);
+        const bool reorder = boolProperty(properties, "shaderExecutionReorder", false);
+        if ((gltfExperiment || reorder) && (backend != "rayPipeline" || (reorder && !gltfExperiment))) {
+            log += "vkGltf/simple BSDF and SER require the experimental rayPipeline backend; SER requires vkGltf or simple\n";
+            return false;
+        }
+        if (gltfExperiment && stringProperty(properties, "debugView", "final") != "final") {
+            log += "vkGltf/simple experiments currently support debugView=final only\n";
+            return false;
+        }
+        if (backend == "rayQuery") { return true; }
+        if (backend != "rayPipeline" || realtime_ || visibilityDeferred_ || (!useOpenPBRBsdf(properties) && !gltfExperiment) ||
+            cacheModeFromProperties(properties) != kScenePathTraceCacheModeOff ||
+            boolProperty(properties, "splitPrimaryGuides", false)) {
+            log += "traversalBackend=rayPipeline requires OpenPBR, vkGltf or simple path tracing, cacheMode=off and splitPrimaryGuides=false\n";
+            return false;
+        }
+        return true;
+    }
+
     void clearPrograms()
     {
         materialExecutableKeys_.clear();
@@ -2022,6 +2149,8 @@ private:
             program.clear();
         }
         primaryGuidesProgram_.clear();
+        rayProgram_.clear();
+        rayEncoder_.clear();
         sharcClearProgram_.clear();
         sharcResolveProgram_.clear();
         materialBinning_.clear();
@@ -2409,6 +2538,21 @@ private:
         return realtime_ || bsdf == "openpbr" || bsdf == "OpenPBR";
     }
 
+    bool useVkGltfBsdf(const RenderGraphProperties& properties) const
+    {
+        return stringProperty(properties, "bsdf", "standard") == "vkGltf";
+    }
+
+    bool useSimpleBSDF(const RenderGraphProperties& properties) const
+    {
+        return stringProperty(properties, "bsdf", "standard") == "simple";
+    }
+
+    bool useGltfExperimentBsdf(const RenderGraphProperties& properties) const
+    {
+        return useVkGltfBsdf(properties) || useSimpleBSDF(properties);
+    }
+
     bool hasValuePrograms() const
     {
         const auto binding = sceneResources_.materialBinding();
@@ -2474,6 +2618,11 @@ private:
         }
         const auto generation = sceneResources_.materialGeneration();
         if (!generation) { log = "Missing material generation"; return false; }
+        if (useGltfExperimentBsdf(properties()) && std::any_of(generation->parameters().begin(), generation->parameters().end(),
+                [](const SceneMaterialData& material) { return uint32_t(material.textureParams[2]) != uint32_t(MaterialProgramId::OpenPBRComposite); })) {
+            log = "vkGltf/simple experiments require builtin surface materials; Fiber and custom closures are unsupported";
+            return false;
+        }
         const auto target = visibilityDeferred_ ? MaterialEvaluationTarget::VisibilityBuffer :
             MaterialEvaluationTarget::RayHitWithFiber;
         return generation->supports(target, log);
@@ -2761,6 +2910,10 @@ private:
     bool compiledProgramBinning_ = true;
     bool compiledSingleSampleGuides_ = false;
     bool compiledSplitPrimaryGuides_ = false;
+    bool compiledRayPipeline_ = false;
+    bool compiledVkGltf_ = false;
+    bool compiledSimpleBSDF_ = false;
+    bool compiledInvocationReorder_ = false;
     bool compiledHalfPrecision_ = true;
     bool compiledExportUpscalerGuides_ = false;
     bool compiledGlobalView_ = false;
@@ -2788,6 +2941,8 @@ private:
     OpenPBRLutResources openPBRLuts_;
     std::array<ComputeKernel, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel primaryGuidesProgram_;
+    RayTracingKernel rayProgram_;
+    ComputeResourceEncoder rayEncoder_;
     ComputeKernel sharcClearProgram_;
     ComputeKernel sharcResolveProgram_;
     std::string compiledShaderKey_;

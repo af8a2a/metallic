@@ -18,6 +18,10 @@ VulkanDeviceProperties queryDeviceProperties(VkPhysicalDevice physicalDevice,
     append(result.maintenance4);
     if (features.shaderObject) { append(result.shaderObject); }
     if (features.rayTracingAccelerationStructure) { append(result.accelerationStructure); }
+    if (features.rayTracingPipeline) { append(result.rayTracingPipeline); }
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+    if (features.rayTracingInvocationReorder) { append(result.rayTracingInvocationReorder); }
+#endif
     if (features.bindlessDescriptorHeap) { append(result.descriptorHeap); }
     if (features.deviceGeneratedCommands) { append(result.generatedCommands); }
 #ifdef VK_NV_cluster_acceleration_structure

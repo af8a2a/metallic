@@ -213,6 +213,7 @@ enum class BufferUsageBits : uint32_t {
     AccelerationStructureStorage = 1u << 8,
     Indirect = 1u << 9,
     MemoryDecompression = 1u << 10,
+    ShaderBindingTable = 1u << 11,
 };
 
 enum class TextureUsageBits : uint32_t {
@@ -479,6 +480,10 @@ struct DeviceDesc {
     bool enableRayTracingAccelerationStructure = false;
     // Ray queries require CLAS; unsupported devices fail creation.
     bool enableRayQuery = false;
+    // Optional independent RT-pipeline path; unavailable devices retain compute support.
+    bool enableRayTracingPipeline = false;
+    // Optional VK_EXT_ray_tracing_invocation_reorder; implies RT-pipeline support.
+    bool enableRayTracingInvocationReorder = false;
     bool enableClusterAccelerationStructure = false;
     bool enablePartitionedAccelerationStructure = false;
     ValidationSink validationSink;
@@ -519,6 +524,10 @@ struct DeviceCapabilities {
     uint32_t maxComputeWorkgroupSubgroups = 0;
     bool rayTracingAccelerationStructure = false;
     bool rayQuery = false;
+    bool rayTracingPipeline = false;
+    bool rayTracingInvocationReorder = false;
+    // Device hint only: extension support does not guarantee actual reordering.
+    bool rayTracingInvocationReorderReorderingHint = false;
     bool clusterAccelerationStructure = false;
     bool partitionedAccelerationStructure = false;
     bool shaderBufferInt64Atomics = false;
@@ -1235,6 +1244,25 @@ struct ComputePipelineDesc {
     const char* nativeBinaryCacheDirectory = nullptr;
 };
 
+// Fixed triangle path: groups 0/1/2 are ray generation / miss / triangle hit.
+// TraceRay uses hit offset 0, hit stride 0 and miss index 0. All four stages
+// are required; only rayGenerationShader supports specialization constants.
+// The pipeline owns its immutable shader binding table.
+struct RayTracingPipelineDesc {
+    ShaderStageDesc rayGenerationShader;
+    ShaderStageDesc missShader;
+    ShaderStageDesc closestHitShader;
+    ShaderStageDesc anyHitShader;
+    bool usesBindlessHeap = false;
+    uint32_t bindlessUserPushDataSize = 0;
+    class PipelineCache* pipelineCache = nullptr;
+    uint32_t maxRecursionDepth = 1;
+    bool clusterAccelerationStructure = true;
+    // Shader uses SPV_EXT_shader_invocation_reorder; requires the enabled device feature.
+    bool enableInvocationReorder = false;
+    bool disableOptimization = false;
+};
+
 struct GraphicsShaderObjectProgramDesc {
     ShaderStageDesc vertexShader;
     ShaderStageDesc fragmentShader;
@@ -1352,6 +1380,7 @@ struct ShaderModuleImpl;
 struct PipelineCacheImpl;
 struct GraphicsPipelineImpl;
 struct ComputePipelineImpl;
+struct RayTracingPipelineImpl;
 struct GraphicsShaderObjectProgramImpl;
 struct BindlessHeapImpl;
 struct VulkanNativeAccess;
@@ -1609,21 +1638,23 @@ struct RasterExecutionState {
     DepthStencilState depthStencil;
     uint32_t colorAttachmentCount = 1;
 };
-enum class ExecutionKind : uint8_t { Compute, Raster };
+enum class ExecutionKind : uint8_t { Compute, Raster, RayTracing };
 
 // Immutable snapshot of already-created executable code. Copies keep native
 // objects alive across reload/retirement; no lookup or PSO creation at bind time.
 class PreparedExecution {
 public:
-    bool valid() const { return compute_ || graphics_ || shaders_; }
-    ExecutionKind kind() const { return compute_ ? ExecutionKind::Compute : ExecutionKind::Raster; }
+    bool valid() const { return compute_ || graphics_ || shaders_ || rayTracing_; }
+    ExecutionKind kind() const { return rayTracing_ ? ExecutionKind::RayTracing : compute_ ? ExecutionKind::Compute : ExecutionKind::Raster; }
     const void* deviceIdentity() const;
 private:
     std::shared_ptr<detail::ComputePipelineImpl> compute_;
     std::shared_ptr<detail::GraphicsPipelineImpl> graphics_;
     std::shared_ptr<detail::GraphicsShaderObjectProgramImpl> shaders_;
+    std::shared_ptr<detail::RayTracingPipelineImpl> rayTracing_;
     RasterExecutionState raster_;
     friend class ComputePipeline;
+    friend class RayTracingPipeline;
     friend class GraphicsPipeline;
     friend class GraphicsShaderObjectProgram;
     friend class CommandBuffer;
@@ -1672,6 +1703,24 @@ class ComputePipeline {
 
 private:
     explicit ComputePipeline(std::shared_ptr<detail::ComputePipelineImpl> impl);
+    std::optional<PipelineCreationStats> acquisitionStats_;
+};
+
+class RayTracingPipeline {
+    METALLIC_RHI_HANDLE(RayTracingPipeline, shared_ptr,
+        friend class Device;
+        friend class ShaderRegistry;
+        friend class CommandBuffer;
+        friend struct detail::DeviceImpl;
+    )
+
+    uint64_t psoHash() const;
+    bool pipelineCacheHit() const;
+    PipelineCreationStats creationStats() const;
+    PreparedExecution execution() const;
+
+private:
+    explicit RayTracingPipeline(std::shared_ptr<detail::RayTracingPipelineImpl> impl);
     std::optional<PipelineCreationStats> acquisitionStats_;
 };
 
@@ -1812,6 +1861,8 @@ class CommandBuffer {
     [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     [[nodiscard]] Result<> drawMeshTasksIndirect(const BufferSlice& arguments);
     [[nodiscard]] Result<> dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+    // Uses the immutable SBT retained by the currently bound RT execution.
+    [[nodiscard]] Result<> traceRays(uint32_t width, uint32_t height, uint32_t depth = 1);
     // Three GPU-written uint32 group counts; offset is 4-byte aligned.
     Result<> dispatchIndirect(const BufferSlice& arguments);
     Result<> buildClusterAccelerationStructureTriangles(
@@ -1940,6 +1991,8 @@ class Device {
         const GraphicsPipelineDesc& desc, PipelineCreationStats* creationStats = nullptr);
     [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> createComputePipeline(
         const ComputePipelineDesc& desc, PipelineCreationStats* creationStats = nullptr);
+    [[nodiscard]] Result<std::unique_ptr<RayTracingPipeline>> createRayTracingPipeline(
+        const RayTracingPipelineDesc& desc, PipelineCreationStats* creationStats = nullptr);
     [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> createGraphicsShaderObjectProgram(const GraphicsShaderObjectProgramDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<BindlessHeap>> createBindlessHeap(const BindlessHeapDesc& desc);
     [[nodiscard]] Result<ClusterAccelerationStructureProperties> queryClusterAccelerationStructureProperties() const;
@@ -1956,6 +2009,7 @@ private:
     // looking up a PSO; matching bytecode never authorizes cross-device stages.
     Result<> validateGraphicsPipelineDesc(const GraphicsPipelineDesc& desc) const;
     Result<> validateComputePipelineDesc(const ComputePipelineDesc& desc) const;
+    Result<> validateRayTracingPipelineDesc(const RayTracingPipelineDesc& desc) const;
     static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
 };
 

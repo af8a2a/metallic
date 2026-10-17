@@ -1253,6 +1253,87 @@ TEST(ShaderRequests, HZBSPDWarmupAppendsRuntimeOrderedDescriptors)
     }
 }
 
+TEST(ShaderRequests, OpenPBRRayPipelineKeepsCanonicalSourceAndNativePolicies)
+{
+    const auto options = standardSceneOptions();
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    const bool specialized = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
+    for (const auto program : {SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+        const auto query = makeSceneShaderRequest(program, options);
+        auto pipeline = makeOpenPBRRayPipelineShaderRequest(program, options);
+        const bool plainSource = query.module == "Features/PathTracing/OpenPBRRayQueryPathTrace";
+        EXPECT_EQ(pipeline.module, plainSource ? "Features/PathTracing/OpenPBRRayPipelinePathTrace" :
+            "Features/PathTracing/OpenPBRRayPipelinePathTraceGuides");
+        EXPECT_EQ(pipeline.entry, plainSource ? "openPbrRayPipelinePathTraceMain" : "openPbrRayPipelinePathTraceGuidesMain");
+        EXPECT_FALSE(contains(catalog, pipeline));
+        EXPECT_TRUE(contains(catalog, query));
+        ASSERT_EQ(pipeline.defines.back(), (std::pair<std::string, std::string>{"METALLIC_PT_RAY_PIPELINE", "1"}));
+        ASSERT_EQ(pipeline.capabilities.back(), "spvRayTracingKHR");
+        pipeline.defines.pop_back();
+        pipeline.capabilities.pop_back();
+        pipeline.module = query.module;
+        pipeline.entry = query.entry;
+        EXPECT_EQ(pipeline, query);
+        const auto constants = sceneShaderSpecializationConstants(program, options);
+        ASSERT_EQ(constants.size(), specialized ? 2u : 0u);
+        if (specialized) {
+            EXPECT_EQ(constants[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 0}));
+            EXPECT_EQ(constants[1], (ShaderSpecializationConstant{1, ShaderSpecializationType::Bool32,
+                program == SceneShaderProgram::OpenPBRPathTraceGuides ? 1u : 0u}));
+        }
+    }
+    const SlangMacroDefine single[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    const auto pipeline = makeOpenPBRRayPipelineShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, single);
+    EXPECT_EQ(pipeline.module, "Features/PathTracing/OpenPBRRayPipelinePathTraceGuides");
+    EXPECT_EQ(pipeline.entry, "openPbrRayPipelinePathTraceGuidesMain");
+    const auto constants = sceneShaderSpecializationConstants(SceneShaderProgram::OpenPBRPathTraceGuides, options, single);
+    ASSERT_EQ(constants.size(), specialized ? 1u : 0u);
+    if (specialized) { EXPECT_EQ(constants[0], (ShaderSpecializationConstant{0, ShaderSpecializationType::Bool32, 0})); }
+}
+
+TEST(ShaderRequests, OpenPBRRayPipelineHitStagesKeepCoverageRequestIdentity)
+{
+    auto options = standardSceneOptions();
+    options.customMaterials = true;
+    options.materialInclude = "generated/materials";
+    const auto query = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options);
+    for (const auto [stage, entry] : {
+            std::pair{OpenPBRRayPipelineStage::Miss, "openPbrRayPipelineMiss"},
+            std::pair{OpenPBRRayPipelineStage::ClosestHit, "openPbrRayPipelineClosestHit"},
+            std::pair{OpenPBRRayPipelineStage::AnyHit, "openPbrRayPipelineAnyHit"}}) {
+        auto request = makeOpenPBRRayPipelineShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, {}, stage);
+        EXPECT_EQ(request.module, "Features/PathTracing/OpenPBRRayPipelineHit");
+        EXPECT_EQ(request.entry, entry);
+        ASSERT_EQ(request.defines.back(), (std::pair<std::string, std::string>{"METALLIC_PT_RAY_PIPELINE", "1"}));
+        ASSERT_EQ(request.capabilities.back(), "spvRayTracingKHR");
+        request.defines.pop_back();
+        request.capabilities.pop_back();
+        request.module = query.module;
+        request.entry = query.entry;
+        EXPECT_EQ(request, query);
+    }
+}
+
+TEST(ShaderRequests, OpenPBRRayPipelineRejectsUnqualifiedOrOverriddenPolicies)
+{
+    const auto options = standardSceneOptions();
+    for (const auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::Deferred, SceneShaderProgram::SharcClear}) {
+        EXPECT_THROW(makeOpenPBRRayPipelineShaderRequest(program, options), std::invalid_argument);
+    }
+    for (const auto define : {SlangMacroDefine{"SHARC_QUERY", "1"}, SlangMacroDefine{"SHARC_UPDATE", "1"},
+            SlangMacroDefine{"SHARC_QUERY", "0"}, SlangMacroDefine{"METALLIC_PT_SINGLE_SAMPLE", "0"},
+            SlangMacroDefine{"METALLIC_PT_RAY_PIPELINE", "1"}, SlangMacroDefine{"METALLIC_PT_SPLIT_PRIMARY", "1"}}) {
+        EXPECT_THROW(makeOpenPBRRayPipelineShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, {&define, 1}),
+            std::invalid_argument);
+    }
+    const SlangMacroDefine single[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    EXPECT_THROW(makeOpenPBRRayPipelineShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, single), std::invalid_argument);
+    const SlangMacroDefine duplicated[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
+    EXPECT_THROW(makeOpenPBRRayPipelineShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, duplicated), std::invalid_argument);
+    EXPECT_THROW(makeOpenPBRRayPipelineShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options, {},
+        static_cast<OpenPBRRayPipelineStage>(99)), std::invalid_argument);
+}
+
 TEST(ShaderRequests, PrimaryGuideSplitIsOptInAndKeepsSingleSourcePolicy)
 {
     const SlangMacroDefine single[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
@@ -2318,4 +2399,82 @@ TEST(ShaderRequests, SingleGuideCacheQueryCatalogRetainsBothRuntimePolicies)
             EXPECT_EQ(policy.size(), shared ? 1u : 0u);
         }
     }
+}
+
+TEST(ShaderRequests, VkGltfExperimentKeepsMaterialAndSERPoliciesIsolated)
+{
+    const auto plain = makeVkGltfRayPipelineShaderRequest(true, true, false);
+    const auto ser = makeVkGltfRayPipelineShaderRequest(true, true, true);
+    EXPECT_EQ(plain.module, "Features/PathTracing/VkGltfRayPipelinePathTrace");
+    EXPECT_NE(plain, ser);
+    EXPECT_TRUE(plain.searchPaths.empty());
+    EXPECT_EQ(std::count(ser.capabilities.begin(), ser.capabilities.end(), "spvShaderInvocationReorderEXT"), 1);
+    EXPECT_EQ(std::count(plain.capabilities.begin(), plain.capabilities.end(), "spvShaderInvocationReorderEXT"), 0);
+    for (const auto& [name, value] : ser.defines) {
+        EXPECT_EQ(name.find("OPENPBR"), std::string::npos);
+        EXPECT_EQ(name.find("SHARC"), std::string::npos);
+        if (name == "METALLIC_CUSTOM_MATERIALS" || name == "METALLIC_HAS_RTXCR") { EXPECT_EQ(value, "0"); }
+    }
+    for (auto stage : {OpenPBRRayPipelineStage::Miss, OpenPBRRayPipelineStage::ClosestHit, OpenPBRRayPipelineStage::AnyHit}) {
+        EXPECT_EQ(makeVkGltfRayPipelineShaderRequest(true, true, true, stage),
+            makeVkGltfRayPipelineShaderRequest(false, false, false, stage));
+    }
+    EXPECT_THROW(makeVkGltfRayPipelineShaderRequest(false, false, false, static_cast<OpenPBRRayPipelineStage>(99)), std::invalid_argument);
+}
+
+TEST(ShaderRequests, SimpleBSDFChangesOnlyRayGenerationSourcePolicy)
+{
+    for (bool guides : {false, true}) {
+        for (bool single : {false, true}) {
+            for (bool reorder : {false, true}) {
+                for (auto stage : {OpenPBRRayPipelineStage::RayGeneration, OpenPBRRayPipelineStage::Miss,
+                        OpenPBRRayPipelineStage::ClosestHit, OpenPBRRayPipelineStage::AnyHit}) {
+                    const bool rayGeneration = stage == OpenPBRRayPipelineStage::RayGeneration;
+                    const auto direct = makeVkGltfRayPipelineShaderRequest(guides, single, reorder, stage);
+                    auto generic = makeSimpleBSDFRayPipelineShaderRequest(guides, single, reorder, stage);
+                    EXPECT_EQ(std::count_if(direct.defines.begin(), direct.defines.end(), [](const auto& define) {
+                        return define.first == "METALLIC_SIMPLE_BSDF";
+                    }), 0);
+                    EXPECT_EQ(std::count_if(generic.defines.begin(), generic.defines.end(), [](const auto& define) {
+                        return define.first == "METALLIC_SIMPLE_BSDF" && define.second == "1";
+                    }), rayGeneration ? 1 : 0);
+                    EXPECT_EQ(std::count(generic.capabilities.begin(), generic.capabilities.end(),
+                        "spvShaderInvocationReorderEXT"), rayGeneration && reorder ? 1 : 0);
+                    EXPECT_EQ(std::count(generic.capabilities.begin(), generic.capabilities.end(), "spvRayTracingKHR"), 1);
+                    EXPECT_TRUE(generic.searchPaths.empty());
+                    // Native specialization remains owned by the pass, which
+                    // supplies an empty span for both experimental models.
+                    for (const auto& [name, value] : generic.defines) {
+                        EXPECT_EQ(name.find("SPECIALIZATION"), std::string::npos);
+                        EXPECT_EQ(name.find("OPENPBR"), std::string::npos);
+                        EXPECT_EQ(name.find("SHARC"), std::string::npos);
+                    }
+                    if (rayGeneration) {
+                        EXPECT_NE(generic, direct);
+                        std::erase_if(generic.defines, [](const auto& define) { return define.first == "METALLIC_SIMPLE_BSDF"; });
+                    }
+                    EXPECT_EQ(generic, direct);
+                }
+            }
+        }
+    }
+    EXPECT_THROW(makeSimpleBSDFRayPipelineShaderRequest(false, false, false,
+        static_cast<OpenPBRRayPipelineStage>(99)), std::invalid_argument);
+}
+
+TEST(ShaderRequests, SimpleBSDFHitStagesRemainSharedAcrossAllPolicies)
+{
+    for (auto stage : {OpenPBRRayPipelineStage::Miss, OpenPBRRayPipelineStage::ClosestHit, OpenPBRRayPipelineStage::AnyHit}) {
+        const auto original = makeVkGltfRayPipelineShaderRequest(false, false, false, stage);
+        EXPECT_EQ(makeSimpleBSDFRayPipelineShaderRequest(true, true, true, stage), original);
+        EXPECT_EQ(makeSimpleBSDFRayPipelineShaderRequest(false, false, false, stage), original);
+    }
+    const auto request = makeSimpleBSDFRayPipelineShaderRequest(true, true, true);
+    const ShaderRequestView view(request);
+    const auto desc = view.desc();
+    EXPECT_EQ(std::count_if(desc.macroDefines.begin(), desc.macroDefines.end(), [](const auto& define) {
+        return std::string_view(define.name) == "METALLIC_SIMPLE_BSDF" && std::string_view(define.value) == "1";
+    }), 1);
+    EXPECT_STREQ(desc.moduleName, "Features/PathTracing/VkGltfRayPipelinePathTrace");
+    EXPECT_STREQ(desc.entryPointName, "vkGltfRayPipelinePathTraceMain");
 }
