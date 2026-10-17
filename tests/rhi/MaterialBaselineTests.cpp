@@ -4,6 +4,8 @@
 #include "Runtime/Render/Environment/AtmosphereResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/RenderView.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Material/MaterialAsset.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
@@ -124,6 +126,8 @@ public:
         using Json = nlohmann::json;
         const char* artifactManifest = std::getenv("METALLIC_SHADER_ARTIFACT_MANIFEST");
         Json report = {{"version", 1}, {"validation", context.enableValidation}, {"cases", Json::array()}};
+        bool nsightTraceRequested = false;
+        ArtifactReportGuard shaderDebugRestore;
         std::shared_ptr<ShaderArtifactFixture> artifact;
         ShaderArtifactOverrideScope artifactScope;
         std::optional<size_t> artifactCaseIndex;
@@ -139,19 +143,20 @@ public:
                 row["input_fnv1a64"] = artifact->inputHash();
             }
         };
+        const auto persistReport = [&]() {
+            syncArtifact();
+            std::ofstream output(context.outputDirectory / "MaterialBaseline.json");
+            output << report.dump(2) << '\n';
+        };
         ArtifactReportGuard artifactReport;
         if (artifactManifest) {
             report["status"] = "failed";
             report["artifact_manifest"] = artifactManifest;
             report["artifact_cases"] = Json::array();
-            artifactReport.persist = [&]() {
-                syncArtifact();
-                std::ofstream output(context.outputDirectory / "MaterialBaseline.json");
-                output << report.dump(2) << '\n';
-            };
+            artifactReport.persist = persistReport;
         }
         const auto fail = [&](const std::string& message) {
-            if (artifactManifest) {
+            if (artifactManifest || nsightTraceRequested) {
                 report["status"] = "failed";
                 report["error"] = message;
                 syncArtifact();
@@ -182,6 +187,28 @@ public:
             report["synchronizationValidation"] = synchronizationValidation;
             if (artifact) { ShaderArtifactFixture::require(!cases.at("cases").empty(), "Artifact correctness needs at least one case"); }
             const uint32_t frames = cases.at("frames"), warmup = cases.at("warmupFrames"), count = cases.at("timingFrames");
+            std::optional<uint32_t> nsightTraceFrame;
+            if (cases.contains("nsightTraceFrame")) {
+                nsightTraceRequested = true;
+                artifactReport.persist = persistReport;
+                report["status"] = "failed";
+                report["diagnostic"] = true;
+                report["performanceEligible"] = false;
+                const auto& frame = cases.at("nsightTraceFrame");
+                if (!frame.is_number_unsigned() || frame.get<uint64_t>() == 0 || frame.get<uint64_t>() >= warmup ||
+                    cases.at("cases").size() != 1 || context.enableValidation || artifact || assetRoundTrip_) {
+                    return fail("Nsight trace requires one ordinary case, validation disabled and 0 < nsightTraceFrame < warmupFrames");
+                }
+                nsightTraceFrame = frame.get<uint32_t>();
+                const auto previous = slangShaderDebugMode();
+                shaderDebugRestore.persist = [previous]() { setSlangShaderDebugMode(previous); };
+                setSlangShaderDebugMode(SlangShaderDebugMode::CaptureSymbols);
+                if (slangShaderOptimizationLevel(SlangShaderDesc{}) != SlangShaderOptimizationLevel::O1) {
+                    return fail("Nsight trace requires optimized O1 capture symbols");
+                }
+                report["shaderDebugMode"] = "capture";
+                report["shaderOptimization"] = "O1";
+            }
             if (!count || frames <= uint64_t(warmup) + count) {
                 return fail("Capture must follow the complete timing window");
             }
@@ -199,6 +226,11 @@ public:
                         return frame >= caseFrames || (frame >= warmup && frame < uint64_t(warmup) + count);
                     })) {
                     return fail("Differential captures must be valid frames outside the timing window");
+                }
+                if (nsightTraceFrame && std::any_of(captureFrames.begin(), captureFrames.end(), [&](uint32_t frame) {
+                        return frame == *nsightTraceFrame || frame == *nsightTraceFrame - 1;
+                    })) {
+                    return fail("Nsight trace frame and preceding frame must not read back images");
                 }
                 const auto id = spec.at("id").get<std::string>();
                 std::unique_ptr<ArtifactRecipeDirectoryScope> caseRecipeScope;
@@ -301,6 +333,12 @@ public:
                 }
                 const uint32_t width = spec.at("width"), height = spec.at("height");
                 Json result = spec;
+                ArtifactReportGuard traceCaseReport;
+                if (nsightTraceFrame) {
+                    result["sdkTrace"] = {{"frame", *nsightTraceFrame}, {"frames", 1},
+                        {"complete", false}, {"artifactVerified", false}};
+                    traceCaseReport.persist = [&]() { report["cases"].push_back(result); };
+                }
                 result["frames"] = Json::array();
                 result["warmup"] = Json::array();
                 result["environmentTransitions"] = Json::array();
@@ -348,7 +386,41 @@ public:
                                 if (active) { preview.setDebugObserver(nullptr); }
                             }
                         } reset{preview, proofFrame};
-                        return preview.render(graph, width, height, spec.at("output").get<std::string>(), capture);
+                        bool traceActive = false;
+                        ArtifactReportGuard traceCleanup;
+                        if (nsightTraceFrame && frame == *nsightTraceFrame) {
+                            traceCleanup.persist = [&]() {
+                                if (!traceActive) { return; }
+                                // A failed render may return before its normal submission drain.
+                                const auto* host = preview.subsystemHost();
+                                if (!host || !host->device() || !host->device()->waitIdle()) {
+                                    result["sdkTrace"]["cleanupDrainFailed"] = true;
+                                }
+                                std::string error;
+                                if (!profiling::endExternalNsightGpuTrace(error)) {
+                                    result["sdkTrace"]["cleanupError"] = error;
+                                }
+                            };
+                            // The preceding non-readback render returned after draining submissions.
+                            std::string error;
+                            if (!profiling::beginExternalNsightGpuTrace(error)) {
+                                result["sdkTrace"]["error"] = error;
+                                throw std::runtime_error(error);
+                            }
+                            traceActive = true;
+                        }
+                        auto rendered = preview.render(graph, width, height, spec.at("output").get<std::string>(), capture);
+                        if (traceActive && rendered) {
+                            // Successful preview.render also drains the captured frame before returning.
+                            std::string error;
+                            if (!profiling::endExternalNsightGpuTrace(error)) {
+                                result["sdkTrace"]["error"] = error;
+                                throw std::runtime_error(error);
+                            }
+                            traceActive = false;
+                            result["sdkTrace"]["complete"] = true;
+                        }
+                        return rendered;
                     }();
                     if (!rendered) { return fail(id + ": " + preview.lastLog()); }
                     if (artifact && (artifactFailureLog(preview.lastLog()) || artifact->rejected() != caseRejectedBefore)) {
@@ -486,6 +558,7 @@ public:
                     row["status"] = "passed";
                     syncArtifact();
                 }
+                traceCaseReport.persist = {};
                 report["cases"].push_back(std::move(result));
                 // Keep completed cases and invalid raw images even if a later case fails.
                 std::ofstream(context.outputDirectory / "MaterialBaseline.json") << report.dump(2) << '\n';
@@ -494,12 +567,12 @@ public:
                 }
             }
             std::ofstream output(context.outputDirectory / "MaterialBaseline.json");
-            if (artifact) { report["status"] = "passed"; syncArtifact(); }
+            if (artifact || nsightTraceRequested) { report["status"] = "passed"; syncArtifact(); }
             output << report.dump(2) << '\n';
             if (!output) { return fail("Baseline report write failed"); }
             return RHITestResult::pass("Capture complete; per-case validHDR is the baseline quality gate");
         } catch (const std::exception& error) {
-            if (!artifactManifest) { throw; }
+            if (!artifactManifest && !nsightTraceRequested) { throw; }
             return fail(std::string("Material baseline artifact/fixture failure: ") + error.what());
         }
     }

@@ -611,7 +611,7 @@ public:
     {
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
-        if (boolProperty(properties(), "experimentalInlineComputeRoot", false) != compiledInlineComputeRoot_) {
+        if (inlineComputeRootEnabled(properties()) != compiledInlineComputeRoot_) {
             return compile(context, log);
         }
         if (rayPipelineEnabled(properties()) != compiledRayPipeline_ ||
@@ -647,7 +647,7 @@ public:
     {
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
-        const bool inlineComputeRoot = boolProperty(properties(), "experimentalInlineComputeRoot", false);
+        const bool inlineComputeRoot = inlineComputeRootEnabled(properties());
         const bool rayPipeline = rayPipelineEnabled(properties());
         const bool vkGltf = useVkGltfBsdf(properties());
         const bool simpleBSDF = useSimpleBSDF(properties());
@@ -1235,8 +1235,8 @@ public:
             spdlog::error("{}", splitLog);
             return makeError(Error::Unsupported);
         }
-        if (boolProperty(context.properties(), "experimentalInlineComputeRoot", false) != compiledInlineComputeRoot_) {
-            spdlog::error("ScenePathTracePass experimentalInlineComputeRoot changed without recompiling the graph");
+        if (inlineComputeRootEnabled(context.properties()) != compiledInlineComputeRoot_) {
+            spdlog::error("ScenePathTracePass inlineComputeRoot changed without recompiling the graph");
             return makeError(Error::InvalidArgument);
         }
         if (errorProgram_.valid()) {
@@ -1962,12 +1962,24 @@ public:
     }
 
 private:
+    bool supportsInlineComputeRoot(const RenderGraphProperties& properties) const
+    {
+        return !realtime_ && !visibilityDeferred_ && !rayPipelineEnabled(properties) &&
+            !boolProperty(properties, "splitPrimaryGuides", false);
+    }
+
+    bool inlineComputeRootEnabled(const RenderGraphProperties& properties) const
+    {
+        // Keep authored graphs from the experiment readable; the supported path
+        // now uses the direct root by default without an opt-in property.
+        return boolProperty(properties, "inlineComputeRoot",
+            boolProperty(properties, "experimentalInlineComputeRoot", supportsInlineComputeRoot(properties)));
+    }
+
     bool validateInlineComputeRoot(const RenderGraphProperties& properties, std::string& log) const
     {
-        if (!boolProperty(properties, "experimentalInlineComputeRoot", false)) { return true; }
-        if (realtime_ || visibilityDeferred_ || rayPipelineEnabled(properties) ||
-            boolProperty(properties, "splitPrimaryGuides", false)) {
-            log += "experimentalInlineComputeRoot requires the unsplit compute path tracer\n";
+        if (inlineComputeRootEnabled(properties) && !supportsInlineComputeRoot(properties)) {
+            log += "inlineComputeRoot requires the unsplit compute path tracer\n";
             return false;
         }
         return true;

@@ -27,7 +27,8 @@ import ValidatePathTraceBackendRendering as rendering
 
 ROOT = Path(__file__).resolve().parents[2]
 ARMS = ("descriptor-root12", "inline-root24")
-PROPERTY = "experimentalInlineComputeRoot"
+PROPERTY = "inlineComputeRoot"
+LEGACY_PROPERTY = "experimentalInlineComputeRoot"
 CASES = ("Opaque1", "Mixed1", "Sky")
 TARGET_MODULES = ("Features/PathTracing/OpenPBRRayQueryPathTrace",
                   "Features/PathTracing/OpenPBRRayQueryPathTraceGuides")
@@ -71,8 +72,9 @@ def prepare_workload(cases_path, output):
         properties = path_trace_node(graph)["properties"]
         require(properties.get("bsdf") == "openpbr" and properties.get("exportDenoiserGuides") is True,
                 "Require production OpenPBR with denoiser guides")
+        properties.pop(LEGACY_PROPERTY, None)
         properties.update(samples=2, maxDepth=12, cacheMode="off", accumulate=False,
-                          outputLinear=True, experimentalInlineComputeRoot=False)
+                          outputLinear=True, inlineComputeRoot=False)
         require(not properties.get("splitPrimaryGuides", False) and
                 properties.get("traversalBackend", "rayquery") in ("rayquery", "ray-query", "rayQuery"),
                 "Inline root is restricted to the ordinary compute path")
@@ -150,12 +152,14 @@ def comparable_report(report, configuration, arm_configuration, arm):
     for case, specification, canonical in zip(result["cases"], arm_configuration["cases"], configuration["cases"]):
         experiment.validate_requested_case(case, specification, arm_configuration)
         properties = path_trace_node(case["resolvedGraph"])["properties"]
-        require(properties.get(PROPERTY) is (arm == ARMS[1]), "Runtime graph used the wrong root arm")
+        # Archived experiments used the old property; keep their verifier usable.
+        property_key = PROPERTY if PROPERTY in properties else LEGACY_PROPERTY
+        require(properties.get(property_key) is (arm == ARMS[1]), "Runtime graph used the wrong root arm")
         require(properties.get("samples") == 2 and properties.get("maxDepth") == 12 and
                 properties.get("cacheMode") == "off" and properties.get("bsdf") == "openpbr" and
                 properties.get("exportDenoiserGuides") is True, "Runtime shading settings changed")
         # Normalize only the declared treatment and its graph filename. Raw reports remain intact.
-        properties[PROPERTY] = False
+        properties[property_key] = False
         case["graph"] = canonical["graph"]
     return result
 

@@ -110,9 +110,12 @@ OpenPBR context 由材质 source 显式提供，guide 写出由独立参数控�
 只需要参数包的一部分时，可用 `getResourceParameterField<Packet, Field>(byteOffset)`
 读取字段或连续小参数组，避免先构造整个 `Packet`。偏移必须采用 scalar wire layout，
 并由共享 CPU 声明的 `offsetof` 断言及 mapped/native GPU readback 验证。
-默认传输下，此接口仍要求完整的 root 和 `Packet` 长度；短包、非 4 字节对齐或越界字段返回零值，
+旧 root buffer 传输下，此接口仍要求完整的 root 和 `Packet` 长度；短包、非 4 字节对齐或越界字段返回零值，
 合法包中的缺失资源 sentinel 原样保留。它不改变参数编码或 descriptor 解析方式。
-路径追踪的默认关闭实验 `experimentalInlineComputeRoot` 使用独立的 24 字节 push ABI，
+普通、未拆分的 compute 路径追踪正式默认启用 `inlineComputeRoot`，使用独立的 24 字节 push ABI；
+显式设为 `false` 可恢复旧传输用于 A/B。Realtime、visibility deferred、ray pipeline 和 primary-guide split
+路径的属性缺省为 `false`，显式设为 `true` 会被拒绝。通用 `Core` 的宏缺省仍为 `0`。
+旧名 `experimentalInlineComputeRoot` 仅作为已保存配置的兼容别名，新名的显式布尔值优先。
 通过全局编译定义 `METALLIC_INLINE_COMPUTE_ROOT=1` 选择 `InlineComputeRoot`；CPU 同时选择
 `ResourceComputeKernelDesc.rootTransport=InlinePush`。资源包长度和字段检查保留，
 仅省去外层 root buffer 及其读取。该模式不能同时导入 `ParameterRoot`。
