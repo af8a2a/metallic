@@ -1,6 +1,7 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeResourceEncoder.h"
+#include "Runtime/Render/Core/ComputeResourceParameters.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 
@@ -14,13 +15,6 @@ namespace metallic::render {
 namespace {
 
 constexpr uint32_t kMaxComputeResourceBindings = 256;
-
-// ParameterRoot payload; matches Core.ComputeResourceParameters in Slang.
-struct ComputeResourceParameters {
-    GPUBufferSpan resources;
-    GPUBufferSpan constants;
-};
-static_assert(sizeof(ComputeResourceParameters) == 24);
 
 const ComputeDispatchBinding* findDispatchBinding(
     const ComputeDispatchDesc& desc,
@@ -65,12 +59,13 @@ struct ComputeResourceEncoder::Impl {
     uint32_t pushConstantSize = 0;
     uint32_t resourceParameterSize = 0;
     uint32_t resourceParameterAlignment = 4;
+    ParameterTransport rootTransport = ParameterTransport::DescriptorBuffer;
     std::string debugName;
 
     bool hasCompatibleBindings(const Impl& other) const
     {
         return device == other.device && pushConstantSize == other.pushConstantSize && bindings == other.bindings &&
-            resourceParameterSize == other.resourceParameterSize;
+            resourceParameterSize == other.resourceParameterSize && rootTransport == other.rootTransport;
     }
 };
 
@@ -78,6 +73,10 @@ Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComput
 {
     clear();
     log.clear();
+    if (desc.rootTransport != ParameterTransport::DescriptorBuffer && desc.rootTransport != ParameterTransport::InlinePush) {
+        log = "ComputeResourceEncoder has an invalid root transport";
+        return makeError(Error::InvalidArgument);
+    }
     if (desc.bindings.size() > kMaxComputeResourceBindings || hasDuplicateBindings(desc.bindings)) {
         log = "Resource encoder requires unique resource members";
         return makeError(Error::InvalidArgument);
@@ -90,6 +89,7 @@ Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComput
     auto impl = std::make_shared<Impl>();
     impl->device = &device;
     impl->pushConstantSize = desc.pushConstantSize;
+    impl->rootTransport = desc.rootTransport;
     impl->debugName = desc.debugName ? desc.debugName : "ComputeResourceEncoder";
     for (const auto& binding : desc.bindings) {
         if (!binding.binding.valid() || binding.binding.kind() != binding.kind || binding.descriptorCount == 0 ||
@@ -163,7 +163,7 @@ Result<> ComputeResourceEncoder::initialize(Device& device, const ResourceComput
 
 ParameterABI ComputeResourceEncoder::parameterABI() const
 {
-    return impl_ ? parameterAbi<ComputeResourceParameters>(impl_->abiId) : ParameterABI{};
+    return impl_ ? parameterAbi<ComputeResourceParameters>(impl_->abiId, impl_->rootTransport) : ParameterABI{};
 }
 
 bool ComputeResourceEncoder::compatible(const ComputeResourceEncoder& other) const
@@ -343,7 +343,7 @@ Result<std::vector<EncodedParameters>> ComputeResourceEncoder::encode(
             parameters.constants.byteOffset += static_cast<uint32_t>(stride * i);
             parameters.constants.count = impl_->pushConstantSize / 4;
         }
-        auto encoded = writer.encode(parameters, impl_->abiId);
+        auto encoded = writer.encode(parameters, impl_->abiId, impl_->rootTransport);
         if (!encoded) { return makeError(encoded.error()); }
         items.push_back(std::move(*encoded));
     }

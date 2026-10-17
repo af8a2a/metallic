@@ -29,6 +29,7 @@ struct MaterialExecutableArtifact
     ComputeResourceEncoder encoder;
     uint32_t resourceParameterSize = 0;
     bool requiresRayQuery = false;
+    ParameterTransport rootTransport = ParameterTransport::DescriptorBuffer;
 };
 
 struct MaterialProgramCompileOptions

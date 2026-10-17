@@ -77,6 +77,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     candidate->resources.assign(layout.bindings.begin(), layout.bindings.end());
     candidate->resourceParameterSize = layout.resourceParameterSize;
     candidate->requiresRayQuery = layout.requiresRayQuery;
+    candidate->rootTransport = layout.rootTransport;
     candidate->constantsSize = layout.pushConstantSize;
     ProgramHash definition, ir, specialization, capabilities;
     definition.add(source.moduleName ? source.moduleName : "");
@@ -92,6 +93,7 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     }
     specialization.add(candidate->constantsSize);
     specialization.add(layout.resourceParameterSize);
+    specialization.add(uint64_t(layout.rootTransport));
     for (const auto& binding : layout.bindings) {
         specialization.add(binding.binding.key()); specialization.add(uint64_t(binding.kind));
         specialization.add(binding.descriptorCount); specialization.add(binding.dataStride);
@@ -126,7 +128,8 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
         if (!cached || cached->shader.spirv != candidate->shader.spirv || cached->resources != candidate->resources ||
             cached->specializationConstants != candidate->specializationConstants ||
             cached->constantsSize != candidate->constantsSize ||
-            cached->resourceParameterSize != candidate->resourceParameterSize || cached->requiresRayQuery != candidate->requiresRayQuery) {
+            cached->resourceParameterSize != candidate->resourceParameterSize || cached->requiresRayQuery != candidate->requiresRayQuery ||
+            cached->rootTransport != candidate->rootTransport) {
             continue;
         }
         program = cached->executable;

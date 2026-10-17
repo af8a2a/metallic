@@ -66,6 +66,8 @@ struct ResourceComputeKernelDesc {
     // Required direct CPU/Slang resource struct. There is no implicit slot layout.
     uint32_t resourceParameterSize = 0;
     std::span<const ShaderSpecializationConstant> specializationConstants;
+    // Selects the two-span root transport; resource/constant payloads remain DR buffers.
+    ParameterTransport rootTransport = ParameterTransport::DescriptorBuffer;
 };
 
 // Uses the same named resource fields and encoded parameter ABI as compute.

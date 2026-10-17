@@ -1,6 +1,10 @@
 #language slang 2026
 implementing Core;
 
+#ifndef METALLIC_INLINE_COMPUTE_ROOT
+#define METALLIC_INLINE_COMPUTE_ROOT 0
+#endif
+
 namespace Metallic
 {
 #include "../../../Source/Runtime/Render/Core/NamedResourceParameters.h"
@@ -19,8 +23,12 @@ public T getResourceParameters<T>()
 public TField getResourceParameterField<TPacket, TField>(uint byteOffset)
 {
     TField zero = {};
+#if METALLIC_INLINE_COMPUTE_ROOT
+    let span = gInlineComputeRoot.resources;
+#else
     if (gParameterRoot.count < (sizeof(ComputeResourceParameters) + 3u) / 4u) { return zero; }
     let span = resolveUniform(gParameterRoot.resource).Load<BufferSpan<uint>>(gParameterRoot.byteOffset);
+#endif
     if (span.count < (sizeof(TPacket) + 3u) / 4u ||
         sizeof(TField) > sizeof(TPacket) || byteOffset > sizeof(TPacket) - sizeof(TField) ||
         (byteOffset & 3u) != 0u) { return zero; }

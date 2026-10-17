@@ -610,6 +610,10 @@ public:
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
+        if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
+        if (boolProperty(properties(), "experimentalInlineComputeRoot", false) != compiledInlineComputeRoot_) {
+            return compile(context, log);
+        }
         if (rayPipelineEnabled(properties()) != compiledRayPipeline_ ||
             useVkGltfBsdf(properties()) != compiledVkGltf_ ||
             useSimpleBSDF(properties()) != compiledSimpleBSDF_ ||
@@ -642,6 +646,8 @@ public:
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
+        if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
+        const bool inlineComputeRoot = boolProperty(properties(), "experimentalInlineComputeRoot", false);
         const bool rayPipeline = rayPipelineEnabled(properties());
         const bool vkGltf = useVkGltfBsdf(properties());
         const bool simpleBSDF = useSimpleBSDF(properties());
@@ -735,6 +741,7 @@ public:
             "|simpleBSDF=" + (simpleBSDF ? "1" : "0") +
             "|invocationReorder=" + (invocationReorder ? "1" : "0") +
             "|splitPrimaryGuides=" + (splitPrimaryGuides ? "1" : "0") +
+            "|inlineComputeRoot=" + (inlineComputeRoot ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
@@ -954,6 +961,7 @@ public:
             compiledShaderKey_ = shaderKey;
             compiledGlobalView_ = globalView;
             compiledSingleSampleGuides_ = singleSampleGuides;
+            compiledInlineComputeRoot_ = false;
             compiledSplitPrimaryGuides_ = false;
             compiledRayPipeline_ = true;
             compiledVkGltf_ = vkGltf;
@@ -972,9 +980,12 @@ public:
             if (singleSampleGuides && permutation != PathTracePermutation::SharcUpdate) {
                 defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
             }
-            const auto request = splitPrimaryGuides
+            auto request = splitPrimaryGuides
                 ? makeOpenPBRPrimarySplitShaderRequest(shaderOptions, defines, false)
                 : makeSceneShaderRequest(shaderProgram, shaderOptions, defines);
+            // Select the transport after the factory has selected the existing
+            // source and specialization constants. Only the root ABI changes.
+            if (inlineComputeRoot) { request.defines.push_back({"METALLIC_INLINE_COMPUTE_ROOT", "1"}); }
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
@@ -984,13 +995,14 @@ public:
                 {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
                     .resourceParameterSize = splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) : sizeof(SceneResourceParameters),
-                    .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines)},
+                    .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines),
+                    .rootTransport = inlineComputeRoot ? ParameterTransport::InlinePush : ParameterTransport::DescriptorBuffer},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
-                if (splitPrimaryGuides) {
+                if (splitPrimaryGuides || inlineComputeRoot) {
                     clearPrograms();
                     compiledShaderKey_.clear();
                     return compiled;
@@ -1187,6 +1199,7 @@ public:
         compiledShaderKey_ = shaderKey;
         compiledGlobalView_ = globalView;
         compiledSingleSampleGuides_ = singleSampleGuides;
+        compiledInlineComputeRoot_ = inlineComputeRoot;
         compiledSplitPrimaryGuides_ = splitPrimaryGuides;
         compiledRayPipeline_ = false;
         compiledVkGltf_ = false;
@@ -1216,6 +1229,14 @@ public:
         }
         if (boolProperty(context.properties(), "splitPrimaryGuides", false) != compiledSplitPrimaryGuides_) {
             spdlog::error("ScenePathTracePass splitPrimaryGuides changed without recompiling the graph");
+            return makeError(Error::InvalidArgument);
+        }
+        if (!validateInlineComputeRoot(context.properties(), splitLog)) {
+            spdlog::error("{}", splitLog);
+            return makeError(Error::Unsupported);
+        }
+        if (boolProperty(context.properties(), "experimentalInlineComputeRoot", false) != compiledInlineComputeRoot_) {
+            spdlog::error("ScenePathTracePass experimentalInlineComputeRoot changed without recompiling the graph");
             return makeError(Error::InvalidArgument);
         }
         if (errorProgram_.valid()) {
@@ -1941,6 +1962,17 @@ public:
     }
 
 private:
+    bool validateInlineComputeRoot(const RenderGraphProperties& properties, std::string& log) const
+    {
+        if (!boolProperty(properties, "experimentalInlineComputeRoot", false)) { return true; }
+        if (realtime_ || visibilityDeferred_ || rayPipelineEnabled(properties) ||
+            boolProperty(properties, "splitPrimaryGuides", false)) {
+            log += "experimentalInlineComputeRoot requires the unsplit compute path tracer\n";
+            return false;
+        }
+        return true;
+    }
+
     bool validatePrimaryGuideSplit(const RenderGraphProperties& properties, std::string& log) const
     {
         if (!boolProperty(properties, "splitPrimaryGuides", false)) { return true; }
@@ -2909,6 +2941,7 @@ private:
     bool compiledMaterialBinning_ = true;
     bool compiledProgramBinning_ = true;
     bool compiledSingleSampleGuides_ = false;
+    bool compiledInlineComputeRoot_ = false;
     bool compiledSplitPrimaryGuides_ = false;
     bool compiledRayPipeline_ = false;
     bool compiledVkGltf_ = false;

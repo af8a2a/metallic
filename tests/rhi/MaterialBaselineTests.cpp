@@ -203,12 +203,13 @@ public:
                 const auto id = spec.at("id").get<std::string>();
                 std::unique_ptr<ArtifactRecipeDirectoryScope> caseRecipeScope;
                 std::filesystem::path caseRecipeDirectory;
-                if (artifact) {
+                const char* recipeDirectory = std::getenv("METALLIC_PIPELINE_RECIPE_DIRECTORY");
+                if (recipeDirectory && *recipeDirectory) {
                     ShaderArtifactFixture::require(!id.empty() && id != "." && id != ".." &&
-                        std::filesystem::path(id).filename() == std::filesystem::path(id), "Artifact case id must be a single path component");
-                    caseRecipeDirectory = std::filesystem::path(std::getenv("METALLIC_PIPELINE_RECIPE_DIRECTORY")) / id;
+                        std::filesystem::path(id).filename() == std::filesystem::path(id), "Recipe case id must be a single path component");
+                    caseRecipeDirectory = std::filesystem::path(recipeDirectory) / id;
                     caseRecipeScope = std::make_unique<ArtifactRecipeDirectoryScope>(caseRecipeDirectory);
-                    report["artifact_cases"].at(*artifactCaseIndex)["recipe_directory"] = caseRecipeDirectory.string();
+                    if (artifact) { report["artifact_cases"].at(*artifactCaseIndex)["recipe_directory"] = caseRecipeDirectory.string(); }
                 }
                 RenderGraph graph;
                 std::string log;

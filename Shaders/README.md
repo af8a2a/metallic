@@ -110,8 +110,13 @@ OpenPBR context 由材质 source 显式提供，guide 写出由独立参数控�
 只需要参数包的一部分时，可用 `getResourceParameterField<Packet, Field>(byteOffset)`
 读取字段或连续小参数组，避免先构造整个 `Packet`。偏移必须采用 scalar wire layout，
 并由共享 CPU 声明的 `offsetof` 断言及 mapped/native GPU readback 验证。
-此接口仍要求完整的 root 和 `Packet` 长度；短包、非 4 字节对齐或越界字段返回零值，
+默认传输下，此接口仍要求完整的 root 和 `Packet` 长度；短包、非 4 字节对齐或越界字段返回零值，
 合法包中的缺失资源 sentinel 原样保留。它不改变参数编码或 descriptor 解析方式。
+路径追踪的默认关闭实验 `experimentalInlineComputeRoot` 使用独立的 24 字节 push ABI，
+通过全局编译定义 `METALLIC_INLINE_COMPUTE_ROOT=1` 选择 `InlineComputeRoot`；CPU 同时选择
+`ResourceComputeKernelDesc.rootTransport=InlinePush`。资源包长度和字段检查保留，
+仅省去外层 root buffer 及其读取。该模式不能同时导入 `ParameterRoot`。
+具体范围和验证方法见 [Inline compute root](../Documentation/InlineComputeRoot.md)。
 Shader 获取使用 [ShaderRegistry](../Documentation/ShaderRegistry.md) 的 `getComputeKernel` /
 `getComputeProgram`，或 `getShader` 后由统一管线入口创建；默认自动复用持久 PSO，Pass 不管理缓存文件。
 DR-first 的新接口使用 `ResourceHandle<T>` / `SamplerHandle`（32 位）和

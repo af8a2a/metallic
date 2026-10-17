@@ -427,6 +427,8 @@ add_executable(MetallicRHITests
     rhi/MaterialValueIRTests.cpp
     rhi/MaterialCoverageTests.cpp
     rhi/ResourceRegistryTests.cpp
+    rhi/ComputeResourceRootTransportTests.cpp
+    rhi/InlineComputeRootShaderTests.cpp
     rhi/ShaderRegistryTests.cpp
     rhi/ShaderSpecializationTests.cpp
     rhi/ShaderRegistryNativePipelineTests.cpp

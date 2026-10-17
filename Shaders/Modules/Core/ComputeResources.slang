@@ -1,19 +1,19 @@
 #language slang 2026
 implementing Core;
 
+#ifndef METALLIC_INLINE_COMPUTE_ROOT
+#define METALLIC_INLINE_COMPUTE_ROOT 0
+#endif
+
 namespace Metallic
 {
-// Shared with ComputeProgram. Only acceleration structures retain a 64-bit
-// address; images, buffers, resource arrays and constants all use DR.
-public struct ComputeResourceParameters
-{
-    public BufferSpan<uint> resources;
-    public BufferSpan<uint> constants;
-};
-
 public ComputeResourceParameters getComputeResources()
 {
+#if METALLIC_INLINE_COMPUTE_ROOT
+    return gInlineComputeRoot;
+#else
     return getParameters<ComputeResourceParameters>();
+#endif
 }
 
 public T getConstants<T>()
