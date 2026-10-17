@@ -175,6 +175,83 @@ removed. Evidence is in `.tmp/spirv-removal-research/Sdk363Retest/`: core
 `20261007-204316-043-pixels`, `20261007-205145-094-printf`, `Payload`, `Sample`
 and `SampleValidated`; `Results.json` and `Report.md` aggregate the results.
 
+### Unified SDK paths retest, 2026-10-17
+
+The user and machine `VULKAN_SDK` / `VK_SDK_PATH` values and registered explicit
+layers now select `D:/Scoop/apps/vulkan/current`, which resolves to SDK 1.4.363.0.
+An independent discovery check left `VK_LAYER_PATH` unset and confirmed actual
+instance and device insertion of that SDK's validation DLL. Its SHA-256 remains
+`2ACC317EF880F73A9862F23A964694C03F531B866FAB6D70F1412FCBAE60CAAC`, identical to
+the previously tested 1.4.363 layer. This corrects default discovery; it does not
+introduce a newer validation implementation. Driver 617.42 and Slang 2026.18.2
+are unchanged. The renderer builds still use SDL's Vulkan header version 358.
+
+The existing Release targets were rebuilt. Direct test processes explicitly
+selected the new SDK tools and layer, and validation-enabled runs record actual
+instance/device layer insertion. The RHI tree's cached
+`METALLIC_TESTBENCH_LAYER_PATH` still pointed to SDK 1.4.350 during these direct
+runs; after GPU testing it was reconfigured to
+`D:/Scoop/apps/vulkan/current/Bin` without changing the compiler or build variant.
+This configuration repair is not an additional CTest or GPU run.
+CMake also discovered the installed SPIRV-Tools headers/libraries that had been
+cached as not found. The tested executables were not rebuilt after this repair;
+its complete cache delta is recorded in `ConfigurationRepair.json`.
+
+Across the 27 planned cases, 25 pass and two alpha-mask assertions fail:
+
+- Core: 13 GPU execution/readback cases and two CPU ABI cases pass, with zero
+  VUIDs. Native DebugPrintf also passes its GPU readback and 1/1 echo records.
+- Material coverage: native and mapped, including their Slab variants, all pass
+  with zero VUIDs. Each case checks 30,752 MASK pixels across raster, ray and
+  shadow results; the four BLEND opacity cases check only the ray probe.
+- Tessellation: both modes pass all 32 displacement and 96 recursive Stream
+  image comparisons and subsequent live-edit checks. Both modes disable VVL for
+  these matrices. Three initial matrices stopped on source-epoch notifications;
+  fresh-process retries completed with no image differences. The removed
+  Resident path is not covered by these current matrices.
+- Native default DLSS-RR PathTracingSample completes normal CPU shader warmup
+  and native PSO prewarm, submits and presents a frame, and exits 0 with zero
+  VUIDs. The previous PSO-loading crash was not reproduced. CPU warmup reports
+  132 source requests, zero existing cache hits and zero failures; native
+  prewarm creates 109 compute pipelines, with all 109 recorded creation results
+  successful. Its 35 graphics source configurations are skipped by the prewarm
+  recipe, so 132 sources must not be described as 132 created pipelines.
+
+The alpha-mask test fails identically in both modes: coverage 11668, dark 4716,
+unexpected colors zero, and no VUIDs. Its scene helper and test are unchanged
+from the earlier comparison, but shared renderer behavior has changed. A static
+candidate explanation is that its rear, untextured, alpha=1 BLEND surface is now
+classified opaque and fills holes in the front MASK; the counts fit that
+geometry. No winner/material-ID capture or isolated control has confirmed this
+explanation. These failures establish neither a native-only regression nor a
+general MASK failure; the separate material coverage checks pass.
+
+The independent create-only payload probe still blocks policy removal. A
+historical raw 128-byte task paired with a synthetic mesh reports false `08758`
+and `08755`; a synthetic raw unified-stride pair also reports false `08760`.
+The callbacks interpret the 128-byte payload as 4294967293 bytes. Pipeline
+creation returns success, and the historical raw task passes the new
+`spirv-val`, but neither result cancels those validation failures. Literal and
+specialization-controlled 128-byte controls are clean; genuine 20,000/32,768-byte
+controls still report the appropriate limits. These probes submit no GPU work.
+The current production `TessPatchPayload` is 12,372 bytes; 128 bytes describes
+only the historical task and synthetic controls.
+
+The literal-stride policy remains required. Native pointer normalization, typed
+uint64 handling and AS resolution remain enabled. Current coverage/CLAS tests
+do not exercise the removed OMM tests or establish that historical OMM problems
+are fixed. This is current-worktree evidence at base HEAD
+`1b8d320c99ea620c0f5dfebbcda3843737f44be6`, with shader and other concurrent
+working-tree changes recorded per attempt; it is not a controlled SDK A/B,
+full-scene/temporal acceptance or a performance comparison.
+
+Local evidence is under `.tmp/native-compatibility/20261017-UnifiedPaths/`.
+`Results.json` and `Report.md` merge the latest result per case while retaining
+the original timeout and source-epoch attempts. `Environment.json` and the
+default-discovery logs identify the selected layer; `Payload/Runs/20261017-144322-106/`
+contains the final eight independent controls. Source/executable hashes and
+the pre-repair CMake cache are retained alongside the logs.
+
 ## Conditions for removal
 
 Do not retire this policy solely because a newer SDK recognizes descriptor heap
@@ -182,7 +259,9 @@ extensions or can evaluate heap stride expressions. Verify all of the following:
 
 1. Unmodified native task and masked mesh compiler output retains
    `OpConstantSizeOfEXT` and unified stride expressions, while graphics-pipeline
-   creation reports neither payload-limit VUID for a fixed 128-byte payload.
+   creation reports no false payload-limit VUID (`08758`, `08755` or `08760`)
+   for fixed literal payloads, including the 128-byte control and current
+   production payload.
 2. Genuine oversized payloads and payload array lengths controlled by
    specialization constants still produce the appropriate errors; do not suppress
    VUIDs or simply remove the module-wide specialization check.

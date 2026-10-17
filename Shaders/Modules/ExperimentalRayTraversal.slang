@@ -15,6 +15,28 @@ using Metallic.Material;
 using Metallic.SceneSurface;
 using Metallic.StreamGeometry;
 
+#if METALLIC_VKGLTF_SER
+// Slang 2026.18.2 exposes the split HitObject API but not the fused EXT
+// operation. Match its built-in TraceRay payload storage until it does.
+[require(spirv, spvShaderInvocationReorderEXT)]
+void traceReorderExecuteExperimental(out HitObject hitObject,
+    RaytracingAccelerationStructure scene, RayDesc ray, inout StreamRayHit payload)
+{
+    [__vulkanRayPayload]
+    static StreamRayHit rayPayload;
+    rayPayload = payload;
+    spirv_asm
+    {
+        OpExtension "SPV_EXT_shader_invocation_reorder";
+        OpCapability ShaderInvocationReorderEXT;
+        OpHitObjectTraceReorderExecuteEXT &hitObject $scene
+            $(RAY_FLAG_FORCE_NON_OPAQUE) $(0xffu) $(0u) $(0u) $(0u)
+            $(ray.Origin) $(ray.TMin) $(ray.Direction) $(ray.TMax) &rayPayload;
+    };
+    payload = rayPayload;
+}
+#endif
+
 // The experimental BSDF never imports the standard or OpenPBR integrator.
 // Coverage and geometry decoding deliberately retain the shared scene ABI.
 public bool alphaAccepts(uint instance, uint cluster, uint triangle, float2 bary,
@@ -46,9 +68,8 @@ public bool traceClosest(Ray ray, float nearDistance, float farDistance,
     let scene = resolveAccelerationStructure(
         getResourceParameterField<SceneResourceParameters, uint64_t>(kSceneSceneOffset));
 #if METALLIC_VKGLTF_SER
-    HitObject hitObject = HitObject::TraceRay(scene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, 0, 0, 0, desc, payload);
-    ReorderThread(hitObject);
-    HitObject::Invoke(hitObject, payload);
+    HitObject hitObject;
+    traceReorderExecuteExperimental(hitObject, scene, desc, payload);
 #else
     TraceRay(scene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, 0, 0, 0, desc, payload);
 #endif

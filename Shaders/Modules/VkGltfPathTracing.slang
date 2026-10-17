@@ -267,15 +267,41 @@ float3 directLighting(PreparedMaterial material, HitInfo hit, float3 view, Mediu
 
 float guideHardwareDepth(float linearDepth, ScenePathTracePush push)
 {
-    // Explicitly fuse the perspective subtraction so TraceRay and HitObject
-    // cannot choose different contraction for this guide calculation.
+    // Slang 2026.18.2 drops source-level precise on SPIR-V. Keep the depth
+    // projection's rounding boundaries explicit across TraceRay/SER codegen.
     float nearPlane = max(push.clipOrtho.x, 0.0001);
     float farPlane = max(push.clipOrtho.y, nearPlane + 0.0001);
     float viewDepth = clamp(linearDepth, nearPlane, farPlane);
-    float range = farPlane - nearPlane;
+    float range = spirv_asm {
+        %range : $$float = OpFSub $farPlane $nearPlane;
+        OpDecorate %range NoContraction;
+        result : $$float = OpCopyObject %range
+    };
     float result;
-    if (push.upProjection.w > 0.5) { result = (viewDepth - nearPlane) / range; }
-    else { result = fma(-(nearPlane * farPlane), 1.0 / (range * viewDepth), farPlane / range); }
+    if (push.upProjection.w > 0.5) {
+        result = spirv_asm {
+            %offset : $$float = OpFSub $viewDepth $nearPlane;
+            %depth : $$float = OpFDiv %offset $range;
+            OpDecorate %offset NoContraction;
+            OpDecorate %depth NoContraction;
+            result : $$float = OpCopyObject %depth
+        };
+    } else {
+        result = spirv_asm {
+            %numerator : $$float = OpFMul $nearPlane $farPlane;
+            %denominator : $$float = OpFMul $range $viewDepth;
+            %inverse : $$float = OpFDiv $(1.0) %denominator;
+            %scale : $$float = OpFDiv $farPlane $range;
+            %negative : $$float = OpFNegate %numerator;
+            OpDecorate %numerator NoContraction;
+            OpDecorate %denominator NoContraction;
+            OpDecorate %inverse NoContraction;
+            OpDecorate %scale NoContraction;
+            %depth : $$float = OpExtInst glsl450 Fma %negative %inverse %scale;
+            OpDecorate %depth NoContraction;
+            result : $$float = OpCopyObject %depth
+        };
+    }
     return saturate(result);
 }
 
@@ -388,6 +414,86 @@ float3 tracePath(uint2 pixel, Ray ray, RayCone cone, ScenePathTracePush push,
     return primarySurface ? applyPrimaryAerialPerspective(radiance, primaryEndpoint, primaryOrigin) : radiance;
 }
 
+#if METALLIC_VKGLTF_GUIDES
+// Experimental guides-only camera consistency: preserve the shared camera basis
+// and projection inputs, but make the final affine/normalization rounding explicit.
+float guidesCameraMultiply(float left, float right)
+{
+    return spirv_asm {
+        %product : $$float = OpFMul $left $right;
+        OpDecorate %product NoContraction;
+        result : $$float = OpCopyObject %product
+    };
+}
+
+float guidesCameraAffineComponent(float forward, float right, float up, float horizontal, float vertical)
+{
+    return spirv_asm {
+        %horizontalPart : $$float = OpFMul $right $horizontal;
+        %base : $$float = OpFAdd $forward %horizontalPart;
+        %verticalPart : $$float = OpFMul $up $vertical;
+        %component : $$float = OpFAdd %base %verticalPart;
+        OpDecorate %horizontalPart NoContraction;
+        OpDecorate %base NoContraction;
+        OpDecorate %verticalPart NoContraction;
+        OpDecorate %component NoContraction;
+        result : $$float = OpCopyObject %component
+    };
+}
+
+float3 guidesCameraNormalize(float3 value, float3 fallback)
+{
+    float lengthSquared = spirv_asm {
+        %xx : $$float = OpFMul $(value.x) $(value.x);
+        %yy : $$float = OpFMul $(value.y) $(value.y);
+        %zz : $$float = OpFMul $(value.z) $(value.z);
+        %xy : $$float = OpFAdd %xx %yy;
+        %sum : $$float = OpFAdd %xy %zz;
+        OpDecorate %xx NoContraction;
+        OpDecorate %yy NoContraction;
+        OpDecorate %zz NoContraction;
+        OpDecorate %xy NoContraction;
+        OpDecorate %sum NoContraction;
+        result : $$float = OpCopyObject %sum
+    };
+    if (lengthSquared > 0.00000001) {
+        float inverseLength = spirv_asm {
+            %inverse : $$float = OpExtInst glsl450 InverseSqrt $lengthSquared;
+            OpDecorate %inverse NoContraction;
+            result : $$float = OpCopyObject %inverse
+        };
+        return float3(guidesCameraMultiply(value.x, inverseLength),
+            guidesCameraMultiply(value.y, inverseLength), guidesCameraMultiply(value.z, inverseLength));
+    }
+    return fallback;
+}
+
+float3 guidesCameraDirectionFromPixel(float2 pixel, ScenePathTracePush push)
+{
+    float aspect = max(push.viewport.x, 0.001);
+    float2 uv = pixel / float2(max(push.width, 1u), max(push.height, 1u));
+    float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+
+    float3 forward = Metallic.ScenePath::safeNormalize(push.center.xyz - push.eye.xyz, float3(0.0, 0.0, -1.0));
+    float3 cameraUp = Metallic.ScenePath::safeNormalize(push.upProjection.xyz, float3(0.0, 1.0, 0.0));
+    float3 right = Metallic.ScenePath::safeNormalize(cross(forward, cameraUp), float3(1.0, 0.0, 0.0));
+    float3 up = Metallic.ScenePath::safeNormalize(cross(right, forward), float3(0.0, 1.0, 0.0));
+
+    if (push.upProjection.w > 0.5) {
+        return forward;
+    }
+
+    float fovRadians = clamp(push.viewport.w, 0.017453292, 3.12413936);
+    float halfHeight = tan(fovRadians * 0.5);
+    float horizontal = guidesCameraMultiply(guidesCameraMultiply(ndc.x, aspect), halfHeight);
+    float vertical = guidesCameraMultiply(ndc.y, halfHeight);
+    float3 direction = float3(
+        guidesCameraAffineComponent(forward.x, right.x, up.x, horizontal, vertical),
+        guidesCameraAffineComponent(forward.y, right.y, up.y, horizontal, vertical),
+        guidesCameraAffineComponent(forward.z, right.z, up.z, horizontal, vertical));
+    return guidesCameraNormalize(direction, forward);
+}
+#endif
 public void dispatchVkGltf(uint2 pixel)
 {
     ScenePathTracePush push = getConstants<ScenePathTracePush>();
@@ -407,7 +513,11 @@ public void dispatchVkGltf(uint2 pixel)
             : (samples == 1u ? float2(0.5) : float2(rand(seed), rand(seed)));
 #endif
         float2 samplePixel = float2(pixel) + jitter;
+#if METALLIC_VKGLTF_GUIDES
+        Ray ray = {rayOriginFromPixel(samplePixel, push), guidesCameraDirectionFromPixel(samplePixel, push)};
+#else
         Ray ray = {rayOriginFromPixel(samplePixel, push), rayDirectionFromPixel(samplePixel, push)};
+#endif
         RayCone cone = primaryRayConeFromPixel(samplePixel, push);
         float specularDistance;
         color += tracePath(pixel, ray, cone, push, seed, sample == 0u, specularDistance);

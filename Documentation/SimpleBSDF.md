@@ -160,3 +160,120 @@ it to remove samples. These pass/dispatch/graph ranges are not editor FPS.
 
 Local evidence and Python charts:
 `build-release/simple-bsdf-gpu-20261017/report-final/report.md`.
+
+## SER correctness repair and qualified GPU rerun on 2026-10-17
+
+This later experiment fixes the cross-SER failures above. The earlier packages
+remain historical diagnostic evidence; they are not overwritten or retroactively
+qualified. The HDR bound remains `2e-5 + 2e-5*abs(reference)` and all seven guides
+still require raw byte equality. No output quantization or tolerance change is used.
+
+Two local arithmetic boundaries needed explicit SPIR-V `NoContraction` in the
+experimental integrator. Hardware-depth projection differed by one ULP despite
+identical same-frame linear depth; controlling the intermediates and final Fma
+removed that discrepancy. A bounded HDR diagnostic then exposed a one-ULP primary
+camera-direction difference before shadow traversal. The final uninstrumented
+candidate fixes the guides-enabled perspective camera's affine combination and
+normalization order, retaining the shared camera basis, projection inputs, fallback
+and threshold. Instrumentation perturbed some results, so the final strict GPU
+matrix, rather than debug logging alone, establishes acceptance.
+
+These camera changes affect the guides-enabled primary rays, not just guide
+writeout. They can change low HDR bits relative to the old shader. RNG, BSDF, NEE,
+ray origins/cones, ordered transparent shadows and the non-guides camera branch
+remain unchanged; shared OpenPBR shaders are untouched. SER uses an explicit fused
+`OpHitObjectTraceReorderExecuteEXT` wrapper because Slang 2026.18.2 lacks that free
+API. Final IR contains two real EXT fused calls when enabled and two `TraceRayKHR`
+calls when disabled. The fused wrapper alone did not fix the numerical failures.
+
+All 32 production-factory SPIR-V stages compile and pass Vulkan 1.4 validation.
+Relative to the depth-only candidate, the camera repair adds 24 NoContraction
+decorations and 804 bytes / 51 instructions per raygen; 24 hit stages are unchanged.
+These IR counts say nothing about native register allocation or spills.
+
+On RTX 5070 Ti / driver 617.42 / Slang 2026.18.2, the repaired candidate passes all
+24 correctness processes and all 48 ordinary timing processes. Every contrast and
+same-arm repeat passes, including temporal/camera-change HDR and byte-exact guides.
+Actual runtime stages match the fresh reference SPIR-V. This is the same three-case
+512x512, depth-12, guides-enabled workload and four-arm Williams timing order
+described above, with 32 warmup and 64 timed frames per independent process.
+
+PathTrace pass medians below are in milliseconds, with four process medians per
+cell. SER changes are the median of four block-paired percentages, not ratios of
+the table's medians. No sample was removed.
+
+| Case | Direct off | Simple off | Direct on | Simple on | Direct SER paired change |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Opaque1 | 10.132 | 10.065 | 32.740 | 32.715 | +222.91% [199.49%, 225.49%] |
+| Mixed4 | 158.853 | 157.112 | 244.134 | 248.117 | +60.76% [53.66%, 96.19%] |
+| ABeautifulGame | 2.600 | 2.573 | 6.957 | 6.999 | +169.93% [165.73%, 176.39%] |
+
+Wrapper paired medians (off/on) are -0.51%/-0.03%, +0.52%/-0.48% and
+-1.14%/+0.43%, respectively. Mixed4 wrapper ranges are -19.69% to +29.11% with
+SER off and -6.00% to +11.27% with SER on; a stable wrapper gain/regression is not
+established. Frame inspection shows sustained fast/slow periods, primarily in the
+shading interval. Whole-device telemetry has no exact frame-time join and cannot
+identify a clock, thermal, cache or background-load cause. The SER regression is
+present in every paired block and remains much larger than the wrapper medians.
+
+### Shadow-SER policy control
+
+A separate temporary candidate keeps the same numerical repair, direct BSDF and
+main-ray fused EXT call, but uses ordinary TraceRay for ordered transparent shadow
+queries. All four SER-off raygens and 24 shared hit stages are byte-identical to the
+repaired full policy. SER-on has one fused call and one TraceRay; its outgoing
+payload variables now have separate locations, so this changes native codegen as
+well as the shadow reordering policy. The payload value structure is unchanged.
+
+The control passes 12 correctness processes across all three scenes, followed by
+eight ordinary Mixed4 timing processes in AB/BA/AB/BA order, with the original
+readback and same-arm gates. Direct SER-off pass medians are 117.374608, 117.765552,
+123.399840 and 116.601792 ms; main-only SER medians are 90.246512, 80.928576,
+81.397328 and 87.435728 ms. Its four within-period changes are -23.11%, -31.28%,
+-34.04% and -25.01% (median -28.15%). This reverses the sign of the earlier
+Mixed4 full-policy SER comparison, strongly implicating shadow reordering and its
+associated codegen as an important contributor to that workload's regression.
+
+The full policy and control were measured in separate periods and used different
+four-arm/two-arm schedules. Their identical SER-off SPIR-V nevertheless produced
+different timing distributions. Do not pair blocks across periods or attribute
+the complete absolute-time difference to shadow SER. The control covers direct
+BSDF timing in one scene and does not qualify a four-arm production replacement;
+the working-tree shader is restored to the full policy that passed 24+48 processes.
+
+The integrator invokes shadow queries inside a loop of up to 16 transparent layers.
+All materials share one hit SBT record, closest-hit writes a small payload, and
+expensive material work runs later in raygen; no explicit material coherence hint
+is supplied. Repeated state save/restore with insufficient coherence benefit is a
+plausible explanation, consistent with the
+[Khronos SER guidance](https://www.khronos.org/blog/boosting-ray-tracing-performance-with-shader-execution-reordering-introducing-vk-ext-ray-tracing-invocation-reorder).
+It is not a measured spill or occupancy diagnosis. A single hit shader/no hint
+does not preclude SER gains, as the same article's vk_gltf_renderer example shows.
+Native RT live-state/coherence counters would be needed to separate those costs.
+
+The result establishes cross-variant equivalence on the declared perspective,
+guides-enabled workloads, not reference-renderer truth or cross-driver bitwise
+identity. Orthographic, no-guides GPU rendering, accumulated output and extreme
+FOV behavior were not separately exercised. GPU pass/shading/graph timestamps
+exclude shader compilation and PSO creation and are not editor FPS measurements.
+
+Local evidence under `build-release/ser-correctness-20261017/`:
+
+- `report-final-v2/report.md`, `PassProcesses.png`, `PassPairedChanges.png`, and
+  `report-tools/PlotReport.py`: verified full matrix and visually reviewed charts.
+- `policy-control-report/report.md`, `PolicyControl.png`, and
+  `control-report-tools/PlotPolicyControl.py`: restricted control and its charts.
+- `candidate-09b-camera-affine/{correctness,performance}` and
+  `candidate-10-main-only-ser/{control-correctness,control-performance}`: sealed raw
+  processes, readbacks, references, identities and original thresholds.
+- `variation-review/VariationReview.md`: all Mixed4 timed frames and telemetry
+  limits; `ProjectionModel/README.md` and `Candidate09bEvidenceNote.md`: numerical
+  investigation, including rejected candidates and instrumentation limitations.
+- `candidate09b-identity-review.json`, `candidate10-identity-review.md`,
+  `PolicySource-restore.json`: IR evidence and exact source restoration.
+
+Use the current maintained `Tools/Perf/SimpleBSDFGPU.py verify <capture>` with the
+restored source to recheck the full matrix. The temporary policy's current-source
+verifier requires its separately preserved overlay; its report records verification
+while that source was active. Do not execute archived evidence scripts blindly or
+weaken the source-identity checks to verify a different installed candidate.
