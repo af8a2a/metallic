@@ -31,9 +31,9 @@ namespace Metallic.ScenePathTracing
 public bool streamRayGeometryChanged()
 {
 #if SHARC_UPDATE
-    StructuredBuffer<uint> changes = resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamChanges);
+    StructuredBuffer<uint> changes = resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameters().rayStreamChanges);
 #else
-    StructuredBuffer<uint> changes = resolveBuffer<StructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamChangesOffset));
+    StructuredBuffer<uint> changes = resolveBuffer<StructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamChangesOffset));
 #endif
     return changes[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD] != 0u;
 }

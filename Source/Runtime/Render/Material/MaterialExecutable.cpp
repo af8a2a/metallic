@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 
 namespace metallic::render {
 
@@ -56,11 +57,45 @@ MaterialProgramCacheStats materialProgramCacheStats()
     return {cacheHits, pipelineBuilds, programCache.size()};
 }
 
+Result<> validateTrustedSceneResourceContract(const SlangShaderDesc& source,
+    const ResourceComputeKernelDesc& layout, std::string& log)
+{
+    const SlangMacroDefine* trusted = nullptr;
+    const SlangMacroDefine* inlineRoot = nullptr;
+    uint32_t inlineRootCount = 0;
+    for (const auto& define : source.macroDefines) {
+        const std::string_view name = define.name ? define.name : "";
+        if (name == "METALLIC_TRUSTED_SCENE_RESOURCE_BYTES") {
+            if (trusted) {
+                log += "Duplicate METALLIC_TRUSTED_SCENE_RESOURCE_BYTES definition\n";
+                return makeError(Error::InvalidArgument);
+            }
+            trusted = &define;
+        } else if (name == "METALLIC_INLINE_COMPUTE_ROOT") {
+            inlineRoot = &define;
+            ++inlineRootCount;
+        }
+    }
+    if (!trusted) { return {}; }
+    const std::string_view value = trusted->value ? trusted->value : "1";
+    if (value == "0") { return {}; }
+    if (value != std::to_string(sizeof(SceneResourceParameters)) ||
+        layout.resourceParameterSize != sizeof(SceneResourceParameters) ||
+        layout.rootTransport != ParameterTransport::InlinePush ||
+        inlineRootCount != 1 || !inlineRoot->value || std::string_view(inlineRoot->value) != "1") {
+        log += "Trusted Scene parameters require the shared SceneResourceParameters byte size and unique METALLIC_INLINE_COMPUTE_ROOT=1 with InlinePush transport\n";
+        return makeError(Error::InvalidArgument);
+    }
+    return {};
+}
+
 Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,
     const ResourceComputeKernelDesc& layout, ComputeKernel& program,
     std::shared_ptr<const MaterialExecutableArtifact>& artifact, std::string& log,
     MaterialProgramCompileOptions options)
 {
+    auto contract = validateTrustedSceneResourceContract(source, layout, log);
+    if (!contract) { return contract; }
     // Always let Slang validate dependencies (its disk cache does the cheap
     // unchanged-source path). Source edits cannot hit a stale executable here.
     auto candidate = std::make_shared<MaterialExecutableArtifact>();
@@ -73,6 +108,14 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     }
     auto compiled = ShaderRegistry::instance().getShader(source, log);
     if (!compiled) { return makeError(compiled.error()); }
+    const bool trustedScene = std::any_of(source.macroDefines.begin(), source.macroDefines.end(), [](const auto& define) {
+        return define.name && std::string_view(define.name) == "METALLIC_TRUSTED_SCENE_RESOURCE_BYTES" &&
+            std::string_view(define.value ? define.value : "1") != "0";
+    });
+    if (trustedScene && compiled->fromArtifactOverride) {
+        log += "Trusted Scene parameters require source-compiled shaders; artifact overrides must use checked Scene getters\n";
+        return makeError(Error::InvalidArgument);
+    }
     candidate->shader = std::move(*compiled);
     candidate->resources.assign(layout.bindings.begin(), layout.bindings.end());
     candidate->resourceParameterSize = layout.resourceParameterSize;

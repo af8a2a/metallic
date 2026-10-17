@@ -121,6 +121,9 @@ struct ShaderCompileResult {
     std::string diagnostics;
     std::vector<std::string> dependencies;
     ShaderCompileMetrics metrics;
+    // ShaderRegistry sets this for actual artifact replacements, regardless of
+    // the provider's input value. Ordinary compiler/disk-cache results are false.
+    bool fromArtifactOverride = false;
 };
 
 struct SlangShaderCacheOptions {

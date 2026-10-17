@@ -32,6 +32,46 @@ direct mode has no external root span to truncate; its CPU encoder must supply t
 complete root. It still returns zero for a short resource packet or invalid field offset.
 Direct transport does not add forced inlining or load the whole scene resource packet.
 
+## Host-guaranteed scene packet
+
+For the supported inline compute path tracer, `trustedSceneParameters` defaults to
+`true`. Explicit `false` selects the checked scene accessors without changing the
+24-byte root ABI. Enabling it with buffered roots, primary-guide splitting, realtime
+lighting, visibility deferred or ray pipelines is rejected.
+
+Path-tracing code uses the fixed-type `getSceneResourceParameters()` and
+`getSceneResourceParameterField<TField>(byteOffset)` entry points. Their default
+compilation delegates to the generic checked APIs. Only the path tracer's material
+request supplies `METALLIC_TRUSTED_SCENE_RESOURCE_BYTES=sizeof(SceneResourceParameters)`.
+The material compiler validates that declaration against the shared CPU structure,
+the encoder's packet size and `InlinePush` transport before compiling or looking up
+an executable. Slang asserts the same shared structure size. The request definition
+participates in shader/material cache identity and pass recompile checks.
+
+The encoder uploads the complete packet and sets its word count; failed allocation,
+encoding or ABI validation prevents dispatch. Trusted scene loads therefore omit the
+packet-length comparison. Field size, offset range and alignment checks remain, as do
+optional-resource sentinels and resource-specific bounds. Generic
+`getResourceParameters<T>` and `getResourceParameterField<TPacket,TField>` remain
+unchanged, including short-packet zero returns inside trusted compilations.
+
+Trust is a source-compiled, fixed-Scene contract, not a property inferred from an
+arbitrary SPIR-V blob. A handled shader artifact override is rejected for a trusted
+material request; override experiments must select `trustedSceneParameters=false`.
+Low-level raw kernel/root construction remains the caller's responsibility and is
+not an alternative production path for bypassing the encoder contract.
+
+`trusted_scene_resource_contract_and_bounds` tests host declaration failures, the
+checked short-packet contract under both compilation modes, valid trusted fields,
+dynamic offsets and sentinels on mapped/native descriptors. The existing root/field
+tests continue to cover legacy short roots and other generic packet types.
+
+For a same-root comparison, use `Tools/Perf/MeasurePathTraceInlineRoot.py run
+--experiment trusted-scene-parameters` with the usual executable, cases and new output
+directory arguments. Both arms explicitly use inline roots; only scene packet trust
+changes. The runner checks actual shader identities, unchanged non-target pipelines,
+HDR/temporal/guide equivalence, and independent-process AB/BA/AB timing pairs.
+
 The CPU encoder validates member layout and bindings, encodes the complete resource
 packet, retains its allocations, and uses the existing `ParameterWriter` inline
 transport. Encoder ABI interning, material executable caching and prepared dispatch
@@ -128,3 +168,45 @@ the reviewed plots and HDR previews are in
 `build/inline-compute-root-20261017/report/Report.html`. The first attempt is retained
 separately because its report parser incorrectly expected an artifact-only status field;
 the renderer passed, and that attempt is excluded from these statistics.
+
+## Trusted scene packet measurement, 2026-10-17
+
+This comparison fixes `inlineComputeRoot=true` in both arms and changes only
+`trustedSceneParameters`. It uses the same RTX 5070 Ti, three 512×512 fixtures,
+2 samples, maxDepth 12, SHARC off, 16 warmup frames and 32 timed frames. A
+validation-on correctness pair precedes three validation-off process pairs in
+AB/BA/AB order. Percentages are paired process-median time changes; ranges are
+the three observed changes, not confidence intervals.
+
+| Fixture | Path trace shading time change | Observed paired range |
+| --- | ---: | ---: |
+| Opaque1 | -19.93% | -24.35% to -19.33% |
+| Mixed1 | -18.55% | -18.78% to -17.49% |
+| Sky | +10.37% | +10.04% to +10.80% |
+
+Sky regresses in all three pairs (about 0.270 ms to 0.298 ms for shading);
+removing the checks is not a universal speedup. Its graph-time change is +3.00%,
+while Opaque1 and Mixed1 graph times change by -19.50% and -18.42%. These are
+fixture GPU intervals, not end-to-end application frame rates. The runner's
+decision remains `inconclusive`: three exploratory pairs, no separate confirmation
+stage or predeclared acceptance threshold. The supported path tracer enables the
+new contract by default; explicit `trustedSceneParameters=false` retains a
+same-root checked comparison and permits artifact override experiments.
+
+All eight rendering processes passed. Every final HDR, eight temporal captures
+and seven guides per case matched numerically with maximum absolute error 0.
+Recipes confirmed identical root size, entry points, specialization and non-target
+pipelines, with different target SPIR-V. Current-input verification passed. Six
+focused validation-enabled RHI tests also passed, including short generic packets
+inside trusted compilations and rejection of artifact overrides. Twenty static
+shader compilations and SPIR-V validations passed; SHARC variants were compiled
+but not rendered in this experiment. Full production scenes remain unmeasured.
+The actual correctness-run target SPIR-V recorded by native PSO recipes has
+477 `resources.count` loads in checked mode and zero in trusted mode; static
+StorageBuffer load counts remain 2177 in both. Both recorded binaries pass
+`spirv-val`. These instruction counts prove elimination of the count reads,
+not elimination of all runtime memory stalls.
+
+Sealed evidence: `build/trusted-scene-parameters-ab-20261017/`. Reviewed plots,
+readback previews and reproduction script:
+`build/trusted-scene-parameters-20261017/report/Report.html`.

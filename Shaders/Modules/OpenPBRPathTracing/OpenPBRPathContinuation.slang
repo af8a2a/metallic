@@ -62,7 +62,7 @@ public float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone
 #if METALLIC_PT_SINGLE_CACHE_QUERY_SPECIALIZATION
     // Select only numeric values and engine handle indices across the policy branch.
     // Materials is mandatory for every accepted production dispatch, including misses.
-    let inactiveMaterials = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
+    let inactiveMaterials = getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
     float3 cacheCameraPosition = float3(0.0, 0.0, 0.0);
     float cacheLogarithmBase = 0.0;
     float cacheSceneScale = 0.0;
@@ -75,7 +75,7 @@ public float3 pathTraceOpenPbrSingleSample(uint2 pixel, Ray ray, RayCone rayCone
     if (kOpenPBRSingleCacheQueryEnabled) {
         // Keep these expressions and their order in sync with makeCacheContext().
         ScenePathTraceCacheParams params = scenePathCacheParams()[0];
-        let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+        let resources = getSceneResourceParameterField<SceneSharcResourceParameters>(kSceneSharcOffset);
         cacheCameraPosition = params.sharcCameraPosition.xyz;
         cacheLogarithmBase = kSHARCGridLogarithmBase;
         cacheSceneScale = max(params.sharcSceneScale, 0.0001);

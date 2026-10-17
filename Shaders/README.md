@@ -120,6 +120,10 @@ OpenPBR context 由材质 source 显式提供，guide 写出由独立参数控�
 `ResourceComputeKernelDesc.rootTransport=InlinePush`。资源包长度和字段检查保留，
 仅省去外层 root buffer 及其读取。该模式不能同时导入 `ParameterRoot`。
 具体范围和验证方法见 [Inline compute root](../Documentation/InlineComputeRoot.md)。
+路径追踪使用固定 Scene 类型的 `getSceneResourceParameters()` /
+`getSceneResourceParameterField<TField>()`。支持的 inline compute 路径默认由 host
+通过 `trustedSceneParameters` 保证完整包，并以编译期大小契约去掉这两个入口的包长度检查；
+其他路径仍委托通用 checked getter。通用接口的短包返回零契约不变，字段合法性检查也保留。
 Shader 获取使用 [ShaderRegistry](../Documentation/ShaderRegistry.md) 的 `getComputeKernel` /
 `getComputeProgram`，或 `getShader` 后由统一管线入口创建；默认自动复用持久 PSO，Pass 不管理缓存文件。
 DR-first 的新接口使用 `ResourceHandle<T>` / `SamplerHandle`（32 位）和

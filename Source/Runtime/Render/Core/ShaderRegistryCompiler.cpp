@@ -255,6 +255,7 @@ Result<ShaderCompileResult> ShaderRegistry::getShaderWithOverride(const SlangSha
             auto valid = validateArtifact(desc, artifact, log);
             if (!valid) { return makeError(valid.error()); }
             auto& shader = artifact.shader;
+            shader.fromArtifactOverride = true;
             shader.metrics = {};
             const uint64_t size = shader.spirv.size() * sizeof(uint32_t);
             shader.metrics.outputSpirvByteSize = size;
@@ -278,7 +279,10 @@ Result<ShaderCompileResult> ShaderRegistry::getShaderWithOverride(const SlangSha
         }
     }
     auto compiled = compileSlangShaderToSpirv(desc, options, log);
-    if (compiled) { registerCompiledShader(desc, *compiled); }
+    if (compiled) {
+        compiled->fromArtifactOverride = false;
+        registerCompiledShader(desc, *compiled);
+    }
     return compiled;
 }
 

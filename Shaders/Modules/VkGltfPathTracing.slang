@@ -324,7 +324,7 @@ void writePrimaryGuides(uint2 pixel, Ray ray, RayCone cone, bool found, HitInfo 
         motion = motionVectorToPrevious(hit.position, float2(pixel) + 0.5, push);
         linearDepth = cameraLinearDepth(hit.position, push);
     }
-    let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+    let resources = getSceneResourceParameterField<SceneGuideResourceParameters>(kSceneGuidesOffset);
     resolveUniform(resources.guideAlbedo)[pixel] = float4(saturate(albedo), 1);
     resolveUniform(resources.guideSpecularAlbedo)[pixel] = float4(specular, 1);
     resolveUniform(resources.guideNormalRoughness)[pixel] = float4(normal, roughness);
@@ -533,7 +533,7 @@ public void dispatchVkGltf(uint2 pixel)
     if (push.enableAccumulation != 0u) { color = accumulate(pixel, color, push); }
 #if METALLIC_VKGLTF_GUIDES
     if (push.outputLinear == 0u) { color *= lightingExposure(sceneLights()); }
-    let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+    let resources = getSceneResourceParameterField<SceneGuideResourceParameters>(kSceneGuidesOffset);
     resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(firstSpecularDistance, 0.0);
 #endif
     sceneOutput()[pixel] = float4(color, 1);

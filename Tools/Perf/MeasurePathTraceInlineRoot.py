@@ -1,4 +1,8 @@
-"""Measure the production 12-byte descriptor root against a 24-byte inline root.
+"""Measure one declared production path-trace shader treatment.
+
+The default compares a 12-byte descriptor root with a 24-byte inline root.
+--experiment trusted-scene-parameters holds the inline root at 24 bytes and
+compares checked scene parameters with trusted scene parameters.
 
 Two validation-on correctness processes precede three validation-off AB/BA/AB
 process pairs. All GPU work is serialized and bounded. HDR/temporal/guide
@@ -29,6 +33,16 @@ ROOT = Path(__file__).resolve().parents[2]
 ARMS = ("descriptor-root12", "inline-root24")
 PROPERTY = "inlineComputeRoot"
 LEGACY_PROPERTY = "experimentalInlineComputeRoot"
+INLINE_EXPERIMENT = "pathtrace-inline-root"
+TRUSTED_EXPERIMENT = "pathtrace-trusted-scene-parameters"
+TREATMENTS = {
+    INLINE_EXPERIMENT: dict(arms=list(ARMS), property=PROPERTY, fixed_properties={},
+        push_bytes={ARMS[0]: 12, ARMS[1]: 24}),
+    TRUSTED_EXPERIMENT: dict(arms=["checked", "trusted"], property="trustedSceneParameters",
+        fixed_properties={PROPERTY: True}, push_bytes={"checked": 24, "trusted": 24},
+        declared_compile_macro=dict(name="METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", values={"checked": 0, "trusted": 384},
+            evidence="Declared host compile contract; recipes validate actual SPIR-V identity, not macro reflection.")),
+}
 CASES = ("Opaque1", "Mixed1", "Sky")
 TARGET_MODULES = ("Features/PathTracing/OpenPBRRayQueryPathTrace",
                   "Features/PathTracing/OpenPBRRayQueryPathTraceGuides")
@@ -37,11 +51,29 @@ POLICY = dict(optimization="O1", postprocess="none", backend="pipeline", disable
 require = dispatch.require
 
 
-def schedule():
+def treatment(experiment_name=INLINE_EXPERIMENT):
+    require(experiment_name in TREATMENTS, "Unknown path-trace treatment")
+    return TREATMENTS[experiment_name]
+
+
+def summary_treatment(summary):
+    name = summary["experiment"]
+    declared = treatment(name)
+    # Existing inline-root evidence predates an explicit treatment record.
+    require(summary.get("treatment", declared if name == INLINE_EXPERIMENT else None) == declared,
+            "Declared treatment differs from the supported experiment")
+    if "fixed_scene_parameter_policy" in summary:
+        require(name == INLINE_EXPERIMENT and summary["fixed_scene_parameter_policy"] == {"trustedSceneParameters": False},
+                "Unexpected fixed scene-parameter policy")
+    return name
+
+
+def schedule(experiment_name=INLINE_EXPERIMENT):
+    arms = treatment(experiment_name)["arms"]
     rows = [dict(phase="correctness", block=0, arm=arm, validation=True,
-                 label=f"correctness-{arm}") for arm in ARMS]
+                 label=f"correctness-{arm}") for arm in arms]
     for block in range(3):
-        for arm in (ARMS if block % 2 == 0 else ARMS[::-1]):
+        for arm in (arms if block % 2 == 0 else arms[::-1]):
             rows.append(dict(phase="timing", block=block, arm=arm, validation=False,
                              label=f"block-{block:02}-{arm}"))
     return rows
@@ -55,8 +87,10 @@ def path_trace_node(graph):
     return nodes[0]
 
 
-def prepare_workload(cases_path, output):
+def prepare_workload(cases_path, output, experiment_name=INLINE_EXPERIMENT):
+    declared = treatment(experiment_name)
     original = experiment.read(cases_path)
+    require("nsightTraceFrame" not in original, "A diagnostic capture cannot be a timing workload")
     configuration = copy.deepcopy(original)
     configuration.update(frames=56, warmupFrames=16, timingFrames=32, cases=[])
     configuration.pop("assetFiles", None)  # Snapshot only the selected cases' actual inputs below.
@@ -74,7 +108,9 @@ def prepare_workload(cases_path, output):
                 "Require production OpenPBR with denoiser guides")
         properties.pop(LEGACY_PROPERTY, None)
         properties.update(samples=2, maxDepth=12, cacheMode="off", accumulate=False,
-                          outputLinear=True, inlineComputeRoot=False)
+                          outputLinear=True, inlineComputeRoot=False, trustedSceneParameters=False)
+        properties.update(declared["fixed_properties"])
+        properties[declared["property"]] = False
         require(not properties.get("splitPrimaryGuides", False) and
                 properties.get("traversalBackend", "rayquery") in ("rayquery", "ray-query", "rayQuery"),
                 "Inline root is restricted to the ordinary compute path")
@@ -120,13 +156,13 @@ def prepare_workload(cases_path, output):
     experiment.save(cases_target, configuration)
     inputs.append(cases_target)
     arms = {}
-    for arm in ARMS:
+    for arm in declared["arms"]:
         directory = output / "workloads" / arm
         directory.mkdir(parents=True)
         arm_config = copy.deepcopy(configuration)
         for case in arm_config["cases"]:
             graph = experiment.read(Path(case["graph"]))
-            path_trace_node(graph)["properties"][PROPERTY] = arm == ARMS[1]
+            path_trace_node(graph)["properties"][declared["property"]] = arm == declared["arms"][1]
             path = directory / f"{case['id']}.json"
             experiment.save(path, graph)
             case["graph"] = str(path)
@@ -138,12 +174,15 @@ def prepare_workload(cases_path, output):
     return configuration, arms, inputs, sorted(set(absent))
 
 
-def comparable_report(report, configuration, arm_configuration, arm):
+def comparable_report(report, configuration, arm_configuration, arm, experiment_name=INLINE_EXPERIMENT):
+    declared = treatment(experiment_name)
+    require(arm in declared["arms"], "Unknown treatment arm")
     # Ordinary MaterialBaseline v1 reports have no status field. Process success,
     # complete cases and valid finite readbacks are their qualification contract.
     require(report.get("version") == 1 and not report.get("error") and
             ("status" not in report or report["status"] == "passed") and
-            type(report.get("validation")) is bool and report.get("synchronizationValidation") is False,
+            type(report.get("validation")) is bool and report.get("synchronizationValidation") is False and
+            not report.get("diagnostic", False) and report.get("performanceEligible", True) is not False,
             "Invalid or failed production render report")
     require([case["id"] for case in report["cases"]] == list(CASES), "Incomplete or reordered cases")
     require(all(case.get("validHDR") is True and case.get("nonfiniteComponents") == 0 for case in report["cases"]),
@@ -153,8 +192,20 @@ def comparable_report(report, configuration, arm_configuration, arm):
         experiment.validate_requested_case(case, specification, arm_configuration)
         properties = path_trace_node(case["resolvedGraph"])["properties"]
         # Archived experiments used the old property; keep their verifier usable.
-        property_key = PROPERTY if PROPERTY in properties else LEGACY_PROPERTY
-        require(properties.get(property_key) is (arm == ARMS[1]), "Runtime graph used the wrong root arm")
+        property_key = declared["property"]
+        if experiment_name == INLINE_EXPERIMENT and PROPERTY not in properties:
+            property_key = LEGACY_PROPERTY
+        require(properties.get(property_key) is (arm == declared["arms"][1]), "Runtime graph used the wrong treatment arm")
+        require(all(properties.get(key) is value for key, value in declared["fixed_properties"].items()),
+                "Runtime graph changed a fixed treatment property")
+        if experiment_name == INLINE_EXPERIMENT:
+            requested_properties = path_trace_node(experiment.read(Path(specification["graph"])))["properties"]
+            # New root-only experiments pin parameter checking on both arms.
+            # Historical reports and graphs predate this independent treatment.
+            if "trustedSceneParameters" in requested_properties or "trustedSceneParameters" in properties:
+                require(requested_properties.get("trustedSceneParameters") is False and
+                        properties.get("trustedSceneParameters") is False,
+                        "Root-only comparison changed scene-parameter checking")
         require(properties.get("samples") == 2 and properties.get("maxDepth") == 12 and
                 properties.get("cacheMode") == "off" and properties.get("bsdf") == "openpbr" and
                 properties.get("exportDenoiserGuides") is True, "Runtime shading settings changed")
@@ -164,7 +215,9 @@ def comparable_report(report, configuration, arm_configuration, arm):
     return result
 
 
-def runtime_identity(directory, configuration, arm, validation):
+def runtime_identity(directory, configuration, arm, validation, experiment_name=INLINE_EXPERIMENT):
+    declared = treatment(experiment_name)
+    require(arm in declared["arms"], "Unknown treatment arm")
     text = "\n".join((directory / f"{stream}.log").read_text(encoding="utf-8", errors="replace")
                      for stream in ("stdout", "stderr")).lower()
     require(not any(marker in text for marker in ("initial material compilation failed", "displaying the error material",
@@ -201,7 +254,7 @@ def runtime_identity(directory, configuration, arm, validation):
             if is_target:
                 state = recipe["state"]
                 require(recipe["pipeline_type"] == "compute" and len(stages) == 1 and stages[0]["stage"] == "compute" and
-                        state["bindless_user_push_data_size"] == (24 if arm == ARMS[1] else 12) and
+                        state["bindless_user_push_data_size"] == declared["push_bytes"][arm] and
                         state["uses_bindless_heap"] and not state["indirect_bindable"] and
                         state["compute_backend"] == 0 and not state["disable_optimization"], "Wrong actual root layout/backend")
                 if row not in target_rows:
@@ -218,17 +271,18 @@ def runtime_identity(directory, configuration, arm, validation):
         coverage="Per-case production graph and actual native PSO recipes; no per-dispatch command-buffer binding receipt.")
 
 
-def summarize(runs):
+def summarize(runs, experiment_name=INLINE_EXPERIMENT):
+    arms = treatment(experiment_name)["arms"]
     timed = [run for run in runs if run["phase"] == "timing"]
     require([(run["block"], run["arm"]) for run in timed] ==
-            [(row["block"], row["arm"]) for row in schedule() if row["phase"] == "timing"], "Incomplete AB/BA/AB schedule")
+            [(row["block"], row["arm"]) for row in schedule(experiment_name) if row["phase"] == "timing"], "Incomplete AB/BA/AB schedule")
     paired = {}
     for case in CASES:
         paired[case] = {}
         for scope in dispatch.SCOPES:
             blocks = []
             for block in range(3):
-                a, b = (next(run for run in timed if run["block"] == block and run["arm"] == arm) for arm in ARMS)
+                a, b = (next(run for run in timed if run["block"] == block and run["arm"] == arm) for arm in arms)
                 left, right = (run["timings"][case][scope]["median"] for run in (a, b))
                 blocks.append(dict(block=block, baseline_ms=left, candidate_ms=right, ratio=right / left,
                     baseline_execution_id=a["execution_id"], candidate_execution_id=b["execution_id"]))
@@ -239,22 +293,27 @@ def summarize(runs):
         decision="inconclusive", decision_reason="Three exploratory process pairs; no predeclared performance acceptance threshold or confirmation stage.")
 
 
-def validate_target_pair(targets):
-    if not all(arm in targets for arm in ARMS):
+def validate_target_pair(targets, experiment_name=INLINE_EXPERIMENT):
+    declared = treatment(experiment_name)
+    arms = declared["arms"]
+    if not all(arm in targets for arm in arms):
         return
     for case in CASES:
         shapes = []
-        for arm in ARMS:
+        for arm in arms:
             shape = copy.deepcopy(targets[arm][case])
             shape.pop("pso_hash")
-            shape["state"].pop("bindless_user_push_data_size")
+            require(shape["state"]["bindless_user_push_data_size"] == declared["push_bytes"][arm],
+                    "Target pair changed the declared push-constant size")
+            if experiment_name == INLINE_EXPERIMENT:
+                shape["state"].pop("bindless_user_push_data_size")
             for stage in shape["shaders"]:
                 for key in ("bytes", "sha256", "fnv1a64"):
                     stage.pop(key)
             shapes.append(shape)
-        require(shapes[0] == shapes[1], "Target module/entry/specialization or non-root pipeline state differs between arms")
-        require(targets[ARMS[0]][case]["shaders"][0]["sha256"] != targets[ARMS[1]][case]["shaders"][0]["sha256"],
-                "Both arms used identical target SPIR-V; the root treatment was not established")
+        require(shapes[0] == shapes[1], "Target module/entry/specialization or fixed pipeline state differs between arms")
+        require(targets[arms[0]][case]["shaders"][0]["sha256"] != targets[arms[1]][case]["shaders"][0]["sha256"],
+                "Both arms used identical target SPIR-V; the treatment was not established")
 
 
 def runtime_environment(arm_file, destination, *, live=True):
@@ -300,10 +359,11 @@ def execute(command, environment, destination, timeout):
 
 
 def analyze(output, summary):
+    experiment_name = summary_treatment(summary)
     configuration = summary["workload"]
     dispatch.validate_workload(configuration)
     require(experiment.read(output / "Cases.json") == configuration, "Canonical workload changed")
-    expected = schedule()
+    expected = schedule(experiment_name)
     require(summary["schedule"] == expected and len(summary["runs"]) == len(expected), "Incomplete process evidence")
     baseline, previous_end, execution_ids = None, None, set()
     target_identities, ordinary, device = {}, None, None
@@ -327,16 +387,16 @@ def analyze(output, summary):
         require(raw.get("validation") is row["validation"], "Report validation policy changed")
         arm_configuration = summary["workloads"][row["arm"]]["configuration"]
         require(experiment.read(summary["workloads"][row["arm"]]["file"]) == arm_configuration, "Arm workload changed")
-        normalized = comparable_report(raw, configuration, arm_configuration, row["arm"])
+        normalized = comparable_report(raw, configuration, arm_configuration, row["arm"], experiment_name)
         comparison_path = destination / "ComparableReport.json"
         require(experiment.read(comparison_path) == normalized, "Comparable report changed")
-        identity = runtime_identity(destination, arm_configuration, row["arm"], row["validation"])
+        identity = runtime_identity(destination, arm_configuration, row["arm"], row["validation"], experiment_name)
         require(identity == item["identity"], "Runtime identity evidence changed")
         device = identity["device"] if device is None else device
         ordinary = identity["ordinary"] if ordinary is None else ordinary
         require(identity["device"] == device and identity["ordinary"] == ordinary, "Device or non-target pipelines changed")
         require(target_identities.setdefault(row["arm"], identity["targets"]) == identity["targets"], "Target SPIR-V/layout changed within an arm")
-        validate_target_pair(target_identities)
+        validate_target_pair(target_identities, experiment_name)
         baseline = baseline or comparison_path
         comparison = experiment.compare_readbacks(baseline, comparison_path, configuration, **TOLERANCE)
         require(comparison == item["correctness"] and all(case["qualified"] for case in comparison), "HDR/guide qualification changed")
@@ -344,11 +404,12 @@ def analyze(output, summary):
             require(dispatch.verify_timing_rows(raw, arm_configuration) == item["timings"], "Timing rows changed")
         else:
             require("timings" not in item, "Validation-on run entered timing statistics")
-    return summarize(summary["runs"])
+    return summarize(summary["runs"], experiment_name)
 
 
 def run(args, output, summary):
-    configuration, arms, workload_inputs, absent = prepare_workload(args.cases.resolve(strict=True), output)
+    experiment_name = summary_treatment(summary)
+    configuration, arms, workload_inputs, absent = prepare_workload(args.cases.resolve(strict=True), output, experiment_name)
     executable = args.executable.resolve(strict=True)
     helper_names = (Path(__file__).name, "MeasurePathTraceBackendDispatch.py", "RunComputePipelineExperiments.py",
                     "RunShaderPipelineDriver.py", "ValidatePathTraceBackendRendering.py")
@@ -363,14 +424,14 @@ def run(args, output, summary):
     experiment.save(output / "AbsentInputs.json", absent)
     inventory = experiment.gpu_inventory()
     require(inventory, "Need an observed NVIDIA GPU/driver inventory")
-    summary.update(workload=configuration, workloads=arms, executable=str(executable), schedule=schedule(),
+    summary.update(workload=configuration, workloads=arms, executable=str(executable), schedule=schedule(experiment_name),
         tolerance=TOLERANCE, gpu_inventory=inventory, scope=dispatch.MEASUREMENT_SCOPE,
         cache_policy="Per-process empty application PSO directory; shared runtime SPIR-V and uncontrolled driver cache; 16 warmup frames.",
         caveats=["Cooperative locks do not establish system-wide GPU exclusivity; clocks are unaltered.",
                  "512x512 bounded fixtures do not establish full-scene or end-to-end frame-rate performance.",
                  "Recipe capture proves per-case native PSO creation, not an independent per-dispatch binding receipt."])
     checks, baseline, ordinary, device, targets = [], None, None, None, {}
-    for row in schedule():
+    for row in schedule(experiment_name):
         dispatch.snapshot_check(inputs, absent, inventory, "before-" + row["label"], checks)
         experiment.save(output / "SnapshotChecks.json", checks)
         destination = output / row["label"]
@@ -389,13 +450,13 @@ def run(args, output, summary):
         raw = experiment.read(destination / "MaterialBaseline.json")
         require(raw.get("validation") is row["validation"], "Unexpected runtime validation policy")
         arm_configuration = arms[row["arm"]]["configuration"]
-        experiment.save(destination / "ComparableReport.json", comparable_report(raw, configuration, arm_configuration, row["arm"]))
-        identity = runtime_identity(destination, arm_configuration, row["arm"], row["validation"])
+        experiment.save(destination / "ComparableReport.json", comparable_report(raw, configuration, arm_configuration, row["arm"], experiment_name))
+        identity = runtime_identity(destination, arm_configuration, row["arm"], row["validation"], experiment_name)
         ordinary = identity["ordinary"] if ordinary is None else ordinary
         device = identity["device"] if device is None else device
         require(identity["ordinary"] == ordinary and identity["device"] == device, "Non-target pipeline or device changed")
         require(targets.setdefault(row["arm"], identity["targets"]) == identity["targets"], "Actual target shader changed within an arm")
-        validate_target_pair(targets)
+        validate_target_pair(targets, experiment_name)
         baseline = baseline or destination / "ComparableReport.json"
         comparison = experiment.compare_readbacks(baseline, destination / "ComparableReport.json", configuration, **TOLERANCE)
         item.update(identity=identity, correctness=comparison)
@@ -413,12 +474,13 @@ def verify(output, current_inputs=False):
     output = output.resolve(strict=True)
     dispatch.validate_seal(output)
     summary = experiment.read(output / "summary.json")
-    require(summary["schema_version"] == 1 and summary["experiment"] == "pathtrace-inline-root", "Wrong evidence schema")
+    require(summary["schema_version"] == 1, "Wrong evidence schema")
+    experiment_name = summary_treatment(summary)
     if summary["status"] == "completed":
         require(analyze(output, summary) == summary["timing_summary"], "Process-level analysis changed")
         inputs, absent = experiment.read(output / "Inputs.json"), experiment.read(output / "AbsentInputs.json")
         checks = experiment.read(output / "SnapshotChecks.json")
-        require([item["label"] for item in checks] == [prefix + row["label"] for row in schedule() for prefix in ("before-", "after-")],
+        require([item["label"] for item in checks] == [prefix + row["label"] for row in schedule(experiment_name) for prefix in ("before-", "after-")],
                 "Missing input immutability checks")
         require(all(item["inputs"] == inputs and item["absent_inputs"] == absent and
                     item["gpu_inventory"] == summary["gpu_inventory"] for item in checks), "Input or device changed during execution")
@@ -436,6 +498,8 @@ def main():
     for option in ("executable", "cases", "output-dir"):
         launch.add_argument("--" + option, type=Path, required=True)
     launch.add_argument("--timeout", type=float, default=1200, help="Maximum seconds per independent process")
+    launch.add_argument("--experiment", choices=("inline-root", "trusted-scene-parameters"), default="inline-root",
+                        help="One declared treatment; trusted-scene-parameters fixes both roots at 24 bytes")
     check = sub.add_parser("verify")
     check.add_argument("output", type=Path)
     check.add_argument("--current-inputs", action="store_true")
@@ -452,7 +516,11 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     lock = ROOT / "build/compute-pipeline-experiment.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
-    summary = dict(schema_version=1, experiment="pathtrace-inline-root", status="running", runs=[], decision="inconclusive")
+    experiment_name = "pathtrace-" + args.experiment
+    summary = dict(schema_version=1, experiment=experiment_name, treatment=copy.deepcopy(treatment(experiment_name)),
+                   status="running", runs=[], decision="inconclusive")
+    if experiment_name == INLINE_EXPERIMENT:
+        summary["fixed_scene_parameter_policy"] = dict(trustedSceneParameters=False)
     with lock.open("x", encoding="utf-8") as stream:
         json.dump(dict(pid=os.getpid(), output=str(output), experiment=summary["experiment"]), stream)
     failed = False

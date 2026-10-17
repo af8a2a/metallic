@@ -108,15 +108,15 @@ public typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> Sce
 // Keep sparse training code unchanged: hash insertion/atomic order can affect
 // temporal cache contents. Narrow resource reads are for the shading/query path.
 #if SHARC_UPDATE
-public ScenePathTraceCacheBuffer scenePathCacheParams() { return resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameters<SceneResourceParameters>().cacheParams); }
+public ScenePathTraceCacheBuffer scenePathCacheParams() { return resolveBuffer<ScenePathTraceCacheBuffer>(getSceneResourceParameters().cacheParams); }
 #else
-public ScenePathTraceCacheBuffer scenePathCacheParams() { return resolveBuffer<ScenePathTraceCacheBuffer>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneCacheParamsOffset)); }
+public ScenePathTraceCacheBuffer scenePathCacheParams() { return resolveBuffer<ScenePathTraceCacheBuffer>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneCacheParamsOffset)); }
 #endif
 
 #if SHARC_UPDATE
-public RaytracingAccelerationStructure sceneAccelerationStructure() { return resolveAccelerationStructure(getResourceParameters<SceneResourceParameters>().scene); }
+public RaytracingAccelerationStructure sceneAccelerationStructure() { return resolveAccelerationStructure(getSceneResourceParameters().scene); }
 #else
-public RaytracingAccelerationStructure sceneAccelerationStructure() { return resolveAccelerationStructure(getResourceParameterField<SceneResourceParameters, uint64_t>(kSceneSceneOffset)); }
+public RaytracingAccelerationStructure sceneAccelerationStructure() { return resolveAccelerationStructure(getSceneResourceParameterField<uint64_t>(kSceneSceneOffset)); }
 #endif
 
 #if !METALLIC_REALTIME_DEFERRED
@@ -211,7 +211,7 @@ public float3 pathTrace(
                 : environmentBsdfMisWeight(push, previousBsdfPdf, ray.direction, previousScatterDelta);
             float3 missRadiance = environmentRadiance(ray.direction, push, depth == 0u, primaryOrigin) * misWeight;
             if (depth > 0u && previousScatterDelta && push.environmentMode != kEnvironmentModeDisabled) {
-                missRadiance += physicalDeltaMissDisks(getResourceParameters<SceneResourceParameters>().environment,
+                missRadiance += physicalDeltaMissDisks(getSceneResourceParameters().environment,
                     ray.direction, ray.origin) * max(push.environmentIntensity, 0.0);
             }
             radiance += throughput * missRadiance;
@@ -430,7 +430,7 @@ public float3 pathTrace(
         // samples each finite disk before its projected BSDF and visibility.
         for (uint celestialSlot = 0u; celestialSlot < kCelestialLightCount; ++celestialSlot) {
             let celestial = resolveBuffer<StructuredBuffer<GPUCelestialLight>>(
-                getResourceParameters<SceneResourceParameters>().environment.celestialLights);
+                getSceneResourceParameters().environment.celestialLights);
             PunctualLightSample light = samplePathCelestialLightAtPosition(celestial, celestialSlot, hit.position, seed);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
@@ -445,8 +445,8 @@ public float3 pathTrace(
         }
         uint punctualLightIndex;
         float punctualInverseSourcePdf;
-        if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid), resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-            PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights), punctualLightIndex, hit.position);
+        if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights), resolveBuffer<StructuredBuffer<uint4>>(getSceneResourceParameters().regirGrid), resolveUniform(getSceneResourceParameters().lightsPdf)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+            PunctualLightSample light = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights), punctualLightIndex, hit.position);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
             if (luminanceMax(bsdf * light.illuminance) > 0.0) {
@@ -573,7 +573,7 @@ public float3 pathTrace(
     }
 
     if (primarySurface) {
-        primaryAerial = physicalAerialSegment(getResourceParameters<SceneResourceParameters>().environment, primaryEndpoint, primaryOrigin);
+        primaryAerial = physicalAerialSegment(getSceneResourceParameters().environment, primaryEndpoint, primaryOrigin);
     }
 #if SHARC_UPDATE
     // Cache radiance stays local to the shaded point.
@@ -587,7 +587,7 @@ public PathTraceCacheContext makeCacheContext()
 {
 #if METALLIC_STANDARD_PT_CACHE_QUERY_SPECIALIZATION
     // Select numeric leaves only; mandatory materials supplies inactive valid handles.
-    let inactiveMaterials = getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
+    let inactiveMaterials = getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset);
     float3 cacheCameraPosition = float3(0.0, 0.0, 0.0);
     float cacheLogarithmBase = 0.0;
     float cacheSceneScale = 0.0;
@@ -599,7 +599,7 @@ public PathTraceCacheContext makeCacheContext()
     ResourceHandle<ByteAddressBuffer> cacheResolved = inactiveMaterials;
     if (kStandardPathCacheQueryEnabled) {
         ScenePathTraceCacheParams params = scenePathCacheParams()[0];
-        let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+        let resources = getSceneResourceParameterField<SceneSharcResourceParameters>(kSceneSharcOffset);
         cacheCameraPosition = params.sharcCameraPosition.xyz;
         cacheLogarithmBase = kSHARCGridLogarithmBase;
         cacheSceneScale = max(params.sharcSceneScale, 0.0001);
@@ -628,7 +628,7 @@ public PathTraceCacheContext makeCacheContext()
     ScenePathTraceCacheParams params = scenePathCacheParams()[0];
 #if (SHARC_UPDATE || SHARC_QUERY)
 #if !SHARC_UPDATE
-    let resources = getResourceParameterField<SceneResourceParameters, SceneSharcResourceParameters>(kSceneSharcOffset);
+    let resources = getSceneResourceParameterField<SceneSharcResourceParameters>(kSceneSharcOffset);
 #endif
     cache.sharc.hashGridParameters.cameraPosition = params.sharcCameraPosition.xyz;
     cache.sharc.hashGridParameters.logarithmBase = kSHARCGridLogarithmBase;
@@ -637,9 +637,9 @@ public PathTraceCacheContext makeCacheContext()
 
     cache.sharc.hashGridData.capacity = params.sharcEntriesNum;
 #if SHARC_UPDATE
-    cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(getResourceParameters<SceneResourceParameters>().sharcHashEntries);
-    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(getResourceParameters<SceneResourceParameters>().sharcAccumulation);
-    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(getResourceParameters<SceneResourceParameters>().sharcResolved);
+    cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(getSceneResourceParameters().sharcHashEntries);
+    cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(getSceneResourceParameters().sharcAccumulation);
+    cache.sharc.resolvedBuffer = resolveBuffer<RWStructuredBuffer<SHARCPackedData>>(getSceneResourceParameters().sharcResolved);
 #else
     cache.sharc.hashGridData.hashEntriesBuffer = resolveBuffer<RWStructuredBuffer<uint64_t>>(resources.sharcHashEntries);
     cache.sharc.accumulationBuffer = resolveBuffer<RWStructuredBuffer<SHARCAccumulationData>>(resources.sharcAccumulation);
@@ -656,19 +656,19 @@ public PathTraceCacheContext makeCacheContext()
 }
 
 #if METALLIC_STANDARD_PT_GUIDE_SPECIALIZATION
-#define gDlssRrAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideAlbedo)
+#define gDlssRrAlbedo resolveUniform(getSceneResourceParameters().guideAlbedo)
 
-#define gDlssRrSpecularAlbedo resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularAlbedo)
+#define gDlssRrSpecularAlbedo resolveUniform(getSceneResourceParameters().guideSpecularAlbedo)
 
-#define gDlssRrNormalRoughness resolveUniform(getResourceParameters<SceneResourceParameters>().guideNormalRoughness)
+#define gDlssRrNormalRoughness resolveUniform(getSceneResourceParameters().guideNormalRoughness)
 
-#define gDlssRrMotionVectors resolveUniform(getResourceParameters<SceneResourceParameters>().guideMotion)
+#define gDlssRrMotionVectors resolveUniform(getSceneResourceParameters().guideMotion)
 
-#define gDlssRrLinearDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideLinearDepth)
+#define gDlssRrLinearDepth resolveUniform(getSceneResourceParameters().guideLinearDepth)
 
-#define gDlssRrSpecularHitDistance resolveUniform(getResourceParameters<SceneResourceParameters>().guideSpecularHitDistance)
+#define gDlssRrSpecularHitDistance resolveUniform(getSceneResourceParameters().guideSpecularHitDistance)
 
-#define gDlssDepth resolveUniform(getResourceParameters<SceneResourceParameters>().guideDepth)
+#define gDlssDepth resolveUniform(getSceneResourceParameters().guideDepth)
 
 void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
@@ -807,14 +807,14 @@ public void dispatchScenePathTrace(uint3 dispatchThreadId)
         color = accumulateStreamPathTrace(pixel, color, push);
     }
 
-    sceneOutput()[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights))), 1.0);
+    sceneOutput()[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights))), 1.0);
     writeDlssRrGuides(pixel, guides, push);
     }
     if (!kStandardPathGuideEnabled) {
 #endif
     if (push.outputLinear == 0u) {
         color = Metallic.WorkingColor::toLinearRec709(color);
-        color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights));
+        color *= lightingExposure(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights));
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

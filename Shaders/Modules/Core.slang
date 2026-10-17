@@ -19,3 +19,4 @@ import ParameterRoot;
 #endif
 __include "Core/ComputeResources.slang";
 __include "Core/NamedResources.slang";
+__include "Core/SceneResources.slang";

@@ -48,6 +48,11 @@ struct MaterialProgramCacheStats
 };
 MaterialProgramCacheStats materialProgramCacheStats();
 
+// The trusted Scene getter requires the shared fixed packet and direct root.
+// Validate before shader acquisition, including cache/override resolution.
+Result<> validateTrustedSceneResourceContract(const SlangShaderDesc& source,
+    const ResourceComputeKernelDesc& layout, std::string& log);
+
 // Compilation and pipeline creation are transactional. Prepared dispatches
 // retain old executables/parameters through the existing frame completion.
 Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,

@@ -63,7 +63,7 @@ public DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
 
 public void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
-    let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+    let resources = getSceneResourceParameterField<SceneGuideResourceParameters>(kSceneGuidesOffset);
     resolveUniform(resources.guideAlbedo)[pixel] = float4(saturate(data.albedo), 1.0);
     resolveUniform(resources.guideSpecularAlbedo)[pixel] = float4(saturate(data.specularAlbedo), 1.0);
     resolveUniform(resources.guideNormalRoughness)[pixel] = float4(Metallic.ScenePath::safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
@@ -110,7 +110,7 @@ public DLSSRRGuideData evaluateOpenPbrDlssRrGuides(
 // endpoint depends on continuation and is stored after it completes.
 public void writeDlssRrPrimaryGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
-    let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+    let resources = getSceneResourceParameterField<SceneGuideResourceParameters>(kSceneGuidesOffset);
     resolveUniform(resources.guideAlbedo)[pixel] = float4(saturate(data.albedo), 1.0);
     resolveUniform(resources.guideSpecularAlbedo)[pixel] = float4(saturate(data.specularAlbedo), 1.0);
     resolveUniform(resources.guideNormalRoughness)[pixel] = float4(Metallic.ScenePath::safeNormalize(data.normal, float3(0.0, 1.0, 0.0)), saturate(data.roughness));
@@ -194,7 +194,7 @@ public void dispatchOpenPbrRayQueryPathTraceGuides(uint3 dispatchThreadId)
         float specularHitDistance;
         float3 color = pathTraceOpenPbrSingleSample(pixel, ray, rayCone, push, seed, specularHitDistance);
         writeOpenPbrPathColor(pixel, color, push);
-        let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+        let resources = getSceneResourceParameterField<SceneGuideResourceParameters>(kSceneGuidesOffset);
         resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(specularHitDistance, 0.0);
     }
 #else
@@ -214,7 +214,7 @@ public void dispatchOpenPbrRayQueryPathTraceGuides(uint3 dispatchThreadId)
         }
         color /= float(samples);
         writeOpenPbrPathColor(pixel, color, push);
-        let resources = getResourceParameterField<SceneResourceParameters, SceneGuideResourceParameters>(kSceneGuidesOffset);
+        let resources = getSceneResourceParameterField<SceneGuideResourceParameters>(kSceneGuidesOffset);
         resolveUniform(resources.guideSpecularHitDistance)[pixel] = max(firstSampleSpecularHitDistance, 0.0);
     }
 #endif

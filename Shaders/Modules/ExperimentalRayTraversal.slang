@@ -44,7 +44,7 @@ public bool traceClosest(Ray ray, float nearDistance, float farDistance,
     StreamRayHit payload = (StreamRayHit)0;
     payload.t = -1.0;
     let scene = resolveAccelerationStructure(
-        getResourceParameterField<SceneResourceParameters, uint64_t>(kSceneSceneOffset));
+        getSceneResourceParameterField<uint64_t>(kSceneSceneOffset));
 #if METALLIC_VKGLTF_SER
     HitObject hitObject = HitObject::TraceRay(scene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, 0, 0, 0, desc, payload);
     ReorderThread(hitObject);
@@ -59,7 +59,7 @@ public bool traceClosest(Ray ray, float nearDistance, float farDistance,
 public float3 accumulate(uint2 pixel, float3 color, ScenePathTracePush push)
 {
     let changes = resolveBuffer<StructuredBuffer<uint>>(
-        getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamChangesOffset));
+        getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneRayStreamChangesOffset));
     float count = 1.0;
     if (push.hasHistory != 0u && changes[METALLIC_STREAM_BLAS_SEMANTIC_CHANGE_WORD] == 0u) {
         float4 previous = sceneHistoryPrevious()[pixel];

@@ -47,12 +47,12 @@ using Metallic.ScenePath;
 #if SHARC_UPDATE
 public RWTexture2D<float4> sceneOutput()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().output);
+    return resolveUniform(getSceneResourceParameters().output);
 }
 #else
 public RWTexture2D<float4> sceneOutput()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float4>>>(kSceneOutputOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<RWTexture2D<float4>>>(kSceneOutputOffset));
 }
 #endif
 
@@ -80,125 +80,125 @@ public struct PathTraceInstance
 #if SHARC_UPDATE
 public StructuredBuffer<SceneMaterialData> sceneMaterials()
 {
-    return resolveBuffer<StructuredBuffer<SceneMaterialData>>(getResourceParameters<SceneResourceParameters>().materials);
+    return resolveBuffer<StructuredBuffer<SceneMaterialData>>(getSceneResourceParameters().materials);
 }
 #else
 public StructuredBuffer<SceneMaterialData> sceneMaterials()
 {
-    return resolveBuffer<StructuredBuffer<SceneMaterialData>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset));
+    return resolveBuffer<StructuredBuffer<SceneMaterialData>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMaterialsOffset));
 }
 #endif
 
 #if SHARC_UPDATE
 public RWTexture2D<float4> sceneHistoryCurrent()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().accumulationCurrent);
+    return resolveUniform(getSceneResourceParameters().accumulationCurrent);
 }
 #else
 public RWTexture2D<float4> sceneHistoryCurrent()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float4>>>(kSceneAccumulationCurrentOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<RWTexture2D<float4>>>(kSceneAccumulationCurrentOffset));
 }
 #endif
 
 #if SHARC_UPDATE
 public RWTexture2D<float4> sceneHistoryPrevious()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().accumulationPrevious);
+    return resolveUniform(getSceneResourceParameters().accumulationPrevious);
 }
 #else
 public RWTexture2D<float4> sceneHistoryPrevious()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<RWTexture2D<float4>>>(kSceneAccumulationPreviousOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<RWTexture2D<float4>>>(kSceneAccumulationPreviousOffset));
 }
 #endif
 
 #if SHARC_UPDATE
 public Texture2D<float4> sceneMaterialTexture(uint index)
 {
-    return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameterField<SceneResourceParameters, BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)));
+    return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getSceneResourceParameterField<BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)));
 }
 public SamplerState sceneMaterialSampler()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().materialSampler);
+    return resolveUniform(getSceneResourceParameters().materialSampler);
 }
 public RWStructuredBuffer<uint> sceneTextureFeedback()
 {
-    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+    return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
 }
 public ByteAddressBuffer sceneMaterialValues()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().materialValues);
+    return resolveUniform(getSceneResourceParameters().materialValues);
 }
 public Texture2D<float4> sceneEnvironmentMap()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset));
 }
 public Texture2D<float> sceneEnvironmentImportancePdf()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
 }
 #else
 public Texture2D<float4> sceneMaterialTexture(uint index)
 {
-    return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameterField<SceneResourceParameters, BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)));
+    return resolveNonUniform(ResourceHandle<Texture2D<float4>>(getSceneResourceParameterField<BufferSpan<uint>>(kSceneMaterialTexturesOffset).load(index)));
 }
 public SamplerState sceneMaterialSampler()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, SamplerHandle>(kSceneMaterialSamplerOffset));
+    return resolveUniform(getSceneResourceParameterField<SamplerHandle>(kSceneMaterialSamplerOffset));
 }
 public RWStructuredBuffer<uint> sceneTextureFeedback()
 {
-    return resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+    return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
 }
 public ByteAddressBuffer sceneMaterialValues()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneMaterialValuesOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneMaterialValuesOffset));
 }
 public Texture2D<float4> sceneEnvironmentMap()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float4>>>(kSceneEnvironmentMapOffset));
 }
 public Texture2D<float> sceneEnvironmentImportancePdf()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
 }
 #endif
 
 #if SHARC_UPDATE
 public StructuredBuffer<GPUPunctualLight> sceneLights()
 {
-    return resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<SceneResourceParameters>().lights);
+    return resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameters().lights);
 }
 public Texture2D<float> sceneLightsPdf()
 {
-    return resolveUniform(getResourceParameters<SceneResourceParameters>().lightsPdf);
+    return resolveUniform(getSceneResourceParameters().lightsPdf);
 }
 public StructuredBuffer<uint4> sceneReGIRGrid()
 {
-    return resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().regirGrid);
+    return resolveBuffer<StructuredBuffer<uint4>>(getSceneResourceParameters().regirGrid);
 }
 #else
 public StructuredBuffer<GPUPunctualLight> sceneLights()
 {
-    return resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneLightsOffset));
+    return resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneLightsOffset));
 }
 public Texture2D<float> sceneLightsPdf()
 {
-    return resolveUniform(getResourceParameterField<SceneResourceParameters, ResourceHandle<Texture2D<float>>>(kSceneLightsPdfOffset));
+    return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneLightsPdfOffset));
 }
 public StructuredBuffer<uint4> sceneReGIRGrid()
 {
-    return resolveBuffer<StructuredBuffer<uint4>>(getResourceParameterField<SceneResourceParameters, ResourceHandle<ByteAddressBuffer>>(kSceneReGIRGridOffset));
+    return resolveBuffer<StructuredBuffer<uint4>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneReGIRGridOffset));
 }
 #endif
 
 public EnvironmentResourceParameters getSceneEnvironmentResources()
 {
 #if SHARC_UPDATE
-    return getResourceParameters<SceneResourceParameters>().environment;
+    return getSceneResourceParameters().environment;
 #else
-    return getResourceParameterField<SceneResourceParameters, EnvironmentResourceParameters>(kSceneEnvironmentOffset);
+    return getSceneResourceParameterField<EnvironmentResourceParameters>(kSceneEnvironmentOffset);
 #endif
 }
 

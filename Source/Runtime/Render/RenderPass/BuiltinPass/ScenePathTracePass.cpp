@@ -611,7 +611,9 @@ public:
     {
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
-        if (inlineComputeRootEnabled(properties()) != compiledInlineComputeRoot_) {
+        if (!validateTrustedSceneParameters(properties(), log)) { return makeError(Error::Unsupported); }
+        if (inlineComputeRootEnabled(properties()) != compiledInlineComputeRoot_ ||
+            trustedSceneParametersEnabled(properties()) != compiledTrustedSceneParameters_) {
             return compile(context, log);
         }
         if (rayPipelineEnabled(properties()) != compiledRayPipeline_ ||
@@ -647,7 +649,9 @@ public:
     {
         if (!validateTraversalBackend(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
+        if (!validateTrustedSceneParameters(properties(), log)) { return makeError(Error::Unsupported); }
         const bool inlineComputeRoot = inlineComputeRootEnabled(properties());
+        const bool trustedSceneParameters = trustedSceneParametersEnabled(properties());
         const bool rayPipeline = rayPipelineEnabled(properties());
         const bool vkGltf = useVkGltfBsdf(properties());
         const bool simpleBSDF = useSimpleBSDF(properties());
@@ -742,6 +746,7 @@ public:
             "|invocationReorder=" + (invocationReorder ? "1" : "0") +
             "|splitPrimaryGuides=" + (splitPrimaryGuides ? "1" : "0") +
             "|inlineComputeRoot=" + (inlineComputeRoot ? "1" : "0") +
+            "|trustedSceneParameters=" + (trustedSceneParameters ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
@@ -962,6 +967,7 @@ public:
             compiledGlobalView_ = globalView;
             compiledSingleSampleGuides_ = singleSampleGuides;
             compiledInlineComputeRoot_ = false;
+            compiledTrustedSceneParameters_ = false;
             compiledSplitPrimaryGuides_ = false;
             compiledRayPipeline_ = true;
             compiledVkGltf_ = vkGltf;
@@ -983,9 +989,13 @@ public:
             auto request = splitPrimaryGuides
                 ? makeOpenPBRPrimarySplitShaderRequest(shaderOptions, defines, false)
                 : makeSceneShaderRequest(shaderProgram, shaderOptions, defines);
-            // Select the transport after the factory has selected the existing
-            // source and specialization constants. Only the root ABI changes.
+            // Select transport and the fixed packet contract after the factory
+            // has selected the existing source and specialization constants.
             if (inlineComputeRoot) { request.defines.push_back({"METALLIC_INLINE_COMPUTE_ROOT", "1"}); }
+            if (inlineComputeRoot && supportsInlineComputeRoot(properties())) {
+                request.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES",
+                    trustedSceneParameters ? std::to_string(sizeof(SceneResourceParameters)) : "0");
+            }
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
@@ -1200,6 +1210,7 @@ public:
         compiledGlobalView_ = globalView;
         compiledSingleSampleGuides_ = singleSampleGuides;
         compiledInlineComputeRoot_ = inlineComputeRoot;
+        compiledTrustedSceneParameters_ = trustedSceneParameters;
         compiledSplitPrimaryGuides_ = splitPrimaryGuides;
         compiledRayPipeline_ = false;
         compiledVkGltf_ = false;
@@ -1237,6 +1248,14 @@ public:
         }
         if (inlineComputeRootEnabled(context.properties()) != compiledInlineComputeRoot_) {
             spdlog::error("ScenePathTracePass inlineComputeRoot changed without recompiling the graph");
+            return makeError(Error::InvalidArgument);
+        }
+        if (!validateTrustedSceneParameters(context.properties(), splitLog)) {
+            spdlog::error("{}", splitLog);
+            return makeError(Error::Unsupported);
+        }
+        if (trustedSceneParametersEnabled(context.properties()) != compiledTrustedSceneParameters_) {
+            spdlog::error("ScenePathTracePass trustedSceneParameters changed without recompiling the graph");
             return makeError(Error::InvalidArgument);
         }
         if (errorProgram_.valid()) {
@@ -1980,6 +1999,22 @@ private:
     {
         if (inlineComputeRootEnabled(properties) && !supportsInlineComputeRoot(properties)) {
             log += "inlineComputeRoot requires the unsplit compute path tracer\n";
+            return false;
+        }
+        return true;
+    }
+
+    bool trustedSceneParametersEnabled(const RenderGraphProperties& properties) const
+    {
+        return boolProperty(properties, "trustedSceneParameters",
+            supportsInlineComputeRoot(properties) && inlineComputeRootEnabled(properties));
+    }
+
+    bool validateTrustedSceneParameters(const RenderGraphProperties& properties, std::string& log) const
+    {
+        if (trustedSceneParametersEnabled(properties) &&
+            (!supportsInlineComputeRoot(properties) || !inlineComputeRootEnabled(properties))) {
+            log += "trustedSceneParameters requires the unsplit compute path tracer with inlineComputeRoot\n";
             return false;
         }
         return true;
@@ -2954,6 +2989,7 @@ private:
     bool compiledProgramBinning_ = true;
     bool compiledSingleSampleGuides_ = false;
     bool compiledInlineComputeRoot_ = false;
+    bool compiledTrustedSceneParameters_ = false;
     bool compiledSplitPrimaryGuides_ = false;
     bool compiledRayPipeline_ = false;
     bool compiledVkGltf_ = false;
