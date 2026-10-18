@@ -76,6 +76,28 @@ binding policy and specialization tuples match runtime. In particular, source
 deduplication does not discard the separate OpenPBR cache/guide, Standard path,
 and Deferred precision/material-class PSOs.
 
+Native compute creation expands admitted shader/variant pairs into owned tasks
+and dispatches them to a bounded worker pool. It uses the same
+`METALLIC_SHADER_WARMUP_JOBS` setting as source acquisition (default: CPU thread
+count capped at 12, further capped by task count). Setting it to `1` provides a
+serial control. Tasks run in descending finalized SPIR-V size with stable ties;
+this is a cost estimate, not historical driver timing, and specialization can
+change actual compilation cost substantially.
+
+Workers retain the ordinary registry path: identical native keys remain
+single-flight, distinct keys can create concurrently, and successful executions
+remain pinned for runtime reuse. Modules and specialization storage outlive all
+workers. Results and errors are collected after joining every worker; a failed
+task rejects startup while already successful objects remain available to retry.
+The shared Vulkan pipeline caches use internally synchronized access and do not
+hold the application metadata mutex across driver creation. Per-worker caches
+and merging are not enabled without evidence of driver cache contention.
+
+The completion report separates `nativePipelineMs` (wall time after source
+acquisition, including admission, scheduling and joins) from `nativeCreateMs`
+(the sum of native driver-call durations, which can exceed wall time under
+concurrency). Source acquisition and total native warmup retain their own timings.
+
 The device retains execution owners from successful warmup until teardown.
 This prevents the normal 128-object LRU from evicting a warmup object before
 its first runtime acquisition, at the cost of keeping those native objects in

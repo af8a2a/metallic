@@ -6,10 +6,13 @@
 #include "../../../../Tools/ShaderWarmupRequests.h"
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_set>
 #include <spdlog/spdlog.h>
@@ -28,6 +31,23 @@ struct NativeWarmupState
 {
     std::mutex mutex;
     std::vector<RetainedWarmupPipeline> pipelines;
+};
+
+struct NativeWarmupTask
+{
+    ShaderModule* module = nullptr;
+    std::string name;
+    NativeComputeWarmupVariant variant;
+    size_t variantIndex = 0;
+    size_t variantCount = 0;
+    size_t estimatedCost = 0;
+};
+
+struct NativeWarmupTaskResult
+{
+    std::unique_ptr<ComputePipeline> pipeline;
+    std::optional<Error> error;
+    std::exception_ptr exception;
 };
 
 struct ShaderRequirements
@@ -181,17 +201,17 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
         deviceRequests.push_back(std::move(owned));
     }
     std::vector<ShaderCompileResult> shaders;
+    size_t configuredJobs = std::clamp(std::thread::hardware_concurrency(), 1u, 12u);
     if (!deviceRequests.empty()) {
-        size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 12u);
         if (const char* value = std::getenv("METALLIC_SHADER_WARMUP_JOBS"); value && value[0]) {
             const std::string_view text(value);
-            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), jobs);
-            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || jobs == 0) {
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), configuredJobs);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || configuredJobs == 0) {
                 log += "METALLIC_SHADER_WARMUP_JOBS requires a positive integer\n";
                 return makeError(Error::InvalidArgument);
             }
         }
-        jobs = std::min(jobs, deviceRequests.size());
+        const size_t jobs = std::min(configuredJobs, deviceRequests.size());
         const auto acquireBegin = std::chrono::steady_clock::now();
         spdlog::info("[Native shader warmup] acquiring {} device-qualified sources (workers={})", deviceRequests.size(), jobs);
         std::string diagnostics;
@@ -229,6 +249,10 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
     // Accept no source result until the complete batch has passed its source,
     // namespace, compiler and publication checks. Ordinary runtime acquisition
     // and dependency tracking remain unchanged for subsequent hot reloads.
+    const auto nativeBegin = std::chrono::steady_clock::now();
+    // Modules and owned specialization arrays stay alive through every join.
+    std::vector<std::unique_ptr<ShaderModule>> modules;
+    std::vector<NativeWarmupTask> tasks;
     for (size_t index = 0; index < deviceRequests.size(); ++index) {
         const auto& request = deviceRequests[index];
         const auto& shader = shaders[index];
@@ -271,43 +295,118 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
             continue;
         }
         for (size_t variantIndex = 0; variantIndex < variants.size(); ++variantIndex) {
-            const auto& variant = variants[variantIndex];
-            const ComputePipelineDesc desc{
-                .computeShader = {module->get(), "main", variant.specializationConstants},
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = variant.userPushDataSize,
-                .indirectBindable = variant.indirectBindable,
-            };
-            // Log before entering the driver; a large material PSO can take
-            // tens of seconds even when its source shader was already cached.
-            spdlog::info("[Native shader warmup] creating {} variant {}/{}", name, variantIndex + 1, variants.size());
-            auto pipeline = registry.getComputePipeline(device, desc);
-            if (!pipeline) {
-                log += "Native warmup pipeline creation failed: " + name + ": " + resultToString(pipeline) + "\n";
-                return makeError(pipeline.error());
+            // SPIR-V size is only a scheduling estimate, not measured driver
+            // history. Variants of one module share the same estimate.
+            tasks.push_back({module->get(), name, variants[variantIndex], variantIndex,
+                variants.size(), vulkan::nativeShaderSpirv(**module).size()});
+        }
+        modules.push_back(std::move(*module));
+    }
+    std::stable_sort(tasks.begin(), tasks.end(), [](const auto& left, const auto& right) {
+        return left.estimatedCost > right.estimatedCost;
+    });
+    report.nativeTaskCount = tasks.size();
+    report.nativeWorkerCount = std::min(configuredJobs, tasks.size());
+    std::vector<NativeWarmupTaskResult> results(tasks.size());
+    std::atomic<size_t> nextTask{0};
+    std::atomic<bool> cancelled{false};
+    spdlog::info("[Native shader warmup] creating {} native tasks (workers={}, largest SPIR-V first)",
+        report.nativeTaskCount, report.nativeWorkerCount);
+    const auto worker = [&] {
+        while (!cancelled.load(std::memory_order_relaxed)) {
+            const size_t taskIndex = nextTask.fetch_add(1, std::memory_order_relaxed);
+            if (taskIndex >= tasks.size()) { return; }
+            const auto& task = tasks[taskIndex];
+            auto& result = results[taskIndex];
+            try {
+                const auto& variant = task.variant;
+                const ComputePipelineDesc desc{
+                    .computeShader = {task.module, "main", variant.specializationConstants},
+                    .usesBindlessHeap = true, .bindlessUserPushDataSize = variant.userPushDataSize,
+                    .indirectBindable = variant.indirectBindable,
+                };
+                // Log before entering the driver; a large material PSO can take
+                // tens of seconds even when its source shader was already cached.
+                spdlog::info("[Native shader warmup] creating task {}/{} {} variant {}/{} estimatedSpirvWords={}",
+                    taskIndex + 1, tasks.size(), task.name, task.variantIndex + 1, task.variantCount, task.estimatedCost);
+                const auto taskBegin = std::chrono::steady_clock::now();
+                auto pipeline = registry.getComputePipeline(device, desc);
+                if (!pipeline) {
+                    result.error = pipeline.error();
+                    cancelled.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                result.pipeline = std::move(*pipeline);
+                const auto stats = result.pipeline->creationStats();
+                spdlog::info("[Native shader warmup] {} {} variant {}/{} taskMs={:.3f} createMs={:.3f}",
+                    stats.nativeObjectReused ? "reused" : "created", task.name, task.variantIndex + 1, task.variantCount,
+                    double(elapsedNanoseconds(taskBegin)) / 1e6, double(stats.nativeCreateTimeNanoseconds) / 1e6);
+            } catch (...) {
+                result.exception = std::current_exception();
+                cancelled.store(true, std::memory_order_relaxed);
+                return;
             }
-            const auto stats = (*pipeline)->creationStats();
+        }
+    };
+    std::exception_ptr launchException;
+    {
+        // jthread joins already-launched workers even if thread creation fails.
+        std::vector<std::jthread> workers;
+        try {
+            workers.reserve(report.nativeWorkerCount);
+            for (size_t index = 0; index < report.nativeWorkerCount; ++index) {
+                workers.emplace_back(worker);
+            }
+        } catch (...) {
+            launchException = std::current_exception();
+            cancelled.store(true, std::memory_order_relaxed);
+        }
+    }
+    report.nativePipelineTimeNanoseconds = elapsedNanoseconds(nativeBegin);
+    std::optional<Error> failure;
+    const auto recordException = [&](std::exception_ptr exception) {
+        try {
+            std::rethrow_exception(exception);
+        } catch (const std::exception& error) {
+            log += std::string("Native warmup worker failed: ") + error.what() + "\n";
+        } catch (...) {
+            log += "Native warmup worker failed with an unknown exception\n";
+        }
+        failure = Error::Failure;
+    };
+    if (launchException) { recordException(launchException); }
+    // Merge bookkeeping only after joining. Successful objects remain pinned
+    // even when a sibling task failed; registry single-flight handles duplicates.
+    for (size_t index = 0; index < results.size(); ++index) {
+        auto& result = results[index];
+        if (result.error) {
+            log += "Native warmup pipeline creation failed: " + tasks[index].name + ": " + errorToString(*result.error) + "\n";
+            if (!failure) { failure = *result.error; }
+        }
+        if (result.exception) { recordException(result.exception); }
+        if (result.pipeline) {
+            const auto stats = result.pipeline->creationStats();
             report.nativeCreateCount += stats.nativeObjectReused ? 0 : 1;
             report.nativeObjectReuseCount += stats.nativeObjectReused ? 1 : 0;
             report.nativeCreateTimeNanoseconds += stats.nativeCreateTimeNanoseconds;
-            const auto specialization = detail::canonicalShaderSpecializationConstants(variant.specializationConstants);
-            const uint64_t hash = (*pipeline)->psoHash();
+            const auto specialization = detail::canonicalShaderSpecializationConstants(tasks[index].variant.specializationConstants);
+            const uint64_t hash = result.pipeline->psoHash();
             if (std::none_of(state->pipelines.begin(), state->pipelines.end(), [&](const auto& retained) {
                     return retained.psoHash == hash && retained.specialization == specialization;
                 })) {
-                state->pipelines.push_back({hash, specialization, (*pipeline)->execution()});
+                state->pipelines.push_back({hash, specialization, result.pipeline->execution()});
             }
-            spdlog::debug("[Native shader warmup] {} {} variant {} createMs={:.3f}",
-                stats.nativeObjectReused ? "reused" : "created", name, variantIndex + 1,
-                double(stats.nativeCreateTimeNanoseconds) / 1e6);
         }
     }
     report.retainedPipelineCount = state->pipelines.size();
     report.totalTimeNanoseconds = elapsedNanoseconds(begin);
-    spdlog::info("[Native shader warmup] complete sources={} sourceHits={} sourceCompiles={} compute={} created={} reused={} graphicsSkipped={} unsupportedSkipped={} unknownABISkipped={} retained={} elapsedMs={:.3f} nativeCreateMs={:.3f} sourceAcquireMs={:.3f}",
+    if (failure) { return makeError(*failure); }
+    spdlog::info("[Native shader warmup] complete sources={} sourceHits={} sourceCompiles={} compute={} created={} reused={} graphicsSkipped={} unsupportedSkipped={} unknownABISkipped={} retained={} elapsedMs={:.3f} nativeCreateMs={:.3f} sourceAcquireMs={:.3f} nativeTasks={} nativeWorkers={} nativePipelineMs={:.3f}",
         report.sourceCount, report.sourceCacheHits, report.sourceCompilerExecutions, report.computeSourceCount,
         report.nativeCreateCount, report.nativeObjectReuseCount, report.skippedGraphicsCount, report.skippedUnsupportedCount,
         report.skippedUnownedABICount, report.retainedPipelineCount, double(report.totalTimeNanoseconds) / 1e6,
-        double(report.nativeCreateTimeNanoseconds) / 1e6, double(report.sourceAcquireTimeNanoseconds) / 1e6);
+        double(report.nativeCreateTimeNanoseconds) / 1e6, double(report.sourceAcquireTimeNanoseconds) / 1e6,
+        report.nativeTaskCount, report.nativeWorkerCount, double(report.nativePipelineTimeNanoseconds) / 1e6);
     return report;
 }
 

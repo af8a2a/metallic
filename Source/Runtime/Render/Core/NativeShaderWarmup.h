@@ -17,7 +17,12 @@ struct NativeShaderWarmupReport
     size_t skippedUnsupportedCount = 0;
     size_t skippedUnownedABICount = 0;
     size_t retainedPipelineCount = 0;
+    size_t nativeTaskCount = 0;
+    size_t nativeWorkerCount = 0;
     uint64_t totalTimeNanoseconds = 0;
+    // Wall time for the parallel native pipeline phase; creation time below is
+    // cumulative across tasks and can exceed wall time.
+    uint64_t nativePipelineTimeNanoseconds = 0;
     uint64_t nativeCreateTimeNanoseconds = 0;
     uint64_t sourceAcquireTimeNanoseconds = 0;
     uint64_t sourceSnapshotTimeNanoseconds = 0;

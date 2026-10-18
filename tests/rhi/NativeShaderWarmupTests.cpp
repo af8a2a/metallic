@@ -7,12 +7,17 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace metallic::tests {
 namespace {
@@ -41,6 +46,10 @@ public:
 
     std::atomic<uint32_t> computeCalls{0};
     std::atomic<uint32_t> graphicsCalls{0};
+    std::atomic<uint32_t> activeComputeCalls{0};
+    std::atomic<uint32_t> completedComputeCalls{0};
+    uint32_t peakComputeCalls = 0;
+    bool rendezvousCompute = false;
     bool failCompute = false;
 
 private:
@@ -50,8 +59,24 @@ private:
     {
         auto& self = *active_;
         self.computeCalls.fetch_add(count);
-        if (self.failCompute) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
-        return self.compute_(device, cache, count, infos, allocator, pipelines);
+        {
+            std::unique_lock lock(self.rendezvousMutex_);
+            const auto active = self.activeComputeCalls.fetch_add(1) + 1;
+            self.peakComputeCalls = std::max(self.peakComputeCalls, active);
+            self.rendezvousCondition_.notify_all();
+            if (self.rendezvousCompute) {
+                // A bounded rendezvous proves overlap without hanging the test
+                // when a regression serializes the registry or driver boundary.
+                self.rendezvousCondition_.wait_for(lock, std::chrono::seconds(2), [&] {
+                    return self.peakComputeCalls >= 2;
+                });
+            }
+        }
+        const VkResult result = self.failCompute ? VK_ERROR_OUT_OF_HOST_MEMORY
+            : self.compute_(device, cache, count, infos, allocator, pipelines);
+        self.activeComputeCalls.fetch_sub(1);
+        self.completedComputeCalls.fetch_add(1);
+        return result;
     }
 
     static VKAPI_ATTR VkResult VKAPI_CALL createGraphics(VkDevice device, VkPipelineCache cache,
@@ -67,6 +92,32 @@ private:
     VolkDeviceTable& functions_;
     PFN_vkCreateComputePipelines compute_;
     PFN_vkCreateGraphicsPipelines graphics_;
+    std::mutex rendezvousMutex_;
+    std::condition_variable rendezvousCondition_;
+};
+
+class WarmupJobsEnvironment {
+public:
+    explicit WarmupJobsEnvironment(const char* value)
+    {
+        if (const char* previous = std::getenv("METALLIC_SHADER_WARMUP_JOBS")) { previous_ = previous; }
+        set(value);
+    }
+
+    ~WarmupJobsEnvironment() { set(previous_ ? previous_->c_str() : nullptr); }
+
+private:
+    static void set(const char* value)
+    {
+#ifdef _WIN32
+        _putenv_s("METALLIC_SHADER_WARMUP_JOBS", value ? value : "");
+#else
+        if (value) { setenv("METALLIC_SHADER_WARMUP_JOBS", value, 1); }
+        else { unsetenv("METALLIC_SHADER_WARMUP_JOBS"); }
+#endif
+    }
+
+    std::optional<std::string> previous_;
 };
 
 ShaderRequest bufferRequest(const char* entry)
@@ -228,6 +279,74 @@ public:
         }
         if (calls.graphicsCalls != 0) { return RHITestResult::fail("compute warmup created a graphics pipeline"); }
         return RHITestResult::pass("real buffer warmup survives capacity zero; runtime reuses native objects without Vulkan calls; changed push and invalid specialization cannot alias");
+    }
+};
+
+class NativeShaderWarmupConcurrencyTest final : public RHITest {
+public:
+    NativeShaderWarmupConcurrencyTest()
+    {
+        type = RHITestType::Resource;
+        name = "native_shader_warmup_parallel_creation_and_failure_join";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        struct Scenario {
+            const char* jobs;
+            uint32_t expectedWorkers;
+            bool fail;
+            bool duplicates;
+        };
+        const std::array scenarios{Scenario{"1", 1, false, false}, Scenario{"2", 2, false, false},
+            Scenario{"2", 2, true, false}, Scenario{"2", 2, false, true}};
+        for (const auto& scenario : scenarios) {
+            WarmupJobsEnvironment environment(scenario.jobs);
+            auto device = warmupTestDevice(context);
+            if (!device) { return device.error() == Error::Unsupported
+                ? RHITestResult::skip("bindless native warmup unavailable")
+                : RHITestResult::fail("could not create native warmup concurrency test device"); }
+            auto& registry = ShaderRegistry::instance();
+            if (!registry.setNativePipelineCacheCapacity(**device, 0)) {
+                return RHITestResult::fail("could not disable native LRU retention");
+            }
+            WarmupNativeCalls calls(**device);
+            calls.rendezvousCompute = scenario.expectedWorkers > 1 && !scenario.duplicates;
+            calls.failCompute = scenario.fail;
+            const auto write = bufferRequest(builtin_pass::kRenderGraphBufferWriteEntryPoint);
+            const auto copy = bufferRequest(builtin_pass::kRenderGraphBufferCopyEntryPoint);
+            std::vector requests{write, copy};
+            if (scenario.duplicates) {
+                requests.push_back(write);
+                requests.push_back(copy);
+            }
+            std::string log;
+            auto warmed = warmupNativeShaders(**device, requests, log);
+            if (calls.activeComputeCalls != 0 || calls.completedComputeCalls != calls.computeCalls ||
+                calls.peakComputeCalls > scenario.expectedWorkers || calls.peakComputeCalls == 0 ||
+                (!scenario.duplicates && calls.peakComputeCalls != scenario.expectedWorkers)) {
+                return RHITestResult::fail("native warmup did not honor worker concurrency or join all native calls: " + log);
+            }
+            if (scenario.fail) {
+                if (warmed || warmed.error() != Error::OutOfMemory || log.empty() || calls.computeCalls != 2) {
+                    return RHITestResult::fail("parallel native creation failures did not reject warmup: " + log);
+                }
+                calls.failCompute = false;
+                log.clear();
+                warmed = warmupNativeShaders(**device, requests, log);
+                if (calls.computeCalls != 4 || calls.activeComputeCalls != 0 || calls.completedComputeCalls != 4) {
+                    return RHITestResult::fail("parallel native failure poisoned retry or left active calls: " + log);
+                }
+            } else if (calls.computeCalls != 2) {
+                return RHITestResult::fail("duplicate warmup requests created duplicate native PSOs: " + log);
+            }
+            if (!warmed || warmed->nativeWorkerCount != scenario.expectedWorkers ||
+                warmed->nativeCreateCount != 2 || warmed->nativeObjectReuseCount != (scenario.duplicates ? 2u : 0u) ||
+                warmed->retainedPipelineCount != 2) {
+                return RHITestResult::fail("parallel native warmup lost results, duplicate reuse, or retained PSOs: " + log);
+            }
+        }
+        return RHITestResult::pass("worker overrides control real Vulkan overlap; duplicates create once; parallel failures join and retry successfully");
     }
 };
 
@@ -426,6 +545,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupReuseTest);
+METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupConcurrencyTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupFailureTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSpecializationTest);
 
