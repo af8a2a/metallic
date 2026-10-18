@@ -69,11 +69,11 @@ public:
             checkProfile(displayed.index == 0 && displayed.nodes.back().gpuTimingAvailable && displayed.nodes.back().gpuMilliseconds == 0,
                 "delayed nested/zero GPU result not backfilled into completed frame");
             checkProfile(!profiler.history().back().nodes.back().gpuTimingAvailable, "GPU result incorrectly attached to current frame");
-            for (uint64_t i = 12; i < 530; ++i) {
+            for (uint64_t i = 12; i < 130; ++i) {
                 stats.executionId = i; stats.streaming[0].frameIndex = i;
                 auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats);
             }
-            checkProfile(profiler.history().size() == 500 && profiler.streamingHistory()[0].samples.size() == 500, "history is not bounded");
+            checkProfile(profiler.history().size() == 100 && profiler.streamingHistory()[0].samples.size() == 100, "history is not bounded");
             stats.graphGeneration = 2; stats.executionId = 10;
             stats.streaming[0].generation = 2; stats.streaming[0].frameIndex = 0;
             { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
@@ -234,7 +234,7 @@ public:
             checkProfile(firstRepeated != secondRepeated && firstLeaf != secondLeaf,
                 "Repeated sibling occurrences or their children share a scope identity");
             checkProfilerAggregates(cpuProfiler, "Initial CPU sample");
-            for (uint32_t index = 1; index < 520; ++index) {
+            for (uint32_t index = 1; index < 120; ++index) {
                 emitCpu(index);
                 const auto& current = cpuProfiler.history().back();
                 const size_t first = profilerChild(current, 0, "Repeated");
@@ -243,25 +243,25 @@ public:
                     current.nodes[profilerChild(current, first, "Leaf")].scopeId == firstLeaf &&
                     current.nodes[profilerChild(current, second, "Leaf")].scopeId == secondLeaf,
                     "Conditional sibling insertion changed occurrence/subtree identities");
-                if (index < 5 || index >= 498) { checkProfilerAggregates(cpuProfiler, "CPU frame " + std::to_string(index)); }
-                if (index == 499) {
+                if (index < 5 || index >= 98) { checkProfilerAggregates(cpuProfiler, "CPU frame " + std::to_string(index)); }
+                if (index == 99) {
                     const auto extrema = cpuProfiler.historyStatistics(rolling).cpu;
-                    checkProfile(extrema.count == 500 && extrema.minimum == 0 && extrema.maximum == 1000,
+                    checkProfile(extrema.count == 100 && extrema.minimum == 0 && extrema.maximum == 1000,
                         "Full CPU window lost seeded extrema");
                 }
-                if (index == 500) {
+                if (index == 100) {
                     const auto extrema = cpuProfiler.historyStatistics(rolling).cpu;
-                    checkProfile(extrema.count == 500 && extrema.minimum >= 10 && extrema.maximum == 1000 &&
+                    checkProfile(extrema.count == 100 && extrema.minimum >= 10 && extrema.maximum == 1000 &&
                         cpuProfiler.historyStatistics(vanished).cpu.count == 0,
                         "Evicting first sample retained minimum or a vanished scope sample");
                 }
-                if (index == 501) {
+                if (index == 101) {
                     const auto extrema = cpuProfiler.historyStatistics(rolling).cpu;
                     checkProfile(extrema.minimum >= 10 && extrema.maximum <= 50,
                         "Evicting previous maximum retained stale CPU extrema");
                 }
             }
-            checkProfile(cpuProfiler.history().size() == 500 && cpuProfiler.historyStatistics(zero).cpu.count == 500 &&
+            checkProfile(cpuProfiler.history().size() == 100 && cpuProfiler.historyStatistics(zero).cpu.count == 100 &&
                 cpuProfiler.historyStatistics(zero).cpu.average == 0 && cpuProfiler.historyStatistics(firstRepeated).cpu.maximum < 30 &&
                 cpuProfiler.historyStatistics(secondRepeated).cpu.minimum >= 200,
                 "Missing/zero samples or repeated siblings were combined incorrectly");
@@ -277,7 +277,7 @@ public:
                 checkProfile(node.name != "Vanished", "Clear retained an expired presentation scope");
             }
             checkProfilerAggregates(cpuProfiler, "Cleared CPU history");
-            emitCpu(520);
+            emitCpu(120);
             checkProfile(cpuProfiler.history().size() == 1, "CPU samples did not restart after clear");
             checkProfilerAggregates(cpuProfiler, "Restarted CPU history");
 
@@ -343,16 +343,16 @@ public:
             checkProfilerAggregates(gpuProfiler, "Restored GPU samples and valid zero");
             checkProfile(gpuProfiler.historyStatistics(pass).gpu.count == 3 && gpuProfiler.historyStatistics(pass).cpu.count == 3 &&
                 gpuProfiler.historyStatistics(pass).cpu.average == 2, "GPU correction changed CPU statistics or dropped a valid zero");
-            for (uint64_t executionId = 4; executionId <= 505; ++executionId) {
+            for (uint64_t executionId = 4; executionId <= 105; ++executionId) {
                 emitGpu(graphStats(executionId, 1, true, 15.0 + executionId % 7));
-                if (executionId >= 503) { checkProfilerAggregates(gpuProfiler, "GPU rollover " + std::to_string(executionId)); }
+                if (executionId >= 103) { checkProfilerAggregates(gpuProfiler, "GPU rollover " + std::to_string(executionId)); }
             }
             const auto rolled = gpuProfiler.historyStatistics(pass).gpu;
-            checkProfile(rolled.count == 500 && rolled.minimum >= 15 && rolled.maximum <= 21,
+            checkProfile(rolled.count == 100 && rolled.minimum >= 15 && rolled.maximum <= 21,
                 "GPU rollover retained evicted zero/minimum or correction extrema");
             gpuProfiler.updateRenderGraphGpuStats(graphStats(1, 1, true, 9999));
             checkProfilerAggregates(gpuProfiler, "Completion for evicted execution");
-            checkProfile(gpuProfiler.historyStatistics(pass).gpu.count == 500 && gpuProfiler.historyStatistics(pass).gpu.maximum <= 21,
+            checkProfile(gpuProfiler.historyStatistics(pass).gpu.count == 100 && gpuProfiler.historyStatistics(pass).gpu.maximum <= 21,
                 "Completion outside history reinserted an evicted GPU sample");
             emitGpu(graphStats(1, 2, false, 999));
             gpuProfiler.updateRenderGraphGpuStats(graphStats(1, 1, true, 9999));
@@ -439,7 +439,7 @@ public:
                     actual.average == expected.average && actual.minimum == 5 && actual.maximum == 7,
                     "Catalog overflow stopped updating a known scope or counted rejected names");
             }
-            return RHITestResult::pass("Raw-history CPU/GPU aggregates, 500-sample extrema eviction, occurrence identities, missing/nonfinite/zero samples, shared-execution GPU corrections, resets and bounded scope catalog");
+            return RHITestResult::pass("Raw-history CPU/GPU aggregates, 100-sample extrema eviction, occurrence identities, missing/nonfinite/zero samples, shared-execution GPU corrections, resets and bounded scope catalog");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
@@ -455,12 +455,12 @@ public:
         RenderGraphExecutionStats stats{.graphGeneration=1};
         stats.nodes.push_back({.id=7, .name="Pass", .cpuMilliseconds=1});
         stats.streaming.push_back({.passName="Pass", .assetPath="capture", .generation=1});
-        for (uint64_t i=0; i<540; ++i) {
+        for (uint64_t i=0; i<140; ++i) {
             stats.executionId=i; stats.streaming[0].frameIndex=i;
             auto frame=profiler.beginFrame(); profiler.addRenderGraphStats(stats);
         }
         profiler.endCapture();
-        checkProfile(profiler.history().size()==500 && profiler.capturedFrames().size()==540,
+        checkProfile(profiler.history().size()==100 && profiler.capturedFrames().size()==140,
             "Capture was truncated with UI history");
         checkProfile(profiler.capturedFrames()[0].streaming[0].frameIndex==0,
             "Capture lost original streaming frame");
@@ -526,7 +526,7 @@ public:
             std::filesystem::create_directories(context.outputDirectory);
             std::string log;
             checkProfile(saveProfilerPanel(profiler, "Table", context.outputDirectory / "Profiler-Stable-Scopes.png", log, false), log);
-            for (int i = 0; i < 501; ++i) { emit(false); }
+            for (int i = 0; i < 101; ++i) { emit(false); }
             checkProfile(find(profiler.presentationFrame(), "Optional HZB") == optional,
                 "History rollover removed a known scope");
             profiler.clearHistory();

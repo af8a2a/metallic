@@ -14,7 +14,7 @@
 namespace metallic {
 namespace {
 
-constexpr size_t kProfilerHistorySize = 500;
+constexpr size_t kProfilerHistorySize = 100;
 constexpr size_t kProfilerScopeTreeLimit = 8192;
 constexpr uint32_t kIdleColor = 0x9299a3ffu;
 constexpr float kPi = 3.14159265358979323846f;
