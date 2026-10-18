@@ -76,6 +76,40 @@ protected:
     }
 };
 
+TEST_F(DeviceFeatures, MaximalReconvergenceIsOptionalAndRequiresExtensionAndFeature)
+{
+    const auto requested = request();
+    EXPECT_TRUE(requested.shaderMaximalReconvergence);
+    EXPECT_FALSE(select().shaderMaximalReconvergence);
+    EXPECT_TRUE(select().matches(requested));
+    EXPECT_FALSE(extensionNames(select()).contains(VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME));
+
+    extensions.shaderMaximalReconvergence = true;
+    probe.buildChain(extensions);
+    EXPECT_TRUE(chainTypes(probe.features.pNext).contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR));
+    EXPECT_FALSE(select().shaderMaximalReconvergence);
+    EXPECT_TRUE(select().matches(requested));
+
+    probe.shaderMaximalReconvergenceFeatures.shaderMaximalReconvergence = VK_TRUE;
+    const auto selected = select();
+    EXPECT_TRUE(selected.shaderMaximalReconvergence);
+    EXPECT_TRUE(extensionNames(selected).contains(VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME));
+    VulkanEnabledFeatureChain enabled(selected);
+    EXPECT_TRUE(chainTypes(enabled.features.pNext).contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR));
+    EXPECT_EQ(enabled.shaderMaximalReconvergenceFeatures.shaderMaximalReconvergence, VK_TRUE);
+    DeviceCapabilities caps;
+    VulkanDeviceCapabilities backend;
+    selected.publish(caps, backend);
+    EXPECT_TRUE(caps.shaderMaximalReconvergence);
+
+    extensions.shaderMaximalReconvergence = false;
+    const auto unsupported = select();
+    EXPECT_FALSE(unsupported.shaderMaximalReconvergence);
+    EXPECT_TRUE(unsupported.matches(requested));
+    VulkanEnabledFeatureChain disabled(unsupported);
+    EXPECT_FALSE(chainTypes(disabled.features.pNext).contains(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR));
+}
+
 TEST_F(DeviceFeatures, RayTracingPipelineIsIndependentAndOptIn)
 {
     supportAS();

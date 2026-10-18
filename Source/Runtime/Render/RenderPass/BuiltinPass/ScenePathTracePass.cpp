@@ -614,7 +614,8 @@ public:
         if (!validateInlineComputeRoot(properties(), log)) { return makeError(Error::Unsupported); }
         if (!validateTrustedSceneParameters(properties(), log)) { return makeError(Error::Unsupported); }
         if (inlineComputeRootEnabled(properties()) != compiledInlineComputeRoot_ ||
-            trustedSceneParametersEnabled(properties()) != compiledTrustedSceneParameters_) {
+            trustedSceneParametersEnabled(properties()) != compiledTrustedSceneParameters_ ||
+            boolProperty(properties(), "textureFeedbackWave", false) != compiledTextureFeedbackWaveRequested_) {
             return compile(context, log);
         }
         if (rayPipelineEnabled(properties()) != compiledRayPipeline_ ||
@@ -664,6 +665,9 @@ public:
             log = "ScenePathTracePass requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
         }
+        const bool textureFeedbackWave = boolProperty(properties(), "textureFeedbackWave", false) &&
+            supportsInlineComputeRoot(properties()) && context.device->capabilities().shaderMaximalReconvergence &&
+            context.device->capabilities().computeSubgroupBallotArithmetic;
         if (!visibilityDeferred_ && (!context.device->capabilities().rayTracingAccelerationStructure ||
             !context.device->capabilities().rayQuery)) {
             log = "ScenePathTracePass requires rayTracingAccelerationStructure and rayQuery capabilities";
@@ -749,6 +753,7 @@ public:
             "|splitPrimaryGuides=" + (splitPrimaryGuides ? "1" : "0") +
             "|inlineComputeRoot=" + (inlineComputeRoot ? "1" : "0") +
             "|trustedSceneParameters=" + (trustedSceneParameters ? "1" : "0") +
+            "|textureFeedbackWave=" + (textureFeedbackWave ? "1" : "0") +
             "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
@@ -789,6 +794,7 @@ public:
         if (baseReady && sharcReady) {
             // Legacy fixed/sparse schedules can reuse identical shaders.
             compiledProgramBinning_ = boolProperty(properties(), "programBinning", true);
+            compiledTextureFeedbackWaveRequested_ = boolProperty(properties(), "textureFeedbackWave", false);
             return {};
         }
 
@@ -975,6 +981,7 @@ public:
             compiledSingleSampleGuides_ = singleSampleGuides;
             compiledInlineComputeRoot_ = false;
             compiledTrustedSceneParameters_ = false;
+            compiledTextureFeedbackWaveRequested_ = boolProperty(properties(), "textureFeedbackWave", false);
             compiledSplitPrimaryGuides_ = false;
             compiledRayPipeline_ = true;
             compiledVkGltf_ = vkGltf;
@@ -999,6 +1006,10 @@ public:
             // Select transport and the fixed packet contract after the factory
             // has selected the existing source and specialization constants.
             if (inlineComputeRoot) { request.defines.push_back({"METALLIC_INLINE_COMPUTE_ROOT", "1"}); }
+            if (textureFeedbackWave) {
+                request.defines.emplace_back("METALLIC_TEXTURE_FEEDBACK_WAVE", "1");
+                request.capabilities.emplace_back("spvMaximalReconvergenceKHR");
+            }
             if (inlineComputeRoot && supportsInlineComputeRoot(properties())) {
                 request.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES",
                     trustedSceneParameters ? std::to_string(sizeof(SceneResourceParameters)) : "0");
@@ -1218,6 +1229,7 @@ public:
         compiledSingleSampleGuides_ = singleSampleGuides;
         compiledInlineComputeRoot_ = inlineComputeRoot;
         compiledTrustedSceneParameters_ = trustedSceneParameters;
+        compiledTextureFeedbackWaveRequested_ = boolProperty(properties(), "textureFeedbackWave", false);
         compiledSplitPrimaryGuides_ = splitPrimaryGuides;
         compiledRayPipeline_ = false;
         compiledVkGltf_ = false;
@@ -1263,6 +1275,10 @@ public:
         }
         if (trustedSceneParametersEnabled(context.properties()) != compiledTrustedSceneParameters_) {
             spdlog::error("ScenePathTracePass trustedSceneParameters changed without recompiling the graph");
+            return makeError(Error::InvalidArgument);
+        }
+        if (boolProperty(context.properties(), "textureFeedbackWave", false) != compiledTextureFeedbackWaveRequested_) {
+            spdlog::error("ScenePathTracePass textureFeedbackWave changed without recompiling the graph");
             return makeError(Error::InvalidArgument);
         }
         if (errorProgram_.valid()) {
@@ -2998,6 +3014,7 @@ private:
     bool compiledSingleSampleGuides_ = false;
     bool compiledInlineComputeRoot_ = false;
     bool compiledTrustedSceneParameters_ = false;
+    bool compiledTextureFeedbackWaveRequested_ = false;
     bool compiledSplitPrimaryGuides_ = false;
     bool compiledRayPipeline_ = false;
     bool compiledVkGltf_ = false;

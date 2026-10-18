@@ -142,6 +142,11 @@ MT_VK_FEATURE(computeSubgroupShuffle, true, false,
         (probe.subgroupProperties.supportedOperations & kShuffleOperations) == kShuffleOperations, 0,
     , caps.computeSubgroupShuffle = computeSubgroupShuffle;)
 
+MT_VK_SIMPLE(shaderMaximalReconvergence, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME,
+    VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR,
+    shaderMaximalReconvergence, true, false, true, 0,
+    caps.shaderMaximalReconvergence = shaderMaximalReconvergence;)
+
 MT_VK_FEATURE(rayTracingAccelerationStructure, desc.enableRayTracingAccelerationStructure, true,
     (request.rayTracingAccelerationStructure || request.rayQuery || request.rayTracingPipeline || request.streamline) && accelerationStructureSupported, 4,
     accelerationStructureFeatures.accelerationStructure = selection.rayTracingAccelerationStructure;, caps.rayTracingAccelerationStructure = rayTracingAccelerationStructure;)

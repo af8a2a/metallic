@@ -773,9 +773,7 @@ public float4 loadMaterialTextureForMaterial(
             footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
             float wanted = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection,
                 feedback[offset], feedback[offset + 1u], feedback[offset + 2u], footprint);
-            uint ignored;
-            InterlockedMin(feedback[offset + 4u], uint(max(floor(wanted), 0.0)), ignored);
-            InterlockedAdd(feedback[offset + 5u], 1u, ignored);
+            recordTextureDemand(feedback, textureInfo.textureIndex, uint(max(floor(wanted), 0.0)));
         }
     }
     if (deterministicMip0) {

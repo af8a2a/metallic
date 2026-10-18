@@ -42,6 +42,7 @@ struct ShaderRequirements
     bool clusterAccelerationStructure = false;
     bool subgroupBallotArithmetic = false;
     bool subgroupShuffle = false;
+    bool maximalReconvergence = false;
     bool int64Atomics = false;
     bool integerDotProduct = false;
     bool cooperativeVector = false;
@@ -66,6 +67,10 @@ Result<ShaderRequirements> inspectShader(std::span<const uint32_t> words)
         }
         if (opcode == 21u && count == 4 && words[offset + 2] == 64u) { // OpTypeInt
             int64Types.insert(words[offset + 1]);
+        }
+        if (opcode == 16u) { // OpExecutionMode
+            if (count < 3u) { return makeError(Error::InvalidArgument); }
+            requirements.maximalReconvergence |= words[offset + 2] == 6023u; // MaximallyReconvergesKHR
         }
         if (opcode == 17u && count == 2u) { // Actual SPIR-V OpCapability
             const uint32_t capability = words[offset + 1];
@@ -119,6 +124,9 @@ const char* unsupportedReason(const ShaderRequirements& shader, const DeviceCapa
     }
     if (shader.subgroupShuffle && !caps.computeSubgroupShuffle) {
         return "emitted subgroup shuffle operations are unavailable";
+    }
+    if (shader.maximalReconvergence && !caps.shaderMaximalReconvergence) {
+        return "emitted maximal reconvergence execution mode is unavailable";
     }
     if (shader.int64Atomics && !caps.shaderBufferInt64Atomics) { return "emitted 64-bit buffer atomics are unavailable"; }
     if (shader.integerDotProduct && !caps.shaderIntegerDotProduct) { return "emitted integer dot products are unavailable"; }

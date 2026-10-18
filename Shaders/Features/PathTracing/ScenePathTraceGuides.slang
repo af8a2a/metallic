@@ -68,6 +68,9 @@ DLSSRRGuideData evaluateStandardDlssRrGuides(
     return evaluateStandardDlssRrGuidesAtHit(ray, rayCone, samplePixel, push, seed, hit);
 }
 
+#if METALLIC_TEXTURE_FEEDBACK_WAVE
+[MaximallyReconverges]
+#endif
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)

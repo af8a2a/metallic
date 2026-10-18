@@ -68,6 +68,7 @@ Json deviceJson(const PipelineRecipeDevice& device)
             {"mesh_shader", caps.meshShader}, {"task_shader", caps.taskShader},
             {"geometry_shader", caps.geometryShader}, {"task_shader_subgroup_ballot", caps.taskShaderSubgroupBallot},
             {"subgroup_size_control", caps.subgroupSizeControl}, {"compute_full_subgroups", caps.computeFullSubgroups},
+            {"shader_maximal_reconvergence", caps.shaderMaximalReconvergence},
             {"ray_tracing_acceleration_structure", caps.rayTracingAccelerationStructure}, {"ray_query", caps.rayQuery},
             {"ray_tracing_pipeline", caps.rayTracingPipeline},
             {"ray_tracing_invocation_reorder", caps.rayTracingInvocationReorder},
@@ -99,6 +100,7 @@ PipelineRecipeDevice readDevice(const Json& json)
     caps.taskShaderSubgroupBallot = features.at("task_shader_subgroup_ballot").get<bool>();
     caps.subgroupSizeControl = features.at("subgroup_size_control").get<bool>();
     caps.computeFullSubgroups = features.at("compute_full_subgroups").get<bool>();
+    caps.shaderMaximalReconvergence = features.value("shader_maximal_reconvergence", false);
     caps.rayTracingAccelerationStructure = features.at("ray_tracing_acceleration_structure").get<bool>();
     caps.rayQuery = features.at("ray_query").get<bool>();
     caps.rayTracingPipeline = features.value("ray_tracing_pipeline", false);

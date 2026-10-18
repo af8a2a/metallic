@@ -333,6 +333,7 @@ TEST(PipelineRecipe, RayTracingV3RoundtripAndStageValidation)
     recipe.disableOptimization = true;
     recipe.sourceDevice.capabilities.rayTracingPipeline = true;
     recipe.sourceDevice.capabilities.rayTracingAccelerationStructure = true;
+    recipe.sourceDevice.capabilities.shaderMaximalReconvergence = true;
     const std::array stages{&PipelineRecipe::rayGenerationShader, &PipelineRecipe::missShader,
         &PipelineRecipe::closestHitShader, &PipelineRecipe::anyHitShader};
     const std::array<const char*, 4> names{"ray_generation", "miss", "closest_hit", "any_hit"};
@@ -363,6 +364,15 @@ TEST(PipelineRecipe, RayTracingV3RoundtripAndStageValidation)
     EXPECT_EQ(loaded->cacheGroup, recipe.cacheGroup);
     EXPECT_TRUE(loaded->sourceDevice.capabilities.rayTracingPipeline);
     EXPECT_TRUE(loaded->sourceDevice.capabilities.rayTracingAccelerationStructure);
+    EXPECT_TRUE(loaded->sourceDevice.capabilities.shaderMaximalReconvergence);
+    auto legacyManifest = manifest;
+    legacyManifest["source_device"]["enabled_features"].erase("shader_maximal_reconvergence");
+    const auto legacyPath = directory / "legacy-capabilities.recipe.json";
+    { std::ofstream output(legacyPath); output << legacyManifest.dump(2); }
+    auto legacy = readPipelineRecipe(legacyPath, log);
+    ASSERT_TRUE(legacy) << log;
+    EXPECT_FALSE(legacy->sourceDevice.capabilities.shaderMaximalReconvergence);
+    EXPECT_EQ(legacy->expectedPsoHash, recipe.expectedPsoHash);
     for (size_t index = 0; index < stages.size(); ++index) {
         const auto& original = recipe.*stages[index];
         const auto& imported = (*loaded).*stages[index];
