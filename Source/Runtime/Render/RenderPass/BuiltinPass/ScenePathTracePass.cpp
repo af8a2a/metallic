@@ -2,6 +2,7 @@
 #include "StreamRayTracingBindings.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
+#include "Runtime/Render/Core/PathTraceShaderPolicy.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
@@ -1007,15 +1008,8 @@ public:
                 : makeSceneShaderRequest(shaderProgram, shaderOptions, defines);
             // Select transport and the fixed packet contract after the factory
             // has selected the existing source and specialization constants.
-            if (inlineComputeRoot) { request.defines.push_back({"METALLIC_INLINE_COMPUTE_ROOT", "1"}); }
-            if (textureFeedbackWave) {
-                request.defines.emplace_back("METALLIC_TEXTURE_FEEDBACK_WAVE", "1");
-                request.capabilities.emplace_back("spvMaximalReconvergenceKHR");
-            }
-            if (inlineComputeRoot && supportsInlineComputeRoot(properties())) {
-                request.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES",
-                    trustedSceneParameters ? std::to_string(sizeof(SceneResourceParameters)) : "0");
-            }
+            const PathTraceShaderPolicy sourcePolicy{inlineComputeRoot, trustedSceneParameters, textureFeedbackWave};
+            applyPathTraceShaderPolicy(request, sourcePolicy);
             const ShaderRequestView source(request);
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
@@ -1026,7 +1020,7 @@ public:
                     .debugName = debugName.c_str(),
                     .resourceParameterSize = splitPrimaryGuides ? sizeof(ScenePrimarySplitResourceParameters) : sizeof(SceneResourceParameters),
                     .specializationConstants = sceneShaderSpecializationConstants(shaderProgram, shaderOptions, defines),
-                    .rootTransport = inlineComputeRoot ? ParameterTransport::InlinePush : ParameterTransport::DescriptorBuffer},
+                    .rootTransport = sourcePolicy.rootTransport()},
                 outProgram, artifact, diagnostics,
                 {.definitionHash = useOpenPBR ? findMaterialProgram(definition)->key.definitionHash : 0,
                     .qualityProfile = visibilityDeferred_ && shaderOptions.deferredFloat16 ? 1u : 0u});

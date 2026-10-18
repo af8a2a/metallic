@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/BuiltinShaderRequests.h"
+#include "Runtime/Render/Core/PathTraceShaderPolicy.h"
 #include "Runtime/Render/Core/NamedResourceParameters.h"
 #include "Runtime/Render/Core/ShaderResourceABI.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -31,6 +32,18 @@ SceneShaderOptions standardSceneOptions()
 bool contains(const std::vector<ShaderRequest>& catalog, const ShaderRequest& request)
 {
     return std::find(catalog.begin(), catalog.end(), request) != catalog.end();
+}
+
+// Preserve the historical catalog order/count contract independently of the
+// appended complete default PathTrace policies.
+size_t legacyWarmupPrefixSize(const std::vector<ShaderRequest>& catalog)
+{
+    const auto first = std::find_if(catalog.begin(), catalog.end(), [](const auto& request) {
+        return std::any_of(request.defines.begin(), request.defines.end(), [](const auto& define) {
+            return define.first == "METALLIC_INLINE_COMPUTE_ROOT";
+        });
+    });
+    return static_cast<size_t>(first - catalog.begin());
 }
 
 // Independent old OpenPBR request construction for static fallback expectations.
@@ -1205,6 +1218,54 @@ TEST_F(ShaderRequestCompileTest, DeferredBackgroundCanonicalizationPreservesAllF
     EXPECT_EQ(compiledRequests.size(), 1u);
 }
 
+TEST(ShaderRequests, DLSSRRWarmupContainsCompleteDefaultGuideRequests)
+{
+    for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
+        const auto catalog = builtinShaderWarmupRequests(include);
+        const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
+        const SlangMacroDefine query{"SHARC_QUERY", "1"}, update{"SHARC_UPDATE", "1"};
+        const SlangMacroDefine single{"METALLIC_PT_SINGLE_SAMPLE", "1"};
+        // DLSS RR runs single-sample Base/Query, but trains with the ordinary
+        // update source. Compare the entire ordered request, not its entry name.
+        const std::vector<std::vector<SlangMacroDefine>> permutations{{single}, {query, single}, {update}};
+        for (const auto& defines : permutations) {
+            auto expected = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+            expected.defines.emplace_back("METALLIC_INLINE_COMPUTE_ROOT", "1");
+            expected.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "392");
+            const auto runtime = makePathTraceShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+            EXPECT_EQ(runtime, expected);
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), runtime), 1);
+            const auto legacy = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
+            EXPECT_NE(runtime, legacy);
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), legacy), 1);
+        }
+        ASSERT_LT(legacyWarmupPrefixSize(catalog), catalog.size());
+        for (const auto& request : catalog) {
+            EXPECT_EQ(std::count(catalog.begin(), catalog.end(), request), 1);
+        }
+    }
+}
+
+TEST(ShaderRequests, PathTraceSharedPolicyPreservesExplicitLegacyAndUntrustedRequests)
+{
+    const auto options = standardSceneOptions();
+    const SlangMacroDefine single{"METALLIC_PT_SINGLE_SAMPLE", "1"};
+    const auto program = SceneShaderProgram::OpenPBRPathTraceGuides;
+    const PathTraceShaderPolicy legacy{.inlineComputeRoot = false, .trustedSceneParameters = false};
+    EXPECT_EQ(makePathTraceShaderRequest(program, options, {&single, 1}, legacy),
+        makeSceneShaderRequest(program, options, {&single, 1}));
+    auto expected = makeSceneShaderRequest(program, options, {&single, 1});
+    expected.defines.emplace_back("METALLIC_INLINE_COMPUTE_ROOT", "1");
+    expected.defines.emplace_back("METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "0");
+    const PathTraceShaderPolicy untrusted{.trustedSceneParameters = false};
+    EXPECT_EQ(makePathTraceShaderRequest(program, options, {&single, 1}, untrusted), expected);
+    EXPECT_EQ(legacy.rootTransport(), ParameterTransport::DescriptorBuffer);
+    EXPECT_EQ(legacy.userPushDataSize(), 12u);
+    EXPECT_EQ(untrusted.rootTransport(), ParameterTransport::InlinePush);
+    EXPECT_EQ(untrusted.userPushDataSize(), 24u);
+    EXPECT_EQ(PathTraceShaderPolicy{}.userPushDataSize(), 24u);
+}
+
 TEST(ShaderRequests, SingleSampleGuideWarmupRetainsBothRuntimePolicies)
 {
     for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
@@ -1212,15 +1273,16 @@ TEST(ShaderRequests, SingleSampleGuideWarmupRetainsBothRuntimePolicies)
         const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
         const SlangMacroDefine base[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
         const SlangMacroDefine query[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};
-        ASSERT_EQ(catalog.size(), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
+        ASSERT_EQ(legacyWarmupPrefixSize(catalog), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
             ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const size_t singleRequests = shared ? 1u : 2u;
-        const size_t prefixSize = catalog.size() - singleRequests - 2u;
+        const size_t legacySize = legacyWarmupPrefixSize(catalog);
+        const size_t prefixSize = legacySize - singleRequests - 2u;
         EXPECT_EQ(catalog[prefixSize - 1], makeShadowShaderRequest());
         EXPECT_EQ(catalog[prefixSize], makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, base));
         EXPECT_EQ(catalog[prefixSize + (shared ? 0u : 1u)], makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, query));
-        for (size_t i = 0; i < catalog.size(); ++i) {
+        for (size_t i = 0; i < legacySize; ++i) {
             const auto singles = std::count_if(catalog[i].defines.begin(), catalog[i].defines.end(), [](const auto& define) {
                 return define.first == "METALLIC_PT_SINGLE_SAMPLE";
             });
@@ -1246,7 +1308,7 @@ TEST(ShaderRequests, SingleSampleGuideWarmupMatchesRuntimeOrderedDescriptors)
         defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
         const auto runtime = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options, defines);
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
-        EXPECT_EQ(catalog[catalog.size() - (shared || query ? 3 : 4)], runtime);
+        EXPECT_EQ(catalog[legacyWarmupPrefixSize(catalog) - (shared || query ? 3 : 4)], runtime);
         EXPECT_NE(runtime, multi);
         EXPECT_EQ(std::count(catalog.begin(), catalog.end(), multi), 1);
         std::vector<std::pair<std::string, std::string>> expected{
@@ -1278,7 +1340,7 @@ TEST_F(ShaderRequestCompileTest, SingleSampleGuideWarmupHitsRuntimeCache)
         std::vector<SlangMacroDefine> defines;
         if (query) { defines.push_back({"SHARC_QUERY", "1"}); }
         defines.push_back({"METALLIC_PT_SINGLE_SAMPLE", "1"});
-        const auto runtime = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, standardSceneOptions(), defines);
+        const auto runtime = makePathTraceShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, standardSceneOptions(), defines);
         const auto warmup = std::find(catalog.begin(), catalog.end(), runtime);
         ASSERT_NE(warmup, catalog.end());
         const ShaderRequestView warmupSource(*warmup), runtimeSource(runtime);
@@ -1299,12 +1361,12 @@ TEST(ShaderRequests, HZBSPDWarmupAppendsRuntimeOrderedDescriptors)
 {
     for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
         const auto catalog = builtinShaderWarmupRequests(include);
-        ASSERT_EQ(catalog.size(), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
+        ASSERT_EQ(legacyWarmupPrefixSize(catalog), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
             ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
         for (uint32_t wave = 0; wave < 2; ++wave) {
             const ShaderRequest runtime{.module = kHZBSPDModule, .entry = kHZBSPDEntryPoint,
                 .defines = {{kHZBSPDWaveOpsDefine, wave ? "1" : "0"}}};
-            const auto& warmup = catalog[catalog.size() - 2 + wave];
+            const auto& warmup = catalog[legacyWarmupPrefixSize(catalog) - 2 + wave];
             EXPECT_EQ(warmup, runtime);
             EXPECT_TRUE(warmup.capabilities.empty());
             EXPECT_TRUE(warmup.searchPaths.empty());
@@ -1553,7 +1615,7 @@ TEST(ShaderRequests, DeferredRuntimeGuidesKeepCatalogAndOtherProgramAxes)
 {
     for (const auto& include : {std::string{}, std::string{"C:/RTXCR"}}) {
         const auto catalog = builtinShaderWarmupRequests(include);
-        EXPECT_EQ(catalog.size(), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
+        EXPECT_EQ(legacyWarmupPrefixSize(catalog), (sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg)
             ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
         EXPECT_EQ(std::count_if(catalog.begin(), catalog.end(), [](const auto& request) {
             return request.module == "Features/VisibilityBuffer/VisibilityBufferDeferred";
@@ -2124,7 +2186,7 @@ TEST(ShaderRequests, OpenPBRCacheQueryCatalogRetainsAllRuntimePolicies)
         const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const auto catalog = builtinShaderWarmupRequests(include);
-        EXPECT_EQ(catalog.size(), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
+        EXPECT_EQ(legacyWarmupPrefixSize(catalog), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
             ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
         EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options) ==
             makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, options), shared);
@@ -2306,7 +2368,7 @@ TEST(ShaderRequests, StandardPathCacheQueryCatalogRetainsBothRuntimePolicies)
         const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const auto catalog = builtinShaderWarmupRequests(include);
-        EXPECT_EQ(catalog.size(), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
+        EXPECT_EQ(legacyWarmupPrefixSize(catalog), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
             ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
         const SlangMacroDefine query{"SHARC_QUERY", "1"}, update{"SHARC_UPDATE", "1"};
         const auto off = makeSceneShaderRequest(program, options);
@@ -2454,7 +2516,7 @@ TEST(ShaderRequests, SingleGuideCacheQueryCatalogRetainsBothRuntimePolicies)
         const SceneShaderOptions options{.hasRTXCR = !include.empty(), .rtxcrInclude = include};
         const bool shared = options.hasRTXCR && sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg;
         const auto catalog = builtinShaderWarmupRequests(include);
-        EXPECT_EQ(catalog.size(), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
+        EXPECT_EQ(legacyWarmupPrefixSize(catalog), sceneWorkingColorSpace() == SceneWorkingColorSpace::ACEScg
             ? (include.empty() ? 136u : 132u) : (include.empty() ? 144u : 145u));
         const SlangMacroDefine offDefines[]{{"METALLIC_PT_SINGLE_SAMPLE", "1"}};
         const SlangMacroDefine onDefines[]{{"SHARC_QUERY", "1"}, {"METALLIC_PT_SINGLE_SAMPLE", "1"}};

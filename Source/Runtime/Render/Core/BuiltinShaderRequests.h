@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/ShaderRequests.h"
+#include "Runtime/Render/Core/PathTraceShaderPolicy.h"
 #include "Runtime/Render/HZBSPD.h"
 
 #include <initializer_list>
@@ -153,6 +154,15 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
     // Match VisibilityBufferPass LDS and optional wave SPD startup requests.
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "0"}});
     add(kHZBSPDModule, {kHZBSPDEntryPoint}, {}, {{kHZBSPDWaveOpsDefine, "1"}});
+    // Runtime defaults use the inline root and trusted scene packet. Keep the
+    // explicit legacy transport recipes and warm the exact default source too.
+    const size_t legacyRequestCount = requests.size();
+    for (size_t index = 0; index < legacyRequestCount; ++index) {
+        if (!isPathTraceShaderRequest(requests[index])) { continue; }
+        auto request = requests[index];
+        applyPathTraceShaderPolicy(request, {});
+        requests.push_back(std::move(request));
+    }
     // Deduplicate complete requests, preserving macro/capability/search-path
     // order and the first occurrence. No compiler cache version change is needed.
     std::vector<ShaderRequest> unique;

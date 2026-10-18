@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/NativeShaderWarmupRequests.h"
 #include "Runtime/Render/Core/BuiltinShaderRequests.h"
+#include "Runtime/Render/Core/PathTraceShaderPolicy.h"
 #include "Runtime/Render/HZBSPD.h"
 
 #include <gtest/gtest.h>
@@ -143,6 +144,63 @@ TEST(NativeShaderWarmupRequests, AllRuntimeScenePoliciesSurviveSourceDeduplicati
             }
         }
     }
+}
+
+TEST(NativeShaderWarmupRequests, CompletePathTracePoliciesOwnRuntimeLayoutsAndSpecializationTuples)
+{
+    for (const bool rtxcr : {false, true}) {
+        const SceneShaderOptions options{.hasRTXCR = rtxcr, .rtxcrInclude = rtxcr ? "rtxcr" : ""};
+        const auto catalog = builtinShaderWarmupRequests(options.rtxcrInclude);
+        const SlangMacroDefine query{"SHARC_QUERY", "1"}, update{"SHARC_UPDATE", "1"};
+        const SlangMacroDefine single{"METALLIC_PT_SINGLE_SAMPLE", "1"};
+        for (const auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
+                SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides}) {
+            std::vector<std::vector<SlangMacroDefine>> permutations{{}, {query}, {update}};
+            if (program == SceneShaderProgram::OpenPBRPathTraceGuides) {
+                permutations.push_back({single});
+                permutations.push_back({query, single});
+            }
+            for (const auto& defines : permutations) {
+                for (const bool inlineRoot : {false, true}) {
+                    const PathTraceShaderPolicy policy{.inlineComputeRoot = inlineRoot, .trustedSceneParameters = inlineRoot};
+                    const auto request = makePathTraceShaderRequest(program, options, defines, policy);
+                    SCOPED_TRACE(request.module + "." + request.entry);
+                    const auto variants = nativeComputeWarmupVariants(request);
+                    ASSERT_FALSE(variants.empty());
+                    const auto constants = sceneShaderSpecializationConstants(program, options, defines);
+                    EXPECT_TRUE(std::any_of(variants.begin(), variants.end(), [&](const auto& variant) {
+                        return variant.userPushDataSize == (inlineRoot ? 24u : 12u) && !variant.indirectBindable &&
+                            std::ranges::equal(variant.specializationConstants, constants);
+                    }));
+                    for (const auto& variant : variants) {
+                        EXPECT_EQ(variant.userPushDataSize, inlineRoot ? 24u : 12u);
+                        EXPECT_EQ(std::count(variants.begin(), variants.end(), variant), 1);
+                    }
+                    // Standard Guides SHARC policies are not default runtime
+                    // requests; all other permutations belong to the catalog.
+                    if (program != SceneShaderProgram::PathTraceGuides || defines.empty()) {
+                        EXPECT_EQ(std::count(catalog.begin(), catalog.end(), request), 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(NativeShaderWarmupRequests, MalformedPathTraceRootContractsAreNotGuessed)
+{
+    const auto request = makePathTraceShaderRequest(SceneShaderProgram::OpenPBRPathTraceGuides, {});
+    for (const auto& macro : {std::pair<std::string, std::string>{"METALLIC_INLINE_COMPUTE_ROOT", "1"},
+            {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "392"}}) {
+        auto duplicated = request;
+        duplicated.defines.push_back(macro);
+        EXPECT_TRUE(nativeComputeWarmupVariants(duplicated).empty());
+    }
+    auto wrongPacket = request;
+    for (auto& [name, value] : wrongPacket.defines) {
+        if (name == "METALLIC_TRUSTED_SCENE_RESOURCE_BYTES") { value = "396"; }
+    }
+    EXPECT_TRUE(nativeComputeWarmupVariants(wrongPacket).empty());
 }
 
 TEST(NativeShaderWarmupRequests, FoldedFamiliesHaveOnlyTheirClosedRuntimeTuples)

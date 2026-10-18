@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/ShaderRequests.h"
+#include "Runtime/Render/Core/PathTraceShaderPolicy.h"
 #include "Runtime/Render/Core/ColorResizeParameters.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
@@ -30,6 +31,10 @@ namespace native_warmup_detail {
 // must declare its actual pipeline ABI; it never inherits a guessed 12-byte root.
 inline std::optional<uint32_t> userPushDataSize(const ShaderRequest& request)
 {
+    if (isPathTraceShaderRequest(request)) {
+        const auto policy = parsePathTraceShaderPolicy(request);
+        return policy ? std::optional<uint32_t>(policy->userPushDataSize()) : std::nullopt;
+    }
     const auto matches = [&](std::string_view module, std::initializer_list<std::string_view> entries) {
         return request.module == module && std::find(entries.begin(), entries.end(), request.entry) != entries.end();
     };
@@ -164,7 +169,13 @@ inline std::vector<NativeComputeWarmupVariant> nativeComputeWarmupVariants(const
     }
     const auto addPolicy = [&](SceneShaderProgram program, const SceneShaderOptions& policy,
                                std::span<const SlangMacroDefine> defines = {}) {
-        if (native_warmup_detail::sameSourcePolicy(makeSceneShaderRequest(program, policy, defines), request)) {
+        auto generated = makeSceneShaderRequest(program, policy, defines);
+        if (isPathTraceShaderRequest(request)) {
+            const auto transport = parsePathTraceShaderPolicy(request);
+            if (!transport) { return; }
+            applyPathTraceShaderPolicy(generated, *transport);
+        }
+        if (native_warmup_detail::sameSourcePolicy(std::move(generated), request)) {
             append(sceneShaderSpecializationConstants(program, policy, defines));
         }
     };
