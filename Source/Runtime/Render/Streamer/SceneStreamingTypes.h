@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/TextureStreamingResources.h"
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -64,7 +66,7 @@ struct PreparedSceneResources {
     std::shared_ptr<MeshletStreamRuntime> geometry;
     std::vector<uint32_t> geometryOwnerMask;
     uint32_t mappedInstanceCount = 0;
-    Buffer* textureFeedback = nullptr;
+    TextureFeedbackResources textureFeedback;
     bool textureFeedbackEnabled = false;
     std::shared_ptr<StreamedImage> image;
     std::filesystem::path imagePath;

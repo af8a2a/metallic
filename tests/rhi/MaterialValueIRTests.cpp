@@ -8,6 +8,7 @@
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/NamedResourceParameters.h"
+#include "Runtime/Render/Streamer/TextureStreamingResources.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include <algorithm>
 #include <cmath>
@@ -175,14 +176,15 @@ public:
             allocate(materials.size() * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
             // The production texture adapter reads the residency sampling floor.
             // This probe has one fully resident texture and no streaming demand.
-            const std::array<uint32_t, 8> feedbackWords{};
-            allocate(sizeof(feedbackWords), MemoryLocation::HostUpload, BufferUsageBits::Storage, feedback);
+            const TextureSamplingMetadata samplingMetadata{
+                .residentLodTerm = makeTextureLodTerm(2, 2), .residentWidth = 2, .residentHeight = 2, .residentMipCount = 2};
+            allocate(sizeof(samplingMetadata), MemoryLocation::HostUpload, BufferUsageBits::Storage, feedback);
             auto write = [&](Buffer& buffer, const void* data, size_t bytes) {
                 void* mapped = buffer.map(); check(mapped != nullptr, "IR upload mapping failed");
                 std::memcpy(mapped, data, bytes); buffer.flush(); buffer.unmap();
             };
             write(*input, values->inputBytes().data(), values->inputBytes().size_bytes()); write(*upload, texels.data(), sizeof(texels));
-            write(*feedback, feedbackWords.data(), sizeof(feedbackWords));
+            write(*feedback, &samplingMetadata, sizeof(samplingMetadata));
             std::unique_ptr<Texture> texture;
             std::unique_ptr<TextureView> view;
             check(bool(device->createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
@@ -217,7 +219,7 @@ public:
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput)},
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, 1},
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues)},
-                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback)}};
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata)}};
             ComputeProgram program;
             const auto initialized = program.initialize(*device, {.spirv = shader->spirv, .bindings = bindings, .requiresRayQuery = false,
                 .resourceParameterSize = sizeof(SceneResourceParameters)}, log);
@@ -227,7 +229,7 @@ public:
                 {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = output.get()},
                 {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = views},
                 {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = input.get()},
-                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = feedback.get()}};
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = feedback.get()}};
             check(bool(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = dispatch, .groupCountX = uint32_t(materials.size())})), "IR dispatch failed");
             check(bool(gpu.submitAndWait()), "IR GPU execution failed");
             output->invalidate(); const auto* data = static_cast<const Float4*>(output->map());

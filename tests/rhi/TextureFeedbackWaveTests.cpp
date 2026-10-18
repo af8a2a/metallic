@@ -19,10 +19,10 @@ constexpr uint64_t kWaveFeedbackABI = 0x5445585741564501ull;
 constexpr uint32_t kTextureCount = 64;
 struct TextureFeedbackWaveParams
 {
-    GPUBufferSpan inputs, feedback;
+    GPUBufferSpan inputs, demandMip, demandHits;
     uint32_t laneCount, iterations;
 };
-static_assert(sizeof(TextureFeedbackWaveParams) == 32);
+static_assert(sizeof(TextureFeedbackWaveParams) == 44);
 
 void requireWaveFeedback(bool condition, const std::string& message)
 {
@@ -54,23 +54,29 @@ RHITestResult runWaveFeedback(RHITestContext& context, bool benchmark)
         requireWaveFeedback(registry.initialize(*device), "Registry");
         constexpr uint32_t kMaximumLanes = 65536;
         constexpr uint64_t kInputBytes = kMaximumLanes * sizeof(UInt4);
-        constexpr uint64_t kFeedbackBytes = kTextureCount * 8 * sizeof(uint32_t);
-        std::unique_ptr<Buffer> inputUpload, feedbackUpload, inputs, feedback, readback;
+        constexpr uint64_t kFeedbackBytes = kTextureCount * sizeof(uint32_t);
+        std::unique_ptr<Buffer> inputUpload, feedbackUpload, hitsUpload, inputs, feedback, hitsBuffer, readback, hitsReadback;
         auto allocate = [&](uint64_t bytes, MemoryLocation memory, BufferUsageBits usage, auto& target) {
             requireWaveFeedback(device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = memory})
                 .transform([&](auto value) { target = std::move(value); }), "Buffer");
         };
         allocate(kInputBytes, MemoryLocation::HostUpload, BufferUsageBits::TransferSource, inputUpload);
         allocate(kFeedbackBytes, MemoryLocation::HostUpload, BufferUsageBits::TransferSource, feedbackUpload);
+        allocate(kFeedbackBytes, MemoryLocation::HostUpload, BufferUsageBits::TransferSource, hitsUpload);
         allocate(kInputBytes, MemoryLocation::Device, BufferUsageBits::Storage | BufferUsageBits::TransferDestination, inputs);
         allocate(kFeedbackBytes, MemoryLocation::Device,
             BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination, feedback);
         allocate(kFeedbackBytes, MemoryLocation::HostReadback, BufferUsageBits::TransferDestination, readback);
+        allocate(kFeedbackBytes, MemoryLocation::HostReadback, BufferUsageBits::TransferDestination, hitsReadback);
+        allocate(kFeedbackBytes, MemoryLocation::Device,
+            BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination, hitsBuffer);
         auto write = [&](Buffer& buffer, const void* data, size_t bytes) {
             auto* mapped = buffer.map(); requireWaveFeedback(mapped != nullptr, "Upload map");
             std::memcpy(mapped, data, bytes); buffer.flush(); buffer.unmap();
         };
         auto inputUploadSlice = inputUpload->slice(), inputSlice = inputs->slice();
+        auto hitsUploadSlice = hitsUpload->slice(), hitsSlice = hitsBuffer->slice(), hitsReadbackSlice = hitsReadback->slice();
+        requireWaveFeedback(hitsUploadSlice && hitsSlice && hitsReadbackSlice, "Hits slices");
         auto feedbackUploadSlice = feedbackUpload->slice(), feedbackSlice = feedback->slice(), readbackSlice = readback->slice();
         requireWaveFeedback(inputUploadSlice, "Input upload slice"); requireWaveFeedback(inputSlice, "Input slice");
         requireWaveFeedback(feedbackUploadSlice, "Feedback upload slice"); requireWaveFeedback(feedbackSlice, "Feedback slice");
@@ -102,15 +108,13 @@ RHITestResult runWaveFeedback(RHITestContext& context, bool benchmark)
             const uint32_t lanes = pattern == 8 ? 37 : (benchmark ? kMaximumLanes : 4093);
             const uint32_t iterations = benchmark ? 8 : 3;
             std::vector<UInt4> inputData(kMaximumLanes);
-            std::array<uint32_t, kTextureCount * 8> initial{};
+            std::array<uint32_t, kTextureCount> initial, initialHits;
             for (uint32_t texture = 0; texture < kTextureCount; ++texture) {
-                for (uint32_t word = 0; word < 8; ++word) { initial[texture * 8 + word] = 0x12340000u + texture * 8 + word; }
-                // Include records whose existing mip is finer than every request,
-                // and nonzero counts, to catch overwrite rather than accumulation.
-                initial[texture * 8 + 4] = texture % 5 == 4 ? 0 : UINT32_MAX;
-                initial[texture * 8 + 5] = texture + 7;
+                initial[texture] = texture % 5 == 4 ? 0 : UINT32_MAX;
+                initialHits[texture] = texture + 7;
             }
             auto expected = initial;
+            auto expectedHits = initialHits;
             for (uint32_t lane = 0; lane < lanes; ++lane) {
                 uint32_t texture = 0;
                 if (pattern == 1) { texture = lane % 2; }
@@ -122,13 +126,14 @@ RHITestResult runWaveFeedback(RHITestContext& context, bool benchmark)
                 inputData[lane] = {texture, mip, uint32_t(active), 0};
                 if (active) {
                     for (uint32_t iteration = 0; iteration < iterations; ++iteration) {
-                        expected[texture * 8 + 4] = std::min(expected[texture * 8 + 4], (mip + iteration) & 15);
-                        ++expected[texture * 8 + 5];
+                        expected[texture] = std::min(expected[texture], (mip + iteration) & 15);
+                        ++expectedHits[texture];
                     }
                 }
             }
             write(*inputUpload, inputData.data(), kInputBytes);
             write(*feedbackUpload, initial.data(), kFeedbackBytes);
+            write(*hitsUpload, initialHits.data(), kFeedbackBytes);
             {
                 bench::GPUCommands gpu(*queue); requireWaveFeedback(gpu.initialize(*device), "Input commands");
                 gpu.commands->hostWriteBarrier();
@@ -139,7 +144,7 @@ RHITestResult runWaveFeedback(RHITestContext& context, bool benchmark)
                 requireWaveFeedback(gpu.submitAndWait(), "Input completion");
             }
             ParameterWriter writer(*device, registry);
-            const TextureFeedbackWaveParams params{writer.bufferSpan<UInt4>(inputs.get()), writer.bufferSpan<uint32_t>(feedback.get()), lanes, iterations};
+            const TextureFeedbackWaveParams params{writer.bufferSpan<UInt4>(inputs.get()), writer.bufferSpan<uint32_t>(feedback.get()), writer.bufferSpan<uint32_t>(hitsBuffer.get()), lanes, iterations};
             auto encoded = writer.encode(params, kWaveFeedbackABI, ParameterTransport::InlinePush);
             requireWaveFeedback(encoded, "Parameters");
             std::array<PreparedComputeDispatch, 2> dispatches;
@@ -158,6 +163,7 @@ RHITestResult runWaveFeedback(RHITestContext& context, bool benchmark)
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
                     requireWaveFeedback(gpu.commands->synchronize({.memory = {&reuse, 1}}), "Reset visibility");
                     requireWaveFeedback(gpu.commands->copyBuffer(*feedbackUploadSlice, *feedbackSlice), "Reset feedback");
+                    requireWaveFeedback(gpu.commands->copyBuffer(*hitsUploadSlice, *hitsSlice), "Reset hits");
                     const MemoryBarrierDesc compute{.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                         .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
                     requireWaveFeedback(gpu.commands->synchronize({.memory = {&compute, 1}}), "Feedback visibility");
@@ -168,12 +174,17 @@ RHITestResult runWaveFeedback(RHITestContext& context, bool benchmark)
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
                     requireWaveFeedback(gpu.commands->synchronize({.memory = {&transfer, 1}}), "Readback visibility");
                     requireWaveFeedback(gpu.commands->copyBuffer(*feedbackSlice, *readbackSlice), "Readback copy");
+                    requireWaveFeedback(gpu.commands->copyBuffer(*hitsSlice, *hitsReadbackSlice), "Hits readback copy");
                     requireWaveFeedback(gpu.submitAndWait(), "Completion");
                     readback->invalidate();
                     const auto* mapped = static_cast<const uint32_t*>(readback->map()); requireWaveFeedback(mapped != nullptr, "Readback map");
-                    std::array<uint32_t, kTextureCount * 8> actual;
+                    std::array<uint32_t, kTextureCount> actual, actualHits;
                     std::memcpy(actual.data(), mapped, kFeedbackBytes); readback->unmap();
+                    hitsReadback->invalidate();
+                    auto* hitsMapped = hitsReadback->map(); requireWaveFeedback(hitsMapped != nullptr, "Hits map");
+                    std::memcpy(actualHits.data(), hitsMapped, kFeedbackBytes); hitsReadback->unmap();
                     for (uint32_t word = 0; word < actual.size(); ++word) {
+                        requireWaveFeedback(actualHits[word] == expectedHits[word], std::string(kPatternNames[pattern]) + " hit mismatch at texture " + std::to_string(word));
                         requireWaveFeedback(actual[word] == expected[word], std::string(kPatternNames[pattern]) + " " + entries[side] +
                             " mismatch at word " + std::to_string(word) + ": " + std::to_string(actual[word]) + " != " + std::to_string(expected[word]));
                     }

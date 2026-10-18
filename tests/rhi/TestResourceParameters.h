@@ -254,12 +254,26 @@ static_assert(sizeof(TextureFootprintProbeResources) == 4);
 TEST_PUBLIC struct TextureStreamingProbeResources
 {
     TEST_PUBLIC TEST_SPAN textures;
-    TEST_PUBLIC TEST_BUFFER feedback;
+    TEST_PUBLIC TEST_BUFFER samplingMetadata;
+    TEST_PUBLIC TEST_BUFFER demandMip;
+    TEST_PUBLIC TEST_BUFFER demandHits;
     TEST_PUBLIC TEST_BUFFER output;
     TEST_PUBLIC TEST_SAMPLER sampler;
 };
 #ifdef __cplusplus
-static_assert(sizeof(TextureStreamingProbeResources) == 24);
+static_assert(sizeof(TextureStreamingProbeResources) == 32);
+#endif
+
+TEST_PUBLIC struct TextureLodProbeResources
+{
+    TEST_PUBLIC TEST_BUFFER cases;
+    TEST_PUBLIC TEST_BUFFER samplingMetadata;
+    TEST_PUBLIC TEST_BUFFER output;
+    TEST_PUBLIC TEST_SPAN textures;
+    TEST_PUBLIC TEST_SAMPLER sampler;
+};
+#ifdef __cplusplus
+static_assert(sizeof(TextureLodProbeResources) == 28);
 #endif
 
 TEST_PUBLIC struct TwoPassOcclusionProbeResources

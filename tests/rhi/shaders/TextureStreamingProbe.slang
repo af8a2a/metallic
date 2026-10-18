@@ -4,6 +4,7 @@ import Core;
 using Metallic;
 #include "../TestResourceParameters.h"
 import Material;
+import StreamTextureSampling;
 using Metallic.Material;
 
 struct Push { uint slot; uint visible; float nearSourceLod; float farSourceLod; };
@@ -14,34 +15,28 @@ void main()
 {
     Push push = getConstants<Push>();
     Texture2D<float4> texture = resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<TextureStreamingProbeResources>().textures.load(push.slot)));
-    RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<TextureStreamingProbeResources>().feedback);
-    RWStructuredBuffer<float4> output = resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<TextureStreamingProbeResources>().output);
-    SamplerState sampler = resolveUniform(getResourceParameters<TextureStreamingProbeResources>().sampler);
-    uint count, stride;
-    feedback.GetDimensions(count, stride);
-    uint offset = push.slot * 8u;
-    if (offset + 7u >= count) {
-        output[0] = float4(-1.0);
-        output[1] = float4(-1.0);
-        return;
-    }
-    // Source footprint remains fixed while physical tail index and clamp change.
-    // Sample the production helper; do not duplicate its filtering or LOD clamp.
-    uint firstMip = feedback[offset + 3u];
-    float minimumLod = asfloat(feedback[offset + 6u]);
+    let resources = getResourceParameters<TextureStreamingProbeResources>();
+    StructuredBuffer<TextureSamplingMetadata> metadata = resolveBuffer<StructuredBuffer<TextureSamplingMetadata>>(resources.samplingMetadata);
+    RWStructuredBuffer<uint> demandMip = resolveBuffer<RWStructuredBuffer<uint>>(resources.demandMip);
+    RWStructuredBuffer<uint> demandHits = resolveBuffer<RWStructuredBuffer<uint>>(resources.demandHits);
+    RWStructuredBuffer<float4> output = resolveBuffer<RWStructuredBuffer<float4>>(resources.output);
+    SamplerState sampler = resolveUniform(resources.sampler);
+    TextureSamplingMetadata state = metadata[push.slot];
+    uint firstMip = state.residentFirstMipAndFlags & 0x7fffffffu;
+    float minimumLod = state.samplingFloor;
     float2 uv = float2(0.375, 0.625);
     float nearValue = sampleResidentMaterialTexture(texture, sampler, uv,
         push.nearSourceLod - float(firstMip), minimumLod).r;
     float farValue = sampleResidentMaterialTexture(texture, sampler, uv,
         push.farSourceLod - float(firstMip), minimumLod).r;
-    if (push.visible != 0u && feedback[offset] != 0u) {
+    if (push.visible != 0u && (state.residentFirstMipAndFlags & 0x80000000u) != 0u) {
         uint ignored;
-        InterlockedMin(feedback[offset + 4u], uint(max(floor(push.nearSourceLod), 0.0)), ignored);
-        InterlockedAdd(feedback[offset + 5u], 1000u, ignored);
+        InterlockedMin(demandMip[push.slot], uint(max(floor(push.nearSourceLod), 0.0)), ignored);
+        InterlockedAdd(demandHits[push.slot], 1000u, ignored);
     }
     uint width, height;
     texture.GetDimensions(width, height);
     output[0] = float4(nearValue, farValue, minimumLod, float(firstMip));
-    output[1] = float4(float(feedback[offset + 4u]), float(feedback[offset + 5u]),
-        float(feedback[offset]), float(width));
+    output[1] = float4(float(demandMip[push.slot]), float(demandHits[push.slot]),
+        float(state.residentWidth << firstMip), float(width));
 }

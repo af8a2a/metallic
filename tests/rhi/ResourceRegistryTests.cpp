@@ -2191,7 +2191,7 @@ public:
         constexpr uint64_t kShortRootABI = 0x4649454c44530002ull;
         using ShortRoot = std::array<uint32_t, sizeof(NamedComputeParameters) / sizeof(uint32_t) - 1>;
         static_assert(sizeof(NamedComputeParameters) == 24 && sizeof(ShortRoot) == 20);
-        constexpr std::array<uint32_t, 62> kFieldOffsets{
+        constexpr std::array<uint32_t, 64> kFieldOffsets{
             8, 12, 20, 200, 40, 44, 48, 52, 56, 60, 64, 300, 304, 308,
             sizeof(SceneResourceParameters) - sizeof(uint32_t), UINT32_MAX, UINT32_MAX, UINT32_MAX,
             kSceneSceneOffset, kSceneSceneOffset + 4,
@@ -2206,7 +2206,7 @@ public:
             kSceneMaterialTexturesOffset + 8, kSceneMaterialSamplerOffset,
             kSceneRayStreamHeaderOffset, kSceneRayStreamInstancesOffset, kSceneRayStreamPageTableOffset, kSceneRayStreamPagesOffset,
             kSceneLightsOffset, kSceneLightsPdfOffset, kSceneReGIRGridOffset, kSceneEnvironmentMapOffset, kSceneEnvironmentPdfOffset,
-            kSceneRayStreamChangesOffset, kSceneStreamPageCountOffset, kSceneTextureFeedbackOffset};
+            kSceneRayStreamChangesOffset, kSceneStreamPageCountOffset, kSceneTextureSamplingMetadataOffset, kSceneTextureDemandMipOffset, kSceneTextureDemandHitsOffset};
         std::unique_ptr<Buffer> output;
         REG_REQUIRE(device.createBuffer({.size = kFieldOffsets.size() * sizeof(uint32_t), .structureStride = 4, .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::HostReadback, .queueAccess = QueueAccessBits::Graphics})
@@ -2325,8 +2325,8 @@ public:
             auto& texture = data.baseColorTexture;
             texture.textureIndex = i == 0 ? UINT32_MAX : 1337;
             texture.texCoord = 2 - i;
-            texture.alignmentPadding[0] = 0x12345678u + i;
-            texture.alignmentPadding[1] = 0x87654321u - i;
+            texture.sourceLodTerm = std::bit_cast<float>(0x12345678u + i);
+            texture.sourceMipCount = 0x87654321u - i;
             for (uint32_t channel = 0; channel < 4; ++channel) {
                 texture.transform0[channel] = float(100 + i * 16 + channel);
                 texture.transform1[channel] = float(104 + i * 16 + channel);

@@ -249,7 +249,7 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
 Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
     const SceneStreamingRequirements& requirements, RenderGraphExecutionContext& context, const MeshletStreamFrameDesc& view, std::string& log)
 {
-    prepared.textureFeedback = nullptr;
+    prepared.textureFeedback = {};
     prepared.textureFeedbackEnabled = false;
     prepared.ready = !prepared.snapshot || !prepared.snapshot->pathTraceResources ||
         prepared.snapshot->pathTraceResources->textureUploadsReady();

@@ -6,6 +6,7 @@
 #include "Runtime/Render/Core/ColorSpace.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
+#include "Runtime/Render/Streamer/TextureStreamingResources.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "json.hpp"
@@ -31,6 +32,15 @@ void require(bool okay, const std::string& message)
 void require(Result<> result, const std::string& message)
 {
     require(bool(result), message + ": " + std::string(resultToString(result)));
+}
+void requireTextureFeedbackLayout(const TextureFeedbackResources& feedback, uint32_t textureCount)
+{
+    require(feedback.textureCount == textureCount && feedback.samplingMetadata && feedback.demandMip && feedback.demandHits,
+        "Feedback arrays must cover every bound material texture");
+    require(feedback.samplingMetadata->desc().size == uint64_t(textureCount) * sizeof(TextureSamplingMetadata) &&
+        feedback.demandMip->desc().size == uint64_t(textureCount) * sizeof(uint32_t) &&
+        feedback.demandHits->desc().size == uint64_t(textureCount) * sizeof(uint32_t),
+        "Immutable metadata and demand arrays must have exact logical texture counts");
 }
 template <typename T> void put(std::vector<uint8_t>& bytes, size_t offset, T value)
 {
@@ -219,6 +229,58 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
     return result;
 }
 
+std::vector<TextureSamplingMetadata> readEmptyTextureMetadata(RHITestContext& context, ScenePathTraceResources& resources)
+{
+    std::unique_ptr<CommandPool> pool;
+    std::unique_ptr<CommandBuffer> commands;
+    require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }), "Empty feedback pool");
+    require(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }), "Empty feedback commands");
+    // Plain recording deliberately has no RenderFrameContext, exercising the
+    // immutable fallback arrays used by diagnostic and legacy consumers.
+    require(commands->begin(), "Empty feedback begin");
+    TextureFeedbackResources feedback;
+    bool captureDemand = true;
+    require(resources.beginTextureStreaming(*commands, 1, feedback, nullptr, false, &captureDemand), "Empty feedback resources");
+    requireTextureFeedbackLayout(feedback, resources.materialTextureCount());
+    require(!captureDemand && feedback.samplingMetadata->desc().memoryLocation == MemoryLocation::HostUpload,
+        "No-frame consumers must receive host-upload metadata with demand disabled");
+    const auto* mapped = static_cast<const TextureSamplingMetadata*>(feedback.samplingMetadata->map());
+    require(mapped != nullptr, "Empty metadata map");
+    std::vector<TextureSamplingMetadata> metadata(mapped, mapped + feedback.textureCount);
+    feedback.samplingMetadata->unmap();
+    for (uint32_t slot = 0; slot < feedback.textureCount; ++slot) {
+        const auto& state = metadata[slot];
+        require((state.residentFirstMipAndFlags & kTextureDemandEnabled) == 0 && state.samplingFloor == 0 &&
+            state.residentWidth > 0 && state.residentHeight > 0 && state.residentMipCount > 0,
+            "Empty feedback slot has invalid sampling metadata or allows demand");
+        require(state.residentLodTerm == makeTextureLodTerm(state.residentWidth, state.residentHeight),
+            "Empty feedback resident LOD term differs");
+    }
+    for (const auto& [buffer, expected] : {std::pair{feedback.demandMip, UINT32_MAX}, std::pair{feedback.demandHits, 0u}}) {
+        const auto* words = static_cast<const uint32_t*>(buffer->map()); require(words != nullptr, "Empty demand map");
+        for (uint32_t slot = 0; slot < feedback.textureCount; ++slot) {
+            require(words[slot] == expected, "Empty feedback contains uninitialized demand slots");
+        }
+        buffer->unmap();
+    }
+    require(commands->end(), "Empty feedback end");
+    return metadata;
+}
+
+void requireKtxEmptyTextureMetadata(RHITestContext& context, ScenePathTraceResources& resources)
+{
+    const auto metadata = readEmptyTextureMetadata(context, resources);
+    require(metadata.size() == 301 && metadata[0].residentWidth == 1 && metadata[0].residentHeight == 1,
+        "KTX empty feedback must cover fallback plus all 300 logical slots");
+    for (uint32_t image = 0; image < 300; ++image) {
+        const auto& state = metadata[resources.logicalTextureIndices()[image]];
+        const uint32_t first = resources.materialTextureFirstMips()[image];
+        require(state.residentWidth == std::max(7u >> first, 1u) && state.residentHeight == std::max(5u >> first, 1u) &&
+            state.residentMipCount == 3u - first && state.residentFirstMipAndFlags == first,
+            "KTX nonzero slot has stale or default-only resident metadata");
+    }
+}
+
 Json statsJson(const ScenePathTraceResources& resources)
 {
     const auto s = resources.textureStats();
@@ -294,6 +356,7 @@ class KtxTextureResourcesTest final : public RHITest {
         require(manager.acquire(context.device, context.graphicsQueue, props, &scene, features, log).transform([&](auto value) { first = std::move(value); }),
                 log);
         auto& r = *first->pathTraceResources;
+        requireKtxEmptyTextureMetadata(context, r);
         require(r.materialTextureCount() == 301 && r.logicalTextureIndices().size() == 300,
                 "descriptor count capped or logical mapping lost");
         for (uint32_t i = 0; i < 300; ++i) {
@@ -516,6 +579,7 @@ class KtxTextureResourcesTest final : public RHITest {
         require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, log).transform([&](auto value) { mask = std::move(value); }), log);
         require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, log).transform([&](auto value) { maskSame = std::move(value); }), log);
         require(mask == maskSame, "MASK policy did not share its owner");
+        requireKtxEmptyTextureMetadata(context, *mask->pathTraceResources);
         const auto& tails = mask->pathTraceResources->materialTextureFirstMips();
         require(tails[299] == 1 && tails[0] == 2, "MASK floor or ordinary tail selection failed");
         const auto protectedSample = sampleTexture(context, *mask->pathTraceResources, 300, 0, 1);
@@ -550,6 +614,78 @@ class KtxTextureResourcesTest final : public RHITest {
     }
 };
 
+class TextureFeedbackPngMetadataTest final : public RHITest {
+public:
+    TextureFeedbackPngMetadataTest() { type = RHITestType::Rendering; name = "texture_feedback_png_metadata"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        if (!context.device.capabilities().bindlessDescriptorHeap) {
+            return RHITestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+        }
+        const auto directory = context.outputDirectory / "texture-feedback-png-metadata";
+        std::filesystem::create_directories(directory);
+        std::string log;
+        Json document = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+            "nodes":[{"mesh":0}],"buffers":[{"uri":"geometry.bin","byteLength":36}],
+            "bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,
+            "count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}]})");
+        const std::array<float,9> vertices{0,0,0, 1,0,0, 0,1,0};
+        { std::ofstream file(directory / "geometry.bin", std::ios::binary);
+          file.write(reinterpret_cast<const char*>(vertices.data()), sizeof(vertices)); }
+        constexpr std::array dimensions{std::array{13u,7u}, std::array{1u,19u}, std::array{16u,8u}};
+        for (uint32_t index = 0; index < dimensions.size(); ++index) {
+            const auto width = dimensions[index][0], height = dimensions[index][1];
+            std::vector<uint8_t> pixels(width * height * 4, 255);
+            const auto name = "Image" + std::to_string(index) + ".png";
+            require(saveRgba8Png(directory / name, pixels.data(), width, height, log), log);
+            document["images"].push_back({{"uri", name}, {"mimeType", "image/png"}});
+            document["textures"].push_back({{"source", index}});
+            document["materials"].push_back({{"pbrMetallicRoughness", {{"baseColorTexture", {{"index", index}}}}},
+                {"alphaMode", index == 1 ? "MASK" : "OPAQUE"}});
+        }
+        const auto path = directory / "Scene.gltf";
+        { std::ofstream file(path); file << document; }
+        scene::Scene scene;
+        require(scene.loadStreamMetadata(path), scene.lastLoadResult().error);
+        SceneResourceManager manager;
+        std::shared_ptr<SceneResourceSnapshot> snapshot;
+        const auto features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures;
+        require(manager.acquire(context.device, context.graphicsQueue,
+            {{"path", path.string()}, {"materialTextureMaxDimension", 512}, {"materialTextureBudgetMiB", 16}},
+            &scene, features, log).transform([&](auto value) { snapshot = std::move(value); }), log);
+        auto& resources = *snapshot->pathTraceResources;
+        require(resources.textureStats().ktxImageCount == 0 && resources.materialTextureCount() == 4,
+            "Real PNG fixture must exercise three non-KTX slots plus fallback");
+        const auto metadata = readEmptyTextureMetadata(context, resources);
+        for (uint32_t image = 0; image < dimensions.size(); ++image) {
+            const uint32_t slot = resources.logicalTextureIndices()[image];
+            const auto& state = metadata[slot];
+            require(slot != 0 && state.residentWidth == dimensions[image][0] && state.residentHeight == dimensions[image][1] &&
+                state.residentFirstMipAndFlags == 0,
+                "Real PNG nonzero slot has invalid resident dimensions or allows demand");
+            const auto sample = sampleTexture(context, resources, slot, 0, 0);
+            require(std::isfinite(sample[0]) && std::isfinite(sample[1]) && std::isfinite(sample[2]) && sample[3] == 1.0f,
+                "Real PNG texture did not sample normally");
+        }
+        // Zero authored images must still publish a valid fallback metadata slot.
+        document.erase("images"); document.erase("textures");
+        document["materials"] = Json::array({Json::object()});
+        const auto emptyPath = directory / "Empty.gltf";
+        { std::ofstream file(emptyPath); file << document; }
+        scene::Scene emptyScene;
+        require(emptyScene.loadStreamMetadata(emptyPath), emptyScene.lastLoadResult().error);
+        std::shared_ptr<SceneResourceSnapshot> empty;
+        require(manager.acquire(context.device, context.graphicsQueue, {{"path", emptyPath.string()}},
+            &emptyScene, features, log).transform([&](auto value) { empty = std::move(value); }), log);
+        const auto emptyMetadata = readEmptyTextureMetadata(context, *empty->pathTraceResources);
+        require(emptyMetadata.size() == 1 && emptyMetadata[0].residentWidth == 1 && emptyMetadata[0].residentHeight == 1,
+            "No-texture scene must retain exactly one fallback sampling entry");
+        return RHITestResult::pass("Actual PNG NPOT/thin/multi-slot and MASK resources sample normally; no-frame demand is disabled, including zero-image fallback");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(TextureFeedbackPngMetadataTest);
+
 class KtxTextureStreamingTest final : public RHITest {
 public:
     KtxTextureStreamingTest() { type=RHITestType::Rendering; name="ktx2_texture_streaming"; }
@@ -581,11 +717,14 @@ public:
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
         ComputeProgram program;
-        const ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
+        const ComputeResourceBindingDesc binding[]{
+            {METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, samplingMetadata)},
+            {METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandMip)},
+            {METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandHits)}};
         require(program.initialize(context.device,{
             .spirv = shader.spirv,
             .pushConstantSize = 16,
-            .bindings = {&binding, 1},
+            .bindings = binding,
             .requiresRayQuery = false,
             .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters),
         },log),log);
@@ -604,10 +743,11 @@ public:
             require(pool->reset(),"feedback reset");
             require(frame.begin(index++),"feedback frame");
             require(commands->begin(frame.submissionContext()),"feedback begin");
-            Buffer* feedback = nullptr;
+            TextureFeedbackResources feedback;
             textureProfile.reset();
             bool captureDemand = true;
             require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile,frozen,&captureDemand),"streaming tick");
+            requireTextureFeedbackLayout(feedback, resources.materialTextureCount());
             require(captureDemand == !frozen, "Feedback demand enable must follow frame capture policy");
             for (size_t section=0; section<textureProfile.sections.size(); ++section) {
                 const auto& timing=textureProfile.sections[section];
@@ -616,11 +756,14 @@ public:
                 sawTextureSchedule |= timing.name=="Candidates and allocation queries";
             }
             require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
-            ComputeDispatchBinding view{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback),.buffer=feedback};
+            const ComputeDispatchBinding view[]{
+                {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, samplingMetadata), .buffer = feedback.samplingMetadata},
+                {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandMip), .buffer = feedback.demandMip},
+                {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandHits), .buffer = feedback.demandHits}};
             const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
             require(program.dispatch({
                 .commandBuffer = commands.get(),
-                .bindings = {&view, 1},
+                .bindings = view,
                 .pushData = push,
                 .pushDataSize = 16,
             }),"feedback dispatch");
@@ -722,9 +865,12 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
         ComputeProgram program;
-        const ComputeResourceBindingDesc layout{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
+        const ComputeResourceBindingDesc layout[]{
+            {METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, samplingMetadata)},
+            {METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandMip)},
+            {METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandHits)}};
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = {&layout,1}, .requiresRayQuery = false, .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters)}, log), log);
+            .bindings = layout, .requiresRayQuery = false, .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters)}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::array<std::unique_ptr<CommandBuffer>, 3> commands;
         QueueSubmissionTracker tracker;
@@ -758,27 +904,34 @@ public:
                 }), "feedback backlog commands");
                 require(pendingFrames[index].begin(++frameIndex), "feedback backlog frame");
                 require(pendingCommands[index]->begin(pendingFrames[index].submissionContext()), "feedback backlog begin");
-                Buffer* feedback = nullptr;
+                TextureFeedbackResources feedback;
                 bool captureDemand = true;
                 require(resources.beginTextureStreaming(*pendingCommands[index], frameIndex, feedback,
                     nullptr, false, &captureDemand), "feedback backlog metadata");
-                require(feedback != nullptr && feedback->desc().memoryLocation == MemoryLocation::Device,
+                requireTextureFeedbackLayout(feedback, resources.materialTextureCount());
+                require(feedback.samplingMetadata != nullptr && feedback.demandMip != nullptr && feedback.demandHits != nullptr &&
+                    feedback.demandMip->desc().memoryLocation == MemoryLocation::Device &&
+                    feedback.demandHits->desc().memoryLocation == MemoryLocation::Device,
                     "Backpressure must preserve immutable sampling metadata");
                 require(captureDemand == (index != 4),
                     "Demand capture must stop at four pending frames and resume after cancellation");
-                Buffer* repeatedFeedback = nullptr;
+                TextureFeedbackResources repeatedFeedback;
                 bool repeatedCapture = !captureDemand;
                 require(resources.beginTextureStreaming(*pendingCommands[index], frameIndex, repeatedFeedback,
                     nullptr, false, &repeatedCapture), "feedback backlog repeated consumer");
-                require(repeatedFeedback == feedback && repeatedCapture == captureDemand,
+                require(repeatedFeedback.samplingMetadata == feedback.samplingMetadata && repeatedFeedback.demandMip == feedback.demandMip &&
+                    repeatedFeedback.demandHits == feedback.demandHits && repeatedFeedback.textureCount == feedback.textureCount && repeatedCapture == captureDemand,
                     "Repeated consumers must preserve disabled and enabled capture decisions");
                 require(pendingCommands[index]->end(), "feedback backlog end");
             }
         }
-        const auto dispatch = [&](CommandBuffer& command, Buffer& feedback, uint32_t mip, uint32_t samples) {
-            const ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback), .buffer = &feedback};
+        const auto dispatch = [&](CommandBuffer& command, const TextureFeedbackResources& feedback, uint32_t mip, uint32_t samples) {
+            const ComputeDispatchBinding binding[]{
+                {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, samplingMetadata), .buffer = feedback.samplingMetadata},
+                {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandMip), .buffer = feedback.demandMip},
+                {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandHits), .buffer = feedback.demandHits}};
             const uint32_t push[]{slot,mip,samples,0};
-            require(program.dispatch({.commandBuffer = &command, .bindings = {&binding,1},
+            require(program.dispatch({.commandBuffer = &command, .bindings = binding,
                 .pushData = push, .pushDataSize = sizeof(push)}), "feedback contract demand");
         };
         const auto tick = [&](bool fineDemand, bool cancelReadback = false) {
@@ -786,27 +939,29 @@ public:
             require(pool->reset(), "feedback contract reset");
             require(frame.begin(++frameIndex), "feedback contract frame");
             require(commands[0]->begin(frame.submissionContext()), "feedback first consumer begin");
-            Buffer* first = nullptr;
+            TextureFeedbackResources first;
             bool firstCaptureDemand = false;
             require(resources.beginTextureStreaming(*commands[0], frameIndex, first, nullptr, false, &firstCaptureDemand),
                 "feedback first consumer metadata");
+            requireTextureFeedbackLayout(first, resources.materialTextureCount());
             require(firstCaptureDemand, "Available demand collection must be reported to consumers");
-            require(first != nullptr && first->desc().memoryLocation == MemoryLocation::Device,
+            require(first.samplingMetadata != nullptr && first.demandMip != nullptr && first.demandHits != nullptr &&
+                first.demandMip->desc().memoryLocation == MemoryLocation::Device && first.demandHits->desc().memoryLocation == MemoryLocation::Device,
                 "Texture feedback atomics must target a Device buffer");
             const uint64_t consumedAtBegin = resources.textureStats().feedbackFrames;
             require(resources.uploadMaterialTextures(*commands[0]), "feedback retain generation");
             // The accepted prefix can write fine demand even if its readback tail
             // is cancelled. Frame completion alone must not publish that sample.
-            dispatch(*commands[0], *first, cancelReadback ? 0u : baseMip, 1000);
+            dispatch(*commands[0], first, cancelReadback ? 0u : baseMip, 1000);
             require(commands[0]->end(), "feedback first consumer end");
             require(commands[1]->begin(frame.submissionContext()), "feedback second consumer begin");
-            Buffer* second = nullptr;
+            TextureFeedbackResources second;
             bool secondCaptureDemand = false;
             require(resources.beginTextureStreaming(*commands[1], frameIndex, second, nullptr, false, &secondCaptureDemand),
                 "feedback second consumer metadata");
-            require(second == first, "Consumers in one frame must share accumulated texture feedback");
+            require(second.samplingMetadata == first.samplingMetadata && second.demandMip == first.demandMip && second.demandHits == first.demandHits && second.textureCount == first.textureCount, "Consumers in one frame must share accumulated texture feedback");
             require(secondCaptureDemand == firstCaptureDemand, "Consumers in one frame must share the capture decision");
-            dispatch(*commands[1], *second, 0, fineDemand ? 1000u : 0u);
+            dispatch(*commands[1], second, 0, fineDemand ? 1000u : 0u);
             require(commands[1]->end(), "feedback second consumer end");
             require(commands[2]->begin(frame.submissionContext()), "feedback readback tail begin");
             require(resources.endTextureStreaming(*commands[2], frameIndex), "feedback graph-end readback");
@@ -889,7 +1044,9 @@ public:
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
         const ComputeResourceBindingDesc layout[] = {
             {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, textures), .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
-            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, feedback)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, sampler), .kind = ComputeResourceBindingKind::Sampler}};
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, samplingMetadata)},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, demandMip)},
+            {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, demandHits)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output)}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, sampler), .kind = ComputeResourceBindingKind::Sampler}};
         ComputeProgram program;
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
             .bindings = layout, .requiresRayQuery = false, .resourceParameterSize = sizeof(metallic::tests::TextureStreamingProbeResources)}, log), log);
@@ -918,15 +1075,18 @@ public:
             require(pool->reset(), "stability pool reset");
             require(frame.begin(frameIndex++), "stability frame");
             require(commands->begin(frame.submissionContext()), "stability begin");
-            Buffer* feedback = nullptr;
+            TextureFeedbackResources feedback;
             require(resources.beginTextureStreaming(*commands, frameIndex, feedback, nullptr, frozen), "stability stream tick");
+            requireTextureFeedbackLayout(feedback, resources.materialTextureCount());
             require(resources.uploadMaterialTextures(*commands), "retain stability texture generation");
             const BufferBarrierDesc ready{.buffer = output.get(), .before = {},
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
             require(commands->synchronize({.buffers = {&ready, 1}}), "stability output ready");
             const ComputeDispatchBinding bindings[] = {
                 {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, textures), .sampledImages = resources.materialTextureSnapshot()},
-                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, feedback), .buffer = feedback}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output), .buffer = output.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, samplingMetadata), .buffer = feedback.samplingMetadata},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, demandMip), .buffer = feedback.demandMip},
+                {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, demandHits), .buffer = feedback.demandHits}, {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, output), .buffer = output.get()},
                 {.binding = METALLIC_RESOURCE_MEMBER(metallic::tests::TextureStreamingProbeResources, sampler), .sampler = &sampler}};
             struct Push { uint32_t slot, visible; float nearSourceLod, farSourceLod; };
             const Push push{imageSlot, visible ? 1u : 0u, .25f, 5.25f};

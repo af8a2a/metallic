@@ -20,6 +20,8 @@ void textureFeedbackSamplingMain(uint3 id : SV_DispatchThreadID)
     push = withTextureFeedbackSampling(push, id.xy);
     MaterialTextureInfo info = (MaterialTextureInfo)0;
     info.textureIndex = id.z;
+    info.sourceLodTerm = 3.0;
+    info.sourceMipCount = 4u;
     info.transform0 = float4(1, 0, 0, 0);
     info.transform1 = float4(0, 1, 0, 0);
     HitInfo hit = (HitInfo)0;

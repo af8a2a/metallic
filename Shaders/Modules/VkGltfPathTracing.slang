@@ -3,6 +3,7 @@ module VkGltfPathTracing;
 
 import Core;
 import Material;
+import MaterialProgram;
 import MaterialTextureDecode;
 import ScenePathTypes;
 import ScenePathMath;
@@ -30,10 +31,11 @@ float3 random3(inout uint seed) { return float3(rand(seed), rand(seed), rand(see
 float3 offsetNormal(float3 direction, float3 normal) { return dot(direction, normal) >= 0.0 ? normal : -normal; }
 
 float4 materialTexture(MaterialTextureInfo texture, float4 fallback, HitInfo hit,
-    RayCone cone, float3 direction, ScenePathTracePush push, bool deterministic, inout uint seed)
+    RayCone cone, float3 direction, ScenePathTracePush push, bool deterministic, inout uint seed,
+    TextureFootprint footprint)
 {
     return flag(push, 2) ? fallback : loadMaterialTextureForMaterial(texture, hit.texcoord,
-        fallback, push, cone, hit, direction, deterministic, seed);
+        fallback, push, cone, hit, direction, deterministic, seed, footprint);
 }
 
 // Only the builtin scene payload is mapped. Custom material programs and Fiber
@@ -43,21 +45,24 @@ PreparedMaterial resolveSimpleBSDFInputs(HitInfo hit, RayCone cone, float3 direc
 #else
 PreparedMaterial evaluateMaterial(HitInfo hit, RayCone cone, float3 direction,
 #endif
-    ScenePathTracePush push, bool guides, inout uint seed)
+    ScenePathTracePush push, bool guides, inout uint seed, TextureFootprint footprint = (TextureFootprint)0)
 {
     let source = loadSceneMaterial(hit.materialIndex);
     bool deterministic = guides || source.glassParams.x > 0.01;
-    let base = materialTexture(source.baseColorTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let mr = materialTexture(source.metallicRoughnessTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let emission = materialTexture(source.emissiveTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let normal = materialTexture(source.normalTexture, float4(0.5, 0.5, 1, 1), hit, cone, direction, push, deterministic, seed);
-    let occlusion = materialTexture(source.occlusionTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let transmission = materialTexture(source.transmissionTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let thickness = materialTexture(source.thicknessTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let specular = materialTexture(source.specularTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let specularColor = materialTexture(source.specularColorTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let diffuseTransmission = materialTexture(source.diffuseTransmissionTexture, float4(1), hit, cone, direction, push, deterministic, seed);
-    let diffuseTransmissionColor = materialTexture(source.diffuseTransmissionColorTexture, float4(1), hit, cone, direction, push, deterministic, seed);
+    if (!deterministic && (footprint.flags & kTextureFootprintIsotropic0) == 0u) {
+        footprint = sceneSurfaceMaterialContextForRay(hit, cone, direction).footprint;
+    }
+    let base = materialTexture(source.baseColorTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let mr = materialTexture(source.metallicRoughnessTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let emission = materialTexture(source.emissiveTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let normal = materialTexture(source.normalTexture, float4(0.5, 0.5, 1, 1), hit, cone, direction, push, deterministic, seed, footprint);
+    let occlusion = materialTexture(source.occlusionTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let transmission = materialTexture(source.transmissionTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let thickness = materialTexture(source.thicknessTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let specular = materialTexture(source.specularTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let specularColor = materialTexture(source.specularColorTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let diffuseTransmission = materialTexture(source.diffuseTransmissionTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
+    let diffuseTransmissionColor = materialTexture(source.diffuseTransmissionColorTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
     PreparedMaterial material = defaultPreparedMaterial();
     material.baseColor = saturate(materialTextureModulate(source.baseColor.rgb, base.rgb, source.baseColorTexture.transform0.w));
     material.opacity = saturate(source.baseColor.a * base.a);
@@ -117,7 +122,7 @@ public struct SceneSimpleBSDFSource : ISimpleBSDFSource
         hit.texcoord = context.texCoord0;
         hit.frontFace = context.frontFace != 0u;
         hit.materialIndex = instance.parameterOffset / kSceneMaterialRecordBytes;
-        return resolveSimpleBSDFInputs(hit, cone, direction, push, guides, seed);
+        return resolveSimpleBSDFInputs(hit, cone, direction, push, guides, seed, context.footprint);
     }
 };
 

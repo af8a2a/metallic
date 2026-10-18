@@ -132,19 +132,21 @@ DR_PUBLIC struct SceneResourceParameters
     DR_PUBLIC DR_BUFFER streamPageTable;
     DR_PUBLIC DR_BUFFER streamPages;
     DR_PUBLIC DR_BUFFER streamRecords;
-    DR_PUBLIC DR_BUFFER textureFeedback;
+    DR_PUBLIC DR_BUFFER textureSamplingMetadata;
     DR_PUBLIC DR_STORAGE(2D<float>) upscalerDepth;
     DR_PUBLIC DR_STORAGE(2D<float2>) upscalerMotion;
     DR_PUBLIC DR_BUFFER view;
     DR_PUBLIC DR_SAMPLED(2D<uint>) visibility;
     DR_PUBLIC DR_SAMPLED(2D<float>) visibilityDepth;
     DR_PUBLIC EnvironmentResourceParameters environment;
+    DR_PUBLIC DR_BUFFER textureDemandMip;
+    DR_PUBLIC DR_BUFFER textureDemandHits;
 };
 #ifdef __cplusplus
-static_assert(sizeof(SceneResourceParameters) == 384);
+static_assert(sizeof(SceneResourceParameters) == 392);
 static_assert(offsetof(SceneResourceParameters, environment) == 356);
 static_assert(offsetof(SceneResourceParameters, environment) + sizeof(EnvironmentResourceParameters) ==
-    sizeof(SceneResourceParameters));
+    offsetof(SceneResourceParameters, textureDemandMip));
 #endif
 
 // Read-only views of the existing scene packet; these do not change its wire layout.
@@ -280,7 +282,9 @@ DR_SCENE_OFFSET(kSceneStreamPageCountOffset, streamPageCount, 316);
 DR_SCENE_OFFSET(kSceneStreamPageTableOffset, streamPageTable, 320);
 DR_SCENE_OFFSET(kSceneStreamPagesOffset, streamPages, 324);
 DR_SCENE_OFFSET(kSceneStreamRecordsOffset, streamRecords, 328);
-DR_SCENE_OFFSET(kSceneTextureFeedbackOffset, textureFeedback, 332);
+DR_SCENE_OFFSET(kSceneTextureSamplingMetadataOffset, textureSamplingMetadata, 332);
+DR_SCENE_OFFSET(kSceneTextureDemandMipOffset, textureDemandMip, 384);
+DR_SCENE_OFFSET(kSceneTextureDemandHitsOffset, textureDemandHits, 388);
 DR_SCENE_OFFSET(kSceneUpscalerDepthOffset, upscalerDepth, 336);
 DR_SCENE_OFFSET(kSceneUpscalerMotionOffset, upscalerMotion, 340);
 DR_SCENE_OFFSET(kSceneViewOffset, view, 344);
@@ -304,14 +308,14 @@ DR_PUBLIC struct ScenePrimarySplitResourceParameters
 };
 #ifdef __cplusplus
 inline constexpr uint32_t kOpenPBRPrimaryHitStride = 100;
-inline constexpr uint32_t kScenePrimaryHitsOffset = 384;
+inline constexpr uint32_t kScenePrimaryHitsOffset = 392;
 static_assert(offsetof(ScenePrimarySplitResourceParameters, scene) == 0);
 static_assert(offsetof(ScenePrimarySplitResourceParameters, primaryHits) == kScenePrimaryHitsOffset);
-static_assert(offsetof(ScenePrimarySplitResourceParameters, reserved) == 388);
-static_assert(sizeof(ScenePrimarySplitResourceParameters) == 392);
+static_assert(offsetof(ScenePrimarySplitResourceParameters, reserved) == 396);
+static_assert(sizeof(ScenePrimarySplitResourceParameters) == 400);
 #else
 public static const uint kOpenPBRPrimaryHitStride = 100;
-public static const uint kScenePrimaryHitsOffset = 384;
+public static const uint kScenePrimaryHitsOffset = 392;
 #endif
 
 DR_PUBLIC struct OutputImageResourceParameters
@@ -324,10 +328,12 @@ static_assert(sizeof(OutputImageResourceParameters) == 4);
 
 DR_PUBLIC struct TextureFeedbackResourceParameters
 {
-    DR_PUBLIC DR_BUFFER feedback;
+    DR_PUBLIC DR_BUFFER samplingMetadata;
+    DR_PUBLIC DR_BUFFER demandMip;
+    DR_PUBLIC DR_BUFFER demandHits;
 };
 #ifdef __cplusplus
-static_assert(sizeof(TextureFeedbackResourceParameters) == 4);
+static_assert(sizeof(TextureFeedbackResourceParameters) == 12);
 #endif
 
 DR_PUBLIC struct TextureProbeResourceParameters

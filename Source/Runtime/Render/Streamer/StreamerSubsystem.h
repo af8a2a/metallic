@@ -56,7 +56,7 @@ private:
     Result<> completeInitialLoads(std::string& log);
     struct TextureFrame {
         std::shared_ptr<ScenePathTraceResources> resources;
-        Buffer* feedback = nullptr;
+        TextureFeedbackResources feedback;
         bool captureDemand = false;
         uint64_t frameIndex = 0;
     };

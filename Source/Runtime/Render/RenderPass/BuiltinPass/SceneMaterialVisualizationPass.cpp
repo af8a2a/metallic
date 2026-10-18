@@ -158,7 +158,9 @@ public:
         };
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .kind = ComputeResourceBindingKind::StorageBuffer});
         appendStreamRayLayout(bindings);
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .kind = ComputeResourceBindingKind::StorageBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .kind = ComputeResourceBindingKind::StorageBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .kind = ComputeResourceBindingKind::StorageBuffer});
         std::string programLog;
         result = initializeResourceKernel(
             *context.device,
@@ -230,7 +232,9 @@ public:
             },
         };
         appendStreamRayBindings(bindings, streamGeometry, prepared->geometry->shadingChangeBuffer());
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = prepared->textureFeedback.samplingMetadata});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = prepared->textureFeedback.demandMip});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = prepared->textureFeedback.demandHits});
         bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = sceneResources_.materialBinding()->valueBuffer()
             ? sceneResources_.materialBinding()->valueBuffer() : sceneResources_.materialBuffer()});
         result = dispatchResources(rayQueryProgram_, rayQueryProgramEncoder_, ComputeDispatchDesc{

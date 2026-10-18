@@ -8,7 +8,8 @@ using Metallic;
 struct TextureFeedbackWaveParams
 {
     BufferSpan<uint4> inputs;
-    RWBufferSpan<uint> feedback;
+    RWBufferSpan<uint> demandMip;
+    RWBufferSpan<uint> demandHits;
     uint laneCount;
     uint iterations;
 };
@@ -19,17 +20,19 @@ void runFeedbackProbe(uint index, bool aggregate)
     if (index >= gProbe.laneCount) { return; }
     uint4 input = gProbe.inputs.load(index);
     if (input.z == 0u) { return; }
-    RWStructuredBuffer<uint> feedback = resolveUniform(
-        ResourceHandle<RWStructuredBuffer<uint>>(gProbe.feedback.resource.index));
+    RWStructuredBuffer<uint> demandMip = resolveUniform(
+        ResourceHandle<RWStructuredBuffer<uint>>(gProbe.demandMip.resource.index));
+    RWStructuredBuffer<uint> demandHits = resolveUniform(
+        ResourceHandle<RWStructuredBuffer<uint>>(gProbe.demandHits.resource.index));
     for (uint iteration = 0u; iteration < gProbe.iterations; ++iteration) {
         uint wantedMip = (input.y + iteration) & 15u;
         if (aggregate) {
-            recordTextureDemand(feedback, input.x, wantedMip);
+            recordTextureDemand(demandMip, demandHits, input.x, wantedMip);
         } else {
             // Frozen pre-aggregation behavior, independent of the production helper.
             uint ignored;
-            InterlockedMin(feedback[input.x * 8u + 4u], wantedMip, ignored);
-            InterlockedAdd(feedback[input.x * 8u + 5u], 1u, ignored);
+            InterlockedMin(demandMip[input.x], wantedMip, ignored);
+            InterlockedAdd(demandHits[input.x], 1u, ignored);
         }
     }
 }

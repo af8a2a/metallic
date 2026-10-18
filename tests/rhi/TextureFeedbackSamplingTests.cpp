@@ -3,6 +3,7 @@
 #include "Runtime/Render/Core/NamedResourceParameters.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Streamer/TextureStreamingResources.h"
 
 #include <array>
 #include <cmath>
@@ -38,28 +39,32 @@ public:
                 .transform([&](auto value) { device = std::move(value); }), "Device");
             constexpr uint32_t kCases = 48, kPixels = 64 * 64;
             const std::array<Float4, 5> texels{{{1,0,0,0}, {1,0,0,0}, {1,0,0,0}, {1,0,0,0}, {0,1,0,1}}};
-            std::array<uint32_t, kCases * 8> initialFeedback{};
-            for (uint32_t i = 0; i < kCases; ++i) {
-                initialFeedback[i * 8] = 8;
-                initialFeedback[i * 8 + 1] = 8;
-                initialFeedback[i * 8 + 2] = 4;
-                initialFeedback[i * 8 + 4] = UINT32_MAX;
-                initialFeedback[i * 8 + 6] = 0x3f800000u; // Sampling floor 1.0, even when demand is off.
+            std::array<TextureSamplingMetadata, kCases> initialMetadata{};
+            std::array<uint32_t, kCases> initialMip, initialHits{};
+            initialMip.fill(UINT32_MAX);
+            for (uint32_t slot = 0; slot < kCases; ++slot) {
+                // Non-streamable or pinned slots sample normally but never record demand.
+                const uint32_t flags = slot % 3u == 1u ? 0u : kTextureDemandEnabled;
+                initialMetadata[slot] = {1.0f, makeTextureLodTerm(2, 2), 2, 2, 2, flags | 2u};
             }
-            std::unique_ptr<Buffer> upload, feedback, output;
+            std::unique_ptr<Buffer> upload, metadata, demandMip, demandHits, output;
             auto allocate = [&](size_t bytes, MemoryLocation memory, BufferUsageBits usage, auto& target) {
                 requireFeedback(device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = memory})
                     .transform([&](auto value) { target = std::move(value); }), "Buffer");
             };
             allocate(sizeof(texels), MemoryLocation::HostUpload, BufferUsageBits::TransferSource, upload);
-            allocate(sizeof(initialFeedback), MemoryLocation::HostReadback, BufferUsageBits::Storage, feedback);
+            allocate(sizeof(initialMetadata), MemoryLocation::HostReadback, BufferUsageBits::Storage, metadata);
+            allocate(sizeof(initialMip), MemoryLocation::HostReadback, BufferUsageBits::Storage, demandMip);
+            allocate(sizeof(initialHits), MemoryLocation::HostReadback, BufferUsageBits::Storage, demandHits);
             allocate(kCases * kPixels * 2 * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
             auto write = [&](Buffer& buffer, const void* data, size_t bytes) {
                 auto* mapped = buffer.map(); requireFeedback(mapped != nullptr, "Upload map");
                 std::memcpy(mapped, data, bytes); buffer.flush(); buffer.unmap();
             };
             write(*upload, texels.data(), sizeof(texels));
-            write(*feedback, initialFeedback.data(), sizeof(initialFeedback));
+            write(*metadata, initialMetadata.data(), sizeof(initialMetadata));
+            write(*demandMip, initialMip.data(), sizeof(initialMip));
+            write(*demandHits, initialHits.data(), sizeof(initialHits));
             std::unique_ptr<Texture> texture;
             std::unique_ptr<TextureView> view;
             requireFeedback(device->createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
@@ -75,7 +80,9 @@ public:
             requireFeedback(shader, "Compile: " + log);
             const ComputeResourceBindingDesc layout[] = {
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput)},
-                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback)},
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata)},
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip)},
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits)},
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, kCases}};
             ComputeProgram program;
             requireFeedback(program.initialize(*device, {.spirv = shader->spirv, .bindings = layout, .requiresRayQuery = false,
@@ -100,18 +107,30 @@ public:
             std::array<TextureView*, kCases> views; views.fill(view.get());
             const ComputeDispatchBinding bindings[] = {
                 {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = output.get()},
-                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = feedback.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = metadata.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = demandMip.get()},
+                {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = demandHits.get()},
                 {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = views}};
             requireFeedback(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = bindings,
                 .groupCountX = 8, .groupCountY = 8, .groupCountZ = kCases}), "Dispatch");
             requireFeedback(gpu.submitAndWait(), "Completion");
-            output->invalidate(); feedback->invalidate();
+            output->invalidate(); metadata->invalidate(); demandMip->invalidate(); demandHits->invalidate();
             const auto* mapped = static_cast<const Float4*>(output->map()); requireFeedback(mapped != nullptr, "Output map");
             std::vector<Float4> actual(mapped, mapped + kCases * kPixels * 2); output->unmap();
-            const auto* words = static_cast<const uint32_t*>(feedback->map()); requireFeedback(words != nullptr, "Feedback map");
-            std::array<uint32_t, kCases * 8> result; std::memcpy(result.data(), words, sizeof(result)); feedback->unmap();
+            std::array<uint32_t, kCases> mips, hits;
+            auto read = [&](Buffer& buffer, void* target, size_t bytes) {
+                auto* mapped = buffer.map(); requireFeedback(mapped != nullptr, "Readback map");
+                std::memcpy(target, mapped, bytes); buffer.unmap();
+            };
+            read(*demandMip, mips.data(), sizeof(mips));
+            read(*demandHits, hits.data(), sizeof(hits));
+            std::array<TextureSamplingMetadata, kCases> finalMetadata;
+            read(*metadata, finalMetadata.data(), sizeof(finalMetadata));
+            requireFeedback(std::memcmp(initialMetadata.data(), finalMetadata.data(), sizeof(initialMetadata)) == 0,
+                "Immutable sampling metadata changed");
             bench::readbackEvidence(context, "texture-feedback-sampling.bin", std::span<const Float4>(actual));
-            bench::readbackEvidence(context, "texture-feedback-records.bin", std::span<const uint32_t>(result));
+            bench::readbackEvidence(context, "texture-feedback-mips.bin", std::span<const uint32_t>(mips));
+            bench::readbackEvidence(context, "texture-feedback-hits.bin", std::span<const uint32_t>(hits));
             for (uint32_t test = 0; test < kCases; ++test) {
                 const bool enabled = (test & 8) != 0, mip0 = test >= 16;
                 uint32_t selected = 0;
@@ -125,14 +144,13 @@ public:
                     requireFeedback(sampled == Float4{0,1,0,1}, "Sampling floor was bypassed");
                 }
                 requireFeedback(selected == (enabled ? kPixels / 8 : 0), "Tile selection density");
-                const auto minMip = result[test * 8 + 4], count = result[test * 8 + 5];
-                requireFeedback(enabled ? (minMip == (mip0 ? 0u : 2u) && count == 9 * kPixels / 8) : (minMip == UINT32_MAX && count == 0),
-                    "Demand or Mip0 gate changed at case " + std::to_string(test));
-                for (uint32_t word : {0u, 1u, 2u, 3u, 6u, 7u}) {
-                    requireFeedback(result[test * 8 + word] == initialFeedback[test * 8 + word], "Read-only metadata changed");
-                }
+                const auto minMip = mips[test], count = hits[test];
+                const bool demandEnabled = enabled && test % 3u != 1u;
+                requireFeedback(demandEnabled ? (minMip == (mip0 ? 0u : 2u) && count == 9 * kPixels / 8) : (minMip == UINT32_MAX && count == 0),
+                    "Demand, slot eligibility or Mip0 gate changed at case " + std::to_string(test));
+
             }
-            return RHITestResult::pass("48 frame/capture/regular-Mip0-alpha cases: tile gates, demand suppression, residency floor and RNG preserved");
+            return RHITestResult::pass("48 frame/capture/regular-Mip0-alpha cases: tile gates, mixed per-slot eligibility, demand suppression, residency floor and RNG preserved");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

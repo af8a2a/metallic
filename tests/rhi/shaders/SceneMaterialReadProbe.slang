@@ -22,7 +22,7 @@ void writeMaterialReadProbe(RWByteAddressBuffer output, uint base,
     output.Store3(base + 76u, asuint(float3(coverage.baseAlpha, coverage.cutoff, coverage.alphaMode)));
     output.Store(base + 88u, coverage.hasProgram ? 1u : 0u);
     output.Store4(base + 92u, uint4(coverage.baseColorTexture.textureIndex,
-        coverage.baseColorTexture.texCoord, coverage.baseColorTexture.alignmentPadding));
+        coverage.baseColorTexture.texCoord, uint2(asuint(coverage.baseColorTexture.sourceLodTerm), coverage.baseColorTexture.sourceMipCount)));
     output.Store4(base + 108u, asuint(coverage.baseColorTexture.transform0));
     output.Store4(base + 124u, asuint(coverage.baseColorTexture.transform1));
     output.Store(base + 140u, asuint(scalarProgramId));

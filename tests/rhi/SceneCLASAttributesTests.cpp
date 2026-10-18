@@ -62,7 +62,9 @@ public:
             {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), ComputeResourceBindingKind::AccelerationStructure},
             {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials)},
             {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues)},
-            {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback)},
+            {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata)},
+            {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip)},
+            {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits)},
             {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, material.materialTextureCount()},
             {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput)}};
         builtin_pass::appendStreamRayLayout(layout);
@@ -83,7 +85,9 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, scene), .accelerationStructure = stream.accelerationStructure},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materials), .buffer = material.materialBuffer()},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialValues), .buffer = values->valueBuffer() ? values->valueBuffer() : material.materialBuffer()},
-            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = prepared->textureFeedback.samplingMetadata},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = prepared->textureFeedback.demandMip},
+            {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = prepared->textureFeedback.demandHits},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, materialTextures), .textureViews = material.materialTextureViews(), .sampledImages = material.materialTextureSnapshot()},
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = context.outputBuffer("hits").buffer()}};
         builtin_pass::appendStreamRayBindings(bindings, stream, prepared->geometry->shadingChangeBuffer());

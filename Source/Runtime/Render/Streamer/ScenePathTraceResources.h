@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
+#include "Runtime/Render/Streamer/TextureStreamingResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -93,17 +94,16 @@ public:
     Result<> uploadMaterialTextures(CommandBuffer& commandBuffer);
     // Called before consumers with a frame context; repeat calls in the same
     // frame share one seed and demand buffer. Never waits for
-    // feedback or decode. Each texture slot has eight uint words: source width,
-    // height, mip count, resident first mip, wanted mip, hit count, float bits of
-    // the tail-relative sampling LOD floor, reserved. Sampling metadata remains
-    // valid when demand is disabled (source width is zero), including freezes.
+    // feedback or decode. Immutable sampling metadata and two demand arrays cover
+    // every material texture slot, including non-streaming textures. Metadata
+    // remains valid when demand is disabled, including publication freezes.
     // freezePublication also pauses the 150 ms texture mip reveal transition.
     // captureDemand, when supplied, reports whether the successfully prepared
     // buffer accepts demand this frame. Sampling metadata is independent of it.
     Result<> beginTextureStreaming(
         CommandBuffer& commands,
         uint64_t frameIndex,
-        Buffer*& feedback,
+        TextureFeedbackResources& feedback,
         CPUProfileRecorder* profiler = nullptr,
         bool freezePublication = false,
         bool* captureDemand = nullptr);

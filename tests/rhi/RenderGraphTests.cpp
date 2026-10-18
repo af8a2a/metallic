@@ -807,7 +807,7 @@ public:
 
 struct TestTextureFeedbackState {
     std::weak_ptr<render::ScenePathTraceResources> resources;
-    render::Buffer* feedback = nullptr;
+    render::TextureFeedbackResources feedback;
     bool sharedFeedback = false;
 };
 
@@ -842,9 +842,12 @@ public:
             .moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = kShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeResourceBindingDesc binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback)};
+        const render::ComputeResourceBindingDesc bindings[]{
+            {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, samplingMetadata)},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandMip)},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandHits)}};
         return program_.initialize(*context.device, {
-            .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
+            .spirv = shader.spirv, .pushConstantSize = 16, .bindings = bindings,
             .requiresRayQuery = false, .resourceParameterSize = sizeof(render::TextureFeedbackResourceParameters)}, log);
     }
 
@@ -852,22 +855,32 @@ public:
     {
         const auto* prepared = context.preparedScene();
         if (!prepared || !prepared->ready || !prepared->snapshot || !prepared->snapshot->pathTraceResources ||
-            !prepared->textureFeedback || prepared->textureFeedback->desc().memoryLocation != render::MemoryLocation::Device) {
+            !prepared->textureFeedback.samplingMetadata || !prepared->textureFeedback.demandMip || !prepared->textureFeedback.demandHits ||
+            prepared->textureFeedback.samplingMetadata->desc().memoryLocation != render::MemoryLocation::Device ||
+            prepared->textureFeedback.demandMip->desc().memoryLocation != render::MemoryLocation::Device ||
+            prepared->textureFeedback.demandHits->desc().memoryLocation != render::MemoryLocation::Device) {
             return render::makeError(render::Error::InvalidArgument);
         }
         auto resources = prepared->snapshot->pathTraceResources;
         if (resources->logicalTextureIndices().empty()) { return render::makeError(render::Error::InvalidArgument); }
         auto& state = testTextureFeedbackState();
         if (context.properties().value("after", false)) {
-            state.sharedFeedback = state.resources.lock() == resources && state.feedback == prepared->textureFeedback;
+            state.sharedFeedback = state.resources.lock() == resources &&
+                state.feedback.samplingMetadata == prepared->textureFeedback.samplingMetadata &&
+                state.feedback.demandMip == prepared->textureFeedback.demandMip &&
+                state.feedback.demandHits == prepared->textureFeedback.demandHits &&
+                state.feedback.textureCount == prepared->textureFeedback.textureCount;
             if (!state.sharedFeedback) { return render::makeError(render::Error::InvalidArgument); }
         } else {
             state.resources = resources;
             state.feedback = prepared->textureFeedback;
         }
-        const render::ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback), .buffer = prepared->textureFeedback};
+        const render::ComputeDispatchBinding bindings[]{
+            {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, samplingMetadata), .buffer = prepared->textureFeedback.samplingMetadata},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandMip), .buffer = prepared->textureFeedback.demandMip},
+            {.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, demandHits), .buffer = prepared->textureFeedback.demandHits}};
         const uint32_t push[]{resources->logicalTextureIndices()[0], context.properties().value("wantedMip", 0u), 1u, 0u};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
             .pushData = push, .pushDataSize = sizeof(push)});
     }
 

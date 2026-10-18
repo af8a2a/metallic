@@ -141,7 +141,9 @@ public:
         std::vector<ComputeResourceBindingDesc> bindings = {
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, scene), ComputeResourceBindingKind::AccelerationStructure}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, output), ComputeResourceBindingKind::StorageImage}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials)},
             {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), ComputeResourceBindingKind::SampledImage, geometry.materialTextureCount()}, {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues)},
-            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureFeedback)}};
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureSamplingMetadata)},
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureDemandMip)},
+            {METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, textureDemandHits)}};
         builtin_pass::appendStreamRayLayout(bindings);
         return program_.initialize(*context.device, {.spirv = shader.spirv, .pushConstantSize = sizeof(uint32_t), .bindings = bindings,
             .requiresRayQuery = true, .resourceParameterSize = sizeof(render::SceneResourceParameters)}, log);
@@ -166,7 +168,9 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materials), .buffer = geometry.materialBuffer()},
             {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialTextures), .textureViews = geometry.materialTextureViews(), .sampledImages = geometry.materialTextureSnapshot()},
             {.binding = METALLIC_RESOURCE_MEMBER(render::SceneResourceParameters, materialValues), .buffer = inputs->valueBuffer() ? inputs->valueBuffer() : inputs->buffer()}};
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = prepared->textureFeedback.samplingMetadata});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = prepared->textureFeedback.demandMip});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = prepared->textureFeedback.demandHits});
         builtin_pass::appendStreamRayBindings(bindings, stream, prepared->geometry->shadingChangeBuffer());
         const uint32_t push = geometry.materialTextureCount();
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,

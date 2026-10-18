@@ -122,9 +122,9 @@ public SamplerState sceneMaterialSampler()
 {
     return resolveUniform(getSceneResourceParameters().materialSampler);
 }
-public RWStructuredBuffer<uint> sceneTextureFeedback()
+public StructuredBuffer<TextureSamplingMetadata> sceneTextureSamplingMetadata()
 {
-    return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+    return resolveBuffer<StructuredBuffer<TextureSamplingMetadata>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureSamplingMetadataOffset));
 }
 public ByteAddressBuffer sceneMaterialValues()
 {
@@ -147,9 +147,9 @@ public SamplerState sceneMaterialSampler()
 {
     return resolveUniform(getSceneResourceParameterField<SamplerHandle>(kSceneMaterialSamplerOffset));
 }
-public RWStructuredBuffer<uint> sceneTextureFeedback()
+public StructuredBuffer<TextureSamplingMetadata> sceneTextureSamplingMetadata()
 {
-    return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureFeedbackOffset));
+    return resolveBuffer<StructuredBuffer<TextureSamplingMetadata>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureSamplingMetadataOffset));
 }
 public ByteAddressBuffer sceneMaterialValues()
 {
@@ -164,6 +164,16 @@ public Texture2D<float> sceneEnvironmentImportancePdf()
     return resolveUniform(getSceneResourceParameterField<ResourceHandle<Texture2D<float>>>(kSceneEnvironmentPdfOffset));
 }
 #endif
+
+public RWStructuredBuffer<uint> sceneTextureDemandMip()
+{
+    return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureDemandMipOffset));
+}
+
+public RWStructuredBuffer<uint> sceneTextureDemandHits()
+{
+    return resolveBuffer<RWStructuredBuffer<uint>>(getSceneResourceParameterField<ResourceHandle<ByteAddressBuffer>>(kSceneTextureDemandHitsOffset));
+}
 
 #if SHARC_UPDATE
 public StructuredBuffer<GPUPunctualLight> sceneLights()
@@ -576,21 +586,25 @@ internal TextureFootprint resolveRayConeTextureFootprint(
     return footprint;
 }
 
-public float rayConeTextureLod(
-    MaterialTextureInfo textureInfo,
-    RayCone rayCone,
-    HitInfo hit,
-    float3 rayDirection,
-    uint width,
-    uint height,
-    uint mipCount,
-    TextureFootprint footprint = (TextureFootprint)0)
+public float textureDimensionLod(float term)
 {
-    float textureDimensionLod = 0.5 * safeLog2(float(max(width, 1u)) * float(max(height, 1u)));
-    footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
-    float normalizedLod = footprint.isotropicLod0;
-    float mipLevel = normalizedLod + textureDimensionLod + textureTransformLodBias(textureInfo);
-    return clamp(mipLevel, 0.0, float(max(mipCount, 1u) - 1u));
+    // NPOT CPU/GPU log2 rounding can straddle mip boundaries. Preserve the
+    // original GPU arithmetic for those dimensions without querying the image.
+    return term >= 0.0 ? term : 0.5 * safeLog2(-term);
+}
+
+public float materialSourceTextureLod(MaterialTextureInfo textureInfo, float normalizedLod, float uvBias)
+{
+    return clamp((normalizedLod + textureDimensionLod(textureInfo.sourceLodTerm)) + uvBias,
+        0.0, float(max(textureInfo.sourceMipCount, 1u) - 1u));
+}
+
+public float materialResidentTextureLod(TextureSamplingMetadata metadata, float normalizedLod, float uvBias)
+{
+    // Actual tail dimensions preserve NPOT rounding and axes saturated at one.
+    // Subtracting firstMip from source LOD would change those footprints.
+    return clamp((normalizedLod + textureDimensionLod(metadata.residentLodTerm)) + uvBias,
+        0.0, float(max(metadata.residentMipCount, 1u) - 1u));
 }
 
 public SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone rayCone, float3 rayDirection)
@@ -621,13 +635,11 @@ internal float4 loadMaterialSTFTextureFromSamplePosition(
     inout STF_SamplerState samplerState,
     Texture2D<float4> texture,
     float2 uv,
-    float mipLevel)
+    float mipLevel,
+    uint width,
+    uint height,
+    uint numberOfLevels)
 {
-    uint width;
-    uint height;
-    uint numberOfLevels;
-    texture.GetDimensions(0, width, height, numberOfLevels);
-
     float3 samplePos = samplerState.Texture2DGetSamplePosLevel(width, height, numberOfLevels, uv, mipLevel);
     uint lod = uint(samplePos.z);
     width = width >> lod;
@@ -654,7 +666,7 @@ internal STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout 
 
 public float materialTextureSamplingFloor(uint textureIndex)
 {
-    return streamTextureSamplingFloor(sceneTextureFeedback(), textureIndex);
+    return streamTextureSamplingFloor(sceneTextureSamplingMetadata(), textureIndex);
 }
 
 public float4 loadMaterialTextureMip0(
@@ -667,28 +679,23 @@ public float4 loadMaterialTextureMip0(
         return fallback;
     }
 
-    uint width = 1u;
-    uint height = 1u;
     uint textureIndex = textureInfo.textureIndex;
-    sceneMaterialTexture(textureIndex).GetDimensions(width, height);
-    if (width == 0u || height == 0u) {
-        return fallback;
-    }
+    TextureSamplingMetadata metadata = sceneTextureSamplingMetadata()[textureIndex];
 
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
-    if (push.textureFeedbackEnabled != 0u) {
-        requestStreamTextureMip0(sceneTextureFeedback(), textureIndex);
+    if (push.textureFeedbackEnabled != 0u && streamTextureDemandEnabled(metadata)) {
+        recordTextureDemand(sceneTextureDemandMip(), sceneTextureDemandHits(), textureIndex, 0u);
     }
 #if METALLIC_REALTIME_DEFERRED
     // Glass explicitly requests deterministic finest-available sampling in
     // both comparison modes, including the streaming publication floor.
     return decodeMaterialTextureSample(sampleResidentMaterialTexture(sceneMaterialTexture(textureIndex),
-        sceneMaterialSampler(), wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
+        sceneMaterialSampler(), wrappedUv, 0.0, max(metadata.samplingFloor, 0.0)),
         textureInfo.transform0.w);
 #else
-    uint mip = uint(ceil(materialTextureSamplingFloor(textureIndex)));
-    uint mipCount;
-    sceneMaterialTexture(textureIndex).GetDimensions(mip, width, height, mipCount);
+    uint mip = uint(ceil(max(metadata.samplingFloor, 0.0)));
+    uint width = max(metadata.residentWidth >> mip, 1u);
+    uint height = max(metadata.residentHeight >> mip, 1u);
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
     return decodeMaterialTextureSample(sceneMaterialTexture(textureIndex).Load(int3(texel, mip)), textureInfo.transform0.w);
 #endif
@@ -698,37 +705,21 @@ public float loadMaterialAlphaCoverage(MaterialTextureInfo textureInfo, float2 u
 {
     if (!hasMaterialTexture(textureInfo, push)) { return 1.0; }
     if (push.textureFeedbackEnabled != 0u) {
-        requestStreamTextureMip0(sceneTextureFeedback(), textureInfo.textureIndex);
+        requestStreamTextureMip0(sceneTextureSamplingMetadata(), sceneTextureDemandMip(), sceneTextureDemandHits(), textureInfo.textureIndex);
     }
     return sampleAlphaCoverage(sceneMaterialTexture(textureInfo.textureIndex), transformMaterialUv(textureInfo, uv), uint(ceil(materialTextureSamplingFloor(textureInfo.textureIndex))));
 }
 
-public float4 loadMaterialTexture(
+internal float4 loadResidentMaterialTexture(
     MaterialTextureInfo textureInfo,
     float2 uv,
-    float4 fallback,
     ScenePathTracePush push,
-    RayCone rayCone,
-    HitInfo hit,
-    float3 rayDirection,
+    TextureSamplingMetadata metadata,
+    float mipLevel,
     inout uint seed,
-    TextureFootprint footprint = (TextureFootprint)0)
+    uint textureIndex)
 {
-    if (!hasMaterialTexture(textureInfo, push)) {
-        return fallback;
-    }
-
-    uint width = 1u;
-    uint height = 1u;
-    uint mipCount = 1u;
-    uint textureIndex = textureInfo.textureIndex;
-    sceneMaterialTexture(textureIndex).GetDimensions(0, width, height, mipCount);
-    if (width == 0u || height == 0u || mipCount == 0u) {
-        return fallback;
-    }
-
-    float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount, footprint);
-    float mipFloor = materialTextureSamplingFloor(textureIndex);
+    float mipFloor = max(metadata.samplingFloor, 0.0);
 #if METALLIC_REALTIME_DEFERRED
     if ((push.debugFlags & 256u) == 0u) {
         // Preserve the subsequent lighting/feedback random dimensions when
@@ -743,7 +734,26 @@ public float4 loadMaterialTexture(
     return decodeMaterialTextureSample(loadMaterialSTFTextureFromSamplePosition(samplerState,
         sceneMaterialTexture(textureIndex),
         transformMaterialUv(textureInfo, uv),
-        max(mipLevel, mipFloor)), textureInfo.transform0.w);
+        max(mipLevel, mipFloor), metadata.residentWidth, metadata.residentHeight,
+        metadata.residentMipCount), textureInfo.transform0.w);
+}
+
+public float4 loadMaterialTexture(
+    MaterialTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push,
+    RayCone rayCone,
+    HitInfo hit,
+    float3 rayDirection,
+    inout uint seed,
+    TextureFootprint footprint = (TextureFootprint)0)
+{
+    if (!hasMaterialTexture(textureInfo, push)) { return fallback; }
+    TextureSamplingMetadata metadata = sceneTextureSamplingMetadata()[textureInfo.textureIndex];
+    footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
+    float mipLevel = materialResidentTextureLod(metadata, footprint.isotropicLod0, textureTransformLodBias(textureInfo));
+    return loadResidentMaterialTexture(textureInfo, uv, push, metadata, mipLevel, seed, textureInfo.textureIndex);
 }
 
 public float4 loadMaterialTextureForMaterial(
@@ -758,28 +768,22 @@ public float4 loadMaterialTextureForMaterial(
     inout uint seed,
     TextureFootprint footprint = (TextureFootprint)0)
 {
-    // Demand uses the source dimensions, never the currently coarse resident tail.
-    // The same UV transform and ray-cone footprint drive sampling and residency.
-    // Deterministic sampling records mip 0 once in loadMaterialTextureMip0.
-    // The host/tile gate precedes every demand-buffer access; sampling floors
-    // remain active even when demand capture is disabled.
-    if (push.textureFeedbackEnabled != 0u && !deterministicMip0 && hasMaterialTexture(textureInfo, push)) {
-        RWStructuredBuffer<uint> feedback = sceneTextureFeedback();
-        uint count, stride;
-        feedback.GetDimensions(count, stride);
-        uint offset = textureInfo.textureIndex * 8u;
-        if (offset + 7u < count && feedback[offset] != 0u) {
-            // Reuse the normalized footprint when sampling the resident texture below.
-            footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
-            float wanted = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection,
-                feedback[offset], feedback[offset + 1u], feedback[offset + 2u], footprint);
-            recordTextureDemand(feedback, textureInfo.textureIndex, uint(max(floor(wanted), 0.0)));
-        }
-    }
+    if (!hasMaterialTexture(textureInfo, push)) { return fallback; }
     if (deterministicMip0) {
         return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
     }
-    return loadMaterialTexture(textureInfo, uv, fallback, push, rayCone, hit, rayDirection, seed, footprint);
+    TextureSamplingMetadata metadata = sceneTextureSamplingMetadata()[textureInfo.textureIndex];
+    footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
+    float uvBias = textureTransformLodBias(textureInfo);
+    // The host publishes metadata for every material slot with its image generation.
+    // Demand and sampling reuse the per-hit footprint and per-slot UV transform.
+    if (push.textureFeedbackEnabled != 0u && (metadata.residentFirstMipAndFlags & 0x80000000u) != 0u) {
+        float wanted = materialSourceTextureLod(textureInfo, footprint.isotropicLod0, uvBias);
+        recordTextureDemand(sceneTextureDemandMip(), sceneTextureDemandHits(),
+            textureInfo.textureIndex, uint(floor(wanted)));
+    }
+    float mipLevel = materialResidentTextureLod(metadata, footprint.isotropicLod0, uvBias);
+    return loadResidentMaterialTexture(textureInfo, uv, push, metadata, mipLevel, seed, textureInfo.textureIndex);
 }
 
 // Generated Value IR retains its callback signature; resource-independent
@@ -796,7 +800,7 @@ internal float4 sampleMaterialValueTexture(MaterialValueParameters material, uin
     else if (slot == 5u) { info = material.specularTexture; }
     float4 fallback = linearColor && slot == 2u ? float4(0.5, 0.5, 1.0, 1.0) : float4(1.0);
     if (info.textureIndex >= context.textureCount) { return fallback; }
-    return sampleMaterialValueTextureResource(sceneMaterialTexture(info.textureIndex), sceneTextureFeedback(),
+    return sampleMaterialValueTextureResource(sceneMaterialTexture(info.textureIndex), sceneTextureSamplingMetadata(),
         info, uv, policy, dxLod, dy, context.normalizedRayLod, linearColor);
 }
 #endif

@@ -27,8 +27,10 @@ struct SceneMaterialData
     {
         uint32_t textureIndex = UINT32_MAX;
         uint32_t texCoord = 0;
-        // StructuredBuffer std430 layout aligns each float4 transform to 16 bytes.
-        uint32_t alignmentPadding[2] = {};
+        // Immutable source LOD metadata occupies the former alignment padding.
+        // Nonnegative: exact power-of-two LOD; negative: source area for GPU log2.
+        float sourceLodTerm = 0.0f;
+        uint32_t sourceMipCount = 1;
         float transform0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
         float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
     };
@@ -49,6 +51,8 @@ struct SceneMaterialData
 static_assert(std::is_trivially_copyable_v<SceneMaterialData>);
 // Match Slang StructuredBuffer std430 offsets, including required float4 alignment.
 static_assert(sizeof(SceneMaterialData::TextureInfo) == 48);
+static_assert(offsetof(SceneMaterialData::TextureInfo, sourceLodTerm) == 8);
+static_assert(offsetof(SceneMaterialData::TextureInfo, sourceMipCount) == 12);
 static_assert(offsetof(SceneMaterialData::TextureInfo, transform0) == 16);
 static_assert(offsetof(SceneMaterialData::TextureInfo, transform1) == 32);
 static_assert(sizeof(SceneMaterialData) == 720);

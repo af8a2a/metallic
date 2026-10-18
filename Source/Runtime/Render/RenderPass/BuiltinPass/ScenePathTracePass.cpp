@@ -855,7 +855,9 @@ public:
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
-        baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
+        baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .kind = ComputeResourceBindingKind::StorageBuffer});
+        baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .kind = ComputeResourceBindingKind::StorageBuffer});
+        baseBindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .kind = ComputeResourceBindingKind::StorageBuffer});
         if (!visibilityDeferred_) { appendStreamRayLayout(baseBindings); }
         if (realtime_) {
             baseBindings.push_back(ComputeResourceBindingDesc{
@@ -1400,7 +1402,7 @@ public:
             sharcClearPending_ = true;
         }
         TextureHandle color = context.outputTexture("color");
-        Buffer* textureFeedback = context.preparedScene() ? context.preparedScene()->textureFeedback : nullptr;
+        const auto textureFeedback = context.preparedScene() ? context.preparedScene()->textureFeedback : TextureFeedbackResources{};
         profile.next("Prepare output and shading parameters");
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         const auto textureSnapshot = sceneResources_.materialTextureSnapshot();
@@ -1674,7 +1676,9 @@ public:
                 .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
             },
         };
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = textureFeedback});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = textureFeedback.samplingMetadata});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = textureFeedback.demandMip});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = textureFeedback.demandHits});
         if (!visibilityDeferred_) { appendStreamRayBindings(bindings, streamGeometry, prepared->geometry->shadingChangeBuffer()); }
         if (environment.atmosphereParametersBuffer != nullptr) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});

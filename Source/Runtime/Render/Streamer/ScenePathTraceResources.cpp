@@ -95,6 +95,10 @@ struct ScenePathTraceMaterialTexture {
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t mipCount = 1;
+    uint32_t sourceWidth = 1;
+    uint32_t sourceHeight = 1;
+    uint32_t sourceMipCount = 1;
+    uint32_t residentFirstMip = 0;
     uint64_t byteSize = 4;
     Format format = Format::RGBA8Unorm;
     ResourceState state = ResourceState::Undefined;
@@ -619,6 +623,9 @@ Result<> createMaterialTexture(
         ? preparedMips->size()
         : generatedMipChain.size();
     outTexture.mipCount = static_cast<uint32_t>(mipCount);
+    outTexture.sourceWidth = width;
+    outTexture.sourceHeight = height;
+    outTexture.sourceMipCount = outTexture.mipCount;
     outTexture.mipUploads.reserve(mipCount);
     outTexture.byteSize = 0;
     const uint64_t uploadAlignment = std::max<uint64_t>(
@@ -723,6 +730,8 @@ Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena
     texture = {};
     const auto desc = info.textureDesc(firstMip);
     texture.width = desc.width; texture.height = desc.height; texture.mipCount = desc.mipCount;
+    texture.sourceWidth = info.width; texture.sourceHeight = info.height;
+    texture.sourceMipCount = uint32_t(info.levels.size()); texture.residentFirstMip = firstMip;
     texture.format = desc.format; texture.byteSize = info.tailBytes(firstMip);
     const uint64_t alignment = std::max<uint64_t>(16, device.capabilities().textureUploadBufferOffsetAlignment);
     uint64_t size = 0;
@@ -773,6 +782,8 @@ void stampTextureFormats(std::vector<ScenePathTraceGPUMaterial>& materials,
              &material.thicknessTexture,&material.diffuseTransmissionTexture,&material.diffuseTransmissionColorTexture,&material.specularTexture,&material.specularColorTexture}) {
             const auto index = info->textureIndex;
             if (index >= textures.size()) { continue; }
+            info->sourceLodTerm = makeTextureLodTerm(textures[index].sourceWidth, textures[index].sourceHeight);
+            info->sourceMipCount = textures[index].sourceMipCount;
             // KTX2 vkFormat declares the transfer function: sRGB views decode in
             // hardware, while UNORM KTX2 is already linear. Legacy PNG views
             // retain their existing shader-side sRGB conversion.
@@ -1058,8 +1069,16 @@ struct ScenePathTraceResources::Impl {
     GPUCompletionPoint texturePublication;
     struct TextureFeedbackBuffers {
         std::shared_ptr<Buffer> seed;
-        std::shared_ptr<Buffer> device;
+        std::shared_ptr<Buffer> samplingMetadata;
+        std::shared_ptr<Buffer> demandMip;
+        std::shared_ptr<Buffer> demandHits;
         std::shared_ptr<Buffer> readback;
+        uint32_t textureCount = 0;
+
+        TextureFeedbackResources resources() const
+        {
+            return {samplingMetadata.get(), demandMip.get(), demandHits.get(), textureCount};
+        }
     };
     struct TextureFeedback {
         TextureFeedbackBuffers buffers;
@@ -1096,7 +1115,7 @@ struct ScenePathTraceResources::Impl {
     std::vector<TextureFeedback> textureFeedback;
     std::vector<TextureFeedbackBuffers> freeTextureFeedback;
     std::vector<RetiredTexture> retiredTextures;
-    std::shared_ptr<Buffer> emptyTextureFeedback;
+    TextureFeedbackBuffers emptyTextureFeedback;
     std::vector<bool> pinnedImages;
     std::vector<uint32_t> baseTextureMips, desiredTextureMips, textureHits;
     std::vector<uint64_t> textureLastSeen, textureLastChanged;
@@ -1108,6 +1127,7 @@ struct ScenePathTraceResources::Impl {
 
     void refreshTextureGeneration()
     {
+        emptyTextureFeedback = {};
         auto generation = std::make_shared<TextureGeneration>();
         generation->reserve(materialTextures.size());
         for (size_t slot = 0; slot < materialTextures.size(); ++slot) {
@@ -1145,7 +1165,7 @@ struct ScenePathTraceResources::Impl {
         textureMigration.reset(); // Cancel/join CPU work and wait only during teardown.
         textureFeedback.clear(); freeTextureFeedback.clear();
         retiredTextures.clear();
-        emptyTextureFeedback.reset();
+        emptyTextureFeedback = {};
         textureGeneration.reset();
         materialTextureSnapshot.reset();
         texturePublication = {};
@@ -1173,8 +1193,8 @@ struct ScenePathTraceResources::Impl {
                 if (words) {
                     for (uint32_t image = 0; image < ktxImages.size(); ++image) {
                         const uint32_t slot = asyncImageTextureIndexMap[image];
-                        if (!ktxImages[image] || slot == kInvalidMaterialTextureIndex || pinnedImages[image]) { continue; }
-                        const uint32_t mip = words[slot * 8 + 4], hits = words[slot * 8 + 5];
+                        if (!ktxImages[image] || slot >= it->buffers.textureCount || pinnedImages[image]) { continue; }
+                        const uint32_t mip = words[slot], hits = words[it->buffers.textureCount + slot];
                         if (mip != UINT32_MAX && hits) {
                             const uint32_t finest = ktxImages[image]->firstMipForDimension(textureRefineDimension);
                             desiredTextureMips[image] = std::clamp(mip, std::min(finest, baseTextureMips[image]), baseTextureMips[image]);
@@ -1380,37 +1400,81 @@ struct ScenePathTraceResources::Impl {
         textureMigration = std::move(migration);
     }
 
+    TextureSamplingMetadata textureSamplingMetadata(uint32_t slot) const
+    {
+        const auto& texture = materialTextures[slot];
+        return {.samplingFloor = 0.0f,
+            .residentLodTerm = makeTextureLodTerm(texture.width, texture.height),
+            .residentWidth = texture.width, .residentHeight = texture.height,
+            .residentMipCount = texture.mipCount, .residentFirstMipAndFlags = texture.residentFirstMip};
+    }
+
+    Result<> createTextureFeedbackBuffers(TextureFeedbackBuffers& output, bool empty)
+    {
+        TextureFeedbackBuffers buffers;
+        const uint64_t count = std::max<size_t>(materialTextures.size(), 1);
+        buffers.textureCount = uint32_t(materialTextures.size());
+        const auto create = [&](uint64_t bytes, BufferUsageBits usage, MemoryLocation memory, std::shared_ptr<Buffer>& output) {
+            return device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = memory})
+                .transform([&](auto value) { output = std::move(value); });
+        };
+        const auto usage = empty ? BufferUsageBits::Storage :
+            BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination;
+        const auto memory = empty ? MemoryLocation::HostUpload : MemoryLocation::Device;
+        if (auto result = create(count * sizeof(TextureSamplingMetadata), usage, memory, buffers.samplingMetadata); !result) { return result; }
+        if (auto result = create(count * sizeof(uint32_t), usage, memory, buffers.demandMip); !result) { return result; }
+        if (auto result = create(count * sizeof(uint32_t), usage, memory, buffers.demandHits); !result) { return result; }
+        if (!empty) {
+            if (auto result = create(count * (sizeof(TextureSamplingMetadata) + 2 * sizeof(uint32_t)),
+                BufferUsageBits::TransferSource, MemoryLocation::HostUpload, buffers.seed); !result) { return result; }
+            if (auto result = create(count * 2 * sizeof(uint32_t), BufferUsageBits::TransferDestination,
+                MemoryLocation::HostReadback, buffers.readback); !result) { return result; }
+            output = std::move(buffers);
+            return {};
+        }
+        auto* metadata = static_cast<TextureSamplingMetadata*>(buffers.samplingMetadata->map());
+        if (!metadata) { return makeError(Error::Failure); }
+        for (uint32_t slot = 0; slot < count; ++slot) {
+            metadata[slot] = slot < materialTextures.size() ? textureSamplingMetadata(slot) : TextureSamplingMetadata{};
+        }
+        buffers.samplingMetadata->flush(); buffers.samplingMetadata->unmap();
+        for (const auto& [buffer, initial] : {std::pair{buffers.demandMip, UINT32_MAX}, std::pair{buffers.demandHits, 0u}}) {
+            auto* words = static_cast<uint32_t*>(buffer->map());
+            if (!words) { return makeError(Error::Failure); }
+            std::fill_n(words, count, initial);
+            buffer->flush(); buffer->unmap();
+        }
+        output = std::move(buffers);
+        return {};
+    }
+
     Result<> beginTextureStreaming(
         CommandBuffer& commands,
         uint64_t frameIndex,
-        Buffer*& feedback,
+        TextureFeedbackResources& feedback,
         CPUProfileRecorder* profiler,
         bool freezePublication,
         bool* demandEnabled)
     {
         if (demandEnabled) { *demandEnabled = false; }
-        if (!emptyTextureFeedback) {
-            std::unique_ptr<Buffer> buffer;
-            auto result = device->createBuffer({.size=32, .usage=BufferUsageBits::Storage,
-                .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
-            if (!result) { return result; }
-            auto* mapped = buffer->map(); if (!mapped) { return makeError(Error::Failure); }
-            std::memset(mapped,0,32); buffer->flush(); buffer->unmap();
-            emptyTextureFeedback = std::move(buffer);
+        if (!emptyTextureFeedback.samplingMetadata || emptyTextureFeedback.textureCount != materialTextures.size()) {
+            if (auto result = createTextureFeedbackBuffers(emptyTextureFeedback, true); !result) { return result; }
         }
-        feedback = emptyTextureFeedback.get();
+        feedback = emptyTextureFeedback.resources();
         auto* frame = metallic::render::RenderFrameContext::from(commands);
         if (!frame) { return {}; }
-        frame->retain(emptyTextureFeedback);
+        frame->retain(emptyTextureFeedback.samplingMetadata);
+        frame->retain(emptyTextureFeedback.demandMip);
+        frame->retain(emptyTextureFeedback.demandHits);
+        frame->retain(textureGeneration);
         if (baseTextureMips.empty()) { return {}; }
-        // Multiple consumers share one immutable metadata seed and one demand
-        // accumulation for this frame. Never reset demand after another
-        // consumer has already recorded writes to the same shared resources.
+        // Every consumer in a submitted frame shares one immutable metadata
+        // generation and demand accumulation. A later consumer must not reset it.
         const auto prepared = std::find_if(textureFeedback.begin(), textureFeedback.end(), [&](const TextureFeedback& value) {
             return value.frame == frameIndex && value.completion.sameSubmission(frame->completion());
         });
         if (prepared != textureFeedback.end()) {
-            feedback = prepared->buffers.device.get();
+            feedback = prepared->buffers.resources();
             if (demandEnabled) { *demandEnabled = prepared->captureDemand; }
             return {};
         }
@@ -1437,7 +1501,6 @@ struct ScenePathTraceResources::Impl {
                 ++textureStats.budgetDeferrals;
                 if (hasError(result,Error::DeviceLost)) { return result; }
             }
-            // Publication can release the previous generation immediately if no frame uses it.
             phase.next("Retire texture generations");
             consumeTextureFeedback();
             phase.next("Schedule texture migration");
@@ -1450,64 +1513,59 @@ struct ScenePathTraceResources::Impl {
         TextureFeedbackBuffers buffers;
         if (!freeTextureFeedback.empty()) {
             buffers = std::move(freeTextureFeedback.back()); freeTextureFeedback.pop_back();
-        } else {
-            const uint64_t bytes = materialTextures.size() * 32;
-            result = device->createBuffer({.size=bytes, .usage=BufferUsageBits::TransferSource,
-                .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto value) { buffers.seed = std::move(value); });
-            if (!result) { return result; }
-            result = device->createBuffer({.size=bytes,
-                .usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination,
-                .memoryLocation=MemoryLocation::Device}).transform([&](auto value) { buffers.device = std::move(value); });
-            if (!result) { return result; }
-            result = device->createBuffer({.size=bytes, .usage=BufferUsageBits::TransferDestination,
-                .memoryLocation=MemoryLocation::HostReadback}).transform([&](auto value) { buffers.readback = std::move(value); });
-            if (!result) { return result; }
         }
-        auto* words = static_cast<uint32_t*>(buffers.seed->map());
-        if (!words) { return makeError(Error::Failure); }
-        std::memset(words,0,materialTextures.size()*32);
+        if (!buffers.samplingMetadata || buffers.textureCount != materialTextures.size()) {
+            if (auto allocation = createTextureFeedbackBuffers(buffers, false); !allocation) { return allocation; }
+        }
+        const uint64_t count = std::max<size_t>(materialTextures.size(), 1);
+        const uint64_t metadataBytes = count * sizeof(TextureSamplingMetadata), demandBytes = count * sizeof(uint32_t);
+        auto* metadata = static_cast<TextureSamplingMetadata*>(buffers.seed->map());
+        if (!metadata) { return makeError(Error::Failure); }
+        auto* mip = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(metadata) + metadataBytes);
+        auto* hits = mip + count;
+        for (uint32_t slot = 0; slot < count; ++slot) {
+            metadata[slot] = slot < materialTextures.size() ? textureSamplingMetadata(slot) : TextureSamplingMetadata{};
+        }
+        std::fill_n(mip, count, UINT32_MAX);
+        std::fill_n(hits, count, 0u);
         for (uint32_t image = 0; image < ktxImages.size(); ++image) {
             const uint32_t slot = asyncImageTextureIndexMap[image];
-            if (!ktxImages[image] || pinnedImages[image] || slot == kInvalidMaterialTextureIndex) { continue; }
-            if (captureDemand) {
-                words[slot*8] = ktxImages[image]->width;
-                words[slot*8+1] = ktxImages[image]->height;
-                words[slot*8+2] = uint32_t(ktxImages[image]->levels.size());
-            }
-            words[slot*8+3] = ktxFirstMips[image];
-            words[slot*8+4] = UINT32_MAX;
-            words[slot*8+6] = std::bit_cast<uint32_t>(textureMipTransitions[image].samplingLodFloor(textureTransitionSeconds));
+            if (!ktxImages[image] || pinnedImages[image] || slot >= materialTextures.size()) { continue; }
+            metadata[slot].samplingFloor = textureMipTransitions[image].samplingLodFloor(textureTransitionSeconds);
+            if (captureDemand) { metadata[slot].residentFirstMipAndFlags |= kTextureDemandEnabled; }
         }
         buffers.seed->flush(); buffers.seed->unmap();
-        // Sampling metadata must remain available when demand readback is full
-        // or publication is frozen. Zero source dimensions disable GPU demand
-        // writes on these frames; word 6 still describes this immutable tail.
-        TextureFeedback entry{.buffers=std::move(buffers), .completion=frame->completion(),
-            .frame=frameIndex, .captureDemand=captureDemand};
-        feedback = entry.buffers.device.get();
+        TextureFeedback entry{.buffers = std::move(buffers), .completion = frame->completion(),
+            .frame = frameIndex, .captureDemand = captureDemand};
+        feedback = entry.buffers.resources();
         frame->retain(entry.buffers.seed);
-        frame->retain(entry.buffers.device);
+        frame->retain(entry.buffers.samplingMetadata);
+        frame->retain(entry.buffers.demandMip);
+        frame->retain(entry.buffers.demandHits);
         frame->retain(entry.buffers.readback);
         frame->retain(textureGeneration);
         phase.next("Initialize Device texture feedback");
-        const BufferBarrierDesc initialize[] = {
-            {.buffer = entry.buffers.seed.get(),
-                .before = {PipelineStageBits::Host, AccessBits::HostWrite},
-                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
-            {.buffer = feedback,
+        const BufferBarrierDesc seedReady{.buffer = entry.buffers.seed.get(),
+            .before = {PipelineStageBits::Host, AccessBits::HostWrite},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+        if (auto commandResult = commands.synchronize({.buffers = {&seedReady, 1}}); !commandResult) { return commandResult; }
+        const std::array targets{feedback.samplingMetadata, feedback.demandMip, feedback.demandHits};
+        const std::array offsets{uint64_t(0), metadataBytes, metadataBytes + demandBytes};
+        for (size_t i = 0; i < targets.size(); ++i) {
+            const BufferBarrierDesc initialize{.buffer = targets[i],
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}},
-        };
-        if (auto commandResult = commands.synchronize({.buffers = initialize}); !commandResult) { return commandResult; }
-        const auto seed = entry.buffers.seed->slice({0, entry.buffers.seed->desc().size});
-        if (!seed) { return std::unexpected(seed.error()); }
-        const auto destination = feedback->slice({0, feedback->desc().size});
-        if (!destination) { return std::unexpected(destination.error()); }
-        if (auto commandResult = commands.copyBuffer(*seed, *destination); !commandResult) { return commandResult; }
-        const BufferBarrierDesc ready{.buffer = feedback,
-            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
-        if (auto commandResult = commands.synchronize({.buffers = {&ready, 1}}); !commandResult) { return commandResult; }
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+            if (auto commandResult = commands.synchronize({.buffers = {&initialize, 1}}); !commandResult) { return commandResult; }
+            const auto source = entry.buffers.seed->slice({offsets[i], targets[i]->desc().size});
+            if (!source) { return std::unexpected(source.error()); }
+            const auto destination = targets[i]->slice({0, targets[i]->desc().size});
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto commandResult = commands.copyBuffer(*source, *destination); !commandResult) { return commandResult; }
+            const BufferBarrierDesc ready{.buffer = targets[i],
+                .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::AllCommands, i == 0 ? AccessBits::ShaderRead : AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+            if (auto commandResult = commands.synchronize({.buffers = {&ready, 1}}); !commandResult) { return commandResult; }
+        }
         textureFeedback.push_back(std::move(entry));
         if (demandEnabled) { *demandEnabled = captureDemand; }
         return {};
@@ -1525,27 +1583,28 @@ struct ScenePathTraceResources::Impl {
         });
         if (entry == textureFeedback.end() || !entry->captureDemand || entry->readbackSubmission) { return {}; }
         CPUProfileScope phase(profiler, "Copy texture feedback readback");
-        const BufferBarrierDesc copy[] = {
-            {.buffer = entry->buffers.device.get(),
+        const BufferBarrierDesc readbackReady{.buffer = entry->buffers.readback.get(),
+            .before = {PipelineStageBits::Host, AccessBits::HostRead},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+        if (auto result = commands.synchronize({.buffers = {&readbackReady, 1}}); !result) { return result; }
+        const std::array demands{entry->buffers.demandMip.get(), entry->buffers.demandHits.get()};
+        for (size_t i = 0; i < demands.size(); ++i) {
+            const BufferBarrierDesc copy{.buffer = demands[i],
                 .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
-                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
-            {.buffer = entry->buffers.readback.get(),
-                .before = {PipelineStageBits::Host, AccessBits::HostRead},
-                .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}},
-        };
-        if (auto result = commands.synchronize({.buffers = copy}); !result) { return result; }
-        const auto source = entry->buffers.device->slice({0, entry->buffers.device->desc().size});
-        if (!source) { return std::unexpected(source.error()); }
-        const auto destination = entry->buffers.readback->slice({0, entry->buffers.readback->desc().size});
-        if (!destination) { return std::unexpected(destination.error()); }
-        if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+            if (auto result = commands.synchronize({.buffers = {&copy, 1}}); !result) { return result; }
+            const auto source = demands[i]->slice({0, demands[i]->desc().size});
+            if (!source) { return std::unexpected(source.error()); }
+            const auto destination = entry->buffers.readback->slice({i * demands[i]->desc().size, demands[i]->desc().size});
+            if (!destination) { return std::unexpected(destination.error()); }
+            if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        }
         const BufferBarrierDesc hostReady{.buffer = entry->buffers.readback.get(),
             .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .after = {PipelineStageBits::Host, AccessBits::HostRead}};
         if (auto result = commands.synchronize({.buffers = {&hostReady, 1}}); !result) { return result; }
-        // An accepted frame prefix does not prove that its readback tail was
-        // accepted. Keep a transaction on this command buffer so a cancelled
-        // tail can never publish the previous contents of its staging buffer.
+        // Both demand copies belong to this tail. An accepted frame prefix must
+        // never make stale staging contents visible after a cancelled readback.
         auto submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
         if (auto result = commands.addSubmissionTransaction(submission); !result) { return result; }
         entry->readbackSubmission = std::move(submission);
@@ -2933,7 +2992,7 @@ Result<> ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandB
 Result<> ScenePathTraceResources::beginTextureStreaming(
     CommandBuffer& commands,
     uint64_t frameIndex,
-    Buffer*& feedback,
+    TextureFeedbackResources& feedback,
     CPUProfileRecorder* profiler,
     bool freezePublication,
     bool* captureDemand)
@@ -2941,7 +3000,27 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
     if (auto* frame = metallic::render::RenderFrameContext::from(commands); frame && impl_->materialBinding) {
         frame->retain(impl_->materialBinding);
     }
-    return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication, captureDemand);
+    const auto result = impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication, captureDemand);
+    if (!result) { return result; }
+
+    // Shader loads are trusted after their material slot check. Validate the
+    // complete frame publication here, including cached and empty preparations.
+    // Vulkan buffers keep one physical element when the logical count is zero.
+    const uint64_t textureCount = impl_->materialTextureViews.size();
+    const uint64_t physicalCount = std::max<uint64_t>(textureCount, 1);
+    const auto hasSize = [](const Buffer* buffer, uint64_t bytes) {
+        return buffer != nullptr && buffer->desc().size == bytes;
+    };
+    if (feedback.textureCount != textureCount || impl_->materialTextureCount != textureCount ||
+        !hasSize(feedback.samplingMetadata, physicalCount * sizeof(TextureSamplingMetadata)) ||
+        !hasSize(feedback.demandMip, physicalCount * sizeof(uint32_t)) ||
+        !hasSize(feedback.demandHits, physicalCount * sizeof(uint32_t))) {
+        spdlog::error("[TextureStreaming] Texture sampling publication does not match {} bound texture slots", textureCount);
+        feedback = {};
+        if (captureDemand) { *captureDemand = false; }
+        return makeError(Error::InvalidArgument);
+    }
+    return {};
 }
 
 Result<> ScenePathTraceResources::endTextureStreaming(

@@ -1,6 +1,7 @@
 module TextureResidencyProbe;
 
 import Core;
+import StreamTextureSampling;
 using Metallic;
 struct Push { uint slot; uint wantedMip; uint samples; uint unused; };
 [shader("compute")]
@@ -8,13 +9,13 @@ struct Push { uint slot; uint wantedMip; uint samples; uint unused; };
 void main()
 {
     Push push = getConstants<Push>();
-    RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<TextureFeedbackResourceParameters>().feedback);
-    uint count, stride;
-    feedback.GetDimensions(count, stride);
-    uint offset = push.slot * 8;
-    if (offset + 7 < count && feedback[offset] != 0 && push.samples != 0) {
+    let resources = getResourceParameters<TextureFeedbackResourceParameters>();
+    StructuredBuffer<TextureSamplingMetadata> metadata = resolveBuffer<StructuredBuffer<TextureSamplingMetadata>>(resources.samplingMetadata);
+    RWStructuredBuffer<uint> demandMip = resolveBuffer<RWStructuredBuffer<uint>>(resources.demandMip);
+    RWStructuredBuffer<uint> demandHits = resolveBuffer<RWStructuredBuffer<uint>>(resources.demandHits);
+    if ((metadata[push.slot].residentFirstMipAndFlags & 0x80000000u) != 0u && push.samples != 0u) {
         uint ignored;
-        InterlockedMin(feedback[offset + 4], push.wantedMip, ignored);
-        InterlockedAdd(feedback[offset + 5], push.samples, ignored);
+        InterlockedMin(demandMip[push.slot], push.wantedMip, ignored);
+        InterlockedAdd(demandHits[push.slot], push.samples, ignored);
     }
 }

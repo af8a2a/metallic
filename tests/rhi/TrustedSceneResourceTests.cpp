@@ -59,11 +59,11 @@ public:
 
     RHITestResult run(RHITestContext& context) override
     {
-        static_assert(sizeof(SceneResourceParameters) == 384);
+        static_assert(sizeof(SceneResourceParameters) == 392);
         const auto fail = [](const std::string& text) { return RHITestResult::fail(text); };
         std::string log;
         const SlangMacroDefine validDefines[] = {
-            {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "384"}};
+            {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", "392"}};
         SlangShaderDesc source{.moduleName = "TrustedSceneResourceProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = validDefines};
         ResourceComputeKernelDesc layout{.requiresRayQuery = false,
@@ -75,7 +75,7 @@ public:
         wrongLayout = layout;
         wrongLayout.rootTransport = ParameterTransport::DescriptorBuffer;
         if (validateTrustedSceneResourceContract(source, wrongLayout, log)) { return fail("Buffered trusted root accepted"); }
-        for (const char* value : {"380", "388", "-1", "384junk", ""}) {
+        for (const char* value : {"388", "396", "-1", "392junk", ""}) {
             const SlangMacroDefine badDefines[] = {
                 {"METALLIC_INLINE_COMPUTE_ROOT", "1"}, {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", value}};
             source.macroDefines = badDefines;
@@ -144,7 +144,7 @@ public:
             for (bool trusted : {false, true}) {
                 const SlangMacroDefine defines[] = {
                     {"METALLIC_INLINE_COMPUTE_ROOT", "1"},
-                    {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", trusted ? "384" : "0"}};
+                    {"METALLIC_TRUSTED_SCENE_RESOURCE_BYTES", trusted ? "392" : "0"}};
                 source.macroDefines = defines;
                 source.descriptorHeapMode = mode;
                 auto shader = compileSlangShaderToSpirv(source, log);
@@ -157,15 +157,16 @@ public:
                 for (bool shortPacket : {false, true}) {
                     for (bool sentinel : {false, true}) {
                         // Both packet and constants start beyond a guard word.
-                        std::array<uint32_t, 98> words;
+                        constexpr uint32_t kPacketWords = sizeof(SceneResourceParameters) / sizeof(uint32_t);
+                        std::array<uint32_t, kPacketWords + 2> words;
                         for (uint32_t i = 0; i < words.size(); ++i) { words[i] = sentinel ? UINT32_MAX : 0x12340000u + i; }
                         ParameterWriter writer(device, **registry);
                         const auto handle = writer.buffer(output->get());
-                        const std::array<uint32_t, 5> constants{0xdeadbeefu, handle.index, shortPacket ? 1u : 0u, 380u, 0u};
+                        const std::array<uint32_t, 5> constants{0xdeadbeefu, handle.index, shortPacket ? 1u : 0u, sizeof(SceneResourceParameters) - sizeof(uint32_t), 0u};
                         ComputeResourceParameters root;
                         root.resources = writer.dataSpan(words.data(), sizeof(words), 4, 4);
                         root.resources.byteOffset += 4;
-                        root.resources.count = shortPacket ? 95 : 96;
+                        root.resources.count = shortPacket ? kPacketWords - 1 : kPacketWords;
                         root.constants = writer.dataSpan(constants.data(), sizeof(constants), 4, 4);
                         root.constants.byteOffset += 4;
                         root.constants.count = 4;
@@ -182,7 +183,7 @@ public:
                         std::copy_n(mapped, actual.size(), actual.begin());
                         (*output)->unmap();
                         const uint32_t material = shortPacket ? 0 : words[kMaterialsWord + 1];
-                        const uint32_t tail = shortPacket ? 0 : words[96];
+                        const uint32_t tail = shortPacket ? 0 : words[kPacketWords];
                         const Readback expected{material, material, tail, material, material, tail, tail, 0, 0, 0, 0};
                         const size_t compared = shortPacket ? 3 : expected.size();
                         if (!std::equal(expected.begin(), expected.begin() + compared, actual.begin())) {

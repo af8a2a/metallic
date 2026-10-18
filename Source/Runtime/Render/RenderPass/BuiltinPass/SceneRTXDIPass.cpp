@@ -298,7 +298,9 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lightsPdf), .kind = ComputeResourceBindingKind::SampledImage},
         };
         appendStreamRayLayout(bindings);
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .kind = ComputeResourceBindingKind::StorageBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .kind = ComputeResourceBindingKind::StorageBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .kind = ComputeResourceBindingKind::StorageBuffer});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .kind = ComputeResourceBindingKind::StorageBuffer});
         std::string programLog;
         result = initializeResourceKernel(
             *context.device,
@@ -566,7 +568,9 @@ public:
             {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, regirGrid), .buffer = lights_.reGIRBuffer()},
         };
         appendStreamRayBindings(bindings, streamGeometry, prepared->geometry->shadingChangeBuffer());
-        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureFeedback), .buffer = prepared->textureFeedback});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureSamplingMetadata), .buffer = prepared->textureFeedback.samplingMetadata});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandMip), .buffer = prepared->textureFeedback.demandMip});
+        bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, textureDemandHits), .buffer = prepared->textureFeedback.demandHits});
         if (environment.atmosphereParametersBuffer != nullptr) {
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.atmosphereParameters), .buffer = environment.atmosphereParametersBuffer});
             bindings.push_back({.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environment.transmittance), .textureViews = {atmosphereTransmittanceViews, 1}});

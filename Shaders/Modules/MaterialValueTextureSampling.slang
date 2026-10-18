@@ -46,7 +46,7 @@ internal float4 materialValueBilinear(Texture2D<float4> texture, MaterialTexture
 }
 
 public float4 sampleMaterialValueTextureResource(Texture2D<float4> texture,
-    RWStructuredBuffer<uint> feedback, MaterialTextureInfo info, float2 uv,
+    StructuredBuffer<TextureSamplingMetadata> metadata, MaterialTextureInfo info, float2 uv,
     uint policy, float4 dxLod, float4 dy, float normalizedRayLod, bool linearColor)
 {
     uint2 dimensions; uint mipCount;
@@ -59,7 +59,7 @@ public float4 sampleMaterialValueTextureResource(Texture2D<float4> texture,
     } else if (policy == 2u) {
         lod = normalizedRayLod + 0.5 * log2(float(max(dimensions.x, 1u)) * float(max(dimensions.y, 1u))) + textureTransformLodBias(info) + dxLod.x;
     }
-    lod = max(lod, streamTextureSamplingFloor(feedback, info.textureIndex));
+    lod = max(lod, streamTextureSamplingFloor(metadata, info.textureIndex));
     lod = clamp(lod, 0.0, float(max(mipCount, 1u) - 1u));
     const uint lo = uint(floor(lod)), hi = min(lo + 1u, max(mipCount, 1u) - 1u);
     float2 transformed = transformMaterialUv(info, uv);

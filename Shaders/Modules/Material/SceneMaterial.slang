@@ -8,8 +8,10 @@ public struct MaterialTextureInfo
 {
     public uint textureIndex;
     public uint texCoord;
-    // Required for float4 alignment in StructuredBuffer std430 layout.
-    public uint2 alignmentPadding;
+    // Nonnegative: exact POT dimension LOD. Negative: source pixel area,
+    // retaining GPU log2 rounding for NPOT dimensions.
+    public float sourceLodTerm;
+    public uint sourceMipCount;
     public float4 transform0;
     public float4 transform1;
 };
