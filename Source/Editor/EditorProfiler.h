@@ -183,6 +183,7 @@ private:
     int chartMetric_ = 1;
     std::vector<std::string> chartPath_;
     std::string selectedStream_;
+    std::string captureOpenError_;
     std::vector<render::SceneStreamingProfile> currentStreaming_;
     std::vector<StreamingHistory> streamingHistory_;
 };

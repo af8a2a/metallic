@@ -3,6 +3,8 @@
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "imgui.h"
+#include <SDL3/SDL_error.h>
+#include <SDL3/SDL_misc.h>
 
 #include <algorithm>
 #include <cmath>
@@ -1092,9 +1094,26 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         ImGui::TextDisabled("%s", graphicsCapture.statusText);
     }
 
+    const auto drawOpenCaptureButton = [&](const char* path) {
+        ImGui::SameLine();
+        ImGui::PushID(path);
+        if (ImGui::SmallButton("Open in Nsight")) {
+            captureOpenError_.clear();
+            if (!SDL_OpenURL(path)) {
+                captureOpenError_ = "Could not open capture in Nsight: ";
+                captureOpenError_ += SDL_GetError();
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Open this file using its registered Nsight Graphics application.");
+        }
+        ImGui::PopID();
+    };
+
     if (graphicsCapture.replayTracePath != nullptr && graphicsCapture.replayTracePath[0] != '\0') {
         ImGui::TextWrapped("Replay GPU Trace: %s", graphicsCapture.replayTracePath);
         if (ImGui::SmallButton("Copy GPU Trace Path")) { ImGui::SetClipboardText(graphicsCapture.replayTracePath); }
+        drawOpenCaptureButton(graphicsCapture.replayTracePath);
     }
     if (graphicsCapture.replayTraceError != nullptr && graphicsCapture.replayTraceError[0] != '\0') {
         ImGui::TextWrapped("Replay collection failed (capture preserved): %s", graphicsCapture.replayTraceError);
@@ -1106,6 +1125,10 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         if (ImGui::SmallButton("Copy Path")) {
             ImGui::SetClipboardText(graphicsCapture.capturePath);
         }
+        drawOpenCaptureButton(graphicsCapture.capturePath);
+    }
+    if (!captureOpenError_.empty()) {
+        ImGui::TextWrapped("%s", captureOpenError_.c_str());
     }
     ImGui::Separator();
 

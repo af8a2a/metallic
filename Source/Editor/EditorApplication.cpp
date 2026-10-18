@@ -3496,8 +3496,8 @@ void EditorApplication::drawPanels()
         } else if (captureReady) {
             captureStatus += " Optimized Slang source symbols are enabled.";
         }
-        const std::string capturePath = nsightGraphicsCapture_.capturePath().string();
-        const std::string replayTracePath = nsightGraphicsCapture_.replayTracePath().string();
+        const std::u8string capturePath = nsightGraphicsCapture_.capturePath().u8string();
+        const std::u8string replayTracePath = nsightGraphicsCapture_.replayTracePath().u8string();
         const std::string& replayTraceError = nsightGraphicsCapture_.replayTraceError();
         const EditorProfiler::GraphicsCaptureControls captureControls{
             .sdkCompiled = render::profiling::NsightGraphicsCapture::compiledAvailable(),
@@ -3507,8 +3507,8 @@ void EditorApplication::drawPanels()
             .capturePending = nsightGraphicsCapture_.hasOutstandingCapture(),
             .gpuTrace = nsightMode_ == render::profiling::NsightCaptureMode::GPUTrace,
             .statusText = captureStatus.c_str(),
-            .capturePath = capturePath.c_str(),
-            .replayTracePath = replayTracePath.c_str(),
+            .capturePath = reinterpret_cast<const char*>(capturePath.c_str()),
+            .replayTracePath = reinterpret_cast<const char*>(replayTracePath.c_str()),
             .replayTraceError = replayTraceError.c_str(),
         };
         if (profiler_.drawWindow(&profilerOpen_, captureControls)) {
