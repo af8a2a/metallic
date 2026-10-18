@@ -12,6 +12,8 @@ LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
 `.hlsli` 绕过模块归属。在仓库根执行 `python -B Tools/CheckShaderModules.py`，递归检查 `Shaders/**/*.slang`
 和 `tests/**/*.slang`（含 editor 与 RHI 探针），验证唯一归属、同 owner 的实现引用和裸 include 禁令。
 外部 SDK 源码不在扫描范围；运行时生成的 MaterialValueDispatch 则单独检查生成器的归属声明。
+生成的 `MaterialCoverageGenerated` 独立模块也检查其生成器归属；后端与缓存约定见
+[Native Slang Coverage](../Documentation/MaterialCoverageNativeSlang.md)。
 配置了 Python 的测试构建同时注册 `MetallicShaderModuleOwnershipAudit` 和检查器回归测试。
 
 编译复杂度与源码实验记录见 [Shader compilation complexity](../Documentation/ShaderCompilationComplexity.md)。

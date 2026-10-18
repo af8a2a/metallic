@@ -674,6 +674,74 @@ TEST(ShaderRequests, PreservesCustomMaterialAndSDKSearchPrecedence)
     EXPECT_EQ(maintenance.capabilities, request.capabilities);
 }
 
+TEST(ShaderRequests, CoverageOnlyHasIndependentExecutableIdentity)
+{
+    SceneShaderOptions options{.customCoverage = true, .coverageInclude = "C:/Coverage/A"};
+    for (const auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
+        SceneShaderProgram::OpenPBRPathTrace, SceneShaderProgram::OpenPBRPathTraceGuides,
+        SceneShaderProgram::RealtimeLighting, SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+        const auto request = makeSceneShaderRequest(program, options);
+        EXPECT_NE(request, makeSceneShaderRequest(program, {}));
+        EXPECT_NE(std::find(request.defines.begin(), request.defines.end(),
+            std::pair<std::string, std::string>{"METALLIC_CUSTOM_COVERAGE", "1"}), request.defines.end());
+        EXPECT_NE(std::find(request.defines.begin(), request.defines.end(),
+            std::pair<std::string, std::string>{"METALLIC_CUSTOM_MATERIALS", "0"}), request.defines.end());
+        EXPECT_EQ(request.searchPaths, (std::vector<std::string>{"C:/Coverage/A"}));
+        auto changed = options;
+        changed.coverageInclude = "C:/Coverage/B";
+        EXPECT_NE(request, makeSceneShaderRequest(program, changed));
+    }
+    options.customMaterials = true;
+    options.materialInclude = "C:/Surface";
+    options.hasRTXCR = true;
+    options.rtxcrInclude = "C:/RTXCR";
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options).searchPaths,
+        (std::vector<std::string>{"C:/Surface", "C:/Coverage/A", "C:/RTXCR"}));
+    EXPECT_EQ(makeSceneShaderRequest(SceneShaderProgram::SharcClear, options),
+        makeSceneShaderRequest(SceneShaderProgram::SharcClear, {}));
+}
+
+TEST_F(ShaderRequestCompileTest, CoverageOnlyCodeEditsMissCacheWhileParameterEditsReuseIt)
+{
+    metallic::scene::RenderMaterial material;
+    material.alphaMode = "MASK";
+    material.valueProgram = R"({"version":1,"coverage":{"op":"parameter","index":0}})";
+    std::string diagnostics;
+    const auto first = MaterialValueProgramSet::create({&material, 1}, diagnostics);
+    ASSERT_TRUE(first) << diagnostics;
+    material.valueParameters[0] = 0.75f;
+    const auto parameters = MaterialValueProgramSet::create({&material, 1}, diagnostics);
+    ASSERT_TRUE(parameters) << diagnostics;
+    EXPECT_EQ(first->coverageKey(), parameters->coverageKey());
+    EXPECT_EQ(first->key(), parameters->key());
+    material.valueProgram = R"({"version":1,"coverage":{"op":"mul","args":[{"op":"uv"},{"op":"parameter","index":0}]}})";
+    const auto changed = MaterialValueProgramSet::create({&material, 1}, diagnostics);
+    ASSERT_TRUE(changed) << diagnostics;
+    EXPECT_EQ(first->key(), changed->key());
+    EXPECT_NE(first->coverageKey(), changed->coverageKey());
+    const std::filesystem::path root = uniqueShaderCacheDirectory("coverage-only");
+    const auto cachePath = (root / "spirv").string();
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = cachePath.c_str(), .outCacheHit = &hit};
+    std::vector<uint32_t> initialSpirv;
+    uint32_t step = 0;
+    for (const auto& programs : {first, parameters, changed}) {
+        std::filesystem::path directory;
+        ASSERT_TRUE(programs->writeCoverageInclude(root / "generated", directory, diagnostics)) << diagnostics;
+        ShaderRequest request{.module = "MaterialCoverageCacheProbe", .entry = "main",
+            .defines = {{"METALLIC_CUSTOM_COVERAGE", "1"}}, .searchPaths = {directory.string()},
+            .searchPath = PROJECT_SOURCE_DIR "/tests/editor/shaders"};
+        const ShaderRequestView view(request);
+        const auto compiled = compileSlangShaderToSpirv(view.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_EQ(hit, step == 1);
+        if (step == 0) { initialSpirv = compiled->spirv; }
+        else if (step == 1) { EXPECT_EQ(initialSpirv, compiled->spirv); }
+        else { EXPECT_NE(initialSpirv, compiled->spirv); }
+        ++step;
+    }
+}
+
 TEST(ShaderRequests, DirectionalCacheNeverUsesSpatialKeyReprojection)
 {
     const auto spatial = makeSceneShaderRequest(SceneShaderProgram::SharcResolve, {});
@@ -2477,4 +2545,69 @@ TEST(ShaderRequests, SimpleBSDFHitStagesRemainSharedAcrossAllPolicies)
     }), 1);
     EXPECT_STREQ(desc.moduleName, "Features/PathTracing/VkGltfRayPipelinePathTrace");
     EXPECT_STREQ(desc.entryPointName, "vkGltfRayPipelinePathTraceMain");
+}
+
+TEST_F(ShaderRequestCompileTest, CoverageOnlyWarmupTracksCodeButNotInstanceParameters)
+{
+    const auto root = std::filesystem::path(TEST_BINARY_DIR) / "coverage-only-warmup" /
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto write = [&](const std::filesystem::path& path, const nlohmann::json& value) {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream file(path);
+        file << value.dump();
+        ASSERT_TRUE(file);
+    };
+    write(root / "Sample/Scene.gltf", nlohmann::json::object());
+    write(root / "Sample/Graph.json", {{"nodes", {
+        {{"type", "ScenePathTracePass"}, {"properties", {{"bsdf", "openpbr"}}}}
+    }}});
+    const nlohmann::json sample{{"id", "painter-coverage"}, {"name", "Coverage"}, {"description", ""}, {"environment", ""},
+        {"scenePath", "Sample/Scene.gltf"}, {"graphPath", "Sample/Graph.json"}};
+    write(root / "build/MaterialValidation/PainterLookDev/Catalog.json", {{"version", 1}, {"samples", {sample}}});
+    metallic::scene::RenderMaterial material;
+    material.alphaMode = "MASK";
+    const auto writeMaterial = [&] {
+        write(root / "Sample/Scene.metallic_scene.json", {{"materials", {{{"properties", {
+            {"alphaMode", material.alphaMode}, {"valueProgram", material.valueProgram},
+            {"valueParameters", material.valueParameters}}}}}}});
+    };
+    writeMaterial();
+    EXPECT_TRUE(metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR).empty());
+    std::vector<ShaderRequest> previous;
+    const std::string cacheDirectory = (root / "spirv").string();
+    bool hit = false;
+    const SlangShaderCacheOptions cache{.cacheDirectory = cacheDirectory.c_str(), .outCacheHit = &hit};
+    std::string diagnostics;
+    for (const char* expression : {
+        R"({"version":1,"coverage":{"op":"parameter","index":0}})",
+        R"({"version":1,"coverage":{"op":"mul","args":[{"op":"alpha"},{"op":"parameter","index":0}]}})"}) {
+        material.valueProgram = expression;
+        writeMaterial();
+        const auto requests = metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+        ASSERT_EQ(requests.size(), 1u);
+        if (!previous.empty()) { EXPECT_NE(requests, previous); }
+        const auto runtimePrograms = MaterialValueProgramSet::create({&material, 1}, diagnostics);
+        ASSERT_TRUE(runtimePrograms) << diagnostics;
+        EXPECT_EQ(runtimePrograms->programCount(), 0u);
+        std::filesystem::path directory;
+        ASSERT_TRUE(runtimePrograms->writeCoverageInclude(root / ".cache/materials", directory, diagnostics)) << diagnostics;
+        auto options = standardSceneOptions();
+        options.customCoverage = true;
+        options.coverageInclude = directory.string();
+        const auto runtime = makeSceneShaderRequest(SceneShaderProgram::OpenPBRPathTrace, options);
+        EXPECT_EQ(requests.front(), runtime);
+        const ShaderRequestView warmupSource(requests.front());
+        const auto compiled = compileSlangShaderToSpirv(warmupSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        EXPECT_FALSE(hit);
+        const ShaderRequestView runtimeSource(runtime);
+        const auto reused = compileSlangShaderToSpirv(runtimeSource.desc(), cache, diagnostics);
+        ASSERT_TRUE(reused) << diagnostics;
+        EXPECT_TRUE(hit);
+        EXPECT_EQ(compiled->spirv, reused->spirv);
+        material.valueParameters[0] = 0.75f;
+        writeMaterial();
+        EXPECT_EQ(requests, metallic::tools::materialShaderWarmupRequests(root, METALLIC_RTXCR_SHADER_INCLUDE_DIR));
+        previous = requests;
+    }
 }

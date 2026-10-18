@@ -1,5 +1,7 @@
 # Material System Phase 8 — Coverage Program 分离
 
+当前后端已迁移为 [原生 Slang Coverage](MaterialCoverageNativeSlang.md)，具有独立代码缓存及 Coverage-only 热更新；下文中的字节码后端描述是 Phase 8 历史记录。
+
 后续更新：[Phase 9 Value IR](MaterialSystemPhase9.md) 已统一 Surface/Coverage 前端并新增 v2 图引用。
 下文保留 Phase 8 交付时的后端和验收记录。
 

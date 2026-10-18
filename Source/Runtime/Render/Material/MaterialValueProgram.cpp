@@ -153,6 +153,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
         std::vector<std::string> sources;
         std::vector<std::string> coverageSources;
         std::map<std::string, MaterialCoverageSlice> coveragePrograms;
+        std::map<std::string, MaterialValueIR> coverageIR;
         for (const auto& material : materials) {
             require(std::all_of(material.valueParameters.begin(), material.valueParameters.end(),
                 [](float v) { return std::isfinite(v) && std::abs(v) <= 1e6f; }), "Value parameters must be finite and within +/-1e6");
@@ -167,6 +168,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
                 coverageSource = coverage.canonical();
                 if (!coveragePrograms.contains(coverageSource)) {
                     coveragePrograms.emplace(coverageSource, compileMaterialCoverageSlice(coverage));
+                    coverageIR.emplace(coverageSource, coverage);
                 }
             }
             coverageSources.push_back(coverageSource);
@@ -240,22 +242,31 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
         }
         if (materials.empty()) { result->instances_.emplace_back(); }
         result->inputBytes_.resize(result->instances_.size() * sizeof(MaterialValueInstance));
-        std::map<std::string, uint32_t> coverageOffsets;
+        std::map<std::string, uint32_t> coverageIds;
+        result->coverageSource_ = "#language slang 2026\nmodule MaterialCoverageGenerated;\n"
+            "// Independent Coverage IR; no Surface/Closure resources or runtime instruction table.\n"
+            "namespace Metallic.MaterialCoverage\n{\n";
         for (const auto& [source, slice] : coveragePrograms) {
-            require(result->inputBytes_.size() <= UINT32_MAX - slice.instructions.size() * sizeof(MaterialCoverageInstruction),
-                "Coverage byte offsets exceed uint32");
-            coverageOffsets[source] = static_cast<uint32_t>(result->inputBytes_.size());
-            const auto* first = reinterpret_cast<const std::byte*>(slice.instructions.data());
-            result->inputBytes_.insert(result->inputBytes_.end(), first, first + slice.instructions.size() * sizeof(MaterialCoverageInstruction));
+            const auto id = ++result->coverageProgramCount_;
+            coverageIds[source] = id;
+            result->coverageSource_ += emitMaterialCoverageProgram(coverageIR.at(source), id);
         }
+        result->coverageSource_ += "public float evaluateGeneratedCoverage(ByteAddressBuffer inputs, uint programId, uint parameterOffset, float2 uv, float baseAlpha)\n{\n"
+            "    switch (programId) {\n";
+        for (const auto& [source, id] : coverageIds) {
+            const auto name = std::to_string(id);
+            result->coverageSource_ += "    case " + name + "u: return materialCoverage" + name + "(inputs,parameterOffset,uv,baseAlpha);\n";
+        }
+        result->coverageSource_ += "    default: return baseAlpha;\n    }\n}\n} // namespace Metallic.MaterialCoverage\n";
+        result->coverageKey_ = 14695981039346656037ull;
+        for (unsigned char c : result->coverageSource_) { result->coverageKey_ = (result->coverageKey_ ^ c) * 1099511628211ull; }
         for (size_t i = 0; i < coverageSources.size(); ++i) {
             if (coverageSources[i].empty()) { continue; }
             const auto& slice = coveragePrograms.at(coverageSources[i]);
-            result->instances_[i].coverageOffset = coverageOffsets.at(coverageSources[i]);
+            result->instances_[i].coverageOffset = coverageIds.at(coverageSources[i]);
             result->instances_[i].coverageCount = static_cast<uint32_t>(slice.instructions.size());
             result->instances_[i].coverageFlags = slice.usesBaseAlpha ? 1u : 0u;
         }
-        result->coverageProgramCount_ = static_cast<uint32_t>(coveragePrograms.size());
         std::memcpy(result->inputBytes_.data(), result->instances_.data(), result->instances_.size() * sizeof(MaterialValueInstance));
         return result;
     } catch (const std::exception& error) {
@@ -282,6 +293,32 @@ bool MaterialValueProgramSet::writeInclude(const std::filesystem::path& root,
             file.write(source_.data(), static_cast<std::streamsize>(source_.size()));
             file.close();
             require(bool(file), "Cannot write generated program include");
+        }
+        return true;
+    } catch (const std::exception& error) {
+        diagnostics = error.what();
+        return false;
+    }
+}
+
+bool MaterialValueProgramSet::writeCoverageInclude(const std::filesystem::path& root,
+    std::filesystem::path& directory, std::string& diagnostics) const
+{
+    static std::mutex mutex;
+    const std::lock_guard lock(mutex);
+    try {
+        directory = root / "coverage" / std::to_string(coverageKey_);
+        std::filesystem::create_directories(directory);
+        const auto path = directory / "MaterialCoverageGenerated.slang";
+        if (std::filesystem::exists(path)) {
+            std::ifstream file(path, std::ios::binary);
+            const std::string existing{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+            require(existing == coverageSource_, "Generated Coverage cache collision or corruption");
+        } else {
+            std::ofstream file(path, std::ios::binary);
+            file.write(coverageSource_.data(), static_cast<std::streamsize>(coverageSource_.size()));
+            file.close();
+            require(bool(file), "Cannot write generated Coverage module");
         }
         return true;
     } catch (const std::exception& error) {

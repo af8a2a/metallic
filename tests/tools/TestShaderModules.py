@@ -53,5 +53,16 @@ class ShaderModuleOwnershipTests(unittest.TestCase):
         self.assertEqual([], self.run_case(files))
 
 
+    def test_generated_coverage_requires_named_module(self):
+        files = {
+            'Shaders/Modules/Material.slang': 'module Material;\n__include "Material/Coverage.slang";\n',
+            'Shaders/Modules/Material/Coverage.slang': 'implementing Material;\nimport MaterialCoverageGenerated;\n',
+            'Source/Runtime/Render/Material/MaterialValueProgram.cpp': 'module Other;',
+        }
+        self.assertTrue(any('generated Coverage' in error for error in self.run_case(files)))
+        files['Source/Runtime/Render/Material/MaterialValueProgram.cpp'] = 'module MaterialCoverageGenerated;'
+        self.assertEqual([], self.run_case(files))
+
+
 if __name__ == '__main__':
     unittest.main()

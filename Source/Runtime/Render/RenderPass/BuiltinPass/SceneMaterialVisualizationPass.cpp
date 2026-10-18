@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/MaterialCoverageShader.h"
 #include "StreamRayTracingBindings.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
@@ -101,7 +102,9 @@ public:
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
         Result<> result;
-        if (rayQueryProgram_.valid() &&
+        const auto valuePrograms = sceneResources_.materialBinding()->values();
+        const uint64_t coverageKey = materialCoverageShaderKey(valuePrograms.get());
+        if (rayQueryProgram_.valid() && compiledCoverageKey_ == coverageKey &&
             compiledTextureCount_ == sceneResources_.materialTextureCount()) {
             return {};
         }
@@ -109,7 +112,11 @@ public:
         rayQueryProgramEncoder_.clear();
 
         ShaderCompileResult computeCompile;
-        const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization);
+        SceneShaderOptions shaderOptions;
+        if (!prepareMaterialCoverageShader(valuePrograms.get(), shaderOptions, log)) {
+            return makeError(Error::Failure);
+        }
+        const auto request = makeSceneRayQueryRequest(SceneRayQueryProgram::MaterialVisualization, shaderOptions);
         const ShaderRequestView source(request);
         result = ShaderRegistry::instance().getShader(source.desc(), computeCompile.diagnostics)
             .transform([&](auto value) { computeCompile = std::move(value); });
@@ -175,6 +182,7 @@ public:
             return result;
         }
         compiledTextureCount_ = sceneResources_.materialTextureCount();
+        compiledCoverageKey_ = coverageKey;
         return {};
     }
 
@@ -428,6 +436,7 @@ private:
     ComputeKernel rayQueryProgram_;
     ComputeResourceEncoder rayQueryProgramEncoder_;
     uint32_t compiledTextureCount_ = 0;
+    uint64_t compiledCoverageKey_ = 0;
 };
 
 } // namespace

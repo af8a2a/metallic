@@ -37,6 +37,12 @@ def check(root: Path) -> list[str]:
             continue
         kind, owner = owners[0]
         units[path] = kind, owner, code
+        if label(path) == 'Shaders/Modules/Material/Coverage.slang' and re.search(
+                r'\bimport\s+MaterialCoverageGenerated\s*;', code):
+            generator = root / 'Source/Runtime/Render/Material/MaterialValueProgram.cpp'
+            generated_source = generator.read_text(encoding='utf-8') if generator.exists() else ''
+            if 'module MaterialCoverageGenerated;' not in generated_source:
+                errors.append(f'{label(path)}: generated Coverage must declare module MaterialCoverageGenerated in its generator')
         if kind == 'module':
             if owner in modules:
                 errors.append(f'{label(path)}: duplicate module {owner} also declared by {label(modules[owner])}')

@@ -23,7 +23,7 @@ class MaterialCoverageCompilerTest final : public RHITest
 {
 public:
     MaterialCoverageCompilerTest() { name = "material_coverage_compiler"; type = RHITestType::Resource; }
-    RHITestResult run(RHITestContext&) override
+    RHITestResult run(RHITestContext& context) override
     {
         scene::RenderMaterial material;
         material.alphaMode = "MASK";
@@ -32,10 +32,11 @@ public:
         auto first = MaterialValueProgramSet::create({&material, 1}, log);
         if (!first || first->programCount() != 1 || first->coverageProgramCount() != 1 ||
             first->instances()[0].coverageCount != 3 || first->instances()[0].coverageFlags != 1 ||
-            first->inputBytes().size() != 80 + 3 * 32) { return RHITestResult::fail("Coverage slice contains unrelated Surface nodes: " + log); }
+            first->inputBytes().size() != 80) { return RHITestResult::fail("Coverage slice contains bytecode or unrelated Surface nodes: " + log); }
         material.valueProgram = R"({"version":1,"baseColor":{"op":"sin","args":[{"op":"position"}]},"coverage":0.5})";
         auto second = MaterialValueProgramSet::create({&material, 1}, log);
         if (!second || first->source() != second->source() || first->key() != second->key() ||
+            first->coverageSource() == second->coverageSource() || first->coverageKey() == second->coverageKey() ||
             second->instances()[0].coverageCount != 1 || second->instances()[0].coverageFlags != 0) {
             return RHITestResult::fail("Coverage changed Surface executable identity or retained an unused texture input");
         }
@@ -44,10 +45,33 @@ public:
         for (size_t i = 0; i < instances.size(); ++i) { instances[i].valueParameters[0] = float(i) / 1000; }
         auto shared = MaterialValueProgramSet::create(instances, log);
         if (!shared || shared->programCount() != 0 || shared->coverageProgramCount() != 1 ||
-            shared->inputBytes().size() != 1000 * 80 + 32 || shared->instances()[999].parameters[0] != 0.999f ||
+            shared->inputBytes().size() != 1000 * 80 || shared->instances()[999].parameters[0] != 0.999f ||
             shared->instances()[999].coverageOffset != shared->instances()[0].coverageOffset) {
             return RHITestResult::fail("Coverage program was not shared independently of instance parameters");
         }
+        instances[0].valueParameters[0] = 0.123f;
+        const auto changedParameter = MaterialValueProgramSet::create(instances, log);
+        if (!changedParameter || changedParameter->coverageSource() != shared->coverageSource() ||
+            changedParameter->coverageKey() != shared->coverageKey()) { return RHITestResult::fail("Parameter-only edit changed Coverage executable identity"); }
+        material.valueProgram = R"({"version":1,"coverage":0.25})";
+        const auto coverageOnlyA = MaterialValueProgramSet::create({&material, 1}, log);
+        material.valueProgram = R"({"version":1,"coverage":0.75})";
+        const auto coverageOnlyB = MaterialValueProgramSet::create({&material, 1}, log);
+        if (!coverageOnlyA || !coverageOnlyB || coverageOnlyA->programCount() || coverageOnlyB->programCount() ||
+            coverageOnlyA->key() != coverageOnlyB->key() || coverageOnlyA->coverageKey() == coverageOnlyB->coverageKey()) {
+            return RHITestResult::fail("Coverage-only edit did not have an independent executable identity");
+        }
+        std::filesystem::path cacheA, cacheB;
+        if (!coverageOnlyA->writeCoverageInclude(context.outputDirectory / "coverage-cache", cacheA, log) ||
+            !coverageOnlyB->writeCoverageInclude(context.outputDirectory / "coverage-cache", cacheB, log) || cacheA == cacheB) {
+            return RHITestResult::fail("Coverage cache identities collided: " + log);
+        }
+        const auto cacheFile = cacheA / "MaterialCoverageGenerated.slang";
+        std::ofstream(cacheFile, std::ios::trunc) << "corrupt cache";
+        if (coverageOnlyA->writeCoverageInclude(context.outputDirectory / "coverage-cache", cacheA, log)) {
+            return RHITestResult::fail("Corrupt Coverage cache was accepted");
+        }
+        std::ofstream(cacheFile, std::ios::binary | std::ios::trunc) << coverageOnlyA->coverageSource();
         for (const char* source : {R"({"version":1,"coverage":{"op":"position"}})",
                 R"({"version":1,"coverage":{"op":"texture"}})", R"({"version":1,"coverage":{"op":"parameter","index":4}})"}) {
             material.valueProgram = source;
@@ -97,10 +121,21 @@ public:
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         const auto& geometry = *context.preparedScene->snapshot->pathTraceResources;
+        const auto values = geometry.materialBinding()->values();
+        std::filesystem::path coverageDirectory;
+        std::vector<SlangMacroDefine> macros;
+        std::vector<const char*> paths;
+        std::string coveragePath;
+        if (values && values->coverageProgramCount()) {
+            if (!values->writeCoverageInclude(PROJECT_SOURCE_DIR "/.cache/materials", coverageDirectory, log)) { return makeError(Error::Failure); }
+            coveragePath = coverageDirectory.string(); paths.push_back(coveragePath.c_str());
+            macros.push_back({"METALLIC_CUSTOM_COVERAGE", "1"});
+        }
         ShaderCompileResult shader;
         const char* capabilities[] = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"};
         auto result = compileSlangShaderToSpirv({.moduleName = "MaterialCoverageProbe", .entryPointName = "materialCoverageProbeMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities}, log)
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths = paths,
+            .capabilities = capabilities, .macroDefines = macros}, log)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
         std::vector<ComputeResourceBindingDesc> bindings = {
@@ -203,7 +238,8 @@ public:
         preview.setRawReadbackEnabled(true);
         if (!preview.initialize(context.enableValidation, true, false)) { return RHITestResult::fail("Coverage device failed"); }
         std::ofstream report(context.outputDirectory / "Coverage.txt");
-        for (uint32_t step = 0; step < 8; ++step) {
+        uint64_t coverageOnlySurfaceKey = 0, coverageOnlyKey = 0;
+        for (uint32_t step = 0; step < 11; ++step) {
             auto edited = scene.materials()[0];
             const float shift = step == 2 ? -0.25f : step == 3 ? 1.0f : step == 4 ? -1.0f : step == 6 ? 0.25f : 0.0f;
             if (step > 0) {
@@ -221,7 +257,17 @@ public:
                         edited.valueProgram = graph.dump();
                     }
                 }
-                if (step == 7) { edited.valueProgram.clear(); }
+                if (step == 8 || step == 9) {
+                    edited.valueProgram = nlohmann::json{{"version", 1}, {"coverage", {{"op", "mul"},
+                        {"args", nlohmann::json::array({{{"op", "uv"}}, step == 8 ? 0.5 : 2.0})}}}}.dump();
+                    const auto program = MaterialValueProgramSet::create({&edited, 1}, log);
+                    if (!program || program->programCount() != 0 || (step == 9 &&
+                        (program->key() != coverageOnlySurfaceKey || program->coverageKey() == coverageOnlyKey))) {
+                        return RHITestResult::fail("Coverage-only edit identity failed");
+                    }
+                    coverageOnlySurfaceKey = program->key(); coverageOnlyKey = program->coverageKey();
+                }
+                if (step == 7 || step == 10) { edited.valueProgram.clear(); }
                 if (!scene.setMaterialProperties(0, edited)) { return RHITestResult::fail("Coverage edit failed"); }
             }
             if (!preview.render(sample.graph, 64, 64, "Deferred.color")) { return RHITestResult::fail(preview.lastLog()); }
@@ -243,7 +289,10 @@ public:
             for (uint32_t y = 1; y < 63; ++y) {
                 for (uint32_t x = 1; x < 63; ++x) {
                     const size_t i = (y * 64 + x) * 4;
-                    const bool front = step == 0 || step == 7 || (1.0f - (x + 0.5f) / 64 + shift) * (step >= 5 ? 192.0f / 255.0f : 1.0f) >= 0.5f;
+                    const float u = 1.0f - (x + 0.5f) / 64;
+                    const bool front = step == 0 || step == 7 || step == 10 ||
+                        (step == 8 || step == 9 ? u * (step == 8 ? 0.5f : 2.0f) >= 0.5f :
+                            (u + shift) * (step >= 5 ? 192.0f / 255.0f : 1.0f) >= 0.5f);
                     const float t = front ? 2.0f : 3.0f;
                     if (!std::isfinite(rays[i]) || !std::isfinite(rays[i + 1]) ||
                         !std::isfinite(colors[i]) || !std::isfinite(colors[i + 1]) || !std::isfinite(colors[i + 2]) ||
@@ -282,7 +331,7 @@ public:
                 }
             }
         }
-        return RHITestResult::pass("30752 MASK raster/RT/shadow pixels agree; BLEND instance/texture alpha uses shared Coverage opacity");
+        return RHITestResult::pass("42284 MASK raster/RT/shadow pixels agree including Coverage-only hot code update/removal; BLEND instance/texture alpha uses shared Coverage opacity");
     }
 private:
     bool slab_;

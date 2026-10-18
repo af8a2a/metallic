@@ -88,7 +88,7 @@ OpenPBR 的因子求值已由 IR 生成代码完成，仍发生在原有 glTF �
 
 ## Coverage 与兼容边界
 
-Coverage 后端仍为 64 条指令的有界只读程序，现从同一 IR 自动切片并支持新增算术节点。
+Coverage 从同一 IR 自动切片并支持新增算术节点。当前后端已改为[原生 Slang codegen](MaterialCoverageNativeSlang.md)，保留最多 64 个活跃节点的输入限制；下述历史验收中的指令解释器已从生产路径移除。
 其 `alpha` 输入声明 baseColor 资源和 ExplicitLOD 策略，使用 Phase 8 固定的最精细驻留 mip alpha 采样。
 Coverage 不接受任意 TextureSample、Surface 位置/法线输入或不同 pass 的 footprint，避免 VBuffer、RT、shadow 产生不同可见性。
 已删除的无效采样不会触发这些后端约束。

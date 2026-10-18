@@ -106,10 +106,15 @@ std::vector<render::ShaderRequest> materialShaderWarmupRequests(
                 set = MaterialValueProgramSet::create(materials, diagnostics);
                 if (!set) { throw std::runtime_error(sidecar.string() + ": " + diagnostics); }
             }
-            if (set->programCount() == 0) { continue; }
-            std::filesystem::path include;
+            const bool customMaterials = set->programCount() != 0;
+            const bool customCoverage = set->coverageProgramCount() != 0;
+            if (!customMaterials && !customCoverage) { continue; }
+            std::filesystem::path include, coverageInclude;
             std::string diagnostics;
-            if (!set->writeInclude(projectRoot / ".cache/materials", include, diagnostics)) {
+            if (customMaterials && !set->writeInclude(projectRoot / ".cache/materials", include, diagnostics)) {
+                throw std::runtime_error(diagnostics);
+            }
+            if (customCoverage && !set->writeCoverageInclude(projectRoot / ".cache/materials", coverageInclude, diagnostics)) {
                 throw std::runtime_error(diagnostics);
             }
             const auto graphPath = resolve(projectRoot, sample.at("graphPath").get<std::string>());
@@ -128,10 +133,11 @@ std::vector<render::ShaderRequest> materialShaderWarmupRequests(
                 {
                     for (bool view : {false, true}) {
                         if (!deferred && view) { continue; }
-                        SceneShaderOptions options{.customMaterials = true, .globalView = view,
+                        SceneShaderOptions options{.customMaterials = customMaterials, .globalView = view,
                             .hasRTXCR = !rtxcrInclude.empty(),
                             .deferredFloat16 = properties.value("halfPrecision", true), .upscalerGuides = guides,
-                            .materialInclude = include.string(), .rtxcrInclude = rtxcrInclude};
+                            .materialInclude = include.string(), .rtxcrInclude = rtxcrInclude,
+                            .customCoverage = customCoverage, .coverageInclude = coverageInclude.string()};
                         if (!binned) { add(makeSceneShaderRequest(program, options)); continue; }
                         for (int index = 0; index < 5; ++index) {
                             const auto value = std::to_string(index);

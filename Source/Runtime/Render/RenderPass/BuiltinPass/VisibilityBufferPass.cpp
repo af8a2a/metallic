@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/MaterialCoverageShader.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "StreamLODSettings.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
@@ -412,6 +413,14 @@ public:
         const uint64_t runtimeContentRevision = runtimeScene != nullptr
             ? runtimeScene->sceneGraph().contentRevision()
             : 0;
+        if (!preparedScene_->snapshot || !preparedScene_->snapshot->pathTraceResources) {
+            return makeError(Error::InvalidArgument);
+        }
+        const auto coveragePrograms = preparedScene_->snapshot->pathTraceResources->materialBinding()->values();
+        const uint64_t coverageKey = materialCoverageShaderKey(coveragePrograms.get());
+        if (!prepareMaterialCoverageShader(coveragePrograms.get(), coverageShaderOptions_, log)) {
+            return makeError(Error::Failure);
+        }
         // Graph dimensions are display dimensions and can differ from the DLSS
         // render extent in frameWidth_/frameHeight_. Neither a layout resize nor
         // a resource-only rebuild should reopen the asset and discard residency.
@@ -437,6 +446,13 @@ public:
             (!requestedStreamEnabled ||
                 (compiledStreamAssetPath_ == requestedStreamAssetPath &&
                     compiledStreamSourcePath_ == preparedScene_->streamSourcePath))) {
+            if (compiledCoverageKey_ != coverageKey) {
+                // A Coverage-only edit replaces the raster shaders without resetting
+                // the stream runtime or discarding its resident geometry.
+                auto result = createPipelines(*context.device, log);
+                if (!result) { return result; }
+                compiledCoverageKey_ = coverageKey;
+            }
             return {};
         }
 
@@ -572,6 +588,7 @@ public:
         logGPUDrivenCompileStage("graphics pipelines", compileStageBegin);
 
         compiledTessellationKey_ = tessellationKey();
+        compiledCoverageKey_ = coverageKey;
         compiledTextureMaxDimension_ = properties().value("materialTextureMaxDimension", 512);
         compiledTextureBudgetMiB_ = properties().value("materialTextureBudgetMiB", 2048);
         compiledTextureRefineDimension_ = properties().value("materialTextureRefineDimension", 512);
@@ -1246,14 +1263,22 @@ private:
             "spvMeshShadingEXT",
             "spvGroupNonUniformBallot",
         };
+        std::vector<SlangMacroDefine> defines;
+        for (uint32_t i = 0; i < macroDefineCount; ++i) { defines.push_back(macroDefines[i]); }
+        std::vector<const char*> searchPaths;
+        if (coverageShaderOptions_.customCoverage && std::string_view(moduleName) == kMeshletStreamShaderModuleName) {
+            defines.push_back({"METALLIC_CUSTOM_COVERAGE", "1"});
+            searchPaths.push_back(coverageShaderOptions_.coverageInclude.c_str());
+        }
         Result<> result = ShaderRegistry::instance().getShader(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPoint,
             .searchPath = kTriangleShaderSearchPath,
+            .additionalSearchPaths = searchPaths,
             .capabilities = {meshShadingShader ? capabilities : nullptr, meshShadingShader
                     ? static_cast<uint32_t>(std::size(capabilities))
                     : 0u},
-            .macroDefines = {macroDefines, macroDefineCount},
+            .macroDefines = defines,
         }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
@@ -3609,6 +3634,8 @@ private:
     ResourceLease streamTessellationHandle_;
     std::unique_ptr<ShaderModule> streamTaskShader_;
     std::string compiledTessellationKey_;
+    SceneShaderOptions coverageShaderOptions_;
+    uint64_t compiledCoverageKey_ = 0;
     int compiledTextureMaxDimension_ = 512;
     int compiledTextureBudgetMiB_ = 2048;
     int compiledTextureRefineDimension_ = 512, compiledTextureColdFrames_ = 180;

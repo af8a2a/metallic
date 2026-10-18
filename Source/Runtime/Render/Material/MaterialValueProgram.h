@@ -21,8 +21,8 @@ inline constexpr size_t kMaxMaterialValueSourceBytes = 16384;
 struct alignas(16) MaterialValueInstance
 {
     uint32_t programId = 0;
-    uint32_t coverageOffset = 0; // Byte offset in the shared immutable input buffer.
-    uint32_t coverageCount = 0;
+    uint32_t coverageOffset = 0; // Coverage program ID; historical field name preserves the 80-byte ABI.
+    uint32_t coverageCount = 0; // Live IR node count; zero means no custom Coverage.
     uint32_t coverageFlags = 0; // bit 0: requires base-color texture alpha.
     std::array<float, 16> parameters{};
 };
@@ -46,7 +46,7 @@ struct MaterialValueManifest
 };
 
 // Closed, read-only expression language. Surface outputs use static Slang
-// dispatch; the independent Coverage slice uses a bounded read-only backend.
+// dispatch; Coverage has an independent generated module and executable key.
 class MaterialValueProgramSet final
 {
 public:
@@ -57,10 +57,14 @@ public:
     std::span<const std::byte> inputBytes() const { return inputBytes_; }
     uint64_t key() const { return key_; }
     const std::string& source() const { return source_; }
+    uint64_t coverageKey() const { return coverageKey_; }
+    const std::string& coverageSource() const { return coverageSource_; }
     std::span<const MaterialValueInstance> instances() const { return instances_; }
     std::span<const MaterialValueManifest> manifests() const { return manifests_; }
     // Materialize only validated generated code. Detect key collisions/corruption.
     bool writeInclude(const std::filesystem::path& root, std::filesystem::path& directory,
+        std::string& diagnostics) const;
+    bool writeCoverageInclude(const std::filesystem::path& root, std::filesystem::path& directory,
         std::string& diagnostics) const;
 private:
     uint32_t programCount_ = 0;
@@ -68,6 +72,8 @@ private:
     std::vector<std::byte> inputBytes_;
     uint64_t key_ = 0;
     std::string source_;
+    uint64_t coverageKey_ = 0;
+    std::string coverageSource_;
     std::vector<MaterialValueInstance> instances_;
     std::vector<MaterialValueManifest> manifests_;
 };

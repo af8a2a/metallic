@@ -89,7 +89,18 @@ struct SceneShaderOptions {
     bool upscalerGuides = false; // Output policy; Deferred shader identity is shared.
     std::string materialInclude;
     std::string rtxcrInclude;
+    bool customCoverage = false;
+    std::string coverageInclude;
 };
+
+// Coverage is compiled independently of Surface, including Coverage-only graphs.
+inline void appendMaterialCoverageShaderRequest(ShaderRequest& request, const SceneShaderOptions& options)
+{
+    if (options.customCoverage) {
+        request.defines.emplace_back("METALLIC_CUSTOM_COVERAGE", "1");
+        request.searchPaths.push_back(options.coverageInclude);
+    }
+}
 
 // -1 preserves the original static request; 0/1 share source but keep native policy.
 inline int32_t openPBRCacheQuerySpecializationValue(SceneShaderProgram program, const SceneShaderOptions& options,
@@ -338,6 +349,7 @@ inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const Sc
         for (const auto& define : extraDefines) { request.defines.emplace_back(define.name, define.value); }
     }
     if (options.customMaterials) { request.searchPaths.push_back(options.materialInclude); }
+    appendMaterialCoverageShaderRequest(request, options);
     if (!deferred && options.hasRTXCR) { request.searchPaths.push_back(options.rtxcrInclude); }
     return request;
 }
@@ -445,7 +457,7 @@ inline ShaderRequest makeOpenPBRPrimarySplitShaderRequest(const SceneShaderOptio
 
 enum class SceneRayQueryProgram { RTXDI, MaterialVisualization };
 
-inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program)
+inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program, const SceneShaderOptions& options = {})
 {
     ShaderRequest request;
     if (program == SceneRayQueryProgram::RTXDI) {
@@ -456,6 +468,7 @@ inline ShaderRequest makeSceneRayQueryRequest(SceneRayQueryProgram program)
         request.entry = "sceneMaterialVisualizeMain";
     }
     request.capabilities = {"spvRayQueryKHR", "SPV_NV_cluster_acceleration_structure", "spvRayTracingClusterAccelerationStructureNV"};
+    appendMaterialCoverageShaderRequest(request, options);
     return request;
 }
 

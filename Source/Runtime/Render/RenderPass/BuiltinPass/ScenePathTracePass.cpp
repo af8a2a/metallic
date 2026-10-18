@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/MaterialCoverageShader.h"
 #include "StreamRayTracingBindings.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Core/ShaderRequests.h"
@@ -736,6 +737,7 @@ public:
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|valuePrograms=" + std::to_string(hasValuePrograms() ? valuePrograms->key() : 0) +
+            "|coveragePrograms=" + std::to_string(materialCoverageShaderKey(valuePrograms.get())) +
             "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
@@ -799,6 +801,10 @@ public:
             .materialInclude = valueSearchPath,
             .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR,
         };
+
+        if (!prepareMaterialCoverageShader(valuePrograms.get(), shaderOptions, log)) {
+            return makeError(Error::Failure);
+        }
 
         std::vector<ComputeResourceBindingDesc> baseBindings{
             ComputeResourceBindingDesc{.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, lights), .kind = ComputeResourceBindingKind::StorageBuffer},
@@ -942,9 +948,10 @@ public:
             constexpr std::array stageKinds{OpenPBRRayPipelineStage::RayGeneration, OpenPBRRayPipelineStage::Miss,
                 OpenPBRRayPipelineStage::ClosestHit, OpenPBRRayPipelineStage::AnyHit};
             for (size_t index = 0; index < stages.size(); ++index) {
-                const auto request = simpleBSDF ? makeSimpleBSDFRayPipelineShaderRequest(exportGuides, singleSampleGuides,
+                auto request = simpleBSDF ? makeSimpleBSDFRayPipelineShaderRequest(exportGuides, singleSampleGuides,
                     invocationReorder, stageKinds[index]) : vkGltf ? makeVkGltfRayPipelineShaderRequest(exportGuides, singleSampleGuides,
                     invocationReorder, stageKinds[index]) : makeOpenPBRRayPipelineShaderRequest(shaderProgram, shaderOptions, defines, stageKinds[index]);
+                if (gltfExperiment) { appendMaterialCoverageShaderRequest(request, shaderOptions); }
                 const ShaderRequestView source(request);
                 std::string diagnostics;
                 auto compiled = ShaderRegistry::instance().getShader(source.desc(), diagnostics);
