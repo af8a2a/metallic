@@ -83,6 +83,7 @@ public struct ProbeSource : IOpenPBRMaterialSource
 {
     public ProbeParams probe;
     public typealias Context = ProbeOpenPBRContext;
+    public bool hasTextures(ScenePathTracePush push) { return true; }
     public Context context() { Context result; result.probe = probe; return result; }
     public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
     {

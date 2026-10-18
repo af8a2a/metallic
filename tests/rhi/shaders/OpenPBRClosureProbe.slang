@@ -8,6 +8,7 @@ import OpenPBRClosure;
 import OpenPBRSurface;
 import OpenPBRMaterialParameters;
 import ScenePathTypes;
+import SceneSurface;
 import Material;
 import MaterialProgram;
 import SurfaceLighting;
@@ -19,6 +20,84 @@ using Metallic.Lighting;
 using Metallic.Tests;
 
 [[vk::push_constant]] ConstantBuffer<ProbeParams> gProbe;
+
+// Match the scene provider's uniform presence decision while keeping actual
+// texture reads observable through the existing probe counters.
+struct GuardedProbeSource : IOpenPBRMaterialSource
+{
+    ProbeSource base;
+    typealias Context = ProbeOpenPBRContext;
+    bool hasTextures(ScenePathTracePush push) { return push.materialTextureCount > 1u; }
+    Context context() { return base.context(); }
+    OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance) { return base.loadParameters(instance); }
+    float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
+        ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
+    {
+        return base.loadTexture(info, uv, fallback, push, cone, hit, rayDirection,
+            deterministicMip0, seed, footprint, sampled);
+    }
+};
+
+[shader("compute")]
+[numthreads(32, 1, 1)]
+void openPBRTextureGuardProbeMain(uint3 id : SV_DispatchThreadID)
+{
+    uint lane = id.x;
+    bool normalEnabled = (lane & 1u) != 0u;
+    bool forceGeometry = (lane & 2u) != 0u;
+    bool faceForward = (lane & 4u) != 0u;
+    bool disabled = (lane & 8u) != 0u;
+    bool unlit = (lane & 16u) != 0u;
+    GuardedProbeSource source;
+    source.base.probe = gProbe;
+    OpenPBRMaterialParameters material = (OpenPBRMaterialParameters)0;
+    material.baseColor = float4(0.8, 0.6, 0.4, 0.37);
+    material.emissive = float4(2.3, -0.1, 0.7, unlit ? 1 : 0);
+    material.specular = float4(0.2, 0.7, 0.9, 0.63);
+    material.params = float4(0, 0.35, 0, 0);
+    material.glassParams = float4(0.4, 1.5, 0, 0);
+    // y is occlusion strength, not normal scale. Zero must not disable normals.
+    material.textureParams = float4(normalEnabled ? 1 : 0, 0, 0, 0);
+    material.baseColorTexture.textureIndex = 3;
+    material.emissiveTexture.textureIndex = 3;
+    material.specularColorTexture.textureIndex = 3;
+    material.normalTexture.textureIndex = 2;
+    material.baseColorTexture.transform0.w = 1;
+    material.emissiveTexture.transform0.w = 1;
+    material.specularColorTexture.transform0.w = 1;
+    HitInfo hit = (HitInfo)0;
+    hit.normal = float3(0, 0, 1);
+    hit.geometryNormal = float3(0, 0.6, 0.8);
+    hit.tangent = float4(1, 0, 0, 1);
+    hit.bitangent = float3(0, 1, 0);
+    hit.texcoord = float2(0.25, 0.25);
+    ScenePathTracePush push = (ScenePathTracePush)0;
+    push.materialTextureCount = gProbe.lightCount;
+    push.debugFlags = (disabled ? kOpenPBRDebugDisableMaterialTextures : 0u) |
+        (forceGeometry ? kOpenPBRDebugForceGeometryNormal : 0u);
+    uint seed = 123u;
+    float4 normalSample;
+    resolveSceneSurfaceNormal(hit, material.normalTexture, material.textureParams.x,
+        push, (RayCone)0, float3(0, 0, 1), false, faceForward, true,
+        (TextureFootprint)0, source, seed, normalSample);
+    let closure = resolveOpenPBRInputs(hit, material, push, (RayCone)0,
+        float3(0, 0, 1), seed, source, (TextureFootprint)0, float3(0, 0, 1), faceForward);
+    let lazyContext = Metallic.SceneSurface.sceneSurfaceMaterialContextForRay(hit, (RayCone)0, float3(0, 0, 1), false);
+    let resolvedContext = Metallic.SceneSurface.sceneSurfaceMaterialContextForRay(hit, (RayCone)0, float3(0, 0, 1), true);
+    uint base = lane * 7u;
+    gProbe.output.store(base, float4(closure.inputs.base_color, closure.inputs.geometry_opacity));
+    gProbe.output.store(base + 1u, float4(closure.inputs.emission_color * closure.inputs.emission_luminance, closure.inputs.base_weight));
+    gProbe.output.store(base + 2u, float4(closure.inputs.specular_color, closure.inputs.specular_weight));
+    gProbe.output.store(base + 3u, float4(closure.inputs.geometry_basis.n, float(seed)));
+    gProbe.output.store(base + 4u, float4(closure.inputs.base_metalness, closure.inputs.specular_roughness,
+        closure.inputs.transmission_weight, closure.occlusion));
+    gProbe.output.store(base + 5u, float4(dot(hit.tangent.xyz, hit.normal), dot(hit.bitangent, hit.normal),
+        length(hit.tangent.xyz), length(hit.bitangent)));
+    gProbe.output.store(base + 6u, float4(float(lazyContext.footprint.flags), lazyContext.footprint.isotropicLod0,
+        (resolvedContext.footprint.flags & kTextureFootprintIsotropic0) != 0u ? 1.0 : 0.0,
+        resolvedContext.footprint.isotropicLod0));
+}
 
 // Resolve all color-slot presence combinations through a custom provider with
 // materialTextureCount deliberately zero, for both transfer functions and the

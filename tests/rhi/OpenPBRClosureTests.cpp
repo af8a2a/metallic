@@ -153,6 +153,102 @@ void runOpenPBRColorSlots(RHITestContext& context, Device& device, ResourceRegis
         << " textureRequests=" << counts[1] << " textureLoads=" << counts[2] << " maxError=" << maxError << '\n';
 }
 
+void runOpenPBRTextureGuard(RHITestContext& context, Device& device, ResourceRegistry& registry,
+    Buffer& parameters, Buffer& output, Buffer& counters, TextureView& view)
+{
+    std::string log;
+    auto shader = compileSlangShaderToSpirv({.moduleName = "OpenPBRClosureProbe",
+        .entryPointName = "openPBRTextureGuardProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"},
+        {.enableDiskCache = false}, log);
+    require(shader, "OpenPBR texture-guard probe compile failed: " + log);
+    ComputeKernel kernel;
+    require(kernel.initialize(device, {.spirv = shader->spirv,
+        .parameters = parameterAbi<OpenPBRProbeParams>(kOpenPBRProbeABI, ParameterTransport::InlinePush)}, log), log);
+    std::ofstream report(context.outputDirectory / "OpenPBRTextureGuard.txt");
+    const std::array<color::RGB, 3> factors{{{0.8f, 0.6f, 0.4f}, {2.3f, -0.1f, 0.7f}, {0.2f, 0.7f, 0.9f}}};
+    for (uint32_t textureCount : {0u, 1u, 2u}) {
+        std::array<uint32_t, 5> counts{};
+        auto* countUpload = counters.map();
+        require(countUpload != nullptr, "Texture-guard counter mapping failed");
+        std::memcpy(countUpload, counts.data(), sizeof(counts)); counters.flush(); counters.unmap();
+        bench::GPUCommands gpu(*device.getQueue(QueueType::Graphics));
+        require(gpu.initialize(device), "Texture-guard commands failed");
+        ParameterWriter writer(device, registry);
+        OpenPBRProbeParams params{writer.bufferSpan<Float4>(&parameters), writer.bufferSpan<Float4>(&output),
+            writer.sampledImageHandle(&view), writer.buffer(&counters), textureCount};
+        auto encoded = writer.encode(params, kOpenPBRProbeABI, ParameterTransport::InlinePush);
+        require(encoded, "Texture-guard parameters failed");
+        require(kernel.dispatch(*gpu.commands, *encoded, 1), "Texture-guard dispatch failed");
+        require(gpu.submitAndWait(), "Texture-guard GPU execution failed");
+        output.invalidate(); counters.invalidate();
+        const auto* countData = counters.map();
+        require(countData != nullptr, "Texture-guard counter readback failed");
+        std::memcpy(counts.data(), countData, sizeof(counts)); counters.unmap();
+        const bool textures = textureCount > 1;
+        require(counts == (textures ? std::array<uint32_t, 5>{0, 32 * 8, 32 * 4, 0, 0}
+                                   : std::array<uint32_t, 5>{}),
+            "Texture guard did not skip requests or changed bound-slot sampling; count=" + std::to_string(textureCount));
+        const auto* mapped = static_cast<const Float4*>(output.map());
+        require(mapped != nullptr, "Texture-guard output mapping failed");
+        const std::vector<Float4> data(mapped, mapped + 32 * 7); output.unmap();
+        bench::readbackEvidence(context, "OpenPBR-texture-guard-" + std::to_string(textureCount) + ".bin", std::span<const Float4>(data));
+        float maxError = 0;
+        for (uint32_t lane = 0; lane < 32; ++lane) {
+            const bool normalEnabled = (lane & 1u) != 0;
+            const bool forceGeometry = (lane & 2u) != 0;
+            const bool faceForward = (lane & 4u) != 0;
+            const bool disabled = (lane & 8u) != 0;
+            const bool unlit = (lane & 16u) != 0;
+            const uint32_t base = lane * 7;
+            std::array<color::RGB, 3> expected = factors;
+            for (uint32_t slot = 0; slot < 3; ++slot) {
+                if (textures && !disabled) {
+                    auto sourceFactor = color::toLinearRec709(factors[slot]);
+                    sourceFactor[1] *= 0.5f; sourceFactor[2] *= 0.25f;
+                    expected[slot] = color::fromLinearRec709(sourceFactor);
+                }
+                for (auto& value : expected[slot]) { value = slot == 1 ? std::max(value, 0.f) : std::clamp(value, 0.f, 1.f); }
+            }
+            if (unlit) { expected[1] = expected[0]; }
+            for (uint32_t slot = 0; slot < 7; ++slot) {
+                for (float value : data[base + slot]) { require(std::isfinite(value), "Non-finite texture-guard output"); }
+            }
+            for (uint32_t slot = 0; slot < 3; ++slot) {
+                for (uint32_t c = 0; c < 3; ++c) {
+                    const float error = std::abs(data[base + slot][c] - expected[slot][c]);
+                    maxError = std::max(maxError, error);
+                    require(error <= 2e-6f, "Texture-guard color mismatch at lane " + std::to_string(lane));
+                    if (slot != 1 && (!textures || disabled)) {
+                        require(data[base + slot][c] == expected[slot][c], "Texture guard altered working-space factor");
+                    }
+                }
+            }
+            require(data[base][3] == 0.37f * (textures && !disabled ? 0.25f : 1.f), "Texture guard changed opacity");
+            require(data[base + 1][3] == (unlit ? 0.f : 1.f) && data[base + 2][3] == (unlit ? 0.f : 0.63f),
+                "Texture guard changed unlit weights");
+            require(data[base + 4] == Float4{0, 0.35f, unlit ? 0.f : 0.4f, 1}, "Texture guard changed scalar factors");
+            Float4 normal{0, 0, 1, 123};
+            if (textures && normalEnabled && !disabled) { normal = {0, -1 / std::sqrt(5.f), 2 / std::sqrt(5.f), 123}; }
+            if (forceGeometry) { normal = {0, 0.6f, 0.8f, 123}; }
+            if (faceForward) { for (uint32_t c = 0; c < 3; ++c) { normal[c] = -normal[c]; } }
+            for (uint32_t c = 0; c < 4; ++c) {
+                require(std::abs(data[base + 3][c] - normal[c]) <= 2e-6f,
+                    "Texture guard changed normal/face-forward/seed at lane " + std::to_string(lane));
+            }
+            if (forceGeometry) {
+                require(std::abs(data[base + 5][0]) <= 2e-6f && std::abs(data[base + 5][1]) <= 2e-6f &&
+                    std::abs(data[base + 5][2] - 1.f) <= 2e-6f && std::abs(data[base + 5][3] - 1.f) <= 2e-6f,
+                    "Texture guard skipped geometry-normal TBN repair");
+            }
+            require(data[base + 6][0] == 0 && data[base + 6][1] == 0 && data[base + 6][2] == 1,
+                "Lazy scene surface context resolved a footprint, or eager control did not");
+        }
+        report << "materialTextureCount=" << textureCount << " cases=32 normalScale=0,1 occlusionStrength=0"
+            << " forceGeometry=0,1 faceForward=0,1 debugDisable=0,1 unlit=0,1 textureRequests=" << counts[1]
+            << " textureLoads=" << counts[2] << " maxError=" << maxError << '\n';
+    }
+}
+
 RHITestResult runSurfaceLighting(RHITestContext& context, Device& device,
     Buffer& parameters, Buffer& output, Buffer& counters, TextureView& view)
 {
@@ -590,8 +686,9 @@ public:
                     std::to_string(entering) + " exiting=" + std::to_string(exiting));
             }
             runOpenPBRColorSlots(context, *device, registry, *parameters, *output, *counters, *view);
+            runOpenPBRTextureGuard(context, *device, registry, *parameters, *output, *counters, *view);
             require(validationErrors == 0, "Vulkan validation errors");
-            return RHITestResult::pass("Shared production OpenPBR program; 1/8 lights, vendor equivalence, normal mapping, both IOR sides and 64 color-slot cases");
+            return RHITestResult::pass("Shared production OpenPBR program; 1/8 lights, vendor equivalence, normal mapping, both IOR sides, 64 color-slot and 96 texture-guard cases");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 private:

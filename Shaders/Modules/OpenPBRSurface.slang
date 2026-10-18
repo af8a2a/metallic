@@ -124,6 +124,7 @@ public float3 openPbrDebugIdColor(uint id)
 // and counts logical texture reads without adding counters to production.
 public interface ISceneMaterialTextureSource
 {
+    public bool hasTextures(ScenePathTracePush push);
     // The provider owns slot validity; sampled is false when returning fallback.
     // Callers supply a resolved isotropic footprint unless deterministicMip0.
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
@@ -140,6 +141,7 @@ public interface IOpenPBRMaterialSource : ISceneMaterialTextureSource
 
 public struct SceneMaterialTextureSource : ISceneMaterialTextureSource
 {
+    public bool hasTextures(ScenePathTracePush push) { return sceneHasMaterialTextures(push); }
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
@@ -151,6 +153,7 @@ public struct SceneMaterialTextureSource : ISceneMaterialTextureSource
 
 public struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
 {
+    public bool hasTextures(ScenePathTracePush push) { return sceneHasMaterialTextures(push); }
     public typealias Context = SceneOpenPBRContext;
     public Context context() { return SceneOpenPBRContext(); }
     public OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
@@ -185,10 +188,13 @@ public void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
     bool faceForwardNormal, bool applyDebugNormalOverrides, TextureFootprint footprint,
     TSource source, inout uint seed, out float4 normalSample)
 {
-    bool sampled;
-    normalSample = source.loadTexture(normalTexture, hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0), push, rayCone, hit, rayDirection,
-        deterministicMip0, seed, footprint, sampled);
+    normalSample = float4(0.5, 0.5, 1.0, 1.0);
+    if (source.hasTextures(push)) {
+        bool sampled;
+        normalSample = source.loadTexture(normalTexture, hit.texcoord,
+            normalSample, push, rayCone, hit, rayDirection,
+            deterministicMip0, seed, footprint, sampled);
+    }
     if (applyDebugNormalOverrides && (openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap) ||
         openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures))) {
         normalSample = float4(0.5, 0.5, 1.0, 1.0);
@@ -245,64 +251,73 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
         if (faceForwardNormal) { hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, rayDirection); }
     }
 #endif
-    bool baseColorSampled;
-    bool emissiveSampled;
-    bool specularColorSampled;
+    bool baseColorSampled = false;
+    bool emissiveSampled = false;
+    bool specularColorSampled = false;
     bool sampled;
-    float4 baseColorSample = source.loadTexture(
-        material.baseColorTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        rayDirection,
-        deterministicGlassTextures,
-        seed, footprint, baseColorSampled);
-    float4 metallicRoughnessSample = source.loadTexture(
-        material.metallicRoughnessTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        rayDirection,
-        deterministicGlassTextures,
-        seed, footprint, sampled);
-    float4 emissiveSample = source.loadTexture(
-        material.emissiveTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        rayDirection,
-        deterministicGlassTextures,
-        seed, footprint, emissiveSampled);
-    float4 occlusionSample = source.loadTexture(
-        material.occlusionTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        rayDirection,
-        deterministicGlassTextures,
-        seed, footprint, sampled);
-    float4 transmissionSample = source.loadTexture(
-        material.transmissionTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        rayCone,
-        hit,
-        rayDirection,
-        deterministicGlassTextures,
-        seed, footprint, sampled);
-    float4 specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
-        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, sampled);
-    float4 specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
-        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, specularColorSampled);
+    float4 baseColorSample = float4(1.0);
+    float4 metallicRoughnessSample = float4(1.0);
+    float4 emissiveSample = float4(1.0);
+    float4 occlusionSample = float4(1.0);
+    float4 transmissionSample = float4(1.0);
+    float4 specularSample = float4(1.0);
+    float4 specularColorSample = float4(1.0);
+    if (source.hasTextures(push)) {
+        baseColorSample = source.loadTexture(
+            material.baseColorTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push,
+            rayCone,
+            hit,
+            rayDirection,
+            deterministicGlassTextures,
+            seed, footprint, baseColorSampled);
+        metallicRoughnessSample = source.loadTexture(
+            material.metallicRoughnessTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push,
+            rayCone,
+            hit,
+            rayDirection,
+            deterministicGlassTextures,
+            seed, footprint, sampled);
+        emissiveSample = source.loadTexture(
+            material.emissiveTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push,
+            rayCone,
+            hit,
+            rayDirection,
+            deterministicGlassTextures,
+            seed, footprint, emissiveSampled);
+        occlusionSample = source.loadTexture(
+            material.occlusionTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push,
+            rayCone,
+            hit,
+            rayDirection,
+            deterministicGlassTextures,
+            seed, footprint, sampled);
+        transmissionSample = source.loadTexture(
+            material.transmissionTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push,
+            rayCone,
+            hit,
+            rayDirection,
+            deterministicGlassTextures,
+            seed, footprint, sampled);
+        specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
+            float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, sampled);
+        specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
+            float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, specularColorSampled);
+    }
     bool disableTextures = openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures);
     // Keep bound-slot sampling and RNG advancement unchanged in debug mode.
     if (disableTextures) {
@@ -394,12 +409,25 @@ internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : 
     return result;
 }
 
+internal bool materialNeedsRayFootprint(bool hasTextures, bool deterministicMip0)
+{
+#if METALLIC_CUSTOM_MATERIALS
+    // Generated texture expressions have their own sampling policies, including
+    // ray-cone LOD, independently of the legacy glass texture policy.
+    return hasTextures;
+#else
+    return hasTextures && !deterministicMip0;
+#endif
+}
+
 public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
     inout HitInfo hit, inout OpenPBRMaterialParameters material,
     ScenePathTracePush push, RayCone rayCone, float3 rayDirection,
     inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal)
 {
-    footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
+    if (materialNeedsRayFootprint(source.hasTextures(push), materialNeedsDeterministicTextureMip0(material))) {
+        footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
+    }
     return resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed,
         source, footprint, authoredNormal, faceForwardNormal);
 }
@@ -432,7 +460,9 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
     {
         material = source.loadParameters(instance);
         updateSceneSurfaceHit(hit, context, instance.parameterOffset / kSceneMaterialRecordBytes);
-        context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
+        if (materialNeedsRayFootprint(source.hasTextures(push), materialNeedsDeterministicTextureMip0(material))) {
+            context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
+        }
         resolveSceneSurfaceNormal(hit, material.normalTexture, material.textureParams.x, push,
             rayCone, rayDirection, materialNeedsDeterministicTextureMip0(material), faceForwardNormal,
             applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
@@ -521,7 +551,9 @@ public struct SceneSlabMaterialProgram<TModel : ISceneSlabModel> : ISceneSurface
     {
         uint materialIndex = instance.parameterOffset / kSceneMaterialRecordBytes;
         updateSceneSurfaceHit(hit, context, materialIndex);
-        context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
+        if (sceneHasMaterialTextures(push)) {
+            context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
+        }
         let transport = loadSceneMaterial(materialIndex);
         SceneMaterialTextureSource textureSource;
         resolveSceneSurfaceNormal(hit, transport.normalTexture, transport.textureParams.x, push,
@@ -644,7 +676,7 @@ public SceneSurfaceSummary evaluateSceneSurfaceGuides(inout HitInfo hit, ScenePa
             hit.geometryNormal, rayDirection);
         return summarizeFiberGuides(sceneFiberParameters(transport));
     }
-    let context = sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection);
+    let context = sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection, false);
     let instance = sceneMaterialInstanceRef(hit.materialIndex);
 #if METALLIC_CUSTOM_MATERIALS
     uint family = sceneSurfaceMaterialFamily(hit.materialIndex);

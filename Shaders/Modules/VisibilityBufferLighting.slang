@@ -148,7 +148,7 @@ public float3 shadeSceneVisibilitySurface<TProgram : ISceneSurfaceMaterialProgra
     ScenePathTracePush push, inout uint seed)
 {
     let evaluated = program.evaluate(sceneSurfaceMaterialContextForRay(hit,
-        propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t), ray.direction),
+        propagateRayCone(primaryRayConeFromPixel(samplePixel, push), hit.t), ray.direction, false),
         sceneMaterialInstanceRef(hit.materialIndex));
     float3 authoredNormal = hit.normal;
     hit = program.program.evaluatedHit();

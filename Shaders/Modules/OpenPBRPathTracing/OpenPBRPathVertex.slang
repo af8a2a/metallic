@@ -77,7 +77,7 @@ public OpenPBRPathControl shadeOpenPBRSurfacePathVertex(
 )
 {
     float3 shadingNormal = hit.normal;
-    RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
+    RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth, false);
     var program = makeOpenPBRMaterialProgram(hit, push, rayCone, ray.direction, seed, false, true);
     // Always dispatch from this hit's instance. Raster specialization and
     // primary PreparedClosure are never inherited by a secondary hit.
@@ -388,7 +388,7 @@ public OpenPBRPathControl shadeSlabSurfacePathVertex<TProgram : ISceneSurfaceMat
 )
 {
     float3 authoredNormal = hit.normal;
-    RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth);
+    RayMaterialWork work = sceneRayMaterialWork(hit, rayCone, ray.direction, seed, depth, false);
     let evaluated = evaluateRaySurface(material, work);
     hit = material.program.evaluatedHit();
     seed = material.program.evaluatedSeed();

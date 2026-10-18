@@ -570,6 +570,13 @@ public bool hasMaterialTexture(MaterialTextureInfo textureInfo, ScenePathTracePu
     return textureInfo.textureIndex < push.materialTextureCount;
 }
 
+// ScenePathTraceResources reserves descriptor 0 for its white fallback and
+// maps authored textures to indices >= 1. This is a scene-provider contract,
+// not a rule for raw sampling APIs or custom texture sources.
+public bool sceneHasMaterialTextures(ScenePathTracePush push)
+{
+    return push.materialTextureCount > 1u;
+}
 
 public TextureFootprint resolveRayConeTextureFootprint(
     HitInfo hit,
@@ -607,19 +614,22 @@ public float materialResidentTextureLod(TextureSamplingMetadata metadata, float 
         0.0, float(max(metadata.residentMipCount, 1u) - 1u));
 }
 
-public SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone rayCone, float3 rayDirection)
+public SurfaceMaterialContext sceneSurfaceMaterialContextForRay(HitInfo hit, RayCone rayCone, float3 rayDirection,
+    bool resolveFootprint = true)
 {
     SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
-    float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
-    context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
-    context.footprint.flags = kTextureFootprintIsotropic0;
+    if (resolveFootprint) {
+        context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
+    }
     return context;
 }
 
-public RayMaterialWork sceneRayMaterialWork(HitInfo hit, RayCone cone, float3 direction, uint seed, uint bounce)
+public RayMaterialWork sceneRayMaterialWork(HitInfo hit, RayCone cone, float3 direction, uint seed, uint bounce,
+    bool resolveFootprint = true)
 {
     RayMaterialWork work = (RayMaterialWork)0;
-    work.surface = sceneSurfaceMaterialContextForRay(hit, cone, direction);
+    // Scene surface programs may defer footprint preparation until material evaluation.
+    work.surface = sceneSurfaceMaterialContextForRay(hit, cone, direction, resolveFootprint);
     work.woWS = safeNormalize(-direction, hit.normal);
     work.instance = sceneMaterialInstanceRef(hit.materialIndex);
     work.seed = seed;

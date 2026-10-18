@@ -532,6 +532,42 @@ public:
             }
             return true;
         };
+        // Initial readiness only covers fallback roots. Settle the detail geometry
+        // before comparing material edits, as in the Slab closure fixture below.
+        const auto referenceId = sample.graph.findNode("Reference")->id;
+        const auto deferredId = sample.graph.findNode("Deferred")->id;
+        if (!sample.graph.setNodeRuntimeProperty(referenceId, "debugView", "geometryNormal") ||
+            !sample.graph.setNodeRuntimeProperty(deferredId, "debugView", "geometryNormal")) {
+            return RHITestResult::fail("Configure material-value geometry warmup");
+        }
+        std::vector<uint32_t> previousGeometryPixels;
+        nlohmann::json geometryFrames = nlohmann::json::array();
+        uint32_t stableGeometryFrames = 0;
+        bool geometrySettled = false;
+        for (uint32_t frame = 0; frame < 256; ++frame) {
+            if (!preview.render(sample.graph, 256, 256, "Deferred.color")) {
+                return RHITestResult::fail(preview.lastLog());
+            }
+            const auto* streamer = preview.subsystemHost()->get<StreamerSubsystem>();
+            const auto readiness = streamer ? streamer->sceneReadiness() : StreamSceneReadiness{};
+            const bool unchanged = previousGeometryPixels == preview.pixels();
+            stableGeometryFrames = readiness.ready && unchanged ? stableGeometryFrames + 1 : 0;
+            geometryFrames.push_back({{"frame", frame + 1}, {"fallbackReady", readiness.ready},
+                {"stableGeometryFrames", stableGeometryFrames}});
+            previousGeometryPixels = preview.pixels();
+            if (frame >= 31 && stableGeometryFrames >= 8) {
+                geometrySettled = true;
+                break;
+            }
+        }
+        std::ofstream(context.outputDirectory / "MaterialValueGeometryWarmup.json") << nlohmann::json{
+            {"frames", geometryFrames}, {"settled", geometrySettled},
+            {"scope", "geometryNormal; minimum 32 frames and 8 unchanged frames with fallback readiness"}}.dump(2);
+        if (!geometrySettled) { return RHITestResult::fail("Material-value scene geometry did not stabilize within 256 frames"); }
+        if (!sample.graph.setNodeRuntimeProperty(referenceId, "debugView", "baseColor") ||
+            !sample.graph.setNodeRuntimeProperty(deferredId, "debugView", "baseColor")) {
+            return RHITestResult::fail("Restore material-value base-color view");
+        }
         if (!capture("baseline", baseline)) { return RHITestResult::fail(log); }
         for (auto i : edited) {
             auto material = originals[i];

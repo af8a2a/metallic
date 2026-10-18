@@ -247,72 +247,83 @@ public float3 pathTrace(
         OpenPBRMaterialParameters material = sceneOpenPBRParameters(sceneMaterial);
         bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
         TextureFootprint footprint = (TextureFootprint)0;
-        if (!deterministicGlassTextures) {
+        if (!deterministicGlassTextures && sceneHasMaterialTextures(push)) {
             footprint = resolveRayConeTextureFootprint(hit, rayCone, ray.direction, footprint);
         }
-        float4 baseColorSample = loadMaterialTextureForMaterialResolved(
-            material.baseColorTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 metallicRoughnessSample = loadMaterialTextureForMaterialResolved(
-            material.metallicRoughnessTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 emissiveSample = loadMaterialTextureForMaterialResolved(
-            material.emissiveTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 normalSample = loadMaterialTextureForMaterialResolved(
-            material.normalTexture,
-            hit.texcoord,
-            float4(0.5, 0.5, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 occlusionSample = loadMaterialTextureForMaterialResolved(
-            material.occlusionTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 transmissionSample = loadMaterialTextureForMaterialResolved(
-            material.transmissionTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 thicknessSample = loadMaterialTextureForMaterialResolved(
-            material.thicknessTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 diffuseTransmissionSample = loadMaterialTextureForMaterialResolved(
-            material.diffuseTransmissionTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
-        float4 diffuseTransmissionColorSample = loadMaterialTextureForMaterialResolved(
-            material.diffuseTransmissionColorTexture,
-            hit.texcoord,
-            float4(1.0, 1.0, 1.0, 1.0),
-            push,
-            deterministicGlassTextures,
-            seed, footprint);
+        float4 baseColorSample = float4(1.0);
+        float4 metallicRoughnessSample = float4(1.0);
+        float4 emissiveSample = float4(1.0);
+        float4 normalSample = float4(0.5, 0.5, 1.0, 1.0);
+        float4 occlusionSample = float4(1.0);
+        float4 transmissionSample = float4(1.0);
+        float4 thicknessSample = float4(1.0);
+        float4 diffuseTransmissionSample = float4(1.0);
+        float4 diffuseTransmissionColorSample = float4(1.0);
+        if (sceneHasMaterialTextures(push)) {
+            baseColorSample = loadMaterialTextureForMaterialResolved(
+                material.baseColorTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            metallicRoughnessSample = loadMaterialTextureForMaterialResolved(
+                material.metallicRoughnessTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            emissiveSample = loadMaterialTextureForMaterialResolved(
+                material.emissiveTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            normalSample = loadMaterialTextureForMaterialResolved(
+                material.normalTexture,
+                hit.texcoord,
+                float4(0.5, 0.5, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            occlusionSample = loadMaterialTextureForMaterialResolved(
+                material.occlusionTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            transmissionSample = loadMaterialTextureForMaterialResolved(
+                material.transmissionTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            thicknessSample = loadMaterialTextureForMaterialResolved(
+                material.thicknessTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            diffuseTransmissionSample = loadMaterialTextureForMaterialResolved(
+                material.diffuseTransmissionTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+            diffuseTransmissionColorSample = loadMaterialTextureForMaterialResolved(
+                material.diffuseTransmissionColorTexture,
+                hit.texcoord,
+                float4(1.0, 1.0, 1.0, 1.0),
+                push,
+                deterministicGlassTextures,
+                seed, footprint);
+        }
         hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
         float occlusion = lerp(1.0, saturate(occlusionSample.r), saturate(material.textureParams.y));

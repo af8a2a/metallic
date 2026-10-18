@@ -39,6 +39,7 @@ struct LightingProbeSource : IOpenPBRMaterialSource, IDebugLambertSource
 {
     ProbeParams probe;
     typealias Context = ProbeOpenPBRContext;
+    bool hasTextures(ScenePathTracePush push) { return true; }
     Context context() { Context result; result.probe = probe; return result; }
     OpenPBRMaterialParameters loadParameters(MaterialInstanceRef instance)
     {

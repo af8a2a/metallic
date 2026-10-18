@@ -34,7 +34,7 @@ float4 materialTexture(MaterialTextureInfo texture, float4 fallback, HitInfo hit
     RayCone cone, float3 direction, ScenePathTracePush push, bool deterministic, inout uint seed,
     TextureFootprint footprint)
 {
-    return flag(push, 2) ? fallback : loadMaterialTextureForMaterialResolved(texture, hit.texcoord,
+    return (flag(push, 2) || !sceneHasMaterialTextures(push)) ? fallback : loadMaterialTextureForMaterialResolved(texture, hit.texcoord,
         fallback, push, deterministic, seed, footprint);
 }
 
@@ -49,7 +49,7 @@ PreparedMaterial evaluateMaterial(HitInfo hit, RayCone cone, float3 direction,
 {
     let source = loadSceneMaterial(hit.materialIndex);
     bool deterministic = guides || source.glassParams.x > 0.01;
-    if (!deterministic) {
+    if (!deterministic && sceneHasMaterialTextures(push)) {
         footprint = resolveRayConeTextureFootprint(hit, cone, direction, footprint);
     }
     let base = materialTexture(source.baseColorTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
@@ -136,7 +136,7 @@ SimpleBSDFMaterialResult<SimpleBSDFClosure> evaluateSimpleMaterial(
     material.program.source.push = push;
     material.program.source.guides = guides;
     material.program.source.seed = seed;
-    let result = material.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, direction),
+    let result = material.evaluate(sceneSurfaceMaterialContextForRay(hit, cone, direction, false),
         sceneMaterialInstanceRef(hit.materialIndex));
     seed = material.program.source.seed;
     return result;

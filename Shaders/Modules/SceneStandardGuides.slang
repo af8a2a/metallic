@@ -74,31 +74,35 @@ public DLSSRRGuideData evaluateStandardDlssRrGuidesAtHit(
     OpenPBRMaterialParameters material = sceneOpenPBRParameters(sceneMaterial);
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
     TextureFootprint footprint = (TextureFootprint)0;
-    if (!deterministicGlassTextures) {
+    if (!deterministicGlassTextures && sceneHasMaterialTextures(push)) {
         footprint = resolveRayConeTextureFootprint(hit, rayCone, ray.direction, footprint);
     }
-    float4 baseColorSample = loadMaterialTextureForMaterialResolved(
-        material.baseColorTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        deterministicGlassTextures,
-        seed, footprint);
-    float4 metallicRoughnessSample = loadMaterialTextureForMaterialResolved(
-        material.metallicRoughnessTexture,
-        hit.texcoord,
-        float4(1.0, 1.0, 1.0, 1.0),
-        push,
-        deterministicGlassTextures,
-        seed, footprint);
-    float4 normalSample = loadMaterialTextureForMaterialResolved(
-        material.normalTexture,
-        hit.texcoord,
-        float4(0.5, 0.5, 1.0, 1.0),
-        push,
-        deterministicGlassTextures,
-        seed, footprint);
-
+    float4 baseColorSample = float4(1.0);
+    float4 metallicRoughnessSample = float4(1.0);
+    float4 normalSample = float4(0.5, 0.5, 1.0, 1.0);
+    if (sceneHasMaterialTextures(push)) {
+        baseColorSample = loadMaterialTextureForMaterialResolved(
+            material.baseColorTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push,
+            deterministicGlassTextures,
+            seed, footprint);
+        metallicRoughnessSample = loadMaterialTextureForMaterialResolved(
+            material.metallicRoughnessTexture,
+            hit.texcoord,
+            float4(1.0, 1.0, 1.0, 1.0),
+            push,
+            deterministicGlassTextures,
+            seed, footprint);
+        normalSample = loadMaterialTextureForMaterialResolved(
+            material.normalTexture,
+            hit.texcoord,
+            float4(0.5, 0.5, 1.0, 1.0),
+            push,
+            deterministicGlassTextures,
+            seed, footprint);
+    }
     hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
     hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);
 
