@@ -78,9 +78,11 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     if (clusterStride == 0u) { return false; }
     uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
     float3 a, b, c;
-    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, streamPageWordCount(gRayStreamPageCount), a, b, c)) { return false; }
+    StreamTriangleDecodeContext triangleContext;
+    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable,
+        streamPageWordCount(gRayStreamPageCount), a, b, c, triangleContext)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, n, uv, tangents);
+    uint attributes = decodeStreamAttributes(gRayStreamPages, triangleContext, n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = streamRayTriangleNormal(b - a, c - a, float3(0, 1, 0));
     hit.geometryNormal = streamRayNormal(instance, localGeometry);
