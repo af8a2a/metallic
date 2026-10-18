@@ -141,12 +141,8 @@ public bool traceClosestImpl(Ray ray, ScenePathTracePush push, bool classifyShad
     hit = (HitInfo)0;
     return false;
 #else
-    bool found = traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
-    if (found && classifyShadow) {
-        SceneMaterialData material = loadSceneMaterial(hit.materialIndex);
-        opaqueShadow = material.textureParams.w <= 1.5 && material.glassParams.x == 0.0;
-    }
-    return found;
+    return traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001),
+        push, hit, opaqueShadow, classifyShadow);
 #endif
 }
 
@@ -159,7 +155,8 @@ public bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 public bool traceClosestShadow(Ray ray, ScenePathTracePush push, out bool opaqueShadow, out HitInfo hit)
 {
     // Ordered traversal is essential for nested media and transparent layers.
-    // Streamed geometry deliberately retains its existing full decode path.
+    // Opaque hits provide only t/materialIndex; transparent hits provide the
+    // position, geometric normal, UV and facing needed by shadow transport.
     return traceClosestImpl(ray, push, true, opaqueShadow, hit);
 }
 

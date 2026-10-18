@@ -183,8 +183,11 @@ private:
 class MaterialCoverageRenderingTest : public RHITest
 {
 public:
-    explicit MaterialCoverageRenderingTest(bool slab = false) : slab_(slab)
-    { name = slab ? "material_coverage_slab_winner_shadow_ray" : "material_coverage_winner_shadow_ray"; type = RHITestType::Rendering; }
+    explicit MaterialCoverageRenderingTest(bool slab = false, bool shadowOnly = false) : slab_(slab), shadowOnly_(shadowOnly)
+    {
+        name = shadowOnly ? "stream_closest_shadow_hit" : slab ? "material_coverage_slab_winner_shadow_ray" : "material_coverage_winner_shadow_ray";
+        type = RHITestType::Rendering;
+    }
     RHITestResult run(RHITestContext& context) override
     {
         const auto root = std::filesystem::absolute(context.outputDirectory / "coverage-scene");
@@ -236,6 +239,13 @@ public:
         const auto probe = sample.graph.addNode("CoverageRayProbe", "CoverageProbe");
         sample.graph.setNodeRuntimeProperty(probe->id, "path", path.generic_string());
         sample.graph.markOutput("CoverageProbe.color");
+        if (shadowOnly_) {
+            // Exercise published CLAS hits without unrelated raster/material hot
+            // compilation. The comprehensive Coverage tests retain their graph.
+            sample.graph = RenderGraph{};
+            sample.graph.addNode("CoverageRayProbe", "CoverageProbe", {{"path", path.generic_string()}});
+            sample.graph.markOutput("CoverageProbe.color");
+        }
         RenderGraphPreviewRenderer preview;
         preview.bindRuntimeScene(&scene);
         preview.setEnvironment({.enabled = false});
@@ -243,7 +253,7 @@ public:
         if (!preview.initialize(context.enableValidation, true, false)) { return RHITestResult::fail("Coverage device failed"); }
         std::ofstream report(context.outputDirectory / "Coverage.txt");
         uint64_t coverageOnlySurfaceKey = 0, coverageOnlyKey = 0;
-        for (uint32_t step = 0; step < 11; ++step) {
+        for (uint32_t step = 0; step < (shadowOnly_ ? 1u : 11u); ++step) {
             auto edited = scene.materials()[0];
             const float shift = step == 2 ? -0.25f : step == 3 ? 1.0f : step == 4 ? -1.0f : step == 6 ? 0.25f : 0.0f;
             if (step > 0) {
@@ -274,19 +284,25 @@ public:
                 if (step == 7 || step == 10) { edited.valueProgram.clear(); }
                 if (!scene.setMaterialProperties(0, edited)) { return RHITestResult::fail("Coverage edit failed"); }
             }
-            if (!preview.render(sample.graph, 64, 64, "Deferred.color")) { return RHITestResult::fail(preview.lastLog()); }
-            std::ofstream(context.outputDirectory / ("Coverage-" + std::to_string(step) + ".compile.log")) << preview.lastLog();
-            if (preview.lastLog().find("Initial material compilation failed") != std::string::npos ||
-                preview.lastLog().find("error[") != std::string::npos) {
-                return RHITestResult::fail("Coverage raster shader failed step=" + std::to_string(step) + ": " + preview.lastLog());
+            std::vector<float> colors;
+            if (!shadowOnly_) {
+                if (!preview.render(sample.graph, 64, 64, "Deferred.color")) { return RHITestResult::fail(preview.lastLog()); }
+                std::ofstream(context.outputDirectory / ("Coverage-" + std::to_string(step) + ".compile.log")) << preview.lastLog();
+                if (preview.lastLog().find("Initial material compilation failed") != std::string::npos ||
+                    preview.lastLog().find("error[") != std::string::npos) {
+                    return RHITestResult::fail("Coverage raster shader failed step=" + std::to_string(step) + ": " + preview.lastLog());
+                }
+                const auto rasterBytes = preview.readbackBytes();
+                if (preview.readbackFormat() != Format::RGBA32Sfloat || rasterBytes.size() != 64 * 64 * 16) { return RHITestResult::fail("Raster readback format"); }
+                colors.resize(rasterBytes.size() / 4);
+                std::memcpy(colors.data(), rasterBytes.data(), rasterBytes.size());
+                if (!saveRgba8Png(context.outputDirectory / ("Coverage-" + std::to_string(step) + ".png"),
+                    reinterpret_cast<const uint8_t*>(preview.pixels().data()), 64, 64, log)) { return RHITestResult::fail(log); }
             }
-            const auto rasterBytes = preview.readbackBytes();
-            if (preview.readbackFormat() != Format::RGBA32Sfloat || rasterBytes.size() != 64 * 64 * 16) { return RHITestResult::fail("Raster readback format"); }
-            std::vector<float> colors(rasterBytes.size() / 4);
-            std::memcpy(colors.data(), rasterBytes.data(), rasterBytes.size());
-            if (!saveRgba8Png(context.outputDirectory / ("Coverage-" + std::to_string(step) + ".png"),
-                reinterpret_cast<const uint8_t*>(preview.pixels().data()), 64, 64, log)) { return RHITestResult::fail(log); }
             if (!preview.render(sample.graph, 64, 64, "CoverageProbe.color")) { return RHITestResult::fail(preview.lastLog()); }
+            if (preview.readbackFormat() != Format::RGBA32Sfloat || preview.readbackBytes().size() != 64 * 64 * 16) {
+                return RHITestResult::fail("Shadow probe readback format");
+            }
             std::vector<float> rays(preview.readbackBytes().size() / 4);
             std::memcpy(rays.data(), preview.readbackBytes().data(), preview.readbackBytes().size());
             uint32_t winners = 0;
@@ -298,16 +314,16 @@ public:
                         (step == 8 || step == 9 ? u * (step == 8 ? 0.5f : 2.0f) >= 0.5f :
                             (u + shift) * (step >= 5 ? 192.0f / 255.0f : 1.0f) >= 0.5f);
                     const float t = front ? 2.0f : 3.0f;
+                    const bool rasterMismatch = !shadowOnly_ &&
+                        (!std::isfinite(colors[i]) || !std::isfinite(colors[i + 1]) || !std::isfinite(colors[i + 2]) ||
+                            std::abs(colors[i] - (front && step != 6 ? 1.0f : 0.0f)) > 1e-5f ||
+                            std::abs(colors[i + 1] - (front ? 0.0f : 1.0f)) > 1e-5f ||
+                            std::abs(colors[i + 2] - (front && step == 6 ? 1.0f : 0.0f)) > 1e-5f);
                     if (!std::isfinite(rays[i]) || !std::isfinite(rays[i + 1]) ||
-                        !std::isfinite(colors[i]) || !std::isfinite(colors[i + 1]) || !std::isfinite(colors[i + 2]) ||
-                        std::abs(rays[i] - t) > 1e-5f || std::abs(rays[i + 1] - t) > 1e-5f ||
-                        std::abs(colors[i] - (front && step != 6 ? 1.0f : 0.0f)) > 1e-5f ||
-                        std::abs(colors[i + 1] - (front ? 0.0f : 1.0f)) > 1e-5f ||
-                        std::abs(colors[i + 2] - (front && step == 6 ? 1.0f : 0.0f)) > 1e-5f) {
+                        std::abs(rays[i] - t) > 1e-5f || std::abs(rays[i + 1] - t) > 1e-5f || rays[i + 3] != 0.0f || rasterMismatch) {
                         return RHITestResult::fail("Coverage winner mismatch step=" + std::to_string(step) + " x=" + std::to_string(x) +
-                            " red=" + std::to_string(colors[i]) + " green=" + std::to_string(colors[i + 1]) +
-                            " blue=" + std::to_string(colors[i + 2]) + " ray=" + std::to_string(rays[i]) +
-                            " shadow=" + std::to_string(rays[i + 1]) + " expectedDistance=" + std::to_string(t));
+                            " rasterMismatch=" + std::to_string(rasterMismatch) + " ray=" + std::to_string(rays[i]) +
+                            " shadow=" + std::to_string(rays[i + 1]) + " shadowHitFailures=" + std::to_string(rays[i + 3]) + " expectedDistance=" + std::to_string(t));
                     }
                     winners += front;
                 }
@@ -329,16 +345,55 @@ public:
             for (uint32_t y=1;y<63;++y) {
                 for (uint32_t x=1;x<63;++x) {
                     size_t i=(y*64+x)*4;
-                    if (std::abs(rays[i]-(opacity>0 ? 2.0f : 3.0f))>1e-5f || std::abs(rays[i+2]-opacity*192.0f/255.0f)>1e-5f) {
-                        return RHITestResult::fail("BLEND Coverage ignored instance/texture opacity");
+                    if (std::abs(rays[i]-(opacity>0 ? 2.0f : 3.0f))>1e-5f || std::abs(rays[i+2]-opacity*192.0f/255.0f)>1e-5f || rays[i+3] != 0.0f) {
+                        return RHITestResult::fail("BLEND Coverage/closest shadow mismatch, shadowHitFailures=" + std::to_string(rays[i+3]));
                     }
                 }
             }
         }
-        return RHITestResult::pass("42284 MASK raster/RT/shadow pixels agree including Coverage-only hot code update/removal; BLEND instance/texture alpha uses shared Coverage opacity");
+        // The same uploaded geometry exercises committed opaque early-out and
+        // reduced transparent decoding after a material-only lifecycle update.
+        for (float transmission : {0.0f, 1.0f}) {
+            for (uint32_t materialIndex = 0; materialIndex < 2; ++materialIndex) {
+                auto edited = scene.materials()[materialIndex];
+                edited.alphaMode = "OPAQUE";
+                edited.valueProgram.clear();
+                edited.baseColorFactor.w = 1.0f;
+                edited.transmissionFactor = transmission;
+                // This API returns false for an unchanged material as well as
+                // rejected input. Assert the requested state, including no-ops.
+                (void)scene.setMaterialProperties(materialIndex, edited);
+                const auto& applied = scene.materials()[materialIndex];
+                if (applied.alphaMode != "OPAQUE" || !applied.valueProgram.empty() ||
+                    applied.baseColorFactor.w != 1.0f || applied.transmissionFactor != transmission) {
+                    return RHITestResult::fail("Shadow material edit did not establish requested state");
+                }
+            }
+            if (!preview.render(sample.graph, 64, 64, "CoverageProbe.color")) { return RHITestResult::fail(preview.lastLog()); }
+            if (preview.readbackFormat() != Format::RGBA32Sfloat || preview.readbackBytes().size() != 64 * 64 * 16) {
+                return RHITestResult::fail("Shadow probe readback format");
+            }
+            std::vector<float> rays(preview.readbackBytes().size() / 4);
+            std::memcpy(rays.data(), preview.readbackBytes().data(), preview.readbackBytes().size());
+            for (uint32_t y = 1; y < 63; ++y) {
+                for (uint32_t x = 1; x < 63; ++x) {
+                    const size_t i = (y * 64 + x) * 4;
+                    if (!std::isfinite(rays[i]) || std::abs(rays[i] - 2.0f) > 1e-5f || rays[i + 3] != 0.0f) {
+                        return RHITestResult::fail("Opaque/glass closest shadow mismatch transmission=" + std::to_string(transmission) +
+                            " x=" + std::to_string(x) + " y=" + std::to_string(y) + " shadowHitFailures=" + std::to_string(rays[i + 3]));
+                    }
+                }
+            }
+            report << "transmission=" << transmission << " checked=3844 closest-shadow full-hit comparisons x5 ray cases" << '\n';
+        }
+        if (shadowOnly_) {
+            return RHITestResult::pass("134540 MASK/BLEND/opaque/glass closest-shadow comparisons match full-hit classification and consumed attributes for forward/backward/miss/clipped/nonunit rays (ray query)");
+        }
+        return RHITestResult::pass("42284 MASK raster/RT/shadow pixels agree; MASK/BLEND/opaque/glass closest-shadow matches full-hit classification and consumed attributes for forward/backward/miss/clipped/nonunit rays (ray query)");
     }
 private:
     bool slab_;
+    bool shadowOnly_;
 };
 METALLIC_REGISTER_RHI_TEST(MaterialCoverageRenderingTest);
 class MaterialCoverageSlabRenderingTest final : public MaterialCoverageRenderingTest
@@ -347,5 +402,11 @@ public:
     MaterialCoverageSlabRenderingTest() : MaterialCoverageRenderingTest(true) {}
 };
 METALLIC_REGISTER_RHI_TEST(MaterialCoverageSlabRenderingTest);
+class StreamClosestShadowHitTest final : public MaterialCoverageRenderingTest
+{
+public:
+    StreamClosestShadowHitTest() : MaterialCoverageRenderingTest(false, true) {}
+};
+METALLIC_REGISTER_RHI_TEST(StreamClosestShadowHitTest);
 } // namespace
 } // namespace metallic::tests

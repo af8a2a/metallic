@@ -70,12 +70,16 @@ public bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint trian
 }
 
 public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,
-    out HitInfo hit, bool occlusionOnly = false)
+    out HitInfo hit, out bool opaqueShadow, bool classifyShadow, bool occlusionOnly = false)
 {
     hit = (HitInfo)0;
+    opaqueShadow = false;
     RayDesc desc;
     desc.Origin = ray.origin; desc.Direction = ray.direction;
     desc.TMin = nearDistance; desc.TMax = farDistance;
+    uint instanceIndex, clusterId, triangle;
+    float2 bary;
+    float hitT;
     // Force candidate callbacks even for CLAS built with the opaque default.
 #if METALLIC_PT_RAY_PIPELINE
     StreamRayHit payload = (StreamRayHit)0;
@@ -86,8 +90,11 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
     TraceRay(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, 0, 0, 0, desc, payload);
     if (payload.t < 0.0) { return false; }
     if (occlusionOnly) { return true; }
-    return streamRaySurface(payload.instanceId, payload.clusterId, payload.primitiveId,
-        payload.barycentrics, ray, payload.t, push.bitangentFlip, hit);
+    instanceIndex = payload.instanceId;
+    clusterId = payload.clusterId;
+    triangle = payload.primitiveId;
+    bary = payload.barycentrics;
+    hitT = payload.t;
 #else
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
     query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
@@ -101,8 +108,34 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
     // Coverage is already accepted; shadow callers need no committed surface.
     if (occlusionOnly) { return true; }
-    return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
-        query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), push.bitangentFlip, hit);
+    instanceIndex = query.CommittedInstanceID();
+    clusterId = uint(query.CommittedClusterID());
+    triangle = query.CommittedPrimitiveIndex();
+    bary = query.CommittedTriangleBarycentrics();
+    hitT = query.CommittedRayT();
 #endif
+    if (classifyShadow) {
+        uint materialIndex;
+        if (!streamRayMaterialIndex(instanceIndex, materialIndex)) { return false; }
+        SceneMaterialData material = loadSceneMaterial(materialIndex);
+        opaqueShadow = material.textureParams.w <= 1.5 && material.glassParams.x == 0.0;
+        if (opaqueShadow) {
+            // Published stream BLASes retain resident geometry until traversal completes.
+            // Candidate coverage already validated the material binding.
+            // The shadow consumer checks distance before rejecting opaque hits.
+            hit.t = hitT;
+            hit.materialIndex = materialIndex;
+            return true;
+        }
+    }
+    return streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, hitT,
+        push.bitangentFlip, hit, classifyShadow);
+}
+
+public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,
+    out HitInfo hit, bool occlusionOnly = false)
+{
+    bool unusedOpaqueShadow;
+    return traceStreamClosest(ray, nearDistance, farDistance, push, hit, unusedOpaqueShadow, false, occlusionOnly);
 }
 } // namespace Metallic.ScenePathTracing

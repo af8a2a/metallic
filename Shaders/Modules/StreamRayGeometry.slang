@@ -55,7 +55,7 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
 }
 
 public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
-    Ray ray, float t, float bitangentFlip, out HitInfo hit)
+    Ray ray, float t, float bitangentFlip, out HitInfo hit, bool shadowOnly = false)
 {
     hit = (HitInfo)0;
     uint count, stride;
@@ -71,10 +71,20 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = streamRayTriangleNormal(b - a, c - a, float3(0, 1, 0));
-    float3 localNormal = Metallic.ScenePath.safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
-    hit.normal = streamRayNormal(instance, localNormal);
     hit.geometryNormal = streamRayNormal(instance, localGeometry);
     hit.texcoord = uv[0] * weights.x + uv[1] * weights.y + uv[2] * weights.z;
+    hit.position = ray.origin + ray.direction * t;
+    hit.t = t;
+    hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
+    hit.materialIndex = instance.materialIndex;
+    hit.instanceIndex = instance.gpuSceneInstanceIndex;
+    hit.primitiveIndex = instance.primitiveIndex;
+    hit.triangleIndex = triangle;
+    // Shadow transport consumes geometric orientation and UVs, but no shading frame or ray cone.
+    if (shadowOnly) { return true; }
+
+    float3 localNormal = Metallic.ScenePath.safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
+    hit.normal = streamRayNormal(instance, localNormal);
     float3 wt = streamRayVector(instance, b - a), wb = streamRayVector(instance, c - a);
     float uvArea = abs((uv[1].x - uv[0].x) * (uv[2].y - uv[0].y) - (uv[1].y - uv[0].y) * (uv[2].x - uv[0].x));
     hit.rayConeLodConstant = uvArea > 1e-7 ? 0.5 * log2(uvArea / max(length(cross(wt, wb)), 1e-20)) : 0.0;
@@ -93,13 +103,6 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     tangent = Metallic.ScenePath.safeNormalize(tangent - hit.normal * dot(hit.normal, tangent), fallback);
     hit.tangent = float4(tangent, sign * bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * hit.tangent.w;
-    hit.position = ray.origin + ray.direction * t;
-    hit.t = t;
-    hit.frontFace = dot(hit.geometryNormal, -ray.direction) >= 0.0;
-    hit.materialIndex = instance.materialIndex;
-    hit.instanceIndex = instance.gpuSceneInstanceIndex;
-    hit.primitiveIndex = instance.primitiveIndex;
-    hit.triangleIndex = triangle;
     return true;
 }
 

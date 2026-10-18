@@ -46,18 +46,6 @@ float3 hashColor(uint value)
     return lerp(float3(0.16, 0.20, 0.26), color, 0.82);
 }
 
-int committedClusterId(inout RayQuery<RAY_FLAG_FORCE_OPAQUE> query)
-{
-    // Target capabilities authorize the extension, while inline SPIR-V must
-    // still declare the extension and capability used by the injected opcode.
-    return spirv_asm {
-        OpCapability RayTracingClusterAccelerationStructureNV;
-        OpExtension "SPV_NV_cluster_acceleration_structure";
-        OpRayQueryGetIntersectionClusterIdNV $$int result &query $(1);
-    };
-}
-
-
 float3 rayDirectionFromPixel(uint2 pixel, SceneRayQueryVisualizationPush push)
 {
     float aspect = max(push.viewport.x, 0.001);
@@ -127,7 +115,7 @@ void sceneRayQueryVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         if (push.mode == kRayQueryVisualizationModeInstance) {
             colorId = instanceIndex + 1u;
         } else if (push.mode == kRayQueryVisualizationModeClusterId) {
-            int clusterId = committedClusterId(query);
+            int clusterId = query.CommittedClusterID();
             colorId = clusterId >= 0 ? uint(clusterId) + 1u : 0x7fffffffu;
         } else {
             colorId = ((instanceIndex + 1u) * 16777619u) ^ (primitiveIndex + 1u);
