@@ -289,6 +289,26 @@ public:
                                 root / spec.at("materialRoot").get<std::string>(), log)) { return fail(log); }
                         }
                     }
+                    // Explicit benchmark-only instance edits preserve the authored
+                    // mesh, OpenPBR surface inputs, textures, lighting and camera.
+                    for (const auto& override : spec.value("materialOverrides", Json::array())) {
+                        const auto index = override.at("index").get<int32_t>();
+                        if (index < 0 || size_t(index) >= document.materials().size()) {
+                            return fail("Baseline material override index out of range");
+                        }
+                        auto material = document.materials()[index];
+                        if (override.contains("alphaMode")) { material.alphaMode = override.at("alphaMode").get<std::string>(); }
+                        if (override.contains("alphaCutoff")) { material.alphaCutoff = override.at("alphaCutoff").get<float>(); }
+                        if (override.contains("valueProgram")) {
+                            material.valueProgram = override.at("valueProgram").is_null() ? std::string{} : override.at("valueProgram").dump();
+                        }
+                        if (override.contains("valueParameters")) {
+                            material.valueParameters = override.at("valueParameters").get<std::array<float, 16>>();
+                        }
+                        if (!document.setMaterialProperties(index, material)) {
+                            return fail("Baseline material override failed");
+                        }
+                    }
                     preview.bindRuntimeScene(&document);
                     preview.setEnvironment(document.environment());
                     auto lighting = document.lighting();
@@ -333,6 +353,15 @@ public:
                 }
                 const uint32_t width = spec.at("width"), height = spec.at("height");
                 Json result = spec;
+                if (spec.contains("materialOverrides")) {
+                    result["resolvedMaterials"] = Json::array();
+                    for (const auto& material : document.materials()) {
+                        result["resolvedMaterials"].push_back({{"name", material.name}, {"alphaMode", material.alphaMode},
+                            {"alphaCutoff", material.alphaCutoff}, {"valueProgram", material.valueProgram},
+                            {"valueParameters", material.valueParameters}});
+                    }
+                    result["frameSequence"] = "fresh preview; frame index starts at zero; static camera; capture follows timing";
+                }
                 ArtifactReportGuard traceCaseReport;
                 if (nsightTraceFrame) {
                     result["sdkTrace"] = {{"frame", *nsightTraceFrame}, {"frames", 1},
@@ -423,6 +452,9 @@ public:
                         return rendered;
                     }();
                     if (!rendered) { return fail(id + ": " + preview.lastLog()); }
+                    if (spec.contains("materialOverrides") && artifactFailureLog(preview.lastLog())) {
+                        return fail(id + ": material compilation fallback: " + preview.lastLog());
+                    }
                     if (artifact && (artifactFailureLog(preview.lastLog()) || artifact->rejected() != caseRejectedBefore)) {
                         return fail(id + ": rejected artifact request or error-material fallback: " + preview.lastLog());
                     }

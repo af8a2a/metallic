@@ -115,3 +115,67 @@ Frame trajectories retain occasional spikes; the statistic is the process
 median, without outlier removal. Clocks were unmodified and system-wide GPU
 exclusivity was not established. No full-scene speedup, register-spill reduction
 or occupancy improvement was measured.
+
+## Whole-scene acceptance, 2026-10-18
+
+`LookDev/MaterialSystem/Coverage/Cases.json` exercises the existing OpenPBR
+shaderball/calibration meshes and HDR environment through separate production
+deferred and pathtrace graphs. The six cases cover default alpha, a UV cutout,
+and a five-layer procedural cutout at 768 x 768. Path tracing uses four samples
+per frame, depth 12, accumulation enabled, cache off, and 388 spp at capture.
+Each independent process runs 32 warmup frames, 64 timed frames, then readback.
+Eight ordinary processes in ABBA ABBA order provide four paired comparisons;
+two separate diagnostic processes record bound shader identities.
+
+On RTX 5070 Ti / driver 617.42, the complete offscreen graph graphics-queue
+envelope (including graph waits) measured as follows. CPU, presentation,
+compilation, loading and readback are excluded. Milliseconds are means of
+process medians; percentage reductions and Student t intervals use paired
+process ratios, not individual frames.
+
+| Case | Legacy ms | Native ms | Paired reduction | 95% interval | Decision |
+|---|---:|---:|---:|---:|---|
+| Control deferred | 0.871884 | 0.870724 | 0.07% | -5.07 to 5.21% | Inconclusive |
+| Control pathtrace | 14.043184 | 15.572140 | -10.22% | -51.03 to 30.58% | Inconclusive |
+| Simple deferred | 0.789532 | 1.074052 | -35.74% | -160.90 to 89.42% | Inconclusive |
+| Simple pathtrace | 69.896212 | 33.496332 | 52.62% | 13.84 to 91.39% | Improved |
+| Complex deferred | 1.170640 | 1.011936 | 13.50% | -45.92 to 72.91% | Inconclusive |
+| Complex pathtrace | 291.496428 | 25.073052 | 91.45% | 85.07 to 97.84% | Improved |
+
+All samples remain included, including a slow native process (index 2).
+System-wide GPU exclusivity was not established; clocks were unchanged.
+Deferred gains are not established by these noisy process measurements.
+Pathtrace gains are specific to these Coverage-active fixtures, not a general
+scene distribution or editor FPS claim.
+
+All six cases have finite, exactly identical RGBA32F images across all ordinary
+and diagnostic runs (maximum error and RMSE zero). The six comparison images
+and timing plots were inspected. The verifier checks resolved graphs/materials,
+environment readiness, frame sequence, timing scope and matched pipeline
+options. Actual Coverage raster-fragment and pathtrace SPIR-V differ between
+custom legacy/native arms; deferred lighting SPIR-V may correctly be identical.
+
+Visual qualification exposed a shared classification bug: constant base alpha
+one with no alpha texture promoted MASK to OPAQUE even with a custom Coverage
+program. `GPUScene` now conservatively retains MASK/BLEND for materials with a
+Value Program. Program presence enters the classification fingerprint; adding
+or removing it invalidates the bucket, while parameter edits and replacement
+of a nonempty program do not trigger geometry rebuilds. Both paired binaries
+contain this same fix. The standalone
+`RHIResource.gpu_scene_coverage_classification` regression passes, and the fixed
+six-case scene qualification passed with Vulkan validation enabled. Editor and
+test builds, shader module audit and diff checks passed.
+
+The existing `stream_metadata_contract` live-color-edit assertion still fails
+with both the original and fixed binaries; it is preserved unchanged and is
+not counted as passing coverage here. An initial qualification was invalidated
+by a simultaneous build/source-epoch notification; the frozen-source retry
+passed. Neither attempt contributes performance samples.
+
+Local evidence is `build/coverage-scene-20261018/ab/` (sealed); plots, exact
+statistics and reproduction details are in
+`build/coverage-scene-20261018/report/Report.md`. The strengthened offline
+verifier was applied after capture without changing raw evidence or numerical
+thresholds. `MeasureCoverageScene.capture.py` archives the capture-time runner
+outside the sealed directory. See `Tools/Perf/MeasureCoverageScene.md` for paired
+binary preparation, serial measurement, verification and restoration commands.

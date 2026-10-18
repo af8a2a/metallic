@@ -1,0 +1,603 @@
+{
+    "version": 1,
+    "frames": 97,
+    "warmupFrames": 32,
+    "timingFrames": 64,
+    "measurementScope": "Full offscreen render graph GPU duration; excludes CPU/presentation, compilation and readback. Actual OpenPBR LookDev mesh/HDRI; procedural MASK workload injected for Coverage evaluation.",
+    "cases": [
+        {
+            "id": "control-deferred",
+            "workload": "control",
+            "path": "deferred",
+            "graph": "../OpenPBR/Deferred.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Deferred.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 1,
+            "maxDepth": null,
+            "accumulatedSpp": null,
+            "materialOverrides": [
+                {
+                    "index": 0,
+                    "alphaMode": "MASK",
+                    "alphaCutoff": 0.5,
+                    "valueProgram": null,
+                    "valueParameters": [
+                        0.125,
+                        0.25,
+                        0.75,
+                        -0.5,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                }
+            ],
+            "expectedAsyncComputeBranches": 1,
+            "requiredTiming": [
+                "Deferred",
+                "Deferred shading"
+            ],
+            "requireEnvironment": true
+        },
+        {
+            "id": "control-pathtrace",
+            "workload": "control",
+            "path": "pathtrace",
+            "graph": "../OpenPBR/PathTrace.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Reference.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 4,
+            "maxDepth": 12,
+            "accumulatedSpp": 388,
+            "materialOverrides": [
+                {
+                    "index": 0,
+                    "alphaMode": "MASK",
+                    "alphaCutoff": 0.5,
+                    "valueProgram": null,
+                    "valueParameters": [
+                        0.125,
+                        0.25,
+                        0.75,
+                        -0.5,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                }
+            ],
+            "expectedAsyncComputeBranches": 0,
+            "requiredTiming": [
+                "Reference",
+                "Path trace shading"
+            ],
+            "requireEnvironment": true
+        },
+        {
+            "id": "simple-deferred",
+            "workload": "simple",
+            "path": "deferred",
+            "graph": "../OpenPBR/Deferred.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Deferred.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 1,
+            "maxDepth": null,
+            "accumulatedSpp": null,
+            "materialOverrides": [
+                {
+                    "index": 0,
+                    "alphaMode": "MASK",
+                    "alphaCutoff": 0.5,
+                    "valueProgram": {
+                        "version": 1,
+                        "coverage": {
+                            "op": "mul",
+                            "args": [
+                                {
+                                    "op": "alpha"
+                                },
+                                {
+                                    "op": "fract",
+                                    "args": [
+                                        {
+                                            "op": "mul",
+                                            "args": [
+                                                {
+                                                    "op": "uv"
+                                                },
+                                                8.0
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    "valueParameters": [
+                        0.125,
+                        0.25,
+                        0.75,
+                        -0.5,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                }
+            ],
+            "expectedAsyncComputeBranches": 1,
+            "requiredTiming": [
+                "Deferred",
+                "Deferred shading"
+            ],
+            "requireEnvironment": true
+        },
+        {
+            "id": "simple-pathtrace",
+            "workload": "simple",
+            "path": "pathtrace",
+            "graph": "../OpenPBR/PathTrace.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Reference.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 4,
+            "maxDepth": 12,
+            "accumulatedSpp": 388,
+            "materialOverrides": [
+                {
+                    "index": 0,
+                    "alphaMode": "MASK",
+                    "alphaCutoff": 0.5,
+                    "valueProgram": {
+                        "version": 1,
+                        "coverage": {
+                            "op": "mul",
+                            "args": [
+                                {
+                                    "op": "alpha"
+                                },
+                                {
+                                    "op": "fract",
+                                    "args": [
+                                        {
+                                            "op": "mul",
+                                            "args": [
+                                                {
+                                                    "op": "uv"
+                                                },
+                                                8.0
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    "valueParameters": [
+                        0.125,
+                        0.25,
+                        0.75,
+                        -0.5,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                }
+            ],
+            "expectedAsyncComputeBranches": 0,
+            "requiredTiming": [
+                "Reference",
+                "Path trace shading"
+            ],
+            "requireEnvironment": true
+        },
+        {
+            "id": "complex-deferred",
+            "workload": "complex",
+            "path": "deferred",
+            "graph": "../OpenPBR/Deferred.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Deferred.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 1,
+            "maxDepth": null,
+            "accumulatedSpp": null,
+            "materialOverrides": [
+                {
+                    "index": 0,
+                    "alphaMode": "MASK",
+                    "alphaCutoff": 0.5,
+                    "valueProgram": {
+                        "version": 1,
+                        "coverage": {
+                            "op": "mul",
+                            "args": [
+                                {
+                                    "op": "alpha"
+                                },
+                                {
+                                    "op": "fract",
+                                    "args": [
+                                        {
+                                            "op": "add",
+                                            "args": [
+                                                {
+                                                    "op": "sin",
+                                                    "args": [
+                                                        {
+                                                            "op": "mul",
+                                                            "args": [
+                                                                {
+                                                                    "op": "fract",
+                                                                    "args": [
+                                                                        {
+                                                                            "op": "add",
+                                                                            "args": [
+                                                                                {
+                                                                                    "op": "sin",
+                                                                                    "args": [
+                                                                                        {
+                                                                                            "op": "mul",
+                                                                                            "args": [
+                                                                                                {
+                                                                                                    "op": "fract",
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "op": "add",
+                                                                                                            "args": [
+                                                                                                                {
+                                                                                                                    "op": "sin",
+                                                                                                                    "args": [
+                                                                                                                        {
+                                                                                                                            "op": "mul",
+                                                                                                                            "args": [
+                                                                                                                                {
+                                                                                                                                    "op": "fract",
+                                                                                                                                    "args": [
+                                                                                                                                        {
+                                                                                                                                            "op": "add",
+                                                                                                                                            "args": [
+                                                                                                                                                {
+                                                                                                                                                    "op": "sin",
+                                                                                                                                                    "args": [
+                                                                                                                                                        {
+                                                                                                                                                            "op": "mul",
+                                                                                                                                                            "args": [
+                                                                                                                                                                {
+                                                                                                                                                                    "op": "fract",
+                                                                                                                                                                    "args": [
+                                                                                                                                                                        {
+                                                                                                                                                                            "op": "add",
+                                                                                                                                                                            "args": [
+                                                                                                                                                                                {
+                                                                                                                                                                                    "op": "sin",
+                                                                                                                                                                                    "args": [
+                                                                                                                                                                                        {
+                                                                                                                                                                                            "op": "mul",
+                                                                                                                                                                                            "args": [
+                                                                                                                                                                                                {
+                                                                                                                                                                                                    "op": "add",
+                                                                                                                                                                                                    "args": [
+                                                                                                                                                                                                        {
+                                                                                                                                                                                                            "op": "uv"
+                                                                                                                                                                                                        },
+                                                                                                                                                                                                        {
+                                                                                                                                                                                                            "op": "parameter",
+                                                                                                                                                                                                            "index": 0
+                                                                                                                                                                                                        }
+                                                                                                                                                                                                    ]
+                                                                                                                                                                                                },
+                                                                                                                                                                                                1.25
+                                                                                                                                                                                            ]
+                                                                                                                                                                                        }
+                                                                                                                                                                                    ]
+                                                                                                                                                                                },
+                                                                                                                                                                                0.375
+                                                                                                                                                                            ]
+                                                                                                                                                                        }
+                                                                                                                                                                    ]
+                                                                                                                                                                },
+                                                                                                                                                                1.375
+                                                                                                                                                            ]
+                                                                                                                                                        }
+                                                                                                                                                    ]
+                                                                                                                                                },
+                                                                                                                                                0.375
+                                                                                                                                            ]
+                                                                                                                                        }
+                                                                                                                                    ]
+                                                                                                                                },
+                                                                                                                                1.5
+                                                                                                                            ]
+                                                                                                                        }
+                                                                                                                    ]
+                                                                                                                },
+                                                                                                                0.375
+                                                                                                            ]
+                                                                                                        }
+                                                                                                    ]
+                                                                                                },
+                                                                                                1.625
+                                                                                            ]
+                                                                                        }
+                                                                                    ]
+                                                                                },
+                                                                                0.375
+                                                                            ]
+                                                                        }
+                                                                    ]
+                                                                },
+                                                                1.75
+                                                            ]
+                                                        }
+                                                    ]
+                                                },
+                                                0.375
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    "valueParameters": [
+                        0.125,
+                        0.25,
+                        0.75,
+                        -0.5,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                }
+            ],
+            "expectedAsyncComputeBranches": 1,
+            "requiredTiming": [
+                "Deferred",
+                "Deferred shading"
+            ],
+            "requireEnvironment": true
+        },
+        {
+            "id": "complex-pathtrace",
+            "workload": "complex",
+            "path": "pathtrace",
+            "graph": "../OpenPBR/PathTrace.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "Reference.color",
+            "width": 768,
+            "height": 768,
+            "samplesPerFrame": 4,
+            "maxDepth": 12,
+            "accumulatedSpp": 388,
+            "materialOverrides": [
+                {
+                    "index": 0,
+                    "alphaMode": "MASK",
+                    "alphaCutoff": 0.5,
+                    "valueProgram": {
+                        "version": 1,
+                        "coverage": {
+                            "op": "mul",
+                            "args": [
+                                {
+                                    "op": "alpha"
+                                },
+                                {
+                                    "op": "fract",
+                                    "args": [
+                                        {
+                                            "op": "add",
+                                            "args": [
+                                                {
+                                                    "op": "sin",
+                                                    "args": [
+                                                        {
+                                                            "op": "mul",
+                                                            "args": [
+                                                                {
+                                                                    "op": "fract",
+                                                                    "args": [
+                                                                        {
+                                                                            "op": "add",
+                                                                            "args": [
+                                                                                {
+                                                                                    "op": "sin",
+                                                                                    "args": [
+                                                                                        {
+                                                                                            "op": "mul",
+                                                                                            "args": [
+                                                                                                {
+                                                                                                    "op": "fract",
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "op": "add",
+                                                                                                            "args": [
+                                                                                                                {
+                                                                                                                    "op": "sin",
+                                                                                                                    "args": [
+                                                                                                                        {
+                                                                                                                            "op": "mul",
+                                                                                                                            "args": [
+                                                                                                                                {
+                                                                                                                                    "op": "fract",
+                                                                                                                                    "args": [
+                                                                                                                                        {
+                                                                                                                                            "op": "add",
+                                                                                                                                            "args": [
+                                                                                                                                                {
+                                                                                                                                                    "op": "sin",
+                                                                                                                                                    "args": [
+                                                                                                                                                        {
+                                                                                                                                                            "op": "mul",
+                                                                                                                                                            "args": [
+                                                                                                                                                                {
+                                                                                                                                                                    "op": "fract",
+                                                                                                                                                                    "args": [
+                                                                                                                                                                        {
+                                                                                                                                                                            "op": "add",
+                                                                                                                                                                            "args": [
+                                                                                                                                                                                {
+                                                                                                                                                                                    "op": "sin",
+                                                                                                                                                                                    "args": [
+                                                                                                                                                                                        {
+                                                                                                                                                                                            "op": "mul",
+                                                                                                                                                                                            "args": [
+                                                                                                                                                                                                {
+                                                                                                                                                                                                    "op": "add",
+                                                                                                                                                                                                    "args": [
+                                                                                                                                                                                                        {
+                                                                                                                                                                                                            "op": "uv"
+                                                                                                                                                                                                        },
+                                                                                                                                                                                                        {
+                                                                                                                                                                                                            "op": "parameter",
+                                                                                                                                                                                                            "index": 0
+                                                                                                                                                                                                        }
+                                                                                                                                                                                                    ]
+                                                                                                                                                                                                },
+                                                                                                                                                                                                1.25
+                                                                                                                                                                                            ]
+                                                                                                                                                                                        }
+                                                                                                                                                                                    ]
+                                                                                                                                                                                },
+                                                                                                                                                                                0.375
+                                                                                                                                                                            ]
+                                                                                                                                                                        }
+                                                                                                                                                                    ]
+                                                                                                                                                                },
+                                                                                                                                                                1.375
+                                                                                                                                                            ]
+                                                                                                                                                        }
+                                                                                                                                                    ]
+                                                                                                                                                },
+                                                                                                                                                0.375
+                                                                                                                                            ]
+                                                                                                                                        }
+                                                                                                                                    ]
+                                                                                                                                },
+                                                                                                                                1.5
+                                                                                                                            ]
+                                                                                                                        }
+                                                                                                                    ]
+                                                                                                                },
+                                                                                                                0.375
+                                                                                                            ]
+                                                                                                        }
+                                                                                                    ]
+                                                                                                },
+                                                                                                1.625
+                                                                                            ]
+                                                                                        }
+                                                                                    ]
+                                                                                },
+                                                                                0.375
+                                                                            ]
+                                                                        }
+                                                                    ]
+                                                                },
+                                                                1.75
+                                                            ]
+                                                        }
+                                                    ]
+                                                },
+                                                0.375
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    "valueParameters": [
+                        0.125,
+                        0.25,
+                        0.75,
+                        -0.5,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    ]
+                }
+            ],
+            "expectedAsyncComputeBranches": 0,
+            "requiredTiming": [
+                "Reference",
+                "Path trace shading"
+            ],
+            "requireEnvironment": true
+        }
+    ],
+    "assetFiles": [
+        "Asset/LookDev/OpenPBRDefault/ACEScgRuntimeReference.json",
+        "Asset/LookDev/OpenPBRDefault/LICENSE",
+        "Asset/LookDev/OpenPBRDefault/open_pbr_default.mtlx",
+        "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+        "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.metallic_scene.json",
+        "Asset/LookDev/OpenPBRDefault/README.md",
+        "Asset/LookDev/OpenPBRDefault/Reference.json",
+        "Asset/LookDev/OpenPBRDefault/san_giuseppe_bridge_split.hdr",
+        "Asset/LookDev/OpenPBRDefault/san_giuseppe_bridge_split.mtlx",
+        "Asset/LookDev/OpenPBRDefault/Shaderball.bin"
+    ]
+}

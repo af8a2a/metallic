@@ -802,6 +802,65 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamReflectedWindingTest);
 
+class GPUSceneCoverageClassificationTest final : public RHITest
+{
+public:
+    GPUSceneCoverageClassificationTest() { type = RHITestType::Resource; name = "gpu_scene_coverage_classification"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        try {
+            scene::RenderMaterial material;
+            material.baseColorFactor.w = 1.0f;
+            material.alphaMode = "MASK";
+            material.alphaCutoff = 0.5f;
+            for (bool doubleSided : {false, true}) {
+                material.doubleSided = doubleSided;
+                material.valueProgram.clear();
+                const auto opaque = doubleSided ? GPUSceneDrawBucket::OpaqueDoubleSided : GPUSceneDrawBucket::OpaqueSingleSided;
+                const auto masked = doubleSided ? GPUSceneDrawBucket::MaskedDoubleSided : GPUSceneDrawBucket::MaskedSingleSided;
+                require(classifyGPUSceneMaterial(material, true) == opaque, "Default constant MASK lost opaque promotion");
+                material.valueProgram = R"({"version":1,"coverage":{"op":"uv"}})";
+                require(classifyGPUSceneMaterial(material, true) == masked, "Custom Coverage incorrectly promoted to opaque");
+                material.alphaMode = "OPAQUE";
+                require(classifyGPUSceneMaterial(material, true) == opaque, "Authored OPAQUE bucket changed");
+                material.alphaMode = "BLEND";
+                require(classifyGPUSceneMaterial(material, true) == GPUSceneDrawBucket::Blend, "Program-bearing BLEND incorrectly promoted");
+                material.alphaMode = "MASK";
+            }
+            // Exercise the fingerprint path used when adding/removing Coverage
+            // from a constant-alpha instance, not only direct classification.
+            std::array<scene::RenderMaterial, 1> editedMaterials{material};
+            editedMaterials[0].valueProgram.clear();
+            GPUScene gpuScene;
+            std::string log;
+            GPUSceneSourceView view;
+            view.constantAlphaOpaque = true;
+            view.materials = editedMaterials;
+            ++view.externalRevision;
+            require(bool(gpuScene.rebuild(view, log)), log);
+            editedMaterials[0].valueProgram = R"({"version":1,"coverage":{"op":"uv"}})";
+            ++view.externalRevision;
+            require(gpuScene.sync(view) == GPUSceneSyncResult::RebuildRequired, "Adding Coverage failed to invalidate opaque bucket");
+            require(bool(gpuScene.rebuild(view, log)), log);
+            require(gpuScene.materials()[0].bucket == GPUSceneDrawBucket::MaskedDoubleSided, "Coverage rebuild did not install MASK bucket");
+            editedMaterials[0].valueParameters[0] = 0.25f;
+            ++view.externalRevision;
+            require(gpuScene.sync(view) != GPUSceneSyncResult::RebuildRequired, "Coverage parameter edit rebuilt geometry");
+            editedMaterials[0].valueProgram = R"({"version":1,"coverage":{"op":"mul","args":[{"op":"uv"},2]}})";
+            ++view.externalRevision;
+            require(gpuScene.sync(view) != GPUSceneSyncResult::RebuildRequired, "Coverage code replacement rebuilt geometry");
+            editedMaterials[0].valueProgram.clear();
+            ++view.externalRevision;
+            require(gpuScene.sync(view) == GPUSceneSyncResult::RebuildRequired, "Removing Coverage failed to invalidate MASK bucket");
+            require(bool(gpuScene.rebuild(view, log)), log);
+            require(gpuScene.materials()[0].bucket == GPUSceneDrawBucket::OpaqueDoubleSided, "Removing Coverage lost constant-alpha promotion");
+            require(gpuScene.geometries().empty() && gpuScene.instances().empty(), "Classification fixture unexpectedly needs geometry");
+            return RHITestResult::pass("Custom Coverage preserves MASK buckets; program presence invalidates classification without parameter/code rebuilds");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(GPUSceneCoverageClassificationTest);
+
 class StreamMetadataContractTest final : public RHITest {
 public:
     StreamMetadataContractTest() { type = RHITestType::Rendering; name = "stream_metadata_contract"; }

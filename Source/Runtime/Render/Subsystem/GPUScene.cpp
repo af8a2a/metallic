@@ -235,6 +235,9 @@ uint64_t materialFingerprint(const scene::RenderMaterial& material)
     hashValue(hash, material.emissiveFactor);
     hashValue(hash, material.alphaCutoff);
     hashString(hash, material.alphaMode);
+    // Presence affects opaque promotion. Parameter edits and replacements of an
+    // existing program retain the bucket and do not require geometry rebuilds.
+    hashValue(hash, !material.valueProgram.empty());
     hashValue(hash, material.doubleSided);
     hashValue(hash, material.normalTextureScale);
     hashValue(hash, material.displacementMagnitude);
@@ -414,7 +417,11 @@ const char* gpuSceneDrawBucketName(GPUSceneDrawBucket bucket)
 GPUSceneDrawBucket classifyGPUSceneMaterial(const scene::RenderMaterial& material, bool constantAlphaOpaque)
 {
     const bool effectiveOpaque = constantAlphaOpaque &&
-        material.baseColorTexture.textureIndex < 0 && material.baseColorFactor.w >= 1.0f;
+        material.baseColorTexture.textureIndex < 0 && material.baseColorFactor.w >= 1.0f &&
+        material.valueProgram.empty();
+    // A custom program can reject coverage even with constant base alpha one.
+    // Conservatively retain MASK/BLEND for Surface-only programs too; this layer
+    // does not parse Value IR and must not bypass authored coverage semantics.
     if (material.alphaMode == "BLEND" && !effectiveOpaque) {
         return GPUSceneDrawBucket::Blend;
     }
