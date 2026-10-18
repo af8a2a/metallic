@@ -361,6 +361,31 @@ public float loadEnvironmentImportanceWeight(uint2 position, uint mipLevel)
     return loadEnvironmentImportanceWeight(position, mipLevel, uint2(width, height));
 }
 
+// Requires a nonempty mip chain. Share the exact root/leaf normalization
+// between sampling and MIS evaluation, including rectangular mip chains.
+public float environmentImportanceProbabilityFromWeight(
+    Texture2D<float> pdfTex, float weight, uint mipCount)
+{
+    float topWeight = max(pdfTex.Load(int3(0, 0, mipCount - 1u)), 0.0);
+    // PrepareLightsPdf multiplies by 1/4 even for 1xN/Nx1 levels.
+    float totalWeight = ldexp(topWeight, int(2u * (mipCount - 1u)));
+    return totalWeight > 0.0 ? weight / totalWeight : 0.0;
+}
+
+// Child order is (0,0), (0,1), (1,0), (1,1). Preserve strict-CDF tie
+// handling, including repeated thresholds for empty children.
+public uint selectEnvironmentImportanceChild(float4 weights, float randomValue, out float chosenWeight)
+{
+    float c0 = weights.x;
+    float c1 = c0 + weights.y;
+    float c2 = c1 + weights.z;
+    uint index = uint(randomValue >= c0) + uint(randomValue >= c1) + uint(randomValue >= c2);
+    bool odd = (index & 1u) != 0u;
+    chosenWeight = select(index >= 2u,
+        select(odd, weights.w, weights.z), select(odd, weights.y, weights.x));
+    return index;
+}
+
 public bool sampleEnvironmentImportanceMipmap(
     inout uint seed,
     out uint2 position,
@@ -378,6 +403,7 @@ public bool sampleEnvironmentImportanceMipmap(
         probability = 0.0;
         return false;
     }
+    float chosenWeight = 1.0;
     for (int mipLevel = int(mipCount) - 2; mipLevel >= 0; --mipLevel) {
         position *= 2u;
         // All four children share this mip's extent. Derive it from mip 0
@@ -395,20 +421,13 @@ public bool sampleEnvironmentImportanceMipmap(
             probability = 0.0;
             return false;
         }
-        weights /= weightSum;
-        float randomValue = rand(seed);
-        if (randomValue < weights.x) {
-            probability *= weights.x;
-        } else if (randomValue < weights.x + weights.y) {
-            position += uint2(0u, 1u);
-            probability *= weights.y;
-        } else if (randomValue < weights.x + weights.y + weights.z) {
-            position += uint2(1u, 0u);
-            probability *= weights.z;
-        } else {
-            position += uint2(1u, 1u);
-            probability *= weights.w;
-        }
+        float randomValue = rand(seed) * weightSum;
+        uint index = selectEnvironmentImportanceChild(weights, randomValue, chosenWeight);
+        position += uint2(index >> 1u, index & 1u);
+    }
+    // Preserve the single-mip path's probability=1 and zero RNG consumption.
+    if (mipCount > 1u) {
+        probability = environmentImportanceProbabilityFromWeight(pdfTex, chosenWeight, mipCount);
     }
     return probability > 0.0;
 }
@@ -418,16 +437,18 @@ public float environmentImportanceTexelProbability(uint2 position)
     uint width = 0u;
     uint height = 0u;
     uint mipCount = 0u;
-    sceneEnvironmentImportancePdf().GetDimensions(0u, width, height, mipCount);
+    Texture2D<float> pdfTex = sceneEnvironmentImportancePdf();
+    pdfTex.GetDimensions(0u, width, height, mipCount);
     if (mipCount == 0u || any(position >= uint2(width, height))) {
         return 0.0;
     }
-    uint2 topDimensions = max(uint2(width, height) >> (mipCount - 1u), uint2(1u));
-    float averageWeight = loadEnvironmentImportanceWeight(uint2(0u), mipCount - 1u, topDimensions);
-    float totalWeight = averageWeight * float(width * height);
-    return totalWeight > 0.0
-        ? loadEnvironmentImportanceWeight(position, 0u, uint2(width, height)) / totalWeight
-        : 0.0;
+    // Traversal starts at top-mip texel (0, 0). Partial/NPOT chains can
+    // represent a smaller subtree than the complete base-level extent.
+    if (any((position >> (mipCount - 1u)) != uint2(0u))) {
+        return 0.0;
+    }
+    float weight = loadEnvironmentImportanceWeight(pdfTex, position, 0u, uint2(width, height));
+    return environmentImportanceProbabilityFromWeight(pdfTex, weight, mipCount);
 }
 
 public bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out EnvironmentLightSample sample)
