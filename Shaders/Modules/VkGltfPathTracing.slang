@@ -34,8 +34,8 @@ float4 materialTexture(MaterialTextureInfo texture, float4 fallback, HitInfo hit
     RayCone cone, float3 direction, ScenePathTracePush push, bool deterministic, inout uint seed,
     TextureFootprint footprint)
 {
-    return flag(push, 2) ? fallback : loadMaterialTextureForMaterial(texture, hit.texcoord,
-        fallback, push, cone, hit, direction, deterministic, seed, footprint);
+    return flag(push, 2) ? fallback : loadMaterialTextureForMaterialResolved(texture, hit.texcoord,
+        fallback, push, deterministic, seed, footprint);
 }
 
 // Only the builtin scene payload is mapped. Custom material programs and Fiber
@@ -49,8 +49,8 @@ PreparedMaterial evaluateMaterial(HitInfo hit, RayCone cone, float3 direction,
 {
     let source = loadSceneMaterial(hit.materialIndex);
     bool deterministic = guides || source.glassParams.x > 0.01;
-    if (!deterministic && (footprint.flags & kTextureFootprintIsotropic0) == 0u) {
-        footprint = sceneSurfaceMaterialContextForRay(hit, cone, direction).footprint;
+    if (!deterministic) {
+        footprint = resolveRayConeTextureFootprint(hit, cone, direction, footprint);
     }
     let base = materialTexture(source.baseColorTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);
     let mr = materialTexture(source.metallicRoughnessTexture, float4(1), hit, cone, direction, push, deterministic, seed, footprint);

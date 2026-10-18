@@ -6,6 +6,7 @@
 #include "Runtime/Render/Streamer/TextureStreamingResources.h"
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -37,15 +38,17 @@ public:
             requireFeedback(bench::createTestDevice(context, {.applicationName = "Texture feedback sampling",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
                 .transform([&](auto value) { device = std::move(value); }), "Device");
-            constexpr uint32_t kCases = 48, kPixels = 64 * 64;
+            constexpr uint32_t kFeedbackCases = 48, kFootprintCases = 64;
+            constexpr uint32_t kCases = kFeedbackCases + 2 * kFootprintCases, kPixels = 64 * 64, kOutputs = 3;
             const std::array<Float4, 5> texels{{{1,0,0,0}, {1,0,0,0}, {1,0,0,0}, {1,0,0,0}, {0,1,0,1}}};
             std::array<TextureSamplingMetadata, kCases> initialMetadata{};
             std::array<uint32_t, kCases> initialMip, initialHits{};
             initialMip.fill(UINT32_MAX);
             for (uint32_t slot = 0; slot < kCases; ++slot) {
                 // Non-streamable or pinned slots sample normally but never record demand.
-                const uint32_t flags = slot % 3u == 1u ? 0u : kTextureDemandEnabled;
-                initialMetadata[slot] = {1.0f, makeTextureLodTerm(2, 2), 2, 2, 2, flags | 2u};
+                const uint32_t flags = slot < kFeedbackCases && slot % 3u == 1u ? 0u : kTextureDemandEnabled;
+                initialMetadata[slot] = {slot < kFeedbackCases ? 1.0f : 0.0f,
+                    makeTextureLodTerm(2, 2), 2, 2, 2, flags | 2u};
             }
             std::unique_ptr<Buffer> upload, metadata, demandMip, demandHits, output;
             auto allocate = [&](size_t bytes, MemoryLocation memory, BufferUsageBits usage, auto& target) {
@@ -56,7 +59,7 @@ public:
             allocate(sizeof(initialMetadata), MemoryLocation::HostReadback, BufferUsageBits::Storage, metadata);
             allocate(sizeof(initialMip), MemoryLocation::HostReadback, BufferUsageBits::Storage, demandMip);
             allocate(sizeof(initialHits), MemoryLocation::HostReadback, BufferUsageBits::Storage, demandHits);
-            allocate(kCases * kPixels * 2 * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
+            allocate(kCases * kPixels * kOutputs * sizeof(Float4), MemoryLocation::HostReadback, BufferUsageBits::Storage, output);
             auto write = [&](Buffer& buffer, const void* data, size_t bytes) {
                 auto* mapped = buffer.map(); requireFeedback(mapped != nullptr, "Upload map");
                 std::memcpy(mapped, data, bytes); buffer.flush(); buffer.unmap();
@@ -116,7 +119,7 @@ public:
             requireFeedback(gpu.submitAndWait(), "Completion");
             output->invalidate(); metadata->invalidate(); demandMip->invalidate(); demandHits->invalidate();
             const auto* mapped = static_cast<const Float4*>(output->map()); requireFeedback(mapped != nullptr, "Output map");
-            std::vector<Float4> actual(mapped, mapped + kCases * kPixels * 2); output->unmap();
+            std::vector<Float4> actual(mapped, mapped + kCases * kPixels * kOutputs); output->unmap();
             std::array<uint32_t, kCases> mips, hits;
             auto read = [&](Buffer& buffer, void* target, size_t bytes) {
                 auto* mapped = buffer.map(); requireFeedback(mapped != nullptr, "Readback map");
@@ -131,12 +134,12 @@ public:
             bench::readbackEvidence(context, "texture-feedback-sampling.bin", std::span<const Float4>(actual));
             bench::readbackEvidence(context, "texture-feedback-mips.bin", std::span<const uint32_t>(mips));
             bench::readbackEvidence(context, "texture-feedback-hits.bin", std::span<const uint32_t>(hits));
-            for (uint32_t test = 0; test < kCases; ++test) {
+            for (uint32_t test = 0; test < kFeedbackCases; ++test) {
                 const bool enabled = (test & 8) != 0, mip0 = test >= 16;
                 uint32_t selected = 0;
                 for (uint32_t pixel = 0; pixel < kPixels; ++pixel) {
-                    const auto& sampled = actual[(test * kPixels + pixel) * 2];
-                    const auto& state = actual[(test * kPixels + pixel) * 2 + 1];
+                    const auto& sampled = actual[(test * kPixels + pixel) * kOutputs];
+                    const auto& state = actual[(test * kPixels + pixel) * kOutputs + 1];
                     const bool gate = enabled && (((pixel % 64 / 8) ^ (pixel / 64 / 8) ^ (test & 7)) & 7) == 0;
                     selected += gate;
                     requireFeedback(state[0] == float(gate) && state[1] == 1 && state[2] == float(mip0) && state[3] == 1,
@@ -150,7 +153,41 @@ public:
                     "Demand, slot eligibility or Mip0 gate changed at case " + std::to_string(test));
 
             }
-            return RHITestResult::pass("48 frame/capture/regular-Mip0-alpha cases: tile gates, mixed per-slot eligibility, demand suppression, residency floor and RNG preserved");
+            constexpr std::array<float, 4> kConeWidths{0.125f, -0.5f, 0.0f, 2.0f};
+            for (uint32_t test = 0; test < kFootprintCases; ++test) {
+                const auto legacy = kFeedbackCases + test * 2, resolved = legacy + 1;
+                const bool mip0 = (test & 16u) != 0u, absent = (test & 32u) != 0u;
+                const uint32_t coneCase = test & 3u;
+                const float expectedLod = (test & 4u) != 0u ? -0.75f
+                    : 0.25f + std::log2(std::max(std::abs(kConeWidths[coneCase]), 0.000001f)
+                        / (coneCase < 2u ? 1.0f : 0.25f));
+                const uint32_t expectedMip = absent ? UINT32_MAX : mip0 ? 0u
+                    : static_cast<uint32_t>(std::floor(std::clamp(expectedLod + 3.0f, 0.0f, 3.0f)));
+                const uint32_t expectedHits = absent ? 0u : 9u * kPixels / 8u;
+                requireFeedback(mips[legacy] == expectedMip && mips[resolved] == expectedMip
+                    && hits[legacy] == expectedHits && hits[resolved] == expectedHits,
+                    "Resolved footprint demand changed at case " + std::to_string(test));
+                for (uint32_t pixel = 0; pixel < kPixels; ++pixel) {
+                    const auto legacyIndex = (legacy * kPixels + pixel) * kOutputs;
+                    const auto resolvedIndex = (resolved * kPixels + pixel) * kOutputs;
+                    for (uint32_t field = 0; field < kOutputs; ++field) {
+                        requireFeedback(actual[legacyIndex + field] == actual[resolvedIndex + field],
+                            "Resolved footprint sample, RNG or metadata mismatch at case " + std::to_string(test)
+                            + " pixel " + std::to_string(pixel) + " field " + std::to_string(field));
+                    }
+                    const auto& value = actual[resolvedIndex];
+                    const auto& state = actual[resolvedIndex + 1];
+                    const auto& footprint = actual[resolvedIndex + 2];
+                    requireFeedback(state[2] == float(!absent) && state[3] == 1.0f
+                        && std::isfinite(footprint[0]) && std::abs(footprint[0] - expectedLod) < 0.00001f,
+                        "Footprint validity, gradient preservation or LOD failed at case " + std::to_string(test));
+                    const uint32_t seed = static_cast<uint32_t>(state[0]) | (static_cast<uint32_t>(state[1]) << 16u);
+                    requireFeedback((seed == 12345u + pixel) == (mip0 || absent), "Footprint sampling RNG consumption");
+                    requireFeedback(absent ? value == Float4{-1,-1,-1,-1}
+                        : (value == Float4{1,0,0,0} || value == Float4{0,1,0,1}), "Footprint texture or fallback sample");
+                }
+            }
+            return RHITestResult::pass("48 feedback cases and 64 paired legacy/resolved footprint cases: cone LOD, anisotropic UV gradients, Mip0, absent slots, samples, feedback and RNG preserved");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

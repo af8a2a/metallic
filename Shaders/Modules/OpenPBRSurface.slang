@@ -125,6 +125,7 @@ public float3 openPbrDebugIdColor(uint id)
 public interface ISceneMaterialTextureSource
 {
     // The provider owns slot validity; sampled is false when returning fallback.
+    // Callers supply a resolved isotropic footprint unless deterministicMip0.
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled);
@@ -143,8 +144,8 @@ public struct SceneMaterialTextureSource : ISceneMaterialTextureSource
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
         bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
     {
-        return loadMaterialTextureForMaterial(textureInfo, uv, fallback, push, cone,
-            hit, rayDirection, deterministicMip0, seed, footprint, sampled);
+        return loadMaterialTextureForMaterialResolved(textureInfo, uv, fallback, push,
+            deterministicMip0, seed, footprint, sampled);
     }
 };
 
@@ -220,7 +221,7 @@ internal float3 modulateSceneMaterialColor(float3 workingFactor, float3 textureS
     return materialTextureModulate(workingFactor, textureSample, textureInfo.transform0.w);
 }
 
-public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
+internal OpenPBRClosure<TSource.Context> resolveOpenPBRInputsResolved<TSource : IOpenPBRMaterialSource>(
     inout HitInfo hit,
     inout OpenPBRMaterialParameters material,
     ScenePathTracePush push,
@@ -231,8 +232,7 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
 #if METALLIC_CUSTOM_MATERIALS
     MaterialValueTextureContext valueContext;
-    valueContext.normalizedRayLod = (footprint.flags & kTextureFootprintIsotropic0) != 0u
-        ? footprint.isotropicLod0 : sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection).footprint.isotropicLod0;
+    valueContext.normalizedRayLod = footprint.isotropicLod0;
     valueContext.textureCount = push.materialTextureCount;
     MaterialValueOpenPBRInputs surface = defaultMaterialValueOpenPBRInputs();
     material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material, valueContext, surface);
@@ -394,6 +394,16 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
     return result;
 }
 
+public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
+    inout HitInfo hit, inout OpenPBRMaterialParameters material,
+    ScenePathTracePush push, RayCone rayCone, float3 rayDirection,
+    inout uint seed, TSource source, TextureFootprint footprint, float3 authoredNormal, bool faceForwardNormal)
+{
+    footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
+    return resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed,
+        source, footprint, authoredNormal, faceForwardNormal);
+}
+
 // Program-local source state is discarded after evaluate. Closures contain only
 // resolved numeric inputs; stochastic filtering never advances inside lighting.
 public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISceneSurfaceMaterialProgram
@@ -422,11 +432,12 @@ public struct OpenPBRMaterialProgramImpl<TSource : IOpenPBRMaterialSource> : ISc
     {
         material = source.loadParameters(instance);
         updateSceneSurfaceHit(hit, context, instance.parameterOffset / kSceneMaterialRecordBytes);
+        context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
         resolveSceneSurfaceNormal(hit, material.normalTexture, material.textureParams.x, push,
             rayCone, rayDirection, materialNeedsDeterministicTextureMip0(material), faceForwardNormal,
             applyDebugNormalOverrides, context.footprint, source, seed, normalSample);
         SurfaceMaterialResult<Closure> result = (SurfaceMaterialResult<Closure>)0;
-        result.closure = resolveOpenPBRInputs(hit, material, push, rayCone, rayDirection, seed, source,
+        result.closure = resolveOpenPBRInputsResolved(hit, material, push, rayCone, rayDirection, seed, source,
             context.footprint, context.shadingNormalWS, faceForwardNormal);
         if (fixedMetalness >= 0) { result.closure.inputs.base_metalness = float(fixedMetalness); }
         if (opaquePrimary) { result.closure.inputs.transmission_weight = 0.0; }
@@ -510,15 +521,14 @@ public struct SceneSlabMaterialProgram<TModel : ISceneSlabModel> : ISceneSurface
     {
         uint materialIndex = instance.parameterOffset / kSceneMaterialRecordBytes;
         updateSceneSurfaceHit(hit, context, materialIndex);
+        context.footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, context.footprint);
         let transport = loadSceneMaterial(materialIndex);
         SceneMaterialTextureSource textureSource;
         resolveSceneSurfaceNormal(hit, transport.normalTexture, transport.textureParams.x, push,
             rayCone, rayDirection, false, faceForwardNormal, applyDebugNormalOverrides,
             context.footprint, textureSource, seed, normalSample);
         MaterialValueTextureContext valueContext;
-        valueContext.normalizedRayLod = (context.footprint.flags & kTextureFootprintIsotropic0) != 0u
-            ? context.footprint.isotropicLod0
-            : sceneSurfaceMaterialContextForRay(hit, rayCone, rayDirection).footprint.isotropicLod0;
+        valueContext.normalizedRayLod = context.footprint.isotropicLod0;
         valueContext.textureCount = push.materialTextureCount;
         let values = evaluateMaterialSlab(materialIndex, hit.position, hit.geometryNormal, hit.texcoord,
             sceneMaterialValueParameters(transport), valueContext, specializedProgramId);

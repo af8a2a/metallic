@@ -73,36 +73,31 @@ public DLSSRRGuideData evaluateStandardDlssRrGuidesAtHit(
     }
     OpenPBRMaterialParameters material = sceneOpenPBRParameters(sceneMaterial);
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
-    float4 baseColorSample = loadMaterialTextureForMaterial(
+    TextureFootprint footprint = (TextureFootprint)0;
+    if (!deterministicGlassTextures) {
+        footprint = resolveRayConeTextureFootprint(hit, rayCone, ray.direction, footprint);
+    }
+    float4 baseColorSample = loadMaterialTextureForMaterialResolved(
         material.baseColorTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
         push,
-        rayCone,
-        hit,
-        ray.direction,
         deterministicGlassTextures,
-        seed);
-    float4 metallicRoughnessSample = loadMaterialTextureForMaterial(
+        seed, footprint);
+    float4 metallicRoughnessSample = loadMaterialTextureForMaterialResolved(
         material.metallicRoughnessTexture,
         hit.texcoord,
         float4(1.0, 1.0, 1.0, 1.0),
         push,
-        rayCone,
-        hit,
-        ray.direction,
         deterministicGlassTextures,
-        seed);
-    float4 normalSample = loadMaterialTextureForMaterial(
+        seed, footprint);
+    float4 normalSample = loadMaterialTextureForMaterialResolved(
         material.normalTexture,
         hit.texcoord,
         float4(0.5, 0.5, 1.0, 1.0),
         push,
-        rayCone,
-        hit,
-        ray.direction,
         deterministicGlassTextures,
-        seed);
+        seed, footprint);
 
     hit.normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
     hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, ray.direction);

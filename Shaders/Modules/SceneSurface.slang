@@ -571,7 +571,7 @@ public bool hasMaterialTexture(MaterialTextureInfo textureInfo, ScenePathTracePu
 }
 
 
-internal TextureFootprint resolveRayConeTextureFootprint(
+public TextureFootprint resolveRayConeTextureFootprint(
     HitInfo hit,
     RayCone rayCone,
     float3 rayDirection,
@@ -756,6 +756,51 @@ public float4 loadMaterialTexture(
     return loadResidentMaterialTexture(textureInfo, uv, push, metadata, mipLevel, seed, textureInfo.textureIndex);
 }
 
+// Batch callers resolve the ray footprint once before sampling their slots.
+// deterministicMip0 ignores the footprint; otherwise isotropicLod0 must be resolved.
+public float4 loadMaterialTextureForMaterialResolved(
+    MaterialTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push,
+    bool deterministicMip0,
+    inout uint seed,
+    TextureFootprint footprint,
+    out bool sampled)
+{
+    sampled = hasMaterialTexture(textureInfo, push);
+    if (!sampled) { return fallback; }
+    if (deterministicMip0) {
+        return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
+    }
+    TextureSamplingMetadata metadata = sceneTextureSamplingMetadata()[textureInfo.textureIndex];
+    float uvBias = textureTransformLodBias(textureInfo);
+    // The host publishes metadata for every material slot with its image generation.
+    // Demand and sampling reuse the per-hit footprint and per-slot UV transform.
+    if (push.textureFeedbackEnabled != 0u && (metadata.residentFirstMipAndFlags & 0x80000000u) != 0u) {
+        float wanted = materialSourceTextureLod(textureInfo, footprint.isotropicLod0, uvBias);
+        recordTextureDemand(sceneTextureDemandMip(), sceneTextureDemandHits(),
+            textureInfo.textureIndex, uint(floor(wanted)));
+    }
+    float mipLevel = materialResidentTextureLod(metadata, footprint.isotropicLod0, uvBias);
+    return loadResidentMaterialTexture(textureInfo, uv, push, metadata, mipLevel, seed, textureInfo.textureIndex);
+}
+
+public float4 loadMaterialTextureForMaterialResolved(
+    MaterialTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push,
+    bool deterministicMip0,
+    inout uint seed,
+    TextureFootprint footprint)
+{
+    bool sampled;
+    return loadMaterialTextureForMaterialResolved(textureInfo, uv, fallback, push,
+        deterministicMip0, seed, footprint, sampled);
+}
+
+// Compatibility entry for standalone callers with an unresolved footprint.
 public float4 loadMaterialTextureForMaterial(
     MaterialTextureInfo textureInfo,
     float2 uv,
@@ -769,23 +814,11 @@ public float4 loadMaterialTextureForMaterial(
     TextureFootprint footprint,
     out bool sampled)
 {
-    sampled = hasMaterialTexture(textureInfo, push);
-    if (!sampled) { return fallback; }
-    if (deterministicMip0) {
-        return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
+    if (!deterministicMip0 && hasMaterialTexture(textureInfo, push)) {
+        footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
     }
-    TextureSamplingMetadata metadata = sceneTextureSamplingMetadata()[textureInfo.textureIndex];
-    footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
-    float uvBias = textureTransformLodBias(textureInfo);
-    // The host publishes metadata for every material slot with its image generation.
-    // Demand and sampling reuse the per-hit footprint and per-slot UV transform.
-    if (push.textureFeedbackEnabled != 0u && (metadata.residentFirstMipAndFlags & 0x80000000u) != 0u) {
-        float wanted = materialSourceTextureLod(textureInfo, footprint.isotropicLod0, uvBias);
-        recordTextureDemand(sceneTextureDemandMip(), sceneTextureDemandHits(),
-            textureInfo.textureIndex, uint(floor(wanted)));
-    }
-    float mipLevel = materialResidentTextureLod(metadata, footprint.isotropicLod0, uvBias);
-    return loadResidentMaterialTexture(textureInfo, uv, push, metadata, mipLevel, seed, textureInfo.textureIndex);
+    return loadMaterialTextureForMaterialResolved(textureInfo, uv, fallback, push,
+        deterministicMip0, seed, footprint, sampled);
 }
 
 public float4 loadMaterialTextureForMaterial(
