@@ -787,6 +787,8 @@ struct ScenePathTracePush {
     // Bits 0:15 material bin, 16:20 transmission samples, 21:25 ray depth,
     // Bit 26 Deferred upscaler guides, bit 27 global view, bit 28 FP16 precision; bits 29:31 remain unassigned.
     uint32_t deferredSettings = (2u << 16u) | (8u << 21u);
+    // Frame-level demand collection; sampling LOD metadata remains valid when disabled.
+    uint32_t textureFeedbackEnabled = 0;
 };
 
 // Per-frame parameters for the radiance-cache permutations of
@@ -813,9 +815,10 @@ static_assert(sizeof(ScenePathTraceCacheParams) == 80);
 static_assert(offsetof(ScenePathTraceCacheParams, height) == 64);
 static_assert(offsetof(ScenePathTraceCacheParams, sharcMinRoughness) == 72);
 static_assert(offsetof(ScenePathTraceCacheParams, sharcLobeMask) == 76);
-static_assert(sizeof(ScenePathTracePush) == 252);
+static_assert(sizeof(ScenePathTracePush) == 256);
 static_assert(offsetof(ScenePathTracePush, debugView) == 224);
 static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
+static_assert(offsetof(ScenePathTracePush, textureFeedbackEnabled) == 252);
 
 struct SceneRTXDIPush {
     float eye[4] = {};

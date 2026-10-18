@@ -82,7 +82,18 @@ public struct ScenePathTracePush
     public uint sampleFrame;
     public uint temporalJitter;
     public uint deferredSettings; // bin0:15, samples16:20, depth21:25, upscaler guides26, global view27, FP16 precision28
+    public uint textureFeedbackEnabled; // host capture decision, then launch-tile sampling
 };
+
+// Independent of the path RNG. All invocations of an 8x8 compute group share
+// this decision, including SHARC updates where launch and sample pixels differ.
+// Ray-pipeline invocation ordering does not guarantee the same subgroup layout.
+public ScenePathTracePush withTextureFeedbackSampling(ScenePathTracePush push, uint2 launchPixel)
+{
+    uint phase = (launchPixel.x >> 3u) ^ (launchPixel.y >> 3u) ^ push.sampleFrame;
+    push.textureFeedbackEnabled = push.textureFeedbackEnabled != 0u && (phase & 7u) == 0u ? 1u : 0u;
+    return push;
+}
 
 public struct Ray
 {

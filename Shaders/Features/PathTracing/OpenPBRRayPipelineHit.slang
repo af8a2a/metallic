@@ -38,7 +38,7 @@ void openPbrRayPipelineAnyHit(inout StreamRayHit payload, BuiltInTriangleInterse
     // integrator after the closest accepted hit; no RNG is consumed here.
     // Shadow queries only override clip distances, which this test does not use.
     if (!streamRayAlphaAccepts(InstanceID(), uint(GetClusterID()), PrimitiveIndex(),
-            attributes.barycentrics, ray, RayTCurrent(), getConstants<ScenePathTracePush>())) {
+            attributes.barycentrics, ray, RayTCurrent(), withTextureFeedbackSampling(getConstants<ScenePathTracePush>(), DispatchRaysIndex().xy))) {
         IgnoreHit();
     }
 }

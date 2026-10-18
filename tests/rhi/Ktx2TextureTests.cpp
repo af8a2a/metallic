@@ -606,7 +606,9 @@ public:
             require(commands->begin(frame.submissionContext()),"feedback begin");
             Buffer* feedback = nullptr;
             textureProfile.reset();
-            require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile,frozen),"streaming tick");
+            bool captureDemand = true;
+            require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile,frozen,&captureDemand),"streaming tick");
+            require(captureDemand == !frozen, "Feedback demand enable must follow frame capture policy");
             for (size_t section=0; section<textureProfile.sections.size(); ++section) {
                 const auto& timing=textureProfile.sections[section];
                 require(timing.parent==UINT32_MAX || timing.parent<section,"Invalid texture profile parent");
@@ -740,6 +742,39 @@ public:
             ~Drain() { frame.cancel(); (void)queue.waitIdle(); }
         } drain{context.graphicsQueue,frame};
         uint64_t frameIndex = 0;
+        {
+            // Keep four recordings pending so no demand readback can retire.
+            // The fifth still publishes sampling metadata, but must disable demand.
+            std::array<RenderFrameContext, 6> pendingFrames;
+            struct CancelPendingFrames {
+                std::array<RenderFrameContext, 6>& frames;
+                ~CancelPendingFrames() { for (auto& pending : frames) { pending.cancel(); } }
+            } cancelPending{pendingFrames};
+            std::array<std::unique_ptr<CommandBuffer>, 6> pendingCommands;
+            for (uint32_t index = 0; index < pendingFrames.size(); ++index) {
+                if (index == 5) { pendingFrames[0].cancel(); }
+                require(pool->createCommandBuffer().transform([&](auto value) {
+                    pendingCommands[index] = std::move(value);
+                }), "feedback backlog commands");
+                require(pendingFrames[index].begin(++frameIndex), "feedback backlog frame");
+                require(pendingCommands[index]->begin(pendingFrames[index].submissionContext()), "feedback backlog begin");
+                Buffer* feedback = nullptr;
+                bool captureDemand = true;
+                require(resources.beginTextureStreaming(*pendingCommands[index], frameIndex, feedback,
+                    nullptr, false, &captureDemand), "feedback backlog metadata");
+                require(feedback != nullptr && feedback->desc().memoryLocation == MemoryLocation::Device,
+                    "Backpressure must preserve immutable sampling metadata");
+                require(captureDemand == (index != 4),
+                    "Demand capture must stop at four pending frames and resume after cancellation");
+                Buffer* repeatedFeedback = nullptr;
+                bool repeatedCapture = !captureDemand;
+                require(resources.beginTextureStreaming(*pendingCommands[index], frameIndex, repeatedFeedback,
+                    nullptr, false, &repeatedCapture), "feedback backlog repeated consumer");
+                require(repeatedFeedback == feedback && repeatedCapture == captureDemand,
+                    "Repeated consumers must preserve disabled and enabled capture decisions");
+                require(pendingCommands[index]->end(), "feedback backlog end");
+            }
+        }
         const auto dispatch = [&](CommandBuffer& command, Buffer& feedback, uint32_t mip, uint32_t samples) {
             const ComputeDispatchBinding binding{.binding = METALLIC_RESOURCE_MEMBER(render::TextureFeedbackResourceParameters, feedback), .buffer = &feedback};
             const uint32_t push[]{slot,mip,samples,0};
@@ -752,7 +787,10 @@ public:
             require(frame.begin(++frameIndex), "feedback contract frame");
             require(commands[0]->begin(frame.submissionContext()), "feedback first consumer begin");
             Buffer* first = nullptr;
-            require(resources.beginTextureStreaming(*commands[0], frameIndex, first), "feedback first consumer metadata");
+            bool firstCaptureDemand = false;
+            require(resources.beginTextureStreaming(*commands[0], frameIndex, first, nullptr, false, &firstCaptureDemand),
+                "feedback first consumer metadata");
+            require(firstCaptureDemand, "Available demand collection must be reported to consumers");
             require(first != nullptr && first->desc().memoryLocation == MemoryLocation::Device,
                 "Texture feedback atomics must target a Device buffer");
             const uint64_t consumedAtBegin = resources.textureStats().feedbackFrames;
@@ -763,8 +801,11 @@ public:
             require(commands[0]->end(), "feedback first consumer end");
             require(commands[1]->begin(frame.submissionContext()), "feedback second consumer begin");
             Buffer* second = nullptr;
-            require(resources.beginTextureStreaming(*commands[1], frameIndex, second), "feedback second consumer metadata");
+            bool secondCaptureDemand = false;
+            require(resources.beginTextureStreaming(*commands[1], frameIndex, second, nullptr, false, &secondCaptureDemand),
+                "feedback second consumer metadata");
             require(second == first, "Consumers in one frame must share accumulated texture feedback");
+            require(secondCaptureDemand == firstCaptureDemand, "Consumers in one frame must share the capture decision");
             dispatch(*commands[1], *second, 0, fineDemand ? 1000u : 0u);
             require(commands[1]->end(), "feedback second consumer end");
             require(commands[2]->begin(frame.submissionContext()), "feedback readback tail begin");

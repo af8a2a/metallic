@@ -7643,6 +7643,11 @@ public:
         }
         const auto scenePath = directory / "Scene.gltf";
         {
+            const float positions[]{0, 0, 0, 1, 0, 0, 0, 1, 0};
+            std::ofstream output(directory / "unused.bin", std::ios::binary);
+            output.write(reinterpret_cast<const char*>(positions), sizeof(positions));
+        }
+        {
             std::ofstream output(scenePath);
             output << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
                 "buffers":[{"uri":"unused.bin","byteLength":36}],"bufferViews":[{"buffer":0,"byteLength":36}],

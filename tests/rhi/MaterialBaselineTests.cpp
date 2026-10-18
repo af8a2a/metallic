@@ -221,6 +221,16 @@ public:
                 }
                 const uint32_t caseFrames = spec.value("frameCount", frames);
                 const auto captureFrames = spec.value("captureFrames", std::vector<uint32_t>{});
+                std::optional<uint32_t> freezeStreamingFrame;
+                if (spec.contains("freezeStreamingFrame")) {
+                    const auto& requestedFrame = spec.at("freezeStreamingFrame");
+                    if (!requestedFrame.is_number_unsigned() || requestedFrame.get<uint64_t>() == 0 ||
+                        requestedFrame.get<uint64_t>() >= warmup) {
+                        return fail("Streaming freeze requires 0 < freezeStreamingFrame < warmupFrames");
+                    }
+                    freezeStreamingFrame = requestedFrame.get<uint32_t>();
+                }
+                const auto freezeStreamingNode = spec.value("freezeStreamingNode", std::string("PathTrace"));
                 if (caseFrames <= uint64_t(warmup) + count ||
                     std::any_of(captureFrames.begin(), captureFrames.end(), [&](uint32_t frame) {
                         return frame >= caseFrames || (frame >= warmup && frame < uint64_t(warmup) + count);
@@ -247,6 +257,13 @@ public:
                 std::string log;
                 if (!loadRenderGraphFromFile(fixtures / spec.at("graph").get<std::string>(), graph, log)) {
                     return fail(log);
+                }
+                if (freezeStreamingFrame) {
+                    const auto* node = graph.findNode(freezeStreamingNode);
+                    if (!node || node->properties.value("benchmarkFreezeStreaming", false) ||
+                        node->runtimeProperties.value("benchmarkFreezeStreaming", false)) {
+                        return fail("Streaming freeze needs an initially unfrozen node: " + freezeStreamingNode);
+                    }
                 }
                 scene::SceneDocument document;
                 RenderView view;
@@ -386,6 +403,13 @@ public:
                 };
                 auto cloudReceipt = spec.value("physicalCloudReceipt", false) ? std::make_unique<PhysicalCloudFinalReceipt>() : nullptr;
                 for (uint32_t frame = 0; frame < caseFrames; ++frame) {
+                    if (freezeStreamingFrame && frame == *freezeStreamingFrame) {
+                        const auto* node = graph.findNode(freezeStreamingNode);
+                        if (!node || !graph.setNodeRuntimeProperty(node->id, "benchmarkFreezeStreaming", true)) {
+                            return fail("Cannot freeze streaming after priming: " + freezeStreamingNode);
+                        }
+                        result["streamingFreeze"] = {{"node", freezeStreamingNode}, {"appliedFrame", frame}};
+                    }
                     if (spec.contains("cameraFrames")) {
                         for (const auto& change : spec.at("cameraFrames")) {
                             if (change.at("frame") == frame) {

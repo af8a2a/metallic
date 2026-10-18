@@ -57,6 +57,7 @@ private:
     struct TextureFrame {
         std::shared_ptr<ScenePathTraceResources> resources;
         Buffer* feedback = nullptr;
+        bool captureDemand = false;
         uint64_t frameIndex = 0;
     };
     std::unordered_map<const ScenePathTraceResources*, TextureFrame> textureFrames_;

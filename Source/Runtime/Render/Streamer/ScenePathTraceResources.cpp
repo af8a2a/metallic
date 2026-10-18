@@ -1385,8 +1385,10 @@ struct ScenePathTraceResources::Impl {
         uint64_t frameIndex,
         Buffer*& feedback,
         CPUProfileRecorder* profiler,
-        bool freezePublication)
+        bool freezePublication,
+        bool* demandEnabled)
     {
+        if (demandEnabled) { *demandEnabled = false; }
         if (!emptyTextureFeedback) {
             std::unique_ptr<Buffer> buffer;
             auto result = device->createBuffer({.size=32, .usage=BufferUsageBits::Storage,
@@ -1409,6 +1411,7 @@ struct ScenePathTraceResources::Impl {
         });
         if (prepared != textureFeedback.end()) {
             feedback = prepared->buffers.device.get();
+            if (demandEnabled) { *demandEnabled = prepared->captureDemand; }
             return {};
         }
         const auto now = SceneResourceLogClock::now();
@@ -1506,6 +1509,7 @@ struct ScenePathTraceResources::Impl {
             .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
         if (auto commandResult = commands.synchronize({.buffers = {&ready, 1}}); !commandResult) { return commandResult; }
         textureFeedback.push_back(std::move(entry));
+        if (demandEnabled) { *demandEnabled = captureDemand; }
         return {};
     }
 
@@ -2931,12 +2935,13 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
     uint64_t frameIndex,
     Buffer*& feedback,
     CPUProfileRecorder* profiler,
-    bool freezePublication)
+    bool freezePublication,
+    bool* captureDemand)
 {
     if (auto* frame = metallic::render::RenderFrameContext::from(commands); frame && impl_->materialBinding) {
         frame->retain(impl_->materialBinding);
     }
-    return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);
+    return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication, captureDemand);
 }
 
 Result<> ScenePathTraceResources::endTextureStreaming(

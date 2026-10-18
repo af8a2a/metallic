@@ -169,7 +169,7 @@ public void dispatchOpenPbrRayQueryPathTraceGuides(uint3 dispatchThreadId)
     // Sparse cache training never touches the full-resolution RR inputs.
     dispatchOpenPbrRayQueryPathTrace(dispatchThreadId);
 #else
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = withTextureFeedbackSampling(getConstants<ScenePathTracePush>(), dispatchThreadId.xy);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

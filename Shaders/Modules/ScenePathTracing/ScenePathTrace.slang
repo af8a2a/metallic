@@ -705,7 +705,7 @@ DLSSRRGuideData evaluateStandardDlssRrGuides(
 #endif
 public void dispatchScenePathTrace(uint3 dispatchThreadId)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = withTextureFeedbackSampling(getConstants<ScenePathTracePush>(), dispatchThreadId.xy);
     uint2 pixel = dispatchThreadId.xy;
     uint samples = clamp(push.samples, 1u, 16u);
     uint2 outputPixel = pixel;

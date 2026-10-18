@@ -30,5 +30,5 @@ void vkGltfRayPipelineAnyHit(inout StreamRayHit payload, BuiltInTriangleIntersec
     ray.origin = WorldRayOrigin();
     ray.direction = WorldRayDirection();
     if (!Metallic.ExperimentalPath::alphaAccepts(InstanceID(), uint(GetClusterID()), PrimitiveIndex(),
-        attributes.barycentrics, ray, RayTCurrent(), getConstants<ScenePathTracePush>())) { IgnoreHit(); }
+        attributes.barycentrics, ray, RayTCurrent(), withTextureFeedbackSampling(getConstants<ScenePathTracePush>(), DispatchRaysIndex().xy))) { IgnoreHit(); }
 }

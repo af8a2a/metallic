@@ -38,7 +38,7 @@ using Metallic.SceneDirectLighting;
 [numthreads(8, 8, 1)]
 void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = withTextureFeedbackSampling(getConstants<ScenePathTracePush>(), dispatchThreadId.xy);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;

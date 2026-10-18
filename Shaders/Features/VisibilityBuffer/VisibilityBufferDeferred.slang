@@ -224,6 +224,7 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
 // optional stochastic texture filtering, never for light/path sampling.
 void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 {
+    push = withTextureFeedbackSampling(push, pixel);
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
     float2 rayPixel = samplePixel + float2(push.jitterOffsetX, push.jitterOffsetY);

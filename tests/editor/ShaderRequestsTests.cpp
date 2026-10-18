@@ -1590,8 +1590,10 @@ TEST(ShaderRequests, DeferredRuntimeGuidesKeepPushAndPacketLayout)
 {
     using metallic::render::builtin_pass::ScenePathTracePush;
     using metallic::render::builtin_pass::kScenePathTraceExportUpscalerGuides;
-    static_assert(sizeof(ScenePathTracePush) == 252);
+    static_assert(sizeof(ScenePathTracePush) == 256);
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
+    static_assert(offsetof(ScenePathTracePush, textureFeedbackEnabled) == 252);
+    EXPECT_EQ(ScenePathTracePush{}.textureFeedbackEnabled, 0u);
     static_assert(sizeof(metallic::render::SceneResourceParameters) == 384);
     static_assert(kScenePathTraceExportUpscalerGuides == (1u << 26u));
     static_assert((kScenePathTraceExportUpscalerGuides & ((1u << 26u) - 1u)) == 0);
@@ -1669,7 +1671,7 @@ TEST(ShaderRequests, DeferredRuntimeGlobalViewKeepsPushPacketRootAndIndependentF
     using metallic::render::builtin_pass::ScenePathTracePush;
     using metallic::render::builtin_pass::kScenePathTraceExportUpscalerGuides;
     using metallic::render::builtin_pass::kScenePathTraceUseGlobalView;
-    static_assert(sizeof(ScenePathTracePush) == 252);
+    static_assert(sizeof(ScenePathTracePush) == 256);
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
     static_assert(sizeof(metallic::render::SceneResourceParameters) == 384);
     static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);
@@ -1852,7 +1854,7 @@ TEST(ShaderRequests, DeferredRuntimePrecisionKeepsPushPacketRootAndAllHighFlags)
     using metallic::render::builtin_pass::kScenePathTraceExportUpscalerGuides;
     using metallic::render::builtin_pass::kScenePathTraceUseGlobalView;
     using metallic::render::builtin_pass::kScenePathTraceUseFP16Precision;
-    static_assert(sizeof(ScenePathTracePush) == 252);
+    static_assert(sizeof(ScenePathTracePush) == 256);
     static_assert(offsetof(ScenePathTracePush, deferredSettings) == 248);
     static_assert(sizeof(metallic::render::SceneResourceParameters) == 384);
     static_assert(sizeof(metallic::render::GPUBufferSpan) == 12);

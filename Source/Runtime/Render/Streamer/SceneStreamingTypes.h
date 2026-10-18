@@ -65,6 +65,7 @@ struct PreparedSceneResources {
     std::vector<uint32_t> geometryOwnerMask;
     uint32_t mappedInstanceCount = 0;
     Buffer* textureFeedback = nullptr;
+    bool textureFeedbackEnabled = false;
     std::shared_ptr<StreamedImage> image;
     std::filesystem::path imagePath;
     TextureView* imageView = nullptr;

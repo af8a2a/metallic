@@ -561,6 +561,21 @@ public bool hasMaterialTexture(MaterialTextureInfo textureInfo, ScenePathTracePu
 }
 
 
+internal TextureFootprint resolveRayConeTextureFootprint(
+    HitInfo hit,
+    RayCone rayCone,
+    float3 rayDirection,
+    TextureFootprint footprint)
+{
+    if ((footprint.flags & kTextureFootprintIsotropic0) == 0u) {
+        SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
+        float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
+        footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
+        footprint.flags |= kTextureFootprintIsotropic0;
+    }
+    return footprint;
+}
+
 public float rayConeTextureLod(
     MaterialTextureInfo textureInfo,
     RayCone rayCone,
@@ -572,12 +587,8 @@ public float rayConeTextureLod(
     TextureFootprint footprint = (TextureFootprint)0)
 {
     float textureDimensionLod = 0.5 * safeLog2(float(max(width, 1u)) * float(max(height, 1u)));
-    SurfaceMaterialContext context = sceneSurfaceMaterialContext(hit, (TextureFootprint)0);
-    float normalTerm = sqrt(max(abs(dot(rayDirection, context.geometryNormalWS)), 0.000001));
-    context.footprint.isotropicLod0 = hit.rayConeLodConstant + safeLog2(max(abs(rayCone.width), 0.000001) / normalTerm);
-    context.footprint.flags = kTextureFootprintIsotropic0;
-    float normalizedLod = (footprint.flags & kTextureFootprintIsotropic0) != 0u
-        ? footprint.isotropicLod0 : context.footprint.isotropicLod0;
+    footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
+    float normalizedLod = footprint.isotropicLod0;
     float mipLevel = normalizedLod + textureDimensionLod + textureTransformLodBias(textureInfo);
     return clamp(mipLevel, 0.0, float(max(mipCount, 1u) - 1u));
 }
@@ -665,6 +676,9 @@ public float4 loadMaterialTextureMip0(
     }
 
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
+    if (push.textureFeedbackEnabled != 0u) {
+        requestStreamTextureMip0(sceneTextureFeedback(), textureIndex);
+    }
 #if METALLIC_REALTIME_DEFERRED
     // Glass explicitly requests deterministic finest-available sampling in
     // both comparison modes, including the streaming publication floor.
@@ -672,7 +686,6 @@ public float4 loadMaterialTextureMip0(
         sceneMaterialSampler(), wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
         textureInfo.transform0.w);
 #else
-    requestStreamTextureMip0(sceneTextureFeedback(), textureIndex);
     uint mip = uint(ceil(materialTextureSamplingFloor(textureIndex)));
     uint mipCount;
     sceneMaterialTexture(textureIndex).GetDimensions(mip, width, height, mipCount);
@@ -684,7 +697,9 @@ public float4 loadMaterialTextureMip0(
 public float loadMaterialAlphaCoverage(MaterialTextureInfo textureInfo, float2 uv, ScenePathTracePush push)
 {
     if (!hasMaterialTexture(textureInfo, push)) { return 1.0; }
-    requestStreamTextureMip0(sceneTextureFeedback(), textureInfo.textureIndex);
+    if (push.textureFeedbackEnabled != 0u) {
+        requestStreamTextureMip0(sceneTextureFeedback(), textureInfo.textureIndex);
+    }
     return sampleAlphaCoverage(sceneMaterialTexture(textureInfo.textureIndex), transformMaterialUv(textureInfo, uv), uint(ceil(materialTextureSamplingFloor(textureInfo.textureIndex))));
 }
 
@@ -745,12 +760,17 @@ public float4 loadMaterialTextureForMaterial(
 {
     // Demand uses the source dimensions, never the currently coarse resident tail.
     // The same UV transform and ray-cone footprint drive sampling and residency.
-    if (hasMaterialTexture(textureInfo, push) && (seed & 7u) == 0u) {
+    // Deterministic sampling records mip 0 once in loadMaterialTextureMip0.
+    // The host/tile gate precedes every demand-buffer access; sampling floors
+    // remain active even when demand capture is disabled.
+    if (push.textureFeedbackEnabled != 0u && !deterministicMip0 && hasMaterialTexture(textureInfo, push)) {
         RWStructuredBuffer<uint> feedback = sceneTextureFeedback();
         uint count, stride;
         feedback.GetDimensions(count, stride);
         uint offset = textureInfo.textureIndex * 8u;
         if (offset + 7u < count && feedback[offset] != 0u) {
+            // Reuse the normalized footprint when sampling the resident texture below.
+            footprint = resolveRayConeTextureFootprint(hit, rayCone, rayDirection, footprint);
             float wanted = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection,
                 feedback[offset], feedback[offset + 1u], feedback[offset + 2u], footprint);
             uint ignored;

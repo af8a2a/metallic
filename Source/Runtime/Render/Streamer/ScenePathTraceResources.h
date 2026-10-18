@@ -98,12 +98,15 @@ public:
     // the tail-relative sampling LOD floor, reserved. Sampling metadata remains
     // valid when demand is disabled (source width is zero), including freezes.
     // freezePublication also pauses the 150 ms texture mip reveal transition.
+    // captureDemand, when supplied, reports whether the successfully prepared
+    // buffer accepts demand this frame. Sampling metadata is independent of it.
     Result<> beginTextureStreaming(
         CommandBuffer& commands,
         uint64_t frameIndex,
         Buffer*& feedback,
         CPUProfileRecorder* profiler = nullptr,
-        bool freezePublication = false);
+        bool freezePublication = false,
+        bool* captureDemand = nullptr);
     // Record once after every consumer of this frame's texture feedback. Demand
     // is accumulated in Device memory and copied asynchronously to HostReadback;
     // beginTextureStreaming consumes only completed, accepted readback commands.

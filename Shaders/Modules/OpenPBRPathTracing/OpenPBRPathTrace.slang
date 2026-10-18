@@ -469,6 +469,7 @@ public float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push
 public void dispatchOpenPbrRayQueryPathTracePolicy(
     uint3 dispatchThreadId, ScenePathTracePush push, bool exportGuides)
 {
+    push = withTextureFeedbackSampling(push, dispatchThreadId.xy);
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
@@ -565,7 +566,7 @@ public void dispatchOpenPbrRayQueryPathTracePolicy(
 #endif
 public void dispatchOpenPbrRayQueryPathTrace(uint3 dispatchThreadId)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = withTextureFeedbackSampling(getConstants<ScenePathTracePush>(), dispatchThreadId.xy);
     uint2 pixel = dispatchThreadId.xy;
 #if METALLIC_PT_GUIDE_SPECIALIZATION
     dispatchOpenPbrRayQueryPathTracePolicy(dispatchThreadId, push, kOpenPBRGuideExportEnabled);

@@ -1463,6 +1463,7 @@ public:
                 1, kMaxRealtimeEnvironmentSamples);
         }
         push.materialTextureCount = sceneResources_.materialTextureCount();
+        push.textureFeedbackEnabled = context.preparedScene() && context.preparedScene()->textureFeedbackEnabled ? 1u : 0u;
         push.cacheMode = cacheMode;
         push.outputLinear = 1u;
         TextureView* visibilityView = nullptr;

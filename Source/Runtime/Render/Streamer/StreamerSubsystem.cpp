@@ -249,6 +249,8 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
 Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
     const SceneStreamingRequirements& requirements, RenderGraphExecutionContext& context, const MeshletStreamFrameDesc& view, std::string& log)
 {
+    prepared.textureFeedback = nullptr;
+    prepared.textureFeedbackEnabled = false;
     prepared.ready = !prepared.snapshot || !prepared.snapshot->pathTraceResources ||
         prepared.snapshot->pathTraceResources->textureUploadsReady();
     if (!prepared.ready) { return {}; }
@@ -267,7 +269,6 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         if (!result) { return result; }
         if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(prepared.image); }
     }
-    prepared.textureFeedback = nullptr;
     if (prepared.geometry) {
         auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
         if (!gpuScene) { return makeError(Error::InvalidArgument); }
@@ -318,12 +319,14 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
                 {
                     CPUProfileScope profile(&profiler, "Texture streaming");
                     result = resources->beginTextureStreaming(context.commandBuffer(), context.frameIndex(),
-                        entry->second.feedback, &profiler, context.properties().value("benchmarkFreezeStreaming", false));
+                        entry->second.feedback, &profiler, context.properties().value("benchmarkFreezeStreaming", false),
+                        &entry->second.captureDemand);
                 }
                 context.publishCpuProfile(profiler.sections);
                 if (!result) { textureFrames_.erase(entry); return result; }
             }
             prepared.textureFeedback = entry->second.feedback;
+            prepared.textureFeedbackEnabled = entry->second.captureDemand;
         }
         const auto result = resources->uploadMaterialTextures(context.commandBuffer());
         if (!result) { return result; }

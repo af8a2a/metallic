@@ -417,6 +417,7 @@ add_executable(MetallicRHITests
     rhi/MaterialClosureSchedulingTests.cpp
     rhi/OpenPBRClosureTests.cpp
     rhi/OpenPBRFresnelTests.cpp
+    rhi/TextureFeedbackSamplingTests.cpp
     rhi/OpenPBRTextureLutTests.cpp
     rhi/FiberMaterialTests.cpp
     rhi/StrandRenderingTests.cpp

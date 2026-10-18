@@ -496,7 +496,7 @@ float3 guidesCameraDirectionFromPixel(float2 pixel, ScenePathTracePush push)
 #endif
 public void dispatchVkGltf(uint2 pixel)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = withTextureFeedbackSampling(getConstants<ScenePathTracePush>(), pixel);
     if (any(pixel >= uint2(push.width, push.height))) { return; }
     uint seed = hash(pixel.x + pixel.y * push.width + (push.sampleFrame + 1u) * 0x9e3779b9u);
     uint samples = clamp(push.samples, 1u, 16u);
