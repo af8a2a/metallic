@@ -436,6 +436,13 @@ Result<> ShaderRegistry::setNativePipelineCacheCapacity(Device& device, size_t s
     return {};
 }
 
+Result<DeferredShaderCacheWriter::SaveDeferral> ShaderRegistry::deferPipelineCacheSaves(Device& device)
+{
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    return (*state)->writer.deferSaves(*state);
+}
+
 Result<> ShaderRegistry::flushPipelineCaches(Device& device)
 {
     auto state = deviceShaders(device);

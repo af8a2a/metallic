@@ -184,6 +184,121 @@ TEST(DeferredShaderCacheWriter, RuntimeFailureRetriesWithoutAnotherRequest)
     writer.flush();
 }
 
+TEST(DeferredShaderCacheWriter, NestedDeferralsRetainLatestRevisionsUntilFinalRelease)
+{
+    std::atomic<int> calls = 0;
+    std::atomic<int> revision = 0;
+    std::promise<void> saved;
+    auto completed = saved.get_future();
+    DeferredShaderCacheWriter writer(1h, 1h);
+    {
+        auto outer = writer.deferSaves();
+        writer.request("PT", 1, [&] { ++calls; revision = 1; return true; });
+        {
+            auto inner = writer.deferSaves();
+            writer.request("PT", 2, [&] { ++calls; revision = 2; saved.set_value(); return true; });
+            writer.request("PT", 1, [&] { ++calls; revision = -1; return true; });
+        }
+        EXPECT_EQ(completed.wait_for(50ms), std::future_status::timeout);
+        EXPECT_EQ(calls, 0);
+    }
+    EXPECT_EQ(completed.wait_for(2s), std::future_status::ready);
+    writer.flush();
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(revision, 2);
+}
+
+TEST(DeferredShaderCacheWriter, DeferralSuppressesExpiredAutomaticDeadlines)
+{
+    std::atomic<int> calls = 0;
+    DeferredShaderCacheWriter writer(0ms, 0ms);
+    {
+        auto scope = writer.deferSaves();
+        writer.request("PT", 1, [&] { ++calls; return true; });
+        std::this_thread::sleep_for(50ms);
+        EXPECT_EQ(calls, 0);
+    }
+    writer.flush();
+    EXPECT_EQ(calls, 1);
+}
+
+TEST(DeferredShaderCacheWriter, DeferralEntryWaitsForInFlightCallback)
+{
+    CallbackGate gate;
+    DeferredShaderCacheWriter writer(0ms, 0ms);
+    writer.request("PT", 1, [&] { gate.block(); return true; });
+    EXPECT_TRUE(gate.waitForEntry());
+    auto entry = std::async(std::launch::async, [&] { return writer.deferSaves(); });
+    EXPECT_EQ(entry.wait_for(50ms), std::future_status::timeout);
+    gate.release();
+    auto scope = entry.get();
+    std::atomic<int> calls = 0;
+    writer.request("PT", 2, [&] { ++calls; return true; });
+    std::this_thread::sleep_for(50ms);
+    EXPECT_EQ(calls, 0);
+    writer.flush();
+    EXPECT_EQ(calls, 1);
+}
+
+TEST(DeferredShaderCacheWriter, ExplicitFlushOverridesDeferralAndRetriesFailureOnce)
+{
+    std::atomic<int> attempts = 0;
+    DeferredShaderCacheWriter writer(0ms, 0ms);
+    {
+        auto scope = writer.deferSaves();
+        writer.request("PT", 1, [&] { return ++attempts >= 2; });
+        writer.flush();
+        EXPECT_EQ(attempts, 1);
+        std::this_thread::sleep_for(50ms);
+        EXPECT_EQ(attempts, 1);
+        writer.flush();
+        EXPECT_EQ(attempts, 2);
+    }
+    writer.flush();
+    EXPECT_EQ(attempts, 2);
+}
+
+TEST(DeferredShaderCacheWriter, FinalReleaseRetriesPendingFailure)
+{
+    std::atomic<int> attempts = 0;
+    std::promise<void> saved;
+    auto completed = saved.get_future();
+    DeferredShaderCacheWriter writer(1h, 1h);
+    {
+        auto scope = writer.deferSaves();
+        writer.request("PT", 1, [&] {
+            if (++attempts == 1) { return false; }
+            saved.set_value();
+            return true;
+        });
+        writer.flush();
+        EXPECT_EQ(attempts, 1);
+    }
+    EXPECT_EQ(completed.wait_for(2s), std::future_status::ready);
+    writer.flush();
+    EXPECT_EQ(attempts, 2);
+}
+
+TEST(DeferredShaderCacheWriter, MovedDeferralRetainsContainingOwnerUntilRelease)
+{
+    struct Owner {
+        DeferredShaderCacheWriter writer{1h, 1h};
+    };
+    auto owner = std::make_shared<Owner>();
+    std::weak_ptr<Owner> weak = owner;
+    bool saved = false;
+    {
+        auto first = owner->writer.deferSaves(owner);
+        owner->writer.request("PT", 1, [&] { saved = true; return true; });
+        auto second = std::move(first);
+        owner.reset();
+        EXPECT_FALSE(weak.expired());
+        EXPECT_FALSE(saved);
+    }
+    EXPECT_TRUE(weak.expired());
+    EXPECT_TRUE(saved);
+}
+
 TEST(DeferredShaderCacheWriter, DestructionDrainsBeforeCallbackResourcesAreReleased)
 {
     bool resourcesAlive = true;

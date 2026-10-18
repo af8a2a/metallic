@@ -178,6 +178,10 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
     NativeShaderWarmupReport report;
     report.sourceCount = requests.size();
     auto& registry = ShaderRegistry::instance();
+    // Keep persistence out of source/native compilation. This scope outlives
+    // all worker joins, including error exits, and coalesces each cache group.
+    auto cacheSaveDeferral = registry.deferPipelineCacheSaves(device);
+    if (!cacheSaveDeferral) { return makeError(cacheSaveDeferral.error()); }
     const auto nativeDevice = vulkan::nativeDevice(device);
     const bool nativeDescriptorHeapAvailable = nativeDevice.descriptorHeapEnabled && nativeDevice.shaderUntypedPointersEnabled;
     // Own every string/span until acquisition completes. Native heap requests

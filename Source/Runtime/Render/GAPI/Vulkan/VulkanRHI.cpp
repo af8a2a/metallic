@@ -50,6 +50,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -2488,7 +2489,28 @@ Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineC
     PipelineCacheFileLoadStatus fileStatus = PipelineCacheFileLoadStatus::NotFound;
     std::string reason;
     if (!filePath.empty()) {
-        fileStatus = loadPipelineCacheFile(filePath, fileIdentity, fileData, reason);
+        uint64_t maxCacheBytes = 0;
+        if (const char* value = std::getenv("METALLIC_PSO_CACHE_MAX_BYTES"); value && value[0]) {
+            const char* end = value + std::strlen(value);
+            const auto parsed = std::from_chars(value, end, maxCacheBytes);
+            if (parsed.ec != std::errc{} || parsed.ptr != end) {
+                maxCacheBytes = 0;
+                spdlog::warn("Ignoring invalid METALLIC_PSO_CACHE_MAX_BYTES; expected an unsigned byte count (0 disables rebuilding)");
+            }
+        }
+        std::error_code sizeError;
+        const auto fileBytes = maxCacheBytes != 0
+            ? std::filesystem::file_size(filePath, sizeError) : 0;
+        if (maxCacheBytes != 0 && !sizeError && fileBytes > maxCacheBytes) {
+            // Start a genuinely empty native generation. Removing application
+            // hashes or merging the old blob cannot evict opaque driver entries.
+            // Leave the old file intact until save() atomically replaces it.
+            spdlog::info(
+                "Rebuilding oversized pipeline cache '{}' ({} bytes > {} byte limit); starting empty may require cold PSO compilation; old file retained until a successful save",
+                filePath.string(), fileBytes, maxCacheBytes);
+        } else {
+            fileStatus = loadPipelineCacheFile(filePath, fileIdentity, fileData, reason);
+        }
     }
     switch (fileStatus) {
     case PipelineCacheFileLoadStatus::NotFound:

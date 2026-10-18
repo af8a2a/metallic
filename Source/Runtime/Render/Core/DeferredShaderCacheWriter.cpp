@@ -5,6 +5,7 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 namespace metallic::render {
 
@@ -66,6 +67,25 @@ struct DeferredShaderCacheWriter::State {
         --activeFlushes;
     }
 
+    void beginDeferral()
+    {
+        std::unique_lock lock(mutex);
+        ++deferralDepth;
+        finished.wait(lock, [this] { return !inFlight; });
+    }
+
+    void endDeferral() noexcept
+    {
+        std::lock_guard lock(mutex);
+        if (--deferralDepth == 0) {
+            const auto now = Clock::now();
+            for (auto& [key, entry] : entries) {
+                if (entry.pending) { entry.deadline = now; }
+            }
+            wake.notify_one();
+        }
+    }
+
     void shutdown()
     {
         {
@@ -92,12 +112,12 @@ struct DeferredShaderCacheWriter::State {
                 const auto& entry = it->second;
                 if (!entry.pending) { continue; }
                 const bool forced = activeFlushes != 0 && entry.attemptedFlush < flushTicket;
-                if (forced || (!closing && entry.deadline <= now)) {
+                if (forced || (!closing && deferralDepth == 0 && entry.deadline <= now)) {
                     if (selected == entries.end() || entry.deadline < selected->second.deadline) {
                         selected = it;
                     }
                 }
-                if (!closing) { nextDeadline = std::min(nextDeadline, entry.deadline); }
+                if (!closing && deferralDepth == 0) { nextDeadline = std::min(nextDeadline, entry.deadline); }
             }
             if (selected == entries.end()) {
                 if (nextDeadline == Clock::time_point::max()) {
@@ -146,6 +166,7 @@ struct DeferredShaderCacheWriter::State {
     std::map<std::string, Entry> entries;
     uint64_t flushTicket = 0;
     size_t activeFlushes = 0;
+    size_t deferralDepth = 0;
     bool inFlight = false;
     bool closing = false;
     bool stopping = false;
@@ -165,6 +186,42 @@ DeferredShaderCacheWriter::~DeferredShaderCacheWriter()
 void DeferredShaderCacheWriter::request(std::string key, uint64_t revision, std::function<bool()> save)
 {
     state_->request(std::move(key), revision, std::move(save));
+}
+
+DeferredShaderCacheWriter::SaveDeferral::SaveDeferral(State* state, std::shared_ptr<void> owner)
+    : state_(state), owner_(std::move(owner))
+{
+    state_->beginDeferral();
+}
+
+DeferredShaderCacheWriter::SaveDeferral::~SaveDeferral() noexcept
+{
+    reset();
+}
+
+DeferredShaderCacheWriter::SaveDeferral::SaveDeferral(SaveDeferral&& other) noexcept
+    : state_(std::exchange(other.state_, nullptr)), owner_(std::move(other.owner_))
+{}
+
+DeferredShaderCacheWriter::SaveDeferral& DeferredShaderCacheWriter::SaveDeferral::operator=(SaveDeferral&& other) noexcept
+{
+    if (this != &other) {
+        reset();
+        state_ = std::exchange(other.state_, nullptr);
+        owner_ = std::move(other.owner_);
+    }
+    return *this;
+}
+
+void DeferredShaderCacheWriter::SaveDeferral::reset() noexcept
+{
+    if (auto* state = std::exchange(state_, nullptr)) { state->endDeferral(); }
+    owner_.reset();
+}
+
+DeferredShaderCacheWriter::SaveDeferral DeferredShaderCacheWriter::deferSaves(std::shared_ptr<void> owner)
+{
+    return SaveDeferral(state_.get(), std::move(owner));
 }
 
 void DeferredShaderCacheWriter::flush()

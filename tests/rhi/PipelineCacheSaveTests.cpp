@@ -8,9 +8,12 @@
 #include <barrier>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <fstream>
 #include <future>
+#include <iterator>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace metallic::tests {
@@ -566,6 +569,133 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(PipelineCacheConcurrentCreateTest);
+
+class PipelineCacheOversizedRebuildTest final : public RHITest {
+public:
+    PipelineCacheOversizedRebuildTest()
+    {
+        type = RHITestType::Resource;
+        name = "pipeline_cache_oversized_rebuild_and_retention";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        struct ScopedLimit {
+            std::optional<std::string> previous;
+            ScopedLimit()
+            {
+                if (const char* value = std::getenv("METALLIC_PSO_CACHE_MAX_BYTES")) { previous = value; }
+                set(nullptr);
+            }
+            ~ScopedLimit() { set(previous ? previous->c_str() : nullptr); }
+            void set(const char* value)
+            {
+#ifdef _WIN32
+                _putenv_s("METALLIC_PSO_CACHE_MAX_BYTES", value ? value : "");
+#else
+                if (value) { setenv("METALLIC_PSO_CACHE_MAX_BYTES", value, 1); }
+                else { unsetenv("METALLIC_PSO_CACHE_MAX_BYTES"); }
+#endif
+            }
+        } limit;
+        const auto root = std::filesystem::absolute(context.outputDirectory / "pipeline-cache-rebuild" /
+            std::to_string(Clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(root);
+        {
+            std::ofstream source(root / "CacheRebuildProbe.slang");
+            source << "module CacheRebuildProbe;\n"
+                      "[shader(\"compute\")] [numthreads(REBUILD_THREADS, 1, 1)]\n"
+                      "void rebuildMain(uint3 id : SV_DispatchThreadID) {}\n";
+            if (!source) { return RHITestResult::fail("could not write rebuild shader fixture"); }
+        }
+        const auto sourceRoot = root.string();
+        const auto sourceCacheRoot = (root / "spirv").string();
+        std::array<std::unique_ptr<ShaderModule>, 2> modules;
+        auto& registry = ShaderRegistry::instance();
+        for (size_t index = 0; index < modules.size(); ++index) {
+            const auto threads = std::to_string(37 + index);
+            const SlangMacroDefine macro{"REBUILD_THREADS", threads.c_str()};
+            std::string log;
+            auto code = registry.getShader({.moduleName = "CacheRebuildProbe", .entryPointName = "rebuildMain",
+                .searchPath = sourceRoot.c_str(), .macroDefines = {&macro, 1}},
+                {.cacheDirectory = sourceCacheRoot.c_str()}, log);
+            if (!code) { return RHITestResult::fail("rebuild shader compilation failed: " + log); }
+            auto module = registry.getShaderModule(context.device, {.spirv = code->spirv});
+            if (!module) { return RHITestResult::fail("rebuild shader module creation failed"); }
+            modules[index] = std::move(*module);
+        }
+        const auto path = (root / "generation.pso").string();
+        const auto createVariant = [&](PipelineCache& cache, size_t index) {
+            return context.device.createComputePipeline({.computeShader = {modules[index].get()}, .pipelineCache = &cache});
+        };
+        const auto readBytes = [&] {
+            std::ifstream input(path, std::ios::binary);
+            return std::vector<char>(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+        };
+        uint64_t oldHash = 0;
+        {
+            auto cache = context.device.createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = false});
+            if (!cache) { return RHITestResult::fail("could not create seed cache"); }
+            auto pipeline = createVariant(**cache, 0);
+            if (!pipeline || !(*cache)->save()) { return RHITestResult::fail("could not persist seed cache"); }
+            oldHash = (*pipeline)->psoHash();
+        }
+        const auto original = readBytes();
+        if (original.empty()) { return RHITestResult::fail("seed cache file is empty"); }
+        const auto exactSize = std::to_string(original.size());
+        for (const char* value : {static_cast<const char*>(nullptr), "", "0", "garbage", "-1", "+1",
+                 "1 ", "18446744073709551616", exactSize.c_str()}) {
+            limit.set(value);
+            {
+                auto cache = context.device.createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = true});
+                if (!cache || (*cache)->stats().loadStatus != PipelineCacheLoadStatus::Loaded ||
+                    (*cache)->stats().storedPsoCount != 1) {
+                    return RHITestResult::fail("disabled/invalid/exact-size limit changed normal loading");
+                }
+            }
+            if (readBytes() != original) { return RHITestResult::fail("unchanged loaded cache rewrote its file"); }
+        }
+        limit.set("1");
+        {
+            auto cache = context.device.createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = true});
+            if (!cache || (*cache)->stats().storedPsoCount != 0 || (*cache)->stats().backendDataSize != 0 ||
+                (*cache)->stats().dirtyRevision != 0 || !(*cache)->save() || (*cache)->stats().saveCount != 0) {
+                return RHITestResult::fail("oversized cache did not start empty with no pending save");
+            }
+        }
+        if (readBytes() != original) { return RHITestResult::fail("empty rebuild discarded the old cache file"); }
+        uint64_t newHash = 0;
+        {
+            auto cache = context.device.createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = false});
+            if (!cache) { return RHITestResult::fail("could not create replacement generation"); }
+            auto pipeline = createVariant(**cache, 1);
+            if (!pipeline || (*pipeline)->pipelineCacheHit() || readBytes() != original) {
+                return RHITestResult::fail("replacement creation loaded or modified the previous generation");
+            }
+            newHash = (*pipeline)->psoHash();
+            if (newHash == oldHash || !(*cache)->save() || (*cache)->stats().storedPsoCount != 1) {
+                return RHITestResult::fail("replacement save retained old hashes or failed");
+            }
+        }
+        if (readBytes() == original) { return RHITestResult::fail("replacement generation was not persisted"); }
+        limit.set(nullptr);
+        auto cache = context.device.createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = false});
+        if (!cache || (*cache)->stats().loadStatus != PipelineCacheLoadStatus::Loaded ||
+            (*cache)->stats().storedPsoCount != 1) {
+            return RHITestResult::fail("replacement generation did not reload as one stored PSO");
+        }
+        auto newPipeline = createVariant(**cache, 1);
+        auto oldPipeline = createVariant(**cache, 0);
+        if (!newPipeline || !oldPipeline || !(*newPipeline)->pipelineCacheHit() ||
+            (*newPipeline)->psoHash() != newHash || (*oldPipeline)->pipelineCacheHit() ||
+            (*oldPipeline)->psoHash() != oldHash) {
+            return RHITestResult::fail("replacement retained the old identity or lost the new identity");
+        }
+        return RHITestResult::pass("strict byte threshold, untouched empty rebuild and atomic single-generation replacement");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PipelineCacheOversizedRebuildTest);
 
 class ShaderRegistryDeferredTeardownTest final : public RHITest {
 public:

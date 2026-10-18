@@ -105,6 +105,36 @@ memory. The normal persistent pipeline-cache writer also receives the newly
 created PSOs. A later exact request can reuse the live native object without
 calling `vkCreateComputePipelines`; a binary-cache metadata hit alone would not
 prove that. Driver/optimization overrides still apply through the registry.
+
+Automatic pipeline-cache saves are deferred while native warmup workers run.
+Pending revisions coalesce per cache group, and releasing the warmup scope after
+all workers join schedules the latest revision for the background writer. This
+also applies to failure exits and nested scopes. An explicit cache flush still
+forces pending saves. With no later writes or save failures, each dirty group
+is saved once after the batch; runtime misses can schedule subsequent saves.
+
+To rebuild oversized persistent Vulkan caches, opt in to a per-file byte limit:
+
+~~~powershell
+$env:METALLIC_PSO_CACHE_MAX_BYTES = '268435456' # 256 MiB per .pso file
+~~~
+
+Unset, empty or `0` disables this policy. Invalid values warn and leave normal
+cache loading enabled. A file strictly larger than the limit is not loaded;
+its native cache starts empty and accumulates the pipelines created this run.
+The old file remains on disk until a dirty cache is successfully saved through
+the ordinary atomic replacement path. No old-cache merge occurs. This can
+require cold compilation once; the limit is a rebuild trigger, not a hard size
+cap, and a generation that naturally exceeds it will rebuild on subsequent runs.
+Remove the environment variable after a one-time maintenance run if desired.
+
+Vulkan cache blobs are opaque, so removing application hash metadata does not
+remove native entries. This policy rebuilds a complete cache group; it does not
+implement per-PSO LRU or discard all PSOs absent from one scene. Other scenes may
+need to recreate entries after a rebuild. The experimental pipeline-binary
+backend offers per-PSO files, but is not enabled by this policy; see
+[Compute pipeline experiments](ComputePipelineExperiments.md).
+
 Live-object reuse assumes the normal pipeline backend and automatic cache
 selection. Diagnostic shader-object/pipeline-binary modes with an explicit
 native-binary cache directory deliberately bypass the registry object cache;

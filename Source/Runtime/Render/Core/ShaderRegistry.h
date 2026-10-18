@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SlangCompiler.h"
+#include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
 #include "Runtime/Render/Core/PipelineRecipe.h"
 #include "Runtime/Render/Core/NativePipelineCache.h"
 
@@ -115,6 +116,10 @@ public:
     // Capacity counts native objects across compute and graphics. Zero keeps
     // weak reuse/single-flight while disabling strong retention; default 128.
     [[nodiscard]] Result<> setNativePipelineCacheCapacity(Device& device, size_t strongCapacity);
+    // Retains device shader state; the device itself must outlive this scope.
+    // Defers automatic persistence until the final nested scope exits, then
+    // schedules each pending group once. Explicit flush still overrides it.
+    [[nodiscard]] Result<DeferredShaderCacheWriter::SaveDeferral> deferPipelineCacheSaves(Device& device);
     // Automatic saves run on the device-owned worker. This explicit durability
     // barrier blocks until pending attempts finish; ordinary acquisition never
     // calls it. Device teardown drains the worker before native cache teardown.

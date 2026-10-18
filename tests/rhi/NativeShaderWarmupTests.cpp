@@ -13,6 +13,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <functional>
+#include <filesystem>
+#include <thread>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -51,6 +54,8 @@ public:
     uint32_t peakComputeCalls = 0;
     bool rendezvousCompute = false;
     bool failCompute = false;
+    uint32_t failComputeCall = 0;
+    std::function<void(uint32_t)> beforeCompute;
 
 private:
     static VKAPI_ATTR VkResult VKAPI_CALL createCompute(VkDevice device, VkPipelineCache cache,
@@ -58,7 +63,8 @@ private:
         const VkAllocationCallbacks* allocator, VkPipeline* pipelines)
     {
         auto& self = *active_;
-        self.computeCalls.fetch_add(count);
+        const uint32_t call = self.computeCalls.fetch_add(count) + 1;
+        if (self.beforeCompute) { self.beforeCompute(call); }
         {
             std::unique_lock lock(self.rendezvousMutex_);
             const auto active = self.activeComputeCalls.fetch_add(1) + 1;
@@ -72,7 +78,7 @@ private:
                 });
             }
         }
-        const VkResult result = self.failCompute ? VK_ERROR_OUT_OF_HOST_MEMORY
+        const VkResult result = (self.failCompute || self.failComputeCall == call) ? VK_ERROR_OUT_OF_HOST_MEMORY
             : self.compute_(device, cache, count, infos, allocator, pipelines);
         self.activeComputeCalls.fetch_sub(1);
         self.completedComputeCalls.fetch_add(1);
@@ -96,6 +102,42 @@ private:
     std::condition_variable rendezvousCondition_;
 };
 
+// Persistence observer restores the dispatch pointer only after the writer
+// drains, including early test exits. The device outlives both observers.
+class WarmupCacheSaves {
+public:
+    explicit WarmupCacheSaves(Device& device)
+        : device_(device), functions_(*const_cast<VolkDeviceTable*>(vulkan::nativeDevice(device).functions)),
+          getData_(functions_.vkGetPipelineCacheData)
+    {
+        active_ = this;
+        functions_.vkGetPipelineCacheData = getData;
+    }
+
+    ~WarmupCacheSaves()
+    {
+        (void)ShaderRegistry::instance().flushPipelineCaches(device_);
+        functions_.vkGetPipelineCacheData = getData_;
+        active_ = nullptr;
+    }
+
+    std::atomic<uint32_t> extractionCalls{0};
+
+private:
+    static VKAPI_ATTR VkResult VKAPI_CALL getData(VkDevice device, VkPipelineCache cache,
+        size_t* size, void* data)
+    {
+        auto& self = *active_;
+        ++self.extractionCalls;
+        return self.getData_(device, cache, size, data);
+    }
+
+    inline static WarmupCacheSaves* active_ = nullptr;
+    Device& device_;
+    VolkDeviceTable& functions_;
+    PFN_vkGetPipelineCacheData getData_;
+};
+
 class WarmupJobsEnvironment {
 public:
     explicit WarmupJobsEnvironment(const char* value)
@@ -114,6 +156,36 @@ private:
 #else
         if (value) { setenv("METALLIC_SHADER_WARMUP_JOBS", value, 1); }
         else { unsetenv("METALLIC_SHADER_WARMUP_JOBS"); }
+#endif
+    }
+
+    std::optional<std::string> previous_;
+};
+
+class WarmupCacheDirectoryEnvironment {
+public:
+    WarmupCacheDirectoryEnvironment()
+    {
+        if (const char* previous = std::getenv("METALLIC_PSO_CACHE_DIRECTORY")) { previous_ = previous; }
+        static std::atomic<uint64_t> sequence{0};
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto directory = std::filesystem::path(PROJECT_SOURCE_DIR) / ".cache" / "tests" /
+            ("native-warmup-save-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1)));
+        // Each device starts from an absent file, independent of earlier cases
+        // and any user cache-size rotation policy. Keep output for diagnosis.
+        set(directory.string().c_str());
+    }
+
+    ~WarmupCacheDirectoryEnvironment() { set(previous_ ? previous_->c_str() : nullptr); }
+
+private:
+    static void set(const char* value)
+    {
+#ifdef _WIN32
+        _putenv_s("METALLIC_PSO_CACHE_DIRECTORY", value ? value : "");
+#else
+        if (value) { setenv("METALLIC_PSO_CACHE_DIRECTORY", value, 1); }
+        else { unsetenv("METALLIC_PSO_CACHE_DIRECTORY"); }
 #endif
     }
 
@@ -350,6 +422,88 @@ public:
     }
 };
 
+class NativeShaderWarmupSaveBatchTest final : public RHITest {
+public:
+    NativeShaderWarmupSaveBatchTest()
+    {
+        type = RHITestType::Resource;
+        name = "native_shader_warmup_coalesces_cache_saves_and_failure_release";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace std::chrono_literals;
+        // One worker ensures the first PSO has queued a revision before the
+        // second callback pauses beyond the writer's 750 ms quiet period.
+        WarmupJobsEnvironment environment("1");
+        for (const bool failSecond : {false, true}) {
+            WarmupCacheDirectoryEnvironment cacheDirectory;
+            auto device = warmupTestDevice(context);
+            if (!device) { return device.error() == Error::Unsupported
+                ? RHITestResult::skip("bindless native warmup unavailable")
+                : RHITestResult::fail("could not create cache-save warmup device"); }
+            auto& registry = ShaderRegistry::instance();
+            WarmupCacheSaves saves(**device);
+            WarmupNativeCalls calls(**device);
+            calls.failComputeCall = failSecond ? 2 : 0;
+            uint32_t extractionsDuringWarmup = 0;
+            calls.beforeCompute = [&](uint32_t call) {
+                if (call == 2) {
+                    std::this_thread::sleep_for(1500ms);
+                    extractionsDuringWarmup = saves.extractionCalls.load();
+                }
+            };
+            const std::array requests{
+                bufferRequest(builtin_pass::kRenderGraphBufferWriteEntryPoint),
+                bufferRequest(builtin_pass::kRenderGraphBufferCopyEntryPoint)};
+            std::string log;
+            const auto warmed = warmupNativeShaders(**device, requests, log);
+            if (calls.computeCalls != 2 || extractionsDuringWarmup != 0 ||
+                (failSecond ? bool(warmed) : !warmed)) {
+                return RHITestResult::fail("warmup saved during compilation or lost the partial failure: " + log);
+            }
+            // Observe automatic release, not an explicit flush that would
+            // override a leaked scope and hide a missing warmup destructor.
+            bool persisted = false;
+            const auto deadline = std::chrono::steady_clock::now() + 5s;
+            do {
+                auto groups = registry.pipelineCacheStats(**device);
+                if (!groups || groups->size() != 1) {
+                    return RHITestResult::fail("buffer warmup did not share one pipeline cache group");
+                }
+                const auto& cache = groups->front().cache;
+                if (cache.saveCount > 1 || cache.saveFailureCount != 0) {
+                    return RHITestResult::fail("warmup issued multiple saves per group or persistence failed");
+                }
+                persisted = cache.saveCount == 1 && !cache.saveInProgress &&
+                    cache.persistedRevision == cache.dirtyRevision &&
+                    cache.dirtyRevision == (failSecond ? 1u : 2u);
+                if (!persisted) { std::this_thread::sleep_for(10ms); }
+            } while (!persisted && std::chrono::steady_clock::now() < deadline);
+            if (!persisted || saves.extractionCalls == 0) {
+                return RHITestResult::fail("warmup scope did not automatically persist its successful PSOs after return");
+            }
+            calls.beforeCompute = {};
+            calls.failComputeCall = 0;
+            auto repeated = warmupNativeShaders(**device, requests, log);
+            if (!repeated || repeated->nativeObjectReuseCount != (failSecond ? 1u : 2u) ||
+                repeated->nativeCreateCount != (failSecond ? 1u : 0u) ||
+                calls.computeCalls != (failSecond ? 3u : 2u)) {
+                return RHITestResult::fail("save deferral or partial failure broke warmed pipeline reuse: " + log);
+            }
+            if (!registry.flushPipelineCaches(**device)) {
+                return RHITestResult::fail("cache failed to drain after retry");
+            }
+            auto finalGroups = registry.pipelineCacheStats(**device);
+            if (!finalGroups || finalGroups->size() != 1 ||
+                finalGroups->front().cache.saveCount != (failSecond ? 2u : 1u)) {
+                return RHITestResult::fail("reuse resaved an unchanged cache or retry lost its new revision");
+            }
+        }
+        return RHITestResult::pass("warmup suppresses extraction beyond quiet deadline; success and partial failure save once per group automatically; retry preserves native reuse");
+    }
+};
+
 class RejectedWarmupSource final : public ShaderArtifactOverride {
 public:
     std::optional<Result<ShaderArtifactOverrideResult>> resolve(const SlangShaderDesc&, std::string& log) override
@@ -547,6 +701,7 @@ public:
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupReuseTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupConcurrencyTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupFailureTest);
+METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSaveBatchTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSpecializationTest);
 
 } // namespace
