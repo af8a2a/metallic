@@ -395,6 +395,24 @@ int metallic::render::warmupShadersForStartup(bool skip)
     return result;
 }
 
+int metallic::render::prepareStartupShaderWarmup(bool skip)
+{
+    startupWarmupEnabled.store(false, std::memory_order_release);
+    if (skip) { return 0; }
+    if (const char* value = std::getenv("METALLIC_SHADER_WARMUP_JOBS"); value && value[0]) {
+        size_t jobs = 0;
+        const std::string_view text(value);
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), jobs);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || jobs == 0) {
+            std::cerr << "METALLIC_SHADER_WARMUP_JOBS requires a positive integer\n";
+            return 2;
+        }
+    }
+    startupWarmupEnabled.store(true, std::memory_order_release);
+    std::cout << "[Startup] Shader warmup scheduled on the rendering device" << std::endl;
+    return 0;
+}
+
 bool metallic::render::startupShaderWarmupEnabled() noexcept
 {
     return startupWarmupEnabled.load(std::memory_order_acquire);

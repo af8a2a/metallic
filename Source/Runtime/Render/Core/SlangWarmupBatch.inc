@@ -24,6 +24,12 @@ Result<SlangWarmupBatchResult> compileFreshSlangWarmupBatch(std::span<const Slan
     SlangWarmupBatchResult result;
     result.shaders.resize(requests.size());
     result.sessionGroups = requests.size();
+    std::vector<size_t> schedule;
+    schedule.reserve(requests.size());
+    for (size_t index = 0; index < requests.size(); ++index) { schedule.push_back(index); }
+    std::stable_sort(schedule.begin(), schedule.end(), [&](size_t left, size_t right) {
+        return estimateWarmupEntryWork(requests[left]) > estimateWarmupEntryWork(requests[right]);
+    });
     std::vector<std::string> failures(requests.size());
     std::atomic<size_t> next{0};
     std::atomic<bool> failed{false};
@@ -43,19 +49,25 @@ Result<SlangWarmupBatchResult> compileFreshSlangWarmupBatch(std::span<const Slan
                 cache.enableDiskCache = false;
                 cache.outCacheHit = nullptr;
                 while (true) {
-                    const auto index = next.fetch_add(1, std::memory_order_relaxed);
-                    if (index >= owned.size()) { return; }
+                    if (failed.load(std::memory_order_relaxed)) { return; }
+                    const auto scheduled = next.fetch_add(1, std::memory_order_relaxed);
+                    if (scheduled >= schedule.size()) { return; }
+                    const auto index = schedule[scheduled];
                     try {
                         auto shader = compileSlangShaderToSpirv(owned[index]->owned.descriptor, cache, failures[index]);
                         if (!shader || shader->metrics.cacheHit || !shader->metrics.compilerExecuted || shader->spirv.empty()) {
                             failed.store(true, std::memory_order_relaxed);
                         } else {
                             result.shaders[index] = std::move(*shader);
+                            if (options.onShaderReady) { options.onShaderReady(index, result.shaders[index]); }
                             reportSlangWarmupProgress(options, {.phase = "request-complete", .requestIndex = index,
                                 .cacheHit = result.shaders[index].metrics.cacheHit});
                         }
                     } catch (const std::exception& error) {
                         failures[index] = error.what();
+                        failed.store(true, std::memory_order_relaxed);
+                    } catch (...) {
+                        failures[index] = "Unknown fresh warmup worker exception";
                         failed.store(true, std::memory_order_relaxed);
                     }
                 }
@@ -179,6 +191,7 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
                                     failures[index] = std::move(diagnostics); failed.store(true, std::memory_order_relaxed); return;
                                 }
                                 result.shaders[index] = std::move(*shader);
+                                if (options.onShaderReady) { options.onShaderReady(index, result.shaders[index]); }
                                 reportSlangWarmupProgress(options, {.phase = "request-complete", .requestIndex = index,
                                     .cacheHit = result.shaders[index].metrics.cacheHit});
                             } catch (const std::exception& error) {

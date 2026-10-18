@@ -67,6 +67,27 @@ struct ShaderRegistryWarmupResult {
 // to Device::sharedState and is released before that device's native teardown.
 class ShaderRegistry {
 public:
+    // Provisional native work owns isolated caches until source epoch acceptance.
+    // Fresh-device startup only: no ordinary pipeline acquisition may overlap
+    // this operation. Join all callers before commit/destruction; the device
+    // and shader modules must outlive the staging object. Existing devices and
+    // unsupported diagnostic backends use ordinary non-streamed warmup.
+    class StagedComputeWarmup {
+    public:
+        ~StagedComputeWarmup();
+        [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> getComputePipeline(
+            const char* sourceModule, const ComputePipelineDesc& desc);
+        [[nodiscard]] Result<> commit();
+    private:
+        friend class ShaderRegistry;
+        struct State;
+        explicit StagedComputeWarmup(std::unique_ptr<State> state);
+        std::unique_ptr<State> state_;
+    };
+    [[nodiscard]] static bool supportsStagedComputeWarmup();
+    [[nodiscard]] static std::string sourceCacheGroup(const char* sourceModule);
+    [[nodiscard]] Result<std::unique_ptr<StagedComputeWarmup>> beginStagedComputeWarmup(Device& device);
+    void registerWarmupShaderModule(Device& device, ShaderModule& module, std::span<const uint32_t> spirv);
     static ShaderRegistry& instance();
     ShaderRegistry(const ShaderRegistry&) = delete;
     ShaderRegistry& operator=(const ShaderRegistry&) = delete;

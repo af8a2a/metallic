@@ -138,6 +138,50 @@ private:
     std::streamsize oldPrecision_;
 };
 
+TEST_F(ShaderWarmupStartupTest, DeviceFirstPreparationDoesNotCompileOrQueryAdapter)
+{
+    setWorkerEnvironment("12");
+    EXPECT_EQ(metallic::render::prepareStartupShaderWarmup(false), 0);
+    EXPECT_TRUE(metallic::render::startupShaderWarmupEnabled());
+    EXPECT_EQ(compileCalls.load(), 0u);
+    EXPECT_EQ(batchCalls.load(), 0u);
+    EXPECT_EQ(adapterQueries.load(), 0u);
+}
+
+TEST_F(ShaderWarmupStartupTest, DeviceFirstSkipClearsGateWithoutValidatingWorkerSetting)
+{
+    ASSERT_EQ(metallic::render::prepareStartupShaderWarmup(false), 0);
+    setWorkerEnvironment("invalid");
+    EXPECT_EQ(metallic::render::prepareStartupShaderWarmup(true), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+    EXPECT_EQ(compileCalls.load(), 0u);
+    EXPECT_EQ(batchCalls.load(), 0u);
+    EXPECT_EQ(adapterQueries.load(), 0u);
+}
+
+TEST_F(ShaderWarmupStartupTest, DeviceFirstInvalidWorkerSettingClearsGateBeforeCompilation)
+{
+    for (const char* value : {"0", "-1", "8x", "99999999999999999999999999999"}) {
+        setWorkerEnvironment(nullptr);
+        ASSERT_EQ(metallic::render::prepareStartupShaderWarmup(false), 0);
+        setWorkerEnvironment(value);
+        EXPECT_EQ(metallic::render::prepareStartupShaderWarmup(false), 2) << value;
+        EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+    }
+    EXPECT_EQ(compileCalls.load(), 0u);
+    EXPECT_EQ(batchCalls.load(), 0u);
+    EXPECT_EQ(adapterQueries.load(), 0u);
+}
+
+TEST_F(ShaderWarmupStartupTest, StandaloneCompilerDoesNotRearmSkippedDeviceFirstStartup)
+{
+    ASSERT_EQ(metallic::render::prepareStartupShaderWarmup(true), 0);
+    char program[] = "MetallicShaderCompiler";
+    char* arguments[] = {program};
+    EXPECT_EQ(metallic::render::runShaderWarmup(1, arguments), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+}
+
 TEST_F(ShaderWarmupStartupTest, StartupHonorsWorkerEnvironment)
 {
     setWorkerEnvironment("12");

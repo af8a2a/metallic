@@ -194,6 +194,160 @@ void persist(Device& device, PipelineCache& cache, const std::string& group)
 
 } // namespace
 
+struct ShaderRegistry::StagedComputeWarmup::State {
+    struct Pipeline {
+        detail::NativePipelineKey key;
+        std::shared_ptr<void> owner;
+        ComputePipelineDesc desc;
+        std::string entryPoint;
+        std::string group;
+    };
+    Device& device;
+    std::shared_ptr<DeviceShaders> destination;
+    std::mutex mutex;
+    std::map<std::string, std::unique_ptr<PipelineCache>> caches;
+    detail::NativePipelineCache nativePipelines;
+    std::vector<Pipeline> pipelines;
+    bool committed = false;
+
+    State(Device& device, std::shared_ptr<DeviceShaders> destination)
+        : device(device), destination(std::move(destination)) {}
+};
+
+ShaderRegistry::StagedComputeWarmup::StagedComputeWarmup(std::unique_ptr<State> state)
+    : state_(std::move(state)) {}
+
+ShaderRegistry::StagedComputeWarmup::~StagedComputeWarmup() = default;
+
+bool ShaderRegistry::supportsStagedComputeWarmup()
+{
+    const auto* backend = std::getenv("METALLIC_VK_COMPUTE_BACKEND");
+    return !backend || !backend[0] || std::strcmp(backend, "pipeline") == 0;
+}
+
+Result<std::unique_ptr<ShaderRegistry::StagedComputeWarmup>> ShaderRegistry::beginStagedComputeWarmup(Device& device)
+{
+    if (!supportsStagedComputeWarmup()) { return makeError(Error::Unsupported); }
+    auto destination = deviceShaders(device);
+    if (!destination) { return makeError(destination.error()); }
+    std::lock_guard lock((*destination)->mutex);
+    const auto native = (*destination)->nativePipelines.stats();
+    // Staging is a startup operation on a fresh device. Existing-device warmup
+    // keeps the ordinary path, including its native reuse and merge semantics.
+    if (!(*destination)->caches.empty() || native.readyEntryCount || native.inFlightCount) {
+        return makeError(Error::Unsupported);
+    }
+    return std::unique_ptr<StagedComputeWarmup>(new StagedComputeWarmup(
+        std::make_unique<StagedComputeWarmup::State>(device, *destination)));
+}
+
+Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::StagedComputeWarmup::getComputePipeline(
+    const char* sourceModule, const ComputePipelineDesc& requestedDesc)
+{
+    {
+        std::lock_guard lock(state_->mutex);
+        if (state_->committed) { return makeError(Error::InvalidArgument); }
+    }
+    if (requestedDesc.pipelineCache || requestedDesc.nativeBinaryCacheDirectory ||
+        requestedDesc.backend != ComputePipelineBackend::Pipeline) {
+        return makeError(Error::Unsupported);
+    }
+    auto desc = requestedDesc;
+    std::vector<ShaderSpecializationConstant> specialization;
+    try {
+        specialization = detail::canonicalShaderSpecializationConstants(desc.computeShader.specializationConstants);
+    } catch (const std::invalid_argument&) { return makeError(Error::InvalidArgument); }
+    desc.computeShader.specializationConstants = specialization;
+    const auto* optimization = std::getenv("METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION");
+    if (optimization && optimization[0] && std::strcmp(optimization, "1") != 0 && std::strcmp(optimization, "0") != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (optimization && std::strcmp(optimization, "1") == 0) { desc.disableOptimization = true; }
+    if (auto valid = state_->device.validateComputePipelineDesc(desc); !valid) { return makeError(valid.error()); }
+    const auto group = ShaderRegistry::sourceCacheGroup(sourceModule);
+    const auto key = detail::NativePipelineKey{detail::NativePipelineType::Compute,
+        detail::computePipelineStateHash(desc), specialization};
+    auto acquired = state_->nativePipelines.acquire(key, [&]() -> Result<std::shared_ptr<void>> {
+        PipelineCache* cache = nullptr;
+        {
+            std::lock_guard lock(state_->mutex);
+            if (state_->committed) { return makeError(Error::InvalidArgument); }
+            auto& slot = state_->caches[group];
+            if (!slot) {
+                const auto* configured = std::getenv("METALLIC_PSO_CACHE_DIRECTORY");
+                const std::filesystem::path directory = configured && configured[0]
+                    ? std::filesystem::path(configured) : std::filesystem::path(PROJECT_SOURCE_DIR "/.cache/pso");
+                const auto path = (directory / (group + ".pso")).string();
+                auto created = state_->device.createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = false});
+                if (!created) { state_->caches.erase(group); return makeError(created.error()); }
+                slot = std::move(*created);
+            }
+            cache = slot.get();
+        }
+        auto managed = desc;
+        managed.pipelineCache = cache;
+        auto pipeline = state_->device.createComputePipeline(managed);
+        if (!pipeline) { return makeError(pipeline.error()); }
+        return std::shared_ptr<void>((*pipeline)->impl_);
+    });
+    if (!acquired) { return makeError(acquired.error()); }
+    auto pipeline = std::unique_ptr<ComputePipeline>(new ComputePipeline(
+        std::static_pointer_cast<detail::ComputePipelineImpl>(acquired->owner)));
+    if (acquired->nativeObjectReused) {
+        pipeline->acquisitionStats_ = PipelineCreationStats{
+            .singleFlightWaitTimeNanoseconds = acquired->singleFlightWaitTimeNanoseconds,
+            .nativeObjectReused = true, .computeBackend = desc.backend};
+    }
+    {
+        std::lock_guard lock(state_->mutex);
+        state_->pipelines.push_back({key, acquired->owner, desc,
+            desc.computeShader.entryPoint ? desc.computeShader.entryPoint : "main", group});
+    }
+    return pipeline;
+}
+
+Result<> ShaderRegistry::StagedComputeWarmup::commit()
+{
+    if (state_->committed) { return makeError(Error::InvalidArgument); }
+    std::vector<std::pair<std::string, PipelineCache*>> adopted;
+    {
+        std::lock_guard lock(state_->destination->mutex);
+        // The caller joins all speculative workers and accepts the complete
+        // source epoch first. No normal pipeline creation may overlap commit.
+        // Refuse conflicts rather than merging a Vulkan cache in active use.
+        const auto native = state_->destination->nativePipelines.stats();
+        if (!state_->destination->caches.empty() || native.readyEntryCount || native.inFlightCount) {
+            return makeError(Error::Failure);
+        }
+        for (const auto& [group, cache] : state_->caches) { adopted.emplace_back(group, cache.get()); }
+        state_->destination->caches.merge(state_->caches);
+        state_->committed = true;
+    }
+    for (const auto& [group, cache] : adopted) { persist(state_->device, *cache, group); }
+    for (auto& staged : state_->pipelines) {
+        auto published = state_->destination->nativePipelines.acquire(staged.key,
+            [&]() -> Result<std::shared_ptr<void>> { return staged.owner; });
+        if (!published) { return makeError(published.error()); }
+        staged.desc.computeShader.specializationConstants = staged.key.specializationConstants;
+        staged.desc.computeShader.entryPoint = staged.entryPoint.c_str();
+        exportRecipe(state_->device, staged.desc, staged.key.psoHash, staged.group);
+    }
+    return {};
+}
+
+void ShaderRegistry::registerWarmupShaderModule(Device& device, ShaderModule& module, std::span<const uint32_t> spirv)
+{
+    registerShaderModule(spirv, module.contentHash());
+    if (!recipeDirectory().empty()) {
+        auto state = deviceShaders(device);
+        if (state) {
+            auto shader = recipeShader(spirv);
+            std::lock_guard lock((*state)->mutex);
+            (*state)->recipeShaders.insert_or_assign(&module, std::move(shader));
+        }
+    }
+}
+
 Result<std::unique_ptr<ShaderModule>> ShaderRegistry::getShaderModule(Device& device, const ShaderModuleDesc& desc)
 {
     auto module = device.createShaderModule(desc);

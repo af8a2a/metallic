@@ -55,6 +55,9 @@ inline void estimateAndSortWarmupGroups(std::span<const SlangShaderDesc> request
             const std::string_view root = desc.moduleName ? desc.moduleName : "";
             if (std::find(roots.begin(), roots.end(), root) == roots.end()) { roots.push_back(root); }
         }
+        std::stable_sort(group.requestIndices.begin(), group.requestIndices.end(), [&](size_t left, size_t right) {
+            return estimateWarmupEntryWork(requests[left]) > estimateWarmupEntryWork(requests[right]);
+        });
         group.estimatedWorkUnits += roots.size() * 8;
     }
     std::stable_sort(groups.begin(), groups.end(), [](const auto& left, const auto& right) {

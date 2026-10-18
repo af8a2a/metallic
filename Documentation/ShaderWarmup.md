@@ -19,10 +19,11 @@ physical devices for descriptor strides, without creating a logical device or
 submitting work. Supplying both strides explicitly also permits offline native
 compilation.
 
-The editor, LookDev, all rendering samples, and MetallicShaderPrintfProbe warm
-the complete SPIR-V catalog synchronously before initializing rendering. After
-that succeeds, creation of the actual rendering device automatically precreates
-the supported compute Native PSOs before returning the device to its caller.
+The editor, LookDev, all rendering samples, and MetallicShaderPrintfProbe first
+configure startup warmup, then create the actual rendering device. Source
+compilation and supported compute Native PSO creation run on that device before
+it returns to its caller. A completed source can enter native creation while
+other sources are still compiling; rendering waits for both stages to finish.
 Warmup failure aborts startup with a nonzero exit code. To explicitly skip both
 startup phases:
 
@@ -37,12 +38,13 @@ sample listing, offline cooking, CLI control tools, auxiliary launchers and test
 executables do not automatically run this startup warmup.
 
 The shared implementation runs inside each rendering process, after selecting
-its shader debug mode and before GPU initialization. It uses the existing
-parallel workers and progress display, then restores application logging.
-When requests use native descriptor heaps, warmup queries a supported adapter's
-resource/sampler stride pair before starting workers. Every request compiles once;
-the pair is passed only to native requests. Listing requests and explicitly
-skipping warmup do not query Vulkan.
+its shader debug mode and initializing the actual GPU device. Startup preparation
+validates the worker setting without compiling or querying an adapter. Device
+warmup uses the rendering device's resource/sampler stride pair for native heap
+requests; requests whose native ABI is unavailable on that device are reported
+as unsupported. The standalone tool still queries an adapter when native strides
+are not supplied explicitly. Listing requests and explicitly skipping warmup do
+not query Vulkan for warmup.
 There is no external compiler process to locate or deploy. Startup always uses
 the complete catalog; METALLIC_SHADER_WARMUP_ARGS only configures the manual
 target and cannot bypass or filter startup warmup.
@@ -69,9 +71,9 @@ for the compute phase before making the rendering device available. It moves
 driver work into startup; it does not claim to reduce total compilation work.
 
 The device phase uses the real device, its enabled features and exact native
-descriptor strides. It resolves validated shader-cache entries through
-`ShaderRegistry`, constructs complete compute descriptions, and acquires each
-PSO through the same registry path used by rendering. Layout size, indirect
+descriptor strides. It acquires source results through `ShaderRegistry`,
+constructs complete compute descriptions, and stages each PSO for publication
+to the runtime registry. Layout size, indirect
 binding policy and specialization tuples match runtime. In particular, source
 deduplication does not discard the separate OpenPBR cache/guide, Standard path,
 and Deferred precision/material-class PSOs.
@@ -79,24 +81,50 @@ and Deferred precision/material-class PSOs.
 Native compute creation expands admitted shader/variant pairs into owned tasks
 and dispatches them to a bounded worker pool. It uses the same
 `METALLIC_SHADER_WARMUP_JOBS` setting as source acquisition (default: CPU thread
-count capped at 12, further capped by task count). Setting it to `1` provides a
-serial control. Tasks run in descending finalized SPIR-V size with stable ties;
+count capped at 12, further capped by task count). Setting it to `1` limits each
+stage to one worker; the two stages can still overlap. Each stage has its own
+worker pool, so the default can run up to 12 source and 12 native tasks at once.
+Ready native tasks run
+in descending finalized SPIR-V size with stable ties;
 this is a cost estimate, not historical driver timing, and specialization can
 change actual compilation cost substantially.
 
-Workers retain the ordinary registry path: identical native keys remain
-single-flight, distinct keys can create concurrently, and successful executions
-remain pinned for runtime reuse. Modules and specialization storage outlive all
-workers. Results and errors are collected after joining every worker; a failed
-task rejects startup while already successful objects remain available to retry.
-The shared Vulkan pipeline caches use internally synchronized access and do not
-hold the application metadata mutex across driver creation. Per-worker caches
-and merging are not enabled without evidence of driver cache contention.
+Source scheduling prioritizes estimated expensive groups and entries. Native
+priority applies to available tasks rather than waiting for every source to
+finish. Source and driver workers can compete for CPU and memory, so overlap
+does not by itself establish an end-to-end startup improvement.
 
-The completion report separates `nativePipelineMs` (wall time after source
-acquisition, including admission, scheduling and joins) from `nativeCreateMs`
-(the sum of native driver-call durations, which can exceed wall time under
-concurrency). Source acquisition and total native warmup retain their own timings.
+Early source results are provisional. Startup must still pass the complete
+source epoch, compiler identity, policy, alias and publication/readback checks before
+the rendering device can be returned. A source or native failure cancels queued
+work and joins all running native calls before reporting failure; no rendering
+starts with a rejected batch.
+
+On a fresh device, provisional workers use private cache groups and a staging
+native-object cache. Identical native keys remain single-flight and distinct
+keys can create concurrently. Modules and specialization storage outlive all
+workers. Once source acquisition is accepted and every native worker has joined,
+the registry adopts the staged cache groups and publishes successful objects for
+runtime reuse. If source acquisition fails, the complete stage is discarded:
+no provisional native object or pipeline-cache file is published. If sources
+are accepted but a driver task fails, startup still fails while successful
+objects are retained for retry. Existing-device caches and diagnostic backends
+use the original source-then-native path instead of staging.
+
+The Vulkan caches are shared by workers within each group and use internally
+synchronized access. The application metadata mutex is not held across driver
+creation. The staging groups isolate acceptance; they are not per-worker caches
+and do not introduce a cache merge step.
+
+For pipelined warmup, `nativePipelineMs` measures the wall interval from the first
+native dispatch through worker joins, including waits for later source results.
+It overlaps `sourceAcquireMs`; those values must not be added. `elapsedMs`
+measures the combined warmup scope, while `nativeCreateMs` sums native driver-call
+durations and can exceed wall time. `provisionalTasks` counts tasks dispatched
+before final source acceptance. A heartbeat every two seconds reports source
+progress, native completions, active and queued tasks, and source acceptance.
+The original source-then-native path retains its non-overlapping native-phase
+timing definition.
 
 The device retains execution owners from successful warmup until teardown.
 This prevents the normal 128-object LRU from evicting a warmup object before
@@ -107,11 +135,14 @@ calling `vkCreateComputePipelines`; a binary-cache metadata hit alone would not
 prove that. Driver/optimization overrides still apply through the registry.
 
 Automatic pipeline-cache saves are deferred while native warmup workers run.
-Pending revisions coalesce per cache group, and releasing the warmup scope after
-all workers join schedules the latest revision for the background writer. This
-also applies to failure exits and nested scopes. An explicit cache flush still
-forces pending saves. With no later writes or save failures, each dirty group
-is saved once after the batch; runtime misses can schedule subsequent saves.
+After source acceptance, committed revisions coalesce per cache group and are
+scheduled for the background writer after all workers join. Source rejection
+discards private caches without scheduling saves; native failures after source
+acceptance may still save the successful PSOs. On the original non-staged path,
+releasing the deferral scope also schedules pending revisions on failure exits.
+Nested deferrals remain supported, and an explicit cache flush forces published
+pending saves. With no later writes or save failures, each dirty group is saved
+once after the batch; runtime misses can schedule subsequent saves.
 
 To rebuild oversized persistent Vulkan caches, opt in to a per-file byte limit:
 
@@ -160,6 +191,9 @@ The RHI tests disable ordinary LRU retention before warmup, then require repeate
 warmup and exact runtime acquisition to make zero additional native creation
 calls. Changed push layouts and specialization values must remain distinct;
 source/native failures must propagate and permit a later retry.
+The pipelined test withholds a second source until the first Vulkan creation
+completes, then checks accepted publication, source-rejection rollback without
+files or resident objects, and partial driver-failure reuse after joining workers.
 
 On 2026-10-16, a Release `pathtracing-sample` editor smoke run on RTX 5060 /
 driver 616.92 completed the source catalog with 132 cache hits. The device

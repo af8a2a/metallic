@@ -513,6 +513,147 @@ public:
     }
 };
 
+class StreamingWarmupArtifact final : public ShaderArtifactOverride {
+public:
+    StreamingWarmupArtifact(std::array<ShaderCompileResult, 2> shaders, WarmupNativeCalls& calls, bool reject)
+        : shaders_(std::move(shaders)), calls_(calls), reject_(reject)
+    {
+    }
+
+    std::optional<Result<ShaderArtifactOverrideResult>> resolve(const SlangShaderDesc& desc, std::string& log) override
+    {
+        const bool second = std::string_view(desc.entryPointName) == builtin_pass::kRenderGraphBufferCopyEntryPoint;
+        if (second && waitForNative) {
+            // The second source remains unavailable until the first native call
+            // completes. A stage barrier times out instead of hanging the test.
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (calls_.completedComputeCalls == 0 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            observedOverlap = calls_.completedComputeCalls != 0;
+            if (!observedOverlap) {
+                log = "native creation did not overlap pending source acquisition";
+                return Result<ShaderArtifactOverrideResult>(makeError(Error::Failure));
+            }
+            if (reject_) {
+                log = "intentional rejection after provisional native creation";
+                return Result<ShaderArtifactOverrideResult>(makeError(Error::Failure));
+            }
+        }
+        ShaderArtifactOverrideResult result;
+        result.shader = shaders_[second ? 1 : 0];
+        result.identity.moduleName = "Tests/NativeWarmup/StreamingBuffer";
+        result.identity.sourceEntryPoint = desc.entryPointName;
+        result.identity.entryPoint = "main";
+        result.identity.descriptorHeapMode = "mapped";
+        result.identity.optimizationLevel = "O1";
+        result.identity.debugMode = "release";
+        result.identity.spirvPostprocess = "none";
+        return Result<ShaderArtifactOverrideResult>(std::move(result));
+    }
+
+    bool observedOverlap = false;
+    bool waitForNative = true;
+
+private:
+    std::array<ShaderCompileResult, 2> shaders_;
+    WarmupNativeCalls& calls_;
+    bool reject_;
+};
+
+class NativeShaderWarmupPipelineTest final : public RHITest {
+public:
+    NativeShaderWarmupPipelineTest()
+    {
+        type = RHITestType::Resource;
+        name = "native_shader_warmup_pipelined_overlap_acceptance_and_failure";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        WarmupJobsEnvironment jobs("2");
+        auto& registry = ShaderRegistry::instance();
+        const std::array requests{
+            bufferRequest(builtin_pass::kRenderGraphBufferWriteEntryPoint),
+            bufferRequest(builtin_pass::kRenderGraphBufferCopyEntryPoint)};
+        std::array<ShaderCompileResult, 2> shaders;
+        std::string log;
+        for (size_t index = 0; index < requests.size(); ++index) {
+            const ShaderRequestView view(requests[index]);
+            auto source = registry.getShader(view.desc(), log);
+            if (!source) { return RHITestResult::fail("could not compile streaming fixtures: " + log); }
+            shaders[index] = std::move(*source);
+        }
+        // Source rejection must discard provisional success; a driver failure
+        // after source acceptance preserves successful objects for retry.
+        for (int scenario = 0; scenario != 3; ++scenario) {
+            const bool rejectSource = scenario == 1;
+            const bool failDriver = scenario == 2;
+            WarmupCacheDirectoryEnvironment cacheDirectory;
+            const std::filesystem::path cachePath(std::getenv("METALLIC_PSO_CACHE_DIRECTORY"));
+            auto device = warmupTestDevice(context);
+            if (!device) { return device.error() == Error::Unsupported
+                ? RHITestResult::skip("bindless native warmup unavailable")
+                : RHITestResult::fail("could not create pipelined warmup test device"); }
+            if (!registry.setNativePipelineCacheCapacity(**device, 0)) {
+                return RHITestResult::fail("could not disable native LRU retention");
+            }
+            WarmupNativeCalls calls(**device);
+            calls.failComputeCall = failDriver ? 2 : 0;
+            auto artifact = std::make_shared<StreamingWarmupArtifact>(shaders, calls, rejectSource);
+            auto scope = registry.installArtifactOverrideForTesting(artifact);
+            if (!scope) { return RHITestResult::fail("could not install streaming fixture"); }
+            log.clear();
+            auto warmed = warmupNativeShadersPipelined(**device, requests, log);
+            if (!artifact->observedOverlap || calls.activeComputeCalls != 0 ||
+                calls.completedComputeCalls != calls.computeCalls || calls.graphicsCalls != 0) {
+                return RHITestResult::fail("pipelined warmup did not overlap or join all native calls: " + log);
+            }
+            if (rejectSource) {
+                auto stats = registry.nativePipelineCacheStats(**device);
+                auto groups = registry.pipelineCacheStats(**device);
+                if (warmed || calls.computeCalls != 1 || !stats || stats->residentCount != 0 ||
+                    stats->readyEntryCount != 0 || stats->inFlightCount != 0 || !groups || !groups->empty() ||
+                    !registry.flushPipelineCaches(**device) ||
+                    (std::filesystem::exists(cachePath) && !std::filesystem::is_empty(cachePath))) {
+                    return RHITestResult::fail("rejected source published provisional native objects or caches: " + log);
+                }
+            } else {
+                if ((failDriver ? bool(warmed) : !warmed) || calls.computeCalls != 2 ||
+                    (failDriver && warmed.error() != Error::OutOfMemory) ||
+                    (!failDriver && warmed->retainedPipelineCount != 2)) {
+                    return RHITestResult::fail("pipelined native results lost success or driver failure: " + log);
+                }
+                if (!registry.flushPipelineCaches(**device)) {
+                    return RHITestResult::fail("committed streaming cache failed to save");
+                }
+                auto groups = registry.pipelineCacheStats(**device);
+                if (!groups || groups->size() != 1 ||
+                    !groups->front().group.starts_with("ShaderRegistry-RenderGraphBuffer-") ||
+                    groups->front().cache.dirtyRevision != (failDriver ? 1u : 2u) ||
+                    !std::filesystem::exists(cachePath / (groups->front().group + ".pso"))) {
+                    return RHITestResult::fail("accepted streaming results lost their source cache group");
+                }
+            }
+            // A zero-capacity registry still needs the accepted warmup pins;
+            // rejected provisional objects must instead be recreated here.
+            artifact->waitForNative = false;
+            calls.failComputeCall = 0;
+            auto repeated = warmupNativeShaders(**device, requests, log);
+            const size_t expectedReuse = rejectSource ? 0u : failDriver ? 1u : 2u;
+            if (!repeated || repeated->nativeObjectReuseCount != expectedReuse ||
+                repeated->nativeCreateCount != 2 - expectedReuse || repeated->retainedPipelineCount != 2 ||
+                calls.computeCalls != (rejectSource ? 3u : failDriver ? 3u : 2u)) {
+                return RHITestResult::fail("pipelined acceptance or rejection broke subsequent native reuse: " + log);
+            }
+            if (!registry.flushPipelineCaches(**device)) {
+                return RHITestResult::fail("streaming retry cache failed to drain");
+            }
+        }
+        return RHITestResult::pass("source/native overlap at Vulkan boundary; source rejection rolls back objects and files; accepted source commits correct groups and partial native successes for retry");
+    }
+};
+
 class NativeShaderWarmupFailureTest final : public RHITest {
 public:
     NativeShaderWarmupFailureTest()
@@ -703,6 +844,7 @@ METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupConcurrencyTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupFailureTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSaveBatchTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSpecializationTest);
+METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupPipelineTest);
 
 } // namespace
 } // namespace metallic::tests

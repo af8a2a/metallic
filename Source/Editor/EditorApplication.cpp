@@ -2044,7 +2044,7 @@ int EditorApplication::run(
         ? render::SlangShaderDebugMode::CaptureSymbols
         : render::SlangShaderDebugMode::Disabled;
     render::setSlangShaderDebugMode(shaderDebugMode);
-    if (const int warmupResult = render::warmupShadersForStartup(skipShaderWarmup); warmupResult != 0) {
+    if (const int warmupResult = render::prepareStartupShaderWarmup(skipShaderWarmup); warmupResult != 0) {
         return warmupResult;
     }
     render::resetSlangShaderHotReloadTracking();

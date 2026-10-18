@@ -153,6 +153,11 @@ struct SlangWarmupBatchOptions {
     // Request completion is provisional: accept results only after the complete batch
     // returns successfully, including its source validation and cache publication.
     std::function<void(const SlangWarmupBatchProgress&)> onProgress;
+    // Provisional finalized SPIR-V, delivered concurrently in completion order.
+    // The reference is valid only during this call; consumers must copy what
+    // they queue. Accept/publish downstream work only after the batch succeeds.
+    // Unlike diagnostic progress, an exception rejects the complete batch.
+    std::function<void(size_t, const ShaderCompileResult&)> onShaderReady;
 };
 
 struct SlangWarmupBatchResult {

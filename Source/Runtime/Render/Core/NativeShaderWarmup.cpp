@@ -9,10 +9,13 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <exception>
 #include <mutex>
 #include <optional>
+#include <queue>
+#include <stdexcept>
 #include <thread>
 #include <unordered_set>
 #include <spdlog/spdlog.h>
@@ -414,13 +417,262 @@ Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
     return report;
 }
 
+Result<NativeShaderWarmupReport> warmupNativeShadersPipelined(Device& device,
+    std::span<const ShaderRequest> requests, std::string& log)
+{
+    auto& registry = ShaderRegistry::instance();
+    if (!registry.supportsStagedComputeWarmup()) { return warmupNativeShaders(device, requests, log); }
+    auto staged = registry.beginStagedComputeWarmup(device);
+    if (!staged) {
+        if (staged.error() == Error::Unsupported) { return warmupNativeShaders(device, requests, log); }
+        return makeError(staged.error());
+    }
+    static const char stateKey = 0;
+    auto shared = device.sharedState(&stateKey, []() -> Result<std::shared_ptr<void>> {
+        return std::make_shared<NativeWarmupState>();
+    });
+    if (!shared) { return makeError(shared.error()); }
+    auto state = std::static_pointer_cast<NativeWarmupState>(*shared);
+    std::lock_guard stateLock(state->mutex);
+    auto deferral = registry.deferPipelineCacheSaves(device);
+    if (!deferral) { return makeError(deferral.error()); }
+    const auto begin = std::chrono::steady_clock::now();
+    NativeShaderWarmupReport report;
+    report.pipelined = true;
+    report.sourceCount = requests.size();
+    const auto nativeDevice = vulkan::nativeDevice(device);
+    std::vector<ShaderRequest> deviceRequests;
+    for (const auto& request : requests) {
+        auto owned = request;
+        const ShaderRequestView view(request);
+        if (slangUsesNativeDescriptorHeap(view.desc())) {
+            owned.descriptorHeapStrides = device.descriptorHeapShaderStrides();
+            if (!nativeDevice.descriptorHeapEnabled || !nativeDevice.shaderUntypedPointersEnabled ||
+                !owned.descriptorHeapStrides.resource || !owned.descriptorHeapStrides.sampler) {
+                report.skippedUnsupportedCount += std::max(size_t{1}, nativeComputeWarmupVariants(request).size());
+                continue;
+            }
+        }
+        deviceRequests.push_back(std::move(owned));
+    }
+    if (deviceRequests.empty()) { return report; }
+    size_t jobs = std::clamp(std::thread::hardware_concurrency(), 1u, 12u);
+    if (const char* value = std::getenv("METALLIC_SHADER_WARMUP_JOBS"); value && value[0]) {
+        const std::string_view text(value);
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), jobs);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || jobs == 0 || jobs > 256) {
+            log += "METALLIC_SHADER_WARMUP_JOBS requires an integer in [1, 256]\n";
+            return makeError(Error::InvalidArgument);
+        }
+    }
+    jobs = std::min(jobs, deviceRequests.size());
+    struct Job {
+        NativeWarmupTask task;
+        NativeWarmupTaskResult result;
+        size_t sourceIndex = 0;
+        size_t sequence = 0;
+    };
+    struct Priority {
+        bool operator()(const std::shared_ptr<Job>& a, const std::shared_ptr<Job>& b) const
+        {
+            if (a->task.estimatedCost != b->task.estimatedCost) { return a->task.estimatedCost < b->task.estimatedCost; }
+            return a->sequence > b->sequence;
+        }
+    };
+    std::vector<std::unique_ptr<ShaderModule>> modules(deviceRequests.size());
+    // Destroy staged descriptors/owners before their borrowed module wrappers.
+    auto pipelineStaging = std::move(*staged);
+    std::vector<std::shared_ptr<Job>> allJobs;
+    std::priority_queue<std::shared_ptr<Job>, std::vector<std::shared_ptr<Job>>, Priority> ready;
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool producerDone = false;
+    bool cancelled = false;
+    bool sourceAccepted = false;
+    size_t sourceReadyCount = 0;
+    size_t nativeFinishedCount = 0;
+    size_t nativeActiveCount = 0;
+    std::optional<std::chrono::steady_clock::time_point> firstNative;
+    report.nativeWorkerCount = jobs;
+    const auto worker = [&] {
+        for (;;) {
+            std::shared_ptr<Job> job;
+            {
+                std::unique_lock lock(mutex);
+                changed.wait(lock, [&] { return cancelled || producerDone || !ready.empty(); });
+                if (cancelled || ready.empty()) { return; }
+                job = ready.top(); ready.pop();
+                ++nativeActiveCount;
+                if (!firstNative) { firstNative = std::chrono::steady_clock::now(); }
+                if (!sourceAccepted) { ++report.nativeTasksBeforeSourceAcceptance; }
+            }
+            try {
+                const auto& task = job->task;
+                const auto& variant = task.variant;
+                const ComputePipelineDesc desc{
+                    .computeShader = {task.module, "main", variant.specializationConstants},
+                    .usesBindlessHeap = true, .bindlessUserPushDataSize = variant.userPushDataSize,
+                    .indirectBindable = variant.indirectBindable};
+                spdlog::info("[Native shader warmup] provisional create {} variant {}/{} estimatedSpirvWords={}",
+                    task.name, task.variantIndex + 1, task.variantCount, task.estimatedCost);
+                auto pipeline = pipelineStaging->getComputePipeline(deviceRequests[job->sourceIndex].module.c_str(), desc);
+                if (pipeline) { job->result.pipeline = std::move(*pipeline); }
+                else { job->result.error = pipeline.error(); }
+            } catch (...) { job->result.exception = std::current_exception(); }
+            {
+                std::lock_guard lock(mutex);
+                --nativeActiveCount;
+                ++nativeFinishedCount;
+                changed.notify_all();
+                if (job->result.error || job->result.exception) {
+                    cancelled = true;
+                    changed.notify_all();
+                    return;
+                }
+            }
+        }
+    };
+    // Callback consumes immutable bytes immediately into a device module. The
+    // module and specialization storage outlive every worker and commit.
+    const auto onReady = [&](size_t index, const ShaderCompileResult& shader) {
+        std::lock_guard lock(mutex);
+        ++sourceReadyCount;
+        if (cancelled) { return; }
+        if (index >= modules.size()) { throw std::runtime_error("Invalid source stream index"); }
+        const auto& request = deviceRequests[index];
+        const auto name = request.module + "." + request.entry;
+        auto requirements = inspectShader(shader.spirv);
+        if (!requirements) { throw std::runtime_error("Invalid provisional SPIR-V: " + name); }
+        if (!requirements->compute) { ++report.skippedGraphicsCount; return; }
+        ++report.computeSourceCount;
+        const auto variants = nativeComputeWarmupVariants(request);
+        if (variants.empty()) { ++report.skippedUnownedABICount; return; }
+        if (unsupportedReason(*requirements, device.capabilities(), nativeDevice)) {
+            report.skippedUnsupportedCount += variants.size(); return;
+        }
+        auto module = device.createShaderModule({.spirv = shader.spirv, .debugName = name.c_str()});
+        if (!module) { throw std::runtime_error("Provisional shader module failed: " + name); }
+        requirements = inspectShader(vulkan::nativeShaderSpirv(**module));
+        if (!requirements) { throw std::runtime_error("Invalid finalized provisional SPIR-V: " + name); }
+        if (unsupportedReason(*requirements, device.capabilities(), nativeDevice)) {
+            report.skippedUnsupportedCount += variants.size(); return;
+        }
+        modules[index] = std::move(*module);
+        for (size_t variant = 0; variant < variants.size(); ++variant) {
+            auto job = std::make_shared<Job>();
+            job->task = {modules[index].get(), name, variants[variant], variant, variants.size(),
+                vulkan::nativeShaderSpirv(*modules[index]).size()};
+            job->sourceIndex = index;
+            job->sequence = allJobs.size();
+            allJobs.push_back(job);
+            ready.push(std::move(job));
+        }
+        changed.notify_all();
+    };
+    Result<ShaderRegistryWarmupResult> acquired = makeError(Error::Failure);
+    std::string diagnostics;
+    std::vector<std::jthread> workers;
+    std::condition_variable_any heartbeatWake;
+    std::jthread heartbeat;
+    try {
+        workers.reserve(jobs);
+        for (size_t index = 0; index < jobs; ++index) { workers.emplace_back(worker); }
+        heartbeat = std::jthread([&](std::stop_token stop) {
+            std::unique_lock lock(mutex);
+            while (!stop.stop_requested()) {
+                heartbeatWake.wait_for(lock, stop, std::chrono::seconds(2), [] { return false; });
+                if (stop.stop_requested()) { return; }
+                const auto sources = sourceReadyCount;
+                const auto finished = nativeFinishedCount;
+                const auto active = nativeActiveCount;
+                const auto pending = ready.size();
+                const auto accepted = sourceAccepted;
+                lock.unlock();
+                spdlog::info("[Native shader warmup] pipeline progress sources={}/{} nativeFinished={} active={} queued={} sourceAccepted={} elapsedMs={:.3f}",
+                    sources, deviceRequests.size(), finished, active, pending, accepted, double(elapsedNanoseconds(begin)) / 1e6);
+                lock.lock();
+            }
+        });
+        spdlog::info("[Native shader warmup] pipelined acquisition sources={} sourceWorkers={} nativeWorkers={} (provisional; largest ready SPIR-V first)",
+            deviceRequests.size(), jobs, jobs);
+        const SlangWarmupBatchOptions options{.jobs = jobs,
+            .onProgress = [](const SlangWarmupBatchProgress& progress) {
+                if (progress.phase && std::string_view(progress.phase) != "request-complete") {
+                    spdlog::info("[Native shader warmup] source batch {}", progress.phase);
+                }
+            }, .onShaderReady = onReady};
+        acquired = registry.getWarmupShadersWithOverrides(deviceRequests, options, diagnostics);
+    } catch (const std::exception& error) { diagnostics += error.what(); }
+    catch (...) { diagnostics += "Unknown pipelined acquisition exception"; }
+    report.sourceAcquireTimeNanoseconds = elapsedNanoseconds(begin);
+    {
+        std::lock_guard lock(mutex);
+        sourceAccepted = acquired && acquired->sources.completedAllRequests && acquired->sources.shaders.size() == deviceRequests.size();
+        if (!sourceAccepted) { cancelled = true; }
+        producerDone = true;
+    }
+    changed.notify_all();
+    workers.clear(); // Join before checking acceptance or destroying staged data.
+    heartbeat.request_stop();
+    if (heartbeat.joinable()) { heartbeat.join(); }
+    if (!sourceAccepted) {
+        log += "Pipelined source batch rejected; discarded provisional native work:\n" + diagnostics;
+        return makeError(acquired ? Error::Failure : acquired.error());
+    }
+    if (firstNative) { report.nativePipelineTimeNanoseconds = elapsedNanoseconds(*firstNative); }
+    report.nativeTaskCount = allJobs.size();
+    const auto& batch = acquired->sources;
+    report.sourceBatchUsed = !acquired->artifactOverrideActive;
+    report.sourceEpochValidated = batch.completeSourceEpochValidated;
+    report.sourceCacheHits = batch.existingCacheHits;
+    report.sourceCompilerExecutions = batch.compilerExecutions;
+    report.sourceSnapshotTimeNanoseconds = batch.snapshotCaptureTimeNanoseconds;
+    report.sourceBoundaryValidationTimeNanoseconds = batch.boundaryValidationTimeNanoseconds;
+    report.sourcePublicationTimeNanoseconds = batch.cachePublicationTimeNanoseconds;
+    for (size_t index = 0; index < modules.size(); ++index) {
+        if (modules[index]) { registry.registerWarmupShaderModule(device, *modules[index], batch.shaders[index].spirv); }
+    }
+    auto committed = pipelineStaging->commit();
+    if (!committed) { return makeError(committed.error()); }
+    std::optional<Error> failure;
+    for (const auto& job : allJobs) {
+        if (job->result.error || job->result.exception) {
+            failure = job->result.error.value_or(Error::Failure);
+            log += "Pipelined native creation failed: " + job->task.name + "\n";
+        }
+        if (!job->result.pipeline) { continue; }
+        const auto& pipeline = job->result.pipeline;
+        const auto stats = pipeline->creationStats();
+        report.nativeCreateCount += !stats.nativeObjectReused;
+        report.nativeObjectReuseCount += stats.nativeObjectReused;
+        report.nativeCreateTimeNanoseconds += stats.nativeCreateTimeNanoseconds;
+        const auto specialization = detail::canonicalShaderSpecializationConstants(job->task.variant.specializationConstants);
+        if (std::none_of(state->pipelines.begin(), state->pipelines.end(), [&](const auto& retained) {
+                return retained.psoHash == pipeline->psoHash() && retained.specialization == specialization;
+            })) {
+            state->pipelines.push_back({pipeline->psoHash(), specialization, pipeline->execution()});
+        }
+    }
+    report.retainedPipelineCount = state->pipelines.size();
+    report.totalTimeNanoseconds = elapsedNanoseconds(begin);
+    if (failure) { return makeError(*failure); }
+    spdlog::info("[Native shader warmup] complete sources={} sourceHits={} sourceCompiles={} compute={} created={} reused={} graphicsSkipped={} unsupportedSkipped={} unknownABISkipped={} retained={} elapsedMs={:.3f} nativeCreateMs={:.3f} sourceAcquireMs={:.3f} nativeTasks={} nativeWorkers={} nativePipelineMs={:.3f} pipelined=1 provisionalTasks={}",
+        report.sourceCount, report.sourceCacheHits, report.sourceCompilerExecutions, report.computeSourceCount,
+        report.nativeCreateCount, report.nativeObjectReuseCount, report.skippedGraphicsCount, report.skippedUnsupportedCount,
+        report.skippedUnownedABICount, report.retainedPipelineCount, double(report.totalTimeNanoseconds) / 1e6,
+        double(report.nativeCreateTimeNanoseconds) / 1e6, double(report.sourceAcquireTimeNanoseconds) / 1e6,
+        report.nativeTaskCount, report.nativeWorkerCount, double(report.nativePipelineTimeNanoseconds) / 1e6,
+        report.nativeTasksBeforeSourceAcceptance);
+    return report;
+}
+
 Result<> warmupNativeShadersForStartup(Device& device)
 {
     if (!startupShaderWarmupEnabled()) { return {}; }
     try {
         const auto requests = tools::shaderWarmupRequests();
         std::string log;
-        auto result = warmupNativeShaders(device, requests, log);
+        auto result = warmupNativeShadersPipelined(device, requests, log);
         if (!result) {
             spdlog::error("[Native shader warmup] Startup cancelled: {}", log);
             return makeError(result.error());

@@ -8,8 +8,11 @@ namespace metallic::render {
 // warms the complete catalog in the current Slang shader debug/descriptor mode.
 int runShaderWarmup(int argc, char** argv);
 int warmupShadersForStartup(bool skip);
-// Successful application warmup enables the device phase. Standalone/offline
-// compilation does not opt unrelated subsequently created devices into warmup.
+// Arm device-first source/native warmup without compiling or querying an adapter.
+// The actual rendering device performs both stages before createDevice returns.
+int prepareStartupShaderWarmup(bool skip);
+// Explicit application preparation or successful legacy source warmup enables
+// the device phase. Standalone/offline compilation does not enable this gate.
 bool startupShaderWarmupEnabled() noexcept;
 
 struct ShaderWarmupLaunchOptions {

@@ -371,8 +371,22 @@ Result<ShaderRegistryWarmupResult> ShaderRegistry::getWarmupShadersWithOverrides
             uniqueIdentities.push_back(std::move(*identity));
             descriptors.push_back(views.back()->desc());
         }
-        auto batch = getWarmupShaders(descriptors, options, log);
+        auto uniqueOptions = options;
+        if (options.onShaderReady) {
+            uniqueOptions.onShaderReady = [&](size_t uniqueIndex, const ShaderCompileResult& shader) {
+                for (size_t index = 0; index < sourceIndices.size(); ++index) {
+                    if (sourceIndices[index] == uniqueIndex) { options.onShaderReady(index, shader); }
+                }
+            };
+        }
+        // The original aliases form part of this acquisition boundary too.
+        // Do not publish representative source identities before checking them.
+        auto batch = compileSlangShaderWarmupBatch(descriptors, uniqueOptions, log);
         if (!batch) { return makeError(batch.error()); }
+        if (!batch->completedAllRequests || batch->shaders.size() != descriptors.size()) {
+            log += "Incomplete source-qualified warmup result\n";
+            return makeError(Error::Failure);
+        }
         // Include every original alias in the acquisition boundary. A process
         // policy change must not let a representative compiled under a new
         // policy masquerade as an explicit-policy request that was deduplicated.
@@ -383,6 +397,9 @@ Result<ShaderRegistryWarmupResult> ShaderRegistry::getWarmupShadersWithOverrides
                 log += "Effective shader request identity changed during warmup acquisition\n";
                 return makeError(Error::Failure);
             }
+        }
+        for (size_t index = 0; index < descriptors.size(); ++index) {
+            registerCompiledShader(descriptors[index], batch->shaders[index]);
         }
         if (descriptors.size() != requests.size()) {
             auto uniqueShaders = std::move(batch->shaders);
@@ -403,9 +420,24 @@ Result<ShaderRegistryWarmupResult> ShaderRegistry::getWarmupShadersWithOverrides
         result.sources.existingCacheHits += shader->metrics.cacheHit ? 1 : 0;
         result.sources.compilerExecutions += shader->metrics.compilerExecuted ? 1 : 0;
         result.sources.shaders.push_back(std::move(*shader));
+        if (options.onShaderReady) {
+            try { options.onShaderReady(result.sources.shaders.size() - 1, result.sources.shaders.back()); }
+            catch (const std::exception& error) {
+                log += std::string("Warmup shader consumer failed: ") + error.what() + '\n';
+                return makeError(Error::Failure);
+            } catch (...) {
+                log += "Warmup shader consumer failed with an unknown exception\n";
+                return makeError(Error::Failure);
+            }
+        }
     }
     result.sources.completedAllRequests = true;
     return result;
+}
+
+std::string ShaderRegistry::sourceCacheGroup(const char* moduleName)
+{
+    return groupForSource(moduleName);
 }
 
 std::string ShaderRegistry::cacheGroup(uint64_t shaderHash)

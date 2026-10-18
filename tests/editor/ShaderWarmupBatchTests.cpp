@@ -1,4 +1,6 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
+#include "Runtime/Render/Core/ShaderRequests.h"
+#include "Runtime/Render/Core/SlangWarmupSchedule.h"
 #include "Runtime/Render/Core/SlangSnapshotFileSystem.h"
 #include "Runtime/Render/Core/SlangWarmupCacheTransaction.h"
 
@@ -75,6 +77,132 @@ const std::vector<uint32_t> kMinimalCode{
     0x00020011, 1, 0x0003000e, 0, 1, 0x0005000f, 5, 3, 0x6e69616d, 0,
     0x00060010, 3, 17, 1, 1, 1, 0x00020013, 1, 0x00030021, 2, 1,
     0x00050036, 1, 3, 0, 2, 0x000200f8, 4, 0x000100fd, 0x00010038};
+
+TEST(ShaderWarmupBatch, StreamingDeliversOriginalIndicesBeforeAcceptanceAndRejectsConsumerFailure)
+{
+    WarmupDirectory directory;
+    const auto source = directory.path / "source", cache = directory.path / "cache";
+    writeText(source / "StreamingA.slang", "module StreamingA; RWStructuredBuffer<uint> output;\n"
+        "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = 17u; }\n");
+    writeText(source / "StreamingB.slang", "module StreamingB; RWStructuredBuffer<uint> output;\n"
+        "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = 29u; }\n");
+    const ShaderRequest a{.module = "StreamingA", .entry = "probe", .searchPath = source.string(),
+        .descriptorHeapMode = SlangDescriptorHeapMode::Mapped, .optimizationLevel = SlangShaderOptimizationLevel::O1};
+    auto b = a;
+    b.module = "StreamingB";
+    const std::array requests{a, b, a};
+    const auto cachePath = cache.string();
+    std::mutex mutex;
+    bool acceptanceStarted = false;
+    std::array<size_t, 3> delivered{};
+    std::array<std::vector<uint32_t>, 3> copies;
+    SlangWarmupBatchOptions options{.cache = {.cacheDirectory = cachePath.c_str()}, .jobs = 2,
+        .onProgress = [&](const SlangWarmupBatchProgress& progress) {
+            if (progress.phase && (std::string_view(progress.phase) == "validating" ||
+                std::string_view(progress.phase) == "finished")) {
+                std::lock_guard lock(mutex);
+                acceptanceStarted = true;
+                EXPECT_EQ(delivered, (std::array<size_t, 3>{1, 1, 1}));
+            }
+        },
+        .onShaderReady = [&](size_t index, const ShaderCompileResult& shader) {
+            std::lock_guard lock(mutex);
+            EXPECT_FALSE(acceptanceStarted);
+            ASSERT_LT(index, delivered.size());
+            EXPECT_FALSE(shader.spirv.empty());
+            ++delivered[index];
+            copies[index] = shader.spirv;
+        }};
+    std::string log;
+    auto result = ShaderRegistry::instance().getWarmupShadersWithOverrides(requests, options, log);
+    ASSERT_TRUE(result) << log;
+    EXPECT_EQ(result->sources.existingCacheHits + result->sources.compilerExecutions, 2u);
+    ASSERT_EQ(result->sources.shaders.size(), copies.size());
+    for (size_t index = 0; index < copies.size(); ++index) { EXPECT_EQ(copies[index], result->sources.shaders[index].spirv); }
+    EXPECT_EQ(copies[0], copies[2]);
+
+    options.onProgress = {};
+    options.onShaderReady = [](size_t, const ShaderCompileResult&) { throw std::runtime_error("consumer rejected provisional shader"); };
+    EXPECT_FALSE(ShaderRegistry::instance().getWarmupShadersWithOverrides(requests, options, log));
+    EXPECT_NE(log.find("consumer rejected provisional shader"), std::string::npos);
+
+#ifdef _WIN32
+    bool mutated = false;
+    options.jobs = 1;
+    options.onShaderReady = [&](size_t, const ShaderCompileResult&) {
+        if (!mutated) {
+            mutated = true;
+            writeText(source / "StreamingA.slang", "module StreamingA; // changed after provisional completion\n");
+        }
+    };
+    EXPECT_FALSE(ShaderRegistry::instance().getWarmupShadersWithOverrides(requests, options, log));
+    EXPECT_TRUE(mutated);
+#endif
+}
+
+TEST(ShaderWarmupBatch, SchedulingPrioritizesHeavyEntriesWithinSharedGroups)
+{
+    const SlangMacroDefine sharc{"SHARC_UPDATE", "1"};
+    const SlangShaderDesc light{.moduleName = "Features/PathTracing/OpenPBRRayQueryPathTrace"};
+    auto heavy = light;
+    heavy.macroDefines = std::span(&sharc, 1);
+    const SlangShaderDesc small{.moduleName = "Features/Other/Small"};
+    const std::array requests{light, heavy, small};
+    std::vector<WarmupGroupPlan> groups{{.requestIndices = {2}}, {.requestIndices = {0, 1}}};
+    estimateAndSortWarmupGroups(requests, groups);
+    ASSERT_EQ(groups.size(), 2u);
+    EXPECT_EQ(groups[0].requestIndices, (std::vector<size_t>{1, 0}));
+    EXPECT_EQ(groups[1].requestIndices, (std::vector<size_t>{2}));
+}
+
+TEST(ShaderWarmupBatch, RejectedOriginalAliasDoesNotRegisterRepresentativeIdentity)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows process environment policy injection";
+#else
+    struct OptimizationEnvironment {
+        std::optional<std::string> previous;
+        OptimizationEnvironment()
+        {
+            if (const char* value = std::getenv("METALLIC_SLANG_OPTIMIZATION")) { previous = value; }
+            _putenv_s("METALLIC_SLANG_OPTIMIZATION", "O2");
+        }
+        ~OptimizationEnvironment()
+        {
+            _putenv_s("METALLIC_SLANG_OPTIMIZATION", previous ? previous->c_str() : "");
+        }
+    } environment;
+    WarmupDirectory directory;
+    const auto source = directory.path / "source";
+    writeText(source / "UnacceptedAlias.slang", "module UnacceptedAlias; RWStructuredBuffer<uint> output;\n"
+        "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = 371938u; }\n");
+    const ShaderRequest automatic{.module = "UnacceptedAlias", .entry = "probe", .searchPath = source.string(),
+        .descriptorHeapMode = SlangDescriptorHeapMode::Mapped};
+    auto explicitPolicy = automatic;
+    explicitPolicy.optimizationLevel = SlangShaderOptimizationLevel::O2;
+    const std::array requests{automatic, explicitPolicy};
+    const auto cachePath = (directory.path / "cache").string();
+    bool changedPolicy = false;
+    std::vector<uint32_t> provisional;
+    const SlangWarmupBatchOptions options{.cache = {.cacheDirectory = cachePath.c_str()}, .jobs = 1,
+        .onProgress = [&](const SlangWarmupBatchProgress& progress) {
+            if (!changedPolicy && progress.phase && std::string_view(progress.phase) == "preparing") {
+                changedPolicy = true;
+                _putenv_s("METALLIC_SLANG_OPTIMIZATION", "O3");
+            }
+        },
+        .onShaderReady = [&](size_t, const ShaderCompileResult& shader) {
+            provisional = shader.spirv;
+            EXPECT_TRUE(ShaderRegistryIdentityTestAccess::recipe(provisional).moduleName.empty());
+        }};
+    std::string log;
+    EXPECT_FALSE(ShaderRegistry::instance().getWarmupShadersWithOverrides(requests, options, log));
+    EXPECT_TRUE(changedPolicy);
+    ASSERT_FALSE(provisional.empty());
+    EXPECT_NE(log.find("Effective shader request identity changed"), std::string::npos);
+    EXPECT_TRUE(ShaderRegistryIdentityTestAccess::recipe(provisional).moduleName.empty());
+#endif
+}
 
 TEST(ShaderWarmupBatch, RealSlangColdAllHitMixedPrivateHeaderShadowAndOrdinaryCacheFailures)
 {

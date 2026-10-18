@@ -30,6 +30,8 @@ struct NativeShaderWarmupReport
     uint64_t sourcePublicationTimeNanoseconds = 0;
     bool sourceBatchUsed = false;
     bool sourceEpochValidated = false;
+    bool pipelined = false;
+    size_t nativeTasksBeforeSourceAcceptance = 0;
 };
 
 // Uses this rendering Device's shader ABI and a fully validated source batch.
@@ -39,7 +41,14 @@ struct NativeShaderWarmupReport
 [[nodiscard]] Result<NativeShaderWarmupReport> warmupNativeShaders(Device& device,
     std::span<const ShaderRequest> requests, std::string& log);
 
-// Only a successful, enabled application SPIR-V startup warmup opens this gate.
+// On a fresh device, overlap provisional source results with isolated native
+// compilation. Publish native objects only after the complete source batch is
+// accepted. Existing device caches and diagnostic backends use the batch path.
+[[nodiscard]] Result<NativeShaderWarmupReport> warmupNativeShadersPipelined(Device& device,
+    std::span<const ShaderRequest> requests, std::string& log);
+
+// Application startup preparation opens this gate; device creation returns
+// successfully only after the complete source/native warmup is accepted.
 // Standalone shader compilation and ordinary RHI/test devices do not opt in.
 [[nodiscard]] Result<> warmupNativeShadersForStartup(Device& device);
 

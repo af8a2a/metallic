@@ -145,7 +145,7 @@ int main(int argc, char** argv)
     }
 
     if (smokeTest) {
-        if (const int warmupResult = metallic::render::warmupShadersForStartup(warmupOptions.skip); warmupResult != 0) {
+        if (const int warmupResult = metallic::render::prepareStartupShaderWarmup(warmupOptions.skip); warmupResult != 0) {
             return warmupResult;
         }
         return runSmokeTest(scenePath);
