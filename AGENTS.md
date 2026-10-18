@@ -47,6 +47,18 @@ When applying PascalCase to identifiers and file names, use these exceptions:
 
 Keep official mixed-case spellings such as `glTF`, `sRGB`, and `scRGB`, including at the beginning of a name; examples include `glTFInstance`, `RGBA8sRGB`, and `HDRscRGB`.
 
+## Code Trust Boundaries & Defensive Programming
+
+Write internal C++ and Slang code against established contracts. Validate at the boundary that owns a failure; avoid repeating validation downstream. Prefer direct control flow over speculative guards, fallback defaults, and redundant state flags.
+
+- **Establish the contract:** When adding or removing a check, inspect the relevant callers, producers, and lifecycle transitions far enough to identify who guarantees the precondition and how long it remains valid. Do not infer validity solely from an `Init()` / `Setup()` name, a private function, or a raw pointer type. Once established, trust the contract until a mutation, lifetime transition, or asynchronous operation can invalidate it.
+- **Validate at actual boundaries:** Handle malformed external assets, serialized data, user/plugin/script inputs, and fallible OS/Vulkan/resource operations where they enter the system or return results. Report or propagate failures using existing error handling. An internal function can own such a boundary; function visibility and hot-path placement do not determine trust.
+- **Do not revalidate guaranteed inputs:** Internal helpers and pipeline stages should consume validated data directly. Do not add repeated null, range, initialization, or finite-value checks when upstream code or types already guarantee the same condition for every reachable call. Prefer establishing reusable guarantees before per-frame or per-element work.
+- **Expose invariant violations:** Do not turn a broken internal contract into a silent return, empty result, clamped value, or substitute resource. For a non-obvious invariant, use an existing debug assertion mechanism where supported; keep assertions free of side effects. Assertions document contracts and do not replace required release-mode error handling or GPU safety checks. Fix the producer or lifecycle when it violates its contract.
+- **Preserve algorithmic and runtime conditions:** Optional resources, streaming residency, resource invalidation, rounded dispatch tails, GPU-generated indices/counts, synchronization, and numerical domain/stability guards can be required even in internal hot paths. Remove them only with a concrete producer, range, lifetime, or dispatch guarantee. Keep intentional empty-work handling, zero-mass/PDF behavior, and rendering semantics.
+- **Keep control flow simple:** Prefer a direct expression or a short guard for a legitimate condition over nested branches, duplicated checks, one-use state flags, or speculative recovery layers. Add abstractions only when they clarify ownership or remove meaningful duplication.
+- **Keep cleanup evidence-based and scoped:** For removed guards, identify the enforcing contract in the change summary; use a short source comment only when that dependency is non-obvious. If the guarantee cannot be established, retain the existing guard and state the uncertainty instead of inventing a guarantee or adding more speculative checks. Apply the validation requirements below to affected behavior; this policy does not authorize unrelated cleanup.
+
 ## Change and Validation Boundaries
 
 - Preserve unrelated working-tree changes. Avoid broad rewrites in `External/` or vendor shader snapshots; retain their licenses. Treat `build/`, `build-*`, `cmake-build-*`, `Testing/`, `.cache/`, and IDE folders as local output, not source.
