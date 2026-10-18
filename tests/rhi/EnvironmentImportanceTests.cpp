@@ -81,6 +81,7 @@ public:
             require(bool(shader), log);
             const ComputeResourceBindingDesc bindings[] = {
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput)},
+                {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentMap), ComputeResourceBindingKind::SampledImage},
                 {METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentPdf), ComputeResourceBindingKind::SampledImage}};
             ComputeProgram program;
             require(bool(program.initialize(*device, {.spirv = shader->spirv, .bindings = bindings,
@@ -103,6 +104,8 @@ public:
                 << "rngMode=" << rngMode << ". Production may change selections and its RNG stream; the selected continuation contract is checked exactly. Legacy differences are informational.\n"
                 << "Serial production must match the frozen raw-CDF/root-PDF branched traversal exactly: validity, texel, RNG and PDF bits.\n"
                 << "Direct child selection checks cover 132 quartet/target cases including zero, exact CDF ties, adjacent floats, repeated CDFs, empty slots, HDR rounding and nextDown(sum).\n"
+                << "Solid-angle PDF checks cover 200 dimension/row/probability cases: 1x1, thin, NPOT, 2K, 8K and 65536 extents, both poles, equator and the preserved 1e-7 clamp. Frozen-formula relative tolerance=2e-5.\n"
+                << "Production environment-map sampler requires exact RNG/validity/radiance, PDF relative tolerance=2e-5, direction L2 error<=2e-6 and unit squared-length error<=2e-6 versus frozen normalized conversion.\n"
                 << "PDF relative tolerance=2e-5 versus uploaded CPU leaf/root and hierarchy oracles. Zero probabilities require exact zero.\n"
                 << "Successful multi-mip samples must match the evaluator PDF bit-for-bit at the selected texel, using the actual uploaded root.\n"
                 << "Histogram uses CPU hierarchy probabilities; bins with expected count <16 are pooled. Each bin must be within 8 binomial standard deviations +8 counts (engineering regression threshold, not an RNG quality p-value).\n"
@@ -161,7 +164,7 @@ public:
                 }
                 using UInt4 = std::array<uint32_t, 4>;
                 constexpr uint32_t kLaneCount = 65536;
-                constexpr uint32_t kRowsPerLane = 12;
+                constexpr uint32_t kRowsPerLane = 18;
                 std::unique_ptr<Buffer> upload, output;
                 auto allocate = [&](size_t bytes, MemoryLocation location, BufferUsageBits usage, auto& target) {
                     require(bool(device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = location})
@@ -204,6 +207,7 @@ public:
                 TextureView* views[] = {view.get()};
                 const ComputeDispatchBinding dispatch[] = {
                     {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, probeOutput), .buffer = output.get()},
+                    {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentMap), .textureViews = views},
                     {.binding = METALLIC_RESOURCE_MEMBER(SceneResourceParameters, environmentPdf), .textureViews = views}};
                 require(bool(program.dispatch({.commandBuffer = gpu.commands.get(), .bindings = dispatch, .groupCountX = kLaneCount / 64})), "Dispatch failed");
                 require(bool(gpu.submitAndWait()), "GPU execution failed");
@@ -218,6 +222,10 @@ public:
                 uint32_t sampleEvaluatorBitChecks = 0;
                 uint32_t rawBranchedBitChecks = 0, childBoundaryChecks = 0;
                 std::array<bool, 132> childBoundaryCases{};
+                std::array<bool, 200> solidAngleCases{};
+                uint32_t solidAngleClampChecks = 0, mapSamplerChecks = 0;
+                double maxSolidAnglePdfRelativeError = 0, maxMapPdfRelativeError = 0;
+                double maxDirectionError = 0, maxUnitSquaredLengthError = 0;
                 double maxPdfRelativeError = 0, maxHierarchyRelativeError = 0, maxOriginalRelativeError = 0;
                 const uint32_t representedWidth = std::min(fixture.width, 1u << (fixture.mipCount - 1));
                 const uint32_t representedHeight = std::min(fixture.height, 1u << (fixture.mipCount - 1));
@@ -271,6 +279,27 @@ public:
                     require(row[9][3] == lane % childBoundaryCases.size(), where + " child boundary case ID mismatch");
                     childBoundaryCases[row[9][3]] = true;
                     ++childBoundaryChecks;
+                    require(row[13][3] == lane % solidAngleCases.size(), where + " solid angle case ID mismatch");
+                    solidAngleCases[row[13][3]] = true;
+                    checkProbability(std::bit_cast<float>(row[12][0]), std::bit_cast<float>(row[12][1]),
+                        maxSolidAnglePdfRelativeError, where + " solid angle rewrite");
+                    solidAngleClampChecks += std::bit_cast<float>(row[12][3]) == 1e-7f;
+                    if (rngMode == "serial") {
+                        require(row[16][0] == row[16][1], where + " full map sampler RNG mismatch");
+                        require(row[16][2] == row[16][3], where + " full map sampler validity mismatch");
+                        require(row[17][2] == row[17][3], where + " full map sampler radiance mismatch");
+                        checkProbability(std::bit_cast<float>(row[14][3]), std::bit_cast<float>(row[15][3]),
+                            maxMapPdfRelativeError, where + " full map sampler PDF");
+                        const double directionError = std::bit_cast<float>(row[17][1]);
+                        const double lengthError = std::abs(double(std::bit_cast<float>(row[17][0])) - 1.0);
+                        require(std::isfinite(directionError) && directionError <= 2e-6,
+                            where + " environment direction error=" + std::to_string(directionError));
+                        require(std::isfinite(lengthError) && lengthError <= 2e-6,
+                            where + " environment unit squared-length error=" + std::to_string(lengthError));
+                        maxDirectionError = std::max(maxDirectionError, directionError);
+                        maxUnitSquaredLengthError = std::max(maxUnitSquaredLengthError, lengthError);
+                        ++mapSamplerChecks;
+                    }
                     require(row[5] == row[1], where + " frozen cached-entry-derived sample/texel/RNG mismatch");
                     require(row[6] == row[1], where + " frozen cached-per-level sample/texel/RNG mismatch");
                     require(row[7][0] == row[2][1] && row[7][1] == row[2][1], where + " frozen probability bits mismatch");
@@ -370,6 +399,9 @@ public:
                 require(outOfBounds > 0, "Fixture did not exercise out-of-bounds weights");
                 require(std::all_of(childBoundaryCases.begin(), childBoundaryCases.end(), [](bool covered) { return covered; }),
                     "Missing direct child selection boundary coverage");
+                require(std::all_of(solidAngleCases.begin(), solidAngleCases.end(), [](bool covered) { return covered; }),
+                    "Missing solid angle PDF coverage");
+                require(solidAngleClampChecks > 0 && solidAngleClampChecks < kLaneCount, "Solid angle clamp coverage missing");
                 report << fixture.name << " dimensions=" << fixture.width << 'x' << fixture.height
                     << " mips=" << fixture.mipCount << " baseMip=" << fixture.baseMip << " seeds=" << kLaneCount
                     << " success=" << successful << " outOfBounds=" << outOfBounds
@@ -378,6 +410,10 @@ public:
                     << " sampleEvaluatorBitChecks=" << sampleEvaluatorBitChecks
                     << " rawBranchedBitChecks=" << rawBranchedBitChecks << " childBoundaryChecks=" << childBoundaryChecks
                     << " childBoundaryUniqueCases=" << childBoundaryCases.size()
+                    << " solidAngleUniqueCases=" << solidAngleCases.size() << " solidAngleClampChecks=" << solidAngleClampChecks
+                    << " mapSamplerChecks=" << mapSamplerChecks << " maxSolidAnglePdfRelativeError=" << maxSolidAnglePdfRelativeError
+                    << " maxMapPdfRelativeError=" << maxMapPdfRelativeError << " maxDirectionError=" << maxDirectionError
+                    << " maxUnitSquaredLengthError=" << maxUnitSquaredLengthError
                     << " rngMismatches=" << rngMismatches << " legacyRngDifferences=" << legacyRngDifferences
                     << " maxPdfRelativeError=" << maxPdfRelativeError
                     << " maxHierarchyRelativeError=" << maxHierarchyRelativeError << " maxOriginalRelativeError=" << maxOriginalRelativeError
@@ -386,7 +422,7 @@ public:
             }
             require(validationErrors == 0, "Vulkan validation errors");
             return RHITestResult::pass(std::to_string(std::size(fixtures) * 65536u)
-                + " GPU cases: frozen bit-exact variants, raw-CDF branched exact comparison, child CDF boundary selection, " + rngMode + " RNG continuation contract, exact sample/evaluator PDF, CPU hierarchy distribution and spatial marginals, deep/thin/NPOT/partial/HDR chains");
+                + " GPU cases: frozen bit-exact variants, raw-CDF branched exact comparison, child CDF boundary selection, solid-angle PDF/clamp and production map direction/RNG, " + rngMode + " RNG continuation contract, exact sample/evaluator PDF, CPU hierarchy distribution and spatial marginals, deep/thin/NPOT/partial/HDR chains");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };

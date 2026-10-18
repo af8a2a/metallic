@@ -3,6 +3,7 @@ module EnvironmentImportanceProbe;
 import Core;
 import SceneSurface;
 import ScenePathMath;
+import ScenePathTypes;
 using Metallic;
 using Metallic.SceneSurface;
 using Metallic.ScenePath;
@@ -197,6 +198,39 @@ void childBoundaryCase(uint lane, out float4 weights, out float target)
     else { target = asfloat(boundaryBits + 1u); }
 }
 
+// Frozen pre-rewrite solid angle, deliberately independent of the new helper.
+float referenceSolidAngle(uint y, uint width, uint height)
+{
+    float centerTheta = (float(y) + 0.5) * (kPi / float(max(height, 1u)));
+    return max((2.0 * kPi / float(max(width, 1u))) *
+        (kPi / float(max(height, 1u))) * sin(centerTheta), 0.0000001);
+}
+
+void solidAngleCase(uint lane, out uint2 dimensions, out uint row, out float probability)
+{
+    switch ((lane / 25u) % 8u) {
+    case 0u: dimensions = uint2(1u, 1u); break;
+    case 1u: dimensions = uint2(2u, 1u); break;
+    case 2u: dimensions = uint2(7u, 5u); break;
+    case 3u: dimensions = uint2(2048u, 1024u); break;
+    case 4u: dimensions = uint2(8192u, 4096u); break;
+    case 5u: dimensions = uint2(65536u, 65536u); break;
+    case 6u: dimensions = uint2(1u, 65536u); break;
+    default: dimensions = uint2(65536u, 1u); break;
+    }
+    uint rowCase = (lane / 5u) % 5u;
+    row = rowCase == 0u ? 0u : (rowCase == 1u ? min(1u, dimensions.y - 1u) :
+        (rowCase == 2u ? dimensions.y / 2u :
+        (rowCase == 3u ? dimensions.y - min(2u, dimensions.y) : dimensions.y - 1u)));
+    switch (lane % 5u) {
+    case 0u: probability = 0.0; break;
+    case 1u: probability = 1.0; break;
+    case 2u: probability = 1.0 / (float(dimensions.x) * float(dimensions.y)); break;
+    case 3u: probability = 1e-20; break;
+    default: probability = 0.1234567; break;
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void environmentImportanceProbeMain(uint3 id : SV_DispatchThreadID)
@@ -214,6 +248,7 @@ void environmentImportanceProbeMain(uint3 id : SV_DispatchThreadID)
     case 6u: seed = 0u - 0x9e3779b9u - 4u; break;
     case 7u: seed = 0u - 0x9e3779b9u - 8u; break;
     }
+    uint initialSeed = seed;
     uint referenceSeed = seed, rawBranchedSeed = seed;
     uint derivedSeed = seed, perLevelSeed = seed;
     uint2 position, referencePosition, rawBranchedPosition;
@@ -234,7 +269,7 @@ void environmentImportanceProbeMain(uint3 id : SV_DispatchThreadID)
     uint2 queryPosition = uint2(id.x % (width + 1u), (id.x / (width + 1u)) % (height + 1u));
     if (id.x == 65535u) { probePosition = queryPosition = uint2(0xffffffffu); }
     let output = resolveBuffer<RWStructuredBuffer<uint4>>(getResourceParameters<SceneResourceParameters>().probeOutput);
-    uint base = id.x * 12u;
+    uint base = id.x * 18u;
     output[base] = uint4(uint(valid), position, seed);
     output[base + 1u] = uint4(uint(referenceValid), referencePosition, referenceSeed);
     output[base + 2u] = asuint(float4(probability, referencePdf,
@@ -259,4 +294,46 @@ void environmentImportanceProbeMain(uint3 id : SV_DispatchThreadID)
     output[base + 9u] = uint4(asuint(rawBranchedProbability), selectedIndex, referenceIndex, id.x % 132u);
     output[base + 10u] = uint4(asuint(selectedWeight), asuint(referenceSelectedWeight), asuint(boundaryTarget), 0u);
     output[base + 11u] = asuint(boundaryWeights);
+
+    uint2 solidDimensions;
+    uint solidRow;
+    float solidProbability;
+    solidAngleCase(id.x, solidDimensions, solidRow, solidProbability);
+    output[base + 12u] = asuint(float4(
+        environmentTexelPdfSolidAngle(solidProbability, solidRow, solidDimensions.x, solidDimensions.y),
+        solidProbability / referenceSolidAngle(solidRow, solidDimensions.x, solidDimensions.y),
+        solidProbability, referenceSolidAngle(solidRow, solidDimensions.x, solidDimensions.y)));
+    output[base + 13u] = uint4(solidDimensions, solidRow, id.x % 200u);
+
+    // Exercise the actual production map sampler, including uniform fallback and
+    // two jitter draws. A frozen map conversion uses the same independently
+    // checked raw-CDF traversal, retaining its old normalization and PDF formula.
+    ScenePathTracePush push = (ScenePathTracePush)0;
+    push.environmentMode = kEnvironmentModeMap;
+    push.environmentIntensity = 1.0;
+    push.environmentRotationRadians = (float(id.x % 257u) - 128.0) * (kPi / 32.0);
+    uint lightSeed = initialSeed;
+    EnvironmentLightSample lightSample;
+    bool lightValid = sampleEnvironmentLight(push, lightSeed, lightSample);
+    uint frozenSeed = rawBranchedSeed;
+    uint2 frozenTexel = rawBranchedPosition;
+    float frozenProbability = rawBranchedProbability;
+    if (!rawBranchedValid || any(frozenTexel >= uint2(width, height))) {
+        uint count = width * height;
+        uint index = min(uint(rand(frozenSeed) * float(count)), count - 1u);
+        frozenTexel = uint2(index % width, index / width);
+        frozenProbability = 1.0 / float(count);
+    }
+    float2 uv = (float2(frozenTexel) + float2(rand(frozenSeed), rand(frozenSeed))) / float2(width, height);
+    float3 frozenDirection = Metallic.SceneSurface.safeNormalize(
+        environmentLocalDirectionToWorld(environmentLocalDirectionFromUv(uv), push.environmentRotationRadians),
+        float3(0.0, 1.0, 0.0));
+    float frozenPdf = frozenProbability / referenceSolidAngle(frozenTexel.y, width, height);
+    float3 frozenRadiance = max(sceneEnvironmentMap().Load(int3(int2(frozenTexel), 0)).rgb, float3(0.0));
+    bool frozenValid = max(frozenRadiance.x, max(frozenRadiance.y, frozenRadiance.z)) > 0.0 && frozenPdf > 0.0;
+    output[base + 14u] = asuint(float4(lightSample.direction, lightSample.pdfSolidAngle));
+    output[base + 15u] = asuint(float4(frozenDirection, frozenPdf));
+    output[base + 16u] = uint4(lightSeed, frozenSeed, uint(lightValid), uint(frozenValid));
+    output[base + 17u] = asuint(float4(dot(lightSample.direction, lightSample.direction),
+        length(lightSample.direction - frozenDirection), lightSample.radiance.x, frozenRadiance.x));
 }

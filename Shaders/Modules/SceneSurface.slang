@@ -313,6 +313,17 @@ public float environmentTexelSolidAngle(uint y, uint width, uint height)
     return max((2.0 * kPi / float(max(width, 1u))) * (kPi / float(max(height, 1u))) * sin(centerTheta), 0.0000001);
 }
 
+public float environmentTexelPdfSolidAngle(float probability, uint y, uint width, uint height)
+{
+    float texelCount = float(max(width, 1u)) * float(max(height, 1u));
+    float centerTheta = (float(y) + 0.5) * (kPi / float(max(height, 1u)));
+    // Move the texel-area division into the numerator, retaining the original
+    // solid-angle floor at high resolutions and near the poles. Sampling and
+    // MIS evaluation must use the same conversion.
+    return (probability * texelCount) /
+        max((2.0 * kPi * kPi) * sin(centerTheta), 0.0000001 * texelCount);
+}
+
 public float misPowerHeuristic(float pdfA, float pdfB)
 {
     float a = max(pdfA, 0.0);
@@ -485,15 +496,12 @@ public bool sampleEnvironmentLight(ScenePathTracePush push, inout uint seed, out
     }
 
     float2 uv = (float2(texel) + float2(rand(seed), rand(seed))) / float2(width, height);
-    float texelSolidAngle = environmentTexelSolidAngle(texel.y, width, height);
-
     float3 localDirection = environmentLocalDirectionFromUv(uv);
-    sample.direction = safeNormalize(
-        environmentLocalDirectionToWorld(localDirection, push.environmentRotationRadians),
-        float3(0.0, 1.0, 0.0));
+    // The spherical parameterization and Y rotation preserve unit length.
+    sample.direction = environmentLocalDirectionToWorld(localDirection, push.environmentRotationRadians);
     sample.radiance = max(sceneEnvironmentMap().Load(int3(int2(texel), 0)).rgb, float3(0.0, 0.0, 0.0)) *
         max(push.environmentIntensity, 0.0);
-    sample.pdfSolidAngle = texelProbability / texelSolidAngle;
+    sample.pdfSolidAngle = environmentTexelPdfSolidAngle(texelProbability, texel.y, width, height);
     return max(sample.radiance.x, max(sample.radiance.y, sample.radiance.z)) > 0.0 && sample.pdfSolidAngle > 0.0;
 }
 
@@ -530,7 +538,7 @@ public float environmentPdfSolidAngle(float3 direction, ScenePathTracePush push)
     if (texelProbability <= 0.0) {
         texelProbability = 1.0 / float(textureTexelCount);
     }
-    return texelProbability / environmentTexelSolidAngle(texel.y, width, height);
+    return environmentTexelPdfSolidAngle(texelProbability, texel.y, width, height);
 }
 
 public float environmentLightMisWeight(ScenePathTracePush push, float environmentPdf, float bsdfPdf)
