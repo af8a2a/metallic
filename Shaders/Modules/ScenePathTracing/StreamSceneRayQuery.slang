@@ -64,9 +64,8 @@ public bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint trian
     if (materialIndex >= count) { return false; }
     MaterialCoverageParameters material = sceneMaterialCoverageParameters(loadSceneMaterial(materialIndex));
     if (material.alphaMode < 0.5) { return true; }
-    HitInfo hit;
-    if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push.bitangentFlip, hit)) { return false; }
-    return evaluateSceneCoverage(materialIndex, material, hit.texcoord, push).accepted;
+    float2 texcoord = streamRayTexcoord(clusterId, triangle, bary);
+    return evaluateSceneCoverage(materialIndex, material, texcoord, push).accepted;
 }
 
 public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,
@@ -80,14 +79,15 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
     uint instanceIndex, clusterId, triangle;
     float2 bary;
     float hitT;
-    // Force candidate callbacks even for CLAS built with the opaque default.
+    // TLAS instances select hardware opaque traversal or software Coverage.
+    // Ray flags must not override that classification.
 #if METALLIC_PT_RAY_PIPELINE
     StreamRayHit payload = (StreamRayHit)0;
     payload.t = -1.0;
     // One shared triangle hit group and miss record. Keep full closest-hit
     // traversal even for shadows: transparent media are integrated in order
     // by the existing caller, never accumulated in unordered any-hit callbacks.
-    TraceRay(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, 0, 0, 0, desc, payload);
+    TraceRay(sceneAccelerationStructure(), RAY_FLAG_NONE, 0xff, 0, 0, 0, desc, payload);
     if (payload.t < 0.0) { return false; }
     if (occlusionOnly) { return true; }
     instanceIndex = payload.instanceId;
@@ -96,8 +96,8 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
     bary = payload.barycentrics;
     hitT = payload.t;
 #else
-    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-    query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_NONE, 0xff, desc);
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
             streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
@@ -121,7 +121,7 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
         opaqueShadow = material.textureParams.w <= 1.5 && material.glassParams.x == 0.0;
         if (opaqueShadow) {
             // Published stream BLASes retain resident geometry until traversal completes.
-            // Candidate coverage already validated the material binding.
+            // TLAS classification or candidate Coverage accepted the material.
             // The shadow consumer checks distance before rejecting opaque hits.
             hit.t = hitT;
             hit.materialIndex = materialIndex;

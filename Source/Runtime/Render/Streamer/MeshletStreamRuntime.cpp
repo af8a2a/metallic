@@ -2220,6 +2220,7 @@ void MeshletStreamRuntime::reset()
     rasterBindingsHandle_ = {};
     requestHandle_ = {};
     instanceHandle_ = {};
+    gpuSceneInstanceHandle_ = {};
     primitiveHandle_ = {};
     lodLevelHandle_ = {};
     groupHandle_ = {};
@@ -2571,7 +2572,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
     for (const auto& lease : {
         pageHandle_, activeGroupHandle_, activeHeaderHandle_, pageTableHandle_,
         paramsHandle_, visibleClusterHandle_, rasterBindingsHandle_, requestHandle_,
-        instanceHandle_, primitiveHandle_, lodLevelHandle_, groupHandle_,
+        instanceHandle_, gpuSceneInstanceHandle_, primitiveHandle_, lodLevelHandle_, groupHandle_,
         lodTopologyHandle_, lodStateHandle_, demandHandle_, nodeHandle_,
         drawIndirectHandle_, traversalHeaderHandle_, traversalWorkHandle_, clasAddressHandle_,
         clasPageTableHandle_, blasHeaderHandle_, instanceBlasHandle_, blasBuildInfoHandle_,
@@ -3180,6 +3181,13 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
         runtimeRenderNodeIndices.begin(),
         runtimeRenderNodeIndices.end());
     return {};
+}
+
+Result<> MeshletStreamRuntime::bindGPUSceneInstances(Buffer& instances)
+{
+    return registry_->storageBuffer(instances).transform([&](auto handle) {
+        gpuSceneInstanceHandle_ = std::move(handle);
+    });
 }
 
 Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping)
@@ -3814,6 +3822,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.blasStorageAddressLow = static_cast<uint32_t>(blasStorageAddress);
     params.blasStorageAddressHigh = static_cast<uint32_t>(blasStorageAddress >> 32u);
     params.enableBlasInstanceReuse = blasInstanceReuse_ ? 1u : 0u;
+    params.gpuSceneInstanceBufferIndexPlusOne = gpuSceneInstanceHandle_.valid() ? gpuSceneInstanceHandle_.shaderIndex() + 1u : 0u;
     std::copy(blasSizeClasses_.begin(), blasSizeClasses_.end(), params.blasSizeClasses);
     const auto& renderCamera = frame.useSeparateRenderCamera ? frame.renderCamera : frame.camera;
     params.renderEye[0] = finiteOr(renderCamera.eye.x, 0.0f);

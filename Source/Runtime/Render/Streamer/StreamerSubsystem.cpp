@@ -297,6 +297,10 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         }
         auto result = stream.syncGPUSceneInstanceMapping(mapping);
         if (!result) { return result; }
+        // recordPreGraph publishes GPUScene instance uploads with an AllCommands
+        // shader-read barrier, including this stream TLAS input compute pass.
+        result = stream.bindGPUSceneInstances(*gpuScene->globalBufferViews().instances.buffer);
+        if (!result) { return result; }
         auto scope = context.profileScope("Stream Begin");
         result = stream.cmdBeginFrame(context.commandBuffer(), *streamer(), view, [&] {
             auto upload = context.profileScope("Upload preflight");

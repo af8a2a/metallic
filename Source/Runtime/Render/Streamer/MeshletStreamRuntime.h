@@ -359,7 +359,7 @@ struct MeshletStreamGPUParams {
     uint32_t blasStorageAddressLow = 0;
     uint32_t blasStorageAddressHigh = 0;
     uint32_t enableBlasInstanceReuse = 1;
-    uint32_t blasStoragePadding = 0;
+    uint32_t gpuSceneInstanceBufferIndexPlusOne = 0;
     uint32_t blasSizeClasses[32] = {};
     float prefetchEye[4] = {};
     float prefetchCenter[4] = {};
@@ -487,6 +487,7 @@ static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGPUParams) == 640);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
+static_assert(offsetof(MeshletStreamGPUParams, gpuSceneInstanceBufferIndexPlusOne) == 428);
 static_assert(sizeof(MeshletStreamGPURasterBindings) == 96);
 static_assert(sizeof(MeshletStreamUserPush) == 136);
 
@@ -607,6 +608,8 @@ public:
         std::span<const uint32_t> runtimeRenderNodeIndices,
         std::string& log);
     Result<> syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping);
+    // GPUScene publishes this table for shader reads before stream TLAS generation.
+    Result<> bindGPUSceneInstances(Buffer& instances);
     void reset();
 
     bool ready() const;
@@ -829,6 +832,7 @@ private:
     ResourceLease rasterBindingsHandle_;
     ResourceLease requestHandle_;
     ResourceLease instanceHandle_;
+    ResourceLease gpuSceneInstanceHandle_;
     ResourceLease primitiveHandle_;
     ResourceLease lodLevelHandle_;
     ResourceLease groupHandle_;

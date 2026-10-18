@@ -54,6 +54,18 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
         (dot(instance.world0.xyz, c0) < 0.0 ? -1.0 : 1.0), n);
 }
 
+// Ray-query candidates reference the published CLAS cut, whose cluster stride
+// and resident geometry remain valid until the frame's GPU completion.
+public float2 streamRayTexcoord(uint clusterId, uint triangle, float2 bary)
+{
+    uint clusterStride = gRayStreamHeader[2];
+    uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
+    float2 uv[3];
+    decodeStreamTexcoordsAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, uv);
+    float3 weights = float3(1.0 - bary.x - bary.y, bary);
+    return uv[0] * weights.x + uv[1] * weights.y + uv[2] * weights.z;
+}
+
 public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
     Ray ray, float t, float bitangentFlip, out HitInfo hit, bool shadowOnly = false)
 {

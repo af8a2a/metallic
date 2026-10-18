@@ -37,8 +37,8 @@ public float traceGeometryShadow(float3 origin, float3 direction, float maxDista
     ray.TMin = 0.001;
     ray.TMax = max(maxDistance, ray.TMin);
     // SIGMA needs the closest blocker's distance, not the first traversal hit.
-    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-    query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_FORCE_NON_OPAQUE, 0xff, ray);
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(sceneAccelerationStructure(), RAY_FLAG_NONE, 0xff, ray);
     Ray surfaceRay; surfaceRay.origin = origin; surfaceRay.direction = direction;
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&

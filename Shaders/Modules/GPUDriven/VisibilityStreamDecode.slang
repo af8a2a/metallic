@@ -86,6 +86,38 @@ public bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<Com
     return decodeStreamTriangleAtPage(group.pageIndex, record.clusterIndex, triangle, pages, pageTable, pageWordCount, a, b, c);
 }
 
+bool streamHasTexcoords(StructuredBuffer<uint> pages, uint page, uint cluster, out uint uvOffset)
+{
+    uint bytes = pages[page + 12u];
+    uvOffset = pages[page + 17u];
+    uint required = pages[cluster] + pages[cluster + 1u];
+    return (pages[page + 14u] & 4u) != 0u && pages[page + 22u] == 1u && uvOffset % 4u == 0u &&
+        uvOffset <= bytes && required <= (bytes - uvOffset) / 8u;
+}
+
+float2 streamLoadTexcoord(StructuredBuffer<uint> pages, uint page, uint uvOffset, uint vertex)
+{
+    uint uv = page + uvOffset / 4u + vertex * 2u;
+    return asfloat(uint2(pages[uv], pages[uv + 1u]));
+}
+
+// The triangle comes from a published CLAS hit (validated topology and geometry
+// retained through GPU completion). Optional UV ranges still need their own check.
+public void decodeStreamTexcoordsAtPage(uint pageIndex, uint clusterIndex, uint triangle,
+    StructuredBuffer<uint> pages, StructuredBuffer<uint2> pageTable, out float2 uvs[3])
+{
+    for (uint i = 0; i < 3; ++i) { uvs[i] = float2(0); }
+    uint page = (pageTable[pageIndex].x & 0xfffffff8u) / 4u;
+    uint cluster = page + pages[page + 9u] / 4u + clusterIndex * 24u;
+    uint uvOffset;
+    if (!streamHasTexcoords(pages, page, cluster, uvOffset)) { return; }
+    uint address = page * 4u + pages[page + 11u] + pages[cluster + 2u] + triangle * 3u;
+    for (uint i = 0; i < 3; ++i) {
+        uint vertex = pages[cluster] + streamPageByte(pages, address + i);
+        uvs[i] = streamLoadTexcoord(pages, page, uvOffset, vertex);
+    }
+}
+
 // Optional shading streams. Position-only pages continue to use geometric
 // normals and zero UV; every optional range is validated before dereferencing.
 public uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint triangle,
@@ -97,13 +129,12 @@ public uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint
     uint bytes = pages[page + 12u], flags = pages[page + 14u];
     uint cluster = page + pages[page + 9u] / 4u + clusterIndex * 24u;
     uint address = page * 4u + pages[page + 11u] + pages[cluster + 2u] + triangle * 3u;
-    uint normalOffset = pages[page + 16u], uvOffset = pages[page + 17u];
+    uint normalOffset = pages[page + 16u], uvOffset;
     uint required = pages[cluster] + pages[cluster + 1u];
     uint normalFormat = pages[page + 21u], normalStride = streamNormalStride(normalFormat);
     bool hasNormal = (flags & 2u) != 0u && normalStride != 0u && normalOffset % 4u == 0u &&
         normalOffset <= bytes && required <= (bytes - normalOffset) / max(normalStride, 1u);
-    bool hasUv = (flags & 4u) != 0u && pages[page + 22u] == 1u && uvOffset % 4u == 0u &&
-        uvOffset <= bytes && required <= (bytes - uvOffset) / 8u;
+    bool hasUv = streamHasTexcoords(pages, page, cluster, uvOffset);
     uint tangentOffset = pages[page + 24u];
     uint tangentFormat = pages[page + 25u], tangentStride = streamTangentStride(tangentFormat);
     bool hasTangent = (flags & 16u) != 0u && tangentStride != 0u && tangentOffset % 4u == 0u &&
@@ -114,8 +145,7 @@ public uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint
             normals[i] = streamLoadNormal(pages,page,normalOffset,v,normalFormat);
         }
         if (hasUv) {
-            uint uv = page + uvOffset / 4u + v * 2u;
-            uvs[i] = asfloat(uint2(pages[uv], pages[uv + 1u]));
+            uvs[i] = streamLoadTexcoord(pages, page, uvOffset, v);
         }
         if (hasTangent) {
             tangents[i] = streamLoadTangent(pages,page,tangentOffset,v,tangentFormat);

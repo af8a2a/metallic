@@ -253,7 +253,10 @@ public:
         if (!preview.initialize(context.enableValidation, true, false)) { return RHITestResult::fail("Coverage device failed"); }
         std::ofstream report(context.outputDirectory / "Coverage.txt");
         uint64_t coverageOnlySurfaceKey = 0, coverageOnlyKey = 0;
-        for (uint32_t step = 0; step < (shadowOnly_ ? 1u : 11u); ++step) {
+        for (uint32_t scenario = 0; scenario < (shadowOnly_ ? 4u : 11u); ++scenario) {
+            // Focused mode exercises only Coverage programs: install, change
+            // executable identity, and remove. It never creates a Surface graph.
+            const uint32_t step = shadowOnly_ && scenario > 0 ? scenario + 7u : scenario;
             auto edited = scene.materials()[0];
             const float shift = step == 2 ? -0.25f : step == 3 ? 1.0f : step == 4 ? -1.0f : step == 6 ? 0.25f : 0.0f;
             if (step > 0) {
@@ -384,10 +387,42 @@ public:
                     }
                 }
             }
-            report << "transmission=" << transmission << " checked=3844 closest-shadow full-hit comparisons x5 ray cases" << '\n';
+            report << "transmission=" << transmission << " checked=3844 closest-shadow full-hit comparisons x5 ray cases; RAY_FLAG_NONE callbacks=0, forced-nonopaque callbacks>0" << '\n';
         }
         if (shadowOnly_) {
-            return RHITestResult::pass("134540 MASK/BLEND/opaque/glass closest-shadow comparisons match full-hit classification and consumed attributes for forward/backward/miss/clipped/nonunit rays (ray query)");
+            // Revisit MASK after both instances were opaque. This must invalidate
+            // previously published TLAS opacity, including Coverage-only hot edits.
+            for (uint32_t step = 0; step < 3; ++step) {
+                auto edited = scene.materials()[0];
+                edited.alphaMode = "MASK";
+                edited.transmissionFactor = 0.0f;
+                edited.valueProgram = step < 2 ? nlohmann::json{{"version", 1}, {"coverage", {{"op", "mul"},
+                    {"args", nlohmann::json::array({{{"op", "uv"}}, step == 0 ? 0.5 : 2.0})}}}}.dump() : std::string{};
+                if (!scene.setMaterialProperties(0, edited)) { return RHITestResult::fail("Opaque-to-MASK Coverage edit failed"); }
+                if (!preview.render(sample.graph, 64, 64, "CoverageProbe.color")) { return RHITestResult::fail(preview.lastLog()); }
+                if (preview.readbackFormat() != Format::RGBA32Sfloat || preview.readbackBytes().size() != 64 * 64 * 16) {
+                    return RHITestResult::fail("Opaque-to-MASK probe readback format");
+                }
+                std::vector<float> rays(preview.readbackBytes().size() / 4);
+                std::memcpy(rays.data(), preview.readbackBytes().data(), preview.readbackBytes().size());
+                uint32_t winners = 0;
+                for (uint32_t y = 1; y < 63; ++y) {
+                    for (uint32_t x = 1; x < 63; ++x) {
+                        const size_t i = (y * 64 + x) * 4;
+                        const float u = 1.0f - (x + 0.5f) / 64;
+                        const bool front = step == 2 || u * (step == 0 ? 0.5f : 2.0f) >= 0.5f;
+                        const float distance = front ? 2.0f : 3.0f;
+                        if (!std::isfinite(rays[i]) || !std::isfinite(rays[i + 1]) ||
+                            std::abs(rays[i] - distance) > 1e-5f || std::abs(rays[i + 1] - distance) > 1e-5f || rays[i + 3] != 0.0f) {
+                            return RHITestResult::fail("Opaque-to-MASK traversal mismatch step=" + std::to_string(step) +
+                                " x=" + std::to_string(x) + " failures=" + std::to_string(rays[i + 3]));
+                        }
+                        winners += front;
+                    }
+                }
+                report << "opaque-to-mask-step=" << step << " frontWinners=" << winners << " checked=3844 NONE vs forced-nonopaque full-surface reference" << '\n';
+            }
+            return RHITestResult::pass("249860 MASK/BLEND/opaque/glass closest-shadow comparisons match full-hit classification; 49972 NONE vs forced-nonopaque full-surface traversal comparisons, opaque callbacks zero, Coverage-only install/hot edit/removal and opaque-to-MASK lifecycle verified (ray query)");
         }
         return RHITestResult::pass("42284 MASK raster/RT/shadow pixels agree; MASK/BLEND/opaque/glass closest-shadow matches full-hit classification and consumed attributes for forward/backward/miss/clipped/nonunit rays (ray query)");
     }

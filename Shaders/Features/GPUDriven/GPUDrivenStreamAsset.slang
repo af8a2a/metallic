@@ -501,7 +501,7 @@ public struct GPUDrivenStreamAssetParams
     public uint blasStorageAddressLow;
     public uint blasStorageAddressHigh;
     public uint enableBlasInstanceReuse;
-    public uint blasStoragePadding;
+    public uint gpuSceneInstanceBufferIndexPlusOne;
     public uint blasSizeClasses[32];
     public float4 prefetchEye;
     public float4 prefetchCenter;
@@ -3855,7 +3855,17 @@ void gpuDrivenStreamAssetBuildTlasInputMain(
     output.transform1 = float4(instance.world0.y, instance.world1.y, instance.world2.y, instance.world3.y);
     output.transform2 = float4(instance.world0.z, instance.world1.z, instance.world2.z, instance.world3.z);
     output.customIndexMask = (instanceIndex & 0x00ffffffu) | (visibilityMask << 24u);
-    output.shaderBindingTableFlags = 0u;
+    // Standalone runtimes without GPUScene metadata retain software coverage.
+    uint opacityFlags = 8u; // VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR
+    if (params.gpuSceneInstanceBufferIndexPlusOne != 0u && instance.gpuSceneInstanceIndex != kInvalidClusterIndex) {
+        StructuredBuffer<GPUDrivenPreviewInstance> gpuInstances =
+            resolveUniform(ResourceHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(params.gpuSceneInstanceBufferIndexPlusOne - 1u));
+        uint coverageFlags = gpuInstances[instance.gpuSceneInstanceIndex].identity.w;
+        if ((coverageFlags & (kInstanceAlphaMasked | kInstanceAlphaBlend)) == 0u) {
+            opacityFlags = 4u; // VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR
+        }
+    }
+    output.shaderBindingTableFlags = opacityFlags << 24u;
     output.accelerationStructureReferenceLow = accelerationStructureReference.x;
     output.accelerationStructureReferenceHigh = accelerationStructureReference.y;
     tlasInstances[instanceIndex] = output;
