@@ -20,6 +20,49 @@ using Metallic.Tests;
 
 [[vk::push_constant]] ConstantBuffer<ProbeParams> gProbe;
 
+// Resolve all color-slot presence combinations through a custom provider with
+// materialTextureCount deliberately zero, for both transfer functions and the
+// debug override. No BSDF preparation is needed to inspect resolved inputs.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void openPBRColorSlotProbeMain(uint3 id : SV_DispatchThreadID)
+{
+    uint lane = id.x;
+    uint mask = lane & 7u;
+    bool linear = (lane & 8u) != 0u;
+    bool disabled = (lane & 16u) != 0u;
+    bool unlit = (lane & 32u) != 0u;
+    ProbeSource source;
+    source.probe = gProbe;
+    OpenPBRMaterialParameters material = (OpenPBRMaterialParameters)0;
+    material.baseColor = float4(0.8, 0.6, 0.4, 0.37);
+    material.emissive = float4(2.3, -0.1, 0.7, unlit ? 1 : 0);
+    material.specular = float4(0.2, 0.7, 0.9, 0.63);
+    material.params = float4(0, 0.35, 0, 0);
+    material.glassParams = float4(0, 1.5, 0, 0);
+    material.baseColorTexture.textureIndex = (mask & 1u) != 0u ? 3u : 0u;
+    material.emissiveTexture.textureIndex = (mask & 2u) != 0u ? 3u : 0u;
+    material.specularColorTexture.textureIndex = (mask & 4u) != 0u ? 3u : 0u;
+    material.baseColorTexture.transform0.w = linear ? 1.0 : 0.0;
+    material.emissiveTexture.transform0.w = linear ? 1.0 : 0.0;
+    material.specularColorTexture.transform0.w = linear ? 1.0 : 0.0;
+    HitInfo hit = (HitInfo)0;
+    hit.normal = hit.geometryNormal = float3(0, 0, 1);
+    hit.tangent = float4(1, 0, 0, 1);
+    hit.bitangent = float3(0, 1, 0);
+    hit.texcoord = float2(0.25, 0.25);
+    ScenePathTracePush push = (ScenePathTracePush)0;
+    push.debugFlags = disabled ? kOpenPBRDebugDisableMaterialTextures : 0u;
+    uint seed = 123u;
+    let closure = resolveOpenPBRInputs(hit, material, push, (RayCone)0,
+        float3(0, 0, -1), seed, source, (TextureFootprint)0, hit.normal, false);
+    uint base = lane * 4u;
+    gProbe.output.store(base, float4(closure.inputs.base_color, closure.inputs.geometry_opacity));
+    gProbe.output.store(base + 1u, float4(closure.inputs.emission_color * closure.inputs.emission_luminance, closure.inputs.base_weight));
+    gProbe.output.store(base + 2u, float4(closure.inputs.specular_color, closure.inputs.specular_weight));
+    gProbe.output.store(base + 3u, float4(closure.inputs.geometry_basis.n, float(seed)));
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void openPBRClosureProbeMain(uint3 id : SV_DispatchThreadID)

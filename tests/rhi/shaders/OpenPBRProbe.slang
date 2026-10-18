@@ -105,13 +105,20 @@ public struct ProbeSource : IOpenPBRMaterialSource
     }
     public float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
-        bool deterministicMip0, inout uint seed, TextureFootprint footprint)
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
     {
         countStage(probe, 1);
-        if (info.textureIndex == 0) { return fallback; }
+        // Deliberately independent of push.materialTextureCount: generic
+        // material resolution must respect the provider's presence decision.
+        sampled = info.textureIndex != 0;
+        if (!sampled) { return fallback; }
         countStage(probe, 2);
         uint2 texel = info.textureIndex == 2 ? uint2(0, 1) : min(uint2(frac(uv) * 2), uint2(1));
-        return resolveUniform(probe.texture).Load(int3(texel, 0));
+        float4 sample = resolveUniform(probe.texture).Load(int3(texel, 0));
+        // Index 3 exercises nontrivial opacity without changing the texture
+        // payload shared by the existing normal and lighting probes.
+        if (info.textureIndex == 3) { sample.a = 0.25; }
+        return sample;
     }
 };
 

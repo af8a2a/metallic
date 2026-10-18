@@ -117,11 +117,12 @@ std::string pathToUtf8(const std::filesystem::path& path)
 
 std::string traceHostFailure(const std::filesystem::path& logPath)
 {
-    // Keep the first backend error in the application's own startup log.
+    // Keep the first backend error in the application's own log. Operation
+    // timeouts are not prefixed with ERROR by ngfx.
     std::ifstream log(logPath);
     for (std::string line; std::getline(log, line);) {
         if (line.find("ERROR:") != std::string::npos || line.starts_with("No metric sets") ||
-            line.starts_with("Invalid activity")) {
+            line.starts_with("Invalid activity") || line.starts_with("Operation timeout")) {
             return line + "; see " + logPath.string();
         }
     }
@@ -288,10 +289,14 @@ bool NsightGraphicsCapture::startTraceHost(std::string& error)
 #if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
     const auto executable = installationRoot_ / "host/windows-desktop-nomad-x64/ngfx.exe";
     traceHostLog_ = outputDirectory_ / ("GpuTraceHost-" + std::to_string(GetCurrentProcessId()) + ".log");
+    // The host's short operation timeout is independent of --trace-timeout
+    // and can expire while an instrumented View frame is still completing.
+    // Bound startup and export in this owner (60/120 seconds), rather than
+    // letting that operation timeout disconnect a healthy rendering target.
     std::wstring command = quoteArgument(executable.wstring()) + L" --activity \"GPU Trace Profiler\" --attach-pid " +
         std::to_wstring(GetCurrentProcessId()) + L" --output-dir " + quoteArgument(outputDirectory_.wstring()) +
         L" --per-arch-config-path " + quoteArgument(traceMetricsConfig_.wstring()) +
-        L" --start-with-ngfx-sdk --stop-with-ngfx-sdk --keep-going --set-gpu-clocks unaltered --trace-timeout 120";
+        L" --start-with-ngfx-sdk --stop-with-ngfx-sdk --keep-going --set-gpu-clocks unaltered --no-timeout --trace-timeout 120";
     if (!launchTraceHost(executable, std::move(command), error)) { return fail(error); }
     return true;
 #else

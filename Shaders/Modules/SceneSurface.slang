@@ -766,9 +766,11 @@ public float4 loadMaterialTextureForMaterial(
     float3 rayDirection,
     bool deterministicMip0,
     inout uint seed,
-    TextureFootprint footprint = (TextureFootprint)0)
+    TextureFootprint footprint,
+    out bool sampled)
 {
-    if (!hasMaterialTexture(textureInfo, push)) { return fallback; }
+    sampled = hasMaterialTexture(textureInfo, push);
+    if (!sampled) { return fallback; }
     if (deterministicMip0) {
         return loadMaterialTextureMip0(textureInfo, uv, fallback, push);
     }
@@ -784,6 +786,23 @@ public float4 loadMaterialTextureForMaterial(
     }
     float mipLevel = materialResidentTextureLod(metadata, footprint.isotropicLod0, uvBias);
     return loadResidentMaterialTexture(textureInfo, uv, push, metadata, mipLevel, seed, textureInfo.textureIndex);
+}
+
+public float4 loadMaterialTextureForMaterial(
+    MaterialTextureInfo textureInfo,
+    float2 uv,
+    float4 fallback,
+    ScenePathTracePush push,
+    RayCone rayCone,
+    HitInfo hit,
+    float3 rayDirection,
+    bool deterministicMip0,
+    inout uint seed,
+    TextureFootprint footprint = (TextureFootprint)0)
+{
+    bool sampled;
+    return loadMaterialTextureForMaterial(textureInfo, uv, fallback, push, rayCone, hit,
+        rayDirection, deterministicMip0, seed, footprint, sampled);
 }
 
 // Generated Value IR retains its callback signature; resource-independent

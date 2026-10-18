@@ -124,9 +124,10 @@ public float3 openPbrDebugIdColor(uint id)
 // and counts logical texture reads without adding counters to production.
 public interface ISceneMaterialTextureSource
 {
+    // The provider owns slot validity; sampled is false when returning fallback.
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
-        bool deterministicMip0, inout uint seed, TextureFootprint footprint);
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled);
 };
 
 public interface IOpenPBRMaterialSource : ISceneMaterialTextureSource
@@ -140,10 +141,10 @@ public struct SceneMaterialTextureSource : ISceneMaterialTextureSource
 {
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
-        bool deterministicMip0, inout uint seed, TextureFootprint footprint)
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
     {
         return loadMaterialTextureForMaterial(textureInfo, uv, fallback, push, cone,
-            hit, rayDirection, deterministicMip0, seed, footprint);
+            hit, rayDirection, deterministicMip0, seed, footprint, sampled);
     }
 };
 
@@ -157,11 +158,11 @@ public struct SceneOpenPBRMaterialSource : IOpenPBRMaterialSource
     }
     public float4 loadTexture(MaterialTextureInfo textureInfo, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
-        bool deterministicMip0, inout uint seed, TextureFootprint footprint)
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
     {
         SceneMaterialTextureSource source;
         return source.loadTexture(textureInfo, uv, fallback, push, cone, hit, rayDirection,
-            deterministicMip0, seed, footprint);
+            deterministicMip0, seed, footprint, sampled);
     }
 };
 
@@ -183,9 +184,10 @@ public void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
     bool faceForwardNormal, bool applyDebugNormalOverrides, TextureFootprint footprint,
     TSource source, inout uint seed, out float4 normalSample)
 {
+    bool sampled;
     normalSample = source.loadTexture(normalTexture, hit.texcoord,
         float4(0.5, 0.5, 1.0, 1.0), push, rayCone, hit, rayDirection,
-        deterministicMip0, seed, footprint);
+        deterministicMip0, seed, footprint, sampled);
     if (applyDebugNormalOverrides && (openPbrDebugFlag(push, kOpenPBRDebugDisableNormalMap) ||
         openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures))) {
         normalSample = float4(0.5, 0.5, 1.0, 1.0);
@@ -207,6 +209,15 @@ public void resolveSceneSurfaceNormal<TSource : ISceneMaterialTextureSource>(
     if (faceForwardNormal) {
         hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, rayDirection);
     }
+}
+
+internal float3 modulateSceneMaterialColor(float3 workingFactor, float3 textureSample,
+    MaterialTextureInfo textureInfo, bool sampled, bool disableTextures)
+{
+    // CPU-authored factors already use the working color space. A fallback is
+    // the multiplicative identity, with no texture flags or color conversion.
+    if (!sampled || disableTextures) { return workingFactor; }
+    return materialTextureModulate(workingFactor, textureSample, textureInfo.transform0.w);
 }
 
 public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMaterialSource>(
@@ -234,6 +245,10 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         if (faceForwardNormal) { hit.normal = faceForwardShadingNormal(hit.normal, hit.geometryNormal, rayDirection); }
     }
 #endif
+    bool baseColorSampled;
+    bool emissiveSampled;
+    bool specularColorSampled;
+    bool sampled;
     float4 baseColorSample = source.loadTexture(
         material.baseColorTexture,
         hit.texcoord,
@@ -243,7 +258,7 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed, footprint);
+        seed, footprint, baseColorSampled);
     float4 metallicRoughnessSample = source.loadTexture(
         material.metallicRoughnessTexture,
         hit.texcoord,
@@ -253,7 +268,7 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed, footprint);
+        seed, footprint, sampled);
     float4 emissiveSample = source.loadTexture(
         material.emissiveTexture,
         hit.texcoord,
@@ -263,7 +278,7 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed, footprint);
+        seed, footprint, emissiveSampled);
     float4 occlusionSample = source.loadTexture(
         material.occlusionTexture,
         hit.texcoord,
@@ -273,7 +288,7 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed, footprint);
+        seed, footprint, sampled);
     float4 transmissionSample = source.loadTexture(
         material.transmissionTexture,
         hit.texcoord,
@@ -283,12 +298,14 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         hit,
         rayDirection,
         deterministicGlassTextures,
-        seed, footprint);
+        seed, footprint, sampled);
     float4 specularSample = source.loadTexture(material.specularTexture, hit.texcoord,
-        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint);
+        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, sampled);
     float4 specularColorSample = source.loadTexture(material.specularColorTexture, hit.texcoord,
-        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint);
-    if (openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures)) {
+        float4(1.0), push, rayCone, hit, rayDirection, deterministicGlassTextures, seed, footprint, specularColorSampled);
+    bool disableTextures = openPbrDebugFlag(push, kOpenPBRDebugDisableMaterialTextures);
+    // Keep bound-slot sampling and RNG advancement unchanged in debug mode.
+    if (disableTextures) {
         baseColorSample = float4(1.0, 1.0, 1.0, 1.0);
         metallicRoughnessSample = float4(1.0, 1.0, 1.0, 1.0);
         emissiveSample = float4(1.0, 1.0, 1.0, 1.0);
@@ -296,7 +313,8 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         transmissionSample = float4(1.0, 1.0, 1.0, 1.0);
         specularSample = specularColorSample = float4(1.0);
     }
-    float3 baseColor = saturate(materialTextureModulate(material.baseColor.rgb, baseColorSample.rgb, material.baseColorTexture.transform0.w));
+    float3 baseColor = saturate(modulateSceneMaterialColor(material.baseColor.rgb,
+        baseColorSample.rgb, material.baseColorTexture, baseColorSampled, disableTextures));
     float metallic = saturate(material.params.x * metallicRoughnessSample.b);
     float roughness = clamp(material.params.y * metallicRoughnessSample.g, 0.001, 1.0);
     float transmission = saturate(material.glassParams.x * transmissionSample.r);
@@ -304,7 +322,8 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
         transmission = 0.0;
     }
     float ior = clamp(material.glassParams.y, 1.0, 3.0);
-    float3 emissive = max(materialTextureModulate(material.emissive.rgb, emissiveSample.rgb, material.emissiveTexture.transform0.w), float3(0.0, 0.0, 0.0));
+    float3 emissive = max(modulateSceneMaterialColor(material.emissive.rgb,
+        emissiveSample.rgb, material.emissiveTexture, emissiveSampled, disableTextures), float3(0.0));
 #if METALLIC_CUSTOM_MATERIALS
     // Frontends author final surface inputs; texture expressions must not be multiplied twice.
     if ((surface.overrideMask & 1u) != 0u) { baseColor = material.baseColor.rgb; }
@@ -325,7 +344,8 @@ public OpenPBRClosure<TSource.Context> resolveOpenPBRInputs<TSource : IOpenPBRMa
     result.inputs.base_metalness = metallic;
 
     result.inputs.specular_weight = lerp(saturate(material.specular.w * specularSample.a), 1.0, metallic);
-    result.inputs.specular_color = lerp(saturate(materialTextureModulate(material.specular.rgb, specularColorSample.rgb, material.specularColorTexture.transform0.w)), float3(1.0), metallic);
+    result.inputs.specular_color = lerp(saturate(modulateSceneMaterialColor(material.specular.rgb,
+        specularColorSample.rgb, material.specularColorTexture, specularColorSampled, disableTextures)), float3(1.0), metallic);
     result.inputs.specular_roughness = roughness;
     result.inputs.specular_roughness_anisotropy = 0.0;
     result.inputs.specular_ior = ior;

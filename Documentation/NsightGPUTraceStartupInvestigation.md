@@ -86,3 +86,40 @@ per-case commands/results with executable hashes. Captures remain under
 The application PSO cache is isolated to this evidence directory. Shader and
 driver caches are not cleared. Differences from the reported cold startup
 are not a performance A/B result.
+
+
+## Live export operation timeout (2026-10-18)
+
+A later interactive LookDev session completed startup but exited with code 1
+about six seconds after requesting its first GPU Trace. The owned host log
+`GpuTraceHost-37588.log` reported `Operation timeout, consider retrying with
+timeouts disabled.` The editor detected the dead host and deliberately stopped
+its render loop; this evidence does not show a native access violation or
+Vulkan device loss.
+
+The installed Nsight 2026.3.1 CLI distinguishes general operation timeouts from
+`--trace-timeout` (trace start through data transfer). The live host now uses
+`--no-timeout` as advised by its diagnostic, while retaining `--trace-timeout
+120`, the independent 60-second startup watchdog, and the application's
+120-second export polling deadline. The polling deadline cannot interrupt an
+internally blocked Vulkan call; integration runs also use an external process
+budget. Host operation-timeout messages are now surfaced in the editor's own
+error message instead of being reduced to "host exited".
+
+RelWithDebInfo LookDev exported three fresh GPU Trace files and exited 0,
+covering 1797x694, 1957x784, and restored 1797x694 viewports. The smoke workflow
+uses the same capture request and Present boundaries as the Profiler button.
+The invalid-metrics startup regression also passed with a specific diagnostic
+and exit 1. Its first attempt was rejected earlier by source-epoch validation;
+the isolated rerun reached and verified the intended error path.
+This validates the default LookDev workload and resize sequence, not every
+possible interactive session. The repeated missing `kFeatureDLSS_G` diagnostics
+are a separate issue: the application does not load Frame Generation, and the
+reported session continued rendering after those messages.
+
+Evidence: `.cache/lookdev-nsight-timeout-20261018/` contains the supplied logs,
+build and integration logs, and `result.json` with executable/capture hashes.
+Fresh traces are under `Captures/NsightGraphics/LookDev_2026_10_18_14_06_52`,
+`...14_06_58`, and `...14_07_03` (all `.ngfx-gputrace`). This is capture failure
+validation, not a performance measurement; no GPU counter analysis or timing
+speedup is claimed.

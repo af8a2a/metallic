@@ -48,18 +48,19 @@ struct LightingProbeSource : IOpenPBRMaterialSource, IDebugLambertSource
     }
     float4 loadTexture(MaterialTextureInfo info, float2 uv, float4 fallback,
         ScenePathTracePush push, RayCone cone, HitInfo hit, float3 rayDirection,
-        bool deterministicMip0, inout uint seed, TextureFootprint footprint)
+        bool deterministicMip0, inout uint seed, TextureFootprint footprint, out bool sampled)
     {
         ProbeSource source;
         source.probe = probe;
-        return source.loadTexture(info, uv, fallback, push, cone, hit, rayDirection, deterministicMip0, seed, footprint);
+        return source.loadTexture(info, uv, fallback, push, cone, hit, rayDirection, deterministicMip0, seed, footprint, sampled);
     }
     DebugLambertInputs evaluateInputs(SurfaceMaterialContext context, MaterialInstanceRef instance)
     {
         OpenPBRMaterialParameters material = loadParameters(instance);
         uint seed = 0;
+        bool sampled;
         float4 color = loadTexture(material.baseColorTexture, context.texCoord0, float4(1),
-            (ScenePathTracePush)0, (RayCone)0, (HitInfo)0, float3(0), true, seed, context.footprint);
+            (ScenePathTracePush)0, (RayCone)0, (HitInfo)0, float3(0), true, seed, context.footprint, sampled);
         DebugLambertInputs result;
         result.albedo = material.baseColor.rgb * color.rgb;
         result.emission = float3(0);

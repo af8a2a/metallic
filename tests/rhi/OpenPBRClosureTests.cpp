@@ -67,6 +67,92 @@ void require(const Result<T>& value, const std::string& message)
     require(bool(value), message);
 }
 
+void runOpenPBRColorSlots(RHITestContext& context, Device& device, ResourceRegistry& registry,
+    Buffer& parameters, Buffer& output, Buffer& counters, TextureView& view)
+{
+    std::string log;
+    auto shader = compileSlangShaderToSpirv({.moduleName = "OpenPBRClosureProbe",
+        .entryPointName = "openPBRColorSlotProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"},
+        {.enableDiskCache = false}, log);
+    require(shader, "OpenPBR color-slot probe compile failed: " + log);
+    ComputeKernel kernel;
+    require(kernel.initialize(device, {.spirv = shader->spirv,
+        .parameters = parameterAbi<OpenPBRProbeParams>(kOpenPBRProbeABI, ParameterTransport::InlinePush)}, log), log);
+    std::array<uint32_t, 5> counts{};
+    auto* countUpload = counters.map();
+    require(countUpload != nullptr, "Color-slot counters mapping failed");
+    std::memcpy(countUpload, counts.data(), sizeof(counts));
+    counters.flush(); counters.unmap();
+    bench::GPUCommands gpu(*device.getQueue(QueueType::Graphics));
+    require(gpu.initialize(device), "Color-slot commands failed");
+    ParameterWriter writer(device, registry);
+    OpenPBRProbeParams params{writer.bufferSpan<Float4>(&parameters), writer.bufferSpan<Float4>(&output),
+        writer.sampledImageHandle(&view), writer.buffer(&counters), 0};
+    auto encoded = writer.encode(params, kOpenPBRProbeABI, ParameterTransport::InlinePush);
+    require(encoded, "Color-slot parameter encode failed");
+    require(kernel.dispatch(*gpu.commands, *encoded, 1), "Color-slot dispatch failed");
+    require(gpu.submitAndWait(), "Color-slot GPU dispatch failed");
+    output.invalidate(); counters.invalidate();
+    const auto* countData = counters.map();
+    require(countData != nullptr, "Color-slot counter readback failed");
+    std::memcpy(counts.data(), countData, sizeof(counts)); counters.unmap();
+    require(counts == std::array<uint32_t, 5>{0, 64 * 7, 96, 0, 0},
+        "Color-slot presence/debug override changed provider request or sample counts");
+    const auto* mapped = static_cast<const Float4*>(output.map());
+    require(mapped != nullptr, "Color-slot output mapping failed");
+    const std::vector<Float4> data(mapped, mapped + 64 * 4);
+    output.unmap();
+    bench::readbackEvidence(context, "OpenPBR-color-slots.bin", std::span<const Float4>(data));
+    std::ofstream report(context.outputDirectory / "OpenPBRColorSlots.txt");
+    const std::array<color::RGB, 3> factors{{{0.8f, 0.6f, 0.4f}, {2.3f, -0.1f, 0.7f}, {0.2f, 0.7f, 0.9f}}};
+    const color::RGB texel{1, 0.5f, 0.25f};
+    float maxError = 0;
+    for (uint32_t lane = 0; lane < 64; ++lane) {
+        const uint32_t mask = lane & 7u;
+        const bool linear = (lane & 8u) != 0;
+        const bool disabled = (lane & 16u) != 0;
+        const bool unlit = (lane & 32u) != 0;
+        std::array<color::RGB, 3> expected = factors;
+        for (uint32_t slot = 0; slot < 3; ++slot) {
+            if ((mask & (1u << slot)) != 0 && !disabled) {
+                auto sourceFactor = color::toLinearRec709(factors[slot]);
+                for (uint32_t c = 0; c < 3; ++c) {
+                    sourceFactor[c] *= linear ? texel[c] : color::decodeSRGB(texel[c]);
+                }
+                expected[slot] = color::fromLinearRec709(sourceFactor);
+            }
+            for (float& channel : expected[slot]) {
+                channel = slot == 1 ? std::max(channel, 0.f) : std::clamp(channel, 0.f, 1.f);
+            }
+        }
+        if (unlit) { expected[1] = expected[0]; }
+        const uint32_t base = lane * 4;
+        for (uint32_t slot = 0; slot < 4; ++slot) {
+            for (float value : data[base + slot]) { require(std::isfinite(value), "Non-finite color-slot output"); }
+        }
+        for (uint32_t slot = 0; slot < 3; ++slot) {
+            for (uint32_t c = 0; c < 3; ++c) {
+                const float actual = data[base + slot][c];
+                maxError = std::max(maxError, std::abs(actual - expected[slot][c]));
+                require(std::abs(actual - expected[slot][c]) <= 2e-6f,
+                    "Color-slot working-space mismatch at lane " + std::to_string(lane) + " slot " + std::to_string(slot));
+                // Untouched factors must survive exactly, not a color-space
+                // round trip. Emission additionally normalizes its radiance.
+                if (slot != 1 && (disabled || (mask & (1u << slot)) == 0)) {
+                    require(actual == expected[slot][c], "Absent/disabled color slot changed working-space factor");
+                }
+            }
+        }
+        const float expectedOpacity = 0.37f * (((mask & 1u) != 0 && !disabled) ? 0.25f : 1.f);
+        require(data[base][3] == expectedOpacity, "Color-slot modulation changed sampled/fallback opacity");
+        require(data[base + 1][3] == (unlit ? 0.f : 1.f) &&
+            data[base + 2][3] == (unlit ? 0.f : 0.63f), "Color-slot modulation changed unlit weights");
+        require(data[base + 3] == Float4{0, 0, 1, 123}, "Color-slot modulation changed geometry basis or sampling seed");
+    }
+    report << "cases=64 masks=8 transfers=srgb,linear debugDisable=0,1 unlit=0,1 materialTextureCount=0"
+        << " textureRequests=" << counts[1] << " textureLoads=" << counts[2] << " maxError=" << maxError << '\n';
+}
+
 RHITestResult runSurfaceLighting(RHITestContext& context, Device& device,
     Buffer& parameters, Buffer& output, Buffer& counters, TextureView& view)
 {
@@ -503,8 +589,9 @@ public:
                     std::to_string(events) + " invalid=" + std::to_string(invalid) + " entering=" +
                     std::to_string(entering) + " exiting=" + std::to_string(exiting));
             }
+            runOpenPBRColorSlots(context, *device, registry, *parameters, *output, *counters, *view);
             require(validationErrors == 0, "Vulkan validation errors");
-            return RHITestResult::pass("Shared production OpenPBR program; 1/8 lights, vendor equivalence, normal mapping and both IOR sides");
+            return RHITestResult::pass("Shared production OpenPBR program; 1/8 lights, vendor equivalence, normal mapping, both IOR sides and 64 color-slot cases");
         } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 private:
