@@ -91,6 +91,26 @@ def images(output, excluded=()):
     return result
 
 
+def validate_node_queues(nodes, expected=None):
+    if expected is None:
+        if any(type(node["queue"]) is not int or node["queue"] != 0 for node in nodes):
+            raise ValueError("Unexpected asynchronous timing scope")
+        return
+    if (not isinstance(expected, dict) or not expected or
+        any(not isinstance(name, str) or not name or type(queue) is not int or queue not in (0, 1, 2)
+            for name, queue in expected.items())):
+        raise ValueError("Invalid expectedNodeQueues contract")
+    actual = {node["name"]: node["queue"] for node in nodes}
+    if (len(actual) != len(nodes) or actual != expected or
+        any(type(node["queue"]) is not int for node in nodes)):
+        raise ValueError("Unexpected node timing queue contract")
+
+
+def capture_cache_policy(warmup_frames):
+    excluded = f"frames 0-{warmup_frames - 1} excluded" if warmup_frames else "no warmup frames excluded"
+    return f"Existing disk caches retained; {excluded}; no GPU clock changes"
+
+
 def verify(output):
     manifest = read(output / "Manifest.json")
     actual = {str(p.relative_to(output)).replace("\\", "/"): digest(p)
@@ -98,8 +118,12 @@ def verify(output):
     if manifest != actual:
         raise ValueError("Evidence file set or hash changed")
     reports = sorted(output.glob("run-*/MaterialBaseline.json"))
-    if len(reports) != 3 or read(output / "Process.json")["exitCodes"] != [0, 0, 0]:
-        raise ValueError("Three successful independent processes required")
+    processes = read(output / "Process.json")
+    run_count = processes.get("runCount", 3)
+    if type(run_count) is not int or not 1 <= run_count <= 10:
+        raise ValueError("runCount must be an integer from 1 to 10")
+    if len(reports) != run_count or processes["exitCodes"] != [0] * run_count:
+        raise ValueError(f"Exactly {run_count} successful independent processes required")
     config = read(output / "fixtures/Cases.json")
     specifications = config["cases"]
     expected = {c["id"] for c in specifications}
@@ -113,6 +137,8 @@ def verify(output):
             raise ValueError("Invalid case set or diagnostic timings")
         for case in report["cases"]:
             spec = next(c for c in specifications if c["id"] == case["id"])
+            if "expectedNodeQueues" in spec and spec["expectedNodeQueues"] is None:
+                raise ValueError("Invalid expectedNodeQueues contract")
             if any(case.get(key) != value for key, value in spec.items()):
                 raise ValueError("Captured case differs from fixed fixture")
             if config.get("version", 1) >= 2:
@@ -149,8 +175,9 @@ def verify(output):
                     # then joins before Deferred. Its graphics envelope includes
                     # those waits; it is not the sum of concurrent queue times.
                     expected_branches = spec.get("expectedAsyncComputeBranches", 2 if spec.get("backend") == "Deferred" else 0)
-                    if frame["asyncComputeBranches"] != expected_branches or any(n["queue"] != 0 for n in frame["nodes"]):
+                    if frame["asyncComputeBranches"] != expected_branches:
                         raise ValueError("Unexpected asynchronous timing scope")
+                    validate_node_queues(frame["nodes"], spec.get("expectedNodeQueues"))
                 node = next((n for n in frame["nodes"] if n["name"] == required[0]), None)
                 if node is None or node["gpuMs"] is None:
                     raise ValueError("Missing material pass timing")
@@ -162,13 +189,17 @@ def verify(output):
     import numpy as np
     aa = {}
     for name, runs in images(output, invalid_hdr).items():
-        if len(runs) != 3:
+        if len(runs) != run_count:
             raise ValueError("Missing image repeat")
+        if run_count == 1:
+            aa[name] = {"qualified": False, "meaning": "One process; image A/A stability is untested.",
+                        "maxAbsoluteDifference": None, "rgbRMSE": [], "exact": None}
+            continue
         aa[name] = {"maxAbsoluteDifference": float(max(np.max(np.abs(x - runs[0])) for x in runs[1:])),
                     "rgbRMSE": [float(np.sqrt(np.mean((x[:, :, :3] - runs[0][:, :, :3]) ** 2))) for x in runs[1:]],
                     "exact": all(np.array_equal(x, runs[0]) for x in runs[1:])}
     return {"verified": True, "meaning": "Evidence integrity only; invalidHDR cases are NOT qualified performance baselines.",
-            "invalidHDR": invalid_hdr, "imageAA": aa}
+            "runCount": run_count, "invalidHDR": invalid_hdr, "imageAA": aa}
 
 
 def run(args):
@@ -205,15 +236,16 @@ def run(args):
         if case_path:
             env["METALLIC_MATERIAL_BASELINE_CASES"] = str(case_path)
         save(output / "Environment.json", {k: v for k, v in env.items() if k.startswith("METALLIC_")})
-        processes = {"exitCodes": [], "commands": [], "timeoutSeconds": args.timeout,
-                     "cache": "Existing disk caches retained; frames 0-31 excluded; no GPU clock changes"}
-        for index in range(3):
+        warmup_frames = read(output / "fixtures/Cases.json").get("warmupFrames", 32)
+        processes = {"runCount": args.runs, "exitCodes": [], "commands": [], "timeoutSeconds": args.timeout,
+                     "cache": capture_cache_policy(warmup_frames)}
+        for index in range(args.runs):
             destination = output / f"run-{index}"
             destination.mkdir()
             command = [str(exe), "--gtest_filter=*material_phase0_baseline*", "--rhi-no-validation",
                        "--output-dir", str(destination), f"--gtest_output=xml:{destination / 'Tests.xml'}"]
             processes["commands"].append(command)
-            print(f"Capturing process {index + 1}/3: {destination}", flush=True)
+            print(f"Capturing process {index + 1}/{args.runs}: {destination}", flush=True)
             with (destination / "stdout.log").open("wb") as stdout, (destination / "stderr.log").open("wb") as stderr:
                 with (destination / "Telemetry.csv").open("wb") as telemetry:
                     monitor = subprocess.Popen(["nvidia-smi", "--query-gpu=timestamp,pstate,temperature.gpu,utilization.gpu,memory.used,clocks.sm,clocks.mem,power.draw", "--format=csv", "-l", "1"], stdout=telemetry, stderr=subprocess.DEVNULL)
@@ -271,6 +303,8 @@ def main():
     capture.add_argument("--exe", type=Path, required=True)
     capture.add_argument("--output", type=Path, required=True)
     capture.add_argument("--timeout", type=int, default=600)
+    capture.add_argument("--runs", type=int, choices=range(1, 11), default=3,
+                         help="Independent processes per package (default: 3); one run does not qualify image A/A stability")
     capture.add_argument("--cases", type=Path, help="Explicit Cases.json; defaults to Phase 0 fixtures")
     check = sub.add_parser("verify")
     check.add_argument("output", type=Path)

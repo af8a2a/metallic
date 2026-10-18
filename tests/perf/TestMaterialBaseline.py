@@ -1,5 +1,8 @@
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
+import shutil
 import struct
 import sys
 import tempfile
@@ -12,6 +15,47 @@ import MaterialBaseline as baseline
 
 
 class MaterialBaselineIdentityTests(unittest.TestCase):
+    def test_cache_policy_uses_actual_warmup_window(self):
+        self.assertIn("frames 0-31 excluded", baseline.capture_cache_policy(32))
+        self.assertIn("frames 0-127 excluded", baseline.capture_cache_policy(128))
+        self.assertIn("no warmup frames excluded", baseline.capture_cache_policy(0))
+
+    def test_explicit_node_queue_contract(self):
+        expected = {"PathTrace": 0, "AutoExposure": 0, "ColorGrading": 1, "FinalBlit": 1}
+        nodes = [dict(name=name, queue=queue) for name, queue in expected.items()]
+        baseline.validate_node_queues(nodes, expected)
+        for changed in (nodes[:-1], nodes + [nodes[0]], nodes + [dict(name="Extra", queue=0)],
+                        nodes[:-1] + [dict(name="FinalBlit", queue=0)],
+                        nodes[:-1] + [dict(name="FinalBlit", queue=True)]):
+            with self.subTest(nodes=changed), self.assertRaisesRegex(ValueError, "node timing queue"):
+                baseline.validate_node_queues(changed, expected)
+        with self.assertRaisesRegex(ValueError, "asynchronous timing scope"):
+            baseline.validate_node_queues(nodes)
+        for malformed in ({}, [], {"Unknown": 3}, {"Boolean": True}, {"Float": 1.0}, {"": 0}):
+            with self.subTest(expected=malformed), self.assertRaisesRegex(ValueError, "expectedNodeQueues"):
+                baseline.validate_node_queues(nodes, malformed)
+
+    def test_run_count_cli_default_and_valid_range(self):
+        for count in (None, 1, 2, 3, 10):
+            with self.subTest(count=count):
+                argv = ["MaterialBaseline.py", "run", "--exe", "test.exe", "--output", "capture"]
+                if count is not None:
+                    argv += ["--runs", str(count)]
+                with patch.object(sys, "argv", argv), patch.object(baseline, "run") as capture:
+                    baseline.main()
+                self.assertEqual(capture.call_args.args[0].runs, 3 if count is None else count)
+
+    def test_run_count_cli_rejects_invalid_values(self):
+        for count in ("0", "11", "1.5"):
+            with self.subTest(count=count), contextlib.redirect_stderr(io.StringIO()), \
+                    patch.object(sys, "argv", ["MaterialBaseline.py", "run", "--exe", "test.exe",
+                                              "--output", "capture", "--runs", count]), \
+                    patch.object(baseline, "run") as capture:
+                with self.assertRaises(SystemExit) as raised:
+                    baseline.main()
+                self.assertEqual(raised.exception.code, 2)
+                capture.assert_not_called()
+
     def test_identity_does_not_require_access_to_optional_submodule_worktrees(self):
         def git(command, **kwargs):
             if command[1] == "status" and "--ignore-submodules=all" not in command:
@@ -66,6 +110,58 @@ class MaterialBaselineTests(unittest.TestCase):
         action(report)
         baseline.save(path, report)
         baseline.seal(self.root)
+
+    def set_run_count(self, count):
+        for index in range(1, 10):
+            path = self.root / f"run-{index}"
+            if path.exists():
+                shutil.rmtree(path)
+            if index < count:
+                shutil.copytree(self.root / "run-0", path)
+        baseline.save(self.root / "Process.json", {"runCount": count, "exitCodes": [0] * count})
+        baseline.seal(self.root)
+
+    def test_explicit_run_counts(self):
+        for count in (1, 2, 3, 10):
+            with self.subTest(count=count):
+                self.set_run_count(count)
+                result = baseline.verify(self.root)
+                self.assertTrue(result["verified"])
+                self.assertEqual(result["runCount"], count)
+                for aa in result["imageAA"].values():
+                    if count == 1:
+                        self.assertFalse(aa["qualified"])
+                        self.assertIsNone(aa["exact"])
+                        self.assertIsNone(aa["maxAbsoluteDifference"])
+                        self.assertEqual(aa["rgbRMSE"], [])
+                        self.assertIn("untested", aa["meaning"])
+                    else:
+                        self.assertTrue(aa["exact"])
+                        self.assertEqual(len(aa["rgbRMSE"]), count - 1)
+
+    def test_legacy_requires_three_processes(self):
+        self.assertEqual(baseline.verify(self.root)["runCount"], 3)
+        self.set_run_count(1)
+        baseline.save(self.root / "Process.json", {"exitCodes": [0]})
+        baseline.seal(self.root)
+        with self.assertRaisesRegex(ValueError, "Exactly 3"):
+            baseline.verify(self.root)
+
+    def test_declared_count_report_and_exit_code_mismatches_rejected(self):
+        for count, codes in [(1, [0]), (3, [0]), (3, [0, 0, 1]), (3, [0, 0, 0, 0])]:
+            with self.subTest(count=count, codes=codes):
+                baseline.save(self.root / "Process.json", {"runCount": count, "exitCodes": codes})
+                baseline.seal(self.root)
+                with self.assertRaisesRegex(ValueError, "successful independent processes"):
+                    baseline.verify(self.root)
+
+    def test_invalid_recorded_counts_rejected(self):
+        for count in (0, 11, 1.5, True, "3", None):
+            with self.subTest(count=count):
+                baseline.save(self.root / "Process.json", {"runCount": count, "exitCodes": [0, 0, 0]})
+                baseline.seal(self.root)
+                with self.assertRaisesRegex(ValueError, "runCount must"):
+                    baseline.verify(self.root)
 
     def test_harness_archive_copies_are_not_additional_processes(self):
         target = self.root / "run-0/reports/cases/0"
@@ -131,6 +227,8 @@ class MaterialBaselineTests(unittest.TestCase):
         config["version"] = 2
         for spec in config["cases"]:
             spec["backend"] = "Deferred" if spec["id"] == "OpenPBRDeferred" else "PT"
+            if spec["id"] == "OpenPBRPathTrace":
+                spec["expectedNodeQueues"] = {"Reference": 0, "FinalBlit": 1}
         baseline.save(self.root / "fixtures/Cases.json", config)
         for index in range(3):
             path = self.root / f"run-{index}/MaterialBaseline.json"
@@ -143,6 +241,10 @@ class MaterialBaselineTests(unittest.TestCase):
                     frame["asyncComputeBranches"] = 2 if case["backend"] == "Deferred" else 0
                     for node in frame["nodes"]:
                         node["queue"] = 0
+                    if case["id"] == "OpenPBRPathTrace":
+                        frame["nodes"].append(dict(name="FinalBlit", queue=1, gpuMs=0.1, sections=[]))
+                if case["id"] == "OpenPBRPathTrace":
+                    case["expectedNodeQueues"] = {"Reference": 0, "FinalBlit": 1}
             if index == 0:
                 report["cases"][0].update(validHDR=False, nonfiniteComponents=1)
                 (path.parent / report["cases"][0]["image"]).write_bytes(struct.pack("<4f", float("nan"), 0, 0, 1))

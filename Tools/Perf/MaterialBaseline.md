@@ -32,6 +32,18 @@ display transforms, comparison sliders and auto exposure are excluded.
 - Required HDR environment must be ready throughout. Explicit graph cameras or
   authored document cameras and manual exposure are required for scene cases.
 
+`run --runs N` selects 1 through 10 independent processes per package; the default
+remains 3. `Process.json.runCount` records the requested count, and verification
+requires exactly that many reports and successful exit codes. Legacy packages
+without `runCount` retain the three-process requirement. Use `--runs 1` when an
+external experiment driver controls interleaved A/B ordering; the package alone
+does not establish A/A stability. Its `imageAA` result is explicitly unqualified
+with null difference/exact values. The external driver must retain the run order
+and compare repeat images and process timings across packages. `compare` does
+not infer interleaving or automatically accept a speedup.
+`PlotMaterialCatalog.py` remains a three-process catalog report; use a separate
+experiment report for packages captured with another run count.
+
 The runner disables validation and sanitizes inherited `METALLIC_*` flags. Run
 correctness/validation separately, e.g. set `METALLIC_MATERIAL_BASELINE_CASES` and
 invoke `RHIRendering.material_phase0_baseline` without `--rhi-no-validation`.
@@ -63,6 +75,13 @@ span including joins, not a sum of concurrent GPU intervals. The verifier requir
 this backend-specific queue contract (two branches for Deferred, zero for PT and
 native strands); an explicit `expectedAsyncComputeBranches` can register another
 contract. All enclosing node timestamps in these fixtures are graphics intervals.
+A version 2 case can declare `expectedNodeQueues`, an exact mapping from node name
+to RHI queue ID (0 graphics, 1 compute, 2 copy), for production graphs containing
+nodes on other queues. Verification requires that exact node set and queue values;
+extra, missing or duplicated nodes are rejected. Without this explicit mapping,
+the existing all-graphics-node requirement remains. These node intervals are not
+summed across queues, and `expectedAsyncComputeBranches` remains independently
+checked. `Process.json.cache` records the actual configured warmup frame window.
 
 The plotter exports raw plotting data, per-process medians, charts, previews and
 a standalone report outside the sealed evidence. A/A uses the relative range of

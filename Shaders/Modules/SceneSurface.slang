@@ -339,15 +339,26 @@ public struct EnvironmentLightSample
     public float pdfSolidAngle;
 };
 
+public float loadEnvironmentImportanceWeight(
+    Texture2D<float> pdfTex, uint2 position, uint mipLevel, uint2 mipDimensions)
+{
+    return all(position < mipDimensions)
+        ? max(pdfTex.Load(int3(position, mipLevel)), 0.0)
+        : 0.0;
+}
+
+public float loadEnvironmentImportanceWeight(uint2 position, uint mipLevel, uint2 mipDimensions)
+{
+    return loadEnvironmentImportanceWeight(sceneEnvironmentImportancePdf(), position, mipLevel, mipDimensions);
+}
+
 public float loadEnvironmentImportanceWeight(uint2 position, uint mipLevel)
 {
     uint width = 0u;
     uint height = 0u;
     uint mipCount = 0u;
     sceneEnvironmentImportancePdf().GetDimensions(mipLevel, width, height, mipCount);
-    return all(position < uint2(width, height))
-        ? max(sceneEnvironmentImportancePdf().Load(int3(position, mipLevel)), 0.0)
-        : 0.0;
+    return loadEnvironmentImportanceWeight(position, mipLevel, uint2(width, height));
 }
 
 public bool sampleEnvironmentImportanceMipmap(
@@ -360,18 +371,25 @@ public bool sampleEnvironmentImportanceMipmap(
     uint width = 0u;
     uint height = 0u;
     uint mipCount = 0u;
-    sceneEnvironmentImportancePdf().GetDimensions(0u, width, height, mipCount);
+    // Reuse the resolved resource for every level and child of this traversal.
+    Texture2D<float> pdfTex = sceneEnvironmentImportancePdf();
+    pdfTex.GetDimensions(0u, width, height, mipCount);
     if (width == 0u || height == 0u || mipCount == 0u) {
         probability = 0.0;
         return false;
     }
     for (int mipLevel = int(mipCount) - 2; mipLevel >= 0; --mipLevel) {
         position *= 2u;
+        // All four children share this mip's extent. Derive it from mip 0
+        // instead of querying the texture inside each dependent weight load.
+        // Keep zero weight for missing children (not edge clamping): thin and
+        // non-power-of-two mips must preserve the original sampling distribution.
+        uint2 mipDimensions = max(uint2(width, height) >> uint(mipLevel), uint2(1u));
         float4 weights = float4(
-            loadEnvironmentImportanceWeight(position + uint2(0u, 0u), uint(mipLevel)),
-            loadEnvironmentImportanceWeight(position + uint2(0u, 1u), uint(mipLevel)),
-            loadEnvironmentImportanceWeight(position + uint2(1u, 0u), uint(mipLevel)),
-            loadEnvironmentImportanceWeight(position + uint2(1u, 1u), uint(mipLevel)));
+            loadEnvironmentImportanceWeight(pdfTex, position + uint2(0u, 0u), uint(mipLevel), mipDimensions),
+            loadEnvironmentImportanceWeight(pdfTex, position + uint2(0u, 1u), uint(mipLevel), mipDimensions),
+            loadEnvironmentImportanceWeight(pdfTex, position + uint2(1u, 0u), uint(mipLevel), mipDimensions),
+            loadEnvironmentImportanceWeight(pdfTex, position + uint2(1u, 1u), uint(mipLevel), mipDimensions));
         float weightSum = weights.x + weights.y + weights.z + weights.w;
         if (weightSum <= 0.0) {
             probability = 0.0;
@@ -404,10 +422,11 @@ public float environmentImportanceTexelProbability(uint2 position)
     if (mipCount == 0u || any(position >= uint2(width, height))) {
         return 0.0;
     }
-    float averageWeight = loadEnvironmentImportanceWeight(uint2(0u), mipCount - 1u);
+    uint2 topDimensions = max(uint2(width, height) >> (mipCount - 1u), uint2(1u));
+    float averageWeight = loadEnvironmentImportanceWeight(uint2(0u), mipCount - 1u, topDimensions);
     float totalWeight = averageWeight * float(width * height);
     return totalWeight > 0.0
-        ? loadEnvironmentImportanceWeight(position, 0u) / totalWeight
+        ? loadEnvironmentImportanceWeight(position, 0u, uint2(width, height)) / totalWeight
         : 0.0;
 }
 

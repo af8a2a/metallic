@@ -476,7 +476,7 @@ public:
                         return rendered;
                     }();
                     if (!rendered) { return fail(id + ": " + preview.lastLog()); }
-                    if (spec.contains("materialOverrides") && artifactFailureLog(preview.lastLog())) {
+                    if (artifactFailureLog(preview.lastLog())) {
                         return fail(id + ": material compilation fallback: " + preview.lastLog());
                     }
                     if (artifact && (artifactFailureLog(preview.lastLog()) || artifact->rejected() != caseRejectedBefore)) {
