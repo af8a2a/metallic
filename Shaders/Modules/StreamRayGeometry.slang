@@ -41,10 +41,11 @@ struct StreamRayInstance
 public bool streamRayMaterialIndex(uint instanceIndex, out uint materialIndex)
 {
     materialIndex = 0u;
+    let instances = gRayStreamInstances;
     uint count, stride;
-    gRayStreamInstances.GetDimensions(count, stride);
+    instances.GetDimensions(count, stride);
     if (instanceIndex >= count) { return false; }
-    materialIndex = gRayStreamInstances[instanceIndex].materialIndex;
+    materialIndex = instances[instanceIndex].materialIndex;
     return true;
 }
 
@@ -85,18 +86,20 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     uint clusterStride = METALLIC_STREAM_CLAS_CLUSTER_STRIDE)
 {
     hit = (HitInfo)0;
+    let instances = gRayStreamInstances;
     uint count, stride;
-    gRayStreamInstances.GetDimensions(count, stride);
+    instances.GetDimensions(count, stride);
     if (instanceIndex >= count) { return false; }
-    StreamRayInstance instance = gRayStreamInstances[instanceIndex];
+    StreamRayInstance instance = instances[instanceIndex];
     if (clusterStride == 0u) { return false; }
     uint2 address = streamRayClusterAddress(clusterId, clusterStride);
     float3 a, b, c;
     StreamTriangleDecodeContext triangleContext;
-    if (!decodeStreamTriangleAtPage(address.x, address.y, triangle, gRayStreamPages, gRayStreamPageTable,
+    let pages = gRayStreamPages;
+    if (!decodeStreamTriangleAtPage(address.x, address.y, triangle, pages, gRayStreamPageTable,
         streamPageWordCount(gRayStreamPageCount), a, b, c, triangleContext)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes = decodeStreamAttributes(gRayStreamPages, triangleContext, n, uv, tangents);
+    uint attributes = decodeStreamAttributes(pages, triangleContext, n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = streamRayTriangleNormal(b - a, c - a, float3(0, 1, 0));
     hit.geometryNormal = streamRayNormal(instance, localGeometry);
