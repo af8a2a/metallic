@@ -1,0 +1,43 @@
+{
+    "version": 2,
+    "frames": 768,
+    "warmupFrames": 256,
+    "timingFrames": 256,
+    "display": {
+        "transfer": "sRGB",
+        "exposureEV100": 0,
+        "toneMap": "none",
+        "multiplier": 1
+    },
+    "cases": [
+        {
+            "id": "LookDevOpenPBRPathTrace1Spp",
+            "graph": "../../../Pipelines/Samples/openpbr_lookdev.metallic_graph.json",
+            "scene": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+            "output": "PathTrace.color",
+            "width": 1920,
+            "height": 1080,
+            "samplesPerFrame": 1,
+            "maxDepth": 12,
+            "accumulatedSpp": 768,
+            "useRenderView": true,
+            "renderViewCameraNode": "PathTrace",
+            "requireEnvironment": true,
+            "requiredTiming": ["PathTrace", "Path trace shading"],
+            "expectedAsyncComputeBranches": 0,
+            "backend": "PathTrace",
+            "expectedNodeQueues": {
+                "ColorGrading": 1,
+                "PathTrace": 0,
+                "FinalBlit": 1,
+                "AutoExposure": 0
+            }
+        }
+    ],
+    "assetFiles": [
+        "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
+        "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.metallic_scene.json",
+        "Asset/LookDev/OpenPBRDefault/Shaderball.bin",
+        "Asset/LookDev/OpenPBRDefault/san_giuseppe_bridge_split.hdr"
+    ]
+}

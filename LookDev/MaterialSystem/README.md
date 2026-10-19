@@ -5,6 +5,10 @@ VBuffer Deferred and RTXCR Chiang workloads. Run from the repository root.
 The runner hashes referenced assets and these fixtures before and after capture.
 Do not silently regenerate or edit the reference when comparing a candidate.
 
+For default LookDev GPU performance tuning, use the dedicated
+[1 spp accumulation baseline](../Performance/PathTrace1Spp/README.md).
+These Phase 0 fixtures retain their original sampling settings and are not that baseline.
+
 Images, timestamps, diagnostic captures and reports belong in a new ignored
 `build/material-phase0-*` directory, not in this source directory.
 

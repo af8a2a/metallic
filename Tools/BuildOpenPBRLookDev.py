@@ -115,7 +115,7 @@ def main():
     graph = {"version": 1, "name": "OpenPBR Default LookDev", "nodes": [
         {"id": 1, "name": "PathTrace", "type": "ScenePathTracePass",
             "position": {"x": 80.0, "y": 120.0},
-            "properties": {"path": scene_path, "camera": camera, "samples": 4, "bsdf": "openpbr",
+            "properties": {"path": scene_path, "camera": camera, "samples": 1, "bsdf": "openpbr",
                 "maxDepth": 12, "accumulate": True, "outputLinear": True}},
         {"id": 2, "name": "AutoExposure", "type": "AutoExposurePass",
             "position": {"x": 440.0, "y": 120.0}, "properties": {"toneCurve": "none"}},

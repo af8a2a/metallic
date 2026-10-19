@@ -33,7 +33,7 @@
                     "znear": 0.05,
                     "zfar": 100.0
                 },
-                "samples": 4,
+                "samples": 1,
                 "bsdf": "openpbr",
                 "cacheMode": "off",
                 "maxDepth": 12,
