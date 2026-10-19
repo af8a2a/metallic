@@ -14,6 +14,41 @@ using Metallic.ScenePathTracing;
 using Metallic.StreamGeometry;
 using Metallic.SceneShadowQueries;
 
+uint referenceClusterStride()
+{
+    return resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<SceneResourceParameters>().rayStreamHeader)[2];
+}
+
+bool equalHitBits(HitInfo a, HitInfo b)
+{
+    return asuint(a.t) == asuint(b.t) && all(asuint(a.position) == asuint(b.position)) &&
+        all(asuint(a.normal) == asuint(b.normal)) && all(asuint(a.geometryNormal) == asuint(b.geometryNormal)) &&
+        all(asuint(a.tangent) == asuint(b.tangent)) && all(asuint(a.bitangent) == asuint(b.bitangent)) &&
+        all(asuint(a.texcoord) == asuint(b.texcoord)) && a.materialIndex == b.materialIndex &&
+        a.instanceIndex == b.instanceIndex && a.primitiveIndex == b.primitiveIndex && a.triangleIndex == b.triangleIndex &&
+        asuint(a.rayConeLodConstant) == asuint(b.rayConeLodConstant) && a.frontFace == b.frontFace;
+}
+
+uint compareClusterAddressHit(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
+    Ray ray, float t, float bitangentFlip)
+{
+    HitInfo defaultHit, genericHit, zeroStride;
+    uint stride = referenceClusterStride();
+    bool fixedFound = streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, bitangentFlip, defaultHit);
+    bool genericFound = streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, bitangentFlip, genericHit, false, stride);
+    uint failures = !fixedFound || !genericFound || !equalHitBits(defaultHit, genericHit) ? 131072u : 0u;
+    float2 fixedUV = streamRayTexcoord(clusterId, triangle, bary);
+    float2 genericUV = streamRayTexcoord(clusterId, triangle, bary, stride);
+    failures |= !all(asuint(fixedUV) == asuint(genericUV)) || !all(asuint(fixedUV) == asuint(genericHit.texcoord)) ? 262144u : 0u;
+    bool zeroFound = streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, bitangentFlip, zeroStride, false, 0u);
+    failures |= zeroFound || !equalHitBits(zeroStride, (HitInfo)0) ? 524288u : 0u;
+    // Also instantiate the shadow-only path; its unconsumed fields remain zero.
+    bool fixedShadow = streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, bitangentFlip, defaultHit, true);
+    bool genericShadow = streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, bitangentFlip, genericHit, true, stride);
+    failures |= !fixedShadow || !genericShadow || !equalHitBits(defaultHit, genericHit) ? 1048576u : 0u;
+    return failures;
+}
+
 // Keep the original full-surface candidate evaluator independent of the
 // production UV-only path, so both opacity classification and UV decoding are
 // checked against the previous contract.
@@ -28,7 +63,7 @@ bool referenceAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
     MaterialCoverageParameters material = sceneMaterialCoverageParameters(loadSceneMaterial(materialIndex));
     if (material.alphaMode < 0.5) { return true; }
     HitInfo hit;
-    if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push.bitangentFlip, hit)) { return false; }
+    if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push.bitangentFlip, hit, false, referenceClusterStride())) { return false; }
     return evaluateSceneCoverage(materialIndex, material, hit.texcoord, push).accepted;
 }
 
@@ -99,7 +134,7 @@ void materialCoverageProbeMain(uint3 id : SV_DispatchThreadID)
             float candidateT = hardwareQuery.CandidateTriangleRayT();
             HitInfo fullHit;
             bool fullHitValid = streamRaySurface(instanceIndex, clusterId, triangle, bary,
-                surfaceRay, candidateT, push.bitangentFlip, fullHit);
+                surfaceRay, candidateT, push.bitangentFlip, fullHit, false, referenceClusterStride());
             float2 candidateUV = streamRayTexcoord(clusterId, triangle, bary);
             traversalFailures |= !fullHitValid || !all(asuint(candidateUV) == asuint(fullHit.texcoord)) ? 65536u : 0u;
             if (streamRayAlphaAccepts(instanceIndex, clusterId, triangle, bary, surfaceRay, candidateT, push)) {
@@ -109,6 +144,11 @@ void materialCoverageProbeMain(uint3 id : SV_DispatchThreadID)
     }
     bool referenceFound = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
     bool hardwareFound = hardwareQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    if (hardwareFound) {
+        traversalFailures |= compareClusterAddressHit(hardwareQuery.CommittedInstanceID(), uint(hardwareQuery.CommittedClusterID()),
+            hardwareQuery.CommittedPrimitiveIndex(), hardwareQuery.CommittedTriangleBarycentrics(), surfaceRay,
+            hardwareQuery.CommittedRayT(), push.bitangentFlip);
+    }
     traversalFailures |= referenceFound != hardwareFound ? 1024u : 0u;
     if (referenceFound && hardwareFound) {
         traversalFailures |= asuint(query.CommittedRayT()) != asuint(hardwareQuery.CommittedRayT()) ? 2048u : 0u;

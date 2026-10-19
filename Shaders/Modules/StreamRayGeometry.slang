@@ -10,6 +10,20 @@ namespace Metallic.StreamGeometry
 {
 using Metallic.GPUDriven;
 
+#include "../Interop/MeshletStreamBLAS.h"
+
+// Production CLAS IDs use the asset-validated fixed stride. Explicit strides
+// retain the generic decoder for direct-header fixtures.
+public uint2 streamRayClusterAddress(uint clusterId, uint clusterStride = METALLIC_STREAM_CLAS_CLUSTER_STRIDE)
+{
+    if (clusterStride == METALLIC_STREAM_CLAS_CLUSTER_STRIDE) {
+        return uint2(clusterId >> METALLIC_STREAM_CLAS_CLUSTER_SHIFT,
+            clusterId & (METALLIC_STREAM_CLAS_CLUSTER_STRIDE - 1u));
+    }
+    uint pageIndex = clusterId / clusterStride;
+    return uint2(pageIndex, clusterId - pageIndex * clusterStride);
+}
+
 // CLAS IDs are pageIndex * maxPageClusters + localCluster. IDs survive arena moves.
 struct StreamRayInstance
 {
@@ -56,32 +70,30 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
 
 // Ray-query candidates reference the published CLAS cut, whose cluster stride
 // and resident geometry remain valid until the frame's GPU completion.
-public float2 streamRayTexcoord(uint clusterId, uint triangle, float2 bary)
+public float2 streamRayTexcoord(uint clusterId, uint triangle, float2 bary,
+    uint clusterStride = METALLIC_STREAM_CLAS_CLUSTER_STRIDE)
 {
-    uint clusterStride = gRayStreamHeader[2];
-    uint pageIndex = clusterId / clusterStride;
-    uint cluster = clusterId - pageIndex * clusterStride;
+    uint2 address = streamRayClusterAddress(clusterId, clusterStride);
     float2 uv[3];
-    decodeStreamTexcoordsAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, uv);
+    decodeStreamTexcoordsAtPage(address.x, address.y, triangle, gRayStreamPages, gRayStreamPageTable, uv);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     return uv[0] * weights.x + uv[1] * weights.y + uv[2] * weights.z;
 }
 
 public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
-    Ray ray, float t, float bitangentFlip, out HitInfo hit, bool shadowOnly = false)
+    Ray ray, float t, float bitangentFlip, out HitInfo hit, bool shadowOnly = false,
+    uint clusterStride = METALLIC_STREAM_CLAS_CLUSTER_STRIDE)
 {
     hit = (HitInfo)0;
     uint count, stride;
     gRayStreamInstances.GetDimensions(count, stride);
     if (instanceIndex >= count) { return false; }
     StreamRayInstance instance = gRayStreamInstances[instanceIndex];
-    uint clusterStride = gRayStreamHeader[2];
     if (clusterStride == 0u) { return false; }
-    uint pageIndex = clusterId / clusterStride;
-    uint cluster = clusterId - pageIndex * clusterStride;
+    uint2 address = streamRayClusterAddress(clusterId, clusterStride);
     float3 a, b, c;
     StreamTriangleDecodeContext triangleContext;
-    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable,
+    if (!decodeStreamTriangleAtPage(address.x, address.y, triangle, gRayStreamPages, gRayStreamPageTable,
         streamPageWordCount(gRayStreamPageCount), a, b, c, triangleContext)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
     uint attributes = decodeStreamAttributes(gRayStreamPages, triangleContext, n, uv, tangents);

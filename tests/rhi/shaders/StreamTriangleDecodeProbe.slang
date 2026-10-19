@@ -2,8 +2,10 @@
 module StreamTriangleDecodeProbe;
 import Core;
 import GPUDriven;
+import StreamRayGeometry;
 using Metallic;
 using Metallic.GPUDriven;
+using Metallic.StreamGeometry;
 
 // Frozen pre-context implementation; never call the compatibility wrappers here.
 uint referenceStreamPageByte(StructuredBuffer<uint> pages, uint address)
@@ -117,6 +119,17 @@ void streamTriangleDecodeProbeMain(uint3 id : SV_DispatchThreadID)
     StructuredBuffer<uint4> cases = resolveBuffer<StructuredBuffer<uint4>>(resources.rayStreamHeader);
     RWStructuredBuffer<uint4> output = resolveBuffer<RWStructuredBuffer<uint4>>(resources.probeOutput);
     uint4 test = cases[id.x];
+    if (test.w == 0xffffffffu) {
+        uint2 genericAddress = streamRayClusterAddress(test.x, test.y);
+        uint2 defaultAddress = streamRayClusterAddress(test.x);
+        uint2 reference = uint2(test.x / test.y, test.x % test.y);
+        uint2 referenceFixed = uint2(test.x / 32u, test.x % 32u);
+        uint failures = any(genericAddress != reference) ? 1u : 0u;
+        failures |= any(defaultAddress != referenceFixed) ? 2u : 0u;
+        failures |= genericAddress.x != test.z ? 4u : 0u;
+        output[id.x] = uint4(failures, genericAddress, defaultAddress.x);
+        return;
+    }
     float3 ra, rb, rc, a, b, c;
     bool referenceValid = referenceDecodeStreamTriangleAtPage(test.x, test.y, test.z, pages, table, push.pageWords, ra, rb, rc);
     StreamTriangleDecodeContext context;

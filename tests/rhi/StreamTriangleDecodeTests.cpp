@@ -150,6 +150,31 @@ public:
             cases.push_back({uint32_t(table.size() - 1), 0, 0, 0}); names.push_back("physical-short-header");
             // The table grew above, so keep the explicit out-of-range case out.
             cases[cases.size() - 2][0] = uint32_t(table.size());
+            const size_t decodeCaseCount = cases.size();
+            const auto addressCase = [&](uint32_t id, uint32_t stride) {
+                // Nonzero denominators are the helper's contract. Zero is
+                // tested on streamRaySurface by MaterialCoverageProbe.
+                cases.push_back({id, stride, id / stride, 0xffffffffu});
+                names.push_back("cluster-address-id" + std::to_string(id) + "-stride" + std::to_string(stride));
+            };
+            for (uint32_t stride : {1u, 2u, 3u, 7u, 12u, 16u, 31u, 32u, 33u, 63u, 64u, 65u,
+                     255u, 256u, 257u, 65535u, 65536u, 65537u, 0x7fffffffu, 0x80000000u, 0xfffffffeu, 0xffffffffu}) {
+                for (uint32_t id : {0u, 1u, 30u, 31u, 32u, 33u, 63u, 64u, 65u, 65535u, 65536u,
+                         0x7fffffffu, 0x80000000u, 0xfffffffdu, 0xfffffffeu, 0xffffffffu}) {
+                    addressCase(id, stride);
+                }
+                addressCase(stride - 1u, stride);
+                addressCase(stride, stride);
+                if (stride != 0xffffffffu) { addressCase(stride + 1u, stride); }
+                addressCase(0xffffffffu - 0xffffffffu % stride, stride);
+            }
+            uint32_t random = 0x3289abcdu;
+            for (uint32_t i = 0; i < 4096u; ++i) {
+                random = random * 1664525u + 1013904223u;
+                const uint32_t id = random;
+                random = random * 1664525u + 1013904223u;
+                addressCase(id, random == 0u ? 1u : random);
+            }
             const auto require = [](bool condition, const std::string& message) {
                 if (!condition) { throw std::runtime_error(message); }
             };
@@ -204,8 +229,13 @@ public:
             for (size_t i = 0; i < actual.size(); ++i) {
                 report << names[i] << " failures=" << actual[i][0] << " valid=" << actual[i][1] << " attributes=" << actual[i][2] << '\n';
                 require(actual[i][0] == 0, names[i] + " decode mismatch bits=" + std::to_string(actual[i][0]));
+                if (i >= decodeCaseCount) {
+                    require(actual[i][1] == cases[i][0] / cases[i][1] && actual[i][2] == cases[i][0] % cases[i][1],
+                        names[i] + " CPU quotient/remainder mismatch");
+                }
             }
-            return RHITestResult::pass(std::to_string(cases.size()) + " synthetic cooked-page cases: exact position/normal/UV/tangent/flags and packed indices, invalid decode and cleared context");
+            return RHITestResult::pass(std::to_string(decodeCaseCount) + " synthetic cooked-page cases and " +
+                std::to_string(cases.size() - decodeCaseCount) + " production cluster-address cases: exact attributes, flags, packed indices, quotient/remainder and cleared context");
         } catch (const std::exception& error) {
             return RHITestResult::fail(error.what());
         }

@@ -5,6 +5,7 @@
 #include "Runtime/Scene/glTFGPUInstancing.h"
 #include "Runtime/Scene/MeshletStreamGPUCodec.h"
 #include "Runtime/Scene/MeshletStreamReferenceCodec.h"
+#include "../../../Shaders/Interop/MeshletStreamBLAS.h"
 
 #include "json.hpp"
 #include "meshoptimizer.h"
@@ -56,7 +57,7 @@ constexpr uint64_t kPageSlotAlignment = 256;
 constexpr uint32_t kMeshletClusterMaxVertices = 128;
 constexpr uint32_t kMeshletClusterMinTriangles = 32;
 constexpr uint32_t kMeshletClusterMaxTriangles = 128;
-constexpr uint32_t kMeshletLODGroupSize = 32;
+constexpr uint32_t kMeshletLODGroupSize = METALLIC_STREAM_CLAS_CLUSTER_STRIDE;
 constexpr uint32_t kMeshletStreamNodeWidth = 8;
 constexpr float kMeshletClusterFillWeight = 0.5f;
 constexpr float kMeshletLODErrorMergePrevious = 1.5f;
