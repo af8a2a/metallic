@@ -59,7 +59,8 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
 public float2 streamRayTexcoord(uint clusterId, uint triangle, float2 bary)
 {
     uint clusterStride = gRayStreamHeader[2];
-    uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
+    uint pageIndex = clusterId / clusterStride;
+    uint cluster = clusterId - pageIndex * clusterStride;
     float2 uv[3];
     decodeStreamTexcoordsAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, uv);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
@@ -76,7 +77,8 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     StreamRayInstance instance = gRayStreamInstances[instanceIndex];
     uint clusterStride = gRayStreamHeader[2];
     if (clusterStride == 0u) { return false; }
-    uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
+    uint pageIndex = clusterId / clusterStride;
+    uint cluster = clusterId - pageIndex * clusterStride;
     float3 a, b, c;
     StreamTriangleDecodeContext triangleContext;
     if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable,
