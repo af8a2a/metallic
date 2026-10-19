@@ -7,6 +7,45 @@ using Metallic;
 using Metallic.GPUDriven;
 using Metallic.StreamGeometry;
 
+// Frozen scalar-conditional encoding and stream loaders. Attribute reference
+// decoding must not share the optimized octahedral math with production.
+float3 referenceDecodeSceneOctahedron(float2 oct)
+{
+    float3 direction = float3(oct, 1.0 - abs(oct.x) - abs(oct.y));
+    float fold = max(-direction.z, 0.0);
+    direction.xy += float2(direction.x >= 0.0 ? -fold : fold, direction.y >= 0.0 ? -fold : fold);
+    return normalize(direction);
+}
+
+float3 referenceDecodeSceneNormal(uint packed)
+{
+    if (packed == 0x80008000u) { return float3(0.0); }
+    int2 quantized = int2(int(packed << 16) >> 16, int(packed) >> 16);
+    return referenceDecodeSceneOctahedron(float2(quantized) / 32767.0);
+}
+
+float4 referenceDecodeSceneTangent(uint packed)
+{
+    float sign = (packed & 0x40000000u) != 0u ? -1.0 : 1.0;
+    if ((packed & 0x80000000u) == 0u) { return float4(0.0, 0.0, 0.0, sign); }
+    int2 quantized = int2(int(packed << 17) >> 17, int(packed << 2) >> 17);
+    return float4(referenceDecodeSceneOctahedron(float2(quantized) / 16383.0), sign);
+}
+
+float3 referenceStreamLoadNormal(StructuredBuffer<uint> words, uint page, uint offset, uint vertex, uint format)
+{
+    uint stride = format == 2u ? 16u : (format == 5u ? 4u : 0u);
+    uint n = page + offset / 4u + vertex * (stride / 4u);
+    return format == 5u ? referenceDecodeSceneNormal(words[n]) : asfloat(uint3(words[n], words[n + 1u], words[n + 2u]));
+}
+
+float4 referenceStreamLoadTangent(StructuredBuffer<uint> words, uint page, uint offset, uint vertex, uint format)
+{
+    uint stride = format == 2u ? 16u : (format == 6u ? 4u : 0u);
+    uint t = page + offset / 4u + vertex * (stride / 4u);
+    return format == 6u ? referenceDecodeSceneTangent(words[t]) : asfloat(uint4(words[t], words[t + 1u], words[t + 2u], words[t + 3u]));
+}
+
 // Frozen pre-context implementation; never call the compatibility wrappers here.
 uint referenceStreamPageByte(StructuredBuffer<uint> pages, uint address)
 {
@@ -93,13 +132,13 @@ uint referenceDecodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, ui
     for (uint i = 0; i < 3; ++i) {
         uint v = pages[cluster] + referenceStreamPageByte(pages, address + i);
         if (hasNormal) {
-            normals[i] = streamLoadNormal(pages,page,normalOffset,v,normalFormat);
+            normals[i] = referenceStreamLoadNormal(pages,page,normalOffset,v,normalFormat);
         }
         if (hasUv) {
             uvs[i] = referenceStreamLoadTexcoord(pages, page, uvOffset, v);
         }
         if (hasTangent) {
-            tangents[i] = streamLoadTangent(pages,page,tangentOffset,v,tangentFormat);
+            tangents[i] = referenceStreamLoadTangent(pages,page,tangentOffset,v,tangentFormat);
         }
     }
     return (hasNormal ? 2u : 0u) | (hasUv ? 4u : 0u) | (hasTangent ? 16u : 0u);
@@ -119,6 +158,19 @@ void streamTriangleDecodeProbeMain(uint3 id : SV_DispatchThreadID)
     StructuredBuffer<uint4> cases = resolveBuffer<StructuredBuffer<uint4>>(resources.rayStreamHeader);
     RWStructuredBuffer<uint4> output = resolveBuffer<RWStructuredBuffer<uint4>>(resources.probeOutput);
     uint4 test = cases[id.x];
+    if (test.w == 0xfffffffeu) {
+        float3 normal = decodeSceneNormal(test.x);
+        float4 tangent = decodeSceneTangent(test.y);
+        uint failures = any(asuint(normal) != asuint(referenceDecodeSceneNormal(test.x))) ? 1u : 0u;
+        failures |= any(asuint(tangent) != asuint(referenceDecodeSceneTangent(test.y))) ? 2u : 0u;
+        failures |= !all(isfinite(normal)) || !all(isfinite(tangent)) ? 4u : 0u;
+        if (test.x == 0x80008000u) { failures |= any(asuint(normal) != uint3(0)) ? 8u : 0u; }
+        if ((test.y & 0x80000000u) == 0u) {
+            failures |= any(asuint(tangent.xyz) != uint3(0)) ? 16u : 0u;
+        }
+        output[id.x] = uint4(failures, test.xy, 0u);
+        return;
+    }
     if (test.w == 0xffffffffu) {
         uint2 genericAddress = streamRayClusterAddress(test.x, test.y);
         uint2 defaultAddress = streamRayClusterAddress(test.x);

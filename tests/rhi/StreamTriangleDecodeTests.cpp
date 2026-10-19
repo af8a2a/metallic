@@ -3,6 +3,7 @@
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ResourceMember.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstring>
@@ -129,6 +130,70 @@ public:
             });
             mutate("short-page-header", 0, [](auto& f) { f.words[12] = 108; });
             mutate("page-exceeds-pool", 0, [](auto& f) { f.words[12] = 0xfffffffcu; });
+            // Exercise the real decoder at the quotient boundary, including
+            // incomplete final elements. The frozen shader reference retains
+            // the original dynamic divisions and short-circuit ordering.
+            for (uint32_t format : {2u, 4u}) {
+                const uint32_t stride = format == 4u ? 12u : 16u;
+                for (uint32_t remainder = 0; remainder < stride; remainder += 4u) {
+                    for (bool fits : {false, true}) {
+                        auto fixture = makeDecodeFixture(3, format, 0, false, 1);
+                        fixture.name = "position-capacity-format" + std::to_string(format) +
+                            "-remainder" + std::to_string(remainder) + (fits ? "-exact" : "-short");
+                        // Cluster 1 requires six vertices (offset 2 + count 4).
+                        fixture.words[10] = fixture.words[12] - (fits ? 6u : 5u) * stride - remainder;
+                        fixture.expected = fits ? 1u : 0u;
+                        fixtures.push_back(std::move(fixture));
+                    }
+                }
+            }
+            for (bool tangent : {false, true}) {
+                const uint32_t flag = tangent ? 16u : 2u;
+                const uint32_t offsetWord = tangent ? 24u : 16u;
+                const uint32_t formatWord = tangent ? 25u : 21u;
+                for (uint32_t format : {2u, tangent ? 6u : 5u}) {
+                    const uint32_t stride = format == 2u ? 16u : 4u;
+                    for (uint32_t remainder = 0; remainder < stride; remainder += 4u) {
+                        for (bool fits : {false, true}) {
+                            auto fixture = makeDecodeFixture(3, 4, tangent ? 4u : 1u, true, 1);
+                            fixture.name = std::string(tangent ? "tangent" : "normal") +
+                                "-capacity-format" + std::to_string(format) + "-remainder" +
+                                std::to_string(remainder) + (fits ? "-exact" : "-short");
+                            fixture.words[formatWord] = format;
+                            fixture.words[offsetWord] = fixture.words[12] - (fits ? 6u : 5u) * stride - remainder;
+                            fixture.expected = 1u | (fits ? (flag << 1u) : 0u);
+                            fixtures.push_back(std::move(fixture));
+                        }
+                    }
+                }
+                for (uint32_t format : {0u, 1u, 3u, 4u, tangent ? 5u : 6u, 0xffffffffu}) {
+                    auto fixture = makeDecodeFixture(3, 4, tangent ? 4u : 1u, true, 1);
+                    fixture.name = std::string(tangent ? "tangent" : "normal") + "-invalid-format" + std::to_string(format);
+                    fixture.words[formatWord] = format;
+                    fixture.expected = 1u;
+                    fixtures.push_back(std::move(fixture));
+                }
+                for (uint32_t offset : {0xfffffffcu, 0xffffffffu}) {
+                    auto fixture = makeDecodeFixture(3, 4, tangent ? 4u : 1u, true, 1);
+                    fixture.name = std::string(tangent ? "tangent" : "normal") + "-offset" + std::to_string(offset);
+                    fixture.words[offsetWord] = offset;
+                    fixture.expected = 1u;
+                    fixtures.push_back(std::move(fixture));
+                }
+                for (uint32_t tail : {0u, 4u}) {
+                    auto fixture = makeDecodeFixture(3, 4, tangent ? 4u : 1u, true, 1);
+                    fixture.name = std::string(tangent ? "tangent" : "normal") + "-offset-at-or-past-end" + std::to_string(tail);
+                    fixture.words[offsetWord] = fixture.words[12] + tail;
+                    fixture.expected = 1u;
+                    fixtures.push_back(std::move(fixture));
+                }
+            }
+            mutate("position-offset-at-end", 0, [](auto& f) { f.words[10] = f.words[12]; });
+            mutate("position-offset-past-end", 0, [](auto& f) { f.words[10] = f.words[12] + 4u; });
+            mutate("position-offset-uint-max", 0, [](auto& f) { f.words[10] = 0xfffffffcu; });
+            mutate("position-format-uint-max", 0, [](auto& f) { f.words[20] = 0xffffffffu; });
+            mutate("vertex-offset-plus-count-wrap", 0, [](auto& f) { f.words[52] = 0xfffffffdu; f.words[53] = 4u; });
+            mutate("vertex-count-plus-offset-wrap", 0, [](auto& f) { f.words[52] = 2u; f.words[53] = 0xffffffffu; });
             // Keep this valid align=1 page physically last in the descriptor;
             // a needless second-word load would cross the real buffer boundary.
             fixtures.push_back(makeDecodeFixture(1, 4, 0, false, 1));
@@ -174,6 +239,54 @@ public:
                 const uint32_t id = random;
                 random = random * 1664525u + 1013904223u;
                 addressCase(id, random == 0u ? 1u : random);
+            }
+            const size_t addressCaseCount = cases.size() - decodeCaseCount;
+            const auto octCase = [&](uint32_t normal, uint32_t tangent) {
+                cases.push_back({normal, tangent, 0u, 0xfffffffeu});
+                names.push_back("oct-normal" + std::to_string(normal) + "-tangent" + std::to_string(tangent));
+            };
+            const auto normalBits = [](int32_t x, int32_t y) {
+                return (uint32_t(x) & 0xffffu) | ((uint32_t(y) & 0xffffu) << 16u);
+            };
+            const auto tangentBits = [](int32_t x, int32_t y, uint32_t flags) {
+                return (uint32_t(x) & 0x7fffu) | ((uint32_t(y) & 0x7fffu) << 15u) | flags;
+            };
+            // All quadrants, axes, SNORM endpoints, sentinel and both tangent
+            // validity/handedness bits. Integer encodings have no negative-zero
+            // input, but exact output comparison retains zero sign bits.
+            for (int32_t x : {-32768, -32767, -16384, -16383, -1, 0, 1, 16383, 16384, 32766, 32767}) {
+                for (int32_t y : {-32768, -32767, -16384, -16383, -1, 0, 1, 16383, 16384, 32766, 32767}) {
+                    octCase(normalBits(x, y), 0u);
+                }
+            }
+            for (int32_t x : {-16384, -16383, -8192, -8191, -1, 0, 1, 8191, 8192, 16382, 16383}) {
+                for (int32_t y : {-16384, -16383, -8192, -8191, -1, 0, 1, 8191, 8192, 16382, 16383}) {
+                    for (uint32_t flags : {0u, 0x40000000u, 0x80000000u, 0xc0000000u}) {
+                        octCase(0x80008000u, tangentBits(x, y, flags));
+                    }
+                }
+            }
+            for (int32_t x : {-32767, -16384, -1, 0, 1, 16384, 32767}) {
+                for (int32_t delta : {-1, 0, 1}) {
+                    const int32_t y = std::clamp(32767 - (x < 0 ? -x : x) + delta, -32768, 32767);
+                    octCase(normalBits(x, y), 0u);
+                    octCase(normalBits(x, -y), 0u);
+                }
+            }
+            for (int32_t x : {-16383, -8192, -1, 0, 1, 8192, 16383}) {
+                for (int32_t delta : {-1, 0, 1}) {
+                    const int32_t y = std::clamp(16383 - (x < 0 ? -x : x) + delta, -16384, 16383);
+                    for (uint32_t flags : {0x80000000u, 0xc0000000u}) {
+                        octCase(0u, tangentBits(x, y, flags));
+                        octCase(0u, tangentBits(x, -y, flags));
+                    }
+                }
+            }
+            for (uint32_t i = 0; i < 65536u; ++i) {
+                random ^= random << 13u; random ^= random >> 17u; random ^= random << 5u;
+                const uint32_t normal = random;
+                random ^= random << 13u; random ^= random >> 17u; random ^= random << 5u;
+                octCase(normal, random);
             }
             const auto require = [](bool condition, const std::string& message) {
                 if (!condition) { throw std::runtime_error(message); }
@@ -229,13 +342,15 @@ public:
             for (size_t i = 0; i < actual.size(); ++i) {
                 report << names[i] << " failures=" << actual[i][0] << " valid=" << actual[i][1] << " attributes=" << actual[i][2] << '\n';
                 require(actual[i][0] == 0, names[i] + " decode mismatch bits=" + std::to_string(actual[i][0]));
-                if (i >= decodeCaseCount) {
+                if (cases[i][3] == 0xffffffffu) {
                     require(actual[i][1] == cases[i][0] / cases[i][1] && actual[i][2] == cases[i][0] % cases[i][1],
                         names[i] + " CPU quotient/remainder mismatch");
                 }
             }
             return RHITestResult::pass(std::to_string(decodeCaseCount) + " synthetic cooked-page cases and " +
-                std::to_string(cases.size() - decodeCaseCount) + " production cluster-address cases: exact attributes, flags, packed indices, quotient/remainder and cleared context");
+                std::to_string(addressCaseCount) + " production cluster-address cases and " +
+                std::to_string(cases.size() - decodeCaseCount - addressCaseCount) +
+                " packed octahedron cases: bitwise attributes/flags, quotient/remainder, normal/tangent and cleared context");
         } catch (const std::exception& error) {
             return RHITestResult::fail(error.what());
         }
