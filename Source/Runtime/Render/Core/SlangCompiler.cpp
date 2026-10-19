@@ -1249,7 +1249,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
     auto sessionConfig = OwnedSlangSessionConfig::create(globalSession, desc,
         ResolvedSlangSessionPolicy{debugMode, optimizationLevel, *effectivePostprocess,
             native, resolvedDesc.descriptorHeapStrides, cacheOptions.reportDetailedCompilerPerf},
-        snapshotContext ? static_cast<ISlangFileSystem*>(&snapshotContext->snapshot) : nullptr, log);
+        snapshotContext ? snapshotContext->fileSystem() : nullptr, log);
     if (!sessionConfig) { return makeError(Error::InvalidArgument); }
     const auto& normalizedSearchPaths = sessionConfig->normalizedSearchPaths();
     const auto& sessionDesc = sessionConfig->desc();

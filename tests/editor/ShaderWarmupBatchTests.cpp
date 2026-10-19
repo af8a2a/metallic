@@ -265,7 +265,7 @@ TEST(ShaderWarmupBatch, RealSlangColdAllHitMixedPrivateHeaderShadowAndOrdinaryCa
     auto cold = registry.getWarmupShaders(requests, options, log);
     ASSERT_TRUE(cold) << log;
     ASSERT_TRUE(cold->completedAllRequests && cold->completeSourceEpochValidated);
-    EXPECT_EQ(cold->compilerExecutions, 2u); EXPECT_EQ(cold->existingCacheHits, 0u); EXPECT_EQ(cold->sessionGroups, 1u);
+    EXPECT_EQ(cold->compilerExecutions, 2u); EXPECT_EQ(cold->existingCacheHits, 0u); EXPECT_EQ(cold->sessionGroups, 2u);
     checkProgress({false, false});
     auto allHit = registry.getWarmupShaders(requests, options, log);
     ASSERT_TRUE(allHit) << log;
@@ -362,6 +362,126 @@ TEST(ShaderWarmupBatch, RealSlangColdAllHitMixedPrivateHeaderShadowAndOrdinaryCa
 #endif
 }
 
+TEST(ShaderWarmupBatch, IndependentModulesKeepPrivateDependenciesThroughMixedPublication)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Live epoch qualification uses Windows notifications";
+#else
+    for (const size_t jobs : {1u, 2u}) {
+        for (const bool shareSessions : {false, true}) {
+            SCOPED_TRACE(::testing::Message() << "jobs=" << jobs << ", shareSessions=" << shareSessions);
+            WarmupDirectory directory;
+            const auto source = directory.path / "source";
+            const auto header = source / "AOnly.h", moduleA = source / "IndependentA.slang";
+            constexpr std::string_view originalA = "module IndependentA;\n#include \"AOnly.h\"\nRWStructuredBuffer<uint> output;\n"
+                "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = A_VALUE + 1u; }\n";
+            constexpr std::string_view editedA = "module IndependentA;\n#include \"AOnly.h\"\nRWStructuredBuffer<uint> output;\n"
+                "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = A_VALUE + 2u; }\n";
+            static_assert(originalA.size() == editedA.size());
+            writeText(header, "#define A_VALUE 17u\n");
+            writeText(moduleA, originalA);
+            writeText(source / "IndependentB.slang", "module IndependentB; RWStructuredBuffer<uint> output;\n"
+                "[shader(\"compute\")] [numthreads(1,1,1)] void probe(uint3 id : SV_DispatchThreadID) { output[id.x] = 29u; }\n");
+            const auto sourcePath = source.string(), cachePath = (directory.path / "cache").string();
+            const SlangShaderDesc a{.moduleName = "IndependentA", .entryPointName = "probe", .searchPath = sourcePath.c_str(),
+                .descriptorHeapMode = SlangDescriptorHeapMode::Mapped, .optimizationLevel = SlangShaderOptimizationLevel::O1,
+                .postprocessMode = SlangShaderPostprocessMode::None};
+            auto b = a;
+            b.moduleName = "IndependentB";
+            const std::array requests{a, b};
+            auto& registry = ShaderRegistry::instance();
+            std::mutex progressMutex;
+            std::array<size_t, 2> completions{};
+            std::array<bool, 2> hits{};
+            const SlangWarmupBatchOptions options{.cache = {.cacheDirectory = cachePath.c_str()},
+                .jobs = jobs, .shareSessions = shareSessions,
+                .onProgress = [&](const SlangWarmupBatchProgress& progress) {
+                    if (!progress.phase || std::string_view(progress.phase) != "request-complete") { return; }
+                    std::lock_guard lock(progressMutex);
+                    EXPECT_LT(progress.requestIndex, requests.size());
+                    if (progress.requestIndex >= requests.size()) { return; }
+                    ++completions[progress.requestIndex];
+                    hits[progress.requestIndex] = progress.cacheHit;
+                }};
+            std::string log;
+            const auto batch = [&](std::array<bool, 2> expectedHits) {
+                completions = {};
+                hits = {};
+                auto result = registry.getWarmupShaders(requests, options, log);
+                EXPECT_TRUE(result) << log;
+                if (result) {
+                    EXPECT_TRUE(result->completedAllRequests && result->completeSourceEpochValidated);
+                    EXPECT_EQ(result->sessionGroups, 2u);
+                    EXPECT_EQ(result->existingCacheHits, size_t(expectedHits[0]) + size_t(expectedHits[1]));
+                    EXPECT_EQ(result->compilerExecutions, size_t(!expectedHits[0]) + size_t(!expectedHits[1]));
+                    EXPECT_EQ(completions, (std::array<size_t, 2>{1u, 1u}));
+                    EXPECT_EQ(hits, expectedHits);
+                }
+                return result;
+            };
+            const auto cold = batch({false, false});
+            ASSERT_TRUE(cold) << log;
+            ASSERT_EQ(cold->shaders.size(), 2u);
+            const auto stableB = cold->shaders[1].spirv;
+
+            bool ordinaryHit = false;
+            const SlangShaderCacheOptions ordinaryOptions{.cacheDirectory = cachePath.c_str(), .outCacheHit = &ordinaryHit};
+            for (const auto& request : requests) {
+                const auto ordinary = registry.getShader(request, ordinaryOptions, log);
+                ASSERT_TRUE(ordinary) << log;
+                EXPECT_TRUE(ordinaryHit);
+                EXPECT_FALSE(ordinary->metrics.compilerExecuted);
+            }
+            const auto allHit = batch({true, true});
+            ASSERT_TRUE(allHit) << log;
+            EXPECT_EQ(allHit->shaders[0].spirv, cold->shaders[0].spirv);
+            EXPECT_EQ(allHit->shaders[1].spirv, stableB);
+
+            const auto headerTime = fs::last_write_time(header);
+            writeText(header, "#define A_VALUE 31u\n");
+            fs::last_write_time(header, headerTime);
+            const auto mixed = batch({false, true});
+            ASSERT_TRUE(mixed) << log;
+            EXPECT_NE(mixed->shaders[0].spirv, cold->shaders[0].spirv);
+            EXPECT_EQ(mixed->shaders[1].spirv, stableB);
+            const auto mixedHit = batch({true, true});
+            ASSERT_TRUE(mixedHit) << log;
+            EXPECT_EQ(mixedHit->shaders[0].spirv, mixed->shaders[0].spirv);
+
+            // Mixed and all-hit publication must not add A's dependencies to B's
+            // cache envelope. Ordinary compilation of A must remain batch-readable.
+            writeText(header, "#define A_VALUE 47u\n");
+            fs::last_write_time(header, headerTime);
+            const auto unaffectedOrdinary = registry.getShader(b, ordinaryOptions, log);
+            ASSERT_TRUE(unaffectedOrdinary) << log;
+            EXPECT_TRUE(ordinaryHit);
+            EXPECT_EQ(unaffectedOrdinary->spirv, stableB);
+            const auto changedOrdinary = registry.getShader(a, ordinaryOptions, log);
+            ASSERT_TRUE(changedOrdinary) << log;
+            EXPECT_FALSE(ordinaryHit);
+            EXPECT_NE(changedOrdinary->spirv, mixed->shaders[0].spirv);
+            const auto ordinaryToBatch = batch({true, true});
+            ASSERT_TRUE(ordinaryToBatch) << log;
+            EXPECT_EQ(ordinaryToBatch->shaders[0].spirv, changedOrdinary->spirv);
+
+            // Root-module edits have the same isolation contract as private
+            // headers, even if byte count and timestamp are unchanged.
+            const auto moduleTime = fs::last_write_time(moduleA);
+            writeText(moduleA, editedA);
+            fs::last_write_time(moduleA, moduleTime);
+            const auto rootMixed = batch({false, true});
+            ASSERT_TRUE(rootMixed) << log;
+            EXPECT_NE(rootMixed->shaders[0].spirv, changedOrdinary->spirv);
+            EXPECT_EQ(rootMixed->shaders[1].spirv, stableB);
+            const auto finalHit = batch({true, true});
+            ASSERT_TRUE(finalHit) << log;
+            EXPECT_EQ(finalHit->shaders[0].spirv, rootMixed->shaders[0].spirv);
+            EXPECT_EQ(finalHit->shaders[1].spirv, stableB);
+        }
+    }
+#endif
+}
+
 TEST(ShaderWarmupBatch, IssuedTokensAcceptedHitUnionAndActualFilePublicationGates)
 {
 #ifndef _WIN32
@@ -395,8 +515,8 @@ TEST(ShaderWarmupBatch, IssuedTokensAcceptedHitUnionAndActualFilePublicationGate
         const auto proof = snapshot.sourceProof(producer);
         EXPECT_TRUE(std::ranges::any_of(proof.actualReads, [&](const auto& item) { return item.canonicalPath == pathText(header); }));
         SlangWarmupCacheTransaction<SlangSnapshotFileSystem> transaction(snapshot, producer, cache / (mixed ? "mixed" : "all-hit"));
-        ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode}, log));
-        if (mixed) { ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode}, log)); }
+        ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode, proof}, log));
+        if (mixed) { ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode, proof}, log)); }
         size_t registered = 0;
         ASSERT_TRUE(transaction.publish(mixed ? 2 : 1, [](const auto& path, std::span<const uint8_t> bytes) {
             writeFile(path, bytes); return true;
@@ -455,9 +575,9 @@ TEST(ShaderWarmupBatch, IssuedTokensAcceptedHitUnionAndActualFilePublicationGate
         fs::create_directories(cache / mode);
         SlangSnapshotFileSystem snapshot(graph, 3); deliver(snapshot, b);
         SlangWarmupCacheTransaction<SlangSnapshotFileSystem> transaction(snapshot, producer, cache / mode);
-        std::string log; ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode}, log));
-        ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode}, log));
         const auto proof = snapshot.sourceProof(producer);
+        std::string log; ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode, proof}, log));
+        ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode, proof}, log));
         size_t writes = 0, registered = 0;
         const bool published = transaction.publish(2, [&](const auto& path, std::span<const uint8_t> bytes) {
             ++writes;
@@ -492,6 +612,66 @@ TEST(ShaderWarmupBatch, IssuedTokensAcceptedHitUnionAndActualFilePublicationGate
             EXPECT_EQ(read(cache / mode / "000000000000000b.spv"), slang_shader_cache::encode(0xb, proof, kMinimalCode));
         }
     }
+#endif
+}
+
+TEST(ShaderWarmupBatch, TransactionPreservesDistinctItemProofsWithoutBatchUnion)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows snapshot proof fixture";
+#else
+    WarmupDirectory directory;
+    const auto source = directory.path / "source", cache = directory.path / "cache";
+    const auto a = source / "A.slang", b = source / "B.slang", header = source / "AOnly.h";
+    writeText(a, "module A;\n#include \"AOnly.h\"\n");
+    writeText(b, "module B;\n");
+    writeText(header, "#define A_VALUE 17u\n");
+    const Json graph{{"mappings", Json::array({{{"logical", pathText(source)}, {"physical", pathText(source)}}})}};
+    constexpr uint64_t producer = 0x7103;
+    SlangSnapshotFileSystem snapshot(graph, 2);
+    deliver(snapshot, a); deliver(snapshot, header); deliver(snapshot, b);
+    ASSERT_EQ(snapshot.sourceProof(producer).actualReads.size(), 3u);
+    auto scopeA = snapshot.createProvenanceView();
+    auto scopeB = snapshot.createProvenanceView();
+    deliver(*scopeA, a); deliver(*scopeA, header);
+    const auto proofA = scopeA->sourceProof(producer);
+    deliver(*scopeB, b);
+    const auto proofB = scopeB->sourceProof(producer);
+    ASSERT_EQ(proofA.actualReads.size(), 2u);
+    ASSERT_EQ(proofB.actualReads.size(), 1u);
+    SlangWarmupCacheTransaction<SlangSnapshotFileSystem> transaction(snapshot, producer, cache);
+    std::string log;
+    ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode, proofA}, log));
+    ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode, proofB}, log));
+    size_t writes = 0, registrations = 0;
+    ASSERT_TRUE(transaction.publish(2, [&](const auto& path, std::span<const uint8_t> bytes) {
+        ++writes;
+        EXPECT_EQ(registrations, 0u);
+        writeFile(path, bytes);
+        return true;
+    }, [&](size_t) {
+        EXPECT_EQ(writes, 2u);
+        ++registrations;
+    }, log)) << log;
+    EXPECT_EQ(registrations, 2u);
+    const auto bytesA = read(cache / "000000000000000a.spv");
+    const auto bytesB = read(cache / "000000000000000b.spv");
+    EXPECT_EQ(bytesA, slang_shader_cache::encode(0xa, proofA, kMinimalCode));
+    EXPECT_EQ(bytesB, slang_shader_cache::encode(0xb, proofB, kMinimalCode));
+    slang_shader_cache::CachedPayload decoded;
+    auto acceptedA = snapshot.createProvenanceView();
+    ASSERT_TRUE(acceptedA->decodeAndAcceptCache(bytesA, 0xa, producer, decoded, log)) << log;
+    EXPECT_EQ(scopeB->sourceProof(producer), proofB);
+
+    const auto headerTime = fs::last_write_time(header);
+    writeText(header, "#define A_VALUE 31u\n");
+    fs::last_write_time(header, headerTime);
+    EXPECT_FALSE(scopeA->validate(log));
+    EXPECT_FALSE(scopeB->validate(log));
+    SlangSnapshotFileSystem afterEdit(graph, 3);
+    EXPECT_TRUE(afterEdit.decodeAndAcceptCache(bytesB, 0xb, producer, decoded, log)) << log;
+    EXPECT_EQ(decoded.proof.actualReads, proofB.actualReads);
+    EXPECT_FALSE(afterEdit.decodeAndAcceptCache(bytesA, 0xa, producer, decoded, log));
 #endif
 }
 
@@ -530,8 +710,8 @@ TEST(ShaderWarmupBatch, GenericSnapshotsKeepPerFileProofQualification)
     } snapshot{proof};
     SlangWarmupCacheTransaction<GenericSnapshot> transaction(snapshot, producer, directory.path / "cache");
     std::string log;
-    ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode}, log));
-    ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode}, log));
+    ASSERT_TRUE(transaction.stage({1, 0xa, kMinimalCode, proof}, log));
+    ASSERT_TRUE(transaction.stage({2, 0xb, kMinimalCode, proof}, log));
     size_t writes = 0, registered = 0;
     ASSERT_TRUE(transaction.publish(2, [&](const auto& path, std::span<const uint8_t> bytes) {
         ++writes; EXPECT_EQ(registered, 0u); writeFile(path, bytes); return true;
@@ -547,8 +727,8 @@ TEST(ShaderWarmupBatch, GenericSnapshotsKeepPerFileProofQualification)
     GenericSnapshot rejected{proof};
     rejected.failAtQualification = 3;
     SlangWarmupCacheTransaction<GenericSnapshot> failed(rejected, producer, directory.path / "generic-last-rejected");
-    ASSERT_TRUE(failed.stage({1, 0xa, kMinimalCode}, log));
-    ASSERT_TRUE(failed.stage({2, 0xb, kMinimalCode}, log));
+    ASSERT_TRUE(failed.stage({1, 0xa, kMinimalCode, proof}, log));
+    ASSERT_TRUE(failed.stage({2, 0xb, kMinimalCode, proof}, log));
     size_t failedWrites = 0, failedRegistrations = 0;
     EXPECT_FALSE(failed.publish(2, [&](const auto& path, std::span<const uint8_t> bytes) {
         ++failedWrites; EXPECT_EQ(failedRegistrations, 0u); writeFile(path, bytes); return true;

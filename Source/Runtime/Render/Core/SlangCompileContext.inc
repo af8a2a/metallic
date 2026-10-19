@@ -222,14 +222,16 @@ thread_local bool gBypassOrdinarySnapshot = false;
 thread_local bool gOrdinarySnapshotUnqualified = false;
 struct SnapshotCompileContext {
     SnapshotCompileContext(SlangSnapshotFileSystem& source, std::shared_ptr<CompilerProducerSeal> seal, bool share, bool defer = false)
-        : snapshot(source), producer(std::move(seal)), shareSession(share), deferPublication(defer) {}
+        : snapshot(source), provenance(source.createProvenanceView()), producer(std::move(seal)),
+          shareSession(share), deferPublication(defer) {}
     ~SnapshotCompileContext()
     {
         try {
-            if (!deferPublication && snapshot.hasUnqualifiedLookups()) { gOrdinarySnapshotUnqualified = true; }
+            if (!deferPublication && provenance->hasUnqualifiedLookups()) { gOrdinarySnapshotUnqualified = true; }
         } catch (...) { if (!deferPublication) { gOrdinarySnapshotUnqualified = true; } }
     }
     SlangSnapshotFileSystem& snapshot;
+    std::unique_ptr<SlangSnapshotFileSystem> provenance;
     std::shared_ptr<CompilerProducerSeal> producer;
     bool shareSession = false, deferPublication = false;
     // Correct destruction order: modules, ISession, then descriptor/string storage.
@@ -238,6 +240,8 @@ struct SnapshotCompileContext {
     std::map<std::string, Slang::ComPtr<slang::IModule>> modules;
     std::function<bool(uint64_t, const fs::path&, const ShaderCompileResult&)> stage;
     ShaderCompileMetrics* invocationMetrics = nullptr;
+    ISlangFileSystem* fileSystem() const noexcept { return provenance.get(); }
+    ShaderNamespaceProof sourceProof() const { return provenance->sourceProof(producer->identity()); }
     bool guard(std::string& log, bool full) const
     {
         if (!producer) { return false; }
@@ -285,7 +289,7 @@ bool snapshotActualDependencies(SnapshotCompileContext& context, std::span<const
     output.clear();
     for (const auto& path : paths) {
         ShaderSourceReadProof read; fs::file_time_type time;
-        if (!context.snapshot.actualDependency(path, read, time)) { output.clear(); return false; }
+        if (!context.provenance->actualDependency(path, read, time)) { output.clear(); return false; }
         output.push_back({fs::u8path(read.canonicalPath), {.exists = true, .fileSize = read.byteSize,
             .writeTime = time, .contentHash = read.contentHash}});
     }
@@ -305,9 +309,9 @@ bool snapshotModuleDependencies(SnapshotCompileContext& context, slang::IModule&
         // Prefer the exact token issued by this FileSystem. A canonical path
         // is accepted only when it independently matches an actual delivered
         // image, never after interpreting an arbitrary opaque token as a path.
-        const bool issued = context.snapshot.actualIssuedDependency(identity, read, time);
+        const bool issued = context.provenance->actualIssuedDependency(identity, read, time);
         const bool canonical = !issued && identity && isSafeProofPath(identity, false) &&
-            context.snapshot.actualDependency(fs::u8path(identity), read, time) && read.canonicalPath == identity;
+            context.provenance->actualDependency(fs::u8path(identity), read, time) && read.canonicalPath == identity;
         if (!issued && !canonical) {
             log += "SDK dependency does not identify a delivered image in this epoch\n"; output.clear(); return false;
         }
@@ -316,10 +320,10 @@ bool snapshotModuleDependencies(SnapshotCompileContext& context, slang::IModule&
     }
     if (!count) {
         log += "[SnapshotDependency] SDK count=0; using actual delivered read provenance\n";
-        const auto proof = context.snapshot.sourceProof(context.producer->identity());
+        const auto proof = context.sourceProof();
         for (const auto& read : proof.actualReads) {
             fs::file_time_type time; ShaderSourceReadProof actual;
-            if (!context.snapshot.actualDependency(fs::u8path(read.canonicalPath), actual, time)) { return false; }
+            if (!context.provenance->actualDependency(fs::u8path(read.canonicalPath), actual, time)) { return false; }
             output.push_back({fs::u8path(actual.canonicalPath), {.exists = true, .fileSize = actual.byteSize,
                 .writeTime = time, .contentHash = actual.contentHash}});
         }
@@ -336,7 +340,7 @@ bool loadSnapshotCachedShader(SnapshotCompileContext& context, const fs::path& p
     try {
         if (!context.guard(log, false)) { return false; }
         const auto bytes = read(path); slang_shader_cache::CachedPayload output;
-        if (!context.snapshot.decodeAndAcceptCache(bytes, request, context.producer->identity(), output, log)) { return false; }
+        if (!context.provenance->decodeAndAcceptCache(bytes, request, context.producer->identity(), output, log)) { return false; }
         std::vector<fs::path> paths;
         for (const auto& item : output.proof.actualReads) { paths.push_back(fs::u8path(item.canonicalPath)); }
         if (!snapshotActualDependencies(context, paths, dependencies)) { return false; }
@@ -358,14 +362,14 @@ bool completeSnapshotInvocation(SnapshotCompileContext& context, const SlangShad
             log += "[ShaderCacheV3] Cache/source namespace overlaps; persistence bypassed\n";
             return context.guard(log, true);
         }
-        const auto proof = context.snapshot.sourceProof(context.producer->identity());
+        const auto proof = context.sourceProof();
         const auto bytes = slang_shader_cache::encode(request, proof, result.spirv);
         if (bytes.empty() || !writeEncodedShaderCache(path, bytes)) {
             log += "[ShaderCacheV3] Persistence unavailable; returning validated compiled code\n";
             return context.guard(log, true);
         }
         const auto real = read(path); slang_shader_cache::CachedPayload output;
-        if (real != bytes || !context.snapshot.decodeAndAcceptCache(real, request, context.producer->identity(), output, log) ||
+        if (real != bytes || !context.provenance->decodeAndAcceptCache(real, request, context.producer->identity(), output, log) ||
             output.spirv != result.spirv) {
             log += "[ShaderCacheV3] Actual persistence readback failed; returning validated compiled code\n";
             return context.guard(log, true);
@@ -374,6 +378,6 @@ bool completeSnapshotInvocation(SnapshotCompileContext& context, const SlangShad
     return context.guard(log, true);
     } catch (const std::exception& error) {
         log += std::string("[ShaderCacheV3] Ordinary persistence bypassed: ") + error.what() + '\n';
-        return !context.deferPublication && !context.snapshot.hasUnqualifiedLookups() && context.guard(log, true);
+        return !context.deferPublication && !context.provenance->hasUnqualifiedLookups() && context.guard(log, true);
     }
 }

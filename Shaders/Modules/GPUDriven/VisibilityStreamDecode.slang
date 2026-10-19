@@ -45,7 +45,7 @@ public bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint t
     pageTable.GetDimensions(count, stride);
     if (pageIndex >= count) { return false; }
     uint entry = pageTable[pageIndex].x;
-    if (((entry & 7u) != 2u) & ((entry & 7u) != 3u)) { return false; }
+    if ((entry & 7u) != 2u && (entry & 7u) != 3u) { return false; }
     uint page = (entry & 0xfffffff8u) / 4u;
     count = pageWordCount;
     if (page > count || count - page < 28u) { return false; }
@@ -53,19 +53,15 @@ public bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint t
     uint flags = pages[page + 14];
     uint positionFormat = pages[page + 20];
     uint positionStrideWords = positionFormat == 4u ? 3u : 4u;
-    // Eagerly combine loaded values, but retain short-circuit guards for loads
-    // and dependent capacity subtractions below.
-    if (((bytes < 112u) | (bytes / 4u > count - page) |
-        ((positionFormat != 2u) & (positionFormat != 4u)) | ((flags & 1u) == 0u)) ||
-        clusterIndex >= pages[page + 2]) { return false; }
+    if (bytes < 112u || bytes / 4u > count - page || (positionFormat != 2u && positionFormat != 4u) ||
+        (flags & 1u) == 0u || clusterIndex >= pages[page + 2]) { return false; }
     uint clusters = pages[page + 9], positions = pages[page + 10], triangles = pages[page + 11];
-    if (((((clusters | positions) & 3u) != 0u) | (clusters > bytes)) ||
-        clusterIndex >= (bytes - clusters) / 96u) { return false; }
+    if (((clusters | positions) & 3u) != 0u || clusters > bytes || clusterIndex >= (bytes - clusters) / 96u) { return false; }
     uint cluster = page + clusters / 4u + clusterIndex * 24u;
     uint vertexOffset = pages[cluster], vertexCount = pages[cluster + 1];
     uint triangleOffset = pages[cluster + 2], triangleCount = pages[cluster + 3];
-    if (((triangle >= triangleCount) | (triangles > bytes) | (positions > bytes)) ||
-        triangleOffset > bytes - triangles || triangle >= (bytes - triangles - triangleOffset) / 3u) { return false; }
+    if (triangle >= triangleCount || triangles > bytes || triangleOffset > bytes - triangles ||
+        triangle >= (bytes - triangles - triangleOffset) / 3u || positions > bytes) { return false; }
     uint availablePositionBytes = bytes - positions;
     uint maxVertices = positionFormat == 4u ? availablePositionBytes / 12u : availablePositionBytes >> 4u;
     if (vertexOffset > maxVertices || vertexCount > maxVertices - vertexOffset) { return false; }
@@ -126,16 +122,16 @@ bool streamHasTexcoords(StructuredBuffer<uint> pages, uint page, uint cluster, o
     uint bytes = pages[page + 12u];
     uvOffset = pages[page + 17u];
     uint required = pages[cluster] + pages[cluster + 1u];
-    return (pages[page + 14u] & 4u) != 0u && pages[page + 22u] == 1u &&
-        ((uvOffset % 4u == 0u) & (uvOffset <= bytes)) && required <= (bytes - uvOffset) / 8u;
+    return (pages[page + 14u] & 4u) != 0u && pages[page + 22u] == 1u && uvOffset % 4u == 0u &&
+        uvOffset <= bytes && required <= (bytes - uvOffset) / 8u;
 }
 
 bool streamHasTexcoords(StructuredBuffer<uint> pages, uint page, uint bytes, uint flags,
     uint required, out uint uvOffset)
 {
     uvOffset = pages[page + 17u];
-    return (flags & 4u) != 0u && pages[page + 22u] == 1u &&
-        ((uvOffset % 4u == 0u) & (uvOffset <= bytes)) && required <= (bytes - uvOffset) / 8u;
+    return (flags & 4u) != 0u && pages[page + 22u] == 1u && uvOffset % 4u == 0u &&
+        uvOffset <= bytes && required <= (bytes - uvOffset) / 8u;
 }
 
 float2 streamLoadTexcoord(StructuredBuffer<uint> pages, uint page, uint uvOffset, uint vertex)
@@ -172,14 +168,14 @@ public uint decodeStreamAttributes(StructuredBuffer<uint> pages, StreamTriangleD
     uint required = context.requiredVertices;
     uint normalFormat = pages[page + 21u], normalStride = streamNormalStride(normalFormat);
     uint normalShift = normalFormat == 2u ? 4u : 2u;
-    bool hasNormal = ((flags & 2u) != 0u) & (normalStride != 0u) & (normalOffset % 4u == 0u) &
-        (normalOffset <= bytes) && required <= ((bytes - normalOffset) >> normalShift);
+    bool hasNormal = (flags & 2u) != 0u && normalStride != 0u && normalOffset % 4u == 0u &&
+        normalOffset <= bytes && required <= ((bytes - normalOffset) >> normalShift);
     bool hasUv = streamHasTexcoords(pages, page, bytes, flags, required, uvOffset);
     uint tangentOffset = pages[page + 24u];
     uint tangentFormat = pages[page + 25u], tangentStride = streamTangentStride(tangentFormat);
     uint tangentShift = tangentFormat == 2u ? 4u : 2u;
-    bool hasTangent = ((flags & 16u) != 0u) & (tangentStride != 0u) & (tangentOffset % 4u == 0u) &
-        (tangentOffset <= bytes) && required <= ((bytes - tangentOffset) >> tangentShift);
+    bool hasTangent = (flags & 16u) != 0u && tangentStride != 0u && tangentOffset % 4u == 0u &&
+        tangentOffset <= bytes && required <= ((bytes - tangentOffset) >> tangentShift);
     for (uint i = 0; i < 3; ++i) {
         uint v = context.vertices[i];
         if (hasNormal) {

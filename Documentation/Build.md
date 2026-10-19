@@ -83,6 +83,16 @@ Warmup requests must declare all dependency roots in their search paths,
 including parent directories used by relative includes. The batch rejects
 dependencies outside its captured roots.
 
+Source bytes and complete epoch validation are shared, while read/miss/cache-hit
+provenance is isolated per root-module session. Session reuse stays within the
+same root and effective compiler policy, including across its entry points.
+Each persisted request carries that scoped proof; batch publication still
+requires complete source/producer validation and actual file read-back before
+acceptance. Ordinary requests use independent provenance views as well.
+Directory namespace proofs remain conservative: unrelated file additions or
+removals can still invalidate entries. A compiler rebuild changes the producer
+identity, so the first run after this repair can recompile old cache entries.
+
 For manual warmup:
 
 ```powershell

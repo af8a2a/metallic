@@ -123,15 +123,13 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
                 prepared->sessionPolicy(options.cache), nullptr, log);
             if (!config) { return makeError(Error::InvalidArgument); }
             auto key = config->effectiveKey();
-            // Heavy roots retain parallelism; only completely equal light
-            // session policies can share imported IR across root modules.
-            if (!options.shareSessions || estimateWarmupEntryWork(prepared->owned.descriptor) >= 256) {
-                const std::string root = prepared->owned.descriptor.moduleName;
-                key.push_back(0xff); key.insert(key.end(), root.begin(), root.end());
-                if (!options.shareSessions) {
-                    const auto* bytes = reinterpret_cast<const uint8_t*>(&index);
-                    key.insert(key.end(), bytes, bytes + sizeof(index));
-                }
+            // A reused session can suppress filesystem reads for loaded IR.
+            // Keep its conservative provenance closure within one root module.
+            const std::string root = prepared->owned.descriptor.moduleName;
+            key.push_back(0xff); key.insert(key.end(), root.begin(), root.end());
+            if (!options.shareSessions) {
+                const auto* bytes = reinterpret_cast<const uint8_t*>(&index);
+                key.insert(key.end(), bytes, bytes + sizeof(index));
             }
             const auto [entry, inserted] = groupByKey.try_emplace(std::move(key), groups.size());
             if (inserted) { groups.push_back({}); }
@@ -183,7 +181,8 @@ Result<SlangWarmupBatchResult> compileSlangShaderWarmupBatch(std::span<const Sla
                             try {
                                 context.stage = [&](uint64_t requestHash, const fs::path&, const ShaderCompileResult& shader) {
                                     if (pending[index] || requestHash != planned[index].prepared->requestHash) { return false; }
-                                    pending[index] = SlangWarmupCacheTransaction<SlangSnapshotFileSystem>::Item{index, requestHash, shader.spirv}; return true;
+                                    pending[index] = SlangWarmupCacheTransaction<SlangSnapshotFileSystem>::Item{
+                                        index, requestHash, shader.spirv, context.sourceProof()}; return true;
                                 };
                                 std::string diagnostics;
                                 auto shader = compileSlangShaderToSpirv(ownedDescriptors[index], options.cache, diagnostics);

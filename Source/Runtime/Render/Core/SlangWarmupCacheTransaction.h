@@ -2,6 +2,7 @@
 
 #include "SlangShaderCache.h"
 #include "SlangWarmupPreparedReadback.h"
+#include <algorithm>
 #include <filesystem>
 #include <chrono>
 #include <fstream>
@@ -28,6 +29,7 @@ public:
         size_t requestIndex = 0;
         uint64_t requestHash = 0;
         std::vector<uint32_t> finalizedSpirv;
+        ShaderNamespaceProof sourceProof;
     };
 
     SlangWarmupCacheTransaction(Snapshot& snapshot, uint64_t compilerProducerIdentity,
@@ -36,7 +38,10 @@ public:
 
     bool stage(Item item, std::string& log)
     {
-        if (published_ || failed_ || item.finalizedSpirv.empty()) { log = "Invalid warmup cache transaction state"; return false; }
+        if (published_ || failed_ || item.finalizedSpirv.empty() ||
+            !isWellFormedNamespaceProof(item.sourceProof) || item.sourceProof.compilerProducerIdentity != producerIdentity_) {
+            log = "Invalid warmup cache transaction state or source proof"; return false;
+        }
         for (const auto& previous : items_) {
             if (previous.requestIndex == item.requestIndex || previous.requestHash == item.requestHash) {
                 log = "Duplicate warmup request identity"; failed_ = true; return false;
@@ -62,21 +67,31 @@ public:
         };
         if (!validateSource()) { return discard(log); }
         const auto encodeStart = std::chrono::steady_clock::now();
-        const auto proof = snapshot_.sourceProof(producerIdentity_);
         const auto qualify = [&](const ShaderNamespaceProof& cached, ShaderNamespaceProof& current) {
             return snapshot_.qualifyCachedProof(cached, producerIdentity_, current, log);
         };
-        // Only this immutable batch proof is prepared. Ordinary cache lookup
-        // keeps its complete untrusted-proof decoder and qualification path.
-        const auto qualifyCurrentProof = [&] {
+        const auto qualifyCurrentProof = [&](const ShaderNamespaceProof& proof) {
             ShaderNamespaceProof current;
             try { return qualify(proof, current) && namespaceProofMatches(proof, current); }
             catch (...) { return false; }
         };
-        if (!qualifyCurrentProof()) { log = "Pending V3 warmup proof qualification failed"; return discard(log); }
-        const slang_shader_cache::PreparedBatchProof prepared(proof);
-        if (!prepared.valid()) { log = "Pending V3 warmup proof preparation failed"; return discard(log); }
-        const auto validateReadbackSource = [&] {
+        // Proofs are scoped to their root-module sessions. Deduplicate exact
+        // closures without expanding them to the complete batch read union.
+        std::vector<ShaderNamespaceProof> proofs;
+        std::vector<slang_shader_cache::PreparedBatchProof> prepared;
+        std::vector<size_t> proofIndices;
+        for (const auto& item : items_) {
+            const auto found = std::find(proofs.begin(), proofs.end(), item.sourceProof);
+            const auto index = static_cast<size_t>(found - proofs.begin());
+            if (found == proofs.end()) {
+                if (!qualifyCurrentProof(item.sourceProof)) { log = "Pending V3 warmup proof qualification failed"; return discard(log); }
+                proofs.push_back(item.sourceProof);
+                prepared.emplace_back(item.sourceProof);
+                if (!prepared.back().valid()) { log = "Pending V3 warmup proof preparation failed"; return discard(log); }
+            }
+            proofIndices.push_back(index);
+        }
+        const auto validateReadbackSource = [&](size_t proofIndex) {
             if constexpr (requires(Snapshot& snapshot, std::string& reason) { snapshot.validateNotifications(reason); }) {
                 // Keep per-file live edit detection without rebuilding the
                 // same roots/read proof for every persisted envelope.
@@ -84,12 +99,13 @@ public:
                 catch (...) { return false; }
             } else {
                 // Generic snapshots retain their existing qualification gate.
-                return qualifyCurrentProof();
+                return qualifyCurrentProof(proofs[proofIndex]);
             }
         };
         std::vector<slang_shader_cache::Bytes> encoded;
-        for (const auto& item : items_) {
-            auto bytes = prepared.encodeItem(item.requestHash, item.finalizedSpirv);
+        for (size_t index = 0; index < items_.size(); ++index) {
+            const auto& item = items_[index];
+            auto bytes = prepared[proofIndices[index]].encodeItem(item.requestHash, item.finalizedSpirv);
             // The persisted envelope still requires a live source check,
             // checksum, exact known proof, expected SPIR-V and exact bytes.
             // No result or registry registration precedes complete acceptance.
@@ -121,8 +137,8 @@ public:
                 stream.peek() != std::char_traits<char>::eof()) {
                 log = "Actual V3 warmup file short read or trailing bytes"; return discard(log);
             }
-            if (stream.bad() || !validateReadbackSource() ||
-                !prepared.readback(real, item.requestHash, item.finalizedSpirv) || real != encoded[index]) {
+            if (stream.bad() || !validateReadbackSource(proofIndices[index]) ||
+                !prepared[proofIndices[index]].readback(real, item.requestHash, item.finalizedSpirv) || real != encoded[index]) {
                 log = "Actual V3 warmup file readback failed"; return discard(log);
             }
             timings_.fileReadDecodeNanoseconds += elapsed(readStart);

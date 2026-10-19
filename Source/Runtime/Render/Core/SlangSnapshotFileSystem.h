@@ -164,6 +164,13 @@ public:
     {
         closeWatches();
     }
+    // Sessions with different root modules share captured bytes and the epoch's
+    // complete live-validation boundary, but never accumulate each other's
+    // delivered reads, resolver misses or accepted-cache provenance.
+    std::unique_ptr<SlangSnapshotFileSystem> createProvenanceView()
+    {
+        return std::unique_ptr<SlangSnapshotFileSystem>(new SlangSnapshotFileSystem(this));
+    }
     SLANG_NO_THROW SlangResult SLANG_MCALL queryInterface(const SlangUUID& uuid, void** object) override
     {
         if (!object) { return SLANG_E_INVALID_ARG; }
@@ -297,6 +304,7 @@ public:
 
     bool validateNotifications(std::string& reason) const
     {
+        if (epochOwner_) { return epochOwner_->validateNotifications(reason); }
         std::scoped_lock notificationLock(notificationMutex_);
         if (pathKey(fs::current_path()) != cwdKey_) { reason = "process source lookup cwd changed during epoch"; return false; }
 #ifdef _WIN32
@@ -312,6 +320,7 @@ public:
     }
     bool validate(std::string& reason) const
     {
+        if (epochOwner_) { return epochOwner_->validate(reason); }
         try {
             if (!validateNotifications(reason)) { return false; }
             for (const auto& mapping : mappings_) {
@@ -518,6 +527,10 @@ public:
         });
     }
 private:
+    explicit SlangSnapshotFileSystem(SlangSnapshotFileSystem* source)
+        : epoch_(source->epoch_), cwdKey_(source->cwdKey_),
+          sourceImage_(source->sourceImage_), epochOwner_(source->epochOwner_ ? source->epochOwner_ : source) {}
+
 #ifdef _WIN32
     struct DirectoryWatch {
         std::string rootText;
@@ -662,11 +675,22 @@ private:
     std::atomic<uint32_t> refs_{1};
     size_t epoch_;
     std::string cwdKey_;
-    std::vector<Mapping> mappings_;
-    std::map<std::string, FileImage> files_;
-    std::set<std::string> directories_, served_, misses_, qualifiedCacheReads_, qualifiedCacheMisses_;
+    // Only the owning epoch's constructor populates this image. Views retain
+    // it without copying source bytes; their owner outlives every session/view.
+    struct SourceImage {
+        std::vector<Mapping> mappings;
+        std::map<std::string, FileImage> files;
+        std::set<std::string> directories;
+        std::map<std::string, std::map<std::string, std::string>> namespaces;
+    };
+    std::shared_ptr<SourceImage> sourceImage_ = std::make_shared<SourceImage>();
+    SlangSnapshotFileSystem* epochOwner_ = nullptr;
+    std::vector<Mapping>& mappings_ = sourceImage_->mappings;
+    std::map<std::string, FileImage>& files_ = sourceImage_->files;
+    std::set<std::string>& directories_ = sourceImage_->directories;
+    std::map<std::string, std::map<std::string, std::string>>& namespaces_ = sourceImage_->namespaces;
+    std::set<std::string> served_, misses_, qualifiedCacheReads_, qualifiedCacheMisses_;
     std::map<std::string, std::string> issuedIdentities_;
-    std::map<std::string, std::map<std::string, std::string>> namespaces_;
 #ifdef _WIN32
     std::vector<std::unique_ptr<DirectoryWatch>> watches_;
     std::set<std::pair<std::string, bool>> watchedRoots_;

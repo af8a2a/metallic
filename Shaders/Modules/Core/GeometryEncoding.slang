@@ -9,7 +9,7 @@ internal float3 decodeSceneOctahedron(float2 oct)
 {
     float3 direction = float3(oct, 1.0 - abs(oct.x) - abs(oct.y));
     float fold = max(-direction.z, 0.0);
-    direction.xy += select(direction.xy >= float2(0.0), float2(-fold), float2(fold));
+    direction.xy += float2(direction.x >= 0.0 ? -fold : fold, direction.y >= 0.0 ? -fold : fold);
     return normalize(direction);
 }
 
