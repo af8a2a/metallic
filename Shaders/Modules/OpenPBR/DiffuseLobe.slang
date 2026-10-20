@@ -140,6 +140,11 @@ public void openPBRInitializeLobe<TContext : IOpenPBRContext>(TContext context,
     lobe.specular_alpha = specular_alpha;
     lobe.specular_eta_t_over_eta_i = specular_eta_t_over_eta_i;
 
+    if (all(diffuse_albedo == float3(0))) {
+        lobe.cached_specular_energy_compensation = 0.0f;
+        return;
+    }
+
     const float cos_in = dot(view_direction, lobe.normal_ff);
 
     // In the terminology of the original ASM ECD lobe, this calculates (1 - L) / (1 - T).

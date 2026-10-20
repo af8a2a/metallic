@@ -103,7 +103,12 @@ public void openPBRInitializeLobe<TContext : IOpenPBRContext>(TContext context,
         return;
 
     // Derived properties.
+    // Even a zero-energy lobe retains its standalone reflection/transmission PDF.
     lobe.reflection_ratio_ti = openPBRLookUpIdealDielectricReflectionRatio(context, lobe.eta_t_over_eta_i, lobe.alpha);
+    if (all(scale_refl == float3(0)) && all(scale_trans == float3(0))) {
+        lobe.energy_complement_ti_idotn = 0.0f;
+        return;
+    }
     const float idotn = dot(view_direction, lobe.normal_ff);
     lobe.energy_complement_ti_idotn =
         openPBRLookUpIdealDielectricEnergyComplement(context, lobe.eta_t_over_eta_i, lobe.alpha, idotn);
@@ -250,6 +255,11 @@ public void openPBRInitializeLobe<TContext : IOpenPBRContext>(TContext context,
 
     if (lobe.alpha < OpenPBRMinAlphaWithVisibleEnergyLoss)
         return;
+
+    if (all(scale == float3(0))) {
+        lobe.energy_complement_idotn = 0.0f;
+        return;
+    }
 
     // Derived properties.
     const float idotn = dot(view_direction, lobe.normal_ff);
