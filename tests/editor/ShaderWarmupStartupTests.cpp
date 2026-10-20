@@ -138,6 +138,44 @@ private:
     std::streamsize oldPrecision_;
 };
 
+TEST_F(ShaderWarmupStartupTest, DefaultLaunchClearsFullCatalogGateWithoutCompilingUnrelatedRequests)
+{
+    ASSERT_EQ(metallic::render::prepareStartupShaderWarmup(false), 0);
+    const metallic::render::ShaderWarmupLaunchOptions options;
+    EXPECT_TRUE(options.skip);
+    setWorkerEnvironment("invalid");
+    failCompilation = true;
+    EXPECT_EQ(metallic::render::prepareStartupShaderWarmup(options.skip), 0);
+    EXPECT_FALSE(metallic::render::startupShaderWarmupEnabled());
+    EXPECT_EQ(compileCalls.load(), 0u);
+    EXPECT_EQ(batchCalls.load(), 0u);
+    EXPECT_EQ(adapterQueries.load(), 0u);
+}
+
+TEST_F(ShaderWarmupStartupTest, FullCatalogLaunchRequiresExplicitOptIn)
+{
+    metallic::render::ShaderWarmupLaunchOptions options;
+    ASSERT_TRUE(options.consume("--full-shader-warmup"));
+    EXPECT_FALSE(options.skip);
+    EXPECT_EQ(metallic::render::prepareStartupShaderWarmup(options.skip), 0);
+    EXPECT_TRUE(metallic::render::startupShaderWarmupEnabled());
+    EXPECT_EQ(compileCalls.load(), 0u);
+    EXPECT_EQ(batchCalls.load(), 0u);
+    EXPECT_EQ(adapterQueries.load(), 0u);
+}
+
+TEST_F(ShaderWarmupStartupTest, LastWarmupLaunchOptionSelectsMode)
+{
+    metallic::render::ShaderWarmupLaunchOptions options;
+    EXPECT_TRUE(options.consume("--full-shader-warmup"));
+    EXPECT_TRUE(options.consume("--skip-shader-warmup"));
+    EXPECT_TRUE(options.skip);
+    EXPECT_TRUE(options.consume("--full-shader-warmup"));
+    EXPECT_FALSE(options.skip);
+    EXPECT_FALSE(options.consume("--full-shader-warmup=false"));
+    EXPECT_FALSE(options.skip);
+}
+
 TEST_F(ShaderWarmupStartupTest, DeviceFirstPreparationDoesNotCompileOrQueryAdapter)
 {
     setWorkerEnvironment("12");
@@ -274,13 +312,14 @@ TEST_F(ShaderWarmupStartupTest, InspectionAndSkipIgnoreInvalidWorkerEnvironment)
     EXPECT_EQ(compileCalls.load(), 0u);
 }
 
-TEST_F(ShaderWarmupStartupTest, DefaultsToCompleteCatalogAndPreservesApplicationState)
+TEST_F(ShaderWarmupStartupTest, ExplicitFullWarmupCoversCompleteCatalogAndPreservesApplicationState)
 {
     const auto requests = metallic::tools::shaderWarmupRequests();
     const bool hasNativeRequests = std::ranges::any_of(requests, [](const auto& request) {
         return request.descriptorHeapMode == metallic::render::SlangDescriptorHeapMode::Native;
     });
     metallic::render::ShaderWarmupLaunchOptions options;
+    ASSERT_TRUE(options.consume("--full-shader-warmup"));
     EXPECT_FALSE(options.skip);
     spdlog::set_level(spdlog::level::debug);
     std::cout << std::scientific;
@@ -295,11 +334,13 @@ TEST_F(ShaderWarmupStartupTest, DefaultsToCompleteCatalogAndPreservesApplication
     EXPECT_EQ(std::cout.precision(), 7);
 }
 
-TEST_F(ShaderWarmupStartupTest, OnlyExplicitSkipOptionBypassesCompilation)
+TEST_F(ShaderWarmupStartupTest, ExplicitSkipOverridesFullCatalogCompilation)
 {
     metallic::render::ShaderWarmupLaunchOptions options;
     EXPECT_FALSE(options.consume("--smoke-test"));
     EXPECT_FALSE(options.consume("--skip-shader-warmup=false"));
+    EXPECT_TRUE(options.skip);
+    ASSERT_TRUE(options.consume("--full-shader-warmup"));
     EXPECT_FALSE(options.skip);
     EXPECT_TRUE(options.consume("--skip-shader-warmup"));
     failCompilation = true;

@@ -60,11 +60,16 @@ profile when working on those integrations.
 
 ## Runtime shader cache and warmup
 
-Applications warm the shared `.cache/shaders/spirv` cache before initialization.
-Use `--skip-shader-warmup` to compile requests on demand. The manual
+Applications compile the active graph/UI requests on demand by default, using
+the shared `.cache/shaders/spirv` and native pipeline caches. The first frame
+does not wait for unrelated samples or full-catalog permutations. Runtime pass
+factories own the exact source request and native specialization, including
+scene materials, SHARC, guides and device ABI. Use `--full-shader-warmup` to
+explicitly warm the complete source/compute PSO catalog before initialization;
+`--skip-shader-warmup` selects the default mode (the last flag wins). The manual
 `MetallicShaderWarmup` target stays outside default builds and application dependencies.
 
-Startup reports live `[Warmup]` phases (source capture, compilation, validation,
+Full-catalog startup reports live `[Warmup]` phases (source capture, compilation, validation,
 and cache publication), completed request counts, and a heartbeat every two
 seconds while the batch is running. `ready` requests are provisional: startup
 accepts them only after the entire source batch passes validation and cache
@@ -124,7 +129,7 @@ Deferred global/local views, FP16/FP32, guides and material classes. Editor disp
 requests share a factory with runtime and include SDR/scRGB/HDR10 paths at the
 standard 80/203-nit reference whites.
 
-Installed Painter and WhiteStudio catalogs are also read before initialization.
+Explicit full warmup also reads installed Painter and WhiteStudio catalogs.
 Their scene sidecars and material assets are lowered through the runtime CPU
 material compiler to generate the same content-keyed include, then their declared
 graph shader requests are appended, including custom Surface/Closure programs.

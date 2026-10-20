@@ -4,30 +4,39 @@
 
 namespace metallic::render {
 
-// Shared by the standalone compiler and application startup. Startup always
-// warms the complete catalog in the current Slang shader debug/descriptor mode.
+// Explicit full-catalog warmup, shared by the standalone compiler and opt-in
+// application startup. Default startup compiles the active graph/UI requests
+// through their runtime owners, including exact native specialization values.
 int runShaderWarmup(int argc, char** argv);
 int warmupShadersForStartup(bool skip);
-// Arm device-first source/native warmup without compiling or querying an adapter.
-// The actual rendering device performs both stages before createDevice returns.
+// Arm opt-in full-catalog source/native warmup without querying an adapter.
+// Skipping leaves compilation to runtime graph/UI initialization. Otherwise the
+// actual rendering device performs both stages before createDevice returns.
 int prepareStartupShaderWarmup(bool skip);
 // Explicit application preparation or successful legacy source warmup enables
 // the device phase. Standalone/offline compilation does not enable this gate.
 bool startupShaderWarmupEnabled() noexcept;
 
 struct ShaderWarmupLaunchOptions {
-    bool skip = false;
+    bool skip = true;
 
     static constexpr const char* kUsage =
-        "  --skip-shader-warmup         Skip startup SPIR-V and native pipeline warmup (compile on demand)";
+        "  Default: compile shader/PSO variants requested by the active graph and UI\n"
+        "  --full-shader-warmup         Warm the complete shader/compute PSO catalog before initialization\n"
+        "  --skip-shader-warmup         Compile on demand (default; overrides an earlier --full-shader-warmup)";
 
     bool consume(const char* argument)
     {
-        if (std::string_view(argument) != "--skip-shader-warmup") {
-            return false;
+        const std::string_view value(argument);
+        if (value == "--full-shader-warmup") {
+            skip = false;
+            return true;
         }
-        skip = true;
-        return true;
+        if (value == "--skip-shader-warmup") {
+            skip = true;
+            return true;
+        }
+        return false;
     }
 };
 

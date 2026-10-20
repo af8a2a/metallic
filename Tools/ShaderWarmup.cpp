@@ -398,7 +398,10 @@ int metallic::render::warmupShadersForStartup(bool skip)
 int metallic::render::prepareStartupShaderWarmup(bool skip)
 {
     startupWarmupEnabled.store(false, std::memory_order_release);
-    if (skip) { return 0; }
+    if (skip) {
+        std::cout << "[Startup] Shader/PSO compilation follows active runtime requests" << std::endl;
+        return 0;
+    }
     if (const char* value = std::getenv("METALLIC_SHADER_WARMUP_JOBS"); value && value[0]) {
         size_t jobs = 0;
         const std::string_view text(value);
@@ -409,7 +412,7 @@ int metallic::render::prepareStartupShaderWarmup(bool skip)
         }
     }
     startupWarmupEnabled.store(true, std::memory_order_release);
-    std::cout << "[Startup] Shader warmup scheduled on the rendering device" << std::endl;
+    std::cout << "[Startup] Full shader warmup scheduled on the rendering device" << std::endl;
     return 0;
 }
 

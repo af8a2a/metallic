@@ -47,7 +47,7 @@ struct NativeShaderWarmupReport
 [[nodiscard]] Result<NativeShaderWarmupReport> warmupNativeShadersPipelined(Device& device,
     std::span<const ShaderRequest> requests, std::string& log);
 
-// Application startup preparation opens this gate; device creation returns
+// Explicit full-catalog startup preparation opens this gate; device creation returns
 // successfully only after the complete source/native warmup is accepted.
 // Standalone shader compilation and ordinary RHI/test devices do not opt in.
 [[nodiscard]] Result<> warmupNativeShadersForStartup(Device& device);

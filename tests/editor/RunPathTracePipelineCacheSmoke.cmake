@@ -27,11 +27,19 @@ foreach(sample IN LISTS samples)
     endif()
     foreach(run RANGE 1 2)
         execute_process(
-            COMMAND "${LOOKDEV_EXECUTABLE}" --debug-control --sample "${sample}" --skip-shader-warmup --smoke-test
-            WORKING_DIRECTORY "${TEST_DIRECTORY}"
+            COMMAND "${LOOKDEV_EXECUTABLE}" --debug-control --sample "${sample}" --smoke-test
+            # Keep generated PSO files outside the compiler's immediate cwd
+            # namespace, whose mutations intentionally invalidate source epochs.
+            WORKING_DIRECTORY "${SOURCE_DIRECTORY}"
             RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors TIMEOUT 180)
         set(log "${output}\n${errors}")
         file(WRITE "${TEST_DIRECTORY}/${sample}-${run}.log" "${log}")
+        if(log MATCHES "\\[Native shader warmup\\]" OR NOT log MATCHES "Shader/PSO compilation follows active runtime requests")
+            message(FATAL_ERROR "${sample} default launch enabled full-catalog warmup; see ${TEST_DIRECTORY}/${sample}-${run}.log")
+        endif()
+        if(sample STREQUAL "openpbr-lookdev" AND log MATCHES "Features/(PathTracing/(ScenePathTrace|SceneSharcMaintenance)|VisibilityBuffer/VisibilityBufferDeferred|ReSTIR/SceneRTXDI)\\.")
+            message(FATAL_ERROR "${sample} acquired unrelated shader variants; see ${TEST_DIRECTORY}/${sample}-${run}.log")
+        endif()
         if(log MATCHES "Internal pipeline cache diagnostic (requires|unsupported)")
             message(STATUS "SKIP: driver lacks the internal-cache control needed for this test")
             return()

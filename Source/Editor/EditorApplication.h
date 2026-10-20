@@ -45,7 +45,7 @@ public:
         bool enableNsightShaderDebug = false,
         bool enableDebugControl = false,
         bool gpuDrivenScenesOnly = false,
-        bool skipShaderWarmup = false,
+        bool skipShaderWarmup = true,
         render::LookDevRenderPath lookDevRenderPath = render::LookDevRenderPath::Comparison,
         const char* resourceInspectorSmokeOutput = nullptr);
 

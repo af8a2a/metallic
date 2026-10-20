@@ -19,25 +19,38 @@ physical devices for descriptor strides, without creating a logical device or
 submitting work. Supplying both strides explicitly also permits offline native
 compilation.
 
-The editor, LookDev, all rendering samples, and MetallicShaderPrintfProbe first
-configure startup warmup, then create the actual rendering device. Source
-compilation and supported compute Native PSO creation run on that device before
-it returns to its caller. A completed source can enter native creation while
-other sources are still compiling; rendering waits for both stages to finish.
-Warmup failure aborts startup with a nonzero exit code. To explicitly skip both
-startup phases:
+The editor, LookDev, rendering samples, and MetallicShaderPrintfProbe default to
+compiling shaders and creating PSOs as their runtime owners initialize. Device
+creation does not wait for the complete warmup catalog. The RenderGraph executor
+initializes only passes reachable from the requested outputs; their factories
+select requests using the actual graph properties, scene materials and device.
+Native specialization values come from those same runtime factories. UI and
+shared scene/environment initialization still acquire their own required shaders.
+Other samples, inactive passes and unused catalog permutations do not block the
+first frame. A later graph or setting change compiles newly requested variants.
+
+For example, the default OpenPBR LookDev graph uses OpenPBR path tracing with
+cache mode off, AutoExposure, ColorGradingLUT and FinalBlit. Startup no longer
+prewarms Standard path tracing, SHARC, Deferred or other sample variants merely
+because they appear in the full catalog. Pass-owned initialization may still
+prepare internal alternatives required by that pass's runtime contract.
+
+To explicitly request the complete source/compute PSO catalog before device
+creation returns:
 
 ~~~powershell
-.\build-release\Source\Metallic.exe --skip-shader-warmup
-.\build-release\Source\LookDev.exe --skip-shader-warmup
-.\build-release\Source\MetallicPathTracingSample.exe --skip-shader-warmup
+.\build-release\Source\Metallic.exe --full-shader-warmup
+.\build-release\Source\LookDev.exe --full-shader-warmup
+.\build-release\Source\MetallicPathTracingSample.exe --full-shader-warmup
 ~~~
 
-The flag also works with smoke-test launches and the GPU printf probe. Help,
+Both modes also work with smoke-test launches and the GPU printf probe.
+`--skip-shader-warmup` explicitly selects the default runtime-driven mode; when
+both flags are present, the last one wins. Help,
 sample listing, offline cooking, CLI control tools, auxiliary launchers and test
 executables do not automatically run this startup warmup.
 
-The shared implementation runs inside each rendering process, after selecting
+The opt-in full-catalog implementation runs inside each rendering process, after selecting
 its shader debug mode and initializing the actual GPU device. Startup preparation
 validates the worker setting without compiling or querying an adapter. Device
 warmup uses the rendering device's resource/sampler stride pair for native heap
@@ -45,20 +58,21 @@ requests; requests whose native ABI is unavailable on that device are reported
 as unsupported. The standalone tool still queries an adapter when native strides
 are not supplied explicitly. Listing requests and explicitly skipping warmup do
 not query Vulkan for warmup.
-There is no external compiler process to locate or deploy. Startup always uses
-the complete catalog; METALLIC_SHADER_WARMUP_ARGS only configures the manual
-target and cannot bypass or filter startup warmup.
+There is no external compiler process to locate or deploy. Full-catalog startup
+uses the complete catalog; METALLIC_SHADER_WARMUP_ARGS only configures the manual
+target and cannot bypass or filter an explicitly requested full warmup.
 
 The standalone compiler and manual warmup target remain outside default builds.
 Rendering targets link the shared implementation; building them does not execute
-warmup. Runtime compile-on-cache-miss remains available for unlisted variants,
-source changes, and launches using --skip-shader-warmup.
+warmup. Runtime compile-on-cache-miss handles default startup, unlisted variants
+and source changes. Existing source validation, hot reload, native cache reuse
+and cache persistence also apply to runtime-driven startup.
 
 Repeated invocations validate source bytes, search namespaces and compiler
 identity before reusing current entries. Compilation, source changes during the
 batch, or persistence/read-back failures reject the complete warmup and produce
 a nonzero exit code. The standalone tool remains an offline SPIR-V compiler;
-application startup adds the device phase described below.
+explicit full-catalog application startup adds the device phase described below.
 
 ## Native pipeline startup phase
 
@@ -70,7 +84,7 @@ own render-state collectors. The current implementation waits synchronously
 for the compute phase before making the rendering device available. It moves
 driver work into startup; it does not claim to reduce total compilation work.
 
-The device phase uses the real device, its enabled features and exact native
+The opt-in device phase uses the real device, its enabled features and exact native
 descriptor strides. It acquires source results through `ShaderRegistry`,
 constructs complete compute descriptions, and stages each PSO for publication
 to the runtime registry. Layout size, indirect
@@ -178,7 +192,8 @@ unowned request layouts are also reported separately, rather than counted as
 precreated PSOs. New/unlisted shaders and future runtime policy changes retain
 the ordinary on-demand path.
 
-`--skip-shader-warmup` bypasses both startup phases. Standalone compiler/list/help
+Default startup and `--skip-shader-warmup` bypass both full-catalog phases.
+Standalone compiler/list/help
 and ordinary test launches do not enable automatic native warmup. Explicit
 native warmup tests can supply a small request set without running the full
 startup catalog. Changing the device, shaders or complete pipeline state never

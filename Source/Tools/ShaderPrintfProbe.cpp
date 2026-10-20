@@ -378,7 +378,7 @@ int main(int argc, char** argv)
         else if (i + 1 < argc && arg == "--mode") { mode = argv[++i]; }
         else if (i + 1 < argc && arg == "--fault") { fault = argv[++i]; }
         else if (i + 1 < argc && arg == "--output") { directory = argv[++i]; }
-        else { std::cerr << "Usage: MetallicShaderPrintfProbe [--skip-shader-warmup] --output <new-dir> --mode ordinary|heap-mapped|heap-native [--fault none|no-info|stdout|gpu-overflow] [--serve --serve-seconds 120]\n"; return 64; }
+        else { std::cerr << "Usage: MetallicShaderPrintfProbe [--full-shader-warmup|--skip-shader-warmup] --output <new-dir> --mode ordinary|heap-mapped|heap-native [--fault none|no-info|stdout|gpu-overflow] [--serve --serve-seconds 120]\n"; return 64; }
     }
     if ((service && fault != "none") || !serveSeconds || serveSeconds > 300 || directory.empty() || std::filesystem::exists(directory) ||
         (mode != "ordinary" && mode != "heap-mapped" && mode != "heap-native") ||
