@@ -58,6 +58,16 @@ evidence. By default each request completes all iterations before the next reque
 
 ## Cache and compilation modes
 
+`compilation_phases` reports `source_epoch_acquire_ms` (including
+`source_epoch_capture_ms`), `producer_acquire_ms`, `producer_validation_ms`,
+`source_validation_ms`, and `source_notification_validation_ms` separately from
+`cache_lookup_ms`. `source_epoch_reused` distinguishes first capture from a reused
+in-process epoch. On ordinary hits, source validation checks complete namespaces
+and only the invocation's actual source bytes. Phase counters can overlap
+(`cache_lookup_ms` includes its boundary checks), so do not sum them. Prime the
+cache for each compiler build and compare matching hit samples with identical
+SPIR-V, settings and source-epoch reuse conditions.
+
 | Option | Default | Behavior |
 | --- | --- | --- |
 | `--iterations N` | `3` | Positive sample count per selected request; report iterations are zero-based. |

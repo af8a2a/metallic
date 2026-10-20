@@ -92,6 +92,18 @@ public:
                 CompareFileTime(&now.ftLastWriteTime, &file.information.ftLastWriteTime)) {
                 log += "Compiler producer binary changed or became unavailable\n"; return false;
             }
+            // The pinned READ/SHARE_READ handle excludes existing writable
+            // mappings and writers, and denies future writes/deletes. Reopen
+            // the path to also detect ancestor replacement or redirection.
+            const HANDLE current = CreateFileW(file.path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            BY_HANDLE_FILE_INFORMATION currentInformation{};
+            const bool sameFile = current != INVALID_HANDLE_VALUE && GetFileInformationByHandle(current, &currentInformation) &&
+                currentInformation.dwVolumeSerialNumber == file.information.dwVolumeSerialNumber &&
+                currentInformation.nFileIndexHigh == file.information.nFileIndexHigh &&
+                currentInformation.nFileIndexLow == file.information.nFileIndexLow;
+            if (current != INVALID_HANDLE_VALUE) { CloseHandle(current); }
+            if (!sameFile) { log += "Compiler producer path no longer identifies the sealed binary\n"; return false; }
             if (full) {
                 try {
                     if (!file.sealedBytes || read(file.path) != *file.sealedBytes) {
@@ -220,6 +232,7 @@ bool writeEncodedShaderCache(const fs::path& path, std::span<const uint8_t> byte
 
 thread_local bool gBypassOrdinarySnapshot = false;
 thread_local bool gOrdinarySnapshotUnqualified = false;
+enum class SnapshotValidation { Notifications, CacheHit, Complete };
 struct SnapshotCompileContext {
     SnapshotCompileContext(SlangSnapshotFileSystem& source, std::shared_ptr<CompilerProducerSeal> seal, bool share, bool defer = false)
         : snapshot(source), provenance(source.createProvenanceView()), producer(std::move(seal)),
@@ -242,21 +255,22 @@ struct SnapshotCompileContext {
     ShaderCompileMetrics* invocationMetrics = nullptr;
     ISlangFileSystem* fileSystem() const noexcept { return provenance.get(); }
     ShaderNamespaceProof sourceProof() const { return provenance->sourceProof(producer->identity()); }
-    bool guard(std::string& log, bool full) const
+    bool guard(std::string& log, SnapshotValidation validation) const
     {
         if (!producer) { return false; }
         const auto producerStarted = Clock::now();
-        const bool producerValid = producer->validate(log, full);
+        const bool producerValid = producer->validate(log, validation == SnapshotValidation::Complete);
         if (invocationMetrics) {
             invocationMetrics->producerValidationTimeNanoseconds += static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - producerStarted).count());
         }
         if (!producerValid) { return false; }
         const auto sourceStarted = Clock::now();
-        const bool sourceValid = full ? snapshot.validate(log) : snapshot.validateNotifications(log);
+        const bool sourceValid = validation == SnapshotValidation::Complete ? snapshot.validate(log) :
+            validation == SnapshotValidation::CacheHit ? provenance->validateCacheHit(log) : snapshot.validateNotifications(log);
         if (invocationMetrics) {
-            auto& time = full ? invocationMetrics->sourceValidationTimeNanoseconds :
-                invocationMetrics->sourceNotificationValidationTimeNanoseconds;
+            auto& time = validation == SnapshotValidation::Notifications ? invocationMetrics->sourceNotificationValidationTimeNanoseconds :
+                invocationMetrics->sourceValidationTimeNanoseconds;
             time += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - sourceStarted).count());
         }
         return sourceValid;
@@ -264,7 +278,7 @@ struct SnapshotCompileContext {
     bool acquireSession(slang::IGlobalSession* global, std::unique_ptr<OwnedSlangSessionConfig>& config,
         Slang::ComPtr<slang::ISession>& result, std::string& log)
     {
-        if (!guard(log, false)) { return false; }
+        if (!guard(log, SnapshotValidation::Notifications)) { return false; }
         if (!session) {
             ownedSession = std::move(config);
             if (SLANG_FAILED(global->createSession(ownedSession->desc(), session.writeRef())) || !session) { return false; }
@@ -338,7 +352,7 @@ bool loadSnapshotCachedShader(SnapshotCompileContext& context, const fs::path& p
 {
     words.clear(); dependencies.clear();
     try {
-        if (!context.guard(log, false)) { return false; }
+        if (!context.guard(log, SnapshotValidation::Notifications)) { return false; }
         const auto bytes = read(path); slang_shader_cache::CachedPayload output;
         if (!context.provenance->decodeAndAcceptCache(bytes, request, context.producer->identity(), output, log)) { return false; }
         std::vector<fs::path> paths;
@@ -352,32 +366,33 @@ bool completeSnapshotInvocation(SnapshotCompileContext& context, const SlangShad
     uint64_t request, const fs::path& path, const ShaderCompileResult& result, std::string& log)
 {
     try {
-    if (context.deferPublication) { return context.guard(log, false) && context.stage && context.stage(request, path, result); }
-    // A hit has no intervening cache publication; one complete boundary check
-    // covers the returned code. Misses retain both publication/readback guards.
-    if (result.metrics.cacheHit) { return context.guard(log, true); }
-    if (!context.guard(log, true)) { return false; }
+    if (context.deferPublication) { return context.guard(log, SnapshotValidation::Notifications) && context.stage && context.stage(request, path, result); }
+    // A decoded hit validates all resolver namespaces and its actual source
+    // reads, while the producer's pinned handles preserve its initial byte seal.
+    // Misses retain complete publication/readback guards.
+    if (result.metrics.cacheHit) { return context.guard(log, SnapshotValidation::CacheHit); }
+    if (!context.guard(log, SnapshotValidation::Complete)) { return false; }
     if (options.enableDiskCache && !result.metrics.cacheHit) {
         if (context.snapshot.covers(path) || context.snapshot.covers(path.parent_path())) {
             log += "[ShaderCacheV3] Cache/source namespace overlaps; persistence bypassed\n";
-            return context.guard(log, true);
+            return context.guard(log, SnapshotValidation::Complete);
         }
         const auto proof = context.sourceProof();
         const auto bytes = slang_shader_cache::encode(request, proof, result.spirv);
         if (bytes.empty() || !writeEncodedShaderCache(path, bytes)) {
             log += "[ShaderCacheV3] Persistence unavailable; returning validated compiled code\n";
-            return context.guard(log, true);
+            return context.guard(log, SnapshotValidation::Complete);
         }
         const auto real = read(path); slang_shader_cache::CachedPayload output;
         if (real != bytes || !context.provenance->decodeAndAcceptCache(real, request, context.producer->identity(), output, log) ||
             output.spirv != result.spirv) {
             log += "[ShaderCacheV3] Actual persistence readback failed; returning validated compiled code\n";
-            return context.guard(log, true);
+            return context.guard(log, SnapshotValidation::Complete);
         }
     }
-    return context.guard(log, true);
+    return context.guard(log, SnapshotValidation::Complete);
     } catch (const std::exception& error) {
         log += std::string("[ShaderCacheV3] Ordinary persistence bypassed: ") + error.what() + '\n';
-        return !context.deferPublication && !context.provenance->hasUnqualifiedLookups() && context.guard(log, true);
+        return !context.deferPublication && !context.provenance->hasUnqualifiedLookups() && context.guard(log, SnapshotValidation::Complete);
     }
 }

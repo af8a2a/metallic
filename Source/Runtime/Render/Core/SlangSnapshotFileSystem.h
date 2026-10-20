@@ -26,6 +26,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -321,28 +322,22 @@ public:
     bool validate(std::string& reason) const
     {
         if (epochOwner_) { return epochOwner_->validate(reason); }
+        return validateSource(reason, nullptr);
+    }
+    bool validateCacheHit(std::string& reason) const
+    {
+        // A positive cache envelope contributes its qualified reads to this
+        // invocation. Keep the complete resolver namespace, but reread only
+        // these dependencies and any source already delivered to this view.
+        // Forwarding to the owner here would discard per-invocation provenance.
         try {
-            if (!validateNotifications(reason)) { return false; }
-            for (const auto& mapping : mappings_) {
-                const auto current = namespaceFor(mapping.physical, mapping.recursive);
-                if (current != namespaces_.at(pathKey(mapping.logical))) {
-                    reason = "physical namespace changed: " + pathText(mapping.logical); return false;
-                }
-                if (mapping.monitorOriginal && namespaceFor(mapping.logical, mapping.recursive) != current) {
-                    reason = "original namespace changed: " + pathText(mapping.logical); return false;
-                }
+            std::set<std::string> reads;
+            {
+                std::scoped_lock provenanceLock(provenanceMutex_);
+                reads = served_;
+                reads.insert(qualifiedCacheReads_.begin(), qualifiedCacheReads_.end());
             }
-            for (const auto& [key, file] : files_) {
-                if (read(file.physical) != file.bytes) {
-                    reason = "physical bytes changed: " + file.logical; return false;
-                }
-                for (const auto& mapping : mappings_) {
-                    if (mapping.monitorOriginal && childOf(key, pathKey(mapping.logical)) && read(fs::u8path(file.logical)) != file.bytes) {
-                        reason = "original bytes changed: " + file.logical; return false;
-                    }
-                }
-            }
-            return validateNotifications(reason);
+            return validateSource(reason, &reads);
         } catch (const std::exception& error) { reason = error.what(); return false; }
     }
     Json provenance() const
@@ -527,6 +522,42 @@ public:
         });
     }
 private:
+    bool validateSource(std::string& reason, const std::set<std::string>* reads) const
+    {
+        try {
+            if (!validateNotifications(reason)) { return false; }
+            for (const auto& mapping : mappings_) {
+                const auto current = namespaceFor(mapping.physical, mapping.recursive);
+                if (current != namespaces_.at(pathKey(mapping.logical))) {
+                    reason = "physical namespace changed: " + pathText(mapping.logical); return false;
+                }
+                if (mapping.monitorOriginal && namespaceFor(mapping.logical, mapping.recursive) != current) {
+                    reason = "original namespace changed: " + pathText(mapping.logical); return false;
+                }
+            }
+            const auto validateFile = [&](const std::string& key, const FileImage& file) {
+                if (read(file.physical) != file.bytes) {
+                    reason = "physical bytes changed: " + file.logical; return false;
+                }
+                for (const auto& mapping : mappings_) {
+                    if (mapping.monitorOriginal && childOf(key, pathKey(mapping.logical)) && read(fs::u8path(file.logical)) != file.bytes) {
+                        reason = "original bytes changed: " + file.logical; return false;
+                    }
+                }
+                return true;
+            };
+            if (reads) {
+                for (const auto& key : *reads) {
+                    if (!validateFile(key, files_.at(key))) { return false; }
+                }
+            } else {
+                for (const auto& [key, file] : files_) {
+                    if (!validateFile(key, file)) { return false; }
+                }
+            }
+            return validateNotifications(reason);
+        } catch (const std::exception& error) { reason = error.what(); return false; }
+    }
     explicit SlangSnapshotFileSystem(SlangSnapshotFileSystem* source)
         : epoch_(source->epoch_), cwdKey_(source->cwdKey_),
           sourceImage_(source->sourceImage_), epochOwner_(source->epochOwner_ ? source->epochOwner_ : source) {}
@@ -624,9 +655,54 @@ private:
     }
     static std::map<std::string, std::string> namespaceFor(const fs::path& root, bool recursive = true)
     {
+        std::map<std::string, std::string> names;
+#ifdef _WIN32
+        // Enumeration already returns each entry's attributes. Querying them
+        // again per file dominates ordinary hit validation on Windows.
+        std::vector<fs::path> pending{fs::path{}};
+        while (!pending.empty()) {
+            const auto relativeDirectory = std::move(pending.back());
+            pending.pop_back();
+            const auto directory = root / relativeDirectory;
+            const auto checkDirectory = [&] {
+                const DWORD attributes = GetFileAttributesW(directory.c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT ||
+                    !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                    throw std::runtime_error("Source namespace directory unavailable or replaced: " + directory.string());
+                }
+            };
+            checkDirectory();
+            WIN32_FIND_DATAW entry{};
+            struct Search {
+                HANDLE handle;
+                ~Search() { if (handle != INVALID_HANDLE_VALUE) { FindClose(handle); } }
+            } search{FindFirstFileExW((directory / L"*").c_str(), FindExInfoBasic, &entry, FindExSearchNameMatch, nullptr, 0)};
+            if (search.handle == INVALID_HANDLE_VALUE) {
+                const DWORD error = GetLastError();
+                if (error == ERROR_FILE_NOT_FOUND) { checkDirectory(); continue; }
+                throw std::runtime_error("Cannot enumerate source namespace (" + std::to_string(error) + "): " + directory.string());
+            }
+            do {
+                const std::wstring_view name(entry.cFileName);
+                if (name == L"." || name == L"..") { continue; }
+                if (entry.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) {
+                    throw std::runtime_error("Unsupported source filesystem object: " + (directory / name).string());
+                }
+                const auto relative = relativeDirectory / name;
+                const auto text = relative.generic_u8string();
+                const std::string key(reinterpret_cast<const char*>(text.data()), text.size());
+                const bool isDirectory = (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                names.emplace(key, isDirectory ? "directory" : "file");
+                if (recursive && isDirectory) { pending.push_back(relative); }
+            } while (FindNextFileW(search.handle, &entry));
+            const DWORD error = GetLastError();
+            if (error != ERROR_NO_MORE_FILES) {
+                throw std::runtime_error("Source namespace enumeration failed (" + std::to_string(error) + "): " + directory.string());
+            }
+        }
+#else
         rejectReparse(root);
         if (!fs::is_directory(root)) { throw std::runtime_error("Namespace root is absent: " + root.string()); }
-        std::map<std::string, std::string> names;
         const auto add = [&](const auto& item) {
             // Supporting symlink aliases requires canonical backing identity and
             // target namespace tracking. Reject unsupported namespace aliases.
@@ -640,6 +716,7 @@ private:
         };
         if (recursive) { for (const auto& item : fs::recursive_directory_iterator(root)) { add(item); } }
         else { for (const auto& item : fs::directory_iterator(root)) { add(item); } }
+#endif
         return names;
     }
     void capture()

@@ -72,6 +72,38 @@ void deliver(SlangSnapshotFileSystem& snapshot, const fs::path& path)
     ASSERT_TRUE(SLANG_SUCCEEDED(snapshot.loadFile(pathText(path).c_str(), blob.writeRef())));
 }
 
+#ifdef _WIN32
+class WritableSourceMapping
+{
+public:
+    explicit WritableSourceMapping(const fs::path& path)
+    {
+        file_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file_ == INVALID_HANDLE_VALUE) { throw std::runtime_error("Cannot open mapped source fixture"); }
+        mapping_ = CreateFileMappingW(file_, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+        if (mapping_) { data_ = static_cast<uint8_t*>(MapViewOfFile(mapping_, FILE_MAP_WRITE, 0, 0, 0)); }
+        if (!data_) {
+            if (mapping_) { CloseHandle(mapping_); }
+            CloseHandle(file_);
+            throw std::runtime_error("Cannot map source fixture");
+        }
+    }
+    ~WritableSourceMapping()
+    {
+        UnmapViewOfFile(data_);
+        CloseHandle(mapping_);
+        CloseHandle(file_);
+    }
+    void alterFirstByte() { data_[0] ^= 1; }
+    WritableSourceMapping(const WritableSourceMapping&) = delete;
+    WritableSourceMapping& operator=(const WritableSourceMapping&) = delete;
+private:
+    HANDLE file_ = INVALID_HANDLE_VALUE, mapping_ = nullptr;
+    uint8_t* data_ = nullptr;
+};
+#endif
+
 const std::vector<uint32_t> kMinimalCode{
     0x07230203, 0x00010600, 0, 5, 0,
     0x00020011, 1, 0x0003000e, 0, 1, 0x0005000f, 5, 3, 0x6e69616d, 0,
@@ -570,6 +602,7 @@ TEST(ShaderWarmupBatch, IssuedTokensAcceptedHitUnionAndActualFilePublicationGate
         }
         EXPECT_TRUE(advanced);
         EXPECT_FALSE(snapshot.validate(reason)); // Restored bytes still invalidate the old epoch.
+        EXPECT_FALSE(snapshot.validateCacheHit(reason));
     }
     for (const std::string mode : {"normal", "writer-failure", "short", "trailing", "damaged", "corrupt-proof", "source-edit"}) {
         fs::create_directories(cache / mode);
@@ -672,6 +705,202 @@ TEST(ShaderWarmupBatch, TransactionPreservesDistinctItemProofsWithoutBatchUnion)
     EXPECT_TRUE(afterEdit.decodeAndAcceptCache(bytesB, 0xb, producer, decoded, log)) << log;
     EXPECT_EQ(decoded.proof.actualReads, proofB.actualReads);
     EXPECT_FALSE(afterEdit.decodeAndAcceptCache(bytesA, 0xa, producer, decoded, log));
+#endif
+}
+
+TEST(ShaderWarmupBatch, NamespaceEnumerationPreservesHiddenUnicodeAndEmptyDirectories)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows snapshot proof fixture";
+#else
+    for (const bool recursive : {false, true}) {
+        WarmupDirectory directory;
+        const auto source = directory.path / "source";
+        const auto nested = fs::u8path(u8"子目录"), header = nested / fs::u8path(u8"输入.h");
+        writeText(source / "Root.slang", "module Root;\n");
+        writeText(source / header, "#define NESTED 2u\n");
+        fs::create_directories(source / nested / "empty");
+        // Set attributes at creation rather than changing them between two
+        // captured epochs. The fixture is complete before watchers are queued.
+        struct HiddenFile {
+            HANDLE handle;
+            ~HiddenFile() { if (handle != INVALID_HANDLE_VALUE) { CloseHandle(handle); } }
+        } hidden{CreateFileW((source / ".hidden.h").c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+            nullptr, CREATE_NEW, FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM, nullptr)};
+        ASSERT_NE(hidden.handle, INVALID_HANDLE_VALUE);
+        constexpr std::string_view text = "#define VALUE 1u\n";
+        DWORD written = 0;
+        const BOOL success = WriteFile(hidden.handle, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+        ASSERT_TRUE(success);
+        ASSERT_EQ(written, text.size());
+        ASSERT_TRUE(FlushFileBuffers(hidden.handle));
+        ASSERT_TRUE(CloseHandle(hidden.handle));
+        hidden.handle = INVALID_HANDLE_VALUE;
+        const DWORD attributes = GetFileAttributesW((source / ".hidden.h").c_str());
+        ASSERT_NE(attributes, INVALID_FILE_ATTRIBUTES);
+        ASSERT_EQ(attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM), FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
+        const Json graph{{"mappings", Json::array({{{"logical", pathText(source)}, {"physical", pathText(source)},
+            {"recursive", recursive}, {"namespace_only", true}}})}};
+        std::unique_ptr<SlangSnapshotFileSystem> snapshot;
+        for (size_t attempt = 0; attempt < 8; ++attempt) {
+            try {
+                snapshot = std::make_unique<SlangSnapshotFileSystem>(graph, attempt + 1);
+                break;
+            } catch (const std::runtime_error& error) {
+                // Fixture setup can finish delivering last-write/attribute
+                // notifications after the first watcher is queued. Recapture
+                // this unchanged fixture; every other failure remains fatal.
+                if (attempt == 7 || !std::string_view(error.what()).starts_with(
+                    "Unstable snapshot capture: source epoch notification advanced: ")) { throw; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        }
+        ASSERT_TRUE(snapshot);
+        deliver(*snapshot, source / "Root.slang");
+        const auto proof = snapshot->sourceProof(0x7103);
+        ASSERT_EQ(proof.roots.size(), 1u);
+        const auto& entries = proof.roots.front().entries;
+        EXPECT_EQ(entries.size(), recursive ? 5u : 3u);
+        const auto expectEntry = [&](const fs::path& relative, ShaderNamespaceEntryKind kind) {
+            const auto text = relative.generic_u8string();
+            const std::string name(reinterpret_cast<const char*>(text.data()), text.size());
+            EXPECT_TRUE(std::ranges::any_of(entries, [&](const auto& entry) {
+                return entry.relativePath == name && entry.kind == kind;
+            })) << name;
+        };
+        expectEntry("Root.slang", ShaderNamespaceEntryKind::File);
+        expectEntry(".hidden.h", ShaderNamespaceEntryKind::File);
+        expectEntry(nested, ShaderNamespaceEntryKind::Directory);
+        if (recursive) {
+            expectEntry(header, ShaderNamespaceEntryKind::File);
+            expectEntry(nested / "empty", ShaderNamespaceEntryKind::Directory);
+        }
+    }
+#endif
+}
+
+TEST(ShaderWarmupBatch, CacheHitValidationReadsOnlyInvocationDependencies)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows snapshot proof fixture";
+#else
+    for (const std::string changed : {"Unused.h", "Cached.h", "Delivered.h"}) {
+        SCOPED_TRACE(changed);
+        WarmupDirectory directory;
+        const auto source = directory.path / "source";
+        const auto input = source / "A.slang", cachedHeader = source / "Cached.h";
+        const auto deliveredHeader = source / "Delivered.h", unused = source / "Unused.h";
+        writeText(input, "module A;\n");
+        for (const auto& path : {cachedHeader, deliveredHeader, unused}) { writeText(path, "#define VALUE 17u\n"); }
+        const auto before = read(source / changed);
+        WritableSourceMapping changedBytes(source / changed);
+        // A root-only cwd mapping deliberately has no byte-change notification
+        // filter. Keep a writable mapping open across the epoch to change bytes
+        // without truncation or close-time attribute/timestamp notifications.
+        const Json graph{{"mappings", Json::array({{{"logical", pathText(source)}, {"physical", pathText(source)},
+            {"recursive", false}, {"namespace_only", true}}})}};
+        constexpr uint64_t producer = 0x7103;
+        SlangSnapshotFileSystem snapshot(graph, 1);
+        deliver(snapshot, input); deliver(snapshot, cachedHeader);
+        const auto cache = slang_shader_cache::encode(0xa, snapshot.sourceProof(producer), kMinimalCode);
+        // Owner provenance includes an unrelated read. A hit view must use its
+        // own accepted-cache and delivered reads, never the owner's union.
+        deliver(snapshot, unused);
+        auto invocation = snapshot.createProvenanceView();
+        std::string reason;
+        slang_shader_cache::CachedPayload decoded;
+        ASSERT_TRUE(invocation->decodeAndAcceptCache(cache, 0xa, producer, decoded, reason)) << reason;
+        deliver(*invocation, deliveredHeader);
+        ASSERT_EQ(invocation->sourceProof(producer).actualReads.size(), 3u);
+        changedBytes.alterFirstByte();
+        auto expected = before;
+        expected.front() ^= 1;
+        ASSERT_EQ(read(source / changed), expected);
+        ASSERT_TRUE(snapshot.validateNotifications(reason)) << reason;
+        if (changed == "Unused.h") {
+            EXPECT_TRUE(invocation->validateCacheHit(reason)) << reason;
+            EXPECT_FALSE(invocation->validate(reason));
+        } else {
+            EXPECT_FALSE(invocation->validateCacheHit(reason));
+        }
+        EXPECT_NE(reason.find("physical bytes changed"), std::string::npos) << reason;
+    }
+#endif
+}
+
+TEST(ShaderWarmupBatch, CacheHitValidationChecksOriginalDependencyBytes)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows snapshot proof fixture";
+#else
+    WarmupDirectory directory;
+    const auto logical = directory.path / "source", physical = directory.path / "frozen";
+    const auto input = logical / "A.slang";
+    writeText(input, "module A;\n");
+    writeText(physical / "A.slang", "module A;\n");
+    const auto before = read(input);
+    WritableSourceMapping originalBytes(input);
+    const Json graph{{"mappings", Json::array({{{"logical", pathText(logical)}, {"physical", pathText(physical)},
+        {"recursive", false}, {"namespace_only", true}, {"monitor_original", true}}})}};
+    SlangSnapshotFileSystem snapshot(graph, 1);
+    auto invocation = snapshot.createProvenanceView();
+    deliver(*invocation, input);
+    originalBytes.alterFirstByte();
+    auto expected = before;
+    expected.front() ^= 1;
+    ASSERT_EQ(read(input), expected);
+    std::string reason;
+    ASSERT_TRUE(snapshot.validateNotifications(reason)) << reason;
+    EXPECT_FALSE(invocation->validateCacheHit(reason));
+    EXPECT_NE(reason.find("original bytes changed"), std::string::npos) << reason;
+#endif
+}
+
+TEST(ShaderWarmupBatch, CacheHitValidationRejectsNamespaceShadow)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows snapshot proof fixture";
+#else
+    WarmupDirectory directory;
+    const auto source = directory.path / "source", input = source / "A.slang", missing = source / "Shadow.h";
+    writeText(input, "module A;\n");
+    const Json graph{{"mappings", Json::array({{{"logical", pathText(source)}, {"physical", pathText(source)},
+        {"recursive", false}, {"namespace_only", true}}})}};
+    SlangSnapshotFileSystem snapshot(graph, 1);
+    auto invocation = snapshot.createProvenanceView();
+    deliver(*invocation, input);
+    SlangPathType type;
+    ASSERT_TRUE(SLANG_FAILED(invocation->getPathType(pathText(missing).c_str(), &type)));
+    ASSERT_EQ(invocation->sourceProof(0x7103).negativeLookupPaths.size(), 1u);
+    writeText(missing, "#define VALUE 31u\n");
+    std::string reason;
+    EXPECT_FALSE(invocation->validateCacheHit(reason));
+#endif
+}
+
+TEST(ShaderWarmupBatch, CacheHitValidationRejectsReparseReplacement)
+{
+#ifndef _WIN32
+    GTEST_SKIP() << "Windows snapshot proof fixture";
+#else
+    WarmupDirectory directory;
+    const auto source = directory.path / "source", input = source / "A.slang";
+    const auto nested = source / "nested", target = directory.path / "target";
+    writeText(input, "module A;\n");
+    fs::create_directories(nested);
+    fs::create_directories(target);
+    const Json graph{{"mappings", Json::array({{{"logical", pathText(source)}, {"physical", pathText(source)},
+        {"recursive", false}, {"namespace_only", true}}})}};
+    SlangSnapshotFileSystem snapshot(graph, 1);
+    auto invocation = snapshot.createProvenanceView();
+    deliver(*invocation, input);
+    ASSERT_TRUE(fs::remove(nested));
+    if (!CreateSymbolicLinkW(nested.c_str(), target.c_str(),
+        SYMBOLIC_LINK_FLAG_DIRECTORY | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        GTEST_SKIP() << "Windows directory symlink unavailable: " << GetLastError();
+    }
+    std::string reason;
+    EXPECT_FALSE(invocation->validateCacheHit(reason));
 #endif
 }
 

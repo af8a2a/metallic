@@ -37,8 +37,8 @@ public:
                 lease.acquireTimeNanoseconds = elapsed(started);
                 return lease;
             }
-            // Active requests retain their old immutable bytes and still have
-            // to pass the complete source/producer boundary before returning.
+            // Active requests retain immutable bytes and must still pass
+            // their own source/producer boundary before returning.
             log += "[ShaderCacheV3] Source epoch discarded: " + reason + '\n';
             epochs.erase(found);
         }

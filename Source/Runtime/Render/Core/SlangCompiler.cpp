@@ -1197,7 +1197,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
             log += std::string("[ShaderCacheV3] Bypass reuse: ") + error.what() + '\n';
         }
     }
-    if (snapshotContext && !snapshotContext->guard(log, false)) { return makeError(Error::Failure); }
+    if (snapshotContext && !snapshotContext->guard(log, SnapshotValidation::Notifications)) { return makeError(Error::Failure); }
     const std::filesystem::path cachePath = shaderCachePath(cacheOptions, requestHash);
     std::vector<ShaderDependencySnapshot> cachedDependencies;
     const auto cacheLookupStart = Clock::now();
@@ -1213,14 +1213,6 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
         const auto dependencyTrackingStart = Clock::now();
         publishShaderDependencies(cachedDependencies, outResult);
         metrics.dependencyTrackingTimeNanoseconds = elapsed(dependencyTrackingStart);
-        spdlog::info(
-            "[ShaderCache] Loaded {}.{} from '{}' (optimization={}, postprocess={})",
-            desc.moduleName,
-            desc.entryPointName,
-            cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization),
-            slangShaderPostprocessModeName(*effectivePostprocess));
-        outResult.diagnostics = log;
-        metrics.totalTimeNanoseconds = elapsed(requestStart);
         if (snapshotContext && !completeSnapshotInvocation(*snapshotContext, cacheOptions,
                 requestHash, cachePath, outResult, log)) {
             if (cacheOptions.outCacheHit) { *cacheOptions.outCacheHit = false; }
@@ -1228,6 +1220,12 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
         }
         outResult.diagnostics = log;
         metrics.totalTimeNanoseconds = elapsed(requestStart);
+        spdlog::info(
+            "[ShaderCache] Loaded {}.{} from '{}' (optimization={}, postprocess={}, totalMs={:.3f}, producerMs={:.3f}, sourceMs={:.3f}, epochReused={})",
+            desc.moduleName, desc.entryPointName, cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization),
+            slangShaderPostprocessModeName(*effectivePostprocess), double(metrics.totalTimeNanoseconds) / 1e6,
+            double(metrics.producerValidationTimeNanoseconds) / 1e6, double(metrics.sourceValidationTimeNanoseconds) / 1e6,
+            metrics.sourceEpochReused);
         return outResult;
     }
 
@@ -1406,7 +1404,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
     }
     metrics.outputSpirvByteSize = outResult.spirv.size() * sizeof(uint32_t);
     const auto dependencyValidationStart = Clock::now();
-    if (!(snapshotContext ? snapshotContext->guard(log, ordinaryContext != nullptr) :
+    if (!(snapshotContext ? snapshotContext->guard(log, ordinaryContext ? SnapshotValidation::Complete : SnapshotValidation::Notifications) :
             shaderDependencySnapshotsMatch(dependencySnapshots))) {
         outResult.spirv.clear();
         log +=

@@ -74,6 +74,22 @@ batch, or persistence/read-back failures reject the complete warmup and produce
 a nonzero exit code. The standalone tool remains an offline SPIR-V compiler;
 explicit full-catalog application startup adds the device phase described below.
 
+Ordinary disk-cache hits retain per-invocation source provenance. They compare
+the complete current search namespaces and the exact bytes of that shader's
+accepted dependencies, including private headers; unrelated captured files are
+not reread. Live notifications still reject an edited epoch, including an
+edit-and-restore. Notifications alone cannot prove unchanged source bytes.
+Capture, cache misses and full warmup acceptance keep complete source validation.
+
+The compiler host and actual Slang DLLs are byte-sealed once per process, with
+read-only sharing handles retained for their lifetime. These handles exclude
+writes, deletes and existing writable mappings. Hits check handle metadata,
+reopen each producer path to verify its file identity, and check loaded DLL paths
+without rereading the sealed binary bytes. A new process computes the producer
+identity again; a different compiler build or SDK cannot reuse an old proof.
+`ShaderCache Loaded` is logged only after successful validation and includes
+total, producer and source validation times plus source-epoch reuse status.
+
 ## Native pipeline startup phase
 
 This follows the separation used by

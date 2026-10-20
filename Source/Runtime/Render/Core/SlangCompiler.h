@@ -85,7 +85,9 @@ struct ShaderCompileMetrics {
     uint64_t totalTimeNanoseconds = 0;
     uint64_t cacheLookupTimeNanoseconds = 0;
     // Source acquire includes capture on a new epoch; capture is its subset.
-    // Complete ordinary-call boundaries retain full source and producer bytes.
+    // Ordinary hits validate complete namespaces and the invocation's actual
+    // source bytes; pinned producer handles retain the initial binary byte seal.
+    // Miss publication and warmup acceptance retain complete byte validation.
     uint64_t sourceEpochAcquireTimeNanoseconds = 0;
     uint64_t sourceEpochCaptureTimeNanoseconds = 0;
     uint64_t producerAcquireTimeNanoseconds = 0;

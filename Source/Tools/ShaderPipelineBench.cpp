@@ -392,6 +392,13 @@ Json compilationMetricsJson(const ShaderCompileMetrics& metrics)
 {
     return {{"total_ms", double(metrics.totalTimeNanoseconds) / 1e6},
         {"cache_lookup_ms", double(metrics.cacheLookupTimeNanoseconds) / 1e6},
+        {"source_epoch_acquire_ms", double(metrics.sourceEpochAcquireTimeNanoseconds) / 1e6},
+        {"source_epoch_capture_ms", double(metrics.sourceEpochCaptureTimeNanoseconds) / 1e6},
+        {"source_epoch_reused", metrics.sourceEpochReused},
+        {"producer_acquire_ms", double(metrics.producerAcquireTimeNanoseconds) / 1e6},
+        {"producer_validation_ms", double(metrics.producerValidationTimeNanoseconds) / 1e6},
+        {"source_validation_ms", double(metrics.sourceValidationTimeNanoseconds) / 1e6},
+        {"source_notification_validation_ms", double(metrics.sourceNotificationValidationTimeNanoseconds) / 1e6},
         {"compiler_setup_ms", double(metrics.compilerSetupTimeNanoseconds) / 1e6},
         {"module_load_ms", double(metrics.moduleLoadTimeNanoseconds) / 1e6},
         {"dependency_tracking_ms", double(metrics.dependencyTrackingTimeNanoseconds) / 1e6},
