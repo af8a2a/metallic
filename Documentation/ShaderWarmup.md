@@ -81,6 +81,22 @@ not reread. Live notifications still reject an edited epoch, including an
 edit-and-restore. Notifications alone cannot prove unchanged source bytes.
 Capture, cache misses and full warmup acceptance keep complete source validation.
 
+Ordinary requests share an immutable source epoch when their normalized capture
+plans are identical: working directory, producer identity, logical/physical roots
+and capture policies must all match. Additional search paths already covered by
+the same recursive roots do not require another capture. Search order remains
+part of each shader request and session identity; sharing source bytes does not
+merge shader variants or change header resolution. Every acquisition still
+qualifies its effective search paths against the captured namespaces.
+
+The editor starts producer sealing and source capture on a worker before SDL and
+device initialization, then joins it before acquiring the first ImGui shaders.
+This preparation creates no compiler session, shader artifact or PSO. Requests
+revalidate the prepared epoch through the ordinary path; edits invalidate it,
+and preparation failures leave acquisition to those requests. Directory watches
+use private Windows completion ports so they remain valid after the preparation
+thread exits. The worker is also joined on initialization failure.
+
 The compiler host and actual Slang DLLs are byte-sealed once per process, with
 read-only sharing handles retained for their lifetime. These handles exclude
 writes, deletes and existing writable mappings. Hits check handle metadata,
@@ -88,7 +104,11 @@ reopen each producer path to verify its file identity, and check loaded DLL path
 without rereading the sealed binary bytes. A new process computes the producer
 identity again; a different compiler build or SDK cannot reuse an old proof.
 `ShaderCache Loaded` is logged only after successful validation and includes
-total, producer and source validation times plus source-epoch reuse status.
+total, producer and source validation times plus source-epoch reuse status,
+producer acquisition, epoch acquisition/capture and lookup times. Epoch capture
+is a subset of epoch acquisition. Startup logs separately report preparation
+and its remaining wait before ImGui initialization; overlapping device work and
+preparation timings must not be added as sequential startup costs.
 
 ## Native pipeline startup phase
 

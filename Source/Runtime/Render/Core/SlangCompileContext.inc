@@ -182,8 +182,14 @@ std::shared_ptr<CompilerProducerSeal> compilerProducerSeal()
     return seal;
 }
 
-std::unique_ptr<SlangSnapshotFileSystem> captureSourceEpoch(const std::vector<std::vector<fs::path>>& searchRoots, std::string& log)
+struct SourceEpochCapturePlan {
+    fs::path cwd;
+    Json manifest{{"mappings", Json::array()}};
+};
+
+SourceEpochCapturePlan planSourceEpoch(const std::vector<std::vector<fs::path>>& searchRoots)
 {
+    SourceEpochCapturePlan plan{normalizedAbsolutePath(fs::current_path())};
     std::vector<fs::path> roots;
     const auto add = [&](const fs::path& input) {
         const auto path = normalizedAbsolutePath(input);
@@ -197,23 +203,40 @@ std::unique_ptr<SlangSnapshotFileSystem> captureSourceEpoch(const std::vector<st
     for (const char* path : {"Shaders", "Source", ".cache/materials", "External/RTXCR-Material/shaders",
             "External/RTXCR-Geometry/shaders", "External/Rtxtf", "External/slang/include"}) { add(fs::path(PROJECT_SOURCE_DIR) / path); }
     std::sort(roots.begin(), roots.end(), [](const auto& a, const auto& b) { return pathKey(a) < pathKey(b); });
-    Json manifest{{"mappings", Json::array()}};
     for (const auto& root : roots) {
-        manifest["mappings"].push_back({{"logical", pathText(root)}, {"physical", pathText(root)}, {"monitor_original", false}});
+        plan.manifest["mappings"].push_back({{"logical", pathText(root)}, {"physical", pathText(root)},
+            {"recursive", true}, {"namespace_only", false}, {"monitor_original", false}});
     }
-    const auto cwd = normalizedAbsolutePath(fs::current_path());
-    const bool cwdCovered = std::ranges::any_of(roots, [&](const auto& root) { return childOf(pathKey(cwd), pathKey(root)); });
+    const bool cwdCovered = std::ranges::any_of(roots, [&](const auto& root) { return childOf(pathKey(plan.cwd), pathKey(root)); });
     if (!cwdCovered) {
-        manifest["mappings"].push_back({{"logical", pathText(cwd)}, {"physical", pathText(cwd)},
+        plan.manifest["mappings"].push_back({{"logical", pathText(plan.cwd)}, {"physical", pathText(plan.cwd)},
             {"recursive", false}, {"namespace_only", true}, {"monitor_original", false}});
     }
-    auto snapshot = std::make_unique<SlangSnapshotFileSystem>(manifest, 0);
+    return plan;
+}
+
+bool sourceEpochCoversSearchPaths(const SlangSnapshotFileSystem& snapshot,
+    const std::vector<std::vector<fs::path>>& searchRoots, std::string& log)
+{
     for (const auto& paths : searchRoots) {
         for (const auto& path : paths) {
-            if (!snapshot->covers(path)) { log += "Effective search path has no complete captured namespace/ancestor\n"; return {}; }
+            if (!snapshot.covers(path)) { log += "Effective search path has no complete captured namespace/ancestor\n"; return false; }
         }
     }
+    return true;
+}
+
+std::unique_ptr<SlangSnapshotFileSystem> captureSourceEpoch(const SourceEpochCapturePlan& plan,
+    const std::vector<std::vector<fs::path>>& searchRoots, std::string& log)
+{
+    auto snapshot = std::make_unique<SlangSnapshotFileSystem>(plan.manifest, 0);
+    if (!sourceEpochCoversSearchPaths(*snapshot, searchRoots, log)) { return {}; }
     return snapshot;
+}
+
+std::unique_ptr<SlangSnapshotFileSystem> captureSourceEpoch(const std::vector<std::vector<fs::path>>& searchRoots, std::string& log)
+{
+    return captureSourceEpoch(planSourceEpoch(searchRoots), searchRoots, log);
 }
 
 bool writeEncodedShaderCache(const fs::path& path, std::span<const uint8_t> bytes)

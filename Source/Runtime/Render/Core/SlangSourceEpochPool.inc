@@ -22,8 +22,18 @@ public:
         };
         Lease lease;
         if (!producer || !producer->validate(log, false)) { return lease; }
-        std::vector<std::string> key{pathKey(fs::current_path()), pathKey(PROJECT_SOURCE_DIR), hex(producer->identity())};
-        for (const auto& path : orderedSearchPaths) { key.push_back(pathKey(path)); }
+        const std::vector<std::vector<fs::path>> searchRoots{orderedSearchPaths};
+        const auto plan = planSourceEpoch(searchRoots);
+        // Source images share only the exact capture footprint. Search order
+        // still belongs to each request/session's independent identity.
+        std::vector<std::string> key{pathKey(plan.cwd), hex(producer->identity())};
+        for (const auto& mapping : plan.manifest.at("mappings")) {
+            key.push_back(pathKey(fs::u8path(mapping.at("logical").get<std::string>())));
+            key.push_back(pathKey(fs::u8path(mapping.at("physical").get<std::string>())));
+            key.push_back(mapping.at("recursive").get<bool>() ? "recursive" : "root-only");
+            key.push_back(mapping.at("namespace_only").get<bool>() ? "namespace-only" : "source-bytes");
+            key.push_back(mapping.at("monitor_original").get<bool>() ? "monitor-original" : "physical-only");
+        }
         static std::mutex mutex;
         static std::map<std::vector<std::string>, std::shared_ptr<Epoch>> epochs;
         std::lock_guard lock(mutex);
@@ -32,6 +42,9 @@ public:
             std::string reason;
             if (found->second->snapshot->validateNotifications(reason) &&
                 !found->second->snapshot->hasUnqualifiedLookups()) {
+                // Missing paths are omitted from the plan only when a captured
+                // namespace proves their lookup. Qualify every new request.
+                if (!sourceEpochCoversSearchPaths(*found->second->snapshot, searchRoots, log)) { return lease; }
                 lease.epoch = found->second;
                 lease.reused = true;
                 lease.acquireTimeNanoseconds = elapsed(started);
@@ -43,7 +56,7 @@ public:
             epochs.erase(found);
         }
         const auto captureStarted = Clock::now();
-        auto snapshot = captureSourceEpoch({orderedSearchPaths}, log);
+        auto snapshot = captureSourceEpoch(plan, searchRoots, log);
         lease.captureTimeNanoseconds = elapsed(captureStarted);
         if (snapshot) {
             lease.epoch = std::make_shared<Epoch>();

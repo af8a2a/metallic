@@ -1018,6 +1018,33 @@ void appendDiagnostics(slang::IBlob* diagnostics, std::string& outDiagnostics)
 #include "SlangSessionConfigImpl.inc"
 #include "SlangCompileContext.inc"
 
+Result<SlangSourcePreparationMetrics> prepareSlangSourceEpoch(
+    std::span<const std::filesystem::path> searchPaths, std::string& log)
+{
+    const auto started = Clock::now();
+    const auto elapsed = [](auto begin) {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
+    };
+    log.clear();
+    try {
+        SlangSourcePreparationMetrics metrics;
+        const auto producerStarted = Clock::now();
+        const auto producer = compilerProducerSeal();
+        metrics.producerAcquireTimeNanoseconds = elapsed(producerStarted);
+        const std::vector<fs::path> paths(searchPaths.begin(), searchPaths.end());
+        const auto lease = SlangSourceEpochPool::acquire(paths, producer, log);
+        if (!lease.epoch) { return makeError(Error::Failure); }
+        metrics.sourceEpochAcquireTimeNanoseconds = lease.acquireTimeNanoseconds;
+        metrics.sourceEpochCaptureTimeNanoseconds = lease.captureTimeNanoseconds;
+        metrics.sourceEpochReused = lease.reused;
+        metrics.totalTimeNanoseconds = elapsed(started);
+        return metrics;
+    } catch (const std::exception& error) {
+        log += std::string("[ShaderCacheV3] Source preparation unavailable: ") + error.what() + '\n';
+        return makeError(Error::Failure);
+    }
+}
+
 Result<std::vector<uint8_t>> slangShaderRequestIdentity(const SlangShaderDesc& desc, std::string& log)
 {
     auto prepared = prepareSlangRequest(desc, log);
@@ -1221,11 +1248,13 @@ Result<ShaderCompileResult> compileSlangShaderToSpirvSnapshotAttempt(
         outResult.diagnostics = log;
         metrics.totalTimeNanoseconds = elapsed(requestStart);
         spdlog::info(
-            "[ShaderCache] Loaded {}.{} from '{}' (optimization={}, postprocess={}, totalMs={:.3f}, producerMs={:.3f}, sourceMs={:.3f}, epochReused={})",
+            "[ShaderCache] Loaded {}.{} from '{}' (optimization={}, postprocess={}, totalMs={:.3f}, producerMs={:.3f}, sourceMs={:.3f}, epochReused={}, producerAcquireMs={:.3f}, epochAcquireMs={:.3f}, epochCaptureMs={:.3f}, lookupMs={:.3f})",
             desc.moduleName, desc.entryPointName, cachePath.string(), slangShaderOptimizationLevelName(*effectiveOptimization),
             slangShaderPostprocessModeName(*effectivePostprocess), double(metrics.totalTimeNanoseconds) / 1e6,
             double(metrics.producerValidationTimeNanoseconds) / 1e6, double(metrics.sourceValidationTimeNanoseconds) / 1e6,
-            metrics.sourceEpochReused);
+            metrics.sourceEpochReused, double(metrics.producerAcquireTimeNanoseconds) / 1e6,
+            double(metrics.sourceEpochAcquireTimeNanoseconds) / 1e6, double(metrics.sourceEpochCaptureTimeNanoseconds) / 1e6,
+            double(metrics.cacheLookupTimeNanoseconds) / 1e6);
         return outResult;
     }
 

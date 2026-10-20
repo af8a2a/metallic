@@ -44,6 +44,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <string>
@@ -2470,6 +2471,30 @@ bool EditorApplication::initialize()
         }
     }
 
+    // The future joins on every exit path, including SDL/device failures.
+    // Only producer/source I/O runs here; shader requests still resolve their
+    // actual runtime policies and validate the epoch after device creation.
+    std::future<void> sourcePreparation;
+    try {
+        sourcePreparation = std::async(std::launch::async, [] {
+            StartupLogScope scope("Shader cache source preparation");
+            const std::array<std::filesystem::path, 1> searchPaths{PROJECT_SOURCE_DIR "/Shaders"};
+            std::string log;
+            const auto prepared = render::prepareSlangSourceEpoch(searchPaths, log);
+            if (!prepared) {
+                spdlog::warn("[Startup] Shader source preparation unavailable; runtime requests will acquire sources: {}", log);
+                return;
+            }
+            spdlog::info(
+                "[Startup] Shader source prepared totalMs={:.3f} producerAcquireMs={:.3f} epochAcquireMs={:.3f} epochCaptureMs={:.3f} epochReused={}",
+                double(prepared->totalTimeNanoseconds) / 1e6, double(prepared->producerAcquireTimeNanoseconds) / 1e6,
+                double(prepared->sourceEpochAcquireTimeNanoseconds) / 1e6, double(prepared->sourceEpochCaptureTimeNanoseconds) / 1e6,
+                prepared->sourceEpochReused);
+        });
+    } catch (const std::exception& error) {
+        spdlog::warn("[Startup] Cannot start shader source preparation: {}", error.what());
+    }
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         spdlog::error("SDL_Init failed: {}", SDL_GetError());
         return false;
@@ -2548,6 +2573,14 @@ bool EditorApplication::initialize()
         applyNvproImNodesStyle();
     }
 
+    if (sourcePreparation.valid()) {
+        StartupLogScope scope("Wait for shader cache source preparation");
+        try {
+            sourcePreparation.get();
+        } catch (const std::exception& error) {
+            spdlog::warn("[Startup] Shader source preparation failed: {}", error.what());
+        }
+    }
     if (!initializeImGuiBackends()) {
         return false;
     }

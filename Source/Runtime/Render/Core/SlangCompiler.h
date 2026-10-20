@@ -4,6 +4,7 @@
 #include "Runtime/Render/GAPI/ShaderTarget.h"
 
 #include <functional>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <vector>
@@ -137,6 +138,23 @@ struct SlangShaderCacheOptions {
     // fabricate a per-pass report. Use a cache miss for detailed profiling.
     bool reportDetailedCompilerPerf = false;
 };
+
+struct SlangSourcePreparationMetrics {
+    uint64_t totalTimeNanoseconds = 0;
+    uint64_t producerAcquireTimeNanoseconds = 0;
+    // Acquisition includes capture when the pool needs a new source image.
+    uint64_t sourceEpochAcquireTimeNanoseconds = 0;
+    uint64_t sourceEpochCaptureTimeNanoseconds = 0;
+    bool sourceEpochReused = false;
+};
+
+// Prepare the pinned producer and immutable source image without compiling,
+// creating a Slang session, querying a device, or writing shader caches.
+// Search paths supplement the standard source roots; resolution order remains
+// part of each shader request. Later requests revalidate the retained epoch.
+// May run on a worker while the rendering device is initialized.
+[[nodiscard]] Result<SlangSourcePreparationMetrics> prepareSlangSourceEpoch(
+    std::span<const std::filesystem::path> searchPaths, std::string& log);
 
 struct SlangWarmupBatchProgress {
     // preparing, capturing, compiling, validating, publishing, finished, or request-complete.

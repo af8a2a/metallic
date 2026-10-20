@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cassert>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -566,57 +567,85 @@ private:
     struct DirectoryWatch {
         std::string rootText;
         bool recursive;
-        HANDLE directory = INVALID_HANDLE_VALUE, event = nullptr;
+        HANDLE directory = INVALID_HANDLE_VALUE, completionPort = nullptr;
         OVERLAPPED overlapped{};
-        // DWORD-aligned 64KiB buffer; no event is consumed or re-armed in epoch.
+        // DWORD-aligned 64KiB buffer; exactly one request, never re-armed.
         std::array<DWORD, 16384> buffer{};
         bool queued = false;
+        mutable bool completed = false;
+        mutable DWORD completionBytes = 0, completionError = ERROR_SUCCESS;
         explicit DirectoryWatch(const fs::path& root, bool watchSubtree) : rootText(pathText(root)), recursive(watchSubtree)
         {
             if (GetDriveTypeW(root.root_path().c_str()) == DRIVE_REMOTE) {
                 throw std::runtime_error("Remote source notification semantics unsupported");
             }
-            directory = CreateFileW(root.c_str(), FILE_LIST_DIRECTORY,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
-            if (directory == INVALID_HANDLE_VALUE) { throw std::runtime_error("Cannot open source watcher root: " + root.string()); }
-            event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            if (!event) { CloseHandle(directory); directory = INVALID_HANDLE_VALUE; throw std::runtime_error("Cannot create source watcher event"); }
-            overlapped.hEvent = event;
-            const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-                FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SECURITY |
-                (recursive ? FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE : 0);
-            const BOOL started = ReadDirectoryChangesW(directory, buffer.data(), static_cast<DWORD>(sizeof(buffer)),
-                recursive ? TRUE : FALSE, filter, nullptr, &overlapped, nullptr);
-            if (!started) {
-                CloseHandle(event); event = nullptr; CloseHandle(directory); directory = INVALID_HANDLE_VALUE;
-                throw std::runtime_error("Source filesystem cannot queue notifications: " + root.string());
+            try {
+                directory = CreateFileW(root.c_str(), FILE_LIST_DIRECTORY,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+                if (directory == INVALID_HANDLE_VALUE) { throw std::runtime_error("Cannot open source watcher root: " + root.string()); }
+                // Port association makes the pending request independent of
+                // the capture thread, which may exit before this epoch is used.
+                // Callers poll from arbitrary threads; the notification mutex
+                // serializes state, so the port must not throttle those threads.
+                completionPort = CreateIoCompletionPort(directory, nullptr, 0, MAXDWORD);
+                if (!completionPort) { throw std::runtime_error("Cannot create source watcher completion port"); }
+                const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                    FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SECURITY |
+                    (recursive ? FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE : 0);
+                const BOOL started = ReadDirectoryChangesW(directory, buffer.data(), static_cast<DWORD>(sizeof(buffer)),
+                    recursive ? TRUE : FALSE, filter, nullptr, &overlapped, nullptr);
+                if (!started) { throw std::runtime_error("Source filesystem cannot queue notifications: " + root.string()); }
+                queued = true;
+            } catch (...) {
+                closeHandles();
+                throw;
             }
-            queued = true;
         }
         ~DirectoryWatch()
         {
-            if (queued) {
+            if (queued && !completed) {
                 CancelIoEx(directory, &overlapped);
                 DWORD bytes = 0;
+                ULONG_PTR completionKey = 0;
+                OVERLAPPED* packet = nullptr;
                 // Keep OVERLAPPED/buffer alive until cancellation/completion.
-                GetOverlappedResult(directory, &overlapped, &bytes, TRUE);
+                GetQueuedCompletionStatus(completionPort, &bytes, &completionKey, &packet, INFINITE);
+                assert(packet == &overlapped);
             }
-            if (event) { CloseHandle(event); }
+            closeHandles();
+        }
+        void closeHandles() noexcept
+        {
             if (directory != INVALID_HANDLE_VALUE) { CloseHandle(directory); }
+            if (completionPort) { CloseHandle(completionPort); }
         }
         DirectoryWatch(const DirectoryWatch&) = delete;
         DirectoryWatch& operator=(const DirectoryWatch&) = delete;
         bool unchanged(std::string& reason) const
         {
-            DWORD bytes = 0;
-            if (GetOverlappedResult(directory, const_cast<OVERLAPPED*>(&overlapped), &bytes, FALSE)) {
-                reason = (bytes ? "source epoch notification advanced: " : "source epoch notification overflow/zero-byte completion: ") + rootText;
-                return false;
+            if (!completed) {
+                ULONG_PTR completionKey = 0;
+                OVERLAPPED* packet = nullptr;
+                const BOOL succeeded = GetQueuedCompletionStatus(completionPort, &completionBytes, &completionKey, &packet, 0);
+                const DWORD error = succeeded ? ERROR_SUCCESS : GetLastError();
+                if (!packet) {
+                    if (error == WAIT_TIMEOUT) { return true; }
+                    reason = "source epoch notification poll failed " + std::to_string(error) + ": " + rootText;
+                    return false;
+                }
+                assert(packet == &overlapped);
+                completed = true;
+                completionError = error;
             }
-            const DWORD error = GetLastError();
-            if (error == ERROR_IO_INCOMPLETE) { return true; }
-            reason = (error == ERROR_NOTIFY_ENUM_DIR ? "source epoch notification overflow: " : "source epoch notification failed " + std::to_string(error) + ": ") + rootText;
+            // Consuming the single completion packet must never make a later
+            // validation treat an already advanced epoch as unchanged.
+            if (completionError == ERROR_SUCCESS) {
+                reason = (completionBytes ? "source epoch notification advanced: " : "source epoch notification overflow/zero-byte completion: ") + rootText;
+            } else {
+                reason = (completionError == ERROR_NOTIFY_ENUM_DIR ? "source epoch notification overflow: " :
+                    "source epoch notification failed " + std::to_string(completionError) + ": ") + rootText;
+            }
             return false;
         }
     };
