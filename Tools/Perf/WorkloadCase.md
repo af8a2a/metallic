@@ -38,6 +38,8 @@ python -B Tools/Perf/WorkloadCase.py verify build/workload-case-new
 
 `AA.json` 使用独立进程的运行中位数作为统计单位；比较 graph GPU 和同步 early+late SW 总时间的跨运行相对极差。阈值来自 case，默认 10%，只是初始资格检查，不是收益显著性阈值。`stable` 表示本次 A/A 满足该阈值，`inconclusive` 表示噪声过大；两者均不接受任何优化候选。depth/visibility 自身重复一致也不等于与参考渲染器等价。
 
+该独立 A/A 规则保持不变。[ExperimentRunner v2](ExperimentRunner.md) 的候选 A/B 分析将同一极差阈值用作诊断警告，对身份、正确性和采集完整性有效的数据继续计算收益；A/B 共同漂移不能仅凭单侧极差判为无效。v2 以完整 ABBA 区组的 log 比值为统计单位，discovery 筛选有希望的候选，再用独立 confirmation 验收。不要把两种工具的 `inconclusive` 解释为同一原因，或把预算用尽但区间仍不确定解释为没有收益。旧 v1 实验证据仍按原极差硬门槛与配对政策复核。
+
 发生 GPU 错误、报告失败或超时只终止本次启动的进程。若完整 `Capture.json` 已写出而应用 20 秒内仍未退出，runner 回收该进程，记录 `teardownReclaimed`；离线检查仍要求报告和全部输出完整。不能把这种运行描述为正常退出。
 
 可选的 `primeCameraOffset: [x,y,z]` 注册相机移动的帧内 case：在冻结几何与纹理后，每个目标帧之前运行 4 个相同平移相机的历史帧，drain 后恢复目标相机。历史帧不进入目标帧计时，目标帧也在下一次历史预置前 drain。诊断读回使用同一序列；检查器要求 late 软件工作非零。它是特定相机转换下的生产帧，不是所有 GPU 状态的 isolated replay；缓存受到历史帧影响。这类 case 禁用 hold，SDK 最多采一帧。

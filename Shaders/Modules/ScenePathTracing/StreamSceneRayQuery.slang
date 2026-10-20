@@ -129,7 +129,7 @@ public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, S
         }
     }
     return streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, hitT,
-        push.bitangentFlip, hit, classifyShadow);
+        push.bitangentFlip, hit, classifyShadow, METALLIC_STREAM_CLAS_CLUSTER_STRIDE, true);
 }
 
 public bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push,

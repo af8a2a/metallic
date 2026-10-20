@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "role": "default LookDev Nsight GPU Trace diagnostic baseline",
+  "selectedByUser": "2026-10-20",
+  "supersedesEarlierNsightBaselines": true,
+  "trace": {
+    "path": "Captures/NsightGraphics/LookDev_2026_10_20_20_40_25.ngfx-gputrace",
+    "bytes": 34929373,
+    "sha256": "c159b46fb75a4ad30de7b80d00cfc8153447e8274cc96ef9fbf2935a13308f6d"
+  },
+  "screenshot": {
+    "path": "Captures/NsightGraphics/Baselines/LookDev_2026_10_20_20_40_25/UserScreenshot.png",
+    "sha256": "de4e2575cd5b7b90cf590c585f535972aaad53cd9aabecc649905acc681c90fc"
+  },
+  "workloadContext": {
+    "scene": "OpenPBRDefault",
+    "renderWidth": 1920,
+    "renderHeight": 1080,
+    "samplesPerFrame": 1,
+    "accumulate": true,
+    "maxDepth": 12,
+    "provenance": "Established conversation setup; not independently extracted from trace metadata"
+  },
+  "sourceObservedAtRegistration": {
+    "commit": "4443a0b418b6c74313959c4ad5dcf0ffba8fe0a5",
+    "shaderSha256": {
+      "Shaders/Modules/Core/GeometryEncoding.slang": "15fe5702986ab2a8e8ec101c109ee616664976e46b81d6a518a330bf012b3ad1",
+      "Shaders/Modules/GPUDriven/VisibilityStreamDecode.slang": "3825a6f5b7903372d8d84e9300e64d39e157a1548082f8caeb977d2f190cfab5",
+      "Shaders/Modules/StreamRayGeometry.slang": "390bf481193d8dd921cbf4d86ba0fc8d4a923f00e89028dbdbedf5364c05f3ee",
+      "Shaders/Modules/ScenePathTracing/StreamSceneRayQuery.slang": "42d6ee2ad33b544c31a536b8ace7638a0471b1c077a945d90e4a6c860cae5006"
+    },
+    "matchesArchivedCombinedB": true,
+    "graphSha256": "40209cb04cadd9e95a2a424fa1fcc9ffd7ab8ef937de6f33be19f5f112449008",
+    "graphSamples": 1,
+    "graphAccumulate": true,
+    "captureBindingVerified": false
+  },
+  "metricsProvenance": "Manually transcribed from supplied Nsight screenshot; rounded UI values, not exported raw tables",
+  "screenshotMetrics": {
+    "frame": {
+      "index": 0,
+      "durationMs": 6.68,
+      "activeMs": 6.38
+    },
+    "selectedEvent": {
+      "name": "Path trace shading / vkCmdDispatch (22)",
+      "startMs": 0.92,
+      "endMs": 5.88,
+      "durationMs": 4.96
+    },
+    "pathTracePassMs": 5.44,
+    "throughputPercent": {
+      "VidL2": 31.4,
+      "VRAM": 15.1,
+      "L1TEX": 10.5,
+      "SM": 8.4,
+      "PCIe": 5.4,
+      "RTCORE": 4.8,
+      "SysL2": 2.6
+    },
+    "activeThreadsPerWarp": 16.1,
+    "predicatedActiveThreadsPerWarp": 15.7,
+    "computeWarps": 4.5,
+    "computeWarpOccupancyPercent": 9.3,
+    "unallocatedWarps": 31.0,
+    "unallocatedWarpPercent": 64.5,
+    "sampling": {
+      "totalSamples": 183898,
+      "function": "openPbrRayQueryPathTraceMain",
+      "sharePercent": 80.1,
+      "functionSamplesRounded": "147K",
+      "stallPercentWithinFunction": {
+        "Long Scoreboard": 54.39,
+        "Wait": 14.68,
+        "No Instructions": 14.18,
+        "Selected": 7.78,
+        "Short Scoreboard": 4.29,
+        "Branch Resolving": 1.86,
+        "MIO Throttle": 1.33
+      }
+    }
+  },
+  "limits": [
+    "Single user-selected capture, not a repeated-run distribution",
+    "Screenshot shows a warning icon beside Duration; warning text not supplied",
+    "GPU/driver/Nsight version, clocks, warmup and exact capture-time shader identity not independently extracted",
+    "Diagnostic capture timings remain separate from ordinary 1-spp A/A timing evidence",
+    "No new capture, replay, export or performance experiment performed during registration"
+  ]
+}

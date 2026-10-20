@@ -106,7 +106,10 @@ set_tests_properties(MetallicNsightLaunchOptionsTests PROPERTIES LABELS "editor;
 
 option(METALLIC_NSIGHT_INTEGRATION_TESTS "Run installed Nsight host/GPU integration regressions" OFF)
 if(WIN32 AND METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE AND METALLIC_NSIGHT_INTEGRATION_TESTS)
-    foreach(nsight_case IN ITEMS disabled export collection invalid-metrics)
+    foreach(nsight_case IN ITEMS disabled startup export collection invalid-metrics)
+        if(nsight_case STREQUAL "startup" AND NOT METALLIC_HAS_STREAMLINE)
+            continue()
+        endif()
         add_test(NAME MetallicNsightGPUTrace.${nsight_case}
             COMMAND ${CMAKE_COMMAND}
                 "-DEDITOR_EXECUTABLE=$<TARGET_FILE:LookDev>"

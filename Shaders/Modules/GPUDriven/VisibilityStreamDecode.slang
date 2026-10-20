@@ -96,6 +96,52 @@ public bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint t
         pageWordCount, a, b, c, context);
 }
 
+// Committed CLAS hits reference validated page/cluster/triangle ranges. The
+// streaming frame retains their geometry until GPU completion. Keep local-index
+// and position-capacity checks, and let optional attributes validate themselves.
+public bool decodeStreamCommittedTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle,
+    StructuredBuffer<uint> pages, StructuredBuffer<uint2> pageTable,
+    out float3 a, out float3 b, out float3 c, out StreamTriangleDecodeContext context)
+{
+    a = b = c = float3(0);
+    context = (StreamTriangleDecodeContext)0;
+    uint entry = pageTable[pageIndex].x;
+    if ((entry & 7u) != 2u && (entry & 7u) != 3u) { return false; }
+    uint page = (entry & 0xfffffff8u) / 4u;
+    uint bytes = pages[page + 12u], flags = pages[page + 14u];
+    uint positionFormat = pages[page + 20u];
+    uint positionStrideWords = positionFormat == 4u ? 3u : 4u;
+    uint clusters = pages[page + 9u], positions = pages[page + 10u], triangles = pages[page + 11u];
+    uint cluster = page + clusters / 4u + clusterIndex * 24u;
+    uint vertexOffset = pages[cluster], vertexCount = pages[cluster + 1u];
+    uint triangleOffset = pages[cluster + 2u];
+    // Published CLAS topology guarantees the index range independently of the
+    // position stream. Start this fetch before checking vertex capacity.
+    uint address = page * 4u + triangles + triangleOffset + triangle * 3u;
+    uint byteOffset = address & 3u;
+    uint word = address >> 2u;
+    uint packedIndices = pages[word] >> (byteOffset * 8u);
+    uint availablePositionBytes = bytes - positions;
+    uint maxVertices = select(positionFormat == 4u, availablePositionBytes / 12u, availablePositionBytes >> 4u);
+    bool validPositions = (positions <= bytes) & (vertexOffset <= maxVertices) &
+        (vertexCount <= maxVertices - vertexOffset);
+    if (byteOffset > 1u) {
+        packedIndices |= pages[word + 1u] << ((4u - byteOffset) * 8u);
+    }
+    uint3 local = uint3(packedIndices, packedIndices >> 8u, packedIndices >> 16u) & 255u;
+    if (!(validPositions & all(local < vertexCount))) { return false; }
+    uint base = page + positions / 4u + vertexOffset * positionStrideWords;
+    a = streamPagePosition(pages, base + local.x * positionStrideWords);
+    b = streamPagePosition(pages, base + local.y * positionStrideWords);
+    c = streamPagePosition(pages, base + local.z * positionStrideWords);
+    context.page = page;
+    context.bytes = bytes;
+    context.flags = flags;
+    context.requiredVertices = vertexOffset + vertexCount;
+    context.vertices = vertexOffset + local;
+    return true;
+}
+
 public bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStreamVisibleRecord> records,
     StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
     StructuredBuffer<uint2> pageTable, uint pageWordCount, out VisibleClusterRecord record,
@@ -160,35 +206,69 @@ public void decodeStreamTexcoordsAtPage(uint pageIndex, uint clusterIndex, uint 
 // Optional shading streams. Position-only pages continue to use geometric
 // normals and zero UV; every optional range is validated before dereferencing.
 public uint decodeStreamAttributes(StructuredBuffer<uint> pages, StreamTriangleDecodeContext context,
-    out float3 normals[3], out float2 uvs[3], out float4 tangents[3])
+    out float3 normals[3], out float2 uvs[3], out float4 tangents[3], bool decodeShading = true)
 {
-    for (uint i = 0; i < 3; ++i) { normals[i] = float3(0); uvs[i] = float2(0); tangents[i] = float4(0); }
+    normals[0] = normals[1] = normals[2] = float3(0);
+    uvs[0] = uvs[1] = uvs[2] = float2(0);
+    tangents[0] = tangents[1] = tangents[2] = float4(0);
     uint page = context.page, bytes = context.bytes, flags = context.flags;
-    uint normalOffset = pages[page + 16u], uvOffset;
     uint required = context.requiredVertices;
-    uint normalFormat = pages[page + 21u], normalStride = streamNormalStride(normalFormat);
-    uint normalShift = normalFormat == 2u ? 4u : 2u;
-    bool hasNormal = (flags & 2u) != 0u && normalStride != 0u && normalOffset % 4u == 0u &&
-        normalOffset <= bytes && required <= ((bytes - normalOffset) >> normalShift);
+    uint uvOffset;
     bool hasUv = streamHasTexcoords(pages, page, bytes, flags, required, uvOffset);
-    uint tangentOffset = pages[page + 24u];
-    uint tangentFormat = pages[page + 25u], tangentStride = streamTangentStride(tangentFormat);
-    uint tangentShift = tangentFormat == 2u ? 4u : 2u;
-    bool hasTangent = (flags & 16u) != 0u && tangentStride != 0u && tangentOffset % 4u == 0u &&
-        tangentOffset <= bytes && required <= ((bytes - tangentOffset) >> tangentShift);
-    for (uint i = 0; i < 3; ++i) {
-        uint v = context.vertices[i];
+    if (hasUv) {
+        uvs[0] = streamLoadTexcoord(pages, page, uvOffset, context.vertices.x);
+        uvs[1] = streamLoadTexcoord(pages, page, uvOffset, context.vertices.y);
+        uvs[2] = streamLoadTexcoord(pages, page, uvOffset, context.vertices.z);
+    }
+    uint attributes = hasUv ? 4u : 0u;
+    // Shadow transport needs only UVs. Keep shading-stream metadata and loads
+    // inside this specialization so they disappear from the shadow shader.
+    if (decodeShading) {
+        uint normalOffset = pages[page + 16u];
+        uint normalFormat = pages[page + 21u], normalStride = streamNormalStride(normalFormat);
+        uint normalShift = normalFormat == 2u ? 4u : 2u;
+        bool hasNormal = (flags & 2u) != 0u && normalStride != 0u && normalOffset % 4u == 0u &&
+            normalOffset <= bytes && required <= ((bytes - normalOffset) >> normalShift);
         if (hasNormal) {
-            normals[i] = streamLoadNormal(pages,page,normalOffset,v,normalFormat);
+            uint base = page + normalOffset / 4u;
+            if (normalFormat == 5u) {
+                // Issue all three independent loads before consuming their encodings.
+                uint p0 = pages[base + context.vertices.x];
+                uint p1 = pages[base + context.vertices.y];
+                uint p2 = pages[base + context.vertices.z];
+                normals[0] = decodeSceneNormal(p0);
+                normals[1] = decodeSceneNormal(p1);
+                normals[2] = decodeSceneNormal(p2);
+            } else {
+                normals[0] = streamPagePosition(pages, base + context.vertices.x * 4u);
+                normals[1] = streamPagePosition(pages, base + context.vertices.y * 4u);
+                normals[2] = streamPagePosition(pages, base + context.vertices.z * 4u);
+            }
+            attributes |= 2u;
         }
-        if (hasUv) {
-            uvs[i] = streamLoadTexcoord(pages, page, uvOffset, v);
-        }
+        uint tangentOffset = pages[page + 24u];
+        uint tangentFormat = pages[page + 25u], tangentStride = streamTangentStride(tangentFormat);
+        uint tangentShift = tangentFormat == 2u ? 4u : 2u;
+        bool hasTangent = (flags & 16u) != 0u && tangentStride != 0u && tangentOffset % 4u == 0u &&
+            tangentOffset <= bytes && required <= ((bytes - tangentOffset) >> tangentShift);
         if (hasTangent) {
-            tangents[i] = streamLoadTangent(pages,page,tangentOffset,v,tangentFormat);
+            uint base = page + tangentOffset / 4u;
+            if (tangentFormat == 6u) {
+                uint p0 = pages[base + context.vertices.x];
+                uint p1 = pages[base + context.vertices.y];
+                uint p2 = pages[base + context.vertices.z];
+                tangents[0] = decodeSceneTangent(p0);
+                tangents[1] = decodeSceneTangent(p1);
+                tangents[2] = decodeSceneTangent(p2);
+            } else {
+                tangents[0] = streamLoadTangent(pages, page, tangentOffset, context.vertices.x, 2u);
+                tangents[1] = streamLoadTangent(pages, page, tangentOffset, context.vertices.y, 2u);
+                tangents[2] = streamLoadTangent(pages, page, tangentOffset, context.vertices.z, 2u);
+            }
+            attributes |= 16u;
         }
     }
-    return (hasNormal ? 2u : 0u) | (hasUv ? 4u : 0u) | (hasTangent ? 16u : 0u);
+    return attributes;
 }
 
 public uint decodeStreamAttributesAtPage(uint pageIndex, uint clusterIndex, uint triangle,

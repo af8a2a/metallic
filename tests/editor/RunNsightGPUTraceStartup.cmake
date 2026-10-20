@@ -21,6 +21,13 @@ if(CASE STREQUAL "disabled")
     set(ENV{METALLIC_NSIGHT_GPU_TRACE_METRICS} "${TEST_DIRECTORY}/MissingMetrics.json")
     set(arguments --smoke-test)
     set(timeout 180)
+elseif(CASE STREQUAL "startup")
+    # A plain LookDev smoke skips Streamline. Select RR so this regression
+    # actually exercises the interposer's swapchain hooks and requested features.
+    set(arguments --nsight-gputrace --smoke-test --sample pathtracing-sample-dlss-rr)
+    set(ENV{METALLIC_SMOKE_TEST_STREAMLINE_DEBUG} 1)
+    set(ENV{METALLIC_SMOKE_TEST_FRAMES} 8)
+    set(timeout 180)
 elseif(CASE STREQUAL "export")
     set(ENV{METALLIC_SMOKE_TEST_NSIGHT_CAPTURE} 1)
     set(timeout 180)
@@ -57,11 +64,21 @@ execute_process(
 file(READ "${TEST_DIRECTORY}/stdout.log" output)
 file(READ "${TEST_DIRECTORY}/stderr.log" errors)
 file(WRITE "${TEST_DIRECTORY}/LookDev.log" "${output}\n${errors}")
+if((CASE STREQUAL "disabled" OR CASE STREQUAL "startup" OR CASE STREQUAL "export") AND
+   "${output}\n${errors}" MATCHES "\\[Streamline\\]\\[error\\]")
+    message(FATAL_ERROR "Startup reported a Streamline error (${result}); see ${TEST_DIRECTORY}/LookDev.log")
+endif()
 if(CASE STREQUAL "disabled")
     if(NOT result STREQUAL "0" OR NOT output MATCHES "nsightCapture=false" OR
        NOT output MATCHES "Presented editor frame" OR output MATCHES "Nsight GPU Trace startup handshake" OR
        output MATCHES "\\[Nsight shutdown\\]")
         message(FATAL_ERROR "Ordinary startup must render without Nsight (${result}); see ${TEST_DIRECTORY}/LookDev.log")
+    endif()
+elseif(CASE STREQUAL "startup")
+    if(NOT result STREQUAL "0" OR NOT output MATCHES "End Nsight GPU Trace startup handshake" OR
+       NOT output MATCHES "Presented editor frame" OR
+       NOT output MATCHES "\\[Smoke Streamline Debug\\] passed=true, initialized=true")
+        message(FATAL_ERROR "GPU Trace startup failed (${result}); see ${TEST_DIRECTORY}/LookDev.log")
     endif()
 elseif(CASE STREQUAL "collection")
     if(NOT result STREQUAL "0" OR NOT output MATCHES "Replay GPU Trace completed:" OR

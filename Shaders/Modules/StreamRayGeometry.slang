@@ -83,7 +83,7 @@ public float2 streamRayTexcoord(uint clusterId, uint triangle, float2 bary,
 
 public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
     Ray ray, float t, float bitangentFlip, out HitInfo hit, bool shadowOnly = false,
-    uint clusterStride = METALLIC_STREAM_CLAS_CLUSTER_STRIDE)
+    uint clusterStride = METALLIC_STREAM_CLAS_CLUSTER_STRIDE, bool committedHit = false)
 {
     hit = (HitInfo)0;
     let instances = gRayStreamInstances;
@@ -96,10 +96,15 @@ public bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, 
     float3 a, b, c;
     StreamTriangleDecodeContext triangleContext;
     let pages = gRayStreamPages;
-    if (!decodeStreamTriangleAtPage(address.x, address.y, triangle, pages, gRayStreamPageTable,
-        streamPageWordCount(gRayStreamPageCount), a, b, c, triangleContext)) { return false; }
+    if (committedHit) {
+        if (!decodeStreamCommittedTriangleAtPage(address.x, address.y, triangle, pages, gRayStreamPageTable,
+            a, b, c, triangleContext)) { return false; }
+    } else {
+        if (!decodeStreamTriangleAtPage(address.x, address.y, triangle, pages, gRayStreamPageTable,
+            streamPageWordCount(gRayStreamPageCount), a, b, c, triangleContext)) { return false; }
+    }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes = decodeStreamAttributes(pages, triangleContext, n, uv, tangents);
+    uint attributes = decodeStreamAttributes(pages, triangleContext, n, uv, tangents, !shadowOnly);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = streamRayTriangleNormal(b - a, c - a, float3(0, 1, 0));
     hit.geometryNormal = streamRayNormal(instance, localGeometry);

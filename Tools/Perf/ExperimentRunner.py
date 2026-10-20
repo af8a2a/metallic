@@ -25,8 +25,12 @@ import WorkloadCase as w
 ROOT = w.ROOT
 TARGET = "Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang"
 PROTOCOL = "metallic-shader-experiment-v1"
-POLICY = {"minimumGain": .03, "maximumGraphRegression": .02,
-          "confidence": .95, "primaryMetric": "softwareTotalMs", "promotion": "manual"}
+# The candidate schema is shared with diagnostic runners and remains v1.
+CURRENT_PROTOCOL = "metallic-shader-experiment-v2"
+LEGACY_POLICY = {"minimumGain": .03, "maximumGraphRegression": .02,
+                 "confidence": .95, "primaryMetric": "softwareTotalMs", "promotion": "manual"}
+POLICY = {**LEGACY_POLICY, "version": 2, "statistic": "abba-log-ratio",
+          "discoveryMinimumGain": .03}
 T95 = {2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776, 6: 2.571,
        7: 2.447, 8: 2.365, 9: 2.306, 10: 2.262}
 
@@ -98,6 +102,21 @@ def interval(values):
     return {"pairs": len(values), "values": values, "mean": mean, "lower95": mean-margin, "upper95": mean+margin}
 
 
+def block_gain(rows, metric):
+    log_ratios = []
+    for offset in range(0, len(rows), 4):
+        times = [r["result"]["timings"][metric]["median"] for r in rows[offset:offset+4]]
+        w.require(all(v > 0 and math.isfinite(v) for v in times), "Invalid block timing")
+        a1, b1, b2, a2 = map(math.log, times)
+        log_ratios.append(((b1-a1) + (b2-a2)) / 2)
+    bounds = interval(log_ratios)
+    # Interval is formed in log time-ratio space; decreasing transform reverses endpoints.
+    return {"blocks": len(log_ratios), "logRatios": log_ratios,
+            "values": [-math.expm1(value) for value in log_ratios],
+            "meanLogRatio": bounds["mean"], "estimate": -math.expm1(bounds["mean"]),
+            "lower95": -math.expm1(bounds["upper95"]), "upper95": -math.expm1(bounds["lower95"])}
+
+
 def inputs(result):
     identity = copy.deepcopy(result["identity"])
     for resource in w.OUTPUTS:
@@ -110,6 +129,41 @@ def inputs(result):
 
 def verdict(status, reason, **evidence):
     return {"decision": status, "reason": reason, "candidateAccepted": status == "accept", **evidence}
+
+
+def classify(result, stage):
+    categories = {
+        "exact_depth_visibility_mismatch": ("valid", "correctness_failure", "reject_candidate"),
+        "candidate_compiled_to_same_shader": ("valid", "no_shader_change", "revise_candidate"),
+        "primary_regression": ("valid", "confirmed_regression", "reject_candidate"),
+        "graph_regression": ("valid", "confirmed_regression", "reject_candidate"),
+        "gain_below_threshold": ("valid", "below_target", "reject_candidate"),
+        "promising_gain": ("valid", "promising", "run_confirmation"),
+        "qualified_gain": ("valid", "confirmed_gain", "accept_candidate"),
+        "confidence_interval_crosses_gate": ("valid", "uncertain", "retain_candidate"),
+        "discovery_below_screen": ("valid", "uncertain", "retain_candidate"),
+        "no_completed_runs": ("incomplete", "not_assessed", "collect_complete_evidence"),
+        "missing_comparison_arm": ("incomplete", "not_assessed", "collect_complete_evidence"),
+        "incomplete_schedule": ("incomplete", "not_assessed", "collect_complete_evidence"),
+        "restore_conflict": ("invalid", "not_assessed", "resolve_restore_conflict"),
+        "experiment_did_not_finish": ("incomplete", "not_assessed", "inspect_failure"),
+        "execution_failure": ("invalid", "not_assessed", "repair_evidence"),
+        "invalid_or_instrumented_run": ("invalid", "not_assessed", "repair_evidence"),
+        "process_or_environment_evidence_missing": ("invalid", "not_assessed", "repair_evidence"),
+        "workload_input_or_binding_drift": ("invalid", "not_assessed", "repair_evidence"),
+        "within_arm_identity_drift": ("invalid", "not_assessed", "repair_evidence"),
+        "invalid_interleaving": ("invalid", "not_assessed", "repair_evidence"),
+        "independent_process_evidence_invalid": ("invalid", "not_assessed", "repair_evidence"),
+    }
+    validity, effect, action = categories[result["reason"]]
+    return {**result, "stage": stage, "evidenceValidity": validity,
+            "effectAssessment": effect, "nextAction": action}
+
+
+def should_confirm(decision, policy):
+    if policy == LEGACY_POLICY:
+        return decision["decision"] == "accept"
+    return decision["stage"] == "discovery" and decision["nextAction"] == "run_confirmation"
 
 
 def independent_processes(rows):
@@ -125,8 +179,16 @@ def independent_processes(rows):
     return True
 
 
-def assess(rows, case, policy, expected_runs):
+def assess(rows, case, policy, expected_runs, stage="confirmation", reference_rows=()):
     """Recomputed from raw runs by verify; never trust a supplied pass boolean."""
+    w.require(policy in (LEGACY_POLICY, POLICY), "Unknown decision policy")
+    w.require(stage in ("discovery", "confirmation"), "Unknown experiment stage")
+    legacy = policy == LEGACY_POLICY
+    result = assess_stage(rows, case, policy, expected_runs, stage, legacy, reference_rows)
+    return result if legacy else classify(result, stage)
+
+
+def assess_stage(rows, case, policy, expected_runs, stage, legacy, reference_rows):
     if not rows:
         return verdict("inconclusive", "no_completed_runs")
     results = [r["result"] for r in rows]
@@ -138,11 +200,22 @@ def assess(rows, case, policy, expected_runs):
     b = [r for row, r in zip(rows, results) if row["arm"] == "B"]
     if not a or not b:
         return verdict("inconclusive", "missing_comparison_arm")
+    if not legacy:
+        reference = reference_rows[0]["result"] if reference_rows else a[0]
+        # Input drift invalidates attribution of changed outputs to the candidate.
+        if any(inputs(r) != inputs(reference) for r in results):
+            return verdict("inconclusive", "workload_input_or_binding_drift")
+        if reference_rows:
+            identities = {row["arm"]: row["result"]["identity"] for row in reference_rows}
+            if any(r["identity"] != identities["A"] for r in a):
+                return verdict("inconclusive", "within_arm_identity_drift")
     # Compare output bytes via hashes of validated readbacks before timing.
     output = lambda r: {key: r["identity"]["snapshot"][key] for key in w.OUTPUTS}
     if any(output(r) != output(a[0]) for r in results):
         return verdict("reject", "exact_depth_visibility_mismatch")
-    if any(inputs(r) != inputs(a[0]) for r in results):
+    if not legacy and reference_rows and any(r["identity"] != identities["B"] for r in b):
+        return verdict("inconclusive", "within_arm_identity_drift")
+    if legacy and any(inputs(r) != inputs(a[0]) for r in results):
         return verdict("inconclusive", "workload_input_or_binding_drift")
     if any(r["identity"] != arm[0]["identity"] for arm in (a, b) for r in arm):
         return verdict("inconclusive", "within_arm_identity_drift")
@@ -156,10 +229,14 @@ def assess(rows, case, policy, expected_runs):
     if not independent_processes(rows):
         return verdict("inconclusive", "independent_process_evidence_invalid")
     qualification = {label: w.compare_runs(arm, case) for label, arm in (("A", a), ("B", b))}
-    if any(q["status"] != "stable" for q in qualification.values()):
+    noisy = any(q["status"] != "stable" for q in qualification.values())
+    if legacy and noisy:
         return verdict("inconclusive", "within_arm_timing_noise", qualification=qualification)
     gains = {}
     for metric in ("softwareTotalMs", "graphGpuMs"):
+        if not legacy:
+            gains[metric] = block_gain(rows, metric)
+            continue
         samples = []
         for offset in range(0, len(rows), 2):
             pair = {r["arm"]: r["result"]["timings"][metric]["median"] for r in rows[offset:offset+2]}
@@ -170,10 +247,21 @@ def assess(rows, case, policy, expected_runs):
                 "correctness": "exact depth/visibility match across all checkpoints and arms",
                 "statisticalUnit": "adjacent independent-process pair; frame medians are not independent trials"}
     primary, graph = gains["softwareTotalMs"], gains["graphGpuMs"]
+    if not legacy:
+        evidence.update(noiseWarning=noisy,
+                        statisticalUnit="ABBA block of four process medians; interval on block log time ratios")
+        if graph["upper95"] < -policy["maximumGraphRegression"]:
+            return verdict("reject", "graph_regression", **evidence)
+        if primary["upper95"] < 0:
+            return verdict("reject", "primary_regression", **evidence)
     if primary["upper95"] < policy["minimumGain"]:
         return verdict("reject", "gain_below_threshold", **evidence)
     if graph["upper95"] < -policy["maximumGraphRegression"]:
         return verdict("reject", "graph_regression", **evidence)
+    if not legacy and stage == "discovery":
+        if primary["estimate"] >= policy["discoveryMinimumGain"]:
+            return verdict("inconclusive", "promising_gain", **evidence)
+        return verdict("inconclusive", "discovery_below_screen", **evidence)
     if primary["lower95"] >= policy["minimumGain"] and graph["lower95"] >= -policy["maximumGraphRegression"]:
         return verdict("accept", "qualified_gain", **evidence)
     return verdict("inconclusive", "confidence_interval_crosses_gate", **evidence)
@@ -307,7 +395,7 @@ def execute(args):
     w.require(case["variant"] == "swWorkControl" and case["sampleId"] == "gpu-driven-sample" and
               "primeCameraOffset" in case and not case.get("nsightTraceFrames") and not case.get("profileHoldSeconds"),
               "M3 requires the qualified MiniZorah nonzero-late normal timing case")
-    w.require(2 <= args.blocks <= 5 and 2 <= args.confirmation_blocks <= 5 and 1 <= args.timeout <= 900,
+    w.require(2 <= args.blocks <= 10 and 2 <= args.confirmation_blocks <= 10 and 1 <= args.timeout <= 900,
               "Invalid bounded run budget")
     candidate = w.load(args.candidate)
     original = (ROOT / TARGET).read_bytes()
@@ -319,7 +407,7 @@ def execute(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     policy = dict(POLICY)
-    manifest = {"protocol": PROTOCOL, "status": "running", "runs": [], "policy": policy,
+    manifest = {"protocol": CURRENT_PROTOCOL, "status": "running", "runs": [], "policy": policy,
                 "blocks": args.blocks, "confirmationBlocks": args.confirmation_blocks,
                 "toolHashes": {n: w.digest(Path(__file__).with_name(n)) for n in ("ExperimentRunner.py", "WorkloadCase.py", "MeasureExperimentGPU.ps1")}}
     w.save(output / "Manifest.json", manifest)
@@ -332,7 +420,8 @@ def execute(args):
     (output / "Candidate.patch").write_text("".join(difflib.unified_diff(original.decode().splitlines(True),
          changed.decode().splitlines(True), fromfile="a/"+TARGET, tofile="b/"+TARGET)), encoding="utf-8")
     transaction = ShaderTransaction(output, original, changed)
-    final = verdict("inconclusive", "experiment_did_not_finish")
+    stage = "discovery"
+    final = classify(verdict("inconclusive", "experiment_did_not_finish"), stage)
     lock = ROOT / "build" / "shader-experiment.lock"
     lock.parent.mkdir(exist_ok=True)
     # Lock is a cooperative runner mutex. A stale lock requires explicit recovery.
@@ -362,6 +451,7 @@ def execute(args):
         manifest["runtime"] = runtime
         gpu = gpu_identity()
         manifest["gpu"] = gpu
+        discovery_rows = []
         for stage, blocks in (("discovery", args.blocks), ("confirmation", args.confirmation_blocks)):
             stage_rows = []
             for index, arm in enumerate(list("ABBA") * blocks):
@@ -380,22 +470,24 @@ def execute(args):
                 w.require(w.source_inventory() == expected, "Sources changed during measurement")
                 w.require(all(w.digest(Path(p)) == h for p,h in runtime.items()), "Runtime changed during measurement")
                 w.asset_metadata_matches(assets)
-                check = assess(stage_rows, case, policy, blocks*4)
+                check = assess(stage_rows, case, policy, blocks*4, stage, discovery_rows)
                 w.save(output / "Manifest.json", manifest)
                 print(f"{name}: verified; {check['reason']}", flush=True)
                 if check["reason"] in ("exact_depth_visibility_mismatch", "workload_input_or_binding_drift",
                                        "within_arm_identity_drift", "candidate_compiled_to_same_shader",
                                        "process_or_environment_evidence_missing", "invalid_or_instrumented_run"):
                     break
-            final = assess(stage_rows, case, policy, blocks*4)
+            final = assess(stage_rows, case, policy, blocks*4, stage, discovery_rows)
             w.save(output / (stage + "-Decision.json"), final)
-            if final["decision"] != "accept":
-                break
-        # Discovery acceptance only schedules an independent confirmation stage.
+            if stage == "discovery":
+                if not should_confirm(final, policy):
+                    break
+                discovery_rows = stage_rows
+        # Discovery only screens; formal acceptance uses the fixed confirmation batch.
         if final["decision"] == "accept":
             w.require(stage == "confirmation", "Missing independent confirmation")
     except BaseException as error:
-        final = verdict("inconclusive", "execution_failure", error=str(error))
+        final = classify(verdict("inconclusive", "execution_failure", error=str(error)), stage)
     finally:
         if lock_handle is not None:
             try:
@@ -403,7 +495,7 @@ def execute(args):
                 manifest["restored"] = True
             except Exception as error:
                 manifest["restored"] = False
-                final = verdict("inconclusive", "restore_conflict", error=str(error))
+                final = classify(verdict("inconclusive", "restore_conflict", error=str(error)), stage)
             lock_handle.close()
             if manifest.get("restored"):
                 lock.unlink()
@@ -416,9 +508,14 @@ def execute(args):
 
 def verify(directory):
     manifest = w.load(directory / "Manifest.json")
-    w.require(manifest["protocol"] == PROTOCOL and manifest["status"] == "complete", "Incomplete experiment")
-    w.require(manifest["policy"] == POLICY, "Decision policy changed")
-    w.require(2 <= manifest['blocks'] <= 5 and 2 <= manifest['confirmationBlocks'] <= 5, "Invalid schedule budget")
+    w.require(manifest["protocol"] in (PROTOCOL, CURRENT_PROTOCOL) and manifest["status"] == "complete",
+              "Incomplete or unknown experiment protocol")
+    legacy = manifest["protocol"] == PROTOCOL
+    policy = LEGACY_POLICY if legacy else POLICY
+    w.require(manifest["policy"] == policy, "Decision policy changed")
+    maximum_blocks = 5 if legacy else 10
+    w.require(2 <= manifest['blocks'] <= maximum_blocks and
+              2 <= manifest['confirmationBlocks'] <= maximum_blocks, "Invalid schedule budget")
     for relative, expected in manifest["artifacts"].items():
         w.require(w.digest(w.file_in(directory, relative)) == expected, f"Artifact changed: {relative}")
     w.require(artifact_hashes(directory) == manifest["artifacts"], "Artifact inventory changed")
@@ -437,6 +534,14 @@ def verify(directory):
     final = w.load(directory / "Decision.json")
     w.require(final["decision"] in ("accept", "reject", "inconclusive") and
               final["candidateAccepted"] == (final["decision"] == "accept"), "Invalid decision")
+    if not legacy:
+        w.require(final.get("stage") in ("discovery", "confirmation"), "Invalid final stage")
+        w.require(classify(final, final["stage"]) == final, "Decision classification differs")
+        planned = [(stage, arm) for stage, count in
+                   (("discovery", manifest["blocks"]), ("confirmation", manifest["confirmationBlocks"]))
+                   for arm in list("ABBA") * count]
+        actual = [(entry["stage"], entry["arm"]) for entry in manifest["runs"]]
+        w.require(actual == planned[:len(actual)], "Invalid experiment stage schedule")
     stages = {}
     seen = set()
     for entry in manifest["runs"]:
@@ -452,17 +557,25 @@ def verify(directory):
                       'Measurement window is outside its process lifetime')
         row["competition"] = monitor_coverage(run, row["process"]["pid"])
         stages.setdefault(entry["stage"], []).append(row)
+    calculated_stages = {}
     for stage, rows in stages.items():
         count = manifest["blocks" if stage == "discovery" else "confirmationBlocks"] * 4
-        calculated = assess(rows, case, manifest["policy"], count)
+        reference_rows = stages.get("discovery", []) if not legacy and stage == "confirmation" else []
+        calculated = assess(rows, case, policy, count, stage, reference_rows)
+        calculated_stages[stage] = calculated
         stage_file = directory / (stage + "-Decision.json")
         if stage_file.exists():
             w.require(calculated == w.load(stage_file), "Stage decision differs from raw evidence")
     w.require(independent_processes([r for rows in stages.values() for r in rows]),
               'Reused/overlapping independent-process evidence')
+    if not legacy and "confirmation" in stages:
+        w.require("discovery" in calculated_stages and should_confirm(calculated_stages["discovery"], policy),
+                  "Confirmation missing eligible discovery")
     if final["decision"] == "accept":
         w.require(manifest.get("restored") and set(stages) == {"discovery", "confirmation"}, "Acceptance missing confirmation/restore")
-        w.require(all(w.load(directory / (s + "-Decision.json"))["decision"] == "accept" for s in stages), "Acceptance gate failed")
+        discovery = w.load(directory / "discovery-Decision.json")
+        confirmation = w.load(directory / "confirmation-Decision.json")
+        w.require(should_confirm(discovery, policy) and confirmation["decision"] == "accept", "Acceptance gate failed")
         w.require(final == w.load(directory / "confirmation-Decision.json"), "Final decision mismatch")
         w.require(w.load(directory / 'Build.json')['exitCode'] == 0 and
                   manifest['buildIdentity']['configuration'] == 'Release' and
@@ -471,6 +584,9 @@ def verify(directory):
     elif final["reason"] not in ("execution_failure", "restore_conflict"):
         last = "confirmation" if "confirmation" in stages else "discovery"
         w.require(final == w.load(directory / (last + "-Decision.json")), "Final decision mismatch")
+    if not legacy and final["reason"] not in ("execution_failure", "restore_conflict"):
+        w.require(final == calculated_stages.get(final["stage"]), "Final decision differs from raw evidence")
+        w.require(final["nextAction"] != "run_confirmation", "Experiment missing scheduled confirmation")
     return {"integrity": "passed", "producerToolsVerified": True,
             "verifierSha256": w.digest(Path(__file__)), **final}
 
@@ -481,8 +597,9 @@ def main():
     run = commands.add_parser("run")
     for name in ("case", "candidate", "assets", "exe", "build-dir", "output"):
         run.add_argument("--"+name, type=Path, required=True)
-    run.add_argument("--blocks", type=int, default=3)
-    run.add_argument("--confirmation-blocks", type=int, default=2)
+    run.add_argument("--blocks", type=int, default=3, help="Fixed discovery ABBA blocks (2-10; default 3)")
+    run.add_argument("--confirmation-blocks", type=int, default=5,
+                     help="Fixed independent confirmation ABBA blocks (2-10; default 5)")
     run.add_argument("--timeout", type=int, default=300)
     for name in ("verify", "recover"):
         commands.add_parser(name).add_argument("directory", type=Path)
