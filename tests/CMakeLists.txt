@@ -729,9 +729,12 @@ set_tests_properties(MetallicDeferredShaderCacheWriterTests PROPERTIES LABELS "s
 # Device-local object reuse and single-flight contracts are deterministic without a GPU.
 add_executable(MetallicNativePipelineCacheTests
     rhi/NativePipelineCacheTests.cpp
+    rhi/PipelineCreationHistoryTests.cpp
+    rhi/NativeShaderWarmupScheduleTests.cpp
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/PipelineCreationHistory.cpp"
     "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/NativePipelineCache.cpp")
 target_include_directories(MetallicNativePipelineCacheTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
-target_link_libraries(MetallicNativePipelineCacheTests PRIVATE GTest::gtest_main Threads::Threads)
+target_link_libraries(MetallicNativePipelineCacheTests PRIVATE GTest::gtest_main Threads::Threads nlohmann_json)
 if(MSVC)
     target_compile_options(MetallicNativePipelineCacheTests PRIVATE /EHsc /utf-8)
 endif()

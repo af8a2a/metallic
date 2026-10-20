@@ -63,6 +63,11 @@ struct ShaderRegistryWarmupResult {
     bool artifactOverrideActive = false;
 };
 
+struct ComputePipelineWarmupEstimate {
+    uint64_t psoHash = 0;
+    uint64_t historicalTimeNanoseconds = 0; // Zero means no compatible history.
+};
+
 // The process singleton owns source identities only. Native cache state belongs
 // to Device::sharedState and is released before that device's native teardown.
 class ShaderRegistry {
@@ -121,6 +126,10 @@ public:
     // cache above its persistent binary cache. Explicit caches bypass object
     // reuse and always enter the RHI; those callers own binary-cache saving.
     [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> getComputePipeline(Device& device, const ComputePipelineDesc& desc);
+    // Uses the same effective policy/key as native acquisition. Does not create
+    // a pipeline or populate ordinary caches while provisional warmup is active.
+    [[nodiscard]] Result<ComputePipelineWarmupEstimate> estimateComputePipelineWarmup(
+        Device& device, const ComputePipelineDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<RayTracingPipeline>> getRayTracingPipeline(Device& device, const RayTracingPipelineDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> getGraphicsPipeline(Device& device, const GraphicsPipelineDesc& desc);
     // Native interop adapters with external descriptor/vertex ABIs still use

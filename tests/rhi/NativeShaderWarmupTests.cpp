@@ -754,6 +754,116 @@ private:
     ShaderCompileResult code_;
 };
 
+class NativeShaderWarmupHistoryTest final : public RHITest {
+public:
+    NativeShaderWarmupHistoryTest()
+    {
+        type = RHITestType::Resource;
+        name = "native_shader_warmup_runtime_history_and_cross_device_scheduling";
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        if (!ShaderRegistry::supportsStagedComputeWarmup()) {
+            return RHITestResult::skip("historical native warmup requires the pipeline backend");
+        }
+        WarmupCacheDirectoryEnvironment cacheDirectory;
+        auto& registry = ShaderRegistry::instance();
+        const auto request = bufferRequest(builtin_pass::kRenderGraphBufferWriteEntryPoint);
+        const ShaderRequestView view(request);
+        std::string log;
+        auto code = registry.getShader(view.desc(), log);
+        if (!code) { return RHITestResult::fail("history fixture compilation failed: " + log); }
+        uint64_t trainedHash = 0;
+        uint64_t trainedTime = 0;
+        {
+            auto device = warmupTestDevice(context);
+            if (!device) { return device.error() == Error::Unsupported
+                ? RHITestResult::skip("bindless native warmup unavailable")
+                : RHITestResult::fail("could not create runtime history device"); }
+            if (!registry.setNativePipelineCacheCapacity(**device, 0)) {
+                return RHITestResult::fail("could not disable history fixture native LRU retention");
+            }
+            auto module = registry.getShaderModule(**device, {.spirv = code->spirv});
+            if (!module) { return RHITestResult::fail("could not acquire history fixture module"); }
+            const ComputePipelineDesc desc{.computeShader = {module->get(), "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(builtin_pass::RenderGraphBufferUserPush)};
+            auto before = registry.estimateComputePipelineWarmup(**device, desc);
+            if (!before || before->historicalTimeNanoseconds != 0) {
+                return RHITestResult::fail("isolated runtime history started with an existing timing");
+            }
+            WarmupNativeCalls calls(**device);
+            auto pipeline = registry.getComputePipeline(**device, desc);
+            if (!pipeline || calls.computeCalls != 1) {
+                return RHITestResult::fail("runtime history fixture did not create an actual PSO");
+            }
+            const auto stats = (*pipeline)->creationStats();
+            if (!stats.feedbackValid || stats.nativeCacheHit) {
+                return RHITestResult::skip("initial pipeline lacks valid native miss feedback for timing training");
+            }
+            auto trained = registry.estimateComputePipelineWarmup(**device, desc);
+            if (!trained || trained->psoHash != (*pipeline)->psoHash() || trained->psoHash != before->psoHash ||
+                trained->historicalTimeNanoseconds != stats.nativeCreateTimeNanoseconds ||
+                trained->historicalTimeNanoseconds == 0) {
+                return RHITestResult::fail("ordinary runtime creation did not train the exact measured PSO timing");
+            }
+            auto reused = registry.getComputePipeline(**device, desc);
+            auto afterReuse = registry.estimateComputePipelineWarmup(**device, desc);
+            if (!reused || !reusedWithoutNativeWork(**reused) || calls.computeCalls != 1 || !afterReuse ||
+                afterReuse->historicalTimeNanoseconds != trained->historicalTimeNanoseconds) {
+                return RHITestResult::fail("native object reuse changed the measured creation history");
+            }
+            // With no strong LRU retention, releasing both wrappers enters the
+            // driver again and exercises application-cache feedback separately.
+            reused->reset();
+            pipeline->reset();
+            auto recreated = registry.getComputePipeline(**device, desc);
+            auto afterRecreate = registry.estimateComputePipelineWarmup(**device, desc);
+            if (!recreated || calls.computeCalls != 2 || !afterRecreate ||
+                afterRecreate->historicalTimeNanoseconds < trained->historicalTimeNanoseconds) {
+                return RHITestResult::fail("native recreation reduced or lost the trained timing");
+            }
+            const auto recreatedStats = (*recreated)->creationStats();
+            if (recreatedStats.feedbackValid && recreatedStats.nativeCacheHit &&
+                afterRecreate->historicalTimeNanoseconds != trained->historicalTimeNanoseconds) {
+                return RHITestResult::fail("application-cache hit replaced the measured native miss timing");
+            }
+            trainedHash = afterRecreate->psoHash;
+            trainedTime = afterRecreate->historicalTimeNanoseconds;
+            if (!registry.flushPipelineCaches(**device)) {
+                return RHITestResult::fail("runtime PSO timing did not persist");
+            }
+        }
+        const std::array requests{request};
+        for (const bool pipelined : {false, true}) {
+            auto device = warmupTestDevice(context);
+            if (!device) { return RHITestResult::fail("could not recreate device for persisted timing lookup"); }
+            auto module = registry.getShaderModule(**device, {.spirv = code->spirv});
+            if (!module) { return RHITestResult::fail("could not recreate history fixture module"); }
+            const ComputePipelineDesc desc{.computeShader = {module->get(), "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(builtin_pass::RenderGraphBufferUserPush)};
+            const auto reloaded = registry.estimateComputePipelineWarmup(**device, desc);
+            if (!reloaded || reloaded->psoHash != trainedHash || reloaded->historicalTimeNanoseconds != trainedTime) {
+                return RHITestResult::fail("new device failed to reload compatible exact-PSO history");
+            }
+            auto warmed = pipelined ? warmupNativeShadersPipelined(**device, requests, log)
+                                    : warmupNativeShaders(**device, requests, log);
+            if (!warmed || warmed->nativeTaskCount != 1 || warmed->historicalTaskCount != 1) {
+                return RHITestResult::fail("warmup scheduler did not consume the persisted PSO timing: " + log);
+            }
+            const auto afterWarmup = registry.estimateComputePipelineWarmup(**device, desc);
+            if (!afterWarmup || afterWarmup->historicalTimeNanoseconds < trainedTime ||
+                !registry.flushPipelineCaches(**device)) {
+                return RHITestResult::fail("warmup lost trained timing or failed to persist");
+            }
+            trainedTime = afterWarmup->historicalTimeNanoseconds;
+        }
+        return RHITestResult::pass("ordinary native miss trains exact PSO history; reuse and cache hits retain it; fresh devices reload it for batch and pipelined scheduling");
+    }
+};
+
 class NativeShaderWarmupSpecializationTest final : public RHITest {
 public:
     NativeShaderWarmupSpecializationTest()
@@ -820,10 +930,14 @@ public:
         }
         ShaderSpecializationConstant value{*intId, ShaderSpecializationType::Int32, 1};
         desc.computeShader.specializationConstants = {&value, 1};
+        const auto firstEstimate = registry.estimateComputePipelineWarmup(**device, desc);
         auto first = registry.getComputePipeline(**device, desc);
         value.bits = 2;
+        const auto secondEstimate = registry.estimateComputePipelineWarmup(**device, desc);
         auto second = registry.getComputePipeline(**device, desc);
         if (!first || !second || calls.computeCalls != 3 ||
+            !firstEstimate || !secondEstimate || firstEstimate->psoHash != (*first)->psoHash() ||
+            secondEstimate->psoHash != (*second)->psoHash() ||
             (*first)->creationStats().nativeObjectReused || (*second)->creationStats().nativeObjectReused ||
             (*first)->psoHash() == (*original)->psoHash() || (*second)->psoHash() == (*first)->psoHash() ||
             vulkan::nativePipeline(**first).pipeline == vulkan::nativePipeline(**second).pipeline) {
@@ -835,6 +949,13 @@ public:
             vulkan::nativePipeline(**repeated).pipeline != vulkan::nativePipeline(**first).pipeline) {
             return RHITestResult::fail("matching specialization tuple did not reuse its native object");
         }
+        desc.disableOptimization = true;
+        const auto unoptimizedEstimate = registry.estimateComputePipelineWarmup(**device, desc);
+        auto unoptimized = registry.getComputePipeline(**device, desc);
+        if (!unoptimizedEstimate || !unoptimized || unoptimizedEstimate->psoHash != (*unoptimized)->psoHash() ||
+            unoptimizedEstimate->psoHash != detail::computePipelineStateHash(desc)) {
+            return RHITestResult::fail("history lookup did not match specialized unoptimized native PSO identity");
+        }
         return RHITestResult::pass("default warmup reuse, distinct actual scalar specialization values, and same-value runtime reuse verified at the Vulkan call boundary");
     }
 };
@@ -845,6 +966,7 @@ METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupFailureTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSaveBatchTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupSpecializationTest);
 METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupPipelineTest);
+METALLIC_REGISTER_RHI_TEST(NativeShaderWarmupHistoryTest);
 
 } // namespace
 } // namespace metallic::tests

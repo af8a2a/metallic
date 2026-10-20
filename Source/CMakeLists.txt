@@ -55,6 +55,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Core/RayTracingKernel.cpp
     Runtime/Render/Core/ShaderRegistry.cpp
     Runtime/Render/Core/NativePipelineCache.cpp
+    Runtime/Render/Core/PipelineCreationHistory.cpp
     Runtime/Render/Core/NativeShaderWarmup.cpp
     Runtime/Render/Core/PipelineRecipe.cpp
     Runtime/Render/Core/DeferredShaderCacheWriter.cpp

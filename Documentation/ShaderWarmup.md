@@ -98,10 +98,30 @@ and dispatches them to a bounded worker pool. It uses the same
 count capped at 12, further capped by task count). Setting it to `1` limits each
 stage to one worker; the two stages can still overlap. Each stage has its own
 worker pool, so the default can run up to 12 source and 12 native tasks at once.
-Ready native tasks run
-in descending finalized SPIR-V size with stable ties;
-this is a cost estimate, not historical driver timing, and specialization can
-change actual compilation cost substantially.
+Ready native tasks with compatible PSO history run first, in descending measured
+creation time. Equal costs and tasks without history use descending finalized
+SPIR-V size, with stable insertion-order ties. The batch and pipelined schedulers
+use the same ordering; the latter only orders work whose source is already ready.
+
+Normal runtime compute PSO creation and accepted warmup runs learn this history.
+Each exact PSO retains the largest successful native-call duration observed with
+valid feedback and no application pipeline-cache hit. Object reuse, cache hits,
+failed creation and unknown feedback do not overwrite it. An application-cache
+miss can still benefit from an unobserved driver cache; the retained peak is a
+scheduling hint, not a guarantee that the driver was cold.
+
+`ComputePipelineTimings-<device-identity>.json` lives beside the registry PSO
+caches (including `METALLIC_PSO_CACHE_DIRECTORY` overrides). Its identity contains
+vendor/device IDs, driver/API versions and the pipeline-cache UUID. PSO keys use
+final device bytecode, entry point, specialization, push layout, indirect policy,
+optimization and backend, through the same normalization as actual acquisition.
+The existing `.pso` format and hash identities are unchanged. Missing, incompatible
+or malformed history uses the size fallback. Saves are atomic and deferred through
+the device cache writer; a rejected provisional source batch publishes no timing
+observations. History write failures are reported without rejecting valid shaders.
+
+Task logs include `pso`, `historyMs` (zero when unknown) and `estimatedSpirvWords`;
+the report counts `historicalTaskCount`. A first run has no learned ordering.
 
 Source scheduling prioritizes estimated expensive groups and entries. Native
 priority applies to available tasks rather than waiting for every source to

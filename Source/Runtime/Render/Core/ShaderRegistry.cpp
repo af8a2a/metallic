@@ -1,6 +1,7 @@
 #include "Runtime/Render/Core/ShaderRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/DeferredShaderCacheWriter.h"
+#include "Runtime/Render/Core/PipelineCreationHistory.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 
@@ -24,18 +25,87 @@ struct DeviceShaders {
     std::map<const ShaderModule*, PipelineRecipeShader> recipeShaders;
     std::set<std::string> exportedRecipes;
     detail::NativePipelineCache nativePipelines;
+    std::unique_ptr<detail::PipelineCreationHistory> creationHistory;
     // Reverse member destruction drains/joins the writer before cache handles.
     DeferredShaderCacheWriter writer;
 };
 
+std::filesystem::path pipelineCacheDirectory()
+{
+    const auto* configured = std::getenv("METALLIC_PSO_CACHE_DIRECTORY");
+    return configured && configured[0] ? std::filesystem::path(configured)
+        : std::filesystem::path(PROJECT_SOURCE_DIR "/.cache/pso");
+}
+
 Result<std::shared_ptr<DeviceShaders>> deviceShaders(Device& device)
 {
     static const char key = 0;
-    auto state = device.sharedState(&key, []() -> Result<std::shared_ptr<void>> {
-        return std::make_shared<DeviceShaders>();
+    auto state = device.sharedState(&key, [&device]() -> Result<std::shared_ptr<void>> {
+        auto shaders = std::make_shared<DeviceShaders>();
+        const auto& properties = vulkan::nativeDevice(device).properties->core;
+        std::array<uint8_t, 32> identity{};
+        std::memcpy(identity.data(), &properties.vendorID, 4);
+        std::memcpy(identity.data() + 4, &properties.deviceID, 4);
+        std::memcpy(identity.data() + 8, &properties.driverVersion, 4);
+        std::memcpy(identity.data() + 12, &properties.apiVersion, 4);
+        std::memcpy(identity.data() + 16, properties.pipelineCacheUUID, VK_UUID_SIZE);
+        std::ostringstream name;
+        name << "ComputePipelineTimings-";
+        for (auto byte : identity) { name << std::hex << std::setw(2) << std::setfill('0') << unsigned(byte); }
+        name << ".json";
+        shaders->creationHistory = std::make_unique<detail::PipelineCreationHistory>(
+            pipelineCacheDirectory() / name.str(), identity);
+        std::string reason;
+        if (!shaders->creationHistory->load(reason)) {
+            spdlog::warn("[PSO history] Ignored '{}': {}", name.str(), reason);
+        }
+        return shaders;
     });
     if (!state) { return makeError(state.error()); }
     return std::static_pointer_cast<DeviceShaders>(*state);
+}
+
+void recordComputePipelineTiming(DeviceShaders& shaders, uint64_t psoHash, const PipelineCreationStats& stats)
+{
+    const auto revision = shaders.creationHistory->observe(psoHash, stats.nativeCreateTimeNanoseconds,
+        stats.feedbackValid, stats.nativeCacheHit);
+    if (!revision) { return; }
+    // The containing device state drains its writer before destroying history.
+    shaders.writer.request("ComputePipelineTimings", revision, [history = shaders.creationHistory.get()] {
+        std::string reason;
+        if (!history->save(reason)) {
+            spdlog::warn("[PSO history] Could not persist timings: {}", reason);
+            return false;
+        }
+        return true;
+    });
+}
+
+Result<> configureComputePipelineDesc(ComputePipelineDesc& desc,
+    std::vector<ShaderSpecializationConstant>& specialization)
+{
+    try {
+        specialization = detail::canonicalShaderSpecializationConstants(desc.computeShader.specializationConstants);
+    } catch (const std::invalid_argument&) { return makeError(Error::InvalidArgument); }
+    desc.computeShader.specializationConstants = specialization;
+    const auto* optimization = std::getenv("METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION");
+    if (optimization && optimization[0] && std::strcmp(optimization, "1") != 0 && std::strcmp(optimization, "0") != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (optimization && std::strcmp(optimization, "1") == 0) { desc.disableOptimization = true; }
+    const auto* backend = std::getenv("METALLIC_VK_COMPUTE_BACKEND");
+    if (backend && backend[0] && std::strcmp(backend, "shader-object") != 0 &&
+        std::strcmp(backend, "pipeline-binary") != 0 && std::strcmp(backend, "pipeline") != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.backend == ComputePipelineBackend::Pipeline && !desc.pipelineCache && !desc.nativeBinaryCacheDirectory) {
+        if (backend && std::strcmp(backend, "shader-object") == 0) { desc.backend = ComputePipelineBackend::ShaderObject; }
+        if (backend && std::strcmp(backend, "pipeline-binary") == 0) { desc.backend = ComputePipelineBackend::PipelineBinary; }
+    }
+    if (desc.backend != ComputePipelineBackend::Pipeline && !desc.nativeBinaryCacheDirectory) {
+        desc.nativeBinaryCacheDirectory = std::getenv("METALLIC_VK_NATIVE_BINARY_CACHE_DIR");
+    }
+    return {};
 }
 
 std::string recipeDirectory()
@@ -154,11 +224,7 @@ Result<PipelineCache*> acquireCache(Device& device, const std::string& group)
     std::lock_guard lock((*state)->mutex);
     auto& cache = (*state)->caches[group];
     if (!cache) {
-        const char* cacheDirectory = std::getenv("METALLIC_PSO_CACHE_DIRECTORY");
-        const std::filesystem::path directory = cacheDirectory && cacheDirectory[0]
-            ? std::filesystem::path(cacheDirectory)
-            : std::filesystem::path(PROJECT_SOURCE_DIR "/.cache/pso");
-        const std::string path = (directory / (group + ".pso")).string();
+        const std::string path = (pipelineCacheDirectory() / (group + ".pso")).string();
         auto created = device.createPipelineCache({.filePath = path.c_str()});
         if (!created) {
             (*state)->caches.erase(group);
@@ -208,6 +274,7 @@ struct ShaderRegistry::StagedComputeWarmup::State {
     std::map<std::string, std::unique_ptr<PipelineCache>> caches;
     detail::NativePipelineCache nativePipelines;
     std::vector<Pipeline> pipelines;
+    std::vector<std::pair<uint64_t, PipelineCreationStats>> timings;
     bool committed = false;
 
     State(Device& device, std::shared_ptr<DeviceShaders> destination)
@@ -254,15 +321,8 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::StagedComputeWarmup::ge
     }
     auto desc = requestedDesc;
     std::vector<ShaderSpecializationConstant> specialization;
-    try {
-        specialization = detail::canonicalShaderSpecializationConstants(desc.computeShader.specializationConstants);
-    } catch (const std::invalid_argument&) { return makeError(Error::InvalidArgument); }
-    desc.computeShader.specializationConstants = specialization;
-    const auto* optimization = std::getenv("METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION");
-    if (optimization && optimization[0] && std::strcmp(optimization, "1") != 0 && std::strcmp(optimization, "0") != 0) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (optimization && std::strcmp(optimization, "1") == 0) { desc.disableOptimization = true; }
+    if (auto configured = configureComputePipelineDesc(desc, specialization); !configured) { return makeError(configured.error()); }
+    if (desc.backend != ComputePipelineBackend::Pipeline) { return makeError(Error::Unsupported); }
     if (auto valid = state_->device.validateComputePipelineDesc(desc); !valid) { return makeError(valid.error()); }
     const auto group = ShaderRegistry::sourceCacheGroup(sourceModule);
     const auto key = detail::NativePipelineKey{detail::NativePipelineType::Compute,
@@ -274,10 +334,7 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::StagedComputeWarmup::ge
             if (state_->committed) { return makeError(Error::InvalidArgument); }
             auto& slot = state_->caches[group];
             if (!slot) {
-                const auto* configured = std::getenv("METALLIC_PSO_CACHE_DIRECTORY");
-                const std::filesystem::path directory = configured && configured[0]
-                    ? std::filesystem::path(configured) : std::filesystem::path(PROJECT_SOURCE_DIR "/.cache/pso");
-                const auto path = (directory / (group + ".pso")).string();
+                const auto path = (pipelineCacheDirectory() / (group + ".pso")).string();
                 auto created = state_->device.createPipelineCache({.filePath = path.c_str(), .saveOnDestroy = false});
                 if (!created) { state_->caches.erase(group); return makeError(created.error()); }
                 slot = std::move(*created);
@@ -302,6 +359,7 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::StagedComputeWarmup::ge
         std::lock_guard lock(state_->mutex);
         state_->pipelines.push_back({key, acquired->owner, desc,
             desc.computeShader.entryPoint ? desc.computeShader.entryPoint : "main", group});
+        if (!acquired->nativeObjectReused) { state_->timings.emplace_back(key.psoHash, pipeline->creationStats()); }
     }
     return pipeline;
 }
@@ -323,6 +381,7 @@ Result<> ShaderRegistry::StagedComputeWarmup::commit()
         state_->destination->caches.merge(state_->caches);
         state_->committed = true;
     }
+    for (const auto& [hash, stats] : state_->timings) { recordComputePipelineTiming(*state_->destination, hash, stats); }
     for (const auto& [group, cache] : adopted) { persist(state_->device, *cache, group); }
     for (auto& staged : state_->pipelines) {
         auto published = state_->destination->nativePipelines.acquire(staged.key,
@@ -387,29 +446,7 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Devi
 {
     auto desc = requestedDesc;
     std::vector<ShaderSpecializationConstant> specialization;
-    try {
-        specialization = detail::canonicalShaderSpecializationConstants(desc.computeShader.specializationConstants);
-    } catch (const std::invalid_argument&) {
-        return makeError(Error::InvalidArgument);
-    }
-    desc.computeShader.specializationConstants = specialization;
-    const char* optimization = std::getenv("METALLIC_VK_DISABLE_PIPELINE_OPTIMIZATION");
-    if (optimization && optimization[0] && std::strcmp(optimization, "1") != 0 && std::strcmp(optimization, "0") != 0) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (optimization && std::strcmp(optimization, "1") == 0) { desc.disableOptimization = true; }
-    const char* backend = std::getenv("METALLIC_VK_COMPUTE_BACKEND");
-    if (backend && backend[0] && std::strcmp(backend, "shader-object") != 0 &&
-        std::strcmp(backend, "pipeline-binary") != 0 && std::strcmp(backend, "pipeline") != 0) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (desc.backend == ComputePipelineBackend::Pipeline && !desc.pipelineCache && !desc.nativeBinaryCacheDirectory) {
-        if (backend && std::strcmp(backend, "shader-object") == 0) { desc.backend = ComputePipelineBackend::ShaderObject; }
-        if (backend && std::strcmp(backend, "pipeline-binary") == 0) { desc.backend = ComputePipelineBackend::PipelineBinary; }
-    }
-    if (desc.backend != ComputePipelineBackend::Pipeline && !desc.nativeBinaryCacheDirectory) {
-        desc.nativeBinaryCacheDirectory = std::getenv("METALLIC_VK_NATIVE_BINARY_CACHE_DIR");
-    }
+    if (auto configured = configureComputePipelineDesc(desc, specialization); !configured) { return makeError(configured.error()); }
     auto valid = device.validateComputePipelineDesc(desc);
     if (!valid) { return makeError(valid.error()); }
     const std::string group = cacheGroup(desc.computeShader.module->contentHash());
@@ -433,6 +470,7 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Devi
         managed.pipelineCache = *cache;
         auto pipeline = device.createComputePipeline(managed);
         if (!pipeline) { return makeError(pipeline.error()); }
+        recordComputePipelineTiming(**state, (*pipeline)->psoHash(), (*pipeline)->creationStats());
         persist(device, **cache, group);
         return std::shared_ptr<void>((*pipeline)->impl_);
     });
@@ -446,6 +484,18 @@ Result<std::unique_ptr<ComputePipeline>> ShaderRegistry::getComputePipeline(Devi
     }
     exportRecipe(device, desc, pipeline->psoHash(), group);
     return pipeline;
+}
+
+Result<ComputePipelineWarmupEstimate> ShaderRegistry::estimateComputePipelineWarmup(
+    Device& device, const ComputePipelineDesc& requestedDesc)
+{
+    auto desc = requestedDesc;
+    std::vector<ShaderSpecializationConstant> specialization;
+    if (auto configured = configureComputePipelineDesc(desc, specialization); !configured) { return makeError(configured.error()); }
+    const auto hash = detail::computePipelineStateHash(desc);
+    auto state = deviceShaders(device);
+    if (!state) { return makeError(state.error()); }
+    return ComputePipelineWarmupEstimate{hash, (*state)->creationHistory->duration(hash).value_or(0)};
 }
 
 Result<std::unique_ptr<RayTracingPipeline>> ShaderRegistry::getRayTracingPipeline(Device& device, const RayTracingPipelineDesc& requestedDesc)
